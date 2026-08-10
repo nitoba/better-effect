@@ -1,25 +1,33 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
+import { ServiceRuntimeNotConfiguredError } from './errors'
+
 import type { AnyServiceToken } from './types'
 
 export interface ServiceResolver {
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>>
 }
 
-let currentResolver: ServiceResolver | undefined
+const storage = new AsyncLocalStorage<ServiceResolver>()
 
 export class ServiceRuntime {
-  static configure(resolver: ServiceResolver): void {
-    currentResolver = resolver
+  static run<A>(resolver: ServiceResolver, program: () => A): A {
+    return storage.run(resolver, program)
+  }
+
+  static current(): ServiceResolver {
+    const resolver = storage.getStore()
+
+    if (!resolver) {
+      throw new ServiceRuntimeNotConfiguredError()
+    }
+
+    return resolver
   }
 
   static async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
-    if (!currentResolver) {
-      throw new Error('ServiceRuntime has not been configured')
-    }
+    const resolver = ServiceRuntime.current()
 
-    return await currentResolver.resolve(token)
-  }
-
-  static reset(): void {
-    currentResolver = undefined
+    return await resolver.resolve(token)
   }
 }
