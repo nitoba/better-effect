@@ -216,7 +216,7 @@ describe('buildLayer', () => {
     )
 
     try {
-      await expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
+      expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
         ServiceRuntimeNotConfiguredError
       )
     } finally {
@@ -235,7 +235,7 @@ describe('buildLayer', () => {
 
       expect(service).toBeInstanceOf(ExampleService)
 
-      await expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
+      expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
         ServiceRuntimeNotConfiguredError
       )
     } finally {

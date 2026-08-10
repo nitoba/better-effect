@@ -1,6 +1,6 @@
 {
   "name": "better-effect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lightweight Effect-inspired primitives for better-result",
   "keywords": [
     "better-result",
@@ -26,18 +26,10 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs"
-    },
-    "./iti": {
-      "types": "./dist/adapters/iti.d.mts",
-      "import": "./dist/adapters/iti.mjs"
-    },
-    "./testing": {
-      "types": "./dist/testing.d.mts",
-      "import": "./dist/testing.mjs"
-    }
+    ".": "./dist/index.mjs",
+    "./adapters/iti": "./dist/adapters/iti.mjs",
+    "./testing": "./dist/testing.mjs",
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public",
