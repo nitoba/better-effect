@@ -1,12 +1,17 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Layer, buildLayer, type LayerBackend } from '../src/layer'
+import { BuiltLayerDisposedError, Layer, buildLayer, type LayerBackend } from '../src/layer'
 
 import type { LayerProvider } from '../src/layer/types'
 
-import { Service, ServiceRuntime, type AnyServiceToken } from '../src/service'
+import {
+  Service,
+  ServiceRuntime,
+  ServiceRuntimeNotConfiguredError,
+  type AnyServiceToken
+} from '../src/service'
 
 class ExampleService extends Service<ExampleService>() {
   value(): number {
@@ -56,26 +61,24 @@ class MemoryLayerBackend implements LayerBackend {
   }
 }
 
-afterEach(() => {
-  ServiceRuntime.reset()
-})
-
 describe('buildLayer', () => {
-  test.serial('registers every provider in the backend', async () => {
+  test('registers every provider in the backend', async () => {
     const layer = Layer.make(ExampleService, () => new ExampleService())
 
     const backend = new MemoryLayerBackend()
 
     const runtime = await buildLayer(layer, backend)
 
-    expect(backend.providers.has(ExampleService)).toBe(true)
+    try {
+      expect(backend.providers.has(ExampleService)).toBe(true)
 
-    expect(backend.instances.size).toBe(0)
-
-    await runtime.dispose()
+      expect(backend.instances.size).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
   })
 
-  test.serial('does not acquire services while building the layer', async () => {
+  test('does not acquire services while building the layer', async () => {
     let acquired = 0
 
     const layer = Layer.make(ExampleService, () => {
@@ -88,12 +91,14 @@ describe('buildLayer', () => {
 
     const runtime = await buildLayer(layer, backend)
 
-    expect(acquired).toBe(0)
-
-    await runtime.dispose()
+    try {
+      expect(acquired).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
   })
 
-  test.serial('configures ServiceRuntime with the backend', async () => {
+  test('provides the backend inside runtime.run', async () => {
     const backend = new MemoryLayerBackend()
 
     const runtime = await buildLayer(
@@ -101,22 +106,26 @@ describe('buildLayer', () => {
       backend
     )
 
-    const result = await Result.gen(async function* () {
-      const service = yield* ExampleService
+    try {
+      const result = await runtime.run(() =>
+        Result.gen(async function* () {
+          const service = yield* ExampleService
 
-      return Result.ok(service.value())
-    })
+          return Result.ok(service.value())
+        })
+      )
 
-    expect(Result.isOk(result)).toBe(true)
+      expect(Result.isOk(result)).toBe(true)
 
-    if (Result.isOk(result)) {
-      expect(result.value).toBe(42)
+      if (Result.isOk(result)) {
+        expect(result.value).toBe(42)
+      }
+    } finally {
+      await runtime.dispose()
     }
-
-    await runtime.dispose()
   })
 
-  test.serial('caches instances according to backend behavior', async () => {
+  test('caches instances according to backend behavior', async () => {
     let acquired = 0
 
     const backend = new MemoryLayerBackend()
@@ -130,18 +139,27 @@ describe('buildLayer', () => {
       backend
     )
 
-    const first = await ServiceRuntime.resolve(ExampleService)
+    try {
+      const { first, second } = await runtime.run(async () => {
+        const first = await ServiceRuntime.resolve(ExampleService)
 
-    const second = await ServiceRuntime.resolve(ExampleService)
+        const second = await ServiceRuntime.resolve(ExampleService)
 
-    expect(first).toBe(second)
+        return {
+          first,
+          second
+        }
+      })
 
-    expect(acquired).toBe(1)
+      expect(first).toBe(second)
 
-    await runtime.dispose()
+      expect(acquired).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
   })
 
-  test.serial('releases acquired scoped services', async () => {
+  test('releases acquired scoped services', async () => {
     let released = 0
 
     const backend = new MemoryLayerBackend()
@@ -149,9 +167,7 @@ describe('buildLayer', () => {
     const runtime = await buildLayer(
       Layer.scoped(
         ExampleService,
-
         () => new ExampleService(),
-
         () => {
           released++
         }
@@ -159,7 +175,7 @@ describe('buildLayer', () => {
       backend
     )
 
-    await ServiceRuntime.resolve(ExampleService)
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
 
     expect(released).toBe(0)
 
@@ -168,7 +184,7 @@ describe('buildLayer', () => {
     expect(released).toBe(1)
   })
 
-  test.serial('does not release services that were never acquired', async () => {
+  test('does not release services that were never acquired', async () => {
     let released = 0
 
     const backend = new MemoryLayerBackend()
@@ -176,9 +192,7 @@ describe('buildLayer', () => {
     const runtime = await buildLayer(
       Layer.scoped(
         ExampleService,
-
         () => new ExampleService(),
-
         () => {
           released++
         }
@@ -191,17 +205,65 @@ describe('buildLayer', () => {
     expect(released).toBe(0)
   })
 
-  test.serial('resets ServiceRuntime after dispose', async () => {
+  test('does not expose the resolver outside runtime.run', async () => {
     const runtime = await buildLayer(
       Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
 
+    try {
+      expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
+        ServiceRuntimeNotConfiguredError
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('does not leak the resolver after runtime.run completes', async () => {
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const service = await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+
+      expect(service).toBeInstanceOf(ExampleService)
+
+      expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
+        ServiceRuntimeNotConfiguredError
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('does not allow programs to run after dispose', async () => {
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
 
     await runtime.dispose()
 
-    expect(ServiceRuntime.resolve(ExampleService)).rejects.toThrow(
-      'ServiceRuntime has not been configured'
+    expect(() => runtime.run(() => ServiceRuntime.resolve(ExampleService))).toThrow(
+      BuiltLayerDisposedError
     )
+  })
+
+  test('disposes the backend', async () => {
+    const backend = new MemoryLayerBackend()
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      backend
+    )
+
+    expect(backend.disposed).toBe(false)
+
+    await runtime.dispose()
+
+    expect(backend.disposed).toBe(true)
   })
 })

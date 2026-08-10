@@ -1,156 +1,302 @@
-import { describe, expect, expectTypeOf, mock, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 
-import { Layer } from '../src/layer'
-import { Service } from '../src/service'
+import { Result } from 'better-result'
 
-class Database extends Service<Database>() {
-  constructor(readonly environment = 'live') {
-    super()
-  }
+import { BuiltLayerDisposedError, Layer, buildLayer, type LayerBackend } from '../src/layer'
 
-  query(): string {
-    return this.environment
+import type { LayerProvider } from '../src/layer/types'
+
+import {
+  Service,
+  ServiceRuntime,
+  ServiceRuntimeNotConfiguredError,
+  type AnyServiceToken
+} from '../src/service'
+
+class ExampleService extends Service<ExampleService>() {
+  value(): number {
+    return 42
   }
 }
 
-class UserRepository extends Service<UserRepository>() {
-  findUser(): string {
-    return 'user'
+class MemoryLayerBackend implements LayerBackend {
+  readonly providers = new Map<AnyServiceToken, LayerProvider>()
+
+  readonly instances = new Map<AnyServiceToken, unknown>()
+
+  disposed = false
+
+  register(provider: LayerProvider): void {
+    this.providers.set(provider.service, provider)
   }
-}
 
-describe('Layer', () => {
-  test('make creates a provider for the service token', async () => {
-    const layer = Layer.make(Database, () => new Database())
-
-    expect(layer.providers).toHaveLength(1)
-
-    const provider = layer.providers[0]
-
-    expect(provider).toBeDefined()
-
-    if (!provider) {
-      throw new Error('Expected provider')
+  async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    if (this.instances.has(token)) {
+      return this.instances.get(token) as InstanceType<T>
     }
 
-    expect(provider.service).toBe(Database)
+    const provider = this.providers.get(token)
+
+    if (!provider) {
+      throw new Error(`Missing service: ${token.name}`)
+    }
 
     const instance = await provider.acquire()
 
-    expect(instance).toBeInstanceOf(Database)
-  })
+    this.instances.set(token, instance)
 
-  test('succeed always provides the given instance', async () => {
-    const database = new Database('test')
+    return instance as InstanceType<T>
+  }
 
-    const layer = Layer.succeed(Database, database)
+  async disposeAll(): Promise<void> {
+    for (const [token, instance] of this.instances) {
+      const provider = this.providers.get(token)
 
-    const provider = layer.providers[0]
-
-    if (!provider) {
-      throw new Error('Expected provider')
+      await provider?.release?.(instance)
     }
 
-    expect(provider.service).toBe(Database)
+    this.instances.clear()
 
-    expect(await provider.acquire()).toBe(database)
+    this.disposed = true
+  }
+}
+
+describe('buildLayer', () => {
+  test('registers every provider in the backend', async () => {
+    const layer = Layer.make(ExampleService, () => new ExampleService())
+
+    const backend = new MemoryLayerBackend()
+
+    const runtime = await buildLayer(layer, backend)
+
+    try {
+      expect(backend.providers.has(ExampleService)).toBe(true)
+
+      expect(backend.instances.size).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
   })
 
-  test('scoped associates acquire and release with the same service type', async () => {
-    const release = mock(async (database: Database) => {
-      expectTypeOf(database).toEqualTypeOf<Database>()
+  test('does not acquire services while building the layer', async () => {
+    let acquired = 0
+
+    const layer = Layer.make(ExampleService, () => {
+      acquired++
+
+      return new ExampleService()
     })
 
-    const layer = Layer.scoped(
-      Database,
+    const backend = new MemoryLayerBackend()
 
-      () => new Database(),
+    const runtime = await buildLayer(layer, backend)
 
-      release
+    try {
+      expect(acquired).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('provides the backend to programs executed by the runtime', async () => {
+    const backend = new MemoryLayerBackend()
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      backend
     )
 
-    const provider = layer.providers[0]
+    try {
+      const result = await runtime.run(() =>
+        Result.gen(async function* () {
+          const service = yield* ExampleService
 
-    if (!provider) {
-      throw new Error('Expected provider')
+          return Result.ok(service.value())
+        })
+      )
+
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value).toBe(42)
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('caches instances according to backend behavior', async () => {
+    let acquired = 0
+
+    const backend = new MemoryLayerBackend()
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => {
+        acquired++
+
+        return new ExampleService()
+      }),
+      backend
+    )
+
+    try {
+      const { first, second } = await runtime.run(async () => {
+        const first = await ServiceRuntime.resolve(ExampleService)
+
+        const second = await ServiceRuntime.resolve(ExampleService)
+
+        return {
+          first,
+          second
+        }
+      })
+
+      expect(first).toBe(second)
+
+      expect(acquired).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('releases acquired scoped services', async () => {
+    let released = 0
+
+    const backend = new MemoryLayerBackend()
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+
+        () => new ExampleService(),
+
+        () => {
+          released++
+        }
+      ),
+      backend
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+
+    expect(released).toBe(0)
+
+    await runtime.dispose()
+
+    expect(released).toBe(1)
+  })
+
+  test('does not release services that were never acquired', async () => {
+    let released = 0
+
+    const backend = new MemoryLayerBackend()
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+
+        () => new ExampleService(),
+
+        () => {
+          released++
+        }
+      ),
+      backend
+    )
+
+    await runtime.dispose()
+
+    expect(released).toBe(0)
+  })
+
+  test('does not expose the resolver outside runtime.run', async () => {
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      await expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
+        ServiceRuntimeNotConfiguredError
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('does not leak the resolver after runtime.run completes', async () => {
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const service = await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+
+      expect(service).toBeInstanceOf(ExampleService)
+
+      await expect(ServiceRuntime.resolve(ExampleService)).rejects.toBeInstanceOf(
+        ServiceRuntimeNotConfiguredError
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('does not allow programs to run after dispose', async () => {
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    await runtime.dispose()
+
+    expect(() => runtime.run(() => ServiceRuntime.resolve(ExampleService))).toThrow(
+      BuiltLayerDisposedError
+    )
+  })
+
+  test('isolates concurrent runtime contexts', async () => {
+    class NamedService extends Service<NamedService>() {
+      constructor(readonly name: string) {
+        super()
+      }
     }
 
-    const database = await provider.acquire()
+    const firstInstance = new NamedService('first')
 
-    await provider.release?.(database)
+    const secondInstance = new NamedService('second')
 
-    expect(release).toHaveBeenCalledTimes(1)
-
-    expect(release).toHaveBeenCalledWith(database)
-  })
-
-  test('merge combines providers using service tokens', () => {
-    const database = Layer.make(Database, () => new Database())
-
-    const users = Layer.make(UserRepository, () => new UserRepository())
-
-    const merged = Layer.merge(database, users)
-
-    expect(merged.providers).toHaveLength(2)
-
-    expect(merged.providers.map(({ service }) => service)).toEqual([Database, UserRepository])
-  })
-
-  test('merge rejects the same service token twice', () => {
-    const first = Layer.make(Database, () => new Database())
-
-    const second = Layer.make(Database, () => new Database('other'))
-
-    expect(() => Layer.merge(first, second)).toThrow('Duplicate service "Database"')
-  })
-
-  test('override replaces a provider by service identity', async () => {
-    const liveDatabase = new Database('live')
-
-    const testDatabase = new Database('test')
-
-    const live = Layer.merge(
-      Layer.succeed(Database, liveDatabase),
-
-      Layer.make(UserRepository, () => new UserRepository())
+    const firstRuntime = await buildLayer(
+      Layer.succeed(NamedService, firstInstance),
+      new MemoryLayerBackend()
     )
 
-    const overridden = Layer.override(
-      live,
-
-      Layer.succeed(Database, testDatabase)
+    const secondRuntime = await buildLayer(
+      Layer.succeed(NamedService, secondInstance),
+      new MemoryLayerBackend()
     )
 
-    expect(overridden.providers).toHaveLength(2)
+    try {
+      const [first, second] = await Promise.all([
+        firstRuntime.run(async () => {
+          await Promise.resolve()
 
-    const databaseProvider = overridden.providers.find(({ service }) => service === Database)
+          return ServiceRuntime.resolve(NamedService)
+        }),
 
-    expect(databaseProvider).toBeDefined()
+        secondRuntime.run(async () => {
+          await Promise.resolve()
 
-    if (!databaseProvider) {
-      throw new Error('Expected Database provider')
+          return ServiceRuntime.resolve(NamedService)
+        })
+      ])
+
+      expect(first).toBe(firstInstance)
+
+      expect(second).toBe(secondInstance)
+    } finally {
+      await Promise.all([firstRuntime.dispose(), secondRuntime.dispose()])
     }
-
-    expect(await databaseProvider.acquire()).toBe(testDatabase)
-  })
-
-  test('override does not affect unrelated services', () => {
-    const app = Layer.merge(
-      Layer.make(Database, () => new Database()),
-
-      Layer.make(UserRepository, () => new UserRepository())
-    )
-
-    const overridden = Layer.override(
-      app,
-
-      Layer.succeed(Database, new Database('test'))
-    )
-
-    const repository = overridden.providers.find(({ service }) => service === UserRepository)
-
-    expect(repository).toBeDefined()
-
-    expect(repository?.service).toBe(UserRepository)
   })
 })

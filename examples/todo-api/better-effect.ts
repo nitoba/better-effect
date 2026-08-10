@@ -1,3 +1,3 @@
-export { Layer, Resource, Service, ServiceRuntime, buildLayer, RuntimeLayer } from '../../src/index'
+export { Layer, Resource, Service, ServiceRuntime, buildLayer, Runtime } from '../../src/index'
 
 export { ItiLayerBackend } from '../../src/adapters/iti'

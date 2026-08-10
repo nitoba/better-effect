@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, expectTypeOf, test } from 'bun:test'
+import { describe, expect, expectTypeOf, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Service, ServiceRuntime } from '../src/service'
+import { Service, ServiceRuntime, ServiceRuntimeNotConfiguredError } from '../src/service'
 
 import { TestServiceResolver } from './helpers/test-service-resolver'
 
@@ -16,25 +16,21 @@ class CounterService extends Service<CounterService>() {
   }
 }
 
-afterEach(() => {
-  ServiceRuntime.reset()
-})
-
 describe('Service', () => {
-  test.serial('resolves a service using yield*', async () => {
+  test('resolves a service using yield*', async () => {
     const instance = new CounterService(41)
 
     const resolver = new TestServiceResolver().provide(CounterService, instance)
 
-    ServiceRuntime.configure(resolver)
+    const result = await ServiceRuntime.run(resolver, () =>
+      Result.gen(async function* () {
+        const counter = yield* CounterService
 
-    const result = await Result.gen(async function* () {
-      const counter = yield* CounterService
+        expectTypeOf(counter).toEqualTypeOf<CounterService>()
 
-      expectTypeOf(counter).toEqualTypeOf<CounterService>()
-
-      return Result.ok(counter.increment())
-    })
+        return Result.ok(counter.increment())
+      })
+    )
 
     expect(resolver.calls).toEqual([CounterService])
 
@@ -45,17 +41,29 @@ describe('Service', () => {
     }
   })
 
-  test.serial('infers instance type from token', async () => {
+  test('infers instance type from token', async () => {
     const instance = new CounterService(42)
 
     const resolver = new TestServiceResolver().provide(CounterService, instance)
 
-    ServiceRuntime.configure(resolver)
-
-    const counter = await ServiceRuntime.resolve(CounterService)
+    const counter = await ServiceRuntime.run(resolver, () => ServiceRuntime.resolve(CounterService))
 
     expectTypeOf(counter).toEqualTypeOf<CounterService>()
 
     expect(counter).toBe(instance)
+  })
+
+  test('does not leak the resolver outside the runtime context', async () => {
+    const instance = new CounterService(42)
+
+    const resolver = new TestServiceResolver().provide(CounterService, instance)
+
+    const counter = await ServiceRuntime.run(resolver, () => ServiceRuntime.resolve(CounterService))
+
+    expect(counter).toBe(instance)
+
+    expect(ServiceRuntime.resolve(CounterService)).rejects.toBeInstanceOf(
+      ServiceRuntimeNotConfiguredError
+    )
   })
 })

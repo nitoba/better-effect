@@ -1,11 +1,10 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Layer, buildLayer } from '../src/layer'
-
-import { Service, ServiceRuntime } from '../src/service'
 import { ItiLayerBackend } from '../src/adapters/iti'
+import { Layer, buildLayer } from '../src/layer'
+import { Service, ServiceRuntime } from '../src/service'
 
 class Database extends Service<Database>() {
   readonly id = crypto.randomUUID()
@@ -15,19 +14,15 @@ class UserRepository extends Service<UserRepository>() {
   readonly id = crypto.randomUUID()
 }
 
-afterEach(() => {
-  ServiceRuntime.reset()
-})
-
 describe('ItiLayerBackend', () => {
-  test.serial('resolves a service using the class token', async () => {
+  test('resolves a service using the class token', async () => {
     const runtime = await buildLayer(
       Layer.make(Database, () => new Database()),
       new ItiLayerBackend()
     )
 
     try {
-      const database = await ServiceRuntime.resolve(Database)
+      const database = await runtime.run(() => ServiceRuntime.resolve(Database))
 
       expect(database).toBeInstanceOf(Database)
     } finally {
@@ -35,7 +30,7 @@ describe('ItiLayerBackend', () => {
     }
   })
 
-  test.serial('resolves providers lazily', async () => {
+  test('resolves providers lazily', async () => {
     let acquired = 0
 
     const runtime = await buildLayer(
@@ -44,14 +39,13 @@ describe('ItiLayerBackend', () => {
 
         return new Database()
       }),
-
       new ItiLayerBackend()
     )
 
     try {
       expect(acquired).toBe(0)
 
-      await ServiceRuntime.resolve(Database)
+      await runtime.run(() => ServiceRuntime.resolve(Database))
 
       expect(acquired).toBe(1)
     } finally {
@@ -59,7 +53,7 @@ describe('ItiLayerBackend', () => {
     }
   })
 
-  test.serial('caches resolved instances', async () => {
+  test('caches resolved instances', async () => {
     let acquired = 0
 
     const runtime = await buildLayer(
@@ -68,21 +62,22 @@ describe('ItiLayerBackend', () => {
 
         return new Database()
       }),
-
       new ItiLayerBackend()
     )
 
     try {
-      const result = await Result.gen(async function* () {
-        const first = yield* Database
+      const result = await runtime.run(() =>
+        Result.gen(async function* () {
+          const first = yield* Database
 
-        const second = yield* Database
+          const second = yield* Database
 
-        return Result.ok({
-          first,
-          second
+          return Result.ok({
+            first,
+            second
+          })
         })
-      })
+      )
 
       expect(Result.isOk(result)).toBe(true)
 
@@ -96,21 +91,22 @@ describe('ItiLayerBackend', () => {
     }
   })
 
-  test.serial('keeps different class tokens independent', async () => {
+  test('keeps different class tokens independent', async () => {
     const runtime = await buildLayer(
       Layer.merge(
         Layer.make(Database, () => new Database()),
 
         Layer.make(UserRepository, () => new UserRepository())
       ),
-
       new ItiLayerBackend()
     )
 
     try {
-      const database = await ServiceRuntime.resolve(Database)
+      const { database, repository } = await runtime.run(async () => ({
+        database: await ServiceRuntime.resolve(Database),
 
-      const repository = await ServiceRuntime.resolve(UserRepository)
+        repository: await ServiceRuntime.resolve(UserRepository)
+      }))
 
       expect(database).toBeInstanceOf(Database)
 
@@ -122,7 +118,7 @@ describe('ItiLayerBackend', () => {
     }
   })
 
-  test.serial('releases scoped services on dispose', async () => {
+  test('releases scoped services on dispose', async () => {
     let releases = 0
 
     const runtime = await buildLayer(
@@ -135,11 +131,10 @@ describe('ItiLayerBackend', () => {
           releases++
         }
       ),
-
       new ItiLayerBackend()
     )
 
-    await ServiceRuntime.resolve(Database)
+    await runtime.run(() => ServiceRuntime.resolve(Database))
 
     expect(releases).toBe(0)
 
@@ -148,7 +143,7 @@ describe('ItiLayerBackend', () => {
     expect(releases).toBe(1)
   })
 
-  test.serial('does not release a scoped service that was never resolved', async () => {
+  test('does not release a scoped service that was never resolved', async () => {
     let releases = 0
 
     const runtime = await buildLayer(
@@ -161,12 +156,58 @@ describe('ItiLayerBackend', () => {
           releases++
         }
       ),
-
       new ItiLayerBackend()
     )
 
     await runtime.dispose()
 
     expect(releases).toBe(0)
+  })
+
+  test('does not expose services outside the runtime context', async () => {
+    const runtime = await buildLayer(
+      Layer.make(Database, () => new Database()),
+      new ItiLayerBackend()
+    )
+
+    try {
+      expect(ServiceRuntime.resolve(Database)).rejects.toThrow(
+        'No ServiceResolver is available in the current runtime context'
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('isolates services between concurrent runtimes', async () => {
+    const databaseA = new Database()
+
+    const databaseB = new Database()
+
+    const runtimeA = await buildLayer(Layer.succeed(Database, databaseA), new ItiLayerBackend())
+
+    const runtimeB = await buildLayer(Layer.succeed(Database, databaseB), new ItiLayerBackend())
+
+    try {
+      const [resolvedA, resolvedB] = await Promise.all([
+        runtimeA.run(async () => {
+          await Promise.resolve()
+
+          return ServiceRuntime.resolve(Database)
+        }),
+
+        runtimeB.run(async () => {
+          await Promise.resolve()
+
+          return ServiceRuntime.resolve(Database)
+        })
+      ])
+
+      expect(resolvedA).toBe(databaseA)
+
+      expect(resolvedB).toBe(databaseB)
+    } finally {
+      await Promise.all([runtimeA.dispose(), runtimeB.dispose()])
+    }
   })
 })

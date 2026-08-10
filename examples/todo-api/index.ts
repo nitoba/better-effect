@@ -1,11 +1,11 @@
 import { Result } from 'better-result'
 
-import { ItiLayerBackend, RuntimeLayer } from './better-effect'
+import { ItiLayerBackend, Runtime } from './better-effect'
 import { AppLive } from './layers/app-live'
 import { seedDemoUser } from './seed'
 import { createServer } from './server'
 
-const runtime = await RuntimeLayer.build(AppLive, new ItiLayerBackend())
+const runtime = await Runtime.make(AppLive, new ItiLayerBackend())
 
 const seed = await seedDemoUser()
 
