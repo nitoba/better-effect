@@ -28,27 +28,27 @@ bun add iti
 A service is a class that also acts as its own dependency token.
 
 ```ts
-import { Result } from "better-result";
-import { Service } from "better-effect";
+import { Result } from 'better-result'
+import { Service } from 'better-effect'
 
 export class Database extends Service<Database>() {
   findUser(email: string) {
     return Promise.resolve({
-      id: "1",
-      email,
-    });
+      id: '1',
+      email
+    })
   }
 }
 
 export class UserRepository extends Service<UserRepository>() {
   findByEmail(email: string) {
     return Result.gen(async function* () {
-      const database = yield* Database;
+      const database = yield* Database
 
-      const user = await database.findUser(email);
+      const user = await database.findUser(email)
 
-      return Result.ok(user);
-    });
+      return Result.ok(user)
+    })
   }
 }
 ```
@@ -56,7 +56,7 @@ export class UserRepository extends Service<UserRepository>() {
 There are no string tokens:
 
 ```ts
-const database = yield * Database;
+const database = yield * Database
 ```
 
 The class itself is the identity used by the resolver, and the result is inferred as `Database`.
@@ -66,7 +66,7 @@ The class itself is the identity used by the resolver, and the result is inferre
 Using constructors directly avoids duplicated identifiers such as:
 
 ```ts
-Service<AuthService>()("authService");
+Service<AuthService>()('authService')
 ```
 
 and prevents string-key collisions or typos.
@@ -93,36 +93,33 @@ A Layer describes which implementations form an application environment.
 It does **not** implement dependency resolution. That remains the responsibility of the configured backend.
 
 ```ts
-import { Layer } from "better-effect";
+import { Layer } from 'better-effect'
 
 export const DatabaseLive = Layer.scoped(
   Database,
   async () => {
-    const database = new Database();
+    const database = new Database()
 
-    await database.connect();
+    await database.connect()
 
-    return database;
+    return database
   },
-  (database) => database.close(),
-);
+  (database) => database.close()
+)
 
-export const UserRepositoryLive = Layer.make(
-  UserRepository,
-  () => new UserRepository(),
-);
+export const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
 
-export const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive);
+export const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
 ```
 
 The core Layer API intentionally stays small:
 
 ```ts
-Layer.make(Service, acquire);
-Layer.succeed(Service, instance);
-Layer.scoped(Service, acquire, release);
-Layer.merge(...layers);
-Layer.override(base, ...overrides);
+Layer.make(Service, acquire)
+Layer.succeed(Service, instance)
+Layer.scoped(Service, acquire, release)
+Layer.merge(...layers)
+Layer.override(base, ...overrides)
 ```
 
 ### Test environments
@@ -130,9 +127,9 @@ Layer.override(base, ...overrides);
 Layers make implementation replacement explicit:
 
 ```ts
-const DatabaseTest = Layer.succeed(Database, new InMemoryDatabase());
+const DatabaseTest = Layer.succeed(Database, new InMemoryDatabase())
 
-const AppTest = Layer.override(AppLive, DatabaseTest);
+const AppTest = Layer.override(AppLive, DatabaseTest)
 ```
 
 ## ITI adapter
@@ -140,16 +137,16 @@ const AppTest = Layer.override(AppLive, DatabaseTest);
 `better-effect` does not depend on ITI in its core. ITI is just one possible backend.
 
 ```ts
-import { buildLayer } from "better-effect";
+import { buildLayer } from 'better-effect'
 
-import { ItiLayerBackend } from "better-effect/iti";
+import { ItiLayerBackend } from 'better-effect/iti'
 
-const runtime = await buildLayer(AppLive, new ItiLayerBackend());
+const runtime = await buildLayer(AppLive, new ItiLayerBackend())
 
 try {
-  await main();
+  await main()
 } finally {
-  await runtime.dispose();
+  await runtime.dispose()
 }
 ```
 
@@ -162,24 +159,24 @@ A different backend can implement the same resolver/backend contracts without ch
 `Resource.acquireUseRelease()` handles local resource lifecycle while preserving typed `Result` errors.
 
 ```ts
-import { Resource } from "better-effect";
+import { Resource } from 'better-effect'
 
 const result = await Resource.acquireUseRelease({
-  name: "transaction",
+  name: 'transaction',
 
   acquire: () => database.begin(),
 
   use: (transaction) => executeCommand(transaction),
 
-  release: (transaction) => transaction.close(),
-});
+  release: (transaction) => transaction.close()
+})
 ```
 
 When `release` is omitted, `Resource` attempts to use the JavaScript explicit resource management protocol:
 
 ```ts
-Symbol.asyncDispose;
-Symbol.dispose;
+Symbol.asyncDispose
+Symbol.dispose
 ```
 
 ### Error precedence
@@ -299,14 +296,14 @@ Type safety is part of the API.
 For example:
 
 ```ts
-const auth = yield * AuthService;
+const auth = yield * AuthService
 // AuthService
 ```
 
 and:
 
 ```ts
-const database = await ServiceRuntime.resolve(Database);
+const database = await ServiceRuntime.resolve(Database)
 // Database
 ```
 

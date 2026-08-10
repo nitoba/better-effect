@@ -82,7 +82,7 @@ Do not reintroduce string keys:
 
 ```ts
 // Do not do this.
-Service<AuthService>()("authService");
+Service<AuthService>()('authService')
 ```
 
 The class constructor itself is the runtime identity.
@@ -90,7 +90,7 @@ The class constructor itself is the runtime identity.
 A Service should resolve like:
 
 ```ts
-const auth = yield * AuthService;
+const auth = yield * AuthService
 ```
 
 and `auth` must be inferred exactly as `AuthService`.
@@ -153,7 +153,7 @@ Layer is a declarative collection of providers.
 It is intentionally not Effect's full:
 
 ```ts
-Layer<ROut, E, RIn>;
+Layer<ROut, E, RIn>
 ```
 
 Do not add typed dependency graphs, Context, Fiber, Scope or MemoMap unless there is a concrete approved requirement.
@@ -175,13 +175,13 @@ Layer.override(...)
 Service identity comparisons must use constructor identity:
 
 ```ts
-provider.service === Database;
+provider.service === Database
 ```
 
 not:
 
 ```ts
-provider.service.name === "Database";
+provider.service.name === 'Database'
 ```
 
 `name` may be used for diagnostics only.
@@ -195,13 +195,13 @@ It is acceptable for the internal stored provider representation to erase the co
 Type safety must be enforced at the public creation boundary:
 
 ```ts
-Layer.make(Database, () => new Database());
+Layer.make(Database, () => new Database())
 
 Layer.scoped(
   Database,
   () => new Database(),
-  (database) => database.close(),
-);
+  (database) => database.close()
+)
 ```
 
 Keep casts localized at the internal type-erasure boundary.
@@ -231,13 +231,13 @@ If both `use` and `release` fail, preserve the `use` error.
 If explicit `release` is omitted, resource disposal should prefer:
 
 ```ts
-Symbol.asyncDispose;
+Symbol.asyncDispose
 ```
 
 then:
 
 ```ts
-Symbol.dispose;
+Symbol.dispose
 ```
 
 Unexpected exceptions/rejections are normalized using `better-result`'s `UnhandledException` behavior.
@@ -259,9 +259,9 @@ Every `Result.gen` generator must finish by returning a `Result`.
 Prefer:
 
 ```ts
-const value = yield * Result.await(operation());
+const value = yield * Result.await(operation())
 
-return Result.ok(value);
+return Result.ok(value)
 ```
 
 Do not assume a raw value can be returned from `Result.gen`.
@@ -287,10 +287,10 @@ Type inference is part of the public API and must be tested.
 Important contracts include:
 
 ```ts
-const service = yield * AuthService;
+const service = yield * AuthService
 // exactly AuthService
 
-const service = await ServiceRuntime.resolve(AuthService);
+const service = await ServiceRuntime.resolve(AuthService)
 // exactly AuthService
 ```
 
@@ -311,7 +311,7 @@ Do not implement a fake generic resolver that always returns one concrete class.
 Prefer a Map-backed resolver:
 
 ```ts
-Map<AnyServiceToken, unknown>;
+Map<AnyServiceToken, unknown>
 ```
 
 and cast only at the lookup boundary to `InstanceType<T>`.
