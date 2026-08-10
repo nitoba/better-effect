@@ -1,14 +1,15 @@
 import { createContainer } from 'iti'
 
-import type { LayerBackend } from '../layer'
+import { DuplicateServiceError, type LayerBackend, type LayerProvider } from '../layer'
 
-import type { AnyServiceToken, ServiceToken } from '../service'
-import type { LayerProvider } from '../layer/types'
+import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
 export class ItiLayerBackend implements LayerBackend {
   private container: any = createContainer()
 
-  private readonly keys = new WeakMap<ServiceToken<any>, string>()
+  private readonly keys = new WeakMap<AnyServiceToken, string>()
+
+  private readonly registered = new WeakSet<AnyServiceToken>()
 
   private nextId = 0
 
@@ -19,7 +20,7 @@ export class ItiLayerBackend implements LayerBackend {
       return existing
     }
 
-    const name = (token as Function).name || 'Service'
+    const name = token.name || 'Service'
 
     const key = `better-effect:${name}:${this.nextId++}`
 
@@ -29,7 +30,13 @@ export class ItiLayerBackend implements LayerBackend {
   }
 
   register(provider: LayerProvider): void {
-    const key = this.keyFor(provider.service)
+    const token = provider.service
+
+    if (this.registered.has(token)) {
+      throw new DuplicateServiceError(token)
+    }
+
+    const key = this.keyFor(token)
 
     this.container = this.container.add({
       [key]: provider.acquire
@@ -40,9 +47,15 @@ export class ItiLayerBackend implements LayerBackend {
         [key]: provider.release
       })
     }
+
+    this.registered.add(token)
   }
 
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>> {
+    if (!this.registered.has(token)) {
+      throw new ServiceNotFoundError(token)
+    }
+
     const key = this.keyFor(token)
 
     return this.container.get(key) as InstanceType<T> | PromiseLike<InstanceType<T>>

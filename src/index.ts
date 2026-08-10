@@ -1,15 +1,29 @@
-export { Service } from './service/service'
+export {
+  Service,
+  ServiceNotFoundError,
+  ServiceRuntime,
+  ServiceRuntimeNotConfiguredError
+} from './service'
 
-export { ServiceRuntime } from './service/runtime'
+export type {
+  AnyServiceToken,
+  ServiceClass,
+  ServiceInstance,
+  ServiceResolver,
+  ServiceToken
+} from './service'
 
-export type { ServiceResolver } from './service/runtime'
+export {
+  Layer,
+  buildLayer,
+  BuiltLayerDisposedError,
+  DuplicateServiceError,
+  LayerDisposeError,
+  LayerGeneratorYieldError,
+  LayerRegistrationError
+} from './layer'
 
-export type { AnyServiceToken, ServiceInstance } from './service/types'
-
-export { Layer } from './layer/layer'
-export { buildLayer, RuntimeLayer } from './layer/runtime'
-
-export type { LayerBackend, BuiltLayer } from './layer'
+export type { BuiltLayer, LayerBackend } from './layer'
 
 export { Resource, ResourceReleaseFailure } from './resource'
 
@@ -17,8 +31,8 @@ export type {
   AcquireUseReleaseOptions,
   AsyncResult,
   DisposableResource,
-  MaybePromise,
+  ReleaseFailureObserver,
   ReleaseOutcome
 } from './resource'
 
-export { ItiLayerBackend } from './adapters/iti'
+export { Runtime } from './runtime'

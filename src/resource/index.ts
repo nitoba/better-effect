@@ -7,5 +7,6 @@ export type {
   AsyncResult,
   DisposableResource,
   MaybePromise,
+  ReleaseFailureObserver,
   ReleaseOutcome
 } from './types'

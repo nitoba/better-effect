@@ -10,25 +10,18 @@ const acquireUseRelease = <R, A, AcquireError, UseError>({
   name,
   acquire,
   use,
-  release = disposeResource
+  release = disposeResource,
+  onReleaseFailure
 }: AcquireUseReleaseOptions<R, A, AcquireError, UseError>): Promise<
   ResultType<A, AcquireError | UseError | UnhandledException | ResourceReleaseFailure>
 > =>
   Result.gen(async function* () {
     const resource = yield* Result.await(runResult(acquire))
-
-    /**
-     * Não usamos yield* aqui.
-     *
-     * Se use retornar Err, o generator seria
-     * encerrado imediatamente e o release
-     * nunca seria executado.
-     */
     const used = await runResult(() => use(resource))
-
     const released = await runRelease(name, resource, release)
+    const result = await combineUseAndRelease(used, released, onReleaseFailure)
 
-    return combineUseAndRelease(used, released)
+    return result
   })
 
 export const Resource = {

@@ -1,12 +1,22 @@
-import type { ServiceClass } from '../service/types'
+import type { ServiceClass } from '../service'
+import type { MaybePromise } from '../utils/types'
 
-import type { LayerProvider, MaybePromise } from './types'
+import { DuplicateServiceError } from './errors'
+
+import { runLayerGenerator } from './internal'
+
+import type { LayerGenerator, LayerProvider } from './types'
 
 export class Layer {
-  private constructor(readonly providers: readonly LayerProvider[]) {}
+  readonly providers: readonly LayerProvider[]
+
+  private constructor(providers: readonly LayerProvider[]) {
+    this.providers = Object.freeze([...providers])
+  }
 
   static make<S extends ServiceClass<any>>(
     service: S,
+
     acquire: () => MaybePromise<InstanceType<S>>
   ): Layer {
     return new Layer([
@@ -36,6 +46,10 @@ export class Layer {
     ])
   }
 
+  static gen<S extends ServiceClass<any>>(service: S, factory: LayerGenerator<S>): Layer {
+    return Layer.make(service, () => runLayerGenerator(service, factory))
+  }
+
   static merge(...layers: readonly Layer[]): Layer {
     const providers = new Map<ServiceClass<any>, LayerProvider>()
 
@@ -44,7 +58,7 @@ export class Layer {
         const service = provider.service
 
         if (providers.has(service)) {
-          throw new Error(`Duplicate service "${service.name}" in Layer.merge()`)
+          throw new DuplicateServiceError(service)
         }
 
         providers.set(service, provider)

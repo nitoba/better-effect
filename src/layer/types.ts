@@ -1,6 +1,5 @@
-import type { ServiceClass } from '../service/types'
-
-export type MaybePromise<T> = T | PromiseLike<T>
+import type { ServiceClass } from '../service'
+import type { MaybePromise } from '../utils/types'
 
 export interface LayerProvider {
   readonly service: ServiceClass<any>
@@ -9,3 +8,9 @@ export interface LayerProvider {
 
   readonly release?: (instance: unknown) => MaybePromise<void>
 }
+
+export type LayerGenerator<S extends ServiceClass<any>> = () => AsyncGenerator<
+  never,
+  InstanceType<S>,
+  unknown
+>

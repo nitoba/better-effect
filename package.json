@@ -26,9 +26,18 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./dist/index.mjs",
-    "./adapters/iti": "./dist/adapters/iti.mjs",
-    "./package.json": "./package.json"
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./iti": {
+      "types": "./dist/adapters/iti.d.mts",
+      "import": "./dist/adapters/iti.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.mts",
+      "import": "./dist/testing.mjs"
+    }
   },
   "publishConfig": {
     "access": "public",
