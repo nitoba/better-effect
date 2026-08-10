@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Service } from '../better-effect'
+import { Effect, Service } from '../better-effect'
 import { Database } from '../database'
 import type { Session } from '../domain'
 
@@ -18,7 +18,7 @@ const toSession = (row: SessionRow): Session => ({
 
 export class SessionRepository extends Service<SessionRepository>() {
   create(session: Session) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       yield* Result.await(
@@ -43,7 +43,7 @@ export class SessionRepository extends Service<SessionRepository>() {
   }
 
   findValidByToken(token: string, now: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const rows = yield* Result.await(

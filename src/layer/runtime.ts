@@ -60,7 +60,7 @@ class BuiltLayerImpl implements BuiltLayer {
   }
 }
 
-export const buildLayer = async (layer: Layer, backend: LayerBackend): Promise<BuiltLayer> => {
+export const buildLayer = async (layer: Layer<any>, backend: LayerBackend): Promise<BuiltLayer> => {
   let current: LayerProvider | undefined
 
   try {

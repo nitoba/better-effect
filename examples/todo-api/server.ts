@@ -1,5 +1,6 @@
 import { Result } from 'better-result'
 
+import { Effect } from './better-effect'
 import {
   readJson,
   requireUser,
@@ -24,7 +25,7 @@ export const createServer = () =>
 
       '/auth/login': {
         POST: async (request) => {
-          const result = await Result.gen(async function* () {
+          const result = await Effect.gen(async function* () {
             const input = yield* Result.await(readJson(request, isLoginInput))
 
             const auth = yield* AuthService
@@ -40,7 +41,7 @@ export const createServer = () =>
 
       '/todos': {
         GET: async (request) => {
-          const result = await Result.gen(async function* () {
+          const result = await Effect.gen(async function* () {
             const { userId } = yield* Result.await(requireUser(request))
 
             const todos = yield* TodoService
@@ -54,7 +55,7 @@ export const createServer = () =>
         },
 
         POST: async (request) => {
-          const result = await Result.gen(async function* () {
+          const result = await Effect.gen(async function* () {
             const { userId } = yield* Result.await(requireUser(request))
 
             const input = yield* Result.await(readJson(request, isCreateTodoInput))
@@ -76,7 +77,7 @@ export const createServer = () =>
 
       '/todos/:id': {
         GET: async (request) => {
-          const result = await Result.gen(async function* () {
+          const result = await Effect.gen(async function* () {
             const { userId } = yield* Result.await(requireUser(request))
 
             const todos = yield* TodoService
@@ -90,7 +91,7 @@ export const createServer = () =>
         },
 
         PATCH: async (request) => {
-          const result = await Result.gen(async function* () {
+          const result = await Effect.gen(async function* () {
             const { userId } = yield* Result.await(requireUser(request))
 
             const input = yield* Result.await(readJson(request, isUpdateTodoInput))
@@ -112,7 +113,7 @@ export const createServer = () =>
         },
 
         DELETE: async (request) => {
-          const result = await Result.gen(async function* () {
+          const result = await Effect.gen(async function* () {
             const { userId } = yield* Result.await(requireUser(request))
 
             const todos = yield* TodoService

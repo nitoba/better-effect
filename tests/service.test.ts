@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
+import { Effect } from '../src/effect'
 import { Service, ServiceRuntime, ServiceRuntimeNotConfiguredError } from '../src/service'
 
 import { TestServiceResolver } from './helpers/test-service-resolver'
@@ -23,7 +24,7 @@ describe('Service', () => {
     const resolver = new TestServiceResolver().provide(CounterService, instance)
 
     const result = await ServiceRuntime.run(resolver, () =>
-      Result.gen(async function* () {
+      Effect.gen(async function* () {
         const counter = yield* CounterService
 
         expectTypeOf(counter).toEqualTypeOf<CounterService>()

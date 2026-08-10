@@ -1,12 +1,16 @@
 import { LayerGeneratorYieldError } from './errors'
 
-import type { ServiceClass } from '../service'
+import type { ServiceRequirement } from '../effect/types'
+import type { AnyServiceToken, ServiceClass } from '../service'
 
 import type { LayerGenerator } from './types'
 
-export const runLayerGenerator = async <S extends ServiceClass<any>>(
+export const runLayerGenerator = async <
+  S extends ServiceClass<any>,
+  Yield extends ServiceRequirement<AnyServiceToken>
+>(
   service: S,
-  factory: LayerGenerator<S>
+  factory: LayerGenerator<S, Yield>
 ): Promise<InstanceType<S>> => {
   const iterator = factory()
 

@@ -1,8 +1,13 @@
 import { expectTypeOf } from 'bun:test'
 
-import { Layer } from '../../src/layer'
+import { Result } from 'better-result'
 
-import { Service } from '../../src/service'
+import { Effect } from '../../src/effect'
+import { Layer } from '../../src/layer'
+import type { LayerMissing } from '../../src/layer'
+import { Runtime } from '../../src/runtime'
+
+import { Service, type ServiceToken } from '../../src/service'
 
 class Database extends Service<Database>() {
   query(): string {
@@ -13,6 +18,32 @@ class Database extends Service<Database>() {
 class UserRepository extends Service<UserRepository>() {
   find(): string {
     return 'user'
+  }
+
+  load() {
+    return Effect.gen(async function* () {
+      const database = yield* Database
+
+      return Result.ok(database)
+    })
+  }
+}
+
+class PasswordHasher extends Service<PasswordHasher>() {
+  hash() {
+    return Result.ok('hash')
+  }
+}
+
+class AuthService extends Service<AuthService>() {
+  login() {
+    return Effect.gen(async function* () {
+      const users = yield* UserRepository
+
+      const passwords = yield* PasswordHasher
+
+      return Result.ok({ users, passwords })
+    })
   }
 }
 
@@ -31,6 +62,34 @@ Layer.scoped(
     database.query()
   }
 )
+
+const DatabaseLive = Layer.make(Database, () => new Database())
+const UsersLive = Layer.make(UserRepository, () => new UserRepository())
+const UsersGeneratedLive = Layer.gen(UserRepository, async function* () {
+  const database = yield* Database
+
+  void database
+
+  return new UserRepository()
+})
+const PasswordsLive = Layer.make(PasswordHasher, () => new PasswordHasher())
+const AuthLive = Layer.make(AuthService, () => new AuthService())
+
+const Broken = Layer.merge(UsersLive, AuthLive)
+
+expectTypeOf<LayerMissing<typeof Broken>>().toEqualTypeOf<
+  ServiceToken<Database> | ServiceToken<PasswordHasher>
+>()
+
+expectTypeOf<LayerMissing<typeof UsersGeneratedLive>>().toEqualTypeOf<ServiceToken<Database>>()
+
+const Complete = Layer.merge(DatabaseLive, UsersLive, PasswordsLive, AuthLive)
+
+expectTypeOf<LayerMissing<typeof Complete>>().toEqualTypeOf<never>()
+
+// @ts-expect-error Broken does not provide Database or PasswordHasher
+void Runtime.make(Broken, {} as never)
+void Runtime.make(Complete, {} as never)
 
 // @ts-expect-error UserRepository is not a Database
 Layer.make(Database, () => new UserRepository())

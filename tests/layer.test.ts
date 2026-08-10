@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
+import { Effect } from '../src/effect'
 import { BuiltLayerDisposedError, Layer, buildLayer, type LayerBackend } from '../src/layer'
 
 import type { LayerProvider } from '../src/layer/types'
@@ -108,7 +109,7 @@ describe('buildLayer', () => {
 
     try {
       const result = await runtime.run(() =>
-        Result.gen(async function* () {
+        Effect.gen(async function* () {
           const service = yield* ExampleService
 
           return Result.ok(service.value())

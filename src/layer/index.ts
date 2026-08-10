@@ -14,4 +14,19 @@ export type { BuiltLayer } from './runtime'
 
 export type { LayerBackend } from './backend'
 
-export type { LayerGenerator, LayerProvider } from './types'
+export type {
+  AnyLayer,
+  CompleteLayer,
+  LayerMissing,
+  LayerProvided,
+  LayerRawRequired,
+  LayerSpecs
+} from './inference'
+
+export type {
+  AnyLayerSpec,
+  LayerGenerator,
+  LayerGeneratorRequirements,
+  LayerProvider,
+  LayerSpec
+} from './types'

@@ -1,16 +1,25 @@
-import { buildLayer, type BuiltLayer, type Layer, type LayerBackend } from '../layer'
+import {
+  buildLayer,
+  type AnyLayer,
+  type BuiltLayer,
+  type CompleteLayer,
+  type LayerBackend
+} from '../layer'
 
 export class Runtime {
   private constructor(private readonly built: BuiltLayer) {}
 
-  static async make(layer: Layer, backend: LayerBackend): Promise<Runtime> {
+  static async make<L extends AnyLayer>(
+    layer: CompleteLayer<L>,
+    backend: LayerBackend
+  ): Promise<Runtime> {
     const built = await buildLayer(layer, backend)
 
     return new Runtime(built)
   }
 
-  static async run<A>(
-    layer: Layer,
+  static async run<A, L extends AnyLayer>(
+    layer: CompleteLayer<L>,
     backend: LayerBackend,
     program: () => A | PromiseLike<A>
   ): Promise<Awaited<A>> {

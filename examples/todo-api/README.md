@@ -103,7 +103,7 @@ curl -i \
 ### Service
 
 Services and repositories extend `Service<Self>()` and resolve dependencies
-inside `Result.gen`:
+inside `Effect.gen`:
 
 ```ts
 const database = yield * Database

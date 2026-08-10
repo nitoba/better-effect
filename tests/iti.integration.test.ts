@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
+import { Effect } from '../src/effect'
 import { ItiLayerBackend } from '../src/adapters/iti'
 import { Layer, buildLayer } from '../src/layer'
 import { Service, ServiceRuntime } from '../src/service'
@@ -67,7 +68,7 @@ describe('ItiLayerBackend', () => {
 
     try {
       const result = await runtime.run(() =>
-        Result.gen(async function* () {
+        Effect.gen(async function* () {
           const first = yield* Database
 
           const second = yield* Database

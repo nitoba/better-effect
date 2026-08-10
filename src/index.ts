@@ -9,6 +9,7 @@ export type {
   AnyServiceToken,
   ServiceClass,
   ServiceInstance,
+  ServiceRequirements,
   ServiceResolver,
   ServiceToken
 } from './service'
@@ -23,7 +24,26 @@ export {
   LayerRegistrationError
 } from './layer'
 
-export type { BuiltLayer, LayerBackend } from './layer'
+export type {
+  BuiltLayer,
+  LayerBackend,
+  LayerMissing,
+  LayerProvided,
+  LayerRawRequired,
+  LayerSpecs
+} from './layer'
+
+export { Effect } from './effect'
+
+export type {
+  AnyEffectResult,
+  EffectError,
+  EffectRequirements,
+  EffectResult,
+  EffectSuccess,
+  EffectYield,
+  ServiceRequirement
+} from './effect'
 
 export { Resource, ResourceReleaseFailure } from './resource'
 

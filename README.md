@@ -29,7 +29,7 @@ A service is a class that also acts as its own dependency token.
 
 ```ts
 import { Result } from 'better-result'
-import { Service } from 'better-effect'
+import { Effect, Service } from 'better-effect'
 
 export class Database extends Service<Database>() {
   findUser(email: string) {
@@ -42,7 +42,7 @@ export class Database extends Service<Database>() {
 
 export class UserRepository extends Service<UserRepository>() {
   findByEmail(email: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const user = await database.findUser(email)
@@ -52,6 +52,27 @@ export class UserRepository extends Service<UserRepository>() {
   }
 }
 ```
+
+Use `Effect.gen` when a generator accesses Services. It delegates execution to
+`better-result` while carrying the required Service tokens in a type-only
+metadata channel:
+
+```ts
+export class AuthService extends Service<AuthService>() {
+  login(email: string) {
+    return Effect.gen(async function* () {
+      const users = yield* UserRepository
+      const user = yield* Result.await(users.findByEmail(email))
+
+      return Result.ok(user)
+    })
+  }
+}
+```
+
+`Layer.make` derives the requirements from those method return types. A
+`Runtime` rejects a merged Layer at compile time when one of its required
+Services is missing; `Layer.override` remains the explicit replacement API.
 
 There are no string tokens:
 

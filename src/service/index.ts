@@ -6,4 +6,10 @@ export { ServiceNotFoundError, ServiceRuntimeNotConfiguredError } from './errors
 
 export type { ServiceResolver } from './runtime'
 
-export type { AnyServiceToken, ServiceClass, ServiceInstance, ServiceToken } from './types'
+export type {
+  AnyServiceToken,
+  ServiceClass,
+  ServiceInstance,
+  ServiceRequirements,
+  ServiceToken
+} from './types'

@@ -1,0 +1,72 @@
+import { expectTypeOf } from 'bun:test'
+
+import { Result } from 'better-result'
+
+import {
+  Effect,
+  type EffectError,
+  type EffectRequirements,
+  type EffectSuccess
+} from '../../src/effect'
+import { Service, type ServiceRequirements, type ServiceToken } from '../../src/service'
+
+class Database extends Service<Database>() {
+  query(): string {
+    return 'query'
+  }
+}
+
+class Cache extends Service<Cache>() {
+  get(): string {
+    return 'value'
+  }
+}
+
+class UserRepository extends Service<UserRepository>() {
+  find(): ReturnType<typeof Result.ok> {
+    return Result.ok('user')
+  }
+
+  load() {
+    return Effect.gen(async function* () {
+      const database = yield* Database
+
+      const cache = yield* Cache
+
+      return Result.ok({ database, cache })
+    })
+  }
+}
+
+const program = Effect.gen(async function* () {
+  const database = yield* Database
+
+  const cache = yield* Cache
+
+  return Result.ok({ database, cache })
+})
+
+const failedProgram = Effect.gen(async function* () {
+  yield* Result.err('failed')
+
+  return Result.ok(true)
+})
+
+expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
+  ServiceToken<Database> | ServiceToken<Cache>
+>()
+
+expectTypeOf<EffectSuccess<typeof program>>().toEqualTypeOf<{ database: Database; cache: Cache }>()
+
+expectTypeOf<EffectError<typeof program>>().toEqualTypeOf<never>()
+
+expectTypeOf<EffectError<typeof failedProgram>>().toEqualTypeOf<string>()
+expectTypeOf<EffectRequirements<typeof failedProgram>>().toEqualTypeOf<never>()
+
+expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTypeOf<
+  ServiceToken<Database> | ServiceToken<Cache>
+>()
+
+expectTypeOf<ServiceRequirements<typeof UserRepository>>().toEqualTypeOf<
+  ServiceToken<Database> | ServiceToken<Cache>
+>()

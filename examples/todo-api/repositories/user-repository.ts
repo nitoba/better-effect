@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Service } from '../better-effect'
+import { Effect, Service } from '../better-effect'
 import { Database } from '../database'
 import type { User } from '../domain'
 
@@ -24,7 +24,7 @@ export class UserRepository extends Service<UserRepository>() {
   }
 
   findByEmail(email: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const rows = yield* Result.await(
@@ -49,7 +49,7 @@ export class UserRepository extends Service<UserRepository>() {
   }
 
   create(user: User) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       yield* Result.await(

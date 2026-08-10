@@ -1,10 +1,11 @@
 import { Result } from 'better-result'
 
+import { Effect } from './better-effect'
 import { PasswordHasher } from './password-hasher'
 import { UserRepository } from './repositories/user-repository'
 
 export const seedDemoUser = () =>
-  Result.gen(async function* () {
+  Effect.gen(async function* () {
     const users = yield* UserRepository
 
     const passwordHasher = yield* PasswordHasher
