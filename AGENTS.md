@@ -219,6 +219,10 @@ program against the Service-token union provided by its Layer. The inferred
 Runtime and BuiltLayer handles retain that union; unparameterized annotations
 intentionally erase it as an explicit unchecked escape hatch.
 
+Use `RuntimeFor<typeof AppLive>` when a Runtime inferred from a concrete Layer must be
+named in an application boundary. It is a type-only alias for
+`Runtime<LayerProvided<typeof AppLive>>` and must preserve the same execution checks.
+
 ### Scope
 
 `Scope` is the lifecycle primitive.

@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Effect, type LayerProvided, type Runtime } from './better-effect'
+import { Effect, type RuntimeFor } from './better-effect'
 import {
   readJson,
   requireUser,
@@ -14,7 +14,7 @@ import { AuthService } from './services/auth-service'
 import { TodoService } from './services/todo-service'
 import type { AppLive } from './layers/app-live'
 
-type AppRuntime = Runtime<LayerProvided<typeof AppLive>>
+type AppRuntime = RuntimeFor<typeof AppLive>
 
 export const createServer = (runtime: AppRuntime) =>
   Bun.serve({

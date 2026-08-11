@@ -72,4 +72,9 @@ export type {
 
 export { Runtime } from './runtime'
 
-export type { CleanupFailureObserver, RuntimeOptions, RuntimeShutdownDiagnostic } from './runtime'
+export type {
+  CleanupFailureObserver,
+  RuntimeFor,
+  RuntimeOptions,
+  RuntimeShutdownDiagnostic
+} from './runtime'

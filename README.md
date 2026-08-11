@@ -86,6 +86,9 @@ remain valid in any environment:
 const runtime = await Runtime.make(AppLive, backend)
 // inferred as Runtime<typeof Database | typeof UserRepository>
 
+type AppRuntime = RuntimeFor<typeof AppLive>
+// Runtime<typeof Database | typeof UserRepository>
+
 const built = await buildLayer(AppLive, backend)
 // inferred as BuiltLayer<typeof Database | typeof UserRepository>
 
@@ -97,6 +100,11 @@ const result = await runtime.run(() =>
   })
 )
 ```
+
+Use `RuntimeFor<typeof AppLive>` when a Runtime handle inferred from a Layer must
+be named in a function signature. This avoids manually repeating
+`Runtime<LayerProvided<typeof AppLive>>` while preserving the same checked
+Service environment.
 
 Use an unparameterized `Runtime` or `BuiltLayer` annotation only when an
 intentionally erased, unchecked environment is needed:

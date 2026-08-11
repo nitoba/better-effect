@@ -15,7 +15,7 @@ import {
   type LayerBackend,
   type LayerProvided
 } from '../../src/layer'
-import { Runtime } from '../../src/runtime'
+import { Runtime, type RuntimeFor } from '../../src/runtime'
 import { Scope } from '../../src/scope'
 import { Service, type AnyServiceToken } from '../../src/service'
 import type {
@@ -64,6 +64,7 @@ expectTypeOf<Awaited<typeof builtPromise>>().toEqualTypeOf<
 expectTypeOf<Awaited<typeof runtimePromise>>().toEqualTypeOf<
   Runtime<typeof Database | typeof Logger>
 >()
+expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<typeof Database | typeof Logger>>()
 
 const requiresDatabaseAndLogger = () =>
   Effect.gen(async function* () {
