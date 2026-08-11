@@ -1,7 +1,7 @@
 {
   "name": "better-effect",
   "version": "0.3.0",
-  "description": "Lightweight Effect-inspired primitives for better-result",
+  "description": "Effect-inspired application architecture for better-result with typechecked Services and environments, scoped resource lifetimes, and pluggable DI backends.",
   "keywords": [
     "better-result",
     "dependency-injection",

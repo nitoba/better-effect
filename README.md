@@ -1,635 +1,250 @@
 # better-effect
 
-Lightweight Effect-inspired primitives built around [`better-result`](https://www.npmjs.com/package/better-result).
+**Effect-like dependency safety for better-result.**
 
-`better-effect` focuses on six small ideas that are useful in application code without bringing in a full effect system:
+Type your errors with `better-result`. Typecheck the rest of your application wiring with `better-effect`.
 
-- **Effect** — Result-oriented generator and composition primitives with typed Service requirements
-- **Runtime** — Effect execution, Layer provisioning, and graceful lifecycle ownership
-- **Service** — contextual dependency access with `yield*`
-- **Layer** — declarative composition of live/test environments
-- **Scope** — contextual lifetime and finalizer management
-- **Resource** — standalone Result-oriented acquire/use/release helper
-- **DI adapters** — dependency resolution is delegated to an external container instead of being reimplemented by the library
-
-The goal is not to recreate Effect. The goal is to provide a small, composable layer on top of `better-result`.
-
-## Installation
+Use Services directly inside `Effect.gen`, compose implementations into application environments, and let TypeScript catch missing dependencies before your application starts — while keeping Promises, `better-result`, and your DI backend.
 
 ```bash
 bun add better-effect better-result
 ```
 
-If you want the ITI adapter:
-
-```bash
-bun add iti
-```
-
-The core package does not install ITI. Add `iti` only when using the ITI adapter.
-TypeScript 5.2 or newer is supported; the lower bound comes from the explicit
-resource-management types (`Symbol.dispose` and `Symbol.asyncDispose`), not from the
-phantom Service-requirement types.
-
-## Service
-
-A service is a class that also acts as its own dependency token.
+## TypeScript knows what your application needs
 
 ```ts
-import { Result } from 'better-result'
-import { Effect, Service } from 'better-effect'
+import { Result } from "better-result";
+import { Effect, Layer, Runtime, Service } from "better-effect";
 
-export class Database extends Service<Database>() {
-  findUser(email: string) {
-    return Promise.resolve({
-      id: '1',
-      email
-    })
+class Database extends Service<Database>() {
+  findUser(id: string) {
+    // ...
   }
 }
 
-export class UserRepository extends Service<UserRepository>() {
-  findByEmail(email: string) {
+class UserRepository extends Service<UserRepository>() {
+  findUser(id: string) {
     return Effect.gen(async function* () {
-      const database = yield* Database
+      const database = yield* Database;
 
-      const user = await database.findUser(email)
-
-      return Result.ok(user)
-    })
+      return Result.ok(await database.findUser(id));
+    });
   }
 }
+
+const UserRepositoryLive = Layer.make(
+  UserRepository,
+  () => new UserRepository(),
+);
+
+await Runtime.make(UserRepositoryLive, backend);
+//                 ^^^^^^^^^^^^^^^^^^
+// Type error: Database is required but not provided
 ```
 
-Use `Effect.gen` when a generator accesses Services. It delegates execution to
-`better-result` while carrying the required Service tokens in a type-only
-metadata channel:
+`UserRepository` used `Database`, so `Database` became part of its environment requirements.
+
+No dependency list was written manually.
+
+Provide it and the environment becomes complete:
 
 ```ts
-export class AuthService extends Service<AuthService>() {
-  login(email: string) {
-    return Effect.gen(async function* () {
-      const users = yield* UserRepository
-      const user = yield* Result.await(users.findByEmail(email))
+const DatabaseLive = Layer.make(Database, () => new Database());
 
-      return Result.ok(user)
-    })
-  }
-}
+const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive);
+
+const runtime = await Runtime.make(AppLive, backend);
 ```
 
-`Layer.make` derives the requirements from those method return types. A
-`Runtime` rejects a merged Layer at compile time when one of its required
-Services is missing; `Layer.override` remains the explicit replacement API.
+And the contract does not disappear after startup.
 
-`Runtime.make()` and `buildLayer()` preserve the exact Service-token union
-provided by the Layer. Every `run()` boundary checks the final
-`EffectRequirements` against that union, so a program that yields an unavailable
-Service is rejected at compile time and the diagnostic names
-`__betterEffectMissingRuntimeServices`. Programs with no Service requirements
-remain valid in any environment:
+A Runtime also knows which Services exist in its environment:
 
 ```ts
-const runtime = await Runtime.make(AppLive, backend)
-// inferred as Runtime<typeof Database | typeof UserRepository>
-
-type AppRuntime = RuntimeFor<typeof AppLive>
-// Runtime<typeof Database | typeof UserRepository>
-
-const built = await buildLayer(AppLive, backend)
-// inferred as BuiltLayer<typeof Database | typeof UserRepository>
-
-const result = await runtime.run(() =>
+await runtime.run(() =>
   Effect.gen(async function* () {
-    const database = yield* Database
+    const database = yield* Database;
 
-    return Result.ok(database.query())
-  })
-)
+    return Result.ok(database);
+  }),
+);
 ```
 
-Use `RuntimeFor<typeof AppLive>` when a Runtime handle inferred from a Layer must
-be named in a function signature. This avoids manually repeating
-`Runtime<LayerProvided<typeof AppLive>>` while preserving the same checked
-Service environment.
-
-Use an unparameterized `Runtime` or `BuiltLayer` annotation only when an
-intentionally erased, unchecked environment is needed:
-
-```ts
-const erased: Runtime = runtime
-```
-
-There are no string tokens:
-
-```ts
-const database = yield * Database
-```
-
-The class itself is the identity used by the resolver, and the result is inferred as `Database`.
-
-### Why classes are tokens
-
-Using constructors directly avoids duplicated identifiers such as:
-
-```ts
-Service<AuthService>()('authService')
-```
-
-and prevents string-key collisions or typos.
-
-Conceptually:
+If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
 
 ```text
-yield* AuthService
-        │
-        ▼
-ServiceRuntime
-        │
-        ▼
-ServiceResolver
-        │
-        ▼
-AuthService instance
+yield* Database
+      │
+      ▼
+program requires Database
+      │
+      ▼
+Layer provides Database?
+      │
+   no ├──────────► TypeScript error
+      │
+     yes
+      ▼
+Runtime can execute it
 ```
 
-## Layer
+We call this **typechecked wiring**.
 
-A Layer describes which implementations form an application environment.
+The Services your code uses, the implementations your Layers provide, and the programs your Runtime executes participate in the same type-level contract.
 
-It does **not** implement dependency resolution. That remains the responsibility of the configured backend.
+---
+
+## Why better-effect?
+
+`better-result` already gives TypeScript applications an excellent model for typed failures.
+
+But typed errors are only one part of a growing application.
+
+Eventually you also need to answer:
+
+- What does this service depend on?
+- Did the application provide every dependency?
+- Can this program run in this environment?
+- How do I replace implementations in tests?
+- Who owns this database connection?
+- When should this resource be released?
+
+Those problems are often discovered through container errors, startup failures, test setup, or manual composition-root maintenance.
+
+Effect has powerful ideas for solving them.
+
+`better-effect` explores a smaller path:
+
+**keep `better-result`, Promises and normal TypeScript — borrow the architectural ideas that make dependencies and resource lifetimes easier to reason about.**
+
+### Know your dependencies before runtime
+
+Services can be requested directly:
 
 ```ts
-import { Layer } from 'better-effect'
+const database = yield * Database;
+```
 
-export const DatabaseLive = Layer.scoped(
+That access is also captured by the type system.
+
+Layers know both what they provide and what their Services require. Incomplete environments can therefore fail during typechecking instead of application startup.
+
+Runtime keeps that environment information and checks programs against it when they run.
+
+### Compose application environments
+
+Layers describe implementations without making your application code depend on a specific DI container.
+
+```ts
+const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive, AuthServiceLive);
+```
+
+Testing can replace implementations explicitly:
+
+```ts
+const AppTest = Layer.override(AppLive, DatabaseTest);
+```
+
+The environment contract remains typed after the override.
+
+### Own resource lifetimes
+
+Some dependencies are values.
+
+Others own connections, sessions, files or other resources.
+
+`Layer.scoped`, `Layer.scopedGen`, `Effect.acquireRelease`, `Effect.add` and `Scope` make their lifetime explicit.
+
+```ts
+const DatabaseLive = Layer.scoped(
   Database,
-  async () => {
-    const database = new Database()
-
-    await database.connect()
-
-    return database
-  },
-  (database) => database.close()
-)
-
-export const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
-
-export const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
+  () => Database.connect(),
+  (database) => database.close(),
+);
 ```
 
-The core Layer API intentionally stays small:
+Runtime owns the application lifetime and safely releases scoped resources when that lifetime ends.
 
-```ts
-Layer.make(Service, acquire)
-Layer.succeed(Service, instance)
-Layer.scoped(Service, acquire, release)
-Layer.gen(Service, factory)
-Layer.scopedGen(Service, factory, release)
-Layer.merge(...layers)
-Layer.override(base, ...overrides)
-```
+Resources acquired during an individual execution belong to that execution instead.
 
-Use `Layer.gen` when constructing a provider requires contextual Services. The
-requirements yielded by the factory remain part of the Layer's compile-time
-contract:
-
-```ts
-const UserRepositoryLive = Layer.gen(UserRepository, async function* () {
-  const database = yield* Database
-
-  return new UserRepository(database)
-})
-```
-
-Use `Layer.scopedGen` when acquisition both needs contextual Services and owns a
-resource that must be released with the Runtime root Scope:
-
-```ts
-class DatabaseSession extends Service<DatabaseSession>() {
-  constructor(readonly database: Database) {
-    super()
-  }
-
-  close(outcome: ScopeOutcome) {
-    return this.database.closeSession(this, outcome)
-  }
-}
-
-const DatabaseSessionLive = Layer.scopedGen(
-  DatabaseSession,
-  async function* () {
-    const database = yield* Database
-
-    return new DatabaseSession(database)
-  },
-  (session, outcome) => session.close(outcome)
-)
-```
-
-`Layer.gen` expresses contextual acquisition without registering cleanup;
-`Layer.scoped` registers cleanup for a dependency-free factory with its simple
-one-argument release callback; `Layer.scopedGen` combines contextual acquisition with
-outcome-aware cleanup. Every factory remains lazy, the acquired instance is shared
-according to backend caching, and its release runs once when the Runtime root closes.
-The `Layer.scopedGen` callback receives the root `ScopeOutcome`, including the final
-outcome of one-shot `Runtime.run()`.
-
-`Layer.scoped` deliberately keeps the compatibility-friendly release signature
-`(instance) => ...`; it does not expose the final outcome. `Layer.scopedGen` is the
-outcome-aware variant and accepts `(instance, outcome) => ...` when release logic needs
-the final `ScopeOutcome`. Both forms register cleanup in the Runtime root Scope.
-
-### Test environments
-
-Layers make implementation replacement explicit:
-
-```ts
-const DatabaseTest = Layer.succeed(Database, new InMemoryDatabase())
-
-const AppTest = Layer.override(AppLive, DatabaseTest)
-```
-
-## ITI adapter
-
-`better-effect` does not depend on ITI in its core. ITI is just one possible backend.
-
-```ts
-import { buildLayer } from 'better-effect'
-
-import { ItiLayerBackend } from 'better-effect/adapters/iti'
-
-const runtime = await buildLayer(AppLive, new ItiLayerBackend())
-
-try {
-  await main()
-} finally {
-  await runtime.dispose()
-}
-```
-
-This keeps application code independent from the DI container.
-
-A different backend can implement the same resolver/backend contracts without changing Services or Layers.
-
-## Scope
-
-`Scope` manages a dynamic lifetime containing multiple resources. Resources acquired
-inside `runtime.run()` belong to that execution and are released automatically when it
-finishes.
-
-The contextual `Scope` is a non-owning capability: it can acquire resources, register
-finalizers, and fork children, but it cannot close the lifetime that owns it. Owners
-receive a `CloseableScope` from `Scope.make()` or `scope.fork()` and remain responsible
-for closing it:
-
-```ts
-const scope = yield * Scope
-const child = scope.fork()
-
-try {
-  await Scope.provide(child, () => processBatch())
-} finally {
-  await child.close()
-}
-```
-
-For the common acquire-and-release case, `Effect.acquireRelease()` keeps the same
-lifetime semantics without exposing `Scope` in the program. It is an async yieldable
-for `Effect.gen`:
-
-```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const connection = yield* Effect.acquireRelease(
-      () => database.reserve(),
-      (connection, outcome) => {
-        void outcome
-        return connection.release()
-      }
-    )
-
-    return Result.ok(await useConnection(connection))
-  })
-)
-```
-
-Acquisition failures are returned through the Effect `Result` error channel. The
-release callback is registered in the current Scope and remains Scope cleanup, so it
-runs when the owning execution closes.
-
-When a resource is already acquired and implements `Symbol.dispose` or
-`Symbol.asyncDispose`, `Effect.add()` registers it in the current Scope and yields the
-same object back to the program:
-
-```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const file = await createTemporaryFile()
-    const ownedFile = yield* Effect.add(file)
-
-    return Result.ok(await readFile(ownedFile))
-  })
-)
-```
-
-`Effect.add()` does not acquire the resource or create a Scope. It must run inside a
-managed execution such as `runtime.run()` or `Scope.run()`; without a current Scope,
-it preserves the existing missing-Scope failure. The resource is disposed when that
-Scope closes, with `Symbol.asyncDispose` preferred when both protocols exist.
-
-Use `Effect.acquireRelease()` when acquisition belongs in the Effect and cleanup needs
-an explicit callback or the final `ScopeOutcome`; use `Effect.add()` for an
-already-acquired JavaScript disposable.
-
-```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const scope = yield* Scope
-
-    const connection = await scope.acquire(
-      () => database.reserve(),
-      (connection, outcome) => {
-        void outcome
-        return connection.release()
-      }
-    )
-
-    return Result.ok(await useConnection(connection))
-  })
-)
-```
-
-Disposable objects can be registered directly:
-
-```ts
-const file = await scope.add(await createTemporaryFile())
-```
-
-`DisposableResource` requires a callable `Symbol.dispose` or `Symbol.asyncDispose`,
-so plain or weakly typed objects must be narrowed before registration. Dynamic values
-that cross an unsafe boundary are still checked at runtime and rejected with
-`ResourceNotDisposableError` when neither protocol is present.
-
-Finalizers run sequentially in reverse registration order. `Layer.scoped` and
-`Layer.scopedGen` resources belong to the Runtime root scope and remain alive between
-executions; they are released when the Runtime is disposed. `Resource.acquireUseRelease()`
-remains available as a standalone compatibility helper implemented on top of Scope.
-
-Scopes can also form explicit child lifetimes. `fork()` registers a child with its
-parent, while `Scope.provide()` uses an existing scope without taking ownership of its
-closure:
-
-```ts
-const parent = Scope.make()
-const batch = parent.fork()
-
-try {
-  await Scope.provide(batch, () => processBatch())
-} finally {
-  await batch.close()
-  await parent.close()
-}
-```
-
-`runtime.run()` creates one child scope per execution. Concurrent executions receive
-isolated scopes, and `runtime.dispose()` stops accepting new executions, waits for
-active executions to finish, then closes the Runtime root scope and its Layer resources.
-
-The final result is classified only at the execution boundary. Plain values and
-`Result.ok` close the execution with `{ status: 'success' }`; `Result.err` and thrown
-exceptions close it with `{ status: 'failure', cause }`. Intermediate Results do not
-change the outcome. Release callbacks receive this outcome, which makes commit/rollback
-cleanup possible without adding a transaction abstraction.
-
-For example, a transaction can choose its final action from the outcome:
-
-```ts
-const transaction =
-  yield *
-  Effect.acquireRelease(
-    () => database.begin(),
-    (transaction, outcome) =>
-      outcome.status === 'success' ? transaction.commit() : transaction.rollback()
-  )
-```
-
-The ownership tree is:
-
-```text
-Runtime
-└── root Scope
-    ├── Layer resources
-    └── execution Scope
-        └── operation resources
-```
-
-Graceful disposal follows this order:
-
-```text
-stop accepting executions
-↓
-wait for active executions
-↓
-close the root Scope
-↓
-dispose the backend
-```
-
-An execution Scope is always closed before its execution Promise settles. The precedence
-is `program failure > cleanup failure > program success`: a failed program preserves its
-exact `Result.err` or exception, while a successful program rejects with a cleanup error.
-Configure `onCleanupFailure` on `buildLayer` or `Runtime.make` to receive one best-effort
-diagnostic for suppressed execution or shutdown cleanup failures. Calls to `runtime.run()`
-after disposal begins fail with `BuiltLayerDisposedError` without invoking the program.
-Shutdown has no cancellation or timeout mechanism and is intended to be initiated outside
-the execution being awaited.
-
-## Standalone resource helper
-
-`Resource.acquireUseRelease()` remains useful for local workflows that want a
-Result-oriented acquire/use/release API without constructing a Runtime. It is
-implemented on top of Scope and remains fully supported; it is not deprecated.
-
-```ts
-import { Resource } from 'better-effect'
-
-const result = await Resource.acquireUseRelease({
-  name: 'transaction',
-
-  acquire: () => database.begin(),
-
-  use: (transaction) => executeCommand(transaction),
-
-  release: (transaction) => transaction.close()
-})
-```
-
-When `release` is omitted, Resource prefers the JavaScript explicit resource
-management protocol:
-
-```ts
-Symbol.asyncDispose
-Symbol.dispose
-```
-
-If both `use` and `release` fail, the `use` error is preserved. The precedence is:
-
-```text
-1. use failure
-2. release failure
-3. successful use value
-```
-
-Acquisition exceptions, rejected promises, and unexpected failures are normalized
-through `better-result`; release failures use `ResourceReleaseFailure`.
-
-## Effect, Runtime, Service, Layer, Scope, and Resource
-
-| Primitive       | Responsibility                                        |
-| --------------- | ----------------------------------------------------- |
-| `Effect`        | Compose Result-oriented programs and Service needs    |
-| `Runtime`       | Execute Effects and own Layer/Scope lifecycles        |
-| `Service`       | Request a contextual dependency                       |
-| `Layer`         | Describe the implementations that form an environment |
-| `Scope`         | Manage dynamic lifetimes and finalizers               |
-| `Resource`      | Standalone Result-oriented acquire/use/release helper |
-| DI backend      | Resolve and cache service instances                   |
-| `better-result` | Typed failures and generator control flow             |
-
-## Complete example
-
-The repository contains a TODO API example under:
-
-```text
-examples/todo-api
-```
-
-It demonstrates:
-
-- Bun HTTP server
-- SQLite in memory with `Bun.SQL`
-- user login
-- session authentication
-- TODO CRUD
-- `Service` dependency access
-- Layer composition
-- Runtime root and execution scopes
-- scoped database lifecycle
-- Standalone `Resource` compatibility API
-- ITI as the DI backend
-
-Run it from the repository root:
-
-```bash
-bun examples/todo-api/index.ts
-```
-
-## Development
-
-Install dependencies:
-
-```bash
-bun install
-```
-
-Run tests:
-
-```bash
-bun test
-```
-
-Typecheck:
-
-```bash
-bun run typecheck
-```
-
-Run the full quality gate:
-
-```bash
-bun run check
-```
-
-The project uses:
-
-- Bun as package manager and test runner
-- TypeScript
-- tsdown for library builds
-- Oxlint
-- Oxfmt
-- publint
-
-## Design principles
-
-### Keep the core small
-
-`better-effect` should not grow into a second Effect runtime.
-
-The core intentionally does not implement:
-
-- fibers
-- schedules
-- streams
-- queues
-- a dependency graph runtime
-- a custom DI container
-- a custom Context
-- `Effect<A, E, R>`
-
-### Delegate instead of rebuilding
-
-Dependency resolution and caching belong to DI backends. Service release lifecycle is
-owned by `Scope`.
-
-`better-effect` supplies the protocol and composition primitives.
-
-### Preserve inference at public boundaries
-
-Type safety is part of the API.
-
-For example:
-
-```ts
-const auth = yield * AuthService
-// AuthService
-```
-
-and:
-
-```ts
-const database = await ServiceRuntime.resolve(Database)
-// Database
-```
-
-must preserve exact instance types.
-
-### Type erasure stays internal
-
-Layers may store heterogeneous providers internally using erased types.
-
-The public constructors (`Layer.make`, `Layer.succeed`, `Layer.scoped`) are responsible for preserving the relationship between a Service token and its instance type.
-
-## Current scope
-
-The project is intentionally small and experimental.
-
-The current core scope is:
-
-```text
-Effect
-Runtime
-Service
-Layer
-Scope
-Resource
-DI adapters
-better-result integration
-```
-
-New abstractions should only be added when they solve a concrete problem without duplicating responsibilities already handled well by another library.
-
-## License
-
-MIT
+### Keep your runtime choices
+
+`better-effect` is not a replacement implementation of Effect.
+
+It does not introduce a fiber runtime, scheduler, streams, queues or a public `Effect<A, E, R>` abstraction.
+
+`Effect.gen` builds on `better-result` generator composition while carrying Service requirements through the TypeScript type system.
+
+Dependency resolution stays behind a pluggable backend.
+
+Your application can keep using ordinary Promises and existing libraries.
+
+---
+
+## How it compares
+
+|                               | better-result | better-effect       | Effect          |
+| ----------------------------- | ------------- | ------------------- | --------------- |
+| Typed success/failure         | ✓             | ✓ via better-result | ✓               |
+| Generator composition         | ✓             | ✓                   | ✓               |
+| Contextual Services           | —             | ✓                   | ✓               |
+| Dependency requirements       | —             | ✓                   | ✓               |
+| Checked environments          | —             | ✓                   | ✓               |
+| Scoped resource lifetimes     | —             | ✓                   | ✓               |
+| Pluggable external DI backend | —             | ✓                   | different model |
+| Fiber runtime                 | —             | —                   | ✓               |
+| Structured concurrency        | —             | —                   | ✓               |
+| Streams / queues / schedules  | —             | —                   | ✓               |
+| Full effect ecosystem         | —             | —                   | ✓               |
+
+### Choose `better-result`
+
+When typed error handling and Result composition are enough.
+
+### Add `better-effect`
+
+When your Result-based application also needs contextual Services, typechecked application wiring, composable environments, or resource lifetime management.
+
+### Choose Effect
+
+When you want a complete effect system and its runtime, concurrency model, dependency model, resource management and broader ecosystem.
+
+`better-effect` is inspired by some of those ideas. It is intentionally not a reimplementation of the whole system.
+
+---
+
+## Core ideas
+
+### Typechecked wiring
+
+**Service requirements → Layer completeness → Runtime validation**
+
+Use a Service and its requirement follows the program.
+
+Build an incomplete environment and TypeScript tells you what is missing.
+
+Run a program against an incompatible Runtime and the mismatch remains visible at compile time.
+
+### Composable environments
+
+**Layer → merge → override → DI backend**
+
+Describe application implementations independently from the container responsible for resolving them.
+
+Compose production environments and replace selected implementations for tests.
+
+### Scoped lifetimes
+
+**Scope → scoped Layers → acquire/release → graceful Runtime disposal**
+
+Make ownership explicit for resources that need cleanup.
+
+Application resources live with the Runtime. Execution resources live with the execution.
+
+### better-result underneath
+
+**Result → Result.gen → Effect.gen**
+
+Keep `better-result` as the source of truth for typed failures and generator control flow.
+
+`better-effect` adds dependency and lifecycle information around it rather than rebuilding Result or introducing a second error model.
