@@ -5,13 +5,13 @@ import { Result } from 'better-result'
 import { Effect } from '../../src/effect'
 import {
   Layer,
-  buildLayer,
   type CompleteLayer,
   type LayerBackend,
   type LayerMissing,
   type LayerProvided,
   type LayerRawRequired
 } from '../../src/layer'
+import { createRuntimeHandle } from '../../src/layer/runtime'
 import { Runtime } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
 import { Service, type ServiceToken } from '../../src/service'
@@ -75,7 +75,7 @@ const Complete = Layer.merge(DatabaseLive, LoggerLive, UserRepositoryLive)
 expectTypeOf<LayerMissing<typeof Complete>>().toEqualTypeOf<never>()
 expectTypeOf<CompleteLayer<typeof Complete>>().toEqualTypeOf<typeof Complete>()
 
-void buildLayer(Complete, backend)
+void createRuntimeHandle(Complete, backend)
 void Runtime.make(Complete, backend)
 
 const Incomplete = Layer.merge(UserRepositoryLive)
@@ -90,7 +90,7 @@ expectTypeOf<CompleteLayer<typeof Incomplete>>().toMatchTypeOf<
 >()
 
 // @ts-expect-error Database and Logger are not supplied by this Layer.
-void buildLayer(Incomplete, backend)
+void createRuntimeHandle(Incomplete, backend)
 
 // @ts-expect-error Database and Logger are not supplied by this Layer.
 void Runtime.make(Incomplete, backend)

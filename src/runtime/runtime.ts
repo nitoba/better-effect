@@ -1,11 +1,8 @@
-import {
-  buildLayer,
-  type AnyLayer,
-  type BuiltLayer,
-  type CompleteLayer,
-  type LayerProvided,
-  type LayerBackend
-} from '../layer'
+import type { LayerBackend } from '../layer'
+
+import { createRuntimeHandle, type RuntimeHandle } from '../layer/runtime'
+
+import type { AnyLayer, CompleteLayer, LayerProvided } from '../layer/inference'
 
 import type { CompleteExecution } from '../layer/inference'
 
@@ -16,7 +13,7 @@ import { classifyRuntimeOutcome, type RuntimeOptions } from './outcome'
 import type { ScopeOutcome } from '../scope'
 
 export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
-  private constructor(private readonly built: BuiltLayer<Provided>) {}
+  private constructor(private readonly handle: RuntimeHandle<Provided>) {}
 
   /** Create a long-lived Runtime that owns its Layer resources. */
   static async make<L extends AnyLayer>(
@@ -24,9 +21,9 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
     backend: LayerBackend,
     options: RuntimeOptions = {}
   ): Promise<Runtime<LayerProvided<L>>> {
-    const built = await buildLayer(layer, backend, options)
+    const handle = await createRuntimeHandle(layer, backend, options)
 
-    return new Runtime<LayerProvided<L>>(built)
+    return new Runtime<LayerProvided<L>>(handle)
   }
 
   /** Run one program and dispose its Layer resources before resolving. */
@@ -89,19 +86,19 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
 
   /** Run one execution in this Runtime's child Scope. */
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
-    return this.built.run(program)
+    return this.handle.run(program)
   }
 
   private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
-    return this.built.run(program as CompleteExecution<Provided, A>)
+    return this.handle.run(program as CompleteExecution<Provided, A>)
   }
 
   /** Stop new executions and release the Runtime's Layer resources. */
   dispose(): Promise<void> {
-    return this.built.dispose()
+    return this.handle.dispose()
   }
 
   private disposeWithOutcome(outcome: ScopeOutcome): Promise<void> {
-    return this.built.dispose(outcome)
+    return this.handle.dispose(outcome)
   }
 }

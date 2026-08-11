@@ -16,7 +16,6 @@ export type {
 
 export {
   Layer,
-  BuiltLayerDisposedError,
   DuplicateServiceError,
   LayerDisposeError,
   LayerGeneratorYieldError,

@@ -8,13 +8,8 @@ import {
   type EffectRequirements,
   type EffectSuccess
 } from '../../src/effect'
-import {
-  Layer,
-  buildLayer,
-  type BuiltLayer,
-  type LayerBackend,
-  type LayerProvided
-} from '../../src/layer'
+import { Layer, type LayerBackend, type LayerProvided } from '../../src/layer'
+import { createRuntimeHandle, type RuntimeHandle } from '../../src/layer/runtime'
 import type { LayerRegistration } from '../../src'
 import { Runtime, type RuntimeFor } from '../../src/runtime'
 import { Scope } from '../../src/scope'
@@ -72,11 +67,11 @@ expectTypeOf<LayerProvided<typeof AppWithTestDatabase>>().toEqualTypeOf<
   typeof Database | typeof Logger
 >()
 
-const builtPromise = buildLayer(AppLive, backend)
+const builtPromise = createRuntimeHandle(AppLive, backend)
 const runtimePromise = Runtime.make(AppLive, backend)
 
 expectTypeOf<Awaited<typeof builtPromise>>().toEqualTypeOf<
-  BuiltLayer<typeof Database | typeof Logger>
+  RuntimeHandle<typeof Database | typeof Logger>
 >()
 expectTypeOf<Awaited<typeof runtimePromise>>().toEqualTypeOf<
   Runtime<typeof Database | typeof Logger>
@@ -117,7 +112,7 @@ expectTypeOf<IncompleteProgram>().toEqualTypeOf<
 >()
 
 const typedRuntime = {} as Runtime<typeof Database | typeof Logger>
-const typedBuiltLayer = {} as BuiltLayer<typeof Database | typeof Logger>
+const typedBuiltLayer = {} as RuntimeHandle<typeof Database | typeof Logger>
 
 const managedResult = typedRuntime.run(requiresDatabaseAndLogger)
 const builtResult = typedBuiltLayer.run(requiresDatabaseAndLogger)
@@ -136,8 +131,8 @@ expectTypeOf(explicitlyTypedOneShot).toEqualTypeOf<Promise<Awaited<CompleteProgr
 // @ts-expect-error Logger is not supplied by this managed Runtime.
 void ({} as Runtime<typeof Database>).run(requiresDatabaseAndLogger)
 
-// @ts-expect-error Logger is not supplied by this BuiltLayer.
-void ({} as BuiltLayer<typeof Database>).run(requiresDatabaseAndLogger)
+// @ts-expect-error Logger is not supplied by this RuntimeHandle.
+void ({} as RuntimeHandle<typeof Database>).run(requiresDatabaseAndLogger)
 
 // @ts-expect-error Logger is not supplied by this one-shot Layer.
 void Runtime.run(DatabaseLive, backend, requiresDatabaseAndLogger)
@@ -159,8 +154,8 @@ expectTypeOf<
 // @ts-expect-error Both Logger and Cache are absent from this managed Runtime.
 void ({} as Runtime<typeof Database>).run(requiresLoggerAndCache)
 
-// @ts-expect-error Both Logger and Cache are absent from this BuiltLayer.
-void ({} as BuiltLayer<typeof Database>).run(requiresLoggerAndCache)
+// @ts-expect-error Both Logger and Cache are absent from this RuntimeHandle.
+void ({} as RuntimeHandle<typeof Database>).run(requiresLoggerAndCache)
 
 // @ts-expect-error Both Logger and Cache are absent from this one-shot Layer.
 void Runtime.run(DatabaseLive, backend, requiresLoggerAndCache)
@@ -211,19 +206,19 @@ void ({} as Runtime<never>).run(plainValue)
 void ({} as Runtime<never>).run(plainResult)
 void ({} as Runtime<never>).run(scopeOnly)
 void ({} as Runtime<never>).run(acquireReleaseOnly)
-void ({} as BuiltLayer<never>).run(plainValue)
-void ({} as BuiltLayer<never>).run(plainResult)
-void ({} as BuiltLayer<never>).run(scopeOnly)
-void ({} as BuiltLayer<never>).run(acquireReleaseOnly)
+void ({} as RuntimeHandle<never>).run(plainValue)
+void ({} as RuntimeHandle<never>).run(plainResult)
+void ({} as RuntimeHandle<never>).run(scopeOnly)
+void ({} as RuntimeHandle<never>).run(acquireReleaseOnly)
 void Runtime.run(DatabaseLive, backend, plainValue)
 void Runtime.run(DatabaseLive, backend, plainResult)
 void Runtime.run(DatabaseLive, backend, scopeOnly)
 void Runtime.run(DatabaseLive, backend, acquireReleaseOnly)
 
 const erasedRuntime: Runtime = {} as Runtime
-const erasedBuiltLayer: BuiltLayer = {} as BuiltLayer
+const erasedBuiltLayer: RuntimeHandle = {} as RuntimeHandle
 const erasedRuntimeFromInference: Runtime = {} as Awaited<typeof runtimePromise>
-const erasedBuiltLayerFromInference: BuiltLayer = {} as Awaited<typeof builtPromise>
+const erasedBuiltLayerFromInference: RuntimeHandle = {} as Awaited<typeof builtPromise>
 
 void erasedRuntime.run(requiresDatabaseAndLogger)
 void erasedBuiltLayer.run(requiresDatabaseAndLogger)

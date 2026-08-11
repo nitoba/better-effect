@@ -4,7 +4,8 @@ import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { ItiLayerBackend } from '../src/adapters/iti'
-import { Layer, buildLayer } from '../src/layer'
+import { Layer } from '../src/layer'
+import { createRuntimeHandle } from '../src/layer/runtime'
 import { Service, ServiceRuntime } from '../src/service'
 
 class Database extends Service<Database>() {
@@ -17,7 +18,7 @@ class UserRepository extends Service<UserRepository>() {
 
 describe('ItiLayerBackend', () => {
   test('resolves a service using the class token', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(Database, () => new Database()),
       new ItiLayerBackend()
     )
@@ -34,7 +35,7 @@ describe('ItiLayerBackend', () => {
   test('resolves providers lazily', async () => {
     let acquired = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(Database, () => {
         acquired++
 
@@ -57,7 +58,7 @@ describe('ItiLayerBackend', () => {
   test('caches resolved instances', async () => {
     let acquired = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(Database, () => {
         acquired++
 
@@ -93,7 +94,7 @@ describe('ItiLayerBackend', () => {
   })
 
   test('keeps different class tokens independent', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.merge(
         Layer.make(Database, () => new Database()),
 
@@ -122,7 +123,7 @@ describe('ItiLayerBackend', () => {
   test('releases scoped services on dispose', async () => {
     let releases = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         Database,
 
@@ -147,7 +148,7 @@ describe('ItiLayerBackend', () => {
   test('does not release a scoped service that was never resolved', async () => {
     let releases = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         Database,
 
@@ -178,7 +179,7 @@ describe('ItiLayerBackend', () => {
   })
 
   test('does not expose services outside the runtime context', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(Database, () => new Database()),
       new ItiLayerBackend()
     )
@@ -197,9 +198,15 @@ describe('ItiLayerBackend', () => {
 
     const databaseB = new Database()
 
-    const runtimeA = await buildLayer(Layer.succeed(Database, databaseA), new ItiLayerBackend())
+    const runtimeA = await createRuntimeHandle(
+      Layer.succeed(Database, databaseA),
+      new ItiLayerBackend()
+    )
 
-    const runtimeB = await buildLayer(Layer.succeed(Database, databaseB), new ItiLayerBackend())
+    const runtimeB = await createRuntimeHandle(
+      Layer.succeed(Database, databaseB),
+      new ItiLayerBackend()
+    )
 
     try {
       const [resolvedA, resolvedB] = await Promise.all([

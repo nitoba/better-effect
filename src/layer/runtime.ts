@@ -13,7 +13,7 @@ import {
   type RuntimeShutdownDiagnostic
 } from '../runtime/outcome'
 
-import { BuiltLayerDisposedError, LayerDisposeError, LayerRegistrationError } from './errors'
+import { LayerDisposeError, LayerRegistrationError } from './errors'
 
 import type { LayerBackend } from './backend'
 
@@ -25,12 +25,8 @@ import type { ScopeOutcome } from '../scope'
 
 type LayerProvider = AnyLayer['providers'][number]
 
-/**
- * Low-level Layer handle retained for adapter and test integrations.
- *
- * @deprecated Prefer `Runtime.make()` for the public managed runtime API.
- */
-export interface BuiltLayer<Provided extends AnyServiceToken = AnyServiceToken> {
+/** Internal handle used by Runtime to own a Layer's resources. */
+export interface RuntimeHandle<Provided extends AnyServiceToken = AnyServiceToken> {
   readonly backend: LayerBackend
 
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>>
@@ -39,6 +35,14 @@ export interface BuiltLayer<Provided extends AnyServiceToken = AnyServiceToken> 
 }
 
 const SCOPE_SUCCESS: ScopeOutcome = Object.freeze({ status: 'success' })
+
+class RuntimeHandleDisposedError extends Error {
+  constructor() {
+    super('Cannot run a program using a disposed Layer')
+
+    this.name = 'RuntimeHandleDisposedError'
+  }
+}
 
 const normalizeDisposeCauses = (cause: unknown): readonly unknown[] => {
   if (cause instanceof AggregateError) {
@@ -82,7 +86,7 @@ const bindProviderToScope = (
     })
 })
 
-class BuiltLayerImpl<Provided extends AnyServiceToken> implements BuiltLayer<Provided> {
+class RuntimeHandleImpl<Provided extends AnyServiceToken> implements RuntimeHandle<Provided> {
   private disposePromise: Promise<void> | undefined
 
   private readonly executions = new Set<Promise<unknown>>()
@@ -203,21 +207,17 @@ class BuiltLayerImpl<Provided extends AnyServiceToken> implements BuiltLayer<Pro
 
   private assertActive(): void {
     if (this.state !== 'active') {
-      throw new BuiltLayerDisposedError()
+      throw new RuntimeHandleDisposedError()
     }
   }
 }
 
-/**
- * Build a low-level Layer handle.
- *
- * @deprecated Prefer `Runtime.make()` for application code.
- */
-export const buildLayer = async <L extends AnyLayer>(
+/** Build the internal Runtime handle for a complete Layer. */
+export const createRuntimeHandle = async <L extends AnyLayer>(
   layer: CompleteLayer<L>,
   backend: LayerBackend,
   options: RuntimeOptions = {}
-): Promise<BuiltLayer<LayerProvided<L>>> => {
+): Promise<RuntimeHandle<LayerProvided<L>>> => {
   const rootScope = Scope.make()
   let current: LayerProvider | undefined
 
@@ -266,5 +266,5 @@ export const buildLayer = async <L extends AnyLayer>(
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new BuiltLayerImpl<LayerProvided<L>>(backend, rootScope, options.onCleanupFailure)
+  return new RuntimeHandleImpl<LayerProvided<L>>(backend, rootScope, options.onCleanupFailure)
 }

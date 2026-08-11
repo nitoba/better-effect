@@ -3,7 +3,8 @@ import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../../src/effect'
-import { Layer, buildLayer } from '../../src/layer'
+import { Layer } from '../../src/layer'
+import { createRuntimeHandle } from '../../src/layer/runtime'
 import type { CompleteLayer, LayerMissing, LayerRawRequired } from '../../src/layer'
 import { Runtime } from '../../src/runtime'
 
@@ -153,9 +154,9 @@ expectTypeOf<LayerMissing<typeof Complete>>().toEqualTypeOf<never>()
 void Runtime.make(Broken, {} as never)
 void Runtime.make(Complete, {} as never)
 
-// @ts-expect-error buildLayer enforces the same complete-Layer contract as Runtime.make
-void buildLayer(Broken, {} as never)
-void buildLayer(Complete, {} as never)
+// @ts-expect-error createRuntimeHandle enforces the same complete-Layer contract as Runtime.make
+void createRuntimeHandle(Broken, {} as never)
+void createRuntimeHandle(Complete, {} as never)
 
 // @ts-expect-error UserRepository is not a Database
 Layer.make(Database, () => new UserRepository())

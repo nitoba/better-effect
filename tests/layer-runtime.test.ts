@@ -3,14 +3,8 @@ import { describe, expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
-import {
-  BuiltLayerDisposedError,
-  Layer,
-  LayerDisposeError,
-  LayerRegistrationError,
-  buildLayer,
-  type LayerBackend
-} from '../src/layer'
+import { Layer, LayerDisposeError, LayerRegistrationError, type LayerBackend } from '../src/layer'
+import { createRuntimeHandle } from '../src/layer/runtime'
 import { Runtime } from '../src/runtime'
 import { Scope, ScopeCloseError } from '../src/scope'
 
@@ -119,13 +113,13 @@ class MemoryLayerBackend implements LayerBackend {
   }
 }
 
-describe('buildLayer', () => {
+describe('createRuntimeHandle', () => {
   test('registers every provider in the backend', async () => {
     const layer = Layer.make(ExampleService, () => new ExampleService())
 
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(layer, backend)
+    const runtime = await createRuntimeHandle(layer, backend)
 
     try {
       expect(backend.providers.has(ExampleService)).toBe(true)
@@ -147,7 +141,7 @@ describe('buildLayer', () => {
 
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(layer, backend)
+    const runtime = await createRuntimeHandle(layer, backend)
 
     try {
       expect(acquired).toBe(0)
@@ -159,7 +153,7 @@ describe('buildLayer', () => {
   test('provides the backend inside runtime.run', async () => {
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       backend
     )
@@ -188,7 +182,7 @@ describe('buildLayer', () => {
 
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => {
         acquired++
 
@@ -222,7 +216,7 @@ describe('buildLayer', () => {
     let releases = 0
     let releaseOutcome: ScopeOutcome | undefined
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.merge(
         Layer.make(ScopedDependency, () => new ScopedDependency()),
         Layer.scopedGen(
@@ -265,7 +259,7 @@ describe('buildLayer', () => {
     const acquisitionFailure = new Error('scoped generator acquisition failed')
     let releases = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scopedGen(
         ExampleService,
         // oxlint-disable-next-line require-yield
@@ -289,7 +283,7 @@ describe('buildLayer', () => {
 
   test('passes root outcomes to long-lived and one-shot scoped generators', async () => {
     let longLivedOutcome: ScopeOutcome | undefined
-    const longLived = await buildLayer(
+    const longLived = await createRuntimeHandle(
       Layer.scopedGen(
         ExampleService,
         // oxlint-disable-next-line require-yield
@@ -338,7 +332,7 @@ describe('buildLayer', () => {
 
   test('releases dependent scoped generators in LIFO order', async () => {
     const events: string[] = []
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.merge(
         Layer.scopedGen(
           ScopedDependency,
@@ -383,7 +377,7 @@ describe('buildLayer', () => {
       events.push('backend')
     }
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.merge(
         Layer.scopedGen(
           ScopedDependency,
@@ -443,7 +437,7 @@ describe('buildLayer', () => {
 
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -468,7 +462,7 @@ describe('buildLayer', () => {
 
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -487,7 +481,7 @@ describe('buildLayer', () => {
   test('closes the execution scope after runtime.run', async () => {
     let released = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -514,7 +508,7 @@ describe('buildLayer', () => {
     let released = 0
     const failure = new Error('program failed')
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -547,7 +541,7 @@ describe('buildLayer', () => {
     const programFailure = new Error('program failed')
     const cleanupFailure = new Error('cleanup failed')
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -575,7 +569,7 @@ describe('buildLayer', () => {
   test('keeps Layer.scoped resources alive between executions', async () => {
     let released = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -601,7 +595,7 @@ describe('buildLayer', () => {
 
     class ScopedFactoryService extends Service<ScopedFactoryService>() {}
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ScopedFactoryService, async () => {
         await Scope.current().acquire(
           () => ({ value: true }),
@@ -625,7 +619,7 @@ describe('buildLayer', () => {
   })
 
   test('isolates execution scopes between concurrent runs', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -651,12 +645,12 @@ describe('buildLayer', () => {
   })
 
   test('isolates execution scopes between concurrent runtimes', async () => {
-    const runtimeA = await buildLayer(
+    const runtimeA = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
 
-    const runtimeB = await buildLayer(
+    const runtimeB = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -682,7 +676,7 @@ describe('buildLayer', () => {
   })
 
   test('does not expose the resolver outside runtime.run', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -697,7 +691,7 @@ describe('buildLayer', () => {
   })
 
   test('does not leak the resolver after runtime.run completes', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -716,7 +710,7 @@ describe('buildLayer', () => {
   })
 
   test('does not allow programs to run after dispose', async () => {
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -724,14 +718,14 @@ describe('buildLayer', () => {
     await runtime.dispose()
 
     expect(() => runtime.run(() => ServiceRuntime.resolve(ExampleService))).toThrow(
-      BuiltLayerDisposedError
+      'Cannot run a program using a disposed Layer'
     )
   })
 
   test('disposes the backend', async () => {
     const backend = new MemoryLayerBackend()
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       backend
     )
@@ -756,7 +750,7 @@ describe('buildLayer', () => {
       releaseExecution = resolve
     })
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -778,7 +772,9 @@ describe('buildLayer', () => {
     const disposal = runtime.dispose()
 
     expect(released).toBe(0)
-    expect(() => runtime.run(() => undefined)).toThrow(BuiltLayerDisposedError)
+    expect(() => runtime.run(() => undefined)).toThrow(
+      'Cannot run a program using a disposed Layer'
+    )
 
     releaseExecution()
     await execution
@@ -796,7 +792,7 @@ describe('buildLayer', () => {
       releaseGate = resolve
     })
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -841,7 +837,7 @@ describe('buildLayer', () => {
       events.push('backend')
     }
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -861,7 +857,7 @@ describe('buildLayer', () => {
   test('shares concurrent disposal requests', async () => {
     let released = 0
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -890,7 +886,7 @@ describe('buildLayer', () => {
     const expected = Result.err(programFailure)
     const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend(),
       {
@@ -929,7 +925,7 @@ describe('buildLayer', () => {
     const cleanupFailure = new Error('cleanup failed')
     const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend(),
       {
@@ -961,7 +957,7 @@ describe('buildLayer', () => {
   test('reports cleanup failure after a plain execution value', async () => {
     const cleanupFailure = new Error('cleanup failed')
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -988,7 +984,7 @@ describe('buildLayer', () => {
     const secondFailure = new Error('second cleanup failed')
     const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend(),
       {
@@ -1028,7 +1024,7 @@ describe('buildLayer', () => {
     const cleanupFailure = new Error('cleanup failed')
     const observerFailure = new Error('observer failed')
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend(),
       {
@@ -1063,7 +1059,7 @@ describe('buildLayer', () => {
     let observed: ScopeOutcome | undefined
     const expected = Result.err(new Error('program failed'))
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -1095,7 +1091,7 @@ describe('buildLayer', () => {
   test('classifies only the final recovered Result outcome', async () => {
     let observed: ScopeOutcome | undefined
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend()
     )
@@ -1129,7 +1125,7 @@ describe('buildLayer', () => {
     const cleanupFailure = new Error('cleanup failed')
     const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, () => new ExampleService()),
       new MemoryLayerBackend(),
       {
@@ -1165,7 +1161,7 @@ describe('buildLayer', () => {
     let observed: ScopeOutcome | undefined
     let resolverAvailable = false
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.make(ExampleService, async () => {
         Scope.current().addFinalizer(async (outcome) => {
           observed = outcome
@@ -1367,7 +1363,7 @@ describe('buildLayer', () => {
     const backend = new MemoryLayerBackend()
     backend.disposeFailure = backendFailure
 
-    const runtime = await buildLayer(
+    const runtime = await createRuntimeHandle(
       Layer.scoped(
         ExampleService,
         () => new ExampleService(),
@@ -1399,7 +1395,7 @@ describe('buildLayer', () => {
     backend.disposeFailure = backendFailure
 
     const error = await captureRejection(
-      buildLayer(
+      createRuntimeHandle(
         Layer.merge(
           Layer.make(ExampleService, () => {
             Scope.current().addFinalizer((outcome) => {
