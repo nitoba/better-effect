@@ -247,6 +247,26 @@ belong to the Runtime root scope and remain alive between executions; they are r
 when the Runtime is disposed. `Resource.acquireUseRelease()` remains available as a
 compatibility helper implemented on top of Scope.
 
+Scopes can also form explicit child lifetimes. `fork()` registers a child with its
+parent, while `Scope.provide()` uses an existing scope without taking ownership of its
+closure:
+
+```ts
+const parent = Scope.make()
+const batch = parent.fork()
+
+try {
+  await Scope.provide(batch, () => processBatch())
+} finally {
+  await batch.close()
+  await parent.close()
+}
+```
+
+`runtime.run()` creates one child scope per execution. Concurrent executions receive
+isolated scopes, and `runtime.dispose()` stops accepting new executions, waits for
+active executions to finish, then closes the Runtime root scope and its Layer resources.
+
 ## Service vs Layer vs Scope vs Resource
 
 | Primitive       | Responsibility                                        |

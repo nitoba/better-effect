@@ -221,6 +221,15 @@ Resources acquired inside `runtime.run` belong to that execution's Scope.
 
 `Scope` must not become a Service requirement.
 
+Scopes are hierarchical: `Scope.fork()` creates a child owned by the parent until the
+child closes, and parent closure closes still-attached children before its own
+finalizers. `Scope.provide()` supplies an existing Scope without closing it; `Scope.run`
+owns the Scope it creates.
+
+Runtime executions must use child Scopes of the Runtime root. Runtime disposal is
+graceful: reject new runs, wait for active runs, close the root Scope, then perform
+backend cleanup. Do not add a separate ManagedRuntime abstraction for this lifecycle.
+
 `Resource` remains a compatibility facade over Scope until explicitly deprecated.
 
 Never register `LayerProvider.release` directly into a DI container disposer.

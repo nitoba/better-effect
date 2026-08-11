@@ -7,11 +7,13 @@ import { ScopeRuntime } from './runtime'
 import type { DisposableResource, MaybePromise, ScopeFinalizer } from './types'
 
 export class Scope {
+  private readonly children = new Set<Scope>()
+
   private readonly finalizers: ScopeFinalizer[] = []
 
   private closePromise: Promise<void> | undefined
 
-  private constructor() {}
+  private constructor(private parent?: Scope) {}
 
   static make(): Scope {
     return new Scope()
@@ -19,6 +21,10 @@ export class Scope {
 
   static current(): Scope {
     return ScopeRuntime.current()
+  }
+
+  static provide<A>(scope: Scope, program: () => A): A {
+    return ScopeRuntime.run(scope, program)
   }
 
   // oxlint-disable-next-line require-yield
@@ -34,7 +40,7 @@ export class Scope {
     let programFailure: unknown
 
     try {
-      value = await ScopeRuntime.run(scope, () => program(scope))
+      value = await Scope.provide(scope, () => program(scope))
     } catch (cause) {
       programFailed = true
       programFailure = cause
@@ -66,6 +72,16 @@ export class Scope {
     }
 
     return value
+  }
+
+  fork(): Scope {
+    this.assertOpen()
+
+    const child = new Scope(this)
+
+    this.children.add(child)
+
+    return child
   }
 
   addFinalizer(finalizer: ScopeFinalizer): void {
@@ -138,6 +154,24 @@ export class Scope {
   private async closeInternal(): Promise<void> {
     const failures: unknown[] = []
 
+    const children = [...this.children]
+
+    this.children.clear()
+
+    for (let index = children.length - 1; index >= 0; index--) {
+      const child = children[index]
+
+      if (!child) {
+        continue
+      }
+
+      try {
+        await child.close()
+      } catch (cause) {
+        failures.push(cause)
+      }
+    }
+
     for (let index = this.finalizers.length - 1; index >= 0; index--) {
       const finalizer = this.finalizers[index]
 
@@ -154,9 +188,22 @@ export class Scope {
 
     this.finalizers.length = 0
 
+    this.detach()
+
     if (failures.length > 0) {
       throw new ScopeCloseError(failures)
     }
+  }
+
+  private detach(): void {
+    const parent = this.parent
+
+    if (!parent) {
+      return
+    }
+
+    parent.children.delete(this)
+    this.parent = undefined
   }
 
   private assertOpen(): void {

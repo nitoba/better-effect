@@ -46,7 +46,9 @@ const bindProviderToScope = (provider: LayerProvider, rootScope: Scope): LayerPr
 class BuiltLayerImpl implements BuiltLayer {
   private disposePromise: Promise<void> | undefined
 
-  private disposed = false
+  private readonly executions = new Set<Promise<unknown>>()
+
+  private state: 'active' | 'disposing' | 'disposed' = 'active'
 
   constructor(
     readonly backend: LayerBackend,
@@ -54,11 +56,32 @@ class BuiltLayerImpl implements BuiltLayer {
   ) {}
 
   async run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
-    if (this.disposed || this.disposePromise) {
-      throw new BuiltLayerDisposedError()
-    }
+    this.assertActive()
 
-    return await ServiceRuntime.run(this.backend, () => Scope.run(() => program()))
+    const execution = this.runExecution(program)
+
+    this.executions.add(execution)
+
+    void execution.then(
+      () => {
+        this.executions.delete(execution)
+      },
+      () => {
+        this.executions.delete(execution)
+      }
+    )
+
+    return await execution
+  }
+
+  private async runExecution<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+    const executionScope = this.rootScope.fork()
+
+    try {
+      return await ServiceRuntime.run(this.backend, () => Scope.provide(executionScope, program))
+    } finally {
+      await executionScope.close()
+    }
   }
 
   dispose(): Promise<void> {
@@ -66,6 +89,7 @@ class BuiltLayerImpl implements BuiltLayer {
       return this.disposePromise
     }
 
+    this.state = 'disposing'
     this.disposePromise = this.performDispose()
 
     return this.disposePromise
@@ -73,6 +97,8 @@ class BuiltLayerImpl implements BuiltLayer {
 
   private async performDispose(): Promise<void> {
     const failures: unknown[] = []
+
+    await Promise.allSettled(this.executions)
 
     try {
       await ServiceRuntime.run(this.backend, () => this.rootScope.close())
@@ -86,10 +112,16 @@ class BuiltLayerImpl implements BuiltLayer {
       failures.push(cause)
     }
 
-    this.disposed = true
+    this.state = 'disposed'
 
     if (failures.length > 0) {
       throw new LayerDisposeError(failures.flatMap(normalizeDisposeCauses))
+    }
+  }
+
+  private assertActive(): void {
+    if (this.state !== 'active') {
+      throw new BuiltLayerDisposedError()
     }
   }
 }

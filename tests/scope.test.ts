@@ -238,4 +238,132 @@ describe('Scope', () => {
 
     expect(released).toBe(true)
   })
+
+  test('forks child scopes and detaches them after close', async () => {
+    let releases = 0
+    const parent = Scope.make()
+    const child = parent.fork()
+
+    child.addFinalizer(() => {
+      releases++
+    })
+
+    await child.close()
+    await parent.close()
+
+    expect(releases).toBe(1)
+  })
+
+  test('does not retry a child finalizer after a failed child close', async () => {
+    let attempts = 0
+    const parent = Scope.make()
+    const child = parent.fork()
+
+    child.addFinalizer(() => {
+      attempts++
+      throw new Error('child failed')
+    })
+
+    await captureRejection(child.close())
+    await parent.close()
+
+    expect(attempts).toBe(1)
+  })
+
+  test('rejects forking after the parent starts closing', async () => {
+    const parent = Scope.make()
+    const closing = parent.close()
+
+    expect(() => parent.fork()).toThrow(ScopeClosedError)
+
+    await closing
+  })
+
+  test('closes children before parent finalizers in reverse order', async () => {
+    const events: string[] = []
+    const parent = Scope.make()
+    const first = parent.fork()
+    const second = parent.fork()
+
+    first.addFinalizer(() => {
+      events.push('first-child')
+    })
+
+    second.addFinalizer(() => {
+      events.push('second-child')
+    })
+
+    parent.addFinalizer(() => {
+      events.push('parent')
+    })
+
+    await parent.close()
+
+    expect(events).toEqual(['second-child', 'first-child', 'parent'])
+  })
+
+  test('continues parent cleanup when a child close fails', async () => {
+    const events: string[] = []
+    const parent = Scope.make()
+    const failingChild = parent.fork()
+    const succeedingChild = parent.fork()
+
+    failingChild.addFinalizer(() => {
+      events.push('failing-child')
+      throw new Error('child failed')
+    })
+
+    succeedingChild.addFinalizer(() => {
+      events.push('succeeding-child')
+    })
+
+    parent.addFinalizer(() => {
+      events.push('parent')
+    })
+
+    const error = await captureRejection(parent.close())
+
+    expect(error).toBeInstanceOf(ScopeCloseError)
+    expect(events).toEqual(['succeeding-child', 'failing-child', 'parent'])
+  })
+
+  test('provides an existing scope without closing it', async () => {
+    let released = false
+    const scope = Scope.make()
+
+    await Scope.provide(scope, async () => {
+      expect(Scope.current()).toBe(scope)
+
+      await scope.acquire(
+        () => ({ value: 42 }),
+        () => {
+          released = true
+        }
+      )
+    })
+
+    expect(released).toBe(false)
+
+    await scope.close()
+
+    expect(released).toBe(true)
+  })
+
+  test('preserves program and cleanup failures from Scope.run', async () => {
+    const programFailure = new Error('program failed')
+    const cleanupFailure = new Error('cleanup failed')
+
+    const error = await captureRejection(
+      Scope.run(async (scope) => {
+        scope.addFinalizer(() => {
+          throw cleanupFailure
+        })
+
+        throw programFailure
+      })
+    )
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([programFailure, expect.anything()])
+  })
 })

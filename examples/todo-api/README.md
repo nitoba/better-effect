@@ -143,3 +143,9 @@ const result = await runtime.run(() =>
 
 The execution scope closes automatically after `runtime.run()` completes, while
 the scoped database layer remains owned by the Runtime root scope.
+
+Each request handled by the server receives its own child execution scope. During
+shutdown, `runtime.dispose()` stops accepting new executions, waits for active
+requests to finish, and then closes the root scope that owns the database layer.
+For a nested batch lifetime, use `scope.fork()` with `Scope.provide()` and close the
+child explicitly when the batch ends.

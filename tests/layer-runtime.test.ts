@@ -227,6 +227,39 @@ describe('buildLayer', () => {
     }
   })
 
+  test('closes the execution scope after a failed runtime.run', async () => {
+    let released = 0
+    const failure = new Error('program failed')
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const error = await runtime
+        .run(async () => {
+          await Scope.current().acquire(
+            () => ({ value: 42 }),
+            () => {
+              released++
+            }
+          )
+
+          throw failure
+        })
+        .then(
+          () => undefined,
+          (cause) => cause
+        )
+
+      expect(error).toBe(failure)
+      expect(released).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('keeps Layer.scoped resources alive between executions', async () => {
     let released = 0
 
@@ -371,5 +404,75 @@ describe('buildLayer', () => {
     await runtime.dispose()
 
     expect(backend.disposed).toBe(true)
+  })
+
+  test('waits for active executions before disposing root resources', async () => {
+    let releaseExecution!: () => void
+    let executionStarted!: () => void
+    let released = 0
+
+    const started = new Promise<void>((resolve) => {
+      executionStarted = resolve
+    })
+
+    const executionMayFinish = new Promise<void>((resolve) => {
+      releaseExecution = resolve
+    })
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          released++
+        }
+      ),
+      new MemoryLayerBackend()
+    )
+
+    const execution = runtime.run(async () => {
+      await ServiceRuntime.resolve(ExampleService)
+      executionStarted()
+      await executionMayFinish
+    })
+
+    await started
+
+    const disposal = runtime.dispose()
+
+    expect(released).toBe(0)
+    expect(runtime.run(() => undefined)).rejects.toBeInstanceOf(BuiltLayerDisposedError)
+
+    releaseExecution()
+    await execution
+    await disposal
+
+    expect(released).toBe(1)
+  })
+
+  test('shares concurrent disposal requests', async () => {
+    let released = 0
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          released++
+        }
+      ),
+      new MemoryLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+
+    const first = runtime.dispose()
+    const second = runtime.dispose()
+
+    expect(first).toBe(second)
+
+    await Promise.all([first, second])
+
+    expect(released).toBe(1)
   })
 })
