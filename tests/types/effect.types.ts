@@ -1,6 +1,6 @@
 import { expectTypeOf } from 'bun:test'
 
-import { Result } from 'better-result'
+import { Result, type UnhandledException } from 'better-result'
 
 import {
   Effect,
@@ -37,6 +37,10 @@ class UserRepository extends Service<UserRepository>() {
       return Result.ok({ database, cache })
     })
   }
+}
+
+class Connection {
+  readonly id = 'connection'
 }
 
 const program = Effect.gen(async function* () {
@@ -99,10 +103,51 @@ const scopeProgram = Effect.gen(async function* () {
   return Result.ok({ scope, database })
 })
 
+const acquireReleaseProgram = Effect.gen(async function* () {
+  const connection = yield* Effect.acquireRelease(
+    async () => new Connection(),
+    async (resource) => {
+      void resource
+    }
+  )
+
+  return Result.ok(connection)
+})
+
+const serviceAndAcquireReleaseProgram = Effect.gen(async function* () {
+  const database = yield* Database
+
+  const connection = yield* Effect.acquireRelease(
+    () => new Connection(),
+    (resource) => {
+      void resource
+    }
+  )
+
+  return Result.ok({ database, connection })
+})
+
 expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<ServiceToken<Database>>()
 
 expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTypeOf<
   ServiceToken<Database> | ServiceToken<Cache>
+>()
+
+expectTypeOf<EffectSuccess<typeof acquireReleaseProgram>>().toEqualTypeOf<Connection>()
+expectTypeOf<EffectError<typeof acquireReleaseProgram>>().toEqualTypeOf<UnhandledException>()
+expectTypeOf<EffectRequirements<typeof acquireReleaseProgram>>().toEqualTypeOf<never>()
+
+expectTypeOf<EffectSuccess<typeof serviceAndAcquireReleaseProgram>>().toEqualTypeOf<{
+  database: Database
+  connection: Connection
+}>()
+
+expectTypeOf<
+  EffectError<typeof serviceAndAcquireReleaseProgram>
+>().toEqualTypeOf<UnhandledException>()
+
+expectTypeOf<EffectRequirements<typeof serviceAndAcquireReleaseProgram>>().toEqualTypeOf<
+  ServiceToken<Database>
 >()
 
 expectTypeOf<ServiceRequirements<typeof UserRepository>>().toEqualTypeOf<

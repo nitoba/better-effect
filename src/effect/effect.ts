@@ -1,6 +1,10 @@
 import { Result } from 'better-result'
 
-import type { Err, Result as ResultType } from 'better-result'
+import type { Err, Result as ResultType, UnhandledException } from 'better-result'
+
+import { Scope } from '../scope'
+
+import type { MaybePromise } from '../scope'
 
 import type { EffectFromGenerator, EffectYield } from './types'
 
@@ -37,6 +41,22 @@ export function gen(body: EffectGenerator): AnyResult | Promise<AnyResult> {
   )
 }
 
+/**
+ * Acquire a resource in the current Scope and register its release callback.
+ *
+ * Acquisition failures are represented in the Effect Result error channel;
+ * release failures remain owned by Scope cleanup.
+ */
+export function acquireRelease<R>(
+  acquire: () => MaybePromise<R>,
+  release: (resource: R) => MaybePromise<void>
+): AsyncGenerator<Err<never, UnhandledException>, R, unknown> {
+  const scope = Scope.current()
+
+  return Result.await(Result.tryPromise(() => scope.acquire(acquire, release)))
+}
+
 export const Effect = {
-  gen
+  gen,
+  acquireRelease
 } as const

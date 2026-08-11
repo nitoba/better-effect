@@ -221,6 +221,27 @@ Acquisition exceptions, rejected promises, and unexpected failures are normalize
 inside `runtime.run()` belong to that execution and are released automatically when it
 finishes:
 
+For the common acquire-and-release case, `Effect.acquireRelease()` keeps the same
+lifetime semantics without exposing `Scope` in the program. It is an async yieldable
+for `Effect.gen`:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const connection = yield* Effect.acquireRelease(
+      () => database.reserve(),
+      (connection) => connection.release()
+    )
+
+    return Result.ok(await useConnection(connection))
+  })
+)
+```
+
+Acquisition failures are returned through the Effect `Result` error channel. The
+release callback is registered in the current Scope and remains Scope cleanup, so it
+runs when the owning execution closes.
+
 ```ts
 const result = await runtime.run(() =>
   Effect.gen(async function* () {
