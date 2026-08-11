@@ -13,8 +13,8 @@ bun add better-effect better-result
 ## TypeScript knows what your application needs
 
 ```ts
-import { Result } from "better-result";
-import { Effect, Layer, Runtime, Service } from "better-effect";
+import { Result } from 'better-result'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 
 class Database extends Service<Database>() {
   findUser(id: string) {
@@ -25,19 +25,16 @@ class Database extends Service<Database>() {
 class UserRepository extends Service<UserRepository>() {
   findUser(id: string) {
     return Effect.gen(async function* () {
-      const database = yield* Database;
+      const database = yield* Database
 
-      return Result.ok(await database.findUser(id));
-    });
+      return Result.ok(await database.findUser(id))
+    })
   }
 }
 
-const UserRepositoryLive = Layer.make(
-  UserRepository,
-  () => new UserRepository(),
-);
+const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
 
-await Runtime.make(UserRepositoryLive, backend);
+await Runtime.make(UserRepositoryLive, backend)
 //                 ^^^^^^^^^^^^^^^^^^
 // Type error: Database is required but not provided
 ```
@@ -49,11 +46,11 @@ No dependency list was written manually.
 Provide it and the environment becomes complete:
 
 ```ts
-const DatabaseLive = Layer.make(Database, () => new Database());
+const DatabaseLive = Layer.make(Database, () => new Database())
 
-const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive);
+const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
 
-const runtime = await Runtime.make(AppLive, backend);
+const runtime = await Runtime.make(AppLive, backend)
 ```
 
 And the contract does not disappear after startup.
@@ -63,11 +60,11 @@ A Runtime also knows which Services exist in its environment:
 ```ts
 await runtime.run(() =>
   Effect.gen(async function* () {
-    const database = yield* Database;
+    const database = yield* Database
 
-    return Result.ok(database);
-  }),
-);
+    return Result.ok(database)
+  })
+)
 ```
 
 If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
@@ -122,7 +119,7 @@ Effect has powerful ideas for solving them.
 Services can be requested directly:
 
 ```ts
-const database = yield * Database;
+const database = yield * Database
 ```
 
 That access is also captured by the type system.
@@ -136,13 +133,13 @@ Runtime keeps that environment information and checks programs against it when t
 Layers describe implementations without making your application code depend on a specific DI container.
 
 ```ts
-const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive, AuthServiceLive);
+const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive, AuthServiceLive)
 ```
 
 Testing can replace implementations explicitly:
 
 ```ts
-const AppTest = Layer.override(AppLive, DatabaseTest);
+const AppTest = Layer.override(AppLive, DatabaseTest)
 ```
 
 The environment contract remains typed after the override.
@@ -159,8 +156,8 @@ Others own connections, sessions, files or other resources.
 const DatabaseLive = Layer.scoped(
   Database,
   () => Database.connect(),
-  (database) => database.close(),
-);
+  (database) => database.close()
+)
 ```
 
 Runtime owns the application lifetime and safely releases scoped resources when that lifetime ends.
@@ -243,8 +240,33 @@ Application resources live with the Runtime. Execution resources live with the e
 
 ### better-result underneath
 
-**Result → Result.gen → Effect.gen**
+**Result → Result.gen → Effect.gen → pipe**
 
-Keep `better-result` as the source of truth for typed failures and generator control flow.
+Keep `better-result` as the source of truth for typed successes, failures, short-circuiting
+and generator control flow. `Effect.gen` delegates to `Result.gen`; it adds only the
+phantom Service requirements that TypeScript needs to check the application environment.
+At runtime, an `EffectResult` is still a `better-result` Result; the requirements exist
+only in the type.
 
-`better-effect` adds dependency and lifecycle information around it rather than rebuilding Result or introducing a second error model.
+For a linear workflow, `pipe` composes the same kind of program without introducing a
+second Result model or a lazy Effect runtime:
+
+```ts
+import { Effect, pipe } from 'better-effect'
+
+const program = pipe(
+  findUser(id),
+  Effect.map((user: User) => user.email),
+  Effect.andThen(loadPermissions),
+  Effect.mapError((cause: LoadUserError | PermissionError) => new ApplicationError({ cause }))
+)
+```
+
+The combinators keep the `better-result` semantics: `Effect.map` changes the success
+type, `Effect.mapError` changes the error type, and `Effect.andThen` only calls the next
+step after an `Ok`. The pipeline carries the requirements of every step, so Runtime
+still rejects it when its Layer does not provide every required Service.
+
+Use `Effect.gen` for larger workflows with several intermediate values, branches or
+procedural logic. Use `pipe` for concise, linear composition; both are ways to compose
+`better-result` programs while keeping dependency checking in the `better-effect` layer.

@@ -374,6 +374,20 @@ return Result.ok(value)
 
 Do not assume a raw value can be returned from `Result.gen`.
 
+### Pipelines
+
+Pipeline combinators MUST preserve `EffectRequirements` metadata.
+
+Chaining two Effect programs MUST union both requirement sets and both error types.
+
+Pipeline combinators MUST delegate Result semantics and short-circuiting to
+`better-result`.
+
+`pipe` MUST remain generic and unaware of Effect, Result, Promise, Scope or Service.
+
+Do not introduce prototype-based Pipeable APIs, `.pipe()` methods, or runtime metadata
+solely for carrying Effect requirements.
+
 ## Testing
 
 Use `bun:test`.

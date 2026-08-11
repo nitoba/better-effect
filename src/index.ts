@@ -33,6 +33,8 @@ export type {
 
 export { Effect } from './effect'
 
+export { pipe } from './function'
+
 export type {
   AnyEffectResult,
   EffectError,

@@ -8,6 +8,8 @@ import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
 
 import type { EffectFromGenerator, EffectYield } from './types'
 
+import { andThen, map, mapError } from './combinators'
+
 type AnyResult = ResultType<any, any>
 
 type RuntimeGenerator =
@@ -73,5 +75,8 @@ export function add<R extends DisposableResource>(
 export const Effect = {
   gen,
   acquireRelease,
-  add
+  add,
+  map,
+  mapError,
+  andThen
 } as const
