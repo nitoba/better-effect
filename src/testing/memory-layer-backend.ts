@@ -1,20 +1,20 @@
-import { DuplicateServiceError, type LayerBackend, type LayerProvider } from '../layer'
+import { DuplicateServiceError, type LayerBackend, type LayerRegistration } from '../layer'
 
 import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
 export class MemoryLayerBackend implements LayerBackend {
-  private readonly providers = new Map<AnyServiceToken, LayerProvider>()
+  private readonly providers = new Map<AnyServiceToken, LayerRegistration>()
 
   private readonly instances = new Map<AnyServiceToken, unknown>()
 
   private readonly pending = new Map<AnyServiceToken, Promise<unknown>>()
 
-  register(provider: LayerProvider): void {
-    if (this.providers.has(provider.service)) {
-      throw new DuplicateServiceError(provider.service)
+  register(registration: LayerRegistration): void {
+    if (this.providers.has(registration.service)) {
+      throw new DuplicateServiceError(registration.service)
     }
 
-    this.providers.set(provider.service, provider)
+    this.providers.set(registration.service, registration)
   }
 
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {

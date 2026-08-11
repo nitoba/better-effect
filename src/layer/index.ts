@@ -33,6 +33,6 @@ export type {
   AnyLayerSpec,
   LayerGenerator,
   LayerGeneratorRequirements,
-  LayerProvider,
+  LayerRegistration,
   LayerSpec
 } from './types'

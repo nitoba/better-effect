@@ -7,13 +7,22 @@ import { DuplicateServiceError } from './errors'
 
 import { runLayerGenerator } from './internal'
 
-import type { LayerGenerator, LayerGeneratorRequirements, LayerProvider, LayerSpec } from './types'
+import type {
+  LayerGenerator,
+  LayerGeneratorRequirements,
+  LayerRegistration,
+  LayerSpec
+} from './types'
 
 import type { AnyLayerSpec } from './types'
 
 import type { OverrideLayerSpecs } from './inference'
 
 declare const LayerTypeId: unique symbol
+
+interface LayerProvider extends LayerRegistration {
+  readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+}
 
 export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
   declare readonly [LayerTypeId]: Specs

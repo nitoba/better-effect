@@ -19,9 +19,11 @@ import type { LayerBackend } from './backend'
 
 import type { AnyLayer, CompleteExecution, CompleteLayer, LayerProvided } from './inference'
 
-import type { LayerProvider } from './types'
+import type { LayerRegistration } from './types'
 
 import type { ScopeOutcome } from '../scope'
+
+type LayerProvider = AnyLayer['providers'][number]
 
 /**
  * Low-level Layer handle retained for adapter and test integrations.
@@ -64,7 +66,7 @@ const notifyShutdownFailure = async (
 const bindProviderToScope = (
   provider: LayerProvider,
   rootScope: CloseableScope
-): LayerProvider => ({
+): LayerRegistration => ({
   service: provider.service,
 
   acquire: () =>

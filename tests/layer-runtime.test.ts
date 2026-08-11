@@ -18,7 +18,7 @@ import type { CleanupFailureDiagnostic, ScopeOutcome } from '../src/scope'
 
 import type { RuntimeShutdownDiagnostic } from '../src/runtime'
 
-import type { LayerProvider } from '../src/layer/types'
+import type { LayerRegistration } from '../src/layer/types'
 
 import {
   Service,
@@ -50,7 +50,7 @@ class ScopedConsumer extends Service<ScopedConsumer>() {
 }
 
 class MemoryLayerBackend implements LayerBackend {
-  readonly providers = new Map<AnyServiceToken, LayerProvider>()
+  readonly providers = new Map<AnyServiceToken, LayerRegistration>()
 
   readonly instances = new Map<AnyServiceToken, unknown>()
 
@@ -66,7 +66,7 @@ class MemoryLayerBackend implements LayerBackend {
 
   disposeFailure: Error | undefined
 
-  register(provider: LayerProvider): void | PromiseLike<void> {
+  register(provider: LayerRegistration): void | PromiseLike<void> {
     if (this.registerFailure !== undefined) {
       throw this.registerFailure
     }

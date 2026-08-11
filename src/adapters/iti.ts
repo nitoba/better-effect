@@ -1,6 +1,6 @@
 import { createContainer } from 'iti'
 
-import { DuplicateServiceError, type LayerBackend, type LayerProvider } from '../layer'
+import { DuplicateServiceError, type LayerBackend, type LayerRegistration } from '../layer'
 
 import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
@@ -29,8 +29,8 @@ export class ItiLayerBackend implements LayerBackend {
     return key
   }
 
-  register(provider: LayerProvider): void {
-    const token = provider.service
+  register(registration: LayerRegistration): void {
+    const token = registration.service
 
     if (this.registered.has(token)) {
       throw new DuplicateServiceError(token)
@@ -39,7 +39,7 @@ export class ItiLayerBackend implements LayerBackend {
     const key = this.keyFor(token)
 
     this.container = this.container.add({
-      [key]: provider.acquire
+      [key]: registration.acquire
     })
 
     this.registered.add(token)

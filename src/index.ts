@@ -25,6 +25,7 @@ export {
 
 export type {
   LayerBackend,
+  LayerRegistration,
   LayerMissing,
   LayerProvided,
   LayerRawRequired,

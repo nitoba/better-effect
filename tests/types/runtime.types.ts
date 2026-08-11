@@ -15,6 +15,7 @@ import {
   type LayerBackend,
   type LayerProvided
 } from '../../src/layer'
+import type { LayerRegistration } from '../../src'
 import { Runtime, type RuntimeFor } from '../../src/runtime'
 import { Scope } from '../../src/scope'
 import { Service, type AnyServiceToken } from '../../src/service'
@@ -43,6 +44,22 @@ class Cache extends Service<Cache>() {
 }
 
 const backend = {} as LayerBackend
+
+const registration: LayerRegistration = {
+  service: Database,
+  acquire: () => new Database()
+}
+
+expectTypeOf<Parameters<LayerBackend['register']>[0]>().toEqualTypeOf<LayerRegistration>()
+
+void registration
+
+backend.register({
+  service: Database,
+  acquire: () => new Database(),
+  // @ts-expect-error LayerRegistration intentionally excludes lifecycle callbacks.
+  release: () => {}
+})
 
 const DatabaseLive = Layer.succeed(Database, new Database())
 const LoggerLive = Layer.succeed(Logger, new Logger())

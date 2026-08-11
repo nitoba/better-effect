@@ -1,8 +1,9 @@
 import type { ServiceResolver } from '../service'
+import type { MaybePromise } from '../utils/types'
 
-import type { LayerProvider } from './types'
+import type { LayerRegistration } from './types'
 
 export interface LayerBackend extends ServiceResolver {
-  register(provider: LayerProvider): void | PromiseLike<void>
-  disposeAll(): void | PromiseLike<void>
+  register(registration: LayerRegistration): MaybePromise<void>
+  disposeAll(): MaybePromise<void>
 }
