@@ -1,6 +1,7 @@
 import { ServiceRuntime } from '../service'
 
 import { Scope } from '../scope'
+import { runScoped } from '../scope/internal'
 import { ScopeRuntime } from '../scope/runtime'
 
 import { BuiltLayerDisposedError, LayerDisposeError, LayerRegistrationError } from './errors'
@@ -55,10 +56,18 @@ class BuiltLayerImpl implements BuiltLayer {
     private readonly rootScope: Scope
   ) {}
 
-  async run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+  run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
     this.assertActive()
 
-    const execution = this.runExecution(program)
+    const executionScope = this.rootScope.fork()
+
+    let resolveExecution!: (value: Awaited<A> | PromiseLike<Awaited<A>>) => void
+    let rejectExecution!: (cause?: unknown) => void
+
+    const execution = new Promise<Awaited<A>>((resolve, reject) => {
+      resolveExecution = resolve
+      rejectExecution = reject
+    })
 
     this.executions.add(execution)
 
@@ -71,17 +80,29 @@ class BuiltLayerImpl implements BuiltLayer {
       }
     )
 
-    return await execution
+    try {
+      const running = this.runExecution(executionScope, program)
+
+      void running.then(
+        (value) => {
+          resolveExecution(value)
+        },
+        (cause) => {
+          rejectExecution(cause)
+        }
+      )
+    } catch (cause) {
+      rejectExecution(cause)
+    }
+
+    return execution
   }
 
-  private async runExecution<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
-    const executionScope = this.rootScope.fork()
-
-    try {
-      return await ServiceRuntime.run(this.backend, () => Scope.provide(executionScope, program))
-    } finally {
-      await executionScope.close()
-    }
+  private runExecution<A>(
+    executionScope: Scope,
+    program: () => A | PromiseLike<A>
+  ): Promise<Awaited<A>> {
+    return runScoped(executionScope, () => ServiceRuntime.run(this.backend, program))
   }
 
   dispose(): Promise<void> {
@@ -90,15 +111,18 @@ class BuiltLayerImpl implements BuiltLayer {
     }
 
     this.state = 'disposing'
-    this.disposePromise = this.performDispose()
+
+    const executions = [...this.executions]
+
+    this.disposePromise = this.performDispose(executions)
 
     return this.disposePromise
   }
 
-  private async performDispose(): Promise<void> {
+  private async performDispose(executions: readonly Promise<unknown>[]): Promise<void> {
     const failures: unknown[] = []
 
-    await Promise.allSettled(this.executions)
+    await Promise.allSettled(executions)
 
     try {
       await ServiceRuntime.run(this.backend, () => this.rootScope.close())

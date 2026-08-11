@@ -349,6 +349,22 @@ describe('Scope', () => {
     expect(released).toBe(true)
   })
 
+  test('restores the parent context after providing a child scope', async () => {
+    await Scope.run(async (parent) => {
+      const child = parent.fork()
+
+      expect(Scope.current()).toBe(parent)
+
+      await Scope.provide(child, async () => {
+        expect(Scope.current()).toBe(child)
+      })
+
+      expect(Scope.current()).toBe(parent)
+
+      await child.close()
+    })
+  })
+
   test('preserves program and cleanup failures from Scope.run', async () => {
     const programFailure = new Error('program failed')
     const cleanupFailure = new Error('cleanup failed')

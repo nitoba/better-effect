@@ -267,6 +267,34 @@ try {
 isolated scopes, and `runtime.dispose()` stops accepting new executions, waits for
 active executions to finish, then closes the Runtime root scope and its Layer resources.
 
+The ownership tree is:
+
+```text
+Runtime
+└── root Scope
+    ├── Layer resources
+    └── execution Scope
+        └── operation resources
+```
+
+Graceful disposal follows this order:
+
+```text
+stop accepting executions
+↓
+wait for active executions
+↓
+close the root Scope
+↓
+dispose the backend
+```
+
+An execution Scope is always closed before its execution Promise settles. If both the
+program and execution cleanup fail, the returned error preserves both causes with the
+program failure first. Calls to `runtime.run()` after disposal begins fail with
+`BuiltLayerDisposedError` without invoking the program. Shutdown has no cancellation or
+timeout mechanism and is intended to be initiated outside the execution being awaited.
+
 ## Service vs Layer vs Scope vs Resource
 
 | Primitive       | Responsibility                                        |

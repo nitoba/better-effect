@@ -4,7 +4,7 @@ import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { BuiltLayerDisposedError, Layer, buildLayer, type LayerBackend } from '../src/layer'
-import { Scope } from '../src/scope'
+import { Scope, ScopeCloseError } from '../src/scope'
 
 import type { LayerProvider } from '../src/layer/types'
 
@@ -27,6 +27,8 @@ class MemoryLayerBackend implements LayerBackend {
   readonly instances = new Map<AnyServiceToken, unknown>()
 
   disposed = false
+
+  onDispose: (() => void) | undefined
 
   register(provider: LayerProvider): void {
     this.providers.set(provider.service, provider)
@@ -51,6 +53,8 @@ class MemoryLayerBackend implements LayerBackend {
   }
 
   async disposeAll(): Promise<void> {
+    this.onDispose?.()
+
     this.instances.clear()
 
     this.disposed = true
@@ -260,6 +264,40 @@ describe('buildLayer', () => {
     }
   })
 
+  test('preserves program and execution cleanup failures', async () => {
+    const programFailure = new Error('program failed')
+    const cleanupFailure = new Error('cleanup failed')
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const error = await runtime
+        .run(async () => {
+          Scope.current().addFinalizer(() => {
+            throw cleanupFailure
+          })
+
+          throw programFailure
+        })
+        .then(
+          () => undefined,
+          (cause) => cause
+        )
+
+      expect(error).toBeInstanceOf(AggregateError)
+
+      if (error instanceof AggregateError) {
+        expect(error.errors[0]).toBe(programFailure)
+        expect(error.errors[1]).toBeInstanceOf(ScopeCloseError)
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('keeps Layer.scoped resources alive between executions', async () => {
     let released = 0
 
@@ -338,6 +376,37 @@ describe('buildLayer', () => {
     }
   })
 
+  test('isolates execution scopes between concurrent runtimes', async () => {
+    const runtimeA = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    const runtimeB = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const [scopeA, scopeB] = await Promise.all([
+        runtimeA.run(async () => {
+          await Promise.resolve()
+
+          return Scope.current()
+        }),
+        runtimeB.run(async () => {
+          await Promise.resolve()
+
+          return Scope.current()
+        })
+      ])
+
+      expect(scopeA).not.toBe(scopeB)
+    } finally {
+      await Promise.all([runtimeA.dispose(), runtimeB.dispose()])
+    }
+  })
+
   test('does not expose the resolver outside runtime.run', async () => {
     const runtime = await buildLayer(
       Layer.make(ExampleService, () => new ExampleService()),
@@ -380,15 +449,9 @@ describe('buildLayer', () => {
 
     await runtime.dispose()
 
-    let failure: unknown
-
-    try {
-      await runtime.run(() => ServiceRuntime.resolve(ExampleService))
-    } catch (cause) {
-      failure = cause
-    }
-
-    expect(failure).toBeInstanceOf(BuiltLayerDisposedError)
+    expect(() => runtime.run(() => ServiceRuntime.resolve(ExampleService))).toThrow(
+      BuiltLayerDisposedError
+    )
   })
 
   test('disposes the backend', async () => {
@@ -441,13 +504,84 @@ describe('buildLayer', () => {
     const disposal = runtime.dispose()
 
     expect(released).toBe(0)
-    expect(runtime.run(() => undefined)).rejects.toBeInstanceOf(BuiltLayerDisposedError)
+    expect(() => runtime.run(() => undefined)).toThrow(BuiltLayerDisposedError)
 
     releaseExecution()
     await execution
     await disposal
 
     expect(released).toBe(1)
+  })
+
+  test('does not close an execution scope before a re-entrant disposal settles', async () => {
+    let releaseGate!: () => void
+    let disposal!: Promise<void>
+    let released = 0
+
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const execution = runtime.run(async () => {
+        const scope = Scope.current()
+
+        scope.addFinalizer(() => {
+          released++
+        })
+
+        disposal = runtime.dispose()
+
+        expect(released).toBe(0)
+
+        await gate
+
+        expect(released).toBe(0)
+      })
+
+      await Promise.resolve()
+      expect(released).toBe(0)
+
+      releaseGate()
+
+      await execution
+      await disposal
+
+      expect(released).toBe(1)
+    } finally {
+      releaseGate()
+      await runtime.dispose()
+    }
+  })
+
+  test('runs root finalizers before backend cleanup', async () => {
+    const events: string[] = []
+    const backend = new MemoryLayerBackend()
+
+    backend.onDispose = () => {
+      events.push('backend')
+    }
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          events.push('layer')
+        }
+      ),
+      backend
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+    await runtime.dispose()
+
+    expect(events).toEqual(['layer', 'backend'])
   })
 
   test('shares concurrent disposal requests', async () => {

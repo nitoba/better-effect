@@ -2,6 +2,8 @@ import { ResourceNotDisposableError, ScopeCloseError, ScopeClosedError } from '.
 
 import { getDisposeFinalizer } from './disposable'
 
+import { runScoped } from './internal'
+
 import { ScopeRuntime } from './runtime'
 
 import type { DisposableResource, MaybePromise, ScopeFinalizer } from './types'
@@ -32,46 +34,10 @@ export class Scope {
     return ScopeRuntime.current()
   }
 
-  static async run<A>(program: (scope: Scope) => A | PromiseLike<A>): Promise<Awaited<A>> {
+  static run<A>(program: (scope: Scope) => A | PromiseLike<A>): Promise<Awaited<A>> {
     const scope = Scope.make()
 
-    let value!: Awaited<A>
-    let programFailed = false
-    let programFailure: unknown
-
-    try {
-      value = await Scope.provide(scope, () => program(scope))
-    } catch (cause) {
-      programFailed = true
-      programFailure = cause
-    }
-
-    let closeFailed = false
-    let closeFailure: unknown
-
-    try {
-      await scope.close()
-    } catch (cause) {
-      closeFailed = true
-      closeFailure = cause
-    }
-
-    if (programFailed && closeFailed) {
-      throw new AggregateError(
-        [programFailure, closeFailure],
-        'Scope program and cleanup both failed'
-      )
-    }
-
-    if (programFailed) {
-      throw programFailure
-    }
-
-    if (closeFailed) {
-      throw closeFailure
-    }
-
-    return value
+    return runScoped(scope, () => program(scope))
   }
 
   fork(): Scope {

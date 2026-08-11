@@ -234,6 +234,21 @@ backend cleanup. Do not add a separate ManagedRuntime abstraction for this lifec
 
 Never register `LayerProvider.release` directly into a DI container disposer.
 
+### Scope hierarchy
+
+An execution MUST be registered as active before its program callback can run. Its child
+Scope MUST remain open until the program settles, including when disposal is initiated
+re-entrantly before the program yields. If both the program and child cleanup fail, the
+program failure remains primary while the cleanup failure is preserved.
+
+### Graceful Runtime disposal
+
+`runtime.dispose()` MUST transition to disposing before awaiting work, reject new
+executions, await the active execution snapshot, close the root Scope, and dispose the
+backend last. Execution failures MUST NOT prevent root or backend cleanup. Repeated
+disposal calls share one outcome. No cancellation, timeout, Fiber, or forced-shutdown
+machinery should be introduced for this behavior.
+
 ### Resource
 
 `Resource.acquireUseRelease()` must always attempt release after successful acquisition, including when:
