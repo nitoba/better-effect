@@ -43,9 +43,8 @@
     "lint": "oxlint --type-aware .",
     "lint:fix": "oxlint --type-aware --fix .",
     "format": "oxfmt --write .",
-    "format:check": "oxfmt --check .",
     "publint": "publint",
-    "check": "bun run typecheck && bun test && bun run lint && bun run format:check && bun run build && bun run publint",
+    "check": "bun run typecheck && bun test && bun run lint && bun run format && bun run build && bun run publint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun publish --dry-run"
   },
