@@ -1,6 +1,6 @@
 {
   "name": "better-effect",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Effect-inspired application architecture for better-result with typechecked Services and environments, scoped resource lifetimes, and pluggable DI backends.",
   "keywords": [
     "better-result",
@@ -43,6 +43,7 @@
     "lint": "oxlint --type-aware .",
     "lint:fix": "oxlint --type-aware --fix .",
     "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
     "publint": "publint",
     "check": "bun run typecheck && bun test && bun run lint && bun run format && bun run build && bun run publint",
     "prepublishOnly": "bun run check",
