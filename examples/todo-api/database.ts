@@ -1,7 +1,7 @@
 import { SQL } from 'bun'
-import { Result, type Result as ResultType } from 'better-result'
+import { Result, UnhandledException, type Result as ResultType } from 'better-result'
 
-import { Resource, Service } from './better-effect'
+import { Service } from './better-effect'
 import { DatabaseFailure } from './errors'
 
 /**
@@ -60,27 +60,22 @@ export class Database extends Service<Database>() {
     operation: string,
     use: (connection: DatabaseConnection) => A | PromiseLike<A>
   ): Promise<ResultType<A, DatabaseFailure>> {
-    const result = await Resource.acquireUseRelease<DatabaseConnection, A, never, never>({
-      name: 'bun-sql-connection',
+    const normalizeFailure = (cause: unknown): DatabaseFailure => {
+      if (cause instanceof DatabaseFailure) {
+        return cause
+      }
 
-      // Bun's SQLite adapter has no connection pool and does not support
-      // reserve(). Reuse the client and keep it open until Database.close().
-      acquire: () => Result.ok(this.sql),
+      return new DatabaseFailure({
+        operation,
+        cause: cause instanceof UnhandledException ? cause.cause : cause,
+        message: `Database operation failed: ${operation}`
+      })
+    }
 
-      use: async (connection) => Result.ok(await use(connection)),
-
-      // The shared client must not be disposed after every operation.
-      release: () => undefined
+    return Result.tryPromise({
+      try: () => Promise.resolve(use(this.sql)),
+      catch: normalizeFailure
     })
-
-    return result.mapError(
-      (cause) =>
-        new DatabaseFailure({
-          operation,
-          cause,
-          message: `Database operation failed: ${operation}`
-        })
-    )
   }
 
   async close(): Promise<void> {

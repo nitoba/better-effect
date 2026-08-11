@@ -1,6 +1,12 @@
-import { AnyTaggedError, matchErrorPartial, Result, type Result as ResultType } from 'better-result'
+import {
+  matchErrorPartial,
+  Result,
+  type AnyTaggedError,
+  type Result as ResultType
+} from 'better-result'
 
 import type { CreateTodoInput, LoginInput, UpdateTodoInput } from './domain'
+import { Effect } from './better-effect'
 import { InvalidRequest, Unauthorized } from './errors'
 import { AuthService } from './services/auth-service'
 
@@ -92,7 +98,7 @@ const bearerToken = (request: Request): string | null => {
 }
 
 export const requireUser = (request: Request) =>
-  Result.gen(async function* () {
+  Effect.gen(async function* () {
     const token = bearerToken(request)
 
     if (!token) {

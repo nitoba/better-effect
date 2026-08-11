@@ -1,13 +1,13 @@
 import { Result } from 'better-result'
 
-import { Service } from '../better-effect'
+import { Effect, Service } from '../better-effect'
 import type { CreateTodoInput, UpdateTodoInput } from '../domain'
 import { TodoNotFound } from '../errors'
 import { TodoRepository } from '../repositories/todo-repository'
 
 export class TodoService extends Service<TodoService>() {
   list(userId: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const todos = yield* TodoRepository
 
       const result = yield* Result.await(todos.list(userId))
@@ -17,7 +17,7 @@ export class TodoService extends Service<TodoService>() {
   }
 
   get(userId: string, id: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const todos = yield* TodoRepository
 
       const todo = yield* Result.await(todos.findById(userId, id))
@@ -36,7 +36,7 @@ export class TodoService extends Service<TodoService>() {
   }
 
   create(userId: string, input: CreateTodoInput) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const todos = yield* TodoRepository
 
       const todo = yield* Result.await(todos.create(userId, input))
@@ -46,7 +46,7 @@ export class TodoService extends Service<TodoService>() {
   }
 
   update(userId: string, id: string, input: UpdateTodoInput) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const todos = yield* TodoRepository
 
       const todo = yield* Result.await(todos.update(userId, id, input))
@@ -65,7 +65,7 @@ export class TodoService extends Service<TodoService>() {
   }
 
   delete(userId: string, id: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const todos = yield* TodoRepository
 
       const deleted = yield* Result.await(todos.delete(userId, id))

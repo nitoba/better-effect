@@ -156,6 +156,39 @@ describe('Resource.acquireUseRelease', () => {
     }
   })
 
+  test('always releases when use rejects', async () => {
+    const cause = new Error('operation rejected')
+
+    const release = mock(() => undefined)
+
+    const result = await Resource.acquireUseRelease({
+      name: 'database',
+
+      acquire: () =>
+        Result.ok({
+          value: 42
+        }),
+
+      use: async () => {
+        throw cause
+      },
+
+      release
+    })
+
+    expect(release).toHaveBeenCalledTimes(1)
+
+    expect(Result.isError(result)).toBe(true)
+
+    if (Result.isError(result)) {
+      const error = result.error as {
+        cause?: unknown
+      }
+
+      expect(error.cause).toBe(cause)
+    }
+  })
+
   test('converts a thrown release error to ResourceReleaseFailure', async () => {
     const cause = new Error('close failed')
 
@@ -185,6 +218,35 @@ describe('Resource.acquireUseRelease', () => {
         expect(result.error.cause).toBe(cause)
 
         expect(result.error.message).toBe('Failed to release resource: database')
+      }
+    }
+  })
+
+  test('converts a rejected release error to ResourceReleaseFailure', async () => {
+    const cause = new Error('async close failed')
+
+    const result = await Resource.acquireUseRelease({
+      name: 'database',
+
+      acquire: () =>
+        Result.ok({
+          value: 42
+        }),
+
+      use: (resource) => Result.ok(resource.value),
+
+      release: async () => {
+        throw cause
+      }
+    })
+
+    expect(Result.isError(result)).toBe(true)
+
+    if (Result.isError(result)) {
+      expect(result.error).toBeInstanceOf(ResourceReleaseFailure)
+
+      if (result.error instanceof ResourceReleaseFailure) {
+        expect(result.error.cause).toBe(cause)
       }
     }
   })

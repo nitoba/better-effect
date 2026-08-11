@@ -1,5 +1,7 @@
 import type { Result as ResultType } from 'better-result'
 
+export type { DisposableResource } from '../scope/types'
+
 import type { ResourceReleaseFailure } from './errors'
 
 export type MaybePromise<T> = T | PromiseLike<T>
@@ -7,12 +9,6 @@ export type MaybePromise<T> = T | PromiseLike<T>
 export type AsyncResult<T, E> = MaybePromise<ResultType<T, E>>
 
 export type ReleaseOutcome = void | ResultType<void, unknown>
-
-export type DisposableResource = {
-  [Symbol.dispose]?: () => void
-
-  [Symbol.asyncDispose]?: () => MaybePromise<void>
-}
 
 export type ReleaseFailureObserver = (failure: ResourceReleaseFailure) => MaybePromise<void>
 

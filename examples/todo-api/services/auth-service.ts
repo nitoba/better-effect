@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Service } from '../better-effect'
+import { Effect, Service } from '../better-effect'
 import type { LoginInput, LoginOutput, Session } from '../domain'
 import { InvalidCredentials, Unauthorized } from '../errors'
 import { PasswordHasher } from '../password-hasher'
@@ -11,7 +11,7 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 1 day
 
 export class AuthService extends Service<AuthService>() {
   login(input: LoginInput) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const users = yield* UserRepository
 
       const sessions = yield* SessionRepository
@@ -62,7 +62,7 @@ export class AuthService extends Service<AuthService>() {
   }
 
   authenticate(token: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const sessions = yield* SessionRepository
 
       const session = yield* Result.await(

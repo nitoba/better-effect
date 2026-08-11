@@ -1,5 +1,7 @@
 import { Result, type Result as ResultType, type UnhandledException } from 'better-result'
 
+import { Scope } from '../scope'
+
 import { ResourceReleaseFailure } from './errors'
 
 import { combineUseAndRelease, disposeResource, runRelease, runResult } from './internal'
@@ -17,11 +19,20 @@ const acquireUseRelease = <R, A, AcquireError, UseError>({
 > =>
   Result.gen(async function* () {
     const resource = yield* Result.await(runResult(acquire))
-    const used = await runResult(() => use(resource))
-    const released = await runRelease(name, resource, release)
-    const result = await combineUseAndRelease(used, released, onReleaseFailure)
 
-    return result
+    const scope = Scope.make()
+
+    let released: ResultType<void, ResourceReleaseFailure> = Result.ok()
+
+    scope.addFinalizer(async () => {
+      released = await runRelease(name, resource, release)
+    })
+
+    const used = await runResult(() => use(resource))
+
+    await scope.close()
+
+    return await combineUseAndRelease(used, released, onReleaseFailure)
   })
 
 export const Resource = {

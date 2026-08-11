@@ -4,10 +4,11 @@
 
 `better-effect` is a lightweight TypeScript library that adds a small set of Effect-inspired primitives around `better-result`.
 
-The library currently has three core concepts:
+The library currently has four core concepts:
 
 - `Service` — contextual dependency access through `yield*`
 - `Layer` — declarative environment/provider composition
+- `Scope` — contextual lifecycle and finalizer management
 - `Resource` — acquire/use/release lifecycle with typed Result errors
 
 Dependency injection itself is intentionally delegated to adapters such as ITI.
@@ -156,7 +157,7 @@ It is intentionally not Effect's full:
 Layer<ROut, E, RIn>
 ```
 
-Do not add typed dependency graphs, Context, Fiber, Scope or MemoMap unless there is a concrete approved requirement.
+Do not add typed dependency graphs, Context, Fiber, full Effect-style Scope strategies or MemoMap unless there is a concrete approved requirement.
 
 The initial public API is deliberately small:
 
@@ -164,6 +165,8 @@ The initial public API is deliberately small:
 Layer.make(...)
 Layer.succeed(...)
 Layer.scoped(...)
+Layer.gen(...)
+Layer.scopedGen(...)
 Layer.merge(...)
 Layer.override(...)
 ```
@@ -207,6 +210,98 @@ Layer.scoped(
 Keep casts localized at the internal type-erasure boundary.
 
 Do not build a complex generic tuple/union system merely to remove a safe internal cast.
+
+### Typed execution requirements
+
+Every typed execution boundary (`BuiltLayer.run`, managed `Runtime.run`, and
+one-shot `Runtime.run`) MUST validate the final `EffectRequirements` of its
+program against the Service-token union provided by its Layer. The inferred
+Runtime and BuiltLayer handles retain that union; unparameterized annotations
+intentionally erase it as an explicit unchecked escape hatch.
+
+Use `RuntimeFor<typeof AppLive>` when a Runtime inferred from a concrete Layer must be
+named in an application boundary. It is a type-only alias for
+`Runtime<LayerProvided<typeof AppLive>>` and must preserve the same execution checks.
+
+### Scope
+
+`Scope` is the lifecycle primitive.
+
+DI backends must not own Service release semantics.
+
+Resources created by `Layer.scoped` and `Layer.scopedGen` belong to the Runtime root
+Scope. `Layer.scopedGen` may yield contextual Services during acquisition, and its
+release callback receives the root `ScopeOutcome`.
+
+Resources acquired inside `runtime.run` belong to that execution's Scope.
+
+`Scope` must not become a Service requirement.
+
+Scopes are hierarchical: `Scope.fork()` creates a child owned by the parent until the
+child closes, and parent closure closes still-attached children before its own
+finalizers. `Scope.provide()` supplies an existing Scope without closing it; `Scope.run`
+owns the Scope it creates.
+
+The contextual `Scope` capability is non-owning. `Scope.current()` and `yield* Scope`
+expose acquisition, finalizer registration, and child creation, but not `close()`.
+`Scope.make()` and `fork()` return `CloseableScope`, whose owner is responsible for
+closure. `ScopeOutcome` is either `{ status: 'success' }` or
+`{ status: 'failure', cause: unknown }`; finalizers and release callbacks receive the
+chosen outcome. Scope itself must remain independent of `better-result`.
+
+Runtime executions must use child Scopes of the Runtime root. Runtime disposal is
+graceful: reject new runs, wait for active runs, close the root Scope, then perform
+backend cleanup. Do not add a separate ManagedRuntime abstraction for this lifecycle.
+
+`Resource` remains a compatibility facade over Scope until explicitly deprecated.
+
+`Effect.add(resource)` registers an already-acquired disposable object in the current
+Scope and yields that same object. It must not acquire the resource or create a Scope;
+without a current Scope it preserves the existing missing-Scope failure. Prefer
+`Effect.acquireRelease` when acquisition is part of the Effect or cleanup needs an
+explicit callback and `ScopeOutcome`.
+
+`DisposableResource` requires a callable `Symbol.dispose` or `Symbol.asyncDispose`.
+Plain or weakly typed values must be narrowed before `Scope.add` or `Effect.add`,
+although runtime validation still rejects unsafe values without either protocol.
+
+Never register `LayerProvider.release` directly into a DI container disposer.
+
+### Scope hierarchy
+
+An execution MUST be registered as active before its program callback can run. Its child
+Scope MUST remain open until the program settles, including when disposal is initiated
+re-entrantly before the program yields. The final outcome is classified only at the
+execution boundary: plain values and `Result.ok` are success, `Result.err` is failure,
+and thrown/rejected causes are failure. Intermediate Results MUST NOT change Scope state.
+If both the program and child cleanup fail, the exact program failure remains primary;
+cleanup is preserved in one best-effort diagnostic when an observer is configured.
+
+Scope closure is child-first and LIFO. The first `CloseableScope.close(outcome?)` call
+fixes the outcome and later calls share the same Promise. Parent closure propagates its
+outcome to still-attached children, and nested `ScopeCloseError` causes are flattened.
+
+Cleanup observers are boundary concerns: direct `Scope.close()` MUST NOT invoke one.
+Execution and Runtime shutdown boundaries may notify once with an aggregated diagnostic;
+observer failures are ignored and never alter the primary result. The precedence is:
+
+```text
+program failure > cleanup failure > program success
+```
+
+### Graceful Runtime disposal
+
+`runtime.dispose()` MUST transition to disposing before awaiting work, reject new
+executions, await the active execution snapshot, close the root Scope, and dispose the
+backend last. Execution failures MUST NOT prevent root or backend cleanup. Repeated
+disposal calls share one outcome. No cancellation, timeout, Fiber, or forced-shutdown
+machinery should be introduced for this behavior.
+
+One-shot `Runtime.run` closes its execution and root Scopes with the complete final
+outcome, then always attempts backend disposal. Root and backend failures are aggregated
+in that order. A failed program preserves its exact exception or `Result.err`; a
+successful program exposes shutdown cleanup failure. A long-lived Runtime closes its
+root with success regardless of earlier execution outcomes.
 
 ### Resource
 
@@ -298,11 +393,10 @@ Use `expectTypeOf(...).toEqualTypeOf<T>()` when exact equality is the behavior b
 
 Use `toMatchTypeOf<T>()` only when testing that one type satisfies a broader contract.
 
-Tests that configure `ServiceRuntime` must clean it up with `ServiceRuntime.reset()`.
-
-Because the current runtime resolver is process-global, avoid concurrent tests that mutate it.
-
-Use `test.serial` for such tests.
+`ServiceRuntime` uses `AsyncLocalStorage`. Tests should enter resolver context through
+`ServiceRuntime.run()` or a Runtime execution boundary and verify that the context is
+restored afterward. Concurrent runtimes are expected to remain isolated; no global reset
+or serial-test discipline is required for resolver context.
 
 ### Resolver test doubles
 

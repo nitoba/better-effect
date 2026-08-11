@@ -42,12 +42,6 @@ export class ItiLayerBackend implements LayerBackend {
       [key]: provider.acquire
     })
 
-    if (provider.release) {
-      this.container = this.container.addDisposer({
-        [key]: provider.release
-      })
-    }
-
     this.registered.add(token)
   }
 

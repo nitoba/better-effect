@@ -9,8 +9,6 @@ export class MemoryLayerBackend implements LayerBackend {
 
   private readonly pending = new Map<AnyServiceToken, Promise<unknown>>()
 
-  private readonly resolutionOrder: AnyServiceToken[] = []
-
   register(provider: LayerProvider): void {
     if (this.providers.has(provider.service)) {
       throw new DuplicateServiceError(provider.service)
@@ -40,8 +38,6 @@ export class MemoryLayerBackend implements LayerBackend {
       .then((instance) => {
         this.instances.set(token, instance)
 
-        this.resolutionOrder.push(token)
-
         return instance
       })
       .finally(() => {
@@ -58,37 +54,8 @@ export class MemoryLayerBackend implements LayerBackend {
       await Promise.allSettled(this.pending.values())
     }
 
-    const errors: unknown[] = []
-
-    for (let index = this.resolutionOrder.length - 1; index >= 0; index--) {
-      const token = this.resolutionOrder[index]
-
-      if (!token) {
-        continue
-      }
-
-      const instance = this.instances.get(token)
-
-      const provider = this.providers.get(token)
-
-      if (instance === undefined || !provider?.release) {
-        continue
-      }
-
-      try {
-        await provider.release(instance)
-      } catch (cause) {
-        errors.push(cause)
-      }
-    }
-
     this.instances.clear()
     this.pending.clear()
-
-    this.resolutionOrder.splice(0)
-
-    if (errors.length > 0) {
-      throw new AggregateError(errors, 'Failed to dispose one or more services')
-    }
+    this.providers.clear()
   }
 }

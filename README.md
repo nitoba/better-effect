@@ -6,7 +6,8 @@ Lightweight Effect-inspired primitives built around [`better-result`](https://ww
 
 - **Service** — contextual dependency access with `yield*`
 - **Layer** — declarative composition of live/test environments
-- **Resource** — safe acquire/use/release lifecycle
+- **Scope** — contextual lifetime and finalizer management
+- **Resource** — standalone Result-oriented acquire/use/release helper
 - **DI adapters** — dependency resolution is delegated to an external container instead of being reimplemented by the library
 
 The goal is not to recreate Effect. The goal is to provide a small, composable layer on top of `better-result`.
@@ -29,7 +30,7 @@ A service is a class that also acts as its own dependency token.
 
 ```ts
 import { Result } from 'better-result'
-import { Service } from 'better-effect'
+import { Effect, Service } from 'better-effect'
 
 export class Database extends Service<Database>() {
   findUser(email: string) {
@@ -42,7 +43,7 @@ export class Database extends Service<Database>() {
 
 export class UserRepository extends Service<UserRepository>() {
   findByEmail(email: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const user = await database.findUser(email)
@@ -51,6 +52,65 @@ export class UserRepository extends Service<UserRepository>() {
     })
   }
 }
+```
+
+Use `Effect.gen` when a generator accesses Services. It delegates execution to
+`better-result` while carrying the required Service tokens in a type-only
+metadata channel:
+
+```ts
+export class AuthService extends Service<AuthService>() {
+  login(email: string) {
+    return Effect.gen(async function* () {
+      const users = yield* UserRepository
+      const user = yield* Result.await(users.findByEmail(email))
+
+      return Result.ok(user)
+    })
+  }
+}
+```
+
+`Layer.make` derives the requirements from those method return types. A
+`Runtime` rejects a merged Layer at compile time when one of its required
+Services is missing; `Layer.override` remains the explicit replacement API.
+
+`Runtime.make()` and `buildLayer()` preserve the exact Service-token union
+provided by the Layer. Every `run()` boundary checks the final
+`EffectRequirements` against that union, so a program that yields an unavailable
+Service is rejected at compile time and the diagnostic names
+`__betterEffectMissingRuntimeServices`. Programs with no Service requirements
+remain valid in any environment:
+
+```ts
+const runtime = await Runtime.make(AppLive, backend)
+// inferred as Runtime<typeof Database | typeof UserRepository>
+
+type AppRuntime = RuntimeFor<typeof AppLive>
+// Runtime<typeof Database | typeof UserRepository>
+
+const built = await buildLayer(AppLive, backend)
+// inferred as BuiltLayer<typeof Database | typeof UserRepository>
+
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const database = yield* Database
+
+    return Result.ok(database.query())
+  })
+)
+```
+
+Use `RuntimeFor<typeof AppLive>` when a Runtime handle inferred from a Layer must
+be named in a function signature. This avoids manually repeating
+`Runtime<LayerProvided<typeof AppLive>>` while preserving the same checked
+Service environment.
+
+Use an unparameterized `Runtime` or `BuiltLayer` annotation only when an
+intentionally erased, unchecked environment is needed:
+
+```ts
+const erased: Runtime = runtime
 ```
 
 There are no string tokens:
@@ -118,9 +178,55 @@ The core Layer API intentionally stays small:
 Layer.make(Service, acquire)
 Layer.succeed(Service, instance)
 Layer.scoped(Service, acquire, release)
+Layer.gen(Service, factory)
+Layer.scopedGen(Service, factory, release)
 Layer.merge(...layers)
 Layer.override(base, ...overrides)
 ```
+
+Use `Layer.gen` when constructing a provider requires contextual Services. The
+requirements yielded by the factory remain part of the Layer's compile-time
+contract:
+
+```ts
+const UserRepositoryLive = Layer.gen(UserRepository, async function* () {
+  const database = yield* Database
+
+  return new UserRepository(database)
+})
+```
+
+Use `Layer.scopedGen` when acquisition both needs contextual Services and owns a
+resource that must be released with the Runtime root Scope:
+
+```ts
+class DatabaseSession extends Service<DatabaseSession>() {
+  constructor(readonly database: Database) {
+    super()
+  }
+
+  close(outcome: ScopeOutcome) {
+    return this.database.closeSession(this, outcome)
+  }
+}
+
+const DatabaseSessionLive = Layer.scopedGen(
+  DatabaseSession,
+  async function* () {
+    const database = yield* Database
+
+    return new DatabaseSession(database)
+  },
+  (session, outcome) => session.close(outcome)
+)
+```
+
+`Layer.gen` expresses contextual acquisition without registering cleanup;
+`Layer.scoped` registers cleanup for a dependency-free factory; `Layer.scopedGen`
+combines both. The factory remains lazy, the acquired instance is shared according
+to backend caching, and its release runs once when the Runtime root closes. The
+release callback receives the root `ScopeOutcome`, including the final outcome of
+one-shot `Runtime.run()`.
 
 ### Test environments
 
@@ -139,7 +245,7 @@ const AppTest = Layer.override(AppLive, DatabaseTest)
 ```ts
 import { buildLayer } from 'better-effect'
 
-import { ItiLayerBackend } from 'better-effect/iti'
+import { ItiLayerBackend } from 'better-effect/adapters/iti'
 
 const runtime = await buildLayer(AppLive, new ItiLayerBackend())
 
@@ -154,9 +260,184 @@ This keeps application code independent from the DI container.
 
 A different backend can implement the same resolver/backend contracts without changing Services or Layers.
 
-## Resource
+## Scope
 
-`Resource.acquireUseRelease()` handles local resource lifecycle while preserving typed `Result` errors.
+`Scope` manages a dynamic lifetime containing multiple resources. Resources acquired
+inside `runtime.run()` belong to that execution and are released automatically when it
+finishes.
+
+The contextual `Scope` is a non-owning capability: it can acquire resources, register
+finalizers, and fork children, but it cannot close the lifetime that owns it. Owners
+receive a `CloseableScope` from `Scope.make()` or `scope.fork()` and remain responsible
+for closing it:
+
+```ts
+const scope = yield * Scope
+const child = scope.fork()
+
+try {
+  await Scope.provide(child, () => processBatch())
+} finally {
+  await child.close()
+}
+```
+
+For the common acquire-and-release case, `Effect.acquireRelease()` keeps the same
+lifetime semantics without exposing `Scope` in the program. It is an async yieldable
+for `Effect.gen`:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const connection = yield* Effect.acquireRelease(
+      () => database.reserve(),
+      (connection, outcome) => {
+        void outcome
+        return connection.release()
+      }
+    )
+
+    return Result.ok(await useConnection(connection))
+  })
+)
+```
+
+Acquisition failures are returned through the Effect `Result` error channel. The
+release callback is registered in the current Scope and remains Scope cleanup, so it
+runs when the owning execution closes.
+
+When a resource is already acquired and implements `Symbol.dispose` or
+`Symbol.asyncDispose`, `Effect.add()` registers it in the current Scope and yields the
+same object back to the program:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const file = await createTemporaryFile()
+    const ownedFile = yield* Effect.add(file)
+
+    return Result.ok(await readFile(ownedFile))
+  })
+)
+```
+
+`Effect.add()` does not acquire the resource or create a Scope. It must run inside a
+managed execution such as `runtime.run()` or `Scope.run()`; without a current Scope,
+it preserves the existing missing-Scope failure. The resource is disposed when that
+Scope closes, with `Symbol.asyncDispose` preferred when both protocols exist.
+
+Use `Effect.acquireRelease()` when acquisition belongs in the Effect and cleanup needs
+an explicit callback or the final `ScopeOutcome`; use `Effect.add()` for an
+already-acquired JavaScript disposable.
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const scope = yield* Scope
+
+    const connection = await scope.acquire(
+      () => database.reserve(),
+      (connection, outcome) => {
+        void outcome
+        return connection.release()
+      }
+    )
+
+    return Result.ok(await useConnection(connection))
+  })
+)
+```
+
+Disposable objects can be registered directly:
+
+```ts
+const file = await scope.add(await createTemporaryFile())
+```
+
+`DisposableResource` requires a callable `Symbol.dispose` or `Symbol.asyncDispose`,
+so plain or weakly typed objects must be narrowed before registration. Dynamic values
+that cross an unsafe boundary are still checked at runtime and rejected with
+`ResourceNotDisposableError` when neither protocol is present.
+
+Finalizers run sequentially in reverse registration order. `Layer.scoped` and
+`Layer.scopedGen` resources belong to the Runtime root scope and remain alive between
+executions; they are released when the Runtime is disposed. `Resource.acquireUseRelease()`
+remains available as a standalone compatibility helper implemented on top of Scope.
+
+Scopes can also form explicit child lifetimes. `fork()` registers a child with its
+parent, while `Scope.provide()` uses an existing scope without taking ownership of its
+closure:
+
+```ts
+const parent = Scope.make()
+const batch = parent.fork()
+
+try {
+  await Scope.provide(batch, () => processBatch())
+} finally {
+  await batch.close()
+  await parent.close()
+}
+```
+
+`runtime.run()` creates one child scope per execution. Concurrent executions receive
+isolated scopes, and `runtime.dispose()` stops accepting new executions, waits for
+active executions to finish, then closes the Runtime root scope and its Layer resources.
+
+The final result is classified only at the execution boundary. Plain values and
+`Result.ok` close the execution with `{ status: 'success' }`; `Result.err` and thrown
+exceptions close it with `{ status: 'failure', cause }`. Intermediate Results do not
+change the outcome. Release callbacks receive this outcome, which makes commit/rollback
+cleanup possible without adding a transaction abstraction.
+
+For example, a transaction can choose its final action from the outcome:
+
+```ts
+const transaction =
+  yield *
+  Effect.acquireRelease(
+    () => database.begin(),
+    (transaction, outcome) =>
+      outcome.status === 'success' ? transaction.commit() : transaction.rollback()
+  )
+```
+
+The ownership tree is:
+
+```text
+Runtime
+└── root Scope
+    ├── Layer resources
+    └── execution Scope
+        └── operation resources
+```
+
+Graceful disposal follows this order:
+
+```text
+stop accepting executions
+↓
+wait for active executions
+↓
+close the root Scope
+↓
+dispose the backend
+```
+
+An execution Scope is always closed before its execution Promise settles. The precedence
+is `program failure > cleanup failure > program success`: a failed program preserves its
+exact `Result.err` or exception, while a successful program rejects with a cleanup error.
+Configure `onCleanupFailure` on `buildLayer` or `Runtime.make` to receive one best-effort
+diagnostic for suppressed execution or shutdown cleanup failures. Calls to `runtime.run()`
+after disposal begins fail with `BuiltLayerDisposedError` without invoking the program.
+Shutdown has no cancellation or timeout mechanism and is intended to be initiated outside
+the execution being awaited.
+
+## Standalone resource helper
+
+`Resource.acquireUseRelease()` remains useful for local workflows that want a
+Result-oriented acquire/use/release API without constructing a Runtime. It is
+implemented on top of Scope and remains fully supported; it is not deprecated.
 
 ```ts
 import { Resource } from 'better-effect'
@@ -172,18 +453,15 @@ const result = await Resource.acquireUseRelease({
 })
 ```
 
-When `release` is omitted, `Resource` attempts to use the JavaScript explicit resource management protocol:
+When `release` is omitted, Resource prefers the JavaScript explicit resource
+management protocol:
 
 ```ts
 Symbol.asyncDispose
 Symbol.dispose
 ```
 
-### Error precedence
-
-If both `use` and `release` fail, the error produced by `use` is preserved.
-
-The precedence is:
+If both `use` and `release` fail, the `use` error is preserved. The precedence is:
 
 ```text
 1. use failure
@@ -191,16 +469,18 @@ The precedence is:
 3. successful use value
 ```
 
-Acquisition exceptions, rejected promises, and unexpected failures are normalized through `better-result`.
+Acquisition exceptions, rejected promises, and unexpected failures are normalized
+through `better-result`; release failures use `ResourceReleaseFailure`.
 
-## Service vs Layer vs Resource
+## Service vs Layer vs Scope vs Resource
 
 | Primitive       | Responsibility                                        |
 | --------------- | ----------------------------------------------------- |
 | `Service`       | Request a contextual dependency                       |
 | `Layer`         | Describe the implementations that form an environment |
-| `Resource`      | Manage a resource local to one operation              |
-| DI backend      | Resolve, cache and dispose service instances          |
+| `Scope`         | Manage dynamic lifetimes and finalizers               |
+| `Resource`      | Standalone Result-oriented acquire/use/release helper |
+| DI backend      | Resolve and cache service instances                   |
 | `better-result` | Typed failures and generator control flow             |
 
 ## Complete example
@@ -220,8 +500,9 @@ It demonstrates:
 - TODO CRUD
 - `Service` dependency access
 - Layer composition
+- Runtime root and execution scopes
 - scoped database lifecycle
-- `Resource.acquireUseRelease()`
+- Standalone `Resource` compatibility API
 - ITI as the DI backend
 
 Run it from the repository root:
@@ -280,12 +561,12 @@ The core intentionally does not implement:
 - a dependency graph runtime
 - a custom DI container
 - a custom Context
-- a custom Scope runtime
 - `Effect<A, E, R>`
 
 ### Delegate instead of rebuilding
 
-Dependency resolution, caching and container lifecycle belong to DI backends.
+Dependency resolution and caching belong to DI backends. Service release lifecycle is
+owned by `Scope`.
 
 `better-effect` supplies the protocol and composition primitives.
 
@@ -324,6 +605,7 @@ The initial scope is:
 ```text
 Service
 Layer
+Scope
 Resource
 DI adapters
 better-result integration

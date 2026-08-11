@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Service } from '../better-effect'
+import { Effect, Service } from '../better-effect'
 import { Database } from '../database'
 import type { CreateTodoInput, Todo, UpdateTodoInput } from '../domain'
 
@@ -24,7 +24,7 @@ const toTodo = (row: TodoRow): Todo => ({
 
 export class TodoRepository extends Service<TodoRepository>() {
   list(userId: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const rows = yield* Result.await(
@@ -51,7 +51,7 @@ export class TodoRepository extends Service<TodoRepository>() {
   }
 
   findById(userId: string, id: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const rows = yield* Result.await(
@@ -79,7 +79,7 @@ export class TodoRepository extends Service<TodoRepository>() {
   }
 
   create(userId: string, input: CreateTodoInput) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const id = crypto.randomUUID()
@@ -123,7 +123,7 @@ export class TodoRepository extends Service<TodoRepository>() {
   }
 
   update(userId: string, id: string, input: UpdateTodoInput) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const title = input.title ?? null
@@ -169,7 +169,7 @@ export class TodoRepository extends Service<TodoRepository>() {
   }
 
   delete(userId: string, id: string) {
-    return Result.gen(async function* () {
+    return Effect.gen(async function* () {
       const database = yield* Database
 
       const rows = yield* Result.await(

@@ -1,5 +1,6 @@
 import { Result } from 'better-result'
 
+import { Effect, type RuntimeFor } from './better-effect'
 import {
   readJson,
   requireUser,
@@ -11,8 +12,11 @@ import {
 } from './http'
 import { AuthService } from './services/auth-service'
 import { TodoService } from './services/todo-service'
+import type { AppLive } from './layers/app-live'
 
-export const createServer = () =>
+type AppRuntime = RuntimeFor<typeof AppLive>
+
+export const createServer = (runtime: AppRuntime) =>
   Bun.serve({
     port: Number(process.env.PORT ?? 3333),
 
@@ -24,15 +28,17 @@ export const createServer = () =>
 
       '/auth/login': {
         POST: async (request) => {
-          const result = await Result.gen(async function* () {
-            const input = yield* Result.await(readJson(request, isLoginInput))
+          const result = await runtime.run(() =>
+            Effect.gen(async function* () {
+              const input = yield* Result.await(readJson(request, isLoginInput))
 
-            const auth = yield* AuthService
+              const auth = yield* AuthService
 
-            const session = yield* Result.await(auth.login(input))
+              const session = yield* Result.await(auth.login(input))
 
-            return Result.ok(session)
-          })
+              return Result.ok(session)
+            })
+          )
 
           return toResponse(result)
         }
@@ -40,35 +46,39 @@ export const createServer = () =>
 
       '/todos': {
         GET: async (request) => {
-          const result = await Result.gen(async function* () {
-            const { userId } = yield* Result.await(requireUser(request))
+          const result = await runtime.run(() =>
+            Effect.gen(async function* () {
+              const { userId } = yield* Result.await(requireUser(request))
 
-            const todos = yield* TodoService
+              const todos = yield* TodoService
 
-            const items = yield* Result.await(todos.list(userId))
+              const items = yield* Result.await(todos.list(userId))
 
-            return Result.ok(items)
-          })
+              return Result.ok(items)
+            })
+          )
 
           return toResponse(result)
         },
 
         POST: async (request) => {
-          const result = await Result.gen(async function* () {
-            const { userId } = yield* Result.await(requireUser(request))
+          const result = await runtime.run(() =>
+            Effect.gen(async function* () {
+              const { userId } = yield* Result.await(requireUser(request))
 
-            const input = yield* Result.await(readJson(request, isCreateTodoInput))
+              const input = yield* Result.await(readJson(request, isCreateTodoInput))
 
-            const todos = yield* TodoService
+              const todos = yield* TodoService
 
-            const todo = yield* Result.await(
-              todos.create(userId, {
-                title: input.title.trim()
-              })
-            )
+              const todo = yield* Result.await(
+                todos.create(userId, {
+                  title: input.title.trim()
+                })
+              )
 
-            return Result.ok(todo)
-          })
+              return Result.ok(todo)
+            })
+          )
 
           return toResponse(result, 201)
         }
@@ -76,51 +86,57 @@ export const createServer = () =>
 
       '/todos/:id': {
         GET: async (request) => {
-          const result = await Result.gen(async function* () {
-            const { userId } = yield* Result.await(requireUser(request))
+          const result = await runtime.run(() =>
+            Effect.gen(async function* () {
+              const { userId } = yield* Result.await(requireUser(request))
 
-            const todos = yield* TodoService
+              const todos = yield* TodoService
 
-            const todo = yield* Result.await(todos.get(userId, request.params.id))
+              const todo = yield* Result.await(todos.get(userId, request.params.id))
 
-            return Result.ok(todo)
-          })
+              return Result.ok(todo)
+            })
+          )
 
           return toResponse(result)
         },
 
         PATCH: async (request) => {
-          const result = await Result.gen(async function* () {
-            const { userId } = yield* Result.await(requireUser(request))
+          const result = await runtime.run(() =>
+            Effect.gen(async function* () {
+              const { userId } = yield* Result.await(requireUser(request))
 
-            const input = yield* Result.await(readJson(request, isUpdateTodoInput))
+              const input = yield* Result.await(readJson(request, isUpdateTodoInput))
 
-            const todos = yield* TodoService
+              const todos = yield* TodoService
 
-            const todo = yield* Result.await(
-              todos.update(userId, request.params.id, {
-                ...input,
+              const todo = yield* Result.await(
+                todos.update(userId, request.params.id, {
+                  ...input,
 
-                title: input.title?.trim()
-              })
-            )
+                  title: input.title?.trim()
+                })
+              )
 
-            return Result.ok(todo)
-          })
+              return Result.ok(todo)
+            })
+          )
 
           return toResponse(result)
         },
 
         DELETE: async (request) => {
-          const result = await Result.gen(async function* () {
-            const { userId } = yield* Result.await(requireUser(request))
+          const result = await runtime.run(() =>
+            Effect.gen(async function* () {
+              const { userId } = yield* Result.await(requireUser(request))
 
-            const todos = yield* TodoService
+              const todos = yield* TodoService
 
-            yield* Result.await(todos.delete(userId, request.params.id))
+              yield* Result.await(todos.delete(userId, request.params.id))
 
-            return Result.ok()
-          })
+              return Result.ok()
+            })
+          )
 
           return toEmptyResponse(result)
         }

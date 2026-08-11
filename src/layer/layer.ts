@@ -1,13 +1,23 @@
-import type { ServiceClass } from '../service'
+import type { ServiceRequirement } from '../effect/types'
+import type { AnyServiceToken, ServiceClass, ServiceRequirements } from '../service'
+import type { ScopeOutcome } from '../scope'
 import type { MaybePromise } from '../utils/types'
 
 import { DuplicateServiceError } from './errors'
 
 import { runLayerGenerator } from './internal'
 
-import type { LayerGenerator, LayerProvider } from './types'
+import type { LayerGenerator, LayerGeneratorRequirements, LayerProvider, LayerSpec } from './types'
 
-export class Layer {
+import type { AnyLayerSpec } from './types'
+
+import type { OverrideLayerSpecs } from './inference'
+
+declare const LayerTypeId: unique symbol
+
+export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
+  declare readonly [LayerTypeId]: Specs
+
   readonly providers: readonly LayerProvider[]
 
   private constructor(providers: readonly LayerProvider[]) {
@@ -18,7 +28,7 @@ export class Layer {
     service: S,
 
     acquire: () => MaybePromise<InstanceType<S>>
-  ): Layer {
+  ): Layer<LayerSpec<S, ServiceRequirements<S>>> {
     return new Layer([
       {
         service,
@@ -27,7 +37,10 @@ export class Layer {
     ])
   }
 
-  static succeed<S extends ServiceClass<any>>(service: S, instance: InstanceType<S>): Layer {
+  static succeed<S extends ServiceClass<any>>(
+    service: S,
+    instance: InstanceType<S>
+  ): Layer<LayerSpec<S, ServiceRequirements<S>>> {
     return Layer.make(service, () => instance)
   }
 
@@ -35,7 +48,7 @@ export class Layer {
     service: S,
     acquire: () => MaybePromise<InstanceType<S>>,
     release: (instance: InstanceType<S>) => MaybePromise<void>
-  ): Layer {
+  ): Layer<LayerSpec<S, ServiceRequirements<S>>> {
     return new Layer([
       {
         service,
@@ -46,11 +59,30 @@ export class Layer {
     ])
   }
 
-  static gen<S extends ServiceClass<any>>(service: S, factory: LayerGenerator<S>): Layer {
+  static scopedGen<S extends ServiceClass<any>, Yield extends ServiceRequirement<AnyServiceToken>>(
+    service: S,
+    factory: LayerGenerator<S, Yield>,
+    release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
+  ): Layer<LayerSpec<S, LayerGeneratorRequirements<S, Yield>>> {
+    return new Layer([
+      {
+        service,
+        acquire: () => runLayerGenerator(service, factory),
+        release: (instance, outcome) => release(instance as InstanceType<S>, outcome)
+      }
+    ])
+  }
+
+  static gen<S extends ServiceClass<any>, Yield extends ServiceRequirement<AnyServiceToken>>(
+    service: S,
+    factory: LayerGenerator<S, Yield>
+  ): Layer<LayerSpec<S, LayerGeneratorRequirements<S, Yield>>> {
     return Layer.make(service, () => runLayerGenerator(service, factory))
   }
 
-  static merge(...layers: readonly Layer[]): Layer {
+  static merge<const Layers extends readonly Layer<any>[]>(
+    ...layers: Layers
+  ): Layer<Layers[number] extends Layer<infer Specs> ? Specs : never> {
     const providers = new Map<ServiceClass<any>, LayerProvider>()
 
     for (const layer of layers) {
@@ -68,7 +100,10 @@ export class Layer {
     return new Layer([...providers.values()])
   }
 
-  static override(base: Layer, ...overrides: readonly Layer[]): Layer {
+  static override<Base extends Layer<any>, const Overrides extends readonly Layer<any>[]>(
+    base: Base,
+    ...overrides: Overrides
+  ): Layer<OverrideLayerSpecs<Base extends Layer<infer Specs> ? Specs : never, Overrides>> {
     const providers = new Map<ServiceClass<any>, LayerProvider>()
 
     for (const provider of base.providers) {

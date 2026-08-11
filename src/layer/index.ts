@@ -12,6 +12,27 @@ export {
 
 export type { BuiltLayer } from './runtime'
 
+export type {
+  CleanupFailureObserver,
+  RuntimeOptions,
+  RuntimeShutdownDiagnostic
+} from '../runtime/outcome'
+
 export type { LayerBackend } from './backend'
 
-export type { LayerGenerator, LayerProvider } from './types'
+export type {
+  AnyLayer,
+  CompleteLayer,
+  LayerMissing,
+  LayerProvided,
+  LayerRawRequired,
+  LayerSpecs
+} from './inference'
+
+export type {
+  AnyLayerSpec,
+  LayerGenerator,
+  LayerGeneratorRequirements,
+  LayerProvider,
+  LayerSpec
+} from './types'

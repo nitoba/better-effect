@@ -7,14 +7,14 @@ import { createServer } from './server'
 
 const runtime = await Runtime.make(AppLive, new ItiLayerBackend())
 
-const seed = await seedDemoUser()
+const seed = await runtime.run(() => seedDemoUser())
 
 if (Result.isError(seed)) {
   await runtime.dispose()
   throw seed.error
 }
 
-const server = createServer()
+const server = createServer(runtime)
 
 console.log(`TODO API running at ${server.url}`)
 

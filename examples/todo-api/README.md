@@ -4,7 +4,8 @@ Small Bun API demonstrating:
 
 - `Service` for contextual dependencies with `yield*`
 - `Layer` for composing the application environment
-- `Resource` for local acquire/use/release lifecycle
+- `Scope` for execution-local lifetimes and cleanup
+- `Resource` as a standalone compatibility helper for local Result workflows
 - `better-result` for typed errors and generator composition
 - `Bun.SQL` with in-memory SQLite
 - `Bun.password` for password hashing
@@ -103,7 +104,7 @@ curl -i \
 ### Service
 
 Services and repositories extend `Service<Self>()` and resolve dependencies
-inside `Result.gen`:
+inside `Effect.gen`:
 
 ```ts
 const database = yield * Database
@@ -117,7 +118,20 @@ SQL client is closed when the runtime is disposed.
 
 ### Resource
 
-`Database.run()` uses `Resource.acquireUseRelease()` around the shared
-`Bun.SQL` client. Bun's SQLite adapter does not support `sql.reserve()` because
-it does not use connection pooling, so the client remains open until the
-database layer is disposed.
+`Resource.acquireUseRelease()` remains available as a standalone helper for local
+acquire/use/release workflows. It preserves typed errors, cleanup precedence, and
+automatic disposal support; it is not deprecated.
+
+### Scope
+
+The SQLite client is a real root-scoped resource: `Layer.scoped()` acquires it once and
+closes it when the Runtime is disposed. Bun's SQLite adapter does not expose a pooled
+connection lease, so this example does not register a fake execution resource with a
+no-op release.
+
+Each request handled by the server receives its own child execution scope. During
+shutdown, `runtime.dispose()` stops accepting new executions, waits for active
+requests to finish, and then closes the root scope that owns the database layer.
+Real request-local resources can use `Effect.acquireRelease()` and are closed with that
+request's execution scope. For a nested batch lifetime, use `scope.fork()` with
+`Scope.provide()` and close the child explicitly when the batch ends.

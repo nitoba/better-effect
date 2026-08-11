@@ -1,33 +1,103 @@
-import { buildLayer, type BuiltLayer, type Layer, type LayerBackend } from '../layer'
+import {
+  buildLayer,
+  type AnyLayer,
+  type BuiltLayer,
+  type CompleteLayer,
+  type LayerProvided,
+  type LayerBackend
+} from '../layer'
 
-export class Runtime {
-  private constructor(private readonly built: BuiltLayer) {}
+import type { CompleteExecution } from '../layer/inference'
 
-  static async make(layer: Layer, backend: LayerBackend): Promise<Runtime> {
-    const built = await buildLayer(layer, backend)
+import type { AnyServiceToken } from '../service'
 
-    return new Runtime(built)
+import { classifyRuntimeOutcome, type RuntimeOptions } from './outcome'
+
+import type { ScopeOutcome } from '../scope'
+
+export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
+  private constructor(private readonly built: BuiltLayer<Provided>) {}
+
+  static async make<L extends AnyLayer>(
+    layer: CompleteLayer<L>,
+    backend: LayerBackend,
+    options: RuntimeOptions = {}
+  ): Promise<Runtime<LayerProvided<L>>> {
+    const built = await buildLayer(layer, backend, options)
+
+    return new Runtime<LayerProvided<L>>(built)
   }
 
-  static async run<A>(
-    layer: Layer,
+  static async run<A, L extends AnyLayer>(
+    layer: CompleteLayer<L>,
     backend: LayerBackend,
-    program: () => A | PromiseLike<A>
+    program: CompleteExecution<LayerProvided<L>, A>,
+    options: RuntimeOptions = {}
   ): Promise<Awaited<A>> {
-    const runtime = await Runtime.make(layer, backend)
+    const runtime = await Runtime.make(layer, backend, options)
+
+    let value!: Awaited<A>
+    let executionFailed = false
+    let executionFailure: unknown
+    let programOutcome: ScopeOutcome | undefined
 
     try {
-      return await runtime.run(program)
-    } finally {
-      await runtime.dispose()
+      value = await runtime.runUnchecked(async () => {
+        try {
+          const programValue = await program()
+
+          programOutcome = classifyRuntimeOutcome(programValue)
+
+          return programValue
+        } catch (cause) {
+          programOutcome = {
+            status: 'failure',
+            cause
+          }
+
+          throw cause
+        }
+      })
+    } catch (cause) {
+      executionFailed = true
+      executionFailure = cause
     }
+
+    const outcome: ScopeOutcome =
+      programOutcome ??
+      ({
+        status: 'failure',
+        cause: executionFailure
+      } as const)
+
+    try {
+      await runtime.disposeWithOutcome(outcome)
+    } catch (shutdownFailure) {
+      if (!executionFailed && outcome.status === 'success') {
+        throw shutdownFailure
+      }
+    }
+
+    if (executionFailed) {
+      throw executionFailure
+    }
+
+    return value
   }
 
-  run<A>(program: () => A): A {
+  run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
     return this.built.run(program)
+  }
+
+  private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+    return this.built.run(program as CompleteExecution<Provided, A>)
   }
 
   dispose(): Promise<void> {
     return this.built.dispose()
+  }
+
+  private disposeWithOutcome(outcome: ScopeOutcome): Promise<void> {
+    return this.built.dispose(outcome)
   }
 }
