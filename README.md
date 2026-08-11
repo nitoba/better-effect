@@ -7,7 +7,7 @@ Lightweight Effect-inspired primitives built around [`better-result`](https://ww
 - **Service** — contextual dependency access with `yield*`
 - **Layer** — declarative composition of live/test environments
 - **Scope** — contextual lifetime and finalizer management
-- **Resource** — safe acquire/use/release lifecycle
+- **Resource** — standalone Result-oriented acquire/use/release helper
 - **DI adapters** — dependency resolution is delegated to an external container instead of being reimplemented by the library
 
 The goal is not to recreate Effect. The goal is to provide a small, composable layer on top of `better-result`.
@@ -176,45 +176,6 @@ This keeps application code independent from the DI container.
 
 A different backend can implement the same resolver/backend contracts without changing Services or Layers.
 
-## Resource
-
-`Resource.acquireUseRelease()` handles local resource lifecycle while preserving typed `Result` errors.
-
-```ts
-import { Resource } from 'better-effect'
-
-const result = await Resource.acquireUseRelease({
-  name: 'transaction',
-
-  acquire: () => database.begin(),
-
-  use: (transaction) => executeCommand(transaction),
-
-  release: (transaction) => transaction.close()
-})
-```
-
-When `release` is omitted, `Resource` attempts to use the JavaScript explicit resource management protocol:
-
-```ts
-Symbol.asyncDispose
-Symbol.dispose
-```
-
-### Error precedence
-
-If both `use` and `release` fail, the error produced by `use` is preserved.
-
-The precedence is:
-
-```text
-1. use failure
-2. release failure
-3. successful use value
-```
-
-Acquisition exceptions, rejected promises, and unexpected failures are normalized through `better-result`.
-
 ## Scope
 
 `Scope` manages a dynamic lifetime containing multiple resources. Resources acquired
@@ -266,7 +227,7 @@ const file = await scope.add(await createTemporaryFile())
 Finalizers run sequentially in reverse registration order. `Layer.scoped` resources
 belong to the Runtime root scope and remain alive between executions; they are released
 when the Runtime is disposed. `Resource.acquireUseRelease()` remains available as a
-compatibility helper implemented on top of Scope.
+standalone compatibility helper implemented on top of Scope.
 
 Scopes can also form explicit child lifetimes. `fork()` registers a child with its
 parent, while `Scope.provide()` uses an existing scope without taking ownership of its
@@ -316,6 +277,45 @@ program failure first. Calls to `runtime.run()` after disposal begins fail with
 `BuiltLayerDisposedError` without invoking the program. Shutdown has no cancellation or
 timeout mechanism and is intended to be initiated outside the execution being awaited.
 
+## Standalone resource helper
+
+`Resource.acquireUseRelease()` remains useful for local workflows that want a
+Result-oriented acquire/use/release API without constructing a Runtime. It is
+implemented on top of Scope and remains fully supported; it is not deprecated.
+
+```ts
+import { Resource } from 'better-effect'
+
+const result = await Resource.acquireUseRelease({
+  name: 'transaction',
+
+  acquire: () => database.begin(),
+
+  use: (transaction) => executeCommand(transaction),
+
+  release: (transaction) => transaction.close()
+})
+```
+
+When `release` is omitted, Resource prefers the JavaScript explicit resource
+management protocol:
+
+```ts
+Symbol.asyncDispose
+Symbol.dispose
+```
+
+If both `use` and `release` fail, the `use` error is preserved. The precedence is:
+
+```text
+1. use failure
+2. release failure
+3. successful use value
+```
+
+Acquisition exceptions, rejected promises, and unexpected failures are normalized
+through `better-result`; release failures use `ResourceReleaseFailure`.
+
 ## Service vs Layer vs Scope vs Resource
 
 | Primitive       | Responsibility                                        |
@@ -323,7 +323,7 @@ timeout mechanism and is intended to be initiated outside the execution being aw
 | `Service`       | Request a contextual dependency                       |
 | `Layer`         | Describe the implementations that form an environment |
 | `Scope`         | Manage dynamic lifetimes and finalizers               |
-| `Resource`      | Compatibility helper for local acquire/use/release    |
+| `Resource`      | Standalone Result-oriented acquire/use/release helper |
 | DI backend      | Resolve and cache service instances                   |
 | `better-result` | Typed failures and generator control flow             |
 
@@ -346,7 +346,7 @@ It demonstrates:
 - Layer composition
 - Runtime root and execution scopes
 - scoped database lifecycle
-- `Resource` compatibility API
+- Standalone `Resource` compatibility API
 - ITI as the DI backend
 
 Run it from the repository root:

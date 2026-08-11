@@ -1,7 +1,7 @@
 import { SQL } from 'bun'
-import { Result, type Result as ResultType } from 'better-result'
+import { Result, UnhandledException, type Result as ResultType } from 'better-result'
 
-import { Scope, Service } from './better-effect'
+import { Effect, Service } from './better-effect'
 import { DatabaseFailure } from './errors'
 
 /**
@@ -60,29 +60,43 @@ export class Database extends Service<Database>() {
     operation: string,
     use: (connection: DatabaseConnection) => A | PromiseLike<A>
   ): Promise<ResultType<A, DatabaseFailure>> {
-    return Result.tryPromise({
-      try: async () => {
-        const scope = Scope.current()
+    const sql = this.sql
 
-        const connection = await scope.acquire(
-          // Bun's SQLite adapter has no connection pool and does not support
-          // reserve(). The execution Scope represents the operation's lease.
-          () => this.sql,
+    const normalizeFailure = (cause: unknown): DatabaseFailure => {
+      if (cause instanceof DatabaseFailure) {
+        return cause
+      }
 
-          // The shared client is owned by the root Layer scope.
-          () => undefined
-        )
+      return new DatabaseFailure({
+        operation,
+        cause: cause instanceof UnhandledException ? cause.cause : cause,
+        message: `Database operation failed: ${operation}`
+      })
+    }
 
-        return await use(connection)
-      },
+    const execution = await Result.tryPromise({
+      try: () =>
+        Effect.gen(async function* () {
+          const connection = yield* Effect.acquireRelease(
+            () => sql,
+            // The shared client is owned by the database Layer root Scope.
+            () => undefined
+          )
 
-      catch: (cause) =>
-        new DatabaseFailure({
-          operation,
-          cause,
-          message: `Database operation failed: ${operation}`
-        })
+          const value = yield* Result.await(
+            Result.tryPromise({
+              try: () => Promise.resolve(use(connection)),
+              catch: normalizeFailure
+            })
+          )
+
+          return Result.ok(value)
+        }),
+
+      catch: normalizeFailure
     })
+
+    return execution.andThen((result) => result).mapError(normalizeFailure)
   }
 
   async close(): Promise<void> {

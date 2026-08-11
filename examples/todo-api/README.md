@@ -5,7 +5,8 @@ Small Bun API demonstrating:
 - `Service` for contextual dependencies with `yield*`
 - `Layer` for composing the application environment
 - `Scope` for execution-local lifetimes and cleanup
-- `Resource` as a compatibility helper for local acquire/use/release lifecycle
+- `Effect.acquireRelease()` for execution-local resources
+- `Resource` as a standalone compatibility helper for local Result workflows
 - `better-result` for typed errors and generator composition
 - `Bun.SQL` with in-memory SQLite
 - `Bun.password` for password hashing
@@ -118,20 +119,21 @@ SQL client is closed when the runtime is disposed.
 
 ### Resource
 
-`Resource.acquireUseRelease()` remains available for local acquire/use/release
-workflows and preserves typed errors and cleanup precedence.
+`Resource.acquireUseRelease()` remains available as a standalone helper for local
+acquire/use/release workflows. It preserves typed errors, cleanup precedence, and
+automatic disposal support; it is not deprecated.
 
 ### Scope
 
-`Database.run()` uses the execution `Scope` to model a connection lease. Bun's
+`Database.run()` uses `Effect.acquireRelease()` with the current execution Scope to
+model a connection lease. Bun's
 SQLite adapter does not support `sql.reserve()` because it does not use connection
 pooling, so the shared client remains owned by the database Layer's root scope.
 
 ```ts
 const result = await runtime.run(() =>
   Effect.gen(async function* () {
-    const scope = yield* Scope
-    const connection = await scope.acquire(
+    const connection = yield* Effect.acquireRelease(
       () => database.sql,
       () => undefined
     )
