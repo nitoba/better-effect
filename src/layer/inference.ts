@@ -2,7 +2,7 @@ import type { AnyServiceToken } from '../service'
 
 import type { Layer } from './layer'
 
-import type { LayerSpec } from './types'
+import type { AnyLayerSpec, LayerSpec } from './types'
 
 export type AnyLayer = Layer<any>
 
@@ -13,6 +13,43 @@ export type LayerProvided<L extends AnyLayer> =
 
 export type LayerRawRequired<L extends AnyLayer> =
   LayerSpecs<L> extends LayerSpec<any, infer Required> ? Required : never
+
+type LayerSpecProvided<Specs extends AnyLayerSpec> =
+  Specs extends LayerSpec<infer Provided, any> ? Provided : never
+
+type SameServiceToken<Left extends AnyServiceToken, Right extends AnyServiceToken> = [
+  Left
+] extends [Right]
+  ? [Right] extends [Left]
+    ? true
+    : false
+  : false
+
+type IsOverridden<
+  Provided extends AnyServiceToken,
+  Replacements extends AnyServiceToken
+> = Replacements extends AnyServiceToken ? SameServiceToken<Provided, Replacements> : false
+
+type RemoveOverriddenSpecs<Specs extends AnyLayerSpec, Replacements extends AnyServiceToken> =
+  Specs extends LayerSpec<infer Provided, any>
+    ? true extends IsOverridden<Provided, Replacements>
+      ? never
+      : Specs
+    : never
+
+type ReplaceLayerSpecs<Current extends AnyLayerSpec, Replacement extends AnyLayerSpec> =
+  | RemoveOverriddenSpecs<Current, LayerSpecProvided<Replacement>>
+  | Replacement
+
+export type OverrideLayerSpecs<
+  Current extends AnyLayerSpec,
+  Overrides extends readonly AnyLayer[]
+> = Overrides extends readonly [
+  infer Head extends AnyLayer,
+  ...infer Tail extends readonly AnyLayer[]
+]
+  ? OverrideLayerSpecs<ReplaceLayerSpecs<Current, LayerSpecs<Head>>, Tail>
+  : Current
 
 type RequirementProvided<
   Requirement extends AnyServiceToken,
@@ -36,10 +73,10 @@ export type LayerMissing<L extends AnyLayer> = MissingRequirements<
   LayerProvided<L>
 >
 
-declare const MissingLayerServicesTypeId: unique symbol
+type MissingLayerServices<Missing extends AnyServiceToken> = {
+  readonly __betterEffectMissingServices: Missing
+}
 
 export type CompleteLayer<L extends AnyLayer> = [LayerMissing<L>] extends [never]
   ? L
-  : L & {
-      readonly [MissingLayerServicesTypeId]: LayerMissing<L>
-    }
+  : L & MissingLayerServices<LayerMissing<L>>

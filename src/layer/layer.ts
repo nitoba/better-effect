@@ -10,6 +10,8 @@ import type { LayerGenerator, LayerGeneratorRequirements, LayerProvider, LayerSp
 
 import type { AnyLayerSpec } from './types'
 
+import type { OverrideLayerSpecs } from './inference'
+
 declare const LayerTypeId: unique symbol
 
 export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
@@ -86,10 +88,7 @@ export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
   static override<Base extends Layer<any>, const Overrides extends readonly Layer<any>[]>(
     base: Base,
     ...overrides: Overrides
-  ): Layer<
-    | (Base extends Layer<infer Specs> ? Specs : never)
-    | (Overrides[number] extends Layer<infer Specs> ? Specs : never)
-  > {
+  ): Layer<OverrideLayerSpecs<Base extends Layer<infer Specs> ? Specs : never, Overrides>> {
     const providers = new Map<ServiceClass<any>, LayerProvider>()
 
     for (const provider of base.providers) {

@@ -53,6 +53,20 @@ const failedProgram = Effect.gen(async function* () {
   return Result.ok(true)
 })
 
+const nestedProgram = Effect.gen(async function* () {
+  const cache = yield* Cache
+
+  return Result.ok(cache)
+})
+
+const combinedProgram = Effect.gen(async function* () {
+  const database = yield* Database
+
+  void database
+
+  return await nestedProgram
+})
+
 expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
   ServiceToken<Database> | ServiceToken<Cache>
 >()
@@ -63,6 +77,20 @@ expectTypeOf<EffectError<typeof program>>().toEqualTypeOf<never>()
 
 expectTypeOf<EffectError<typeof failedProgram>>().toEqualTypeOf<string>()
 expectTypeOf<EffectRequirements<typeof failedProgram>>().toEqualTypeOf<never>()
+
+expectTypeOf<EffectRequirements<typeof combinedProgram>>().toEqualTypeOf<
+  ServiceToken<Database> | ServiceToken<Cache>
+>()
+
+const plainResult = Result.ok('plain')
+
+expectTypeOf<EffectRequirements<typeof plainResult>>().toEqualTypeOf<never>()
+expectTypeOf<EffectRequirements<Promise<typeof nestedProgram>>>().toEqualTypeOf<
+  ServiceToken<Cache>
+>()
+expectTypeOf<EffectRequirements<typeof nestedProgram | typeof plainResult>>().toEqualTypeOf<
+  ServiceToken<Cache>
+>()
 
 const scopeProgram = Effect.gen(async function* () {
   const scope = yield* Scope

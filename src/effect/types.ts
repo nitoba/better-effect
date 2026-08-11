@@ -42,13 +42,18 @@ export type InferYieldError<Y> = Y extends Err<never, infer E> ? E : never
 export type InferYieldRequirements<Y> =
   Y extends ServiceRequirement<infer Requirement> ? Requirement : never
 
-/** Extract phantom Service requirements from an Effect result or Promise. */
-export type EffectRequirements<T> =
-  Awaited<T> extends {
-    readonly [EffectRequirementsTypeId]?: infer Requirements
-  }
-    ? Requirements
+type InferEffectRequirements<T> = T extends unknown
+  ? typeof EffectRequirementsTypeId extends keyof T
+    ? T extends {
+        readonly [EffectRequirementsTypeId]?: infer Requirements
+      }
+      ? Requirements
+      : never
     : never
+  : never
+
+/** Extract phantom Service requirements from an Effect result or Promise. */
+export type EffectRequirements<T> = InferEffectRequirements<Awaited<T>>
 
 /** Extract the success value from an Effect result or Promise. */
 export type EffectSuccess<T> = Awaited<T> extends ResultType<infer A, unknown> ? A : never
@@ -60,5 +65,5 @@ export type EffectError<T> = Awaited<T> extends ResultType<unknown, infer E> ? E
 export type EffectFromGenerator<Yield, Returned extends ResultType<any, any>> = EffectResult<
   InferOk<Returned>,
   InferYieldError<Yield> | InferErr<Returned>,
-  InferYieldRequirements<Yield>
+  InferYieldRequirements<Yield> | EffectRequirements<Returned>
 >
