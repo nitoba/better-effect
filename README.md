@@ -264,7 +264,9 @@ const program = pipe(
 
 The combinators keep the `better-result` semantics: `Effect.map` changes the success
 type, `Effect.mapError` changes the error type, and `Effect.andThen` only calls the next
-step after an `Ok`. The pipeline carries the requirements of every step, so Runtime
+step after an `Ok`. Use `Effect.andThenAsync` when the next operation returns a
+`Promise<Result>`; it always returns a Promise, including when the source is synchronous
+or already an `Err`. The pipeline carries the requirements of every step, so Runtime
 still rejects it when its Layer does not provide every required Service.
 
 Use `Effect.gen` for larger workflows with several intermediate values, branches or

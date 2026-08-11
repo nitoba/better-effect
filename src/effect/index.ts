@@ -1,6 +1,6 @@
 export { Effect } from './effect'
 
-export { andThen, map, mapError } from './combinators'
+export { andThen, andThenAsync, map, mapError } from './combinators'
 
 export type {
   AnyEffectResult,

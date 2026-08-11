@@ -76,6 +76,20 @@ test('Effect.andThen runs only after Ok and short-circuits Err', () => {
   expect(calls).toBe(1)
 })
 
+test('Effect.andThenAsync always returns a Promise and preserves Err short-circuiting', async () => {
+  const failure = Result.err<number, string>('failed')
+  let calls = 0
+
+  const chained = Effect.andThenAsync(failure, async (value) => {
+    calls++
+    return Result.ok(value + 1)
+  })
+
+  expect(chained).toBeInstanceOf(Promise)
+  expect(await chained).toBe(failure)
+  expect(calls).toBe(0)
+})
+
 test('Effect combinators preserve asynchronous composition', async () => {
   const source = Promise.resolve(Result.ok(2))
 
@@ -88,13 +102,13 @@ test('Effect combinators preserve asynchronous composition', async () => {
 
   const chained = await pipe(
     source,
-    Effect.andThen((value: number) => Promise.resolve(Result.ok(value + 1)))
+    Effect.andThenAsync((value: number) => Promise.resolve(Result.ok(value + 1)))
   )
 
   expect(chained).toEqual(Result.ok(3))
 })
 
-test('Effect.andThen composes async Effect.gen programs', async () => {
+test('Effect.andThenAsync composes async Effect.gen programs', async () => {
   // oxlint-disable-next-line require-yield
   const source = Effect.gen(async function* () {
     return Result.ok(2)
@@ -102,7 +116,7 @@ test('Effect.andThen composes async Effect.gen programs', async () => {
 
   const result = await pipe(
     source,
-    Effect.andThen((value: number) =>
+    Effect.andThenAsync((value: number) =>
       // oxlint-disable-next-line require-yield
       Effect.gen(async function* () {
         return Result.ok(value + 1)

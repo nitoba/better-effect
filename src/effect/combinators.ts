@@ -9,6 +9,8 @@ type EffectInput<A, E, Requirements> =
   | PromiseLike<EffectResult<A, E, Requirements>>
 
 type AnyEffectInput = EffectInput<any, any, any>
+type AnyEffectResult = EffectResult<any, any, any>
+type AnyAsyncEffectInput = PromiseLike<AnyEffectResult>
 
 type PreserveAsync<Input, Output> = Input extends PromiseLike<unknown> ? Promise<Output> : Output
 
@@ -26,12 +28,9 @@ type ChainedResult<First, Next> = EffectResult<
   EffectRequirements<First> | EffectRequirements<Next>
 >
 
-type ChainedOutput<First, Next> =
-  First extends PromiseLike<unknown>
-    ? Promise<ChainedResult<First, Next>>
-    : Next extends PromiseLike<unknown>
-      ? Promise<ChainedResult<First, Next>>
-      : ChainedResult<First, Next>
+type ChainedOutput<First, Next> = ChainedResult<First, Next>
+
+type AsyncChainedOutput<First, Next> = Promise<ChainedResult<First, Next>>
 
 type MapOperation<A, B> = {
   <Input>(effect: Input & EffectInput<A, any, any>): PreserveAsync<Input, MappedResult<Input, B>>
@@ -44,7 +43,11 @@ type MapErrorOperation<E1, E2> = {
 }
 
 type AndThenOperation<A, Next> = {
-  <Input>(effect: Input & EffectInput<A, any, any>): ChainedOutput<Input, Next>
+  <Input>(effect: Input & EffectResult<A, any, any>): ChainedOutput<Input, Next>
+}
+
+type AndThenAsyncOperation<A, Next> = {
+  <Input>(effect: Input & EffectInput<A, any, any>): AsyncChainedOutput<Input, Next>
 }
 
 const isPromiseLike = (value: unknown): value is PromiseLike<unknown> => {
@@ -68,24 +71,22 @@ const mapErrorResult = <A, E1, E2, Requirements>(
 
 const andThenResult = <A, B, E1, E2, Requirements1, Requirements2>(
   result: EffectResult<A, E1, Requirements1>,
-  next: (value: A) => EffectInput<B, E2, Requirements2>
-):
-  | EffectResult<B, E1 | E2, Requirements1 | Requirements2>
-  | Promise<EffectResult<B, E1 | E2, Requirements1 | Requirements2>> => {
-  const chained = Result.andThen(result, next as (value: A) => ResultType<B, E2>) as
-    | EffectResult<B, E1 | E2, Requirements1 | Requirements2>
-    | PromiseLike<EffectResult<B, E1 | E2, Requirements1 | Requirements2>>
-
-  if (!isPromiseLike(chained)) {
-    return chained
-  }
-
-  // Result.andThenAsync supplies better-result's Panic handling for a
-  // Promise returned by the next operation after Result.andThen invokes it.
-  return Result.andThenAsync(result, () => Promise.resolve(chained)) as Promise<
-    EffectResult<B, E1 | E2, Requirements1 | Requirements2>
+  next: (value: A) => EffectResult<B, E2, Requirements2>
+): EffectResult<B, E1 | E2, Requirements1 | Requirements2> =>
+  Result.andThen(result, next as (value: A) => ResultType<B, E2>) as EffectResult<
+    B,
+    E1 | E2,
+    Requirements1 | Requirements2
   >
-}
+
+const andThenAsyncResult = <A, B, E1, E2, Requirements1, Requirements2>(
+  result: EffectResult<A, E1, Requirements1>,
+  next: (value: A) => PromiseLike<EffectResult<B, E2, Requirements2>>
+): Promise<EffectResult<B, E1 | E2, Requirements1 | Requirements2>> =>
+  Result.andThenAsync(
+    result,
+    (value) => Promise.resolve(next(value)) as Promise<ResultType<B, E2>>
+  ) as Promise<EffectResult<B, E1 | E2, Requirements1 | Requirements2>>
 
 export function map<A, B>(fn: (value: A) => B): MapOperation<A, B>
 export function map<Input, B>(
@@ -129,11 +130,11 @@ export function mapError(first: unknown, second?: unknown): unknown {
   return mapErrorResult(first as EffectResult<unknown, unknown, never>, fn)
 }
 
-export function andThen<A, Next extends AnyEffectInput>(
+export function andThen<A, Next extends AnyEffectResult>(
   next: (value: A) => Next
 ): AndThenOperation<A, Next>
-export function andThen<Input, Next extends AnyEffectInput>(
-  effect: Input & AnyEffectInput,
+export function andThen<Input, Next extends AnyEffectResult>(
+  effect: Input & AnyEffectResult,
   next: (value: EffectSuccess<Input>) => Next
 ): ChainedOutput<Input, Next>
 export function andThen(first: unknown, second?: unknown): unknown {
@@ -141,13 +142,30 @@ export function andThen(first: unknown, second?: unknown): unknown {
     return (effect: unknown) => andThen(effect as never, first as never)
   }
 
-  const next = second as (value: unknown) => EffectInput<unknown, unknown, never>
+  const next = second as (value: unknown) => EffectResult<unknown, unknown, never>
+
+  return andThenResult(first as EffectResult<unknown, unknown, never>, next)
+}
+
+export function andThenAsync<A, Next extends AnyAsyncEffectInput>(
+  next: (value: A) => Next
+): AndThenAsyncOperation<A, Next>
+export function andThenAsync<Input, Next extends AnyAsyncEffectInput>(
+  effect: Input & AnyEffectInput,
+  next: (value: EffectSuccess<Input>) => Next
+): AsyncChainedOutput<Input, Next>
+export function andThenAsync(first: unknown, second?: unknown): unknown {
+  if (typeof first === 'function' && second === undefined) {
+    return (effect: unknown) => andThenAsync(effect as never, first as never)
+  }
+
+  const next = second as (value: unknown) => PromiseLike<EffectResult<unknown, unknown, never>>
 
   if (isPromiseLike(first)) {
     return Promise.resolve(first).then((result) =>
-      andThenResult(result as EffectResult<unknown, unknown, never>, next)
+      andThenAsyncResult(result as EffectResult<unknown, unknown, never>, next)
     )
   }
 
-  return andThenResult(first as EffectResult<unknown, unknown, never>, next)
+  return andThenAsyncResult(first as EffectResult<unknown, unknown, never>, next)
 }

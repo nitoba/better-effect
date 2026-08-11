@@ -6,6 +6,7 @@ import {
   Effect,
   type EffectError,
   type EffectRequirements,
+  type EffectResult,
   type EffectSuccess
 } from '../../src/effect'
 import { Runtime } from '../../src/runtime'
@@ -80,6 +81,19 @@ expectTypeOf<EffectSuccess<typeof syncChained>>().toEqualTypeOf<number>()
 expectTypeOf<EffectError<typeof syncChained>>().toEqualTypeOf<never>()
 expectTypeOf<EffectRequirements<typeof syncChained>>().toEqualTypeOf<never>()
 
+const syncErrAsyncChained = Effect.andThenAsync(Result.err<number, string>('failed'), (value) =>
+  Promise.resolve(Result.ok(value + 1))
+)
+
+expectTypeOf(syncErrAsyncChained).toEqualTypeOf<Promise<EffectResult<number, string, never>>>()
+
+const invalidAsyncAndThen = Effect.andThen(Result.ok(1), (value) =>
+  // @ts-expect-error `Effect.andThen` is the synchronous combinator.
+  Promise.resolve(Result.ok(value + 1))
+)
+
+void invalidAsyncAndThen
+
 const mappedDataFirst = Effect.map(source, (user: { id: string }) => user.id)
 
 expectTypeOf<EffectSuccess<typeof mappedDataFirst>>().toEqualTypeOf<string>()
@@ -130,7 +144,7 @@ expectTypeOf<EffectRequirements<typeof mappedErrorWithRequirement>>().toEqualTyp
 
 const chained = pipe(
   source,
-  Effect.andThen((user: { id: string }) =>
+  Effect.andThenAsync((user: { id: string }) =>
     Effect.gen(async function* () {
       const cache = yield* Cache
 
@@ -161,7 +175,7 @@ expectTypeOf<EffectRequirements<typeof finalPipeline>>().toEqualTypeOf<
   ServiceToken<Database> | ServiceToken<Cache>
 >()
 
-const chainedDataFirst = Effect.andThen(source, (user: { id: string }) =>
+const chainedDataFirst = Effect.andThenAsync(source, (user: { id: string }) =>
   Effect.gen(async function* () {
     const cache = yield* Cache
 
@@ -176,7 +190,7 @@ expectTypeOf<EffectRequirements<typeof chainedDataFirst>>().toEqualTypeOf<
 
 const chainedErrors = pipe(
   errorSource,
-  Effect.andThen((value) => {
+  Effect.andThenAsync((value) => {
     void value
 
     return Effect.gen(async function* () {

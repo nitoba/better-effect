@@ -8,7 +8,7 @@ import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
 
 import type { EffectFromGenerator, EffectYield } from './types'
 
-import { andThen, map, mapError } from './combinators'
+import { andThen, andThenAsync, map, mapError } from './combinators'
 
 type AnyResult = ResultType<any, any>
 
@@ -78,5 +78,6 @@ export const Effect = {
   add,
   map,
   mapError,
-  andThen
+  andThen,
+  andThenAsync
 } as const
