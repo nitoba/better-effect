@@ -18,8 +18,16 @@ export type CleanupFailureDiagnostic = {
   readonly error: ScopeCloseError
 }
 
-export type DisposableResource = {
-  [Symbol.dispose]?: () => void
+type SyncDisposableResource = {
+  [Symbol.dispose]: () => void
 
   [Symbol.asyncDispose]?: () => MaybePromise<void>
 }
+
+type AsyncDisposableResource = {
+  [Symbol.dispose]?: () => void
+
+  [Symbol.asyncDispose]: () => MaybePromise<void>
+}
+
+export type DisposableResource = SyncDisposableResource | AsyncDisposableResource

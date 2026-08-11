@@ -12,6 +12,7 @@ import {
 } from '../src/scope'
 
 import type { ScopeOutcome } from '../src/scope'
+import type { DisposableResource } from '../src/scope'
 
 const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
   promise.then(
@@ -152,10 +153,29 @@ describe('Scope', () => {
     expect(disposed).toBe(true)
   })
 
+  test('automatically registers async-only disposable resources', async () => {
+    let disposed = false
+    const scope = Scope.make()
+
+    const resource = await scope.add({
+      async [Symbol.asyncDispose]() {
+        await Promise.resolve()
+        disposed = true
+      }
+    })
+
+    expect(resource[Symbol.asyncDispose]).toBeFunction()
+
+    await scope.close()
+
+    expect(disposed).toBe(true)
+  })
+
   test('rejects resources without a disposer', async () => {
     const scope = Scope.make()
 
-    const error = await captureRejection(scope.add({}))
+    const invalid = {} as unknown as DisposableResource
+    const error = await captureRejection(scope.add(invalid))
 
     expect(error).toBeInstanceOf(ResourceNotDisposableError)
   })
@@ -177,6 +197,81 @@ describe('Scope', () => {
     await scope.close()
 
     expect(events).toEqual(['asyncDispose'])
+  })
+
+  test('disposes a resource immediately when adding to a closing Scope', async () => {
+    let releaseClosingScope!: () => void
+    let closingStarted = false
+    let disposed = false
+    const scope = Scope.make()
+
+    scope.addFinalizer(
+      () =>
+        new Promise<void>((resolve) => {
+          closingStarted = true
+          releaseClosingScope = resolve
+        })
+    )
+
+    const closing = scope.close()
+
+    while (!closingStarted) {
+      await Promise.resolve()
+    }
+
+    const resource = {
+      [Symbol.dispose]() {
+        disposed = true
+      }
+    }
+
+    const error = await captureRejection(scope.add(resource))
+
+    expect(error).toBeInstanceOf(ScopeClosedError)
+    expect(disposed).toBe(true)
+
+    releaseClosingScope()
+    await closing
+  })
+
+  test('preserves registration and immediate disposal failures', async () => {
+    let releaseClosingScope!: () => void
+    let closingStarted = false
+    const disposalFailure = new Error('dispose failed')
+    const scope = Scope.make()
+
+    scope.addFinalizer(
+      () =>
+        new Promise<void>((resolve) => {
+          closingStarted = true
+          releaseClosingScope = resolve
+        })
+    )
+
+    const closing = scope.close()
+
+    while (!closingStarted) {
+      await Promise.resolve()
+    }
+
+    const error = await captureRejection(
+      scope.add({
+        [Symbol.dispose]() {
+          throw disposalFailure
+        }
+      })
+    )
+
+    expect(error).toBeInstanceOf(AggregateError)
+
+    if (error instanceof AggregateError) {
+      expect(error.errors).toEqual(
+        expect.arrayContaining([expect.any(ScopeClosedError), disposalFailure])
+      )
+    }
+
+    releaseClosingScope()
+    await closing
   })
 
   test('runs every finalizer when one fails', async () => {

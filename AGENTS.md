@@ -251,6 +251,16 @@ backend cleanup. Do not add a separate ManagedRuntime abstraction for this lifec
 
 `Resource` remains a compatibility facade over Scope until explicitly deprecated.
 
+`Effect.add(resource)` registers an already-acquired disposable object in the current
+Scope and yields that same object. It must not acquire the resource or create a Scope;
+without a current Scope it preserves the existing missing-Scope failure. Prefer
+`Effect.acquireRelease` when acquisition is part of the Effect or cleanup needs an
+explicit callback and `ScopeOutcome`.
+
+`DisposableResource` requires a callable `Symbol.dispose` or `Symbol.asyncDispose`.
+Plain or weakly typed values must be narrowed before `Scope.add` or `Effect.add`,
+although runtime validation still rejects unsafe values without either protocol.
+
 Never register `LayerProvider.release` directly into a DI container disposer.
 
 ### Scope hierarchy

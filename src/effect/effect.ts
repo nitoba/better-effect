@@ -4,7 +4,7 @@ import type { Err, Result as ResultType, UnhandledException } from 'better-resul
 
 import { Scope } from '../scope'
 
-import type { MaybePromise, ScopeOutcome } from '../scope'
+import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
 
 import type { EffectFromGenerator, EffectYield } from './types'
 
@@ -56,7 +56,22 @@ export function acquireRelease<R>(
   return Result.await(Result.tryPromise(() => scope.acquire(acquire, release)))
 }
 
+/**
+ * Register an already-acquired disposable resource in the current Scope.
+ *
+ * Registration failures are represented in the Effect Result error channel;
+ * disposal failures remain owned by Scope cleanup.
+ */
+export function add<R extends DisposableResource>(
+  resource: R
+): AsyncGenerator<Err<never, UnhandledException>, R, unknown> {
+  const scope = Scope.current()
+
+  return Result.await(Result.tryPromise(() => scope.add(resource)))
+}
+
 export const Effect = {
   gen,
-  acquireRelease
+  acquireRelease,
+  add
 } as const

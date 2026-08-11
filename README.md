@@ -298,6 +298,30 @@ Acquisition failures are returned through the Effect `Result` error channel. The
 release callback is registered in the current Scope and remains Scope cleanup, so it
 runs when the owning execution closes.
 
+When a resource is already acquired and implements `Symbol.dispose` or
+`Symbol.asyncDispose`, `Effect.add()` registers it in the current Scope and yields the
+same object back to the program:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const file = await createTemporaryFile()
+    const ownedFile = yield* Effect.add(file)
+
+    return Result.ok(await readFile(ownedFile))
+  })
+)
+```
+
+`Effect.add()` does not acquire the resource or create a Scope. It must run inside a
+managed execution such as `runtime.run()` or `Scope.run()`; without a current Scope,
+it preserves the existing missing-Scope failure. The resource is disposed when that
+Scope closes, with `Symbol.asyncDispose` preferred when both protocols exist.
+
+Use `Effect.acquireRelease()` when acquisition belongs in the Effect and cleanup needs
+an explicit callback or the final `ScopeOutcome`; use `Effect.add()` for an
+already-acquired JavaScript disposable.
+
 ```ts
 const result = await runtime.run(() =>
   Effect.gen(async function* () {
@@ -321,6 +345,11 @@ Disposable objects can be registered directly:
 ```ts
 const file = await scope.add(await createTemporaryFile())
 ```
+
+`DisposableResource` requires a callable `Symbol.dispose` or `Symbol.asyncDispose`,
+so plain or weakly typed objects must be narrowed before registration. Dynamic values
+that cross an unsafe boundary are still checked at runtime and rejected with
+`ResourceNotDisposableError` when neither protocol is present.
 
 Finalizers run sequentially in reverse registration order. `Layer.scoped` and
 `Layer.scopedGen` resources belong to the Runtime root scope and remain alive between

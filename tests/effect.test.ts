@@ -4,7 +4,12 @@ import { Result, UnhandledException } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { Service, ServiceRuntime } from '../src/service'
-import { Scope, ScopeCloseError, ScopeRuntimeNotConfiguredError } from '../src/scope'
+import {
+  Scope,
+  ScopeCloseError,
+  ScopeClosedError,
+  ScopeRuntimeNotConfiguredError
+} from '../src/scope'
 
 import type { ScopeOutcome } from '../src/scope'
 
@@ -85,6 +90,192 @@ describe('Effect.gen', () => {
 
     expect(result).toEqual(Result.ok(42))
     expect(released).toBe(1)
+  })
+
+  test('adds an already-acquired resource and returns the exact value', async () => {
+    let disposed = 0
+    const resource = {
+      value: 42,
+      [Symbol.dispose]() {
+        disposed++
+      }
+    }
+
+    const result = await Scope.run(async () =>
+      Effect.gen(async function* () {
+        const added = yield* Effect.add(resource)
+
+        expect(added).toBe(resource)
+
+        return Result.ok(added)
+      })
+    )
+
+    expect(result).toEqual(Result.ok(resource))
+    expect(disposed).toBe(1)
+  })
+
+  test('awaits asynchronous disposal', async () => {
+    let disposed = false
+    const resource = {
+      async [Symbol.asyncDispose]() {
+        await Promise.resolve()
+        disposed = true
+      }
+    }
+
+    const result = await Scope.run(async () =>
+      Effect.gen(async function* () {
+        const added = yield* Effect.add(resource)
+
+        return Result.ok(added)
+      })
+    )
+
+    expect(result).toEqual(Result.ok(resource))
+    expect(disposed).toBe(true)
+  })
+
+  test('prefers asynchronous disposal for dual-protocol resources', async () => {
+    const events: string[] = []
+    const resource = {
+      [Symbol.dispose]() {
+        events.push('dispose')
+      },
+
+      async [Symbol.asyncDispose]() {
+        events.push('asyncDispose')
+      }
+    }
+
+    await Scope.run(async () =>
+      Effect.gen(async function* () {
+        yield* Effect.add(resource)
+
+        return Result.ok(true)
+      })
+    )
+
+    expect(events).toEqual(['asyncDispose'])
+  })
+
+  test('disposes resources after a final Result error', async () => {
+    let disposed = 0
+    const resource = {
+      [Symbol.dispose]() {
+        disposed++
+      }
+    }
+
+    const result = await Scope.run(async () =>
+      Effect.gen(async function* () {
+        yield* Effect.add(resource)
+
+        return Result.err<number, 'failed'>('failed')
+      })
+    )
+
+    expect(result).toEqual(Result.err('failed'))
+    expect(disposed).toBe(1)
+  })
+
+  test('disposes resources when the surrounding program throws', async () => {
+    let disposed = 0
+    const programFailure = new Error('program failed')
+    const resource = {
+      [Symbol.dispose]() {
+        disposed++
+      }
+    }
+
+    const error = await captureRejection(
+      Scope.run(async () => {
+        await Effect.gen(async function* () {
+          yield* Effect.add(resource)
+
+          return Result.ok(true)
+        })
+
+        throw programFailure
+      })
+    )
+
+    expect(error).toBe(programFailure)
+    expect(disposed).toBe(1)
+  })
+
+  test('disposes resources when the surrounding program rejects', async () => {
+    let disposed = 0
+    const programFailure = new Error('program rejected')
+    const resource = {
+      [Symbol.dispose]() {
+        disposed++
+      }
+    }
+
+    const error = await captureRejection(
+      Scope.run(async () => {
+        await Effect.gen(async function* () {
+          yield* Effect.add(resource)
+
+          return Result.ok(true)
+        })
+
+        return Promise.reject(programFailure)
+      })
+    )
+
+    expect(error).toBe(programFailure)
+    expect(disposed).toBe(1)
+  })
+
+  test('reports add disposal failures as Scope cleanup failures', async () => {
+    const disposalFailure = new Error('dispose failed')
+    const resource = {
+      [Symbol.dispose]() {
+        throw disposalFailure
+      }
+    }
+
+    const error = await captureRejection(
+      Scope.run(async () =>
+        Effect.gen(async function* () {
+          yield* Effect.add(resource)
+
+          return Result.ok(true)
+        })
+      )
+    )
+
+    expect(error).toBeInstanceOf(ScopeCloseError)
+
+    if (error instanceof ScopeCloseError) {
+      expect(error.causes).toEqual([disposalFailure])
+    }
+  })
+
+  test('preserves a thrown program cause over add disposal failure', async () => {
+    const programFailure = new Error('program failed')
+    const disposalFailure = new Error('dispose failed')
+    const resource = {
+      [Symbol.dispose]() {
+        throw disposalFailure
+      }
+    }
+
+    const error = await captureRejection(
+      Scope.run(async () => {
+        await Effect.gen(async function* () {
+          yield* Effect.add(resource)
+
+          return Result.ok(true)
+        })
+
+        throw programFailure
+      })
+    )
+
+    expect(error).toBe(programFailure)
   })
 
   test('releases resources when the Effect result is an error', async () => {
@@ -223,6 +414,125 @@ describe('Effect.gen', () => {
     )
 
     expect((error as { cause?: unknown }).cause).toBeInstanceOf(ScopeRuntimeNotConfiguredError)
+  })
+
+  test('preserves the existing missing Scope failure for add', async () => {
+    let disposed = 0
+    const resource = {
+      [Symbol.dispose]() {
+        disposed++
+      }
+    }
+
+    const error = await captureRejection(
+      Effect.gen(async function* () {
+        const added = yield* Effect.add(resource)
+
+        return Result.ok(added)
+      })
+    )
+
+    expect((error as { cause?: unknown }).cause).toBeInstanceOf(ScopeRuntimeNotConfiguredError)
+    expect(disposed).toBe(0)
+  })
+
+  test('normalizes add registration races and disposes immediately', async () => {
+    let releaseClosingScope!: () => void
+    let closingStarted = false
+    let disposed = 0
+    const scope = Scope.make()
+
+    scope.addFinalizer(
+      () =>
+        new Promise<void>((resolve) => {
+          closingStarted = true
+          releaseClosingScope = resolve
+        })
+    )
+
+    const closing = scope.close()
+
+    while (!closingStarted) {
+      await Promise.resolve()
+    }
+
+    const resource = {
+      [Symbol.dispose]() {
+        disposed++
+      }
+    }
+
+    const result = await Scope.provide(scope, () =>
+      Effect.gen(async function* () {
+        const added = yield* Effect.add(resource)
+
+        return Result.ok(added)
+      })
+    )
+
+    expect(Result.isError(result)).toBe(true)
+
+    if (Result.isError(result)) {
+      expect(result.error).toBeInstanceOf(UnhandledException)
+      expect((result.error as UnhandledException).cause).toBeInstanceOf(ScopeClosedError)
+    }
+
+    expect(disposed).toBe(1)
+
+    releaseClosingScope()
+    await closing
+  })
+
+  test('preserves add registration and immediate disposal failures', async () => {
+    let releaseClosingScope!: () => void
+    let closingStarted = false
+    const disposalFailure = new Error('dispose failed')
+    const scope = Scope.make()
+
+    scope.addFinalizer(
+      () =>
+        new Promise<void>((resolve) => {
+          closingStarted = true
+          releaseClosingScope = resolve
+        })
+    )
+
+    const closing = scope.close()
+
+    while (!closingStarted) {
+      await Promise.resolve()
+    }
+
+    const result = await Scope.provide(scope, () =>
+      Effect.gen(async function* () {
+        const added = yield* Effect.add({
+          [Symbol.dispose]() {
+            throw disposalFailure
+          }
+        })
+
+        return Result.ok(added)
+      })
+    )
+
+    expect(Result.isError(result)).toBe(true)
+
+    if (Result.isError(result)) {
+      expect(result.error).toBeInstanceOf(UnhandledException)
+
+      const cause = (result.error as UnhandledException).cause
+
+      expect(cause).toBeInstanceOf(AggregateError)
+
+      if (cause instanceof AggregateError) {
+        expect(cause.errors).toEqual(
+          expect.arrayContaining([expect.any(ScopeClosedError), disposalFailure])
+        )
+      }
+    }
+
+    releaseClosingScope()
+    await closing
   })
 
   test('reports release failures through Scope cleanup', async () => {

@@ -1,17 +1,24 @@
-import type { DisposableResource, ScopeFinalizer } from './types'
+import type { ScopeFinalizer } from './types'
 
 const SCOPE_SUCCESS = { status: 'success' } as const
 
-export const getDisposeFinalizer = (resource: DisposableResource): ScopeFinalizer | undefined => {
-  const asyncDispose = resource[Symbol.asyncDispose]
+type DisposableCandidate = {
+  [Symbol.dispose]?: unknown
 
-  if (asyncDispose) {
+  [Symbol.asyncDispose]?: unknown
+}
+
+export const getDisposeFinalizer = (resource: unknown): ScopeFinalizer | undefined => {
+  const candidate = Object(resource) as DisposableCandidate
+  const asyncDispose = candidate[Symbol.asyncDispose]
+
+  if (typeof asyncDispose === 'function') {
     return () => asyncDispose.call(resource)
   }
 
-  const dispose = resource[Symbol.dispose]
+  const dispose = candidate[Symbol.dispose]
 
-  if (dispose) {
+  if (typeof dispose === 'function') {
     return () => dispose.call(resource)
   }
 
@@ -19,8 +26,7 @@ export const getDisposeFinalizer = (resource: DisposableResource): ScopeFinalize
 }
 
 export const disposeResource = (resource: unknown): void | PromiseLike<void> => {
-  const candidate = Object(resource) as DisposableResource
-  const finalizer = getDisposeFinalizer(candidate)
+  const finalizer = getDisposeFinalizer(resource)
 
   return finalizer?.(SCOPE_SUCCESS)
 }
