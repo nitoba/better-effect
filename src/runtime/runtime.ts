@@ -18,6 +18,7 @@ import type { ScopeOutcome } from '../scope'
 export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
   private constructor(private readonly built: BuiltLayer<Provided>) {}
 
+  /** Create a long-lived Runtime that owns its Layer resources. */
   static async make<L extends AnyLayer>(
     layer: CompleteLayer<L>,
     backend: LayerBackend,
@@ -28,6 +29,7 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
     return new Runtime<LayerProvided<L>>(built)
   }
 
+  /** Run one program and dispose its Layer resources before resolving. */
   static async run<A, L extends AnyLayer>(
     layer: CompleteLayer<L>,
     backend: LayerBackend,
@@ -85,6 +87,7 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
     return value
   }
 
+  /** Run one execution in this Runtime's child Scope. */
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
     return this.built.run(program)
   }
@@ -93,6 +96,7 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
     return this.built.run(program as CompleteExecution<Provided, A>)
   }
 
+  /** Stop new executions and release the Runtime's Layer resources. */
   dispose(): Promise<void> {
     return this.built.dispose()
   }

@@ -23,6 +23,11 @@ import type { LayerProvider } from './types'
 
 import type { ScopeOutcome } from '../scope'
 
+/**
+ * Low-level Layer handle retained for adapter and test integrations.
+ *
+ * @deprecated Prefer `Runtime.make()` for the public managed runtime API.
+ */
 export interface BuiltLayer<Provided extends AnyServiceToken = AnyServiceToken> {
   readonly backend: LayerBackend
 
@@ -201,6 +206,11 @@ class BuiltLayerImpl<Provided extends AnyServiceToken> implements BuiltLayer<Pro
   }
 }
 
+/**
+ * Build a low-level Layer handle.
+ *
+ * @deprecated Prefer `Runtime.make()` for application code.
+ */
 export const buildLayer = async <L extends AnyLayer>(
   layer: CompleteLayer<L>,
   backend: LayerBackend,

@@ -38,6 +38,10 @@ export class LayerGeneratorYieldError extends Error {
   }
 }
 
+/**
+ * @deprecated The public managed handle is `Runtime`; this error remains for
+ * compatibility with low-level Layer integrations.
+ */
 export class BuiltLayerDisposedError extends Error {
   constructor() {
     super('Cannot run a program using a disposed Layer')

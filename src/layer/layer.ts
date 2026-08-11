@@ -44,6 +44,12 @@ export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
     return Layer.make(service, () => instance)
   }
 
+  /**
+   * Define a dependency-free provider with Runtime-root cleanup.
+   *
+   * The release callback intentionally keeps its compatibility-friendly
+   * one-argument shape. Use `scopedGen` when cleanup needs `ScopeOutcome`.
+   */
   static scoped<S extends ServiceClass<any>>(
     service: S,
     acquire: () => MaybePromise<InstanceType<S>>,
@@ -59,6 +65,7 @@ export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
     ])
   }
 
+  /** Define a contextual provider with Runtime-root, outcome-aware cleanup. */
   static scopedGen<S extends ServiceClass<any>, Yield extends ServiceRequirement<AnyServiceToken>>(
     service: S,
     factory: LayerGenerator<S, Yield>,

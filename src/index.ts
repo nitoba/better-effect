@@ -16,7 +16,6 @@ export type {
 
 export {
   Layer,
-  buildLayer,
   BuiltLayerDisposedError,
   DuplicateServiceError,
   LayerDisposeError,
@@ -25,7 +24,6 @@ export {
 } from './layer'
 
 export type {
-  BuiltLayer,
   LayerBackend,
   LayerMissing,
   LayerProvided,

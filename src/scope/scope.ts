@@ -200,6 +200,13 @@ export const Scope = {
     return ScopeRuntime.current()
   },
 
+  /**
+   * Run a program in a newly owned Scope.
+   *
+   * Scope is independent from `better-result`, so returned values—including
+   * `Result.err`—close this Scope with a successful outcome. Result-aware
+   * outcome classification belongs to `Runtime.run`.
+   */
   run<A>(program: (scope: Scope) => A | PromiseLike<A>): Promise<Awaited<A>> {
     const scope = new ScopeImpl()
 
