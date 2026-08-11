@@ -1,8 +1,15 @@
 import { ServiceRuntime } from '../service'
 
-import { Scope } from '../scope'
+import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
 import { ScopeRuntime } from '../scope/runtime'
+
+import {
+  classifyRuntimeOutcome,
+  type CleanupFailureObserver,
+  type RuntimeOptions,
+  type RuntimeShutdownDiagnostic
+} from '../runtime/outcome'
 
 import { BuiltLayerDisposedError, LayerDisposeError, LayerRegistrationError } from './errors'
 
@@ -12,13 +19,17 @@ import type { Layer } from './layer'
 
 import type { LayerProvider } from './types'
 
+import type { ScopeOutcome } from '../scope'
+
 export interface BuiltLayer {
   readonly backend: LayerBackend
 
   run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>>
 
-  dispose(): Promise<void>
+  dispose(outcome?: ScopeOutcome): Promise<void>
 }
+
+const SCOPE_SUCCESS: ScopeOutcome = Object.freeze({ status: 'success' })
 
 const normalizeDisposeCauses = (cause: unknown): readonly unknown[] => {
   if (cause instanceof AggregateError) {
@@ -28,7 +39,25 @@ const normalizeDisposeCauses = (cause: unknown): readonly unknown[] => {
   return [cause]
 }
 
-const bindProviderToScope = (provider: LayerProvider, rootScope: Scope): LayerProvider => ({
+const notifyShutdownFailure = async (
+  observer: CleanupFailureObserver | undefined,
+  diagnostic: RuntimeShutdownDiagnostic
+): Promise<void> => {
+  if (!observer) {
+    return
+  }
+
+  try {
+    await observer(diagnostic)
+  } catch {
+    // Shutdown diagnostics are best effort and never affect the primary result.
+  }
+}
+
+const bindProviderToScope = (
+  provider: LayerProvider,
+  rootScope: CloseableScope
+): LayerProvider => ({
   service: provider.service,
 
   acquire: () =>
@@ -53,7 +82,8 @@ class BuiltLayerImpl implements BuiltLayer {
 
   constructor(
     readonly backend: LayerBackend,
-    private readonly rootScope: Scope
+    private readonly rootScope: CloseableScope,
+    private readonly onCleanupFailure: CleanupFailureObserver | undefined
   ) {}
 
   run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
@@ -99,13 +129,22 @@ class BuiltLayerImpl implements BuiltLayer {
   }
 
   private runExecution<A>(
-    executionScope: Scope,
+    executionScope: CloseableScope,
     program: () => A | PromiseLike<A>
   ): Promise<Awaited<A>> {
-    return runScoped(executionScope, () => ServiceRuntime.run(this.backend, program))
+    const options = this.onCleanupFailure
+      ? {
+          classify: classifyRuntimeOutcome,
+          onCleanupFailure: this.onCleanupFailure
+        }
+      : {
+          classify: classifyRuntimeOutcome
+        }
+
+    return runScoped(executionScope, () => ServiceRuntime.run(this.backend, program), options)
   }
 
-  dispose(): Promise<void> {
+  dispose(outcome: ScopeOutcome = SCOPE_SUCCESS): Promise<void> {
     if (this.disposePromise) {
       return this.disposePromise
     }
@@ -114,18 +153,21 @@ class BuiltLayerImpl implements BuiltLayer {
 
     const executions = [...this.executions]
 
-    this.disposePromise = this.performDispose(executions)
+    this.disposePromise = this.performDispose(executions, outcome)
 
     return this.disposePromise
   }
 
-  private async performDispose(executions: readonly Promise<unknown>[]): Promise<void> {
+  private async performDispose(
+    executions: readonly Promise<unknown>[],
+    outcome: ScopeOutcome
+  ): Promise<void> {
     const failures: unknown[] = []
 
     await Promise.allSettled(executions)
 
     try {
-      await ServiceRuntime.run(this.backend, () => this.rootScope.close())
+      await ServiceRuntime.run(this.backend, () => this.rootScope.close(outcome))
     } catch (cause) {
       failures.push(cause)
     }
@@ -139,7 +181,14 @@ class BuiltLayerImpl implements BuiltLayer {
     this.state = 'disposed'
 
     if (failures.length > 0) {
-      throw new LayerDisposeError(failures.flatMap(normalizeDisposeCauses))
+      const error = new LayerDisposeError(failures.flatMap(normalizeDisposeCauses))
+
+      await notifyShutdownFailure(this.onCleanupFailure, {
+        outcome,
+        error
+      })
+
+      throw error
     }
   }
 
@@ -150,7 +199,11 @@ class BuiltLayerImpl implements BuiltLayer {
   }
 }
 
-export const buildLayer = async (layer: Layer<any>, backend: LayerBackend): Promise<BuiltLayer> => {
+export const buildLayer = async (
+  layer: Layer<any>,
+  backend: LayerBackend,
+  options: RuntimeOptions = {}
+): Promise<BuiltLayer> => {
   const rootScope = Scope.make()
   let current: LayerProvider | undefined
 
@@ -161,10 +214,14 @@ export const buildLayer = async (layer: Layer<any>, backend: LayerBackend): Prom
       await backend.register(bindProviderToScope(provider, rootScope))
     }
   } catch (registrationCause) {
+    const outcome: ScopeOutcome = {
+      status: 'failure',
+      cause: registrationCause
+    }
     const cleanupCauses: unknown[] = []
 
     try {
-      await rootScope.close()
+      await ServiceRuntime.run(backend, () => rootScope.close(outcome))
     } catch (cause) {
       cleanupCauses.push(cause)
     }
@@ -175,16 +232,25 @@ export const buildLayer = async (layer: Layer<any>, backend: LayerBackend): Prom
       cleanupCauses.push(cause)
     }
 
+    if (cleanupCauses.length > 0) {
+      const shutdownError = new LayerDisposeError(cleanupCauses.flatMap(normalizeDisposeCauses))
+
+      await notifyShutdownFailure(options.onCleanupFailure, {
+        outcome,
+        error: shutdownError
+      })
+    }
+
     let cleanupCause: unknown
 
     if (cleanupCauses.length === 1) {
       cleanupCause = cleanupCauses[0]
     } else if (cleanupCauses.length > 1) {
-      cleanupCause = new AggregateError(cleanupCauses, 'Layer registration cleanup failed')
+      cleanupCause = new LayerDisposeError(cleanupCauses.flatMap(normalizeDisposeCauses))
     }
 
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new BuiltLayerImpl(backend, rootScope)
+  return new BuiltLayerImpl(backend, rootScope, options.onCleanupFailure)
 }

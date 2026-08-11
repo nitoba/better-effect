@@ -12,6 +12,12 @@ export {
 
 export type { BuiltLayer } from './runtime'
 
+export type {
+  CleanupFailureObserver,
+  RuntimeOptions,
+  RuntimeShutdownDiagnostic
+} from '../runtime/outcome'
+
 export type { LayerBackend } from './backend'
 
 export type {

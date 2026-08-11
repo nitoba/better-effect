@@ -62,6 +62,14 @@ export {
   ScopeRuntimeNotConfiguredError
 } from './scope'
 
-export type { DisposableResource, ScopeFinalizer } from './scope'
+export type {
+  CleanupFailureDiagnostic,
+  CloseableScope,
+  DisposableResource,
+  ScopeFinalizer,
+  ScopeOutcome
+} from './scope'
 
 export { Runtime } from './runtime'
+
+export type { CleanupFailureObserver, RuntimeOptions, RuntimeShutdownDiagnostic } from './runtime'

@@ -182,6 +182,22 @@ A different backend can implement the same resolver/backend contracts without ch
 inside `runtime.run()` belong to that execution and are released automatically when it
 finishes:
 
+The contextual `Scope` is a non-owning capability: it can acquire resources, register
+finalizers, and fork children, but it cannot close the lifetime that owns it. Owners
+receive a `CloseableScope` from `Scope.make()` or `scope.fork()` and remain responsible
+for closing it:
+
+```ts
+const scope = yield * Scope
+const child = scope.fork()
+
+try {
+  await Scope.provide(child, () => processBatch())
+} finally {
+  await child.close()
+}
+```
+
 For the common acquire-and-release case, `Effect.acquireRelease()` keeps the same
 lifetime semantics without exposing `Scope` in the program. It is an async yieldable
 for `Effect.gen`:
@@ -191,7 +207,10 @@ const result = await runtime.run(() =>
   Effect.gen(async function* () {
     const connection = yield* Effect.acquireRelease(
       () => database.reserve(),
-      (connection) => connection.release()
+      (connection, outcome) => {
+        void outcome
+        return connection.release()
+      }
     )
 
     return Result.ok(await useConnection(connection))
@@ -210,7 +229,10 @@ const result = await runtime.run(() =>
 
     const connection = await scope.acquire(
       () => database.reserve(),
-      (connection) => connection.release()
+      (connection, outcome) => {
+        void outcome
+        return connection.release()
+      }
     )
 
     return Result.ok(await useConnection(connection))
@@ -249,6 +271,24 @@ try {
 isolated scopes, and `runtime.dispose()` stops accepting new executions, waits for
 active executions to finish, then closes the Runtime root scope and its Layer resources.
 
+The final result is classified only at the execution boundary. Plain values and
+`Result.ok` close the execution with `{ status: 'success' }`; `Result.err` and thrown
+exceptions close it with `{ status: 'failure', cause }`. Intermediate Results do not
+change the outcome. Release callbacks receive this outcome, which makes commit/rollback
+cleanup possible without adding a transaction abstraction.
+
+For example, a transaction can choose its final action from the outcome:
+
+```ts
+const transaction =
+  yield *
+  Effect.acquireRelease(
+    () => database.begin(),
+    (transaction, outcome) =>
+      outcome.status === 'success' ? transaction.commit() : transaction.rollback()
+  )
+```
+
 The ownership tree is:
 
 ```text
@@ -271,11 +311,14 @@ close the root Scope
 dispose the backend
 ```
 
-An execution Scope is always closed before its execution Promise settles. If both the
-program and execution cleanup fail, the returned error preserves both causes with the
-program failure first. Calls to `runtime.run()` after disposal begins fail with
-`BuiltLayerDisposedError` without invoking the program. Shutdown has no cancellation or
-timeout mechanism and is intended to be initiated outside the execution being awaited.
+An execution Scope is always closed before its execution Promise settles. The precedence
+is `program failure > cleanup failure > program success`: a failed program preserves its
+exact `Result.err` or exception, while a successful program rejects with a cleanup error.
+Configure `onCleanupFailure` on `buildLayer` or `Runtime.make` to receive one best-effort
+diagnostic for suppressed execution or shutdown cleanup failures. Calls to `runtime.run()`
+after disposal begins fail with `BuiltLayerDisposedError` without invoking the program.
+Shutdown has no cancellation or timeout mechanism and is intended to be initiated outside
+the execution being awaited.
 
 ## Standalone resource helper
 

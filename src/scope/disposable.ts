@@ -1,5 +1,7 @@
 import type { DisposableResource, ScopeFinalizer } from './types'
 
+const SCOPE_SUCCESS = { status: 'success' } as const
+
 export const getDisposeFinalizer = (resource: DisposableResource): ScopeFinalizer | undefined => {
   const asyncDispose = resource[Symbol.asyncDispose]
 
@@ -20,5 +22,5 @@ export const disposeResource = (resource: unknown): void | PromiseLike<void> => 
   const candidate = Object(resource) as DisposableResource
   const finalizer = getDisposeFinalizer(candidate)
 
-  return finalizer?.()
+  return finalizer?.(SCOPE_SUCCESS)
 }

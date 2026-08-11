@@ -8,7 +8,7 @@ import {
   type EffectRequirements,
   type EffectSuccess
 } from '../../src/effect'
-import { Scope } from '../../src/scope'
+import { Scope, type ScopeOutcome } from '../../src/scope'
 import { Service, type ServiceRequirements, type ServiceToken } from '../../src/service'
 
 class Database extends Service<Database>() {
@@ -106,8 +106,9 @@ const scopeProgram = Effect.gen(async function* () {
 const acquireReleaseProgram = Effect.gen(async function* () {
   const connection = yield* Effect.acquireRelease(
     async () => new Connection(),
-    async (resource) => {
+    async (resource, outcome) => {
       void resource
+      expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
     }
   )
 
@@ -127,6 +128,17 @@ const serviceAndAcquireReleaseProgram = Effect.gen(async function* () {
   return Result.ok({ database, connection })
 })
 
+const legacyReleaseProgram = Effect.gen(async function* () {
+  const connection = yield* Effect.acquireRelease(
+    () => new Connection(),
+    (resource) => {
+      void resource
+    }
+  )
+
+  return Result.ok(connection)
+})
+
 expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<ServiceToken<Database>>()
 
 expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTypeOf<
@@ -136,6 +148,9 @@ expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTy
 expectTypeOf<EffectSuccess<typeof acquireReleaseProgram>>().toEqualTypeOf<Connection>()
 expectTypeOf<EffectError<typeof acquireReleaseProgram>>().toEqualTypeOf<UnhandledException>()
 expectTypeOf<EffectRequirements<typeof acquireReleaseProgram>>().toEqualTypeOf<never>()
+expectTypeOf<EffectSuccess<typeof legacyReleaseProgram>>().toEqualTypeOf<Connection>()
+expectTypeOf<EffectError<typeof legacyReleaseProgram>>().toEqualTypeOf<UnhandledException>()
+expectTypeOf<EffectRequirements<typeof legacyReleaseProgram>>().toEqualTypeOf<never>()
 
 expectTypeOf<EffectSuccess<typeof serviceAndAcquireReleaseProgram>>().toEqualTypeOf<{
   database: Database

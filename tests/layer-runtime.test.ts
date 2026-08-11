@@ -3,8 +3,20 @@ import { describe, expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
-import { BuiltLayerDisposedError, Layer, buildLayer, type LayerBackend } from '../src/layer'
+import {
+  BuiltLayerDisposedError,
+  Layer,
+  LayerDisposeError,
+  LayerRegistrationError,
+  buildLayer,
+  type LayerBackend
+} from '../src/layer'
+import { Runtime } from '../src/runtime'
 import { Scope, ScopeCloseError } from '../src/scope'
+
+import type { CleanupFailureDiagnostic, ScopeOutcome } from '../src/scope'
+
+import type { RuntimeShutdownDiagnostic } from '../src/runtime'
 
 import type { LayerProvider } from '../src/layer/types'
 
@@ -14,6 +26,12 @@ import {
   ServiceRuntimeNotConfiguredError,
   type AnyServiceToken
 } from '../src/service'
+
+const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
+  promise.then(
+    () => undefined,
+    (cause) => cause
+  )
 
 class ExampleService extends Service<ExampleService>() {
   value(): number {
@@ -30,7 +48,33 @@ class MemoryLayerBackend implements LayerBackend {
 
   onDispose: (() => void) | undefined
 
-  register(provider: LayerProvider): void {
+  registerFailure: Error | undefined
+
+  registerFailureAfterFirst: Error | undefined
+
+  acquireBeforeRegistrationFailure = false
+
+  disposeFailure: Error | undefined
+
+  register(provider: LayerProvider): void | PromiseLike<void> {
+    if (this.registerFailure !== undefined) {
+      throw this.registerFailure
+    }
+
+    if (this.registerFailureAfterFirst !== undefined && this.providers.size > 0) {
+      if (this.acquireBeforeRegistrationFailure) {
+        const first = this.providers.values().next().value
+
+        if (first) {
+          return this.resolve(first.service).then(() => {
+            throw this.registerFailureAfterFirst
+          })
+        }
+      }
+
+      throw this.registerFailureAfterFirst
+    }
+
     this.providers.set(provider.service, provider)
   }
 
@@ -58,6 +102,10 @@ class MemoryLayerBackend implements LayerBackend {
     this.instances.clear()
 
     this.disposed = true
+
+    if (this.disposeFailure !== undefined) {
+      throw this.disposeFailure
+    }
   }
 }
 
@@ -287,12 +335,7 @@ describe('buildLayer', () => {
           (cause) => cause
         )
 
-      expect(error).toBeInstanceOf(AggregateError)
-
-      if (error instanceof AggregateError) {
-        expect(error.errors[0]).toBe(programFailure)
-        expect(error.errors[1]).toBeInstanceOf(ScopeCloseError)
-      }
+      expect(error).toBe(programFailure)
     } finally {
       await runtime.dispose()
     }
@@ -608,5 +651,527 @@ describe('buildLayer', () => {
     await Promise.all([first, second])
 
     expect(released).toBe(1)
+  })
+
+  test('classifies Result errors at the Runtime boundary', async () => {
+    const programFailure = new Error('program failed')
+    const cleanupFailure = new Error('cleanup failed')
+    const expected = Result.err(programFailure)
+    const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend(),
+      {
+        onCleanupFailure: (diagnostic) => {
+          diagnostics.push(diagnostic)
+        }
+      }
+    )
+
+    try {
+      const result = await runtime.run(async () => {
+        Scope.current().addFinalizer(() => {
+          throw cleanupFailure
+        })
+
+        return expected
+      })
+
+      expect(result).toBe(expected)
+      expect(diagnostics).toHaveLength(1)
+      expect(diagnostics[0]?.outcome).toEqual({
+        status: 'failure',
+        cause: programFailure
+      })
+      expect(diagnostics[0]?.error).toBeInstanceOf(ScopeCloseError)
+
+      if (diagnostics[0]?.error instanceof ScopeCloseError) {
+        expect(diagnostics[0].error.causes).toEqual([cleanupFailure])
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('makes execution cleanup failure primary after success', async () => {
+    const cleanupFailure = new Error('cleanup failed')
+    const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend(),
+      {
+        onCleanupFailure: (diagnostic) => {
+          diagnostics.push(diagnostic)
+        }
+      }
+    )
+
+    try {
+      const error = await captureRejection(
+        runtime.run(async () => {
+          Scope.current().addFinalizer(() => {
+            throw cleanupFailure
+          })
+
+          return Result.ok(true)
+        })
+      )
+
+      expect(error).toBeInstanceOf(ScopeCloseError)
+      expect(diagnostics).toHaveLength(1)
+      expect(diagnostics[0]?.outcome).toEqual({ status: 'success' })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('reports cleanup failure after a plain execution value', async () => {
+    const cleanupFailure = new Error('cleanup failed')
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const error = await captureRejection(
+        runtime.run(async () => {
+          Scope.current().addFinalizer(() => {
+            throw cleanupFailure
+          })
+
+          return 42
+        })
+      )
+
+      expect(error).toBeInstanceOf(ScopeCloseError)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('notifies once with all execution cleanup failures', async () => {
+    const firstFailure = new Error('first cleanup failed')
+    const secondFailure = new Error('second cleanup failed')
+    const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend(),
+      {
+        onCleanupFailure: (diagnostic) => {
+          diagnostics.push(diagnostic)
+        }
+      }
+    )
+
+    try {
+      await captureRejection(
+        runtime.run(async () => {
+          const scope = Scope.current()
+
+          scope.addFinalizer(() => {
+            throw firstFailure
+          })
+          scope.addFinalizer(() => {
+            throw secondFailure
+          })
+
+          return Result.ok(true)
+        })
+      )
+
+      expect(diagnostics).toHaveLength(1)
+
+      if (diagnostics[0]?.error instanceof ScopeCloseError) {
+        expect(diagnostics[0].error.causes).toEqual([secondFailure, firstFailure])
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('ignores cleanup observer failures', async () => {
+    const cleanupFailure = new Error('cleanup failed')
+    const observerFailure = new Error('observer failed')
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend(),
+      {
+        onCleanupFailure: () => {
+          throw observerFailure
+        }
+      }
+    )
+
+    try {
+      const error = await captureRejection(
+        runtime.run(async () => {
+          Scope.current().addFinalizer(() => {
+            throw cleanupFailure
+          })
+
+          return Result.ok(true)
+        })
+      )
+
+      expect(error).toBeInstanceOf(ScopeCloseError)
+
+      if (error instanceof ScopeCloseError) {
+        expect(error.causes).toEqual([cleanupFailure])
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('passes the final failure outcome to Effect.acquireRelease in Runtime', async () => {
+    let observed: ScopeOutcome | undefined
+    const expected = Result.err(new Error('program failed'))
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const result = await runtime.run(() =>
+        Effect.gen(async function* () {
+          yield* Effect.acquireRelease(
+            () => ({ value: true }),
+            (_resource, outcome) => {
+              observed = outcome
+            }
+          )
+
+          return expected
+        })
+      )
+
+      expect(result).toBe(expected)
+      expect(observed).toEqual({
+        status: 'failure',
+        cause: expected.error
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('classifies only the final recovered Result outcome', async () => {
+    let observed: ScopeOutcome | undefined
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const result = await runtime.run(() =>
+        Effect.gen(async function* () {
+          const inner = Result.err('recoverable')
+          const recovered = Result.isError(inner) ? 'recovered' : 'unexpected'
+
+          yield* Effect.acquireRelease(
+            () => ({ value: true }),
+            (_resource, outcome) => {
+              observed = outcome
+            }
+          )
+
+          return Result.ok(recovered)
+        })
+      )
+
+      expect(result).toEqual(Result.ok('recovered'))
+      expect(observed).toEqual({ status: 'success' })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('reports execution cleanup while preserving a thrown program cause', async () => {
+    const programFailure = new Error('program failed')
+    const cleanupFailure = new Error('cleanup failed')
+    const diagnostics: Array<CleanupFailureDiagnostic | RuntimeShutdownDiagnostic> = []
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend(),
+      {
+        onCleanupFailure: (diagnostic) => {
+          diagnostics.push(diagnostic)
+        }
+      }
+    )
+
+    try {
+      const error = await captureRejection(
+        runtime.run(async () => {
+          Scope.current().addFinalizer(() => {
+            throw cleanupFailure
+          })
+
+          throw programFailure
+        })
+      )
+
+      expect(error).toBe(programFailure)
+      expect(diagnostics).toHaveLength(1)
+      expect(diagnostics[0]?.outcome).toEqual({
+        status: 'failure',
+        cause: programFailure
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('keeps root finalizers in the ServiceRuntime during long-lived disposal', async () => {
+    let observed: ScopeOutcome | undefined
+    let resolverAvailable = false
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, async () => {
+        Scope.current().addFinalizer(async (outcome) => {
+          observed = outcome
+          resolverAvailable =
+            (await ServiceRuntime.resolve(ExampleService)) instanceof ExampleService
+        })
+
+        return new ExampleService()
+      }),
+      new MemoryLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+    await runtime.run(() => Result.err(new Error('execution failed')))
+    await runtime.dispose()
+
+    expect(observed).toEqual({ status: 'success' })
+    expect(resolverAvailable).toBe(true)
+  })
+
+  test('passes the one-shot program outcome to the root Scope', async () => {
+    let observed: ScopeOutcome | undefined
+    const programFailure = new Error('program failed')
+    const expected = Result.err(programFailure)
+
+    const result = await Runtime.run(
+      Layer.make(ExampleService, async () => {
+        Scope.current().addFinalizer((outcome) => {
+          observed = outcome
+        })
+
+        return new ExampleService()
+      }),
+      new MemoryLayerBackend(),
+      async () => {
+        await ServiceRuntime.resolve(ExampleService)
+
+        return expected
+      }
+    )
+
+    expect(result).toBe(expected)
+    expect(observed).toEqual({
+      status: 'failure',
+      cause: programFailure
+    })
+  })
+
+  test('aggregates root and backend failures while preserving a Result error', async () => {
+    const rootFailure = new Error('root cleanup failed')
+    const backendFailure = new Error('backend cleanup failed')
+    const programFailure = new Error('program failed')
+    const expected = Result.err(programFailure)
+    const diagnostics: RuntimeShutdownDiagnostic[] = []
+    const backend = new MemoryLayerBackend()
+    backend.disposeFailure = backendFailure
+
+    const result = await Runtime.run(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          throw rootFailure
+        }
+      ),
+      backend,
+      async () => {
+        await ServiceRuntime.resolve(ExampleService)
+
+        return expected
+      },
+      {
+        onCleanupFailure: (diagnostic) => {
+          if (diagnostic.error instanceof LayerDisposeError) {
+            diagnostics.push(diagnostic)
+          }
+        }
+      }
+    )
+
+    expect(result).toBe(expected)
+    expect(backend.disposed).toBe(true)
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]?.outcome).toEqual({
+      status: 'failure',
+      cause: programFailure
+    })
+    expect(diagnostics[0]?.error.causes).toHaveLength(2)
+    expect(diagnostics[0]?.error.causes[0]).toBeInstanceOf(ScopeCloseError)
+    expect(diagnostics[0]?.error.causes[1]).toBe(backendFailure)
+  })
+
+  test('exposes root and backend failures after one-shot success', async () => {
+    const rootFailure = new Error('root cleanup failed')
+    const backendFailure = new Error('backend cleanup failed')
+    const backend = new MemoryLayerBackend()
+    backend.disposeFailure = backendFailure
+
+    const error = await captureRejection(
+      Runtime.run(
+        Layer.scoped(
+          ExampleService,
+          () => new ExampleService(),
+          () => {
+            throw rootFailure
+          }
+        ),
+        backend,
+        async () => {
+          await ServiceRuntime.resolve(ExampleService)
+
+          return Result.ok(true)
+        }
+      )
+    )
+
+    expect(error).toBeInstanceOf(LayerDisposeError)
+
+    if (error instanceof LayerDisposeError) {
+      expect(error.causes).toHaveLength(2)
+      expect(error.causes[0]).toBeInstanceOf(ScopeCloseError)
+      expect(error.causes[1]).toBe(backendFailure)
+    }
+
+    expect(backend.disposed).toBe(true)
+  })
+
+  test('preserves a thrown one-shot program failure over shutdown failures', async () => {
+    const programFailure = new Error('program failed')
+    const rootFailure = new Error('root cleanup failed')
+    const backendFailure = new Error('backend cleanup failed')
+    const diagnostics: RuntimeShutdownDiagnostic[] = []
+    const backend = new MemoryLayerBackend()
+    backend.disposeFailure = backendFailure
+
+    const error = await captureRejection(
+      Runtime.run(
+        Layer.scoped(
+          ExampleService,
+          () => new ExampleService(),
+          () => {
+            throw rootFailure
+          }
+        ),
+        backend,
+        async () => {
+          await ServiceRuntime.resolve(ExampleService)
+
+          throw programFailure
+        },
+        {
+          onCleanupFailure: (diagnostic) => {
+            if (diagnostic.error instanceof LayerDisposeError) {
+              diagnostics.push(diagnostic)
+            }
+          }
+        }
+      )
+    )
+
+    expect(error).toBe(programFailure)
+    expect(diagnostics).toHaveLength(1)
+    expect(backend.disposed).toBe(true)
+  })
+
+  test('always attempts backend cleanup after root cleanup fails', async () => {
+    const rootFailure = new Error('root cleanup failed')
+    const backendFailure = new Error('backend cleanup failed')
+    const backend = new MemoryLayerBackend()
+    backend.disposeFailure = backendFailure
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          throw rootFailure
+        }
+      ),
+      backend
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+
+    const disposalError = await captureRejection(runtime.dispose())
+
+    expect(disposalError).toBeInstanceOf(LayerDisposeError)
+    expect(backend.disposed).toBe(true)
+  })
+
+  test('cleans up a partially built layer after registration failure', async () => {
+    class SecondService extends Service<SecondService>() {}
+
+    const registrationFailure = new Error('registration failed')
+    const backendFailure = new Error('backend cleanup failed')
+    let rootOutcome: ScopeOutcome | undefined
+    const diagnostics: RuntimeShutdownDiagnostic[] = []
+    const backend = new MemoryLayerBackend()
+    backend.registerFailureAfterFirst = registrationFailure
+    backend.acquireBeforeRegistrationFailure = true
+    backend.disposeFailure = backendFailure
+
+    const error = await captureRejection(
+      buildLayer(
+        Layer.merge(
+          Layer.make(ExampleService, () => {
+            Scope.current().addFinalizer((outcome) => {
+              rootOutcome = outcome
+            })
+
+            return new ExampleService()
+          }),
+          Layer.make(SecondService, () => new SecondService())
+        ),
+        backend,
+        {
+          onCleanupFailure: (diagnostic) => {
+            if (diagnostic.error instanceof LayerDisposeError) {
+              diagnostics.push(diagnostic)
+            }
+          }
+        }
+      )
+    )
+
+    expect(error).toBeInstanceOf(LayerRegistrationError)
+    expect(backend.disposed).toBe(true)
+    expect(rootOutcome).toEqual({
+      status: 'failure',
+      cause: registrationFailure
+    })
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]?.outcome.status).toBe('failure')
+
+    if (error instanceof LayerRegistrationError) {
+      expect(error.registrationCause).toBe(registrationFailure)
+      expect(error.cleanupCause).toBe(backendFailure)
+    }
   })
 })

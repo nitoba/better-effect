@@ -6,44 +6,42 @@ import { runScoped } from './internal'
 
 import { ScopeRuntime } from './runtime'
 
-import type { DisposableResource, MaybePromise, ScopeFinalizer } from './types'
+import type { DisposableResource, MaybePromise, ScopeFinalizer, ScopeOutcome } from './types'
 
-export class Scope {
-  private readonly children = new Set<Scope>()
+export interface Scope {
+  addFinalizer(finalizer: ScopeFinalizer): void
+
+  acquire<R>(
+    acquire: () => MaybePromise<R>,
+    release: (resource: R, outcome: ScopeOutcome) => MaybePromise<void>
+  ): Promise<R>
+
+  add<R extends DisposableResource>(resource: R): Promise<R>
+
+  fork(): CloseableScope
+}
+
+export interface CloseableScope extends Scope {
+  close(outcome?: ScopeOutcome): Promise<void>
+}
+
+const SCOPE_SUCCESS: ScopeOutcome = Object.freeze({ status: 'success' })
+
+class ScopeImpl implements CloseableScope {
+  private readonly children = new Set<ScopeImpl>()
 
   private readonly finalizers: ScopeFinalizer[] = []
 
   private closePromise: Promise<void> | undefined
 
-  private constructor(private parent?: Scope) {}
+  private closeOutcome: ScopeOutcome | undefined
 
-  static make(): Scope {
-    return new Scope()
-  }
+  constructor(private parent?: ScopeImpl) {}
 
-  static current(): Scope {
-    return ScopeRuntime.current()
-  }
-
-  static provide<A>(scope: Scope, program: () => A): A {
-    return ScopeRuntime.run(scope, program)
-  }
-
-  // oxlint-disable-next-line require-yield
-  static *[Symbol.iterator](): Generator<never, Scope, unknown> {
-    return ScopeRuntime.current()
-  }
-
-  static run<A>(program: (scope: Scope) => A | PromiseLike<A>): Promise<Awaited<A>> {
-    const scope = Scope.make()
-
-    return runScoped(scope, () => program(scope))
-  }
-
-  fork(): Scope {
+  fork(): CloseableScope {
     this.assertOpen()
 
-    const child = new Scope(this)
+    const child = new ScopeImpl(this)
 
     this.children.add(child)
 
@@ -58,19 +56,19 @@ export class Scope {
 
   async acquire<R>(
     acquire: () => MaybePromise<R>,
-    release: (resource: R) => MaybePromise<void>
+    release: (resource: R, outcome: ScopeOutcome) => MaybePromise<void>
   ): Promise<R> {
     this.assertOpen()
 
     const resource = await acquire()
 
     try {
-      this.addFinalizer(() => release(resource))
+      this.addFinalizer((outcome) => release(resource, outcome))
 
       return resource
     } catch (scopeFailure) {
       try {
-        await release(resource)
+        await release(resource, this.closeOutcome ?? SCOPE_SUCCESS)
       } catch (releaseFailure) {
         throw new AggregateError(
           [scopeFailure, releaseFailure],
@@ -95,7 +93,7 @@ export class Scope {
       return resource
     } catch (scopeFailure) {
       try {
-        await finalizer()
+        await finalizer(this.closeOutcome ?? SCOPE_SUCCESS)
       } catch (releaseFailure) {
         throw new AggregateError(
           [scopeFailure, releaseFailure],
@@ -107,17 +105,18 @@ export class Scope {
     }
   }
 
-  close(): Promise<void> {
+  close(outcome: ScopeOutcome = SCOPE_SUCCESS): Promise<void> {
     if (this.closePromise) {
       return this.closePromise
     }
 
-    this.closePromise = Promise.resolve(ScopeRuntime.run(this, () => this.closeInternal()))
+    this.closeOutcome = outcome
+    this.closePromise = ScopeRuntime.run(this, () => this.closeInternal(outcome))
 
     return this.closePromise
   }
 
-  private async closeInternal(): Promise<void> {
+  private async closeInternal(outcome: ScopeOutcome): Promise<void> {
     const failures: unknown[] = []
 
     const children = [...this.children]
@@ -132,9 +131,13 @@ export class Scope {
       }
 
       try {
-        await child.close()
+        await child.close(outcome)
       } catch (cause) {
-        failures.push(cause)
+        if (cause instanceof ScopeCloseError) {
+          failures.push(...cause.causes)
+        } else {
+          failures.push(cause)
+        }
       }
     }
 
@@ -146,7 +149,7 @@ export class Scope {
       }
 
       try {
-        await finalizer()
+        await finalizer(outcome)
       } catch (cause) {
         failures.push(cause)
       }
@@ -178,3 +181,30 @@ export class Scope {
     }
   }
 }
+
+export const Scope = {
+  make(): CloseableScope {
+    return new ScopeImpl()
+  },
+
+  current(): Scope {
+    return ScopeRuntime.current()
+  },
+
+  provide<A>(scope: Scope, program: () => A): A {
+    return ScopeRuntime.run(scope, program)
+  },
+
+  // oxlint-disable-next-line require-yield
+  *[Symbol.iterator](): Generator<never, Scope, unknown> {
+    return ScopeRuntime.current()
+  },
+
+  run<A>(program: (scope: Scope) => A | PromiseLike<A>): Promise<Awaited<A>> {
+    const scope = new ScopeImpl()
+
+    return runScoped(scope, () => program(scope), {
+      classify: () => SCOPE_SUCCESS
+    })
+  }
+} as const

@@ -4,7 +4,7 @@ import type { Err, Result as ResultType, UnhandledException } from 'better-resul
 
 import { Scope } from '../scope'
 
-import type { MaybePromise } from '../scope'
+import type { MaybePromise, ScopeOutcome } from '../scope'
 
 import type { EffectFromGenerator, EffectYield } from './types'
 
@@ -49,7 +49,7 @@ export function gen(body: EffectGenerator): AnyResult | Promise<AnyResult> {
  */
 export function acquireRelease<R>(
   acquire: () => MaybePromise<R>,
-  release: (resource: R) => MaybePromise<void>
+  release: (resource: R, outcome: ScopeOutcome) => MaybePromise<void>
 ): AsyncGenerator<Err<never, UnhandledException>, R, unknown> {
   const scope = Scope.current()
 

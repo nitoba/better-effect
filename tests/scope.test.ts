@@ -11,6 +11,8 @@ import {
   ScopeRuntimeNotConfiguredError
 } from '../src/scope'
 
+import type { ScopeOutcome } from '../src/scope'
+
 const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
   promise.then(
     () => undefined,
@@ -365,6 +367,139 @@ describe('Scope', () => {
     })
   })
 
+  test('passes success and failure outcomes to finalizers', async () => {
+    const successOutcomes: ScopeOutcome[] = []
+    const successScope = Scope.make()
+
+    successScope.addFinalizer((outcome) => {
+      successOutcomes.push(outcome)
+    })
+
+    await successScope.close()
+
+    const failure = new Error('scope failed')
+    const failureOutcomes: ScopeOutcome[] = []
+    const failureScope = Scope.make()
+
+    failureScope.addFinalizer((outcome) => {
+      failureOutcomes.push(outcome)
+    })
+
+    await failureScope.close({ status: 'failure', cause: failure })
+
+    expect(successOutcomes).toEqual([{ status: 'success' }])
+    expect(failureOutcomes).toEqual([{ status: 'failure', cause: failure }])
+  })
+
+  test('first close outcome wins', async () => {
+    const scope = Scope.make()
+    const firstFailure = new Error('first close')
+    let observed: ScopeOutcome | undefined
+
+    scope.addFinalizer((outcome) => {
+      observed = outcome
+    })
+
+    const first = scope.close({ status: 'failure', cause: firstFailure })
+    const second = scope.close()
+
+    expect(second).toBe(first)
+
+    await first
+
+    expect(observed).toEqual({ status: 'failure', cause: firstFailure })
+  })
+
+  test('propagates parent outcomes and preserves a child outcome already in progress', async () => {
+    const parent = Scope.make()
+    const child = parent.fork()
+    const parentFailure = new Error('parent failed')
+    const childOutcomes: ScopeOutcome[] = []
+    const parentOutcomes: ScopeOutcome[] = []
+
+    child.addFinalizer((outcome) => {
+      childOutcomes.push(outcome)
+    })
+
+    parent.addFinalizer((outcome) => {
+      parentOutcomes.push(outcome)
+    })
+
+    await child.close()
+    await parent.close({ status: 'failure', cause: parentFailure })
+
+    expect(childOutcomes).toEqual([{ status: 'success' }])
+    expect(parentOutcomes).toEqual([{ status: 'failure', cause: parentFailure }])
+  })
+
+  test('flattens child close errors in the parent close error', async () => {
+    const parent = Scope.make()
+    const first = parent.fork()
+    const second = parent.fork()
+    const firstFailure = new Error('first child failed')
+    const secondFailure = new Error('second child failed')
+    const parentFailure = new Error('parent failed')
+
+    first.addFinalizer(() => {
+      throw firstFailure
+    })
+
+    second.addFinalizer(() => {
+      throw secondFailure
+    })
+
+    parent.addFinalizer(() => {
+      throw parentFailure
+    })
+
+    const error = await captureRejection(parent.close())
+
+    expect(error).toBeInstanceOf(ScopeCloseError)
+
+    if (error instanceof ScopeCloseError) {
+      expect(error.causes).toEqual([secondFailure, firstFailure, parentFailure])
+      expect(error.causes.some((cause) => cause instanceof ScopeCloseError)).toBe(false)
+    }
+  })
+
+  test('keeps generic Scope.run Result errors as successful Scope outcomes', async () => {
+    let observed: ScopeOutcome | undefined
+    const error = new Error('typed failure')
+
+    const result = await Scope.run(async (scope) => {
+      scope.addFinalizer((outcome) => {
+        observed = outcome
+      })
+
+      return Result.err(error)
+    })
+
+    expect(Result.isError(result)).toBe(true)
+
+    if (Result.isError(result)) {
+      expect(result.error).toBe(error)
+    }
+
+    expect(observed).toEqual({ status: 'success' })
+  })
+
+  test('passes the close outcome to acquired resource releases', async () => {
+    const scope = Scope.make()
+    const failure = new Error('release outcome')
+    let observed: ScopeOutcome | undefined
+
+    await scope.acquire(
+      () => ({ value: true }),
+      (_resource, outcome) => {
+        observed = outcome
+      }
+    )
+
+    await scope.close({ status: 'failure', cause: failure })
+
+    expect(observed).toEqual({ status: 'failure', cause: failure })
+  })
+
   test('preserves program and cleanup failures from Scope.run', async () => {
     const programFailure = new Error('program failed')
     const cleanupFailure = new Error('cleanup failed')
@@ -379,7 +514,6 @@ describe('Scope', () => {
       })
     )
 
-    expect(error).toBeInstanceOf(AggregateError)
-    expect((error as AggregateError).errors).toEqual([programFailure, expect.anything()])
+    expect(error).toBe(programFailure)
   })
 })

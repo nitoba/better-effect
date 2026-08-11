@@ -1,5 +1,7 @@
 export { Scope } from './scope'
 
+export type { CloseableScope } from './scope'
+
 export {
   ResourceNotDisposableError,
   ScopeClosedError,
@@ -7,4 +9,10 @@ export {
   ScopeRuntimeNotConfiguredError
 } from './errors'
 
-export type { DisposableResource, MaybePromise, ScopeFinalizer } from './types'
+export type {
+  CleanupFailureDiagnostic,
+  DisposableResource,
+  MaybePromise,
+  ScopeFinalizer,
+  ScopeOutcome
+} from './types'

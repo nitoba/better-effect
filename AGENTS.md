@@ -226,6 +226,13 @@ child closes, and parent closure closes still-attached children before its own
 finalizers. `Scope.provide()` supplies an existing Scope without closing it; `Scope.run`
 owns the Scope it creates.
 
+The contextual `Scope` capability is non-owning. `Scope.current()` and `yield* Scope`
+expose acquisition, finalizer registration, and child creation, but not `close()`.
+`Scope.make()` and `fork()` return `CloseableScope`, whose owner is responsible for
+closure. `ScopeOutcome` is either `{ status: 'success' }` or
+`{ status: 'failure', cause: unknown }`; finalizers and release callbacks receive the
+chosen outcome. Scope itself must remain independent of `better-result`.
+
 Runtime executions must use child Scopes of the Runtime root. Runtime disposal is
 graceful: reject new runs, wait for active runs, close the root Scope, then perform
 backend cleanup. Do not add a separate ManagedRuntime abstraction for this lifecycle.
@@ -238,8 +245,23 @@ Never register `LayerProvider.release` directly into a DI container disposer.
 
 An execution MUST be registered as active before its program callback can run. Its child
 Scope MUST remain open until the program settles, including when disposal is initiated
-re-entrantly before the program yields. If both the program and child cleanup fail, the
-program failure remains primary while the cleanup failure is preserved.
+re-entrantly before the program yields. The final outcome is classified only at the
+execution boundary: plain values and `Result.ok` are success, `Result.err` is failure,
+and thrown/rejected causes are failure. Intermediate Results MUST NOT change Scope state.
+If both the program and child cleanup fail, the exact program failure remains primary;
+cleanup is preserved in one best-effort diagnostic when an observer is configured.
+
+Scope closure is child-first and LIFO. The first `CloseableScope.close(outcome?)` call
+fixes the outcome and later calls share the same Promise. Parent closure propagates its
+outcome to still-attached children, and nested `ScopeCloseError` causes are flattened.
+
+Cleanup observers are boundary concerns: direct `Scope.close()` MUST NOT invoke one.
+Execution and Runtime shutdown boundaries may notify once with an aggregated diagnostic;
+observer failures are ignored and never alter the primary result. The precedence is:
+
+```text
+program failure > cleanup failure > program success
+```
 
 ### Graceful Runtime disposal
 
@@ -248,6 +270,12 @@ executions, await the active execution snapshot, close the root Scope, and dispo
 backend last. Execution failures MUST NOT prevent root or backend cleanup. Repeated
 disposal calls share one outcome. No cancellation, timeout, Fiber, or forced-shutdown
 machinery should be introduced for this behavior.
+
+One-shot `Runtime.run` closes its execution and root Scopes with the complete final
+outcome, then always attempts backend disposal. Root and backend failures are aggregated
+in that order. A failed program preserves its exact exception or `Result.err`; a
+successful program exposes shutdown cleanup failure. A long-lived Runtime closes its
+root with success regardless of earlier execution outcomes.
 
 ### Resource
 

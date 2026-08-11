@@ -6,6 +6,8 @@ import { Effect } from '../src/effect'
 import { Service, ServiceRuntime } from '../src/service'
 import { Scope, ScopeCloseError, ScopeRuntimeNotConfiguredError } from '../src/scope'
 
+import type { ScopeOutcome } from '../src/scope'
+
 import { TestServiceResolver } from './helpers/test-service-resolver'
 
 class GreetingService extends Service<GreetingService>() {
@@ -98,6 +100,26 @@ describe('Effect.gen', () => {
 
     expect(result).toEqual(Result.err('failed'))
     expect(release).toHaveBeenCalledTimes(1)
+  })
+
+  test('passes the final Scope outcome to acquireRelease releases', async () => {
+    let observed: ScopeOutcome | undefined
+
+    const result = await Scope.run(async () =>
+      Effect.gen(async function* () {
+        yield* Effect.acquireRelease(
+          () => ({ value: 42 }),
+          (_resource, outcome) => {
+            observed = outcome
+          }
+        )
+
+        return Result.err('failed')
+      })
+    )
+
+    expect(result).toEqual(Result.err('failed'))
+    expect(observed).toEqual({ status: 'success' })
   })
 
   test('releases resources when the surrounding program throws', async () => {
@@ -249,11 +271,6 @@ describe('Effect.gen', () => {
       })
     )
 
-    expect(error).toBeInstanceOf(AggregateError)
-
-    if (error instanceof AggregateError) {
-      expect(error.errors[0]).toBe(programFailure)
-      expect(error.errors[1]).toBeInstanceOf(ScopeCloseError)
-    }
+    expect(error).toBe(programFailure)
   })
 })
