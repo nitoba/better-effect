@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Effect, type Runtime } from './better-effect'
+import { Effect, type LayerProvided, type Runtime } from './better-effect'
 import {
   readJson,
   requireUser,
@@ -12,8 +12,11 @@ import {
 } from './http'
 import { AuthService } from './services/auth-service'
 import { TodoService } from './services/todo-service'
+import type { AppLive } from './layers/app-live'
 
-export const createServer = (runtime: Runtime) =>
+type AppRuntime = Runtime<LayerProvided<typeof AppLive>>
+
+export const createServer = (runtime: AppRuntime) =>
   Bun.serve({
     port: Number(process.env.PORT ?? 3333),
 

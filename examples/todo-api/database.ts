@@ -1,7 +1,7 @@
 import { SQL } from 'bun'
 import { Result, UnhandledException, type Result as ResultType } from 'better-result'
 
-import { Effect, Service } from './better-effect'
+import { Service } from './better-effect'
 import { DatabaseFailure } from './errors'
 
 /**
@@ -60,8 +60,6 @@ export class Database extends Service<Database>() {
     operation: string,
     use: (connection: DatabaseConnection) => A | PromiseLike<A>
   ): Promise<ResultType<A, DatabaseFailure>> {
-    const sql = this.sql
-
     const normalizeFailure = (cause: unknown): DatabaseFailure => {
       if (cause instanceof DatabaseFailure) {
         return cause
@@ -74,29 +72,10 @@ export class Database extends Service<Database>() {
       })
     }
 
-    const execution = await Result.tryPromise({
-      try: () =>
-        Effect.gen(async function* () {
-          const connection = yield* Effect.acquireRelease(
-            () => sql,
-            // The shared client is owned by the database Layer root Scope.
-            () => undefined
-          )
-
-          const value = yield* Result.await(
-            Result.tryPromise({
-              try: () => Promise.resolve(use(connection)),
-              catch: normalizeFailure
-            })
-          )
-
-          return Result.ok(value)
-        }),
-
+    return Result.tryPromise({
+      try: () => Promise.resolve(use(this.sql)),
       catch: normalizeFailure
     })
-
-    return execution.andThen((result) => result).mapError(normalizeFailure)
   }
 
   async close(): Promise<void> {

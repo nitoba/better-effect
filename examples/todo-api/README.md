@@ -5,7 +5,6 @@ Small Bun API demonstrating:
 - `Service` for contextual dependencies with `yield*`
 - `Layer` for composing the application environment
 - `Scope` for execution-local lifetimes and cleanup
-- `Effect.acquireRelease()` for execution-local resources
 - `Resource` as a standalone compatibility helper for local Result workflows
 - `better-result` for typed errors and generator composition
 - `Bun.SQL` with in-memory SQLite
@@ -125,29 +124,14 @@ automatic disposal support; it is not deprecated.
 
 ### Scope
 
-`Database.run()` uses `Effect.acquireRelease()` with the current execution Scope to
-model a connection lease. Bun's
-SQLite adapter does not support `sql.reserve()` because it does not use connection
-pooling, so the shared client remains owned by the database Layer's root scope.
-
-```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const connection = yield* Effect.acquireRelease(
-      () => database.sql,
-      () => undefined
-    )
-
-    return Result.ok(await useConnection(connection))
-  })
-)
-```
-
-The execution scope closes automatically after `runtime.run()` completes, while
-the scoped database layer remains owned by the Runtime root scope.
+The SQLite client is a real root-scoped resource: `Layer.scoped()` acquires it once and
+closes it when the Runtime is disposed. Bun's SQLite adapter does not expose a pooled
+connection lease, so this example does not register a fake execution resource with a
+no-op release.
 
 Each request handled by the server receives its own child execution scope. During
 shutdown, `runtime.dispose()` stops accepting new executions, waits for active
 requests to finish, and then closes the root scope that owns the database layer.
-For a nested batch lifetime, use `scope.fork()` with `Scope.provide()` and close the
-child explicitly when the batch ends.
+Real request-local resources can use `Effect.acquireRelease()` and are closed with that
+request's execution scope. For a nested batch lifetime, use `scope.fork()` with
+`Scope.provide()` and close the child explicitly when the batch ends.

@@ -19,10 +19,7 @@ const DatabaseLive = Layer.scoped(
   (database) => database.close()
 )
 
-const UserRepositoryLive = Layer.gen(UserRepository, async function* () {
-  const database = yield* Database
-  return new UserRepository(database)
-})
+const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
 
 const RepositoriesLive = Layer.merge(
   UserRepositoryLive,

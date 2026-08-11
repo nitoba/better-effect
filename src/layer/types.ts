@@ -1,5 +1,6 @@
 import type { InferYieldRequirements, ServiceRequirement } from '../effect/types'
 import type { AnyServiceToken, ServiceClass, ServiceRequirements } from '../service'
+import type { ScopeOutcome } from '../scope'
 import type { MaybePromise } from '../utils/types'
 
 export interface LayerProvider {
@@ -7,7 +8,7 @@ export interface LayerProvider {
 
   readonly acquire: () => MaybePromise<unknown>
 
-  readonly release?: (instance: unknown) => MaybePromise<void>
+  readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
 }
 
 export type LayerSpec<

@@ -39,6 +39,16 @@ class ExampleService extends Service<ExampleService>() {
   }
 }
 
+class ScopedDependency extends Service<ScopedDependency>() {
+  readonly value = 'dependency'
+}
+
+class ScopedConsumer extends Service<ScopedConsumer>() {
+  constructor(readonly dependency: ScopedDependency) {
+    super()
+  }
+}
+
 class MemoryLayerBackend implements LayerBackend {
   readonly providers = new Map<AnyServiceToken, LayerProvider>()
 
@@ -204,6 +214,227 @@ describe('buildLayer', () => {
       expect(acquired).toBe(1)
     } finally {
       await runtime.dispose()
+    }
+  })
+
+  test('acquires scoped generators lazily and caches their instances', async () => {
+    let factoryRuns = 0
+    let releases = 0
+    let releaseOutcome: ScopeOutcome | undefined
+
+    const runtime = await buildLayer(
+      Layer.merge(
+        Layer.make(ScopedDependency, () => new ScopedDependency()),
+        Layer.scopedGen(
+          ScopedConsumer,
+          async function* () {
+            factoryRuns++
+
+            const dependency = yield* ScopedDependency
+
+            return new ScopedConsumer(dependency)
+          },
+          (_consumer, outcome) => {
+            releases++
+            releaseOutcome = outcome
+          }
+        )
+      ),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      expect(factoryRuns).toBe(0)
+
+      const first = await runtime.run(() => ServiceRuntime.resolve(ScopedConsumer))
+      const second = await runtime.run(() => ServiceRuntime.resolve(ScopedConsumer))
+
+      expect(first).toBe(second)
+      expect(first.dependency.value).toBe('dependency')
+      expect(factoryRuns).toBe(1)
+      expect(releases).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+
+    expect(releases).toBe(1)
+    expect(releaseOutcome).toEqual({ status: 'success' })
+  })
+
+  test('does not release a scoped generator after failed acquisition', async () => {
+    const acquisitionFailure = new Error('scoped generator acquisition failed')
+    let releases = 0
+
+    const runtime = await buildLayer(
+      Layer.scopedGen(
+        ExampleService,
+        // oxlint-disable-next-line require-yield
+        async function* () {
+          return await Promise.reject<ExampleService>(acquisitionFailure)
+        },
+        () => {
+          releases++
+        }
+      ),
+      new MemoryLayerBackend()
+    )
+
+    const error = await captureRejection(runtime.run(() => ServiceRuntime.resolve(ExampleService)))
+
+    expect(error).toBe(acquisitionFailure)
+    expect(releases).toBe(0)
+
+    await runtime.dispose()
+  })
+
+  test('passes root outcomes to long-lived and one-shot scoped generators', async () => {
+    let longLivedOutcome: ScopeOutcome | undefined
+    const longLived = await buildLayer(
+      Layer.scopedGen(
+        ExampleService,
+        // oxlint-disable-next-line require-yield
+        async function* () {
+          return new ExampleService()
+        },
+        (_service, outcome) => {
+          longLivedOutcome = outcome
+        }
+      ),
+      new MemoryLayerBackend()
+    )
+
+    await longLived.run(() => ServiceRuntime.resolve(ExampleService))
+    await longLived.run(() => Result.err(new Error('execution failed')))
+    await longLived.dispose()
+
+    expect(longLivedOutcome).toEqual({ status: 'success' })
+
+    let oneShotOutcome: ScopeOutcome | undefined
+    const programFailure = new Error('program failed')
+    const expected = Result.err(programFailure)
+
+    const result = await Runtime.run(
+      Layer.scopedGen(
+        ExampleService,
+        // oxlint-disable-next-line require-yield
+        async function* () {
+          return new ExampleService()
+        },
+        (_service, outcome) => {
+          oneShotOutcome = outcome
+        }
+      ),
+      new MemoryLayerBackend(),
+      async () => {
+        await ServiceRuntime.resolve(ExampleService)
+
+        return expected
+      }
+    )
+
+    expect(result).toBe(expected)
+    expect(oneShotOutcome).toEqual({ status: 'failure', cause: programFailure })
+  })
+
+  test('releases dependent scoped generators in LIFO order', async () => {
+    const events: string[] = []
+    const runtime = await buildLayer(
+      Layer.merge(
+        Layer.scopedGen(
+          ScopedDependency,
+          // oxlint-disable-next-line require-yield
+          async function* () {
+            return new ScopedDependency()
+          },
+          () => {
+            events.push('dependency')
+          }
+        ),
+        Layer.scopedGen(
+          ScopedConsumer,
+          async function* () {
+            const dependency = yield* ScopedDependency
+
+            return new ScopedConsumer(dependency)
+          },
+          () => {
+            events.push('consumer')
+          }
+        )
+      ),
+      new MemoryLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ScopedConsumer))
+    await runtime.dispose()
+
+    expect(events).toEqual(['consumer', 'dependency'])
+  })
+
+  test('aggregates scoped generator release failures with backend cleanup', async () => {
+    const consumerFailure = new Error('consumer release failed')
+    const dependencyFailure = new Error('dependency release failed')
+    const backendFailure = new Error('backend dispose failed')
+    const events: string[] = []
+    const diagnostics: RuntimeShutdownDiagnostic[] = []
+    const backend = new MemoryLayerBackend()
+    backend.disposeFailure = backendFailure
+    backend.onDispose = () => {
+      events.push('backend')
+    }
+
+    const runtime = await buildLayer(
+      Layer.merge(
+        Layer.scopedGen(
+          ScopedDependency,
+          // oxlint-disable-next-line require-yield
+          async function* () {
+            return new ScopedDependency()
+          },
+          () => {
+            events.push('dependency')
+            throw dependencyFailure
+          }
+        ),
+        Layer.scopedGen(
+          ScopedConsumer,
+          async function* () {
+            const dependency = yield* ScopedDependency
+
+            return new ScopedConsumer(dependency)
+          },
+          () => {
+            events.push('consumer')
+            throw consumerFailure
+          }
+        )
+      ),
+      backend,
+      {
+        onCleanupFailure: (diagnostic) => {
+          if (diagnostic.error instanceof LayerDisposeError) {
+            diagnostics.push(diagnostic)
+          }
+        }
+      }
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ScopedConsumer))
+
+    const error = await captureRejection(runtime.dispose())
+
+    expect(error).toBeInstanceOf(LayerDisposeError)
+    expect(events).toEqual(['consumer', 'dependency', 'backend'])
+    expect(diagnostics).toHaveLength(1)
+
+    if (error instanceof LayerDisposeError) {
+      expect(error.causes).toHaveLength(2)
+      expect(error.causes[0]).toBeInstanceOf(ScopeCloseError)
+      expect(error.causes[1]).toBe(backendFailure)
+
+      if (error.causes[0] instanceof ScopeCloseError) {
+        expect(error.causes[0].causes).toEqual([consumerFailure, dependencyFailure])
+      }
     }
   })
 
@@ -981,6 +1212,36 @@ describe('buildLayer', () => {
       status: 'failure',
       cause: programFailure
     })
+  })
+
+  test('keeps the one-shot root outcome successful when only execution cleanup fails', async () => {
+    let rootOutcome: ScopeOutcome | undefined
+    const executionCleanupFailure = new Error('execution cleanup failed')
+
+    const error = await captureRejection(
+      Runtime.run(
+        Layer.make(ExampleService, async () => {
+          Scope.current().addFinalizer((outcome) => {
+            rootOutcome = outcome
+          })
+
+          return new ExampleService()
+        }),
+        new MemoryLayerBackend(),
+        async () => {
+          await ServiceRuntime.resolve(ExampleService)
+
+          Scope.current().addFinalizer(() => {
+            throw executionCleanupFailure
+          })
+
+          return Result.ok(true)
+        }
+      )
+    )
+
+    expect(error).toBeInstanceOf(ScopeCloseError)
+    expect(rootOutcome).toEqual({ status: 'success' })
   })
 
   test('aggregates root and backend failures while preserving a Result error', async () => {

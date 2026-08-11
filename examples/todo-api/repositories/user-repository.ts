@@ -19,10 +19,6 @@ const toUser = (row: UserRow): User => ({
 })
 
 export class UserRepository extends Service<UserRepository>() {
-  constructor(readonly database: Database) {
-    super()
-  }
-
   findByEmail(email: string) {
     return Effect.gen(async function* () {
       const database = yield* Database

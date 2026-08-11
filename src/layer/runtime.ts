@@ -1,5 +1,7 @@
 import { ServiceRuntime } from '../service'
 
+import type { AnyServiceToken } from '../service'
+
 import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
 import { ScopeRuntime } from '../scope/runtime'
@@ -15,16 +17,16 @@ import { BuiltLayerDisposedError, LayerDisposeError, LayerRegistrationError } fr
 
 import type { LayerBackend } from './backend'
 
-import type { Layer } from './layer'
+import type { AnyLayer, CompleteExecution, CompleteLayer, LayerProvided } from './inference'
 
 import type { LayerProvider } from './types'
 
 import type { ScopeOutcome } from '../scope'
 
-export interface BuiltLayer {
+export interface BuiltLayer<Provided extends AnyServiceToken = AnyServiceToken> {
   readonly backend: LayerBackend
 
-  run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>>
+  run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>>
 
   dispose(outcome?: ScopeOutcome): Promise<void>
 }
@@ -68,12 +70,12 @@ const bindProviderToScope = (
 
       return await rootScope.acquire(
         () => provider.acquire(),
-        (resource) => provider.release!(resource)
+        (resource, outcome) => provider.release!(resource, outcome)
       )
     })
 })
 
-class BuiltLayerImpl implements BuiltLayer {
+class BuiltLayerImpl<Provided extends AnyServiceToken> implements BuiltLayer<Provided> {
   private disposePromise: Promise<void> | undefined
 
   private readonly executions = new Set<Promise<unknown>>()
@@ -86,7 +88,7 @@ class BuiltLayerImpl implements BuiltLayer {
     private readonly onCleanupFailure: CleanupFailureObserver | undefined
   ) {}
 
-  run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+  run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
     this.assertActive()
 
     const executionScope = this.rootScope.fork()
@@ -130,7 +132,7 @@ class BuiltLayerImpl implements BuiltLayer {
 
   private runExecution<A>(
     executionScope: CloseableScope,
-    program: () => A | PromiseLike<A>
+    program: CompleteExecution<Provided, A>
   ): Promise<Awaited<A>> {
     const options = this.onCleanupFailure
       ? {
@@ -199,11 +201,11 @@ class BuiltLayerImpl implements BuiltLayer {
   }
 }
 
-export const buildLayer = async (
-  layer: Layer<any>,
+export const buildLayer = async <L extends AnyLayer>(
+  layer: CompleteLayer<L>,
   backend: LayerBackend,
   options: RuntimeOptions = {}
-): Promise<BuiltLayer> => {
+): Promise<BuiltLayer<LayerProvided<L>>> => {
   const rootScope = Scope.make()
   let current: LayerProvider | undefined
 
@@ -252,5 +254,5 @@ export const buildLayer = async (
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new BuiltLayerImpl(backend, rootScope, options.onCleanupFailure)
+  return new BuiltLayerImpl<LayerProvided<L>>(backend, rootScope, options.onCleanupFailure)
 }

@@ -165,6 +165,8 @@ The initial public API is deliberately small:
 Layer.make(...)
 Layer.succeed(...)
 Layer.scoped(...)
+Layer.gen(...)
+Layer.scopedGen(...)
 Layer.merge(...)
 Layer.override(...)
 ```
@@ -209,13 +211,23 @@ Keep casts localized at the internal type-erasure boundary.
 
 Do not build a complex generic tuple/union system merely to remove a safe internal cast.
 
+### Typed execution requirements
+
+Every typed execution boundary (`BuiltLayer.run`, managed `Runtime.run`, and
+one-shot `Runtime.run`) MUST validate the final `EffectRequirements` of its
+program against the Service-token union provided by its Layer. The inferred
+Runtime and BuiltLayer handles retain that union; unparameterized annotations
+intentionally erase it as an explicit unchecked escape hatch.
+
 ### Scope
 
 `Scope` is the lifecycle primitive.
 
 DI backends must not own Service release semantics.
 
-Resources created by `Layer.scoped` belong to the Runtime root Scope.
+Resources created by `Layer.scoped` and `Layer.scopedGen` belong to the Runtime root
+Scope. `Layer.scopedGen` may yield contextual Services during acquisition, and its
+release callback receives the root `ScopeOutcome`.
 
 Resources acquired inside `runtime.run` belong to that execution's Scope.
 
@@ -367,11 +379,10 @@ Use `expectTypeOf(...).toEqualTypeOf<T>()` when exact equality is the behavior b
 
 Use `toMatchTypeOf<T>()` only when testing that one type satisfies a broader contract.
 
-Tests that configure `ServiceRuntime` must clean it up with `ServiceRuntime.reset()`.
-
-Because the current runtime resolver is process-global, avoid concurrent tests that mutate it.
-
-Use `test.serial` for such tests.
+`ServiceRuntime` uses `AsyncLocalStorage`. Tests should enter resolver context through
+`ServiceRuntime.run()` or a Runtime execution boundary and verify that the context is
+restored afterward. Concurrent runtimes are expected to remain isolated; no global reset
+or serial-test discipline is required for resolver context.
 
 ### Resolver test doubles
 

@@ -75,6 +75,36 @@ export class AuthService extends Service<AuthService>() {
 `Runtime` rejects a merged Layer at compile time when one of its required
 Services is missing; `Layer.override` remains the explicit replacement API.
 
+`Runtime.make()` and `buildLayer()` preserve the exact Service-token union
+provided by the Layer. Every `run()` boundary checks the final
+`EffectRequirements` against that union, so a program that yields an unavailable
+Service is rejected at compile time and the diagnostic names
+`__betterEffectMissingRuntimeServices`. Programs with no Service requirements
+remain valid in any environment:
+
+```ts
+const runtime = await Runtime.make(AppLive, backend)
+// inferred as Runtime<typeof Database | typeof UserRepository>
+
+const built = await buildLayer(AppLive, backend)
+// inferred as BuiltLayer<typeof Database | typeof UserRepository>
+
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const database = yield* Database
+
+    return Result.ok(database.query())
+  })
+)
+```
+
+Use an unparameterized `Runtime` or `BuiltLayer` annotation only when an
+intentionally erased, unchecked environment is needed:
+
+```ts
+const erased: Runtime = runtime
+```
+
 There are no string tokens:
 
 ```ts
@@ -140,9 +170,55 @@ The core Layer API intentionally stays small:
 Layer.make(Service, acquire)
 Layer.succeed(Service, instance)
 Layer.scoped(Service, acquire, release)
+Layer.gen(Service, factory)
+Layer.scopedGen(Service, factory, release)
 Layer.merge(...layers)
 Layer.override(base, ...overrides)
 ```
+
+Use `Layer.gen` when constructing a provider requires contextual Services. The
+requirements yielded by the factory remain part of the Layer's compile-time
+contract:
+
+```ts
+const UserRepositoryLive = Layer.gen(UserRepository, async function* () {
+  const database = yield* Database
+
+  return new UserRepository(database)
+})
+```
+
+Use `Layer.scopedGen` when acquisition both needs contextual Services and owns a
+resource that must be released with the Runtime root Scope:
+
+```ts
+class DatabaseSession extends Service<DatabaseSession>() {
+  constructor(readonly database: Database) {
+    super()
+  }
+
+  close(outcome: ScopeOutcome) {
+    return this.database.closeSession(this, outcome)
+  }
+}
+
+const DatabaseSessionLive = Layer.scopedGen(
+  DatabaseSession,
+  async function* () {
+    const database = yield* Database
+
+    return new DatabaseSession(database)
+  },
+  (session, outcome) => session.close(outcome)
+)
+```
+
+`Layer.gen` expresses contextual acquisition without registering cleanup;
+`Layer.scoped` registers cleanup for a dependency-free factory; `Layer.scopedGen`
+combines both. The factory remains lazy, the acquired instance is shared according
+to backend caching, and its release runs once when the Runtime root closes. The
+release callback receives the root `ScopeOutcome`, including the final outcome of
+one-shot `Runtime.run()`.
 
 ### Test environments
 
@@ -161,7 +237,7 @@ const AppTest = Layer.override(AppLive, DatabaseTest)
 ```ts
 import { buildLayer } from 'better-effect'
 
-import { ItiLayerBackend } from 'better-effect/iti'
+import { ItiLayerBackend } from 'better-effect/adapters/iti'
 
 const runtime = await buildLayer(AppLive, new ItiLayerBackend())
 
@@ -180,7 +256,7 @@ A different backend can implement the same resolver/backend contracts without ch
 
 `Scope` manages a dynamic lifetime containing multiple resources. Resources acquired
 inside `runtime.run()` belong to that execution and are released automatically when it
-finishes:
+finishes.
 
 The contextual `Scope` is a non-owning capability: it can acquire resources, register
 finalizers, and fork children, but it cannot close the lifetime that owns it. Owners
@@ -246,10 +322,10 @@ Disposable objects can be registered directly:
 const file = await scope.add(await createTemporaryFile())
 ```
 
-Finalizers run sequentially in reverse registration order. `Layer.scoped` resources
-belong to the Runtime root scope and remain alive between executions; they are released
-when the Runtime is disposed. `Resource.acquireUseRelease()` remains available as a
-standalone compatibility helper implemented on top of Scope.
+Finalizers run sequentially in reverse registration order. `Layer.scoped` and
+`Layer.scopedGen` resources belong to the Runtime root scope and remain alive between
+executions; they are released when the Runtime is disposed. `Resource.acquireUseRelease()`
+remains available as a standalone compatibility helper implemented on top of Scope.
 
 Scopes can also form explicit child lifetimes. `fork()` registers a child with its
 parent, while `Scope.provide()` uses an existing scope without taking ownership of its

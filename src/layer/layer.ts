@@ -1,5 +1,6 @@
 import type { ServiceRequirement } from '../effect/types'
 import type { AnyServiceToken, ServiceClass, ServiceRequirements } from '../service'
+import type { ScopeOutcome } from '../scope'
 import type { MaybePromise } from '../utils/types'
 
 import { DuplicateServiceError } from './errors'
@@ -54,6 +55,20 @@ export class Layer<Specs extends AnyLayerSpec = AnyLayerSpec> {
         acquire,
 
         release: (instance) => release(instance as InstanceType<S>)
+      }
+    ])
+  }
+
+  static scopedGen<S extends ServiceClass<any>, Yield extends ServiceRequirement<AnyServiceToken>>(
+    service: S,
+    factory: LayerGenerator<S, Yield>,
+    release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
+  ): Layer<LayerSpec<S, LayerGeneratorRequirements<S, Yield>>> {
+    return new Layer([
+      {
+        service,
+        acquire: () => runLayerGenerator(service, factory),
+        release: (instance, outcome) => release(instance as InstanceType<S>, outcome)
       }
     ])
   }
