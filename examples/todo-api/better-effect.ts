@@ -2,6 +2,7 @@ export {
   Effect,
   Layer,
   Resource,
+  Scope,
   Service,
   ServiceRuntime,
   buildLayer,

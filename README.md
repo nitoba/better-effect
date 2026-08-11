@@ -6,6 +6,7 @@ Lightweight Effect-inspired primitives built around [`better-result`](https://ww
 
 - **Service** — contextual dependency access with `yield*`
 - **Layer** — declarative composition of live/test environments
+- **Scope** — contextual lifetime and finalizer management
 - **Resource** — safe acquire/use/release lifecycle
 - **DI adapters** — dependency resolution is delegated to an external container instead of being reimplemented by the library
 
@@ -214,14 +215,47 @@ The precedence is:
 
 Acquisition exceptions, rejected promises, and unexpected failures are normalized through `better-result`.
 
-## Service vs Layer vs Resource
+## Scope
+
+`Scope` manages a dynamic lifetime containing multiple resources. Resources acquired
+inside `runtime.run()` belong to that execution and are released automatically when it
+finishes:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const scope = yield* Scope
+
+    const connection = await scope.acquire(
+      () => database.reserve(),
+      (connection) => connection.release()
+    )
+
+    return Result.ok(await useConnection(connection))
+  })
+)
+```
+
+Disposable objects can be registered directly:
+
+```ts
+const file = await scope.add(await createTemporaryFile())
+```
+
+Finalizers run sequentially in reverse registration order. `Layer.scoped` resources
+belong to the Runtime root scope and remain alive between executions; they are released
+when the Runtime is disposed. `Resource.acquireUseRelease()` remains available as a
+compatibility helper implemented on top of Scope.
+
+## Service vs Layer vs Scope vs Resource
 
 | Primitive       | Responsibility                                        |
 | --------------- | ----------------------------------------------------- |
 | `Service`       | Request a contextual dependency                       |
 | `Layer`         | Describe the implementations that form an environment |
-| `Resource`      | Manage a resource local to one operation              |
-| DI backend      | Resolve, cache and dispose service instances          |
+| `Scope`         | Manage dynamic lifetimes and finalizers               |
+| `Resource`      | Compatibility helper for local acquire/use/release    |
+| DI backend      | Resolve and cache service instances                   |
 | `better-result` | Typed failures and generator control flow             |
 
 ## Complete example
@@ -241,8 +275,9 @@ It demonstrates:
 - TODO CRUD
 - `Service` dependency access
 - Layer composition
+- Runtime root and execution scopes
 - scoped database lifecycle
-- `Resource.acquireUseRelease()`
+- `Resource` compatibility API
 - ITI as the DI backend
 
 Run it from the repository root:
@@ -301,12 +336,12 @@ The core intentionally does not implement:
 - a dependency graph runtime
 - a custom DI container
 - a custom Context
-- a custom Scope runtime
 - `Effect<A, E, R>`
 
 ### Delegate instead of rebuilding
 
-Dependency resolution, caching and container lifecycle belong to DI backends.
+Dependency resolution and caching belong to DI backends. Service release lifecycle is
+owned by `Scope`.
 
 `better-effect` supplies the protocol and composition primitives.
 
@@ -345,6 +380,7 @@ The initial scope is:
 ```text
 Service
 Layer
+Scope
 Resource
 DI adapters
 better-result integration

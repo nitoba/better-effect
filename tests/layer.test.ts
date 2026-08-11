@@ -50,12 +50,6 @@ class MemoryLayerBackend implements LayerBackend {
   }
 
   async disposeAll(): Promise<void> {
-    for (const [token, instance] of this.instances) {
-      const provider = this.providers.get(token)
-
-      await provider?.release?.(instance)
-    }
-
     this.instances.clear()
 
     this.disposed = true
@@ -252,9 +246,15 @@ describe('buildLayer', () => {
 
     await runtime.dispose()
 
-    expect(() => runtime.run(() => ServiceRuntime.resolve(ExampleService))).toThrow(
-      BuiltLayerDisposedError
-    )
+    let failure: unknown
+
+    try {
+      await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+    } catch (cause) {
+      failure = cause
+    }
+
+    expect(failure).toBeInstanceOf(BuiltLayerDisposedError)
   })
 
   test('isolates concurrent runtime contexts', async () => {

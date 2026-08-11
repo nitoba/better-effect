@@ -165,6 +165,24 @@ describe('ItiLayerBackend', () => {
     expect(releases).toBe(0)
   })
 
+  test('does not own provider release lifecycle', async () => {
+    let releases = 0
+    const backend = new ItiLayerBackend()
+
+    backend.register({
+      service: Database,
+      acquire: () => new Database(),
+      release: () => {
+        releases++
+      }
+    })
+
+    await backend.resolve(Database)
+    await backend.disposeAll()
+
+    expect(releases).toBe(0)
+  })
+
   test('does not expose services outside the runtime context', async () => {
     const runtime = await buildLayer(
       Layer.make(Database, () => new Database()),

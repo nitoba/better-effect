@@ -1,7 +1,7 @@
 import { SQL } from 'bun'
 import { Result, type Result as ResultType } from 'better-result'
 
-import { Resource, Service } from './better-effect'
+import { Scope, Service } from './better-effect'
 import { DatabaseFailure } from './errors'
 
 /**
@@ -60,27 +60,29 @@ export class Database extends Service<Database>() {
     operation: string,
     use: (connection: DatabaseConnection) => A | PromiseLike<A>
   ): Promise<ResultType<A, DatabaseFailure>> {
-    const result = await Resource.acquireUseRelease<DatabaseConnection, A, never, never>({
-      name: 'bun-sql-connection',
+    return Result.tryPromise({
+      try: async () => {
+        const scope = Scope.current()
 
-      // Bun's SQLite adapter has no connection pool and does not support
-      // reserve(). Reuse the client and keep it open until Database.close().
-      acquire: () => Result.ok(this.sql),
+        const connection = await scope.acquire(
+          // Bun's SQLite adapter has no connection pool and does not support
+          // reserve(). The execution Scope represents the operation's lease.
+          () => this.sql,
 
-      use: async (connection) => Result.ok(await use(connection)),
+          // The shared client is owned by the root Layer scope.
+          () => undefined
+        )
 
-      // The shared client must not be disposed after every operation.
-      release: () => undefined
-    })
+        return await use(connection)
+      },
 
-    return result.mapError(
-      (cause) =>
+      catch: (cause) =>
         new DatabaseFailure({
           operation,
           cause,
           message: `Database operation failed: ${operation}`
         })
-    )
+    })
   }
 
   async close(): Promise<void> {

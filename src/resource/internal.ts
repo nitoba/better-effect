@@ -2,21 +2,11 @@ import { Result, type Result as ResultType, type UnhandledException } from 'bett
 
 import { ResourceReleaseFailure } from './errors'
 
-import type {
-  AsyncResult,
-  DisposableResource,
-  MaybePromise,
-  ReleaseFailureObserver,
-  ReleaseOutcome
-} from './types'
+import { disposeResource } from '../scope/disposable'
 
-export const disposeResource = (resource: unknown): MaybePromise<void> => {
-  const candidate = Object(resource) as DisposableResource
+export { disposeResource }
 
-  const dispose = candidate[Symbol.asyncDispose] ?? candidate[Symbol.dispose]
-
-  return dispose?.call(candidate)
-}
+import type { AsyncResult, MaybePromise, ReleaseFailureObserver, ReleaseOutcome } from './types'
 
 const toReleaseFailure = (resource: string, cause: unknown): ResourceReleaseFailure =>
   new ResourceReleaseFailure({

@@ -50,9 +50,18 @@ export { Resource, ResourceReleaseFailure } from './resource'
 export type {
   AcquireUseReleaseOptions,
   AsyncResult,
-  DisposableResource,
   ReleaseFailureObserver,
   ReleaseOutcome
 } from './resource'
+
+export {
+  Scope,
+  ResourceNotDisposableError,
+  ScopeClosedError,
+  ScopeCloseError,
+  ScopeRuntimeNotConfiguredError
+} from './scope'
+
+export type { DisposableResource, ScopeFinalizer } from './scope'
 
 export { Runtime } from './runtime'

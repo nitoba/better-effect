@@ -32,7 +32,7 @@ export class Runtime {
     }
   }
 
-  run<A>(program: () => A): A {
+  run<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
     return this.built.run(program)
   }
 

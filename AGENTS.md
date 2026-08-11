@@ -4,10 +4,11 @@
 
 `better-effect` is a lightweight TypeScript library that adds a small set of Effect-inspired primitives around `better-result`.
 
-The library currently has three core concepts:
+The library currently has four core concepts:
 
 - `Service` — contextual dependency access through `yield*`
 - `Layer` — declarative environment/provider composition
+- `Scope` — contextual lifecycle and finalizer management
 - `Resource` — acquire/use/release lifecycle with typed Result errors
 
 Dependency injection itself is intentionally delegated to adapters such as ITI.
@@ -156,7 +157,7 @@ It is intentionally not Effect's full:
 Layer<ROut, E, RIn>
 ```
 
-Do not add typed dependency graphs, Context, Fiber, Scope or MemoMap unless there is a concrete approved requirement.
+Do not add typed dependency graphs, Context, Fiber, full Effect-style Scope strategies or MemoMap unless there is a concrete approved requirement.
 
 The initial public API is deliberately small:
 
@@ -207,6 +208,22 @@ Layer.scoped(
 Keep casts localized at the internal type-erasure boundary.
 
 Do not build a complex generic tuple/union system merely to remove a safe internal cast.
+
+### Scope
+
+`Scope` is the lifecycle primitive.
+
+DI backends must not own Service release semantics.
+
+Resources created by `Layer.scoped` belong to the Runtime root Scope.
+
+Resources acquired inside `runtime.run` belong to that execution's Scope.
+
+`Scope` must not become a Service requirement.
+
+`Resource` remains a compatibility facade over Scope until explicitly deprecated.
+
+Never register `LayerProvider.release` directly into a DI container disposer.
 
 ### Resource
 

@@ -8,6 +8,7 @@ import {
   type EffectRequirements,
   type EffectSuccess
 } from '../../src/effect'
+import { Scope } from '../../src/scope'
 import { Service, type ServiceRequirements, type ServiceToken } from '../../src/service'
 
 class Database extends Service<Database>() {
@@ -62,6 +63,15 @@ expectTypeOf<EffectError<typeof program>>().toEqualTypeOf<never>()
 
 expectTypeOf<EffectError<typeof failedProgram>>().toEqualTypeOf<string>()
 expectTypeOf<EffectRequirements<typeof failedProgram>>().toEqualTypeOf<never>()
+
+const scopeProgram = Effect.gen(async function* () {
+  const scope = yield* Scope
+  const database = yield* Database
+
+  return Result.ok({ scope, database })
+})
+
+expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<ServiceToken<Database>>()
 
 expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTypeOf<
   ServiceToken<Database> | ServiceToken<Cache>

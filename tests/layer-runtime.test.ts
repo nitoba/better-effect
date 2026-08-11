@@ -4,6 +4,7 @@ import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { BuiltLayerDisposedError, Layer, buildLayer, type LayerBackend } from '../src/layer'
+import { Scope } from '../src/scope'
 
 import type { LayerProvider } from '../src/layer/types'
 
@@ -50,12 +51,6 @@ class MemoryLayerBackend implements LayerBackend {
   }
 
   async disposeAll(): Promise<void> {
-    for (const [token, instance] of this.instances) {
-      const provider = this.providers.get(token)
-
-      await provider?.release?.(instance)
-    }
-
     this.instances.clear()
 
     this.disposed = true
@@ -206,6 +201,110 @@ describe('buildLayer', () => {
     expect(released).toBe(0)
   })
 
+  test('closes the execution scope after runtime.run', async () => {
+    let released = 0
+
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      await runtime.run(async () => {
+        await Scope.current().acquire(
+          () => ({ value: 42 }),
+          () => {
+            released++
+          }
+        )
+
+        expect(released).toBe(0)
+      })
+
+      expect(released).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('keeps Layer.scoped resources alive between executions', async () => {
+    let released = 0
+
+    const runtime = await buildLayer(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          released++
+        }
+      ),
+      new MemoryLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+    await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+
+    expect(released).toBe(0)
+
+    await runtime.dispose()
+
+    expect(released).toBe(1)
+  })
+
+  test('runs Layer provider factories in the root scope', async () => {
+    let nestedResourceReleased = 0
+
+    class ScopedFactoryService extends Service<ScopedFactoryService>() {}
+
+    const runtime = await buildLayer(
+      Layer.make(ScopedFactoryService, async () => {
+        await Scope.current().acquire(
+          () => ({ value: true }),
+          () => {
+            nestedResourceReleased++
+          }
+        )
+
+        return new ScopedFactoryService()
+      }),
+      new MemoryLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(ScopedFactoryService))
+
+    expect(nestedResourceReleased).toBe(0)
+
+    await runtime.dispose()
+
+    expect(nestedResourceReleased).toBe(1)
+  })
+
+  test('isolates execution scopes between concurrent runs', async () => {
+    const runtime = await buildLayer(
+      Layer.make(ExampleService, () => new ExampleService()),
+      new MemoryLayerBackend()
+    )
+
+    try {
+      const [first, second] = await Promise.all([
+        runtime.run(async () => {
+          const scope = Scope.current()
+          await Promise.resolve()
+          return scope
+        }),
+        runtime.run(async () => {
+          const scope = Scope.current()
+          await Promise.resolve()
+          return scope
+        })
+      ])
+
+      expect(first).not.toBe(second)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('does not expose the resolver outside runtime.run', async () => {
     const runtime = await buildLayer(
       Layer.make(ExampleService, () => new ExampleService()),
@@ -248,9 +347,15 @@ describe('buildLayer', () => {
 
     await runtime.dispose()
 
-    expect(() => runtime.run(() => ServiceRuntime.resolve(ExampleService))).toThrow(
-      BuiltLayerDisposedError
-    )
+    let failure: unknown
+
+    try {
+      await runtime.run(() => ServiceRuntime.resolve(ExampleService))
+    } catch (cause) {
+      failure = cause
+    }
+
+    expect(failure).toBeInstanceOf(BuiltLayerDisposedError)
   })
 
   test('disposes the backend', async () => {
