@@ -2,8 +2,10 @@
 
 Lightweight Effect-inspired primitives built around [`better-result`](https://www.npmjs.com/package/better-result).
 
-`better-effect` focuses on a small set of ideas that are useful in application code without bringing in a full effect runtime:
+`better-effect` focuses on six small ideas that are useful in application code without bringing in a full effect system:
 
+- **Effect** — Result-oriented generator and composition primitives with typed Service requirements
+- **Runtime** — Effect execution, Layer provisioning, and graceful lifecycle ownership
 - **Service** — contextual dependency access with `yield*`
 - **Layer** — declarative composition of live/test environments
 - **Scope** — contextual lifetime and finalizer management
@@ -23,6 +25,11 @@ If you want the ITI adapter:
 ```bash
 bun add iti
 ```
+
+The core package does not install ITI. Add `iti` only when using the ITI adapter.
+TypeScript 5.2 or newer is supported; the lower bound comes from the explicit
+resource-management types (`Symbol.dispose` and `Symbol.asyncDispose`), not from the
+phantom Service-requirement types.
 
 ## Service
 
@@ -222,11 +229,17 @@ const DatabaseSessionLive = Layer.scopedGen(
 ```
 
 `Layer.gen` expresses contextual acquisition without registering cleanup;
-`Layer.scoped` registers cleanup for a dependency-free factory; `Layer.scopedGen`
-combines both. The factory remains lazy, the acquired instance is shared according
-to backend caching, and its release runs once when the Runtime root closes. The
-release callback receives the root `ScopeOutcome`, including the final outcome of
-one-shot `Runtime.run()`.
+`Layer.scoped` registers cleanup for a dependency-free factory with its simple
+one-argument release callback; `Layer.scopedGen` combines contextual acquisition with
+outcome-aware cleanup. Every factory remains lazy, the acquired instance is shared
+according to backend caching, and its release runs once when the Runtime root closes.
+The `Layer.scopedGen` callback receives the root `ScopeOutcome`, including the final
+outcome of one-shot `Runtime.run()`.
+
+`Layer.scoped` deliberately keeps the compatibility-friendly release signature
+`(instance) => ...`; it does not expose the final outcome. `Layer.scopedGen` is the
+outcome-aware variant and accepts `(instance, outcome) => ...` when release logic needs
+the final `ScopeOutcome`. Both forms register cleanup in the Runtime root Scope.
 
 ### Test environments
 
@@ -472,10 +485,12 @@ If both `use` and `release` fail, the `use` error is preserved. The precedence i
 Acquisition exceptions, rejected promises, and unexpected failures are normalized
 through `better-result`; release failures use `ResourceReleaseFailure`.
 
-## Service vs Layer vs Scope vs Resource
+## Effect, Runtime, Service, Layer, Scope, and Resource
 
 | Primitive       | Responsibility                                        |
 | --------------- | ----------------------------------------------------- |
+| `Effect`        | Compose Result-oriented programs and Service needs    |
+| `Runtime`       | Execute Effects and own Layer/Scope lifecycles        |
 | `Service`       | Request a contextual dependency                       |
 | `Layer`         | Describe the implementations that form an environment |
 | `Scope`         | Manage dynamic lifetimes and finalizers               |
@@ -600,9 +615,11 @@ The public constructors (`Layer.make`, `Layer.succeed`, `Layer.scoped`) are resp
 
 The project is intentionally small and experimental.
 
-The initial scope is:
+The current core scope is:
 
 ```text
+Effect
+Runtime
 Service
 Layer
 Scope

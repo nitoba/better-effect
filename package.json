@@ -42,8 +42,8 @@
     "test:coverage": "bun test --coverage",
     "lint": "oxlint --type-aware .",
     "lint:fix": "oxlint --type-aware --fix .",
-    "format": "oxfmt .",
-    "format:check": "oxfmt .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
     "publint": "publint",
     "check": "bun run typecheck && bun test && bun run lint && bun run format:check && bun run build && bun run publint",
     "prepublishOnly": "bun run check",
@@ -62,14 +62,11 @@
   "peerDependencies": {
     "better-result": "^3.0.0",
     "iti": "^0.8.0",
-    "typescript": "^7.0.2"
+    "typescript": ">=5.2.0"
   },
   "peerDependenciesMeta": {
     "iti": {
       "optional": true
     }
-  },
-  "optionalDependencies": {
-    "iti": "^0.8.0"
   }
 }

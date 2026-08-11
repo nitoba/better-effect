@@ -4,8 +4,10 @@
 
 `better-effect` is a lightweight TypeScript library that adds a small set of Effect-inspired primitives around `better-result`.
 
-The library currently has four core concepts:
+The library currently has six core concepts:
 
+- `Effect` — Result-oriented generator and composition primitives with typed Service requirements
+- `Runtime` — Effect execution, Layer provisioning, and graceful lifecycle ownership
 - `Service` — contextual dependency access through `yield*`
 - `Layer` — declarative environment/provider composition
 - `Scope` — contextual lifecycle and finalizer management
@@ -211,6 +213,13 @@ Keep casts localized at the internal type-erasure boundary.
 
 Do not build a complex generic tuple/union system merely to remove a safe internal cast.
 
+`Layer.scoped` intentionally keeps its compatibility-friendly release callback shape
+`(instance) => ...`. The internal `LayerProvider` normalizes that callback to its
+outcome-aware `(instance, outcome) => ...` form, but `Layer.scoped` does not expose the
+`ScopeOutcome`. Use `Layer.scopedGen` when acquisition needs contextual Services and
+release logic needs the final `ScopeOutcome`; its callback explicitly receives both
+`(instance, outcome)`.
+
 ### Typed execution requirements
 
 Every typed execution boundary (`BuiltLayer.run`, managed `Runtime.run`, and
@@ -348,6 +357,10 @@ Use `better-result` as the source of truth for:
 - `Result.await`
 - `TaggedError`
 - `UnhandledException`
+
+The public TypeScript peer range starts at 5.2. The lower bound is required by the
+`Symbol.dispose` and `Symbol.asyncDispose` declarations used by `DisposableResource`;
+the phantom Service-requirement types themselves do not require TypeScript 7.
 
 Every `Result.gen` generator must finish by returning a `Result`.
 
