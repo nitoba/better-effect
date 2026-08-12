@@ -58,6 +58,13 @@ inspection.
 ServiceToken<'PasswordHasher', PasswordHasher>` and the completeness
   constraint MUST identify that exact missing-Service set by tag
 
+#### Scenario: Missing tags remain visible in compiler diagnostics
+
+- **WHEN** an incomplete Layer is passed to a complete-Layer boundary
+- **THEN** the required constraint MUST include a readable diagnostic member
+  named `__betterEffectMissingService__<Tag>` for each absent Service tag, in
+  addition to the stable marker carrying the complete missing-token union
+
 #### Scenario: Same-shape different tags remain missing
 
 - **WHEN** a Layer requires PrimaryDatabase but provides only a structurally

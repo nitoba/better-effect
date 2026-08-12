@@ -128,6 +128,16 @@ type MissingLayerServices<Missing extends AnyServiceToken> = {
   readonly __betterEffectMissingServices: Missing
 }
 
+/**
+ * Put the missing Service tags in the required property name itself. This is
+ * intentionally separate from the stable marker above so TypeScript reports a
+ * useful diagnostic while existing type-level consumers can still inspect the
+ * missing-token union.
+ */
+type MissingLayerServiceDiagnostic<Missing extends AnyServiceToken> = {
+  readonly [K in `__betterEffectMissingService__${ServiceTag<Missing>}`]: never
+}
+
 type LayerCollisionServices<Collisions extends AnyServiceToken> = {
   readonly __betterEffectLayerOverrideCollisions: Collisions
 }
@@ -137,6 +147,7 @@ export type CompleteLayer<L extends AnyLayer> = [LayerMissing<L>] extends [never
     ? L
     : L & LayerCollisionServices<LayerCollisions<L>>
   : L &
+      MissingLayerServiceDiagnostic<LayerMissing<L>> &
       MissingLayerServices<LayerMissing<L>> &
       ([LayerCollisions<L>] extends [never] ? unknown : LayerCollisionServices<LayerCollisions<L>>)
 
@@ -151,6 +162,11 @@ export type MissingRuntimeServices<Missing extends AnyServiceToken> = {
   readonly __betterEffectMissingRuntimeServices: Missing
 }
 
+/** Readable per-tag diagnostics for execution boundaries. */
+type MissingRuntimeServiceDiagnostic<Missing extends AnyServiceToken> = {
+  readonly [K in `__betterEffectMissingRuntimeService__${ServiceTag<Missing>}`]: never
+}
+
 type ExecutionProgram<A> = () => A | PromiseLike<A>
 
 /** Keep execution callbacks unchanged when their Effect requirements are met. */
@@ -158,4 +174,6 @@ export type CompleteExecution<Provided extends AnyServiceToken, A> = [
   ExecutionMissing<Provided, A>
 ] extends [never]
   ? ExecutionProgram<A>
-  : ExecutionProgram<A> & MissingRuntimeServices<ExecutionMissing<Provided, A>>
+  : ExecutionProgram<A> &
+      MissingRuntimeServiceDiagnostic<ExecutionMissing<Provided, A>> &
+      MissingRuntimeServices<ExecutionMissing<Provided, A>>

@@ -83,6 +83,14 @@ incompatible contracts do not satisfy one another. The predicates stay internal;
 the public API exposes the tag-aware self-bound contracts in diagnostics rather
 than helper predicates.
 
+Incomplete Layer and execution boundaries retain stable missing-token markers
+for type-level inspection and add required diagnostic properties whose names
+include each missing Service tag (for example,
+`__betterEffectMissingService__Database` and
+`__betterEffectMissingRuntimeService__Database`). This keeps TypeScript's
+primary "property is missing" diagnostic readable without changing the
+underlying missing-token unions.
+
 ### 4. Make Layer composition the collision boundary
 
 `Layer.merge` preflights providers by `serviceTag` and throws the existing

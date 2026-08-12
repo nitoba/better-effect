@@ -146,6 +146,11 @@ expectTypeOf<CompleteLayer<typeof Broken>>().toMatchTypeOf<
   }
 >()
 
+expectTypeOf<CompleteLayer<typeof Broken>>().toMatchTypeOf<{
+  readonly __betterEffectMissingService__Database: never
+  readonly __betterEffectMissingService__PasswordHasher: never
+}>()
+
 expectTypeOf<LayerMissing<typeof UsersGeneratedLive>>().toEqualTypeOf<
   ServiceToken<'Database', Database>
 >()

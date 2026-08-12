@@ -124,7 +124,9 @@ emitted JavaScript or runtime execution.
 
 - **WHEN** an execution is rejected because its Runtime lacks required Services
 - **THEN** TypeScript's expected parameter contract MUST include
-  `__betterEffectMissingRuntimeServices` with the exact missing-token union
+  `__betterEffectMissingRuntimeServices` with the exact missing-token union and
+  a readable `__betterEffectMissingRuntimeService__<Tag>` member for each
+  missing Service tag
 
 #### Scenario: Complete execution has no marker
 

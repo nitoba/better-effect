@@ -106,8 +106,9 @@ expectTypeOf<MissingRuntimeServices<MissingLogger>>().toEqualTypeOf<{
 type IncompleteProgram = CompleteExecution<typeof Database, CompleteProgram>
 
 expectTypeOf<IncompleteProgram>().toEqualTypeOf<
-  (() => CompleteProgram | PromiseLike<CompleteProgram>) &
-    MissingRuntimeServices<ServiceToken<'Logger', Logger>>
+  (() => CompleteProgram | PromiseLike<CompleteProgram>) & {
+    readonly __betterEffectMissingRuntimeService__Logger: never
+  } & MissingRuntimeServices<ServiceToken<'Logger', Logger>>
 >()
 
 const typedRuntime = {} as Runtime<typeof Database | typeof Logger>
