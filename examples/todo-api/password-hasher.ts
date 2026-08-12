@@ -3,7 +3,7 @@ import { Result, type Result as ResultType } from 'better-result'
 import { Service } from './better-effect'
 import { PasswordFailure } from './errors'
 
-export class PasswordHasher extends Service<PasswordHasher>() {
+export class PasswordHasher extends Service<PasswordHasher>()('PasswordHasher') {
   hash(password: string): Promise<ResultType<string, PasswordFailure>> {
     return Result.tryPromise({
       try: () => Bun.password.hash(password),

@@ -10,7 +10,7 @@ export class ServiceRuntimeNotConfiguredError extends Error {
 
 export class ServiceNotFoundError extends Error {
   constructor(readonly service: AnyServiceToken) {
-    super(`Service "${service.name}" was not provided`)
+    super(`Service "${service.serviceTag}" was not provided`)
 
     this.name = 'ServiceNotFoundError'
   }

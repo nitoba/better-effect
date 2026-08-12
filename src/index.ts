@@ -11,6 +11,7 @@ export type {
   ServiceInstance,
   ServiceRequirements,
   ServiceResolver,
+  ServiceTag,
   ServiceToken
 } from './service'
 
@@ -19,7 +20,8 @@ export {
   DuplicateServiceError,
   LayerDisposeError,
   LayerGeneratorYieldError,
-  LayerRegistrationError
+  LayerRegistrationError,
+  ServiceTagCollisionError
 } from './layer'
 
 export type {

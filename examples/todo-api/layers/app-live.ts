@@ -19,10 +19,8 @@ const DatabaseLive = Layer.scoped(
   (database) => database.close()
 )
 
-const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
-
 const RepositoriesLive = Layer.merge(
-  UserRepositoryLive,
+  Layer.make(UserRepository, () => new UserRepository()),
   Layer.make(SessionRepository, () => new SessionRepository()),
   Layer.make(TodoRepository, () => new TodoRepository())
 )

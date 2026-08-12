@@ -12,12 +12,12 @@ import {
   type RuntimeShutdownDiagnostic,
   Scope,
   Service,
+  type ServiceToken,
   type ScopeFinalizer,
-  type ScopeOutcome,
-  type ServiceToken
+  type ScopeOutcome
 } from '../../src'
 
-class Database extends Service<Database>() {}
+class Database extends Service<Database>()('Database') {}
 
 const program = Effect.gen(async function* () {
   const scope = yield* Scope
@@ -28,7 +28,9 @@ const program = Effect.gen(async function* () {
   return Result.ok({ scope, database })
 })
 
-expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<ServiceToken<Database>>()
+expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
+  ServiceToken<'Database', Database>
+>()
 
 const onlyScope = Effect.gen(async function* () {
   const scope = yield* Scope

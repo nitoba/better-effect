@@ -16,7 +16,7 @@ const toSession = (row: SessionRow): Session => ({
   expiresAt: row.expires_at
 })
 
-export class SessionRepository extends Service<SessionRepository>() {
+export class SessionRepository extends Service<SessionRepository>()('SessionRepository') {
   create(session: Session) {
     return Effect.gen(async function* () {
       const database = yield* Database

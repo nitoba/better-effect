@@ -13,26 +13,26 @@ import { createRuntimeHandle, type RuntimeHandle } from '../../src/layer/runtime
 import type { LayerRegistration } from '../../src'
 import { Runtime, type RuntimeFor } from '../../src/runtime'
 import { Scope } from '../../src/scope'
-import { Service, type AnyServiceToken } from '../../src/service'
+import { Service, type AnyServiceToken, type ServiceToken } from '../../src/service'
 import type {
   CompleteExecution,
   ExecutionMissing,
   MissingRuntimeServices
 } from '../../src/layer/inference'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   query() {
     return 'query'
   }
 }
 
-class Logger extends Service<Logger>() {
+class Logger extends Service<Logger>()('Logger') {
   write(message: string) {
     void message
   }
 }
 
-class Cache extends Service<Cache>() {
+class Cache extends Service<Cache>()('Cache') {
   get() {
     return 'cached'
   }
@@ -94,21 +94,20 @@ expectTypeOf<EffectSuccess<CompleteProgram>>().toEqualTypeOf<{
 }>()
 expectTypeOf<EffectError<CompleteProgram>>().toEqualTypeOf<never>()
 expectTypeOf<EffectRequirements<CompleteProgram>>().toEqualTypeOf<
-  | import('../../src/service').ServiceToken<Database>
-  | import('../../src/service').ServiceToken<Logger>
+  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
 >()
 
 type MissingLogger = ExecutionMissing<typeof Database, CompleteProgram>
 
-expectTypeOf<MissingLogger>().toEqualTypeOf<import('../../src/service').ServiceToken<Logger>>()
+expectTypeOf<MissingLogger>().toEqualTypeOf<ServiceToken<'Logger', Logger>>()
 expectTypeOf<MissingRuntimeServices<MissingLogger>>().toEqualTypeOf<{
-  readonly __betterEffectMissingRuntimeServices: import('../../src/service').ServiceToken<Logger>
+  readonly __betterEffectMissingRuntimeServices: ServiceToken<'Logger', Logger>
 }>()
 type IncompleteProgram = CompleteExecution<typeof Database, CompleteProgram>
 
 expectTypeOf<IncompleteProgram>().toEqualTypeOf<
   (() => CompleteProgram | PromiseLike<CompleteProgram>) &
-    MissingRuntimeServices<import('../../src/service').ServiceToken<Logger>>
+    MissingRuntimeServices<ServiceToken<'Logger', Logger>>
 >()
 
 const typedRuntime = {} as Runtime<typeof Database | typeof Logger>
@@ -147,9 +146,7 @@ const requiresLoggerAndCache = () =>
 
 expectTypeOf<
   ExecutionMissing<typeof Database, ReturnType<typeof requiresLoggerAndCache>>
->().toEqualTypeOf<
-  import('../../src/service').ServiceToken<Logger> | import('../../src/service').ServiceToken<Cache>
->()
+>().toEqualTypeOf<ServiceToken<'Logger', Logger> | ServiceToken<'Cache', Cache>>()
 
 // @ts-expect-error Both Logger and Cache are absent from this managed Runtime.
 void ({} as Runtime<typeof Database>).run(requiresLoggerAndCache)

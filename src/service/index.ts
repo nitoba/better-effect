@@ -11,5 +11,6 @@ export type {
   ServiceClass,
   ServiceInstance,
   ServiceRequirements,
+  ServiceTag,
   ServiceToken
 } from './types'

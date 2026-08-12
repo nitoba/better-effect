@@ -9,7 +9,7 @@ import { UserRepository } from '../repositories/user-repository'
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 1 day
 
-export class AuthService extends Service<AuthService>() {
+export class AuthService extends Service<AuthService>()('AuthService') {
   login(input: LoginInput) {
     return Effect.gen(async function* () {
       const users = yield* UserRepository

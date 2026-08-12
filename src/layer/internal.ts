@@ -6,7 +6,7 @@ import type { AnyServiceToken, ServiceClass } from '../service'
 import type { LayerGenerator } from './types'
 
 export const runLayerGenerator = async <
-  S extends ServiceClass<any>,
+  S extends ServiceClass<any, any>,
   Yield extends ServiceRequirement<AnyServiceToken>
 >(
   service: S,

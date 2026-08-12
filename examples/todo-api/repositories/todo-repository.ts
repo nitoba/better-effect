@@ -22,7 +22,7 @@ const toTodo = (row: TodoRow): Todo => ({
   updatedAt: row.updated_at
 })
 
-export class TodoRepository extends Service<TodoRepository>() {
+export class TodoRepository extends Service<TodoRepository>()('TodoRepository') {
   list(userId: string) {
     return Effect.gen(async function* () {
       const database = yield* Database

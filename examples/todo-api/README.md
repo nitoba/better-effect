@@ -103,8 +103,9 @@ curl -i \
 
 ### Service
 
-Services and repositories extend `Service<Self>()` and resolve dependencies
-inside `Effect.gen`:
+Services and repositories extend `Service<Self>()('Name')`; the explicit tag is
+their stable logical identity while the self type preserves exact inference.
+Dependencies resolve inside `Effect.gen`:
 
 ```ts
 const database = yield * Database

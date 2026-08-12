@@ -5,7 +5,7 @@ import type { CreateTodoInput, UpdateTodoInput } from '../domain'
 import { TodoNotFound } from '../errors'
 import { TodoRepository } from '../repositories/todo-repository'
 
-export class TodoService extends Service<TodoService>() {
+export class TodoService extends Service<TodoService>()('TodoService') {
   list(userId: string) {
     return Effect.gen(async function* () {
       const todos = yield* TodoRepository

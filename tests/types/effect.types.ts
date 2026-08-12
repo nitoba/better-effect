@@ -11,19 +11,19 @@ import {
 import { Scope, type ScopeOutcome } from '../../src/scope'
 import { Service, type ServiceRequirements, type ServiceToken } from '../../src/service'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   query(): string {
     return 'query'
   }
 }
 
-class Cache extends Service<Cache>() {
+class Cache extends Service<Cache>()('Cache') {
   get(): string {
     return 'value'
   }
 }
 
-class UserRepository extends Service<UserRepository>() {
+class UserRepository extends Service<UserRepository>()('UserRepository') {
   find(): ReturnType<typeof Result.ok> {
     return Result.ok('user')
   }
@@ -72,7 +72,7 @@ const combinedProgram = Effect.gen(async function* () {
 })
 
 expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()
 
 expectTypeOf<EffectSuccess<typeof program>>().toEqualTypeOf<{ database: Database; cache: Cache }>()
@@ -83,17 +83,17 @@ expectTypeOf<EffectError<typeof failedProgram>>().toEqualTypeOf<string>()
 expectTypeOf<EffectRequirements<typeof failedProgram>>().toEqualTypeOf<never>()
 
 expectTypeOf<EffectRequirements<typeof combinedProgram>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()
 
 const plainResult = Result.ok('plain')
 
 expectTypeOf<EffectRequirements<typeof plainResult>>().toEqualTypeOf<never>()
 expectTypeOf<EffectRequirements<Promise<typeof nestedProgram>>>().toEqualTypeOf<
-  ServiceToken<Cache>
+  ServiceToken<'Cache', Cache>
 >()
 expectTypeOf<EffectRequirements<typeof nestedProgram | typeof plainResult>>().toEqualTypeOf<
-  ServiceToken<Cache>
+  ServiceToken<'Cache', Cache>
 >()
 
 const scopeProgram = Effect.gen(async function* () {
@@ -139,10 +139,12 @@ const legacyReleaseProgram = Effect.gen(async function* () {
   return Result.ok(connection)
 })
 
-expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<ServiceToken<Database>>()
+expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<
+  ServiceToken<'Database', Database>
+>()
 
 expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()
 
 expectTypeOf<EffectSuccess<typeof acquireReleaseProgram>>().toEqualTypeOf<Connection>()
@@ -162,9 +164,9 @@ expectTypeOf<
 >().toEqualTypeOf<UnhandledException>()
 
 expectTypeOf<EffectRequirements<typeof serviceAndAcquireReleaseProgram>>().toEqualTypeOf<
-  ServiceToken<Database>
+  ServiceToken<'Database', Database>
 >()
 
 expectTypeOf<ServiceRequirements<typeof UserRepository>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()

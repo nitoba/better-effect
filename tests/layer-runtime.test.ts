@@ -3,7 +3,13 @@ import { describe, expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
-import { Layer, LayerDisposeError, LayerRegistrationError, type LayerBackend } from '../src/layer'
+import {
+  Layer,
+  LayerDisposeError,
+  LayerRegistrationError,
+  ServiceTagCollisionError,
+  type LayerBackend
+} from '../src/layer'
 import { createRuntimeHandle } from '../src/layer/runtime'
 import { Runtime } from '../src/runtime'
 import { Scope, ScopeCloseError } from '../src/scope'
@@ -27,26 +33,26 @@ const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
     (cause) => cause
   )
 
-class ExampleService extends Service<ExampleService>() {
+class ExampleService extends Service<ExampleService>()('ExampleService') {
   value(): number {
     return 42
   }
 }
 
-class ScopedDependency extends Service<ScopedDependency>() {
+class ScopedDependency extends Service<ScopedDependency>()('ScopedDependency') {
   readonly value = 'dependency'
 }
 
-class ScopedConsumer extends Service<ScopedConsumer>() {
+class ScopedConsumer extends Service<ScopedConsumer>()('ScopedConsumer') {
   constructor(readonly dependency: ScopedDependency) {
     super()
   }
 }
 
 class MemoryLayerBackend implements LayerBackend {
-  readonly providers = new Map<AnyServiceToken, LayerRegistration>()
+  readonly providers = new Map<string, LayerRegistration>()
 
-  readonly instances = new Map<AnyServiceToken, unknown>()
+  readonly instances = new Map<string, unknown>()
 
   disposed = false
 
@@ -79,23 +85,31 @@ class MemoryLayerBackend implements LayerBackend {
       throw this.registerFailureAfterFirst
     }
 
-    this.providers.set(provider.service, provider)
+    const existing = this.providers.get(provider.service.serviceTag)
+
+    if (existing && existing.service !== provider.service) {
+      throw new ServiceTagCollisionError(existing.service, provider.service)
+    }
+
+    this.providers.set(provider.service.serviceTag, provider)
   }
 
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
-    if (this.instances.has(token)) {
-      return this.instances.get(token) as InstanceType<T>
+    const tag = token.serviceTag
+
+    if (this.instances.has(tag)) {
+      return this.instances.get(tag) as InstanceType<T>
     }
 
-    const provider = this.providers.get(token)
+    const provider = this.providers.get(tag)
 
     if (!provider) {
-      throw new Error(`Missing service: ${token.name}`)
+      throw new Error(`Missing service: ${token.serviceTag}`)
     }
 
     const instance = await provider.acquire()
 
-    this.instances.set(token, instance)
+    this.instances.set(tag, instance)
 
     return instance as InstanceType<T>
   }
@@ -122,7 +136,7 @@ describe('createRuntimeHandle', () => {
     const runtime = await createRuntimeHandle(layer, backend)
 
     try {
-      expect(backend.providers.has(ExampleService)).toBe(true)
+      expect(backend.providers.has(ExampleService.serviceTag)).toBe(true)
 
       expect(backend.instances.size).toBe(0)
     } finally {
@@ -593,7 +607,7 @@ describe('createRuntimeHandle', () => {
   test('runs Layer provider factories in the root scope', async () => {
     let nestedResourceReleased = 0
 
-    class ScopedFactoryService extends Service<ScopedFactoryService>() {}
+    class ScopedFactoryService extends Service<ScopedFactoryService>()('ScopedFactoryService') {}
 
     const runtime = await createRuntimeHandle(
       Layer.make(ScopedFactoryService, async () => {
@@ -1383,7 +1397,7 @@ describe('createRuntimeHandle', () => {
   })
 
   test('cleans up a partially built layer after registration failure', async () => {
-    class SecondService extends Service<SecondService>() {}
+    class SecondService extends Service<SecondService>()('SecondService') {}
 
     const registrationFailure = new Error('registration failed')
     const backendFailure = new Error('backend cleanup failed')

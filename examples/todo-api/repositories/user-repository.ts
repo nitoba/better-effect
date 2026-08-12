@@ -18,7 +18,7 @@ const toUser = (row: UserRow): User => ({
   createdAt: row.created_at
 })
 
-export class UserRepository extends Service<UserRepository>() {
+export class UserRepository extends Service<UserRepository>()('UserRepository') {
   findByEmail(email: string) {
     return Effect.gen(async function* () {
       const database = yield* Database

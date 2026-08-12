@@ -13,13 +13,13 @@ import { Runtime } from '../../src/runtime'
 import { Service, type ServiceToken } from '../../src/service'
 import { pipe } from '../../src/function'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   find(): string {
     return 'user'
   }
 }
 
-class Cache extends Service<Cache>() {
+class Cache extends Service<Cache>()('Cache') {
   get(): string {
     return 'cached'
   }
@@ -56,7 +56,9 @@ const mapped = pipe(
 
 expectTypeOf<EffectSuccess<typeof mapped>>().toEqualTypeOf<string>()
 expectTypeOf<EffectError<typeof mapped>>().toEqualTypeOf<never>()
-expectTypeOf<EffectRequirements<typeof mapped>>().toEqualTypeOf<ServiceToken<Database>>()
+expectTypeOf<EffectRequirements<typeof mapped>>().toEqualTypeOf<
+  ServiceToken<'Database', Database>
+>()
 
 // oxlint-disable-next-line require-yield
 const syncSource = Effect.gen(function* () {
@@ -98,7 +100,9 @@ const mappedDataFirst = Effect.map(source, (user: { id: string }) => user.id)
 
 expectTypeOf<EffectSuccess<typeof mappedDataFirst>>().toEqualTypeOf<string>()
 expectTypeOf<EffectError<typeof mappedDataFirst>>().toEqualTypeOf<never>()
-expectTypeOf<EffectRequirements<typeof mappedDataFirst>>().toEqualTypeOf<ServiceToken<Database>>()
+expectTypeOf<EffectRequirements<typeof mappedDataFirst>>().toEqualTypeOf<
+  ServiceToken<'Database', Database>
+>()
 
 const errorSource = Effect.gen(async function* () {
   if (Math.random() < 0) {
@@ -139,7 +143,7 @@ const mappedErrorWithRequirement = pipe(
 )
 
 expectTypeOf<EffectRequirements<typeof mappedErrorWithRequirement>>().toEqualTypeOf<
-  ServiceToken<Database>
+  ServiceToken<'Database', Database>
 >()
 
 const chained = pipe(
@@ -160,7 +164,7 @@ const chained = pipe(
 expectTypeOf<EffectSuccess<typeof chained>>().toEqualTypeOf<string>()
 expectTypeOf<EffectError<typeof chained>>().toEqualTypeOf<SecondFailure>()
 expectTypeOf<EffectRequirements<typeof chained>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()
 
 const finalPipeline = pipe(
@@ -172,7 +176,7 @@ const finalPipeline = pipe(
 expectTypeOf<EffectSuccess<typeof finalPipeline>>().toEqualTypeOf<number>()
 expectTypeOf<EffectError<typeof finalPipeline>>().toEqualTypeOf<NormalizedFailure>()
 expectTypeOf<EffectRequirements<typeof finalPipeline>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()
 
 const chainedDataFirst = Effect.andThenAsync(source, (user: { id: string }) =>
@@ -185,7 +189,7 @@ const chainedDataFirst = Effect.andThenAsync(source, (user: { id: string }) =>
 
 expectTypeOf<EffectSuccess<typeof chainedDataFirst>>().toEqualTypeOf<string>()
 expectTypeOf<EffectRequirements<typeof chainedDataFirst>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Cache>
+  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
 >()
 
 const chainedErrors = pipe(

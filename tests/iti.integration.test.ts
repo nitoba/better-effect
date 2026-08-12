@@ -4,16 +4,38 @@ import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { ItiLayerBackend } from '../src/adapters/iti'
-import { Layer } from '../src/layer'
+import { Layer, ServiceTagCollisionError } from '../src/layer'
 import { createRuntimeHandle } from '../src/layer/runtime'
 import { Service, ServiceRuntime } from '../src/service'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   readonly id = crypto.randomUUID()
 }
 
-class UserRepository extends Service<UserRepository>() {
+class UserRepository extends Service<UserRepository>()('UserRepository') {
   readonly id = crypto.randomUUID()
+}
+
+class TaggedDatabaseA extends Service<TaggedDatabaseA>()('ItiTaggedDatabase') {
+  value(): string {
+    return 'a'
+  }
+}
+
+class TaggedDatabaseB extends Service<TaggedDatabaseB>()('ItiTaggedDatabase') {
+  value(): string {
+    return 'b'
+  }
+}
+
+class IncompatibleTaggedA extends Service<IncompatibleTaggedA>()('ItiCollision') {
+  query(): string {
+    return 'a'
+  }
+}
+
+class IncompatibleTaggedB extends Service<IncompatibleTaggedB>()('ItiCollision') {
+  migrate(): void {}
 }
 
 describe('ItiLayerBackend', () => {
@@ -229,5 +251,58 @@ describe('ItiLayerBackend', () => {
     } finally {
       await Promise.all([runtimeA.dispose(), runtimeB.dispose()])
     }
+  })
+
+  test('uses the tag key for compatible overrides', async () => {
+    const runtime = await createRuntimeHandle(
+      Layer.override(
+        Layer.make(TaggedDatabaseA, () => new TaggedDatabaseA()),
+        Layer.make(TaggedDatabaseB, () => new TaggedDatabaseB())
+      ),
+      new ItiLayerBackend()
+    )
+
+    try {
+      const resolved = await runtime.run(() => ServiceRuntime.resolve(TaggedDatabaseA))
+
+      expect(resolved).toBeInstanceOf(TaggedDatabaseB)
+      expect(resolved.value()).toBe('b')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('rejects duplicate tag registrations', () => {
+    const backend = new ItiLayerBackend()
+
+    backend.register({
+      service: TaggedDatabaseA,
+      acquire: () => new TaggedDatabaseA()
+    })
+
+    expect(() =>
+      backend.register({
+        service: TaggedDatabaseB,
+        acquire: () => new TaggedDatabaseB()
+      })
+    ).toThrow(ServiceTagCollisionError)
+  })
+
+  test('rejects an incompatible same-tag lookup', async () => {
+    const backend = new ItiLayerBackend()
+
+    backend.register({
+      service: IncompatibleTaggedB,
+      acquire: () => new IncompatibleTaggedB()
+    })
+
+    const cause = await Promise.resolve()
+      .then(() => backend.resolve(IncompatibleTaggedA))
+      .then(
+        () => undefined,
+        (error) => error
+      )
+
+    expect(cause).toBeInstanceOf(ServiceTagCollisionError)
   })
 })

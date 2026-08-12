@@ -75,20 +75,16 @@ A Service class is simultaneously:
 2. a runtime dependency token;
 3. a yieldable dependency handle.
 
-Services are declared using the self type:
+Services are declared using an explicit self type and a non-empty literal tag:
 
 ```ts
-class AuthService extends Service<AuthService>() {}
+class AuthService extends Service<AuthService>()('AuthService') {}
 ```
 
-Do not reintroduce string keys:
-
-```ts
-// Do not do this.
-Service<AuthService>()('authService')
-```
-
-The class constructor itself is the runtime identity.
+The class constructor remains the ergonomic runtime and type-level handle. The
+literal `serviceTag` is the stable logical identity used by Layer composition
+and dependency backends. The self type anchors exact instance inference while
+the tag is carried in the phantom requirement contract.
 
 A Service should resolve like:
 
@@ -115,7 +111,7 @@ resolve<T extends AnyServiceToken>(
 Do not use an unrelated generic result parameter such as:
 
 ```ts
-resolve<A>(token: ServiceToken<A>): A
+resolve<A>(token: AnyServiceToken): A
 ```
 
 That weakens the token → instance relationship and causes generic assignability problems.
@@ -140,7 +136,9 @@ Adapters own container-specific translation.
 
 For example, ITI may require internal string identifiers. That translation must remain inside the ITI adapter.
 
-The core must continue to use the class constructor as the Service token.
+The core must continue to use the class constructor as the Service handle and
+resolver token. DI backends may translate its `serviceTag` to container-local
+keys, but those keys must not leak into core APIs.
 
 Do not leak ITI types or identifiers into:
 
@@ -173,23 +171,30 @@ Layer.merge(...)
 Layer.override(...)
 ```
 
-`Layer.merge` must reject duplicate Service tokens.
+`Layer.merge` must reject duplicate Service tags.
 
 `Layer.override` is the explicit mechanism for intentional replacement.
 
-Service identity comparisons must use constructor identity:
+Overrides with the same tag and bidirectionally compatible instance contracts
+replace the prior provider. An incompatible same-tag override carries a typed
+collision diagnostic and MUST NOT pass a complete-Layer boundary. Runtime
+backends retain the registering constructor and perform a best-effort member
+check when a different constructor is requested for the same tag.
+
+Service identity comparisons must use the literal tag:
 
 ```ts
-provider.service === Database
+provider.service.serviceTag === Database.serviceTag
 ```
 
-not:
+not a diagnostic-only constructor name:
 
 ```ts
 provider.service.name === 'Database'
 ```
 
-`name` may be used for diagnostics only.
+The registering constructor is retained for type relationships and collision
+diagnostics; `name` may be used for diagnostics only.
 
 ### Layer type erasure
 
@@ -429,7 +434,8 @@ or serial-test discipline is required for resolver context.
 
 Do not implement a fake generic resolver that always returns one concrete class.
 
-Prefer a Map-backed resolver:
+Prefer a Map-backed resolver keyed by the Service handle (the resolver itself
+may use tags internally):
 
 ```ts
 Map<AnyServiceToken, unknown>

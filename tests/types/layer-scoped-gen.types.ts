@@ -16,19 +16,19 @@ import { Runtime } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
 import { Service, type ServiceToken } from '../../src/service'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   query(): string {
     return 'query'
   }
 }
 
-class Logger extends Service<Logger>() {
+class Logger extends Service<Logger>()('Logger') {
   write(message: string): void {
     void message
   }
 }
 
-class UserRepository extends Service<UserRepository>() {
+class UserRepository extends Service<UserRepository>()('UserRepository') {
   constructor(readonly database: Database) {
     super()
   }
@@ -64,10 +64,10 @@ const UserRepositoryLive = Layer.scopedGen(
 
 expectTypeOf<LayerProvided<typeof UserRepositoryLive>>().toEqualTypeOf<typeof UserRepository>()
 expectTypeOf<LayerRawRequired<typeof UserRepositoryLive>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Logger>
+  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
 >()
 expectTypeOf<LayerMissing<typeof UserRepositoryLive>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Logger>
+  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
 >()
 
 const Complete = Layer.merge(DatabaseLive, LoggerLive, UserRepositoryLive)
@@ -81,11 +81,13 @@ void Runtime.make(Complete, backend)
 const Incomplete = Layer.merge(UserRepositoryLive)
 
 expectTypeOf<LayerMissing<typeof Incomplete>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<Logger>
+  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
 >()
 expectTypeOf<CompleteLayer<typeof Incomplete>>().toMatchTypeOf<
   typeof Incomplete & {
-    readonly __betterEffectMissingServices: ServiceToken<Database> | ServiceToken<Logger>
+    readonly __betterEffectMissingServices:
+      | ServiceToken<'Database', Database>
+      | ServiceToken<'Logger', Logger>
   }
 >()
 
@@ -128,4 +130,4 @@ const ScopeOnly = Layer.scopedGen(
   }
 )
 
-expectTypeOf<LayerRawRequired<typeof ScopeOnly>>().toEqualTypeOf<ServiceToken<Logger>>()
+expectTypeOf<LayerRawRequired<typeof ScopeOnly>>().toEqualTypeOf<ServiceToken<'Logger', Logger>>()

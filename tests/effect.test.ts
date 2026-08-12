@@ -15,7 +15,7 @@ import type { ScopeOutcome } from '../src/scope'
 
 import { TestServiceResolver } from './helpers/test-service-resolver'
 
-class GreetingService extends Service<GreetingService>() {
+class GreetingService extends Service<GreetingService>()('GreetingService') {
   greet(name: string): string {
     return `Hello, ${name}!`
   }

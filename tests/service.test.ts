@@ -7,7 +7,7 @@ import { Service, ServiceRuntime, ServiceRuntimeNotConfiguredError } from '../sr
 
 import { TestServiceResolver } from './helpers/test-service-resolver'
 
-class CounterService extends Service<CounterService>() {
+class CounterService extends Service<CounterService>()('CounterService') {
   constructor(readonly value: number) {
     super()
   }

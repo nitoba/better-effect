@@ -1,4 +1,4 @@
-import type { AnyServiceToken } from '../service'
+import type { AnyServiceToken, ServiceTag } from '../service'
 
 import type { EffectRequirements } from '../effect/types'
 
@@ -6,9 +6,9 @@ import type { Layer } from './layer'
 
 import type { AnyLayerSpec, LayerSpec } from './types'
 
-export type AnyLayer = Layer<any>
+export type AnyLayer = Layer<any, any>
 
-export type LayerSpecs<L extends AnyLayer> = L extends Layer<infer Specs> ? Specs : never
+export type LayerSpecs<L extends AnyLayer> = L extends Layer<infer Specs, any> ? Specs : never
 
 export type LayerProvided<L extends AnyLayer> =
   LayerSpecs<L> extends LayerSpec<infer Provided, any> ? Provided : never
@@ -19,13 +19,27 @@ export type LayerRawRequired<L extends AnyLayer> =
 type LayerSpecProvided<Specs extends AnyLayerSpec> =
   Specs extends LayerSpec<infer Provided, any> ? Provided : never
 
-type SameServiceToken<Left extends AnyServiceToken, Right extends AnyServiceToken> = [
-  Left
-] extends [Right]
-  ? [Right] extends [Left]
+type SameServiceTag<Left extends AnyServiceToken, Right extends AnyServiceToken> =
+  string extends ServiceTag<Left>
+    ? true
+    : string extends ServiceTag<Right>
+      ? true
+      : [ServiceTag<Left>] extends [ServiceTag<Right>]
+        ? [ServiceTag<Right>] extends [ServiceTag<Left>]
+          ? true
+          : false
+        : false
+
+type SameServiceContract<Left extends AnyServiceToken, Right extends AnyServiceToken> = [
+  InstanceType<Left>
+] extends [InstanceType<Right>]
+  ? [InstanceType<Right>] extends [InstanceType<Left>]
     ? true
     : false
   : false
+
+type SameServiceToken<Left extends AnyServiceToken, Right extends AnyServiceToken> =
+  SameServiceTag<Left, Right> extends true ? SameServiceContract<Left, Right> : false
 
 type IsOverridden<
   Provided extends AnyServiceToken,
@@ -53,12 +67,43 @@ export type OverrideLayerSpecs<
   ? OverrideLayerSpecs<ReplaceLayerSpecs<Current, LayerSpecs<Head>>, Tail>
   : Current
 
+type IncompatibleServicePair<Left extends AnyServiceToken, Right extends AnyServiceToken> =
+  SameServiceTag<Left, Right> extends true
+    ? SameServiceContract<Left, Right> extends true
+      ? never
+      : Right
+    : never
+
+type IncompatibleServicePairs<Left, Right> = Left extends AnyServiceToken
+  ? Right extends AnyServiceToken
+    ? IncompatibleServicePair<Left, Right>
+    : never
+  : never
+
+type IncompatibleLayerSpecs<
+  Current extends AnyLayerSpec,
+  Replacement extends AnyLayerSpec
+> = IncompatibleServicePairs<LayerSpecProvided<Current>, LayerSpecProvided<Replacement>>
+
+/** Same-tag replacements with incompatible instance contracts. */
+export type OverrideLayerCollisions<
+  Current extends AnyLayerSpec,
+  Overrides extends readonly AnyLayer[]
+> = Overrides extends readonly [
+  infer Head extends AnyLayer,
+  ...infer Tail extends readonly AnyLayer[]
+]
+  ?
+      | IncompatibleLayerSpecs<Current, LayerSpecs<Head>>
+      | OverrideLayerCollisions<ReplaceLayerSpecs<Current, LayerSpecs<Head>>, Tail>
+  : never
+
 type RequirementProvided<
   Requirement extends AnyServiceToken,
   Provided extends AnyServiceToken
 > = Provided extends AnyServiceToken
-  ? Provided extends abstract new (...args: any[]) => InstanceType<Requirement>
-    ? true
+  ? SameServiceTag<Requirement, Provided> extends true
+    ? SameServiceContract<Requirement, Provided>
     : false
   : false
 
@@ -76,13 +121,24 @@ export type LayerMissing<L extends AnyLayer> = MissingServices<
   LayerProvided<L>
 >
 
+export type LayerCollisions<L extends AnyLayer> =
+  L extends Layer<any, infer Collisions> ? Collisions : never
+
 type MissingLayerServices<Missing extends AnyServiceToken> = {
   readonly __betterEffectMissingServices: Missing
 }
 
+type LayerCollisionServices<Collisions extends AnyServiceToken> = {
+  readonly __betterEffectLayerOverrideCollisions: Collisions
+}
+
 export type CompleteLayer<L extends AnyLayer> = [LayerMissing<L>] extends [never]
-  ? L
-  : L & MissingLayerServices<LayerMissing<L>>
+  ? [LayerCollisions<L>] extends [never]
+    ? L
+    : L & LayerCollisionServices<LayerCollisions<L>>
+  : L &
+      MissingLayerServices<LayerMissing<L>> &
+      ([LayerCollisions<L>] extends [never] ? unknown : LayerCollisionServices<LayerCollisions<L>>)
 
 /** Services required by an execution result that are not in its environment. */
 export type ExecutionMissing<Provided extends AnyServiceToken, ProgramResult> = MissingServices<

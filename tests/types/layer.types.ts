@@ -10,13 +10,13 @@ import { Runtime } from '../../src/runtime'
 
 import { Service, type ServiceToken } from '../../src/service'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   query(): string {
     return 'query'
   }
 }
 
-class UserRepository extends Service<UserRepository>() {
+class UserRepository extends Service<UserRepository>()('UserRepository') {
   find(): string {
     return 'user'
   }
@@ -30,21 +30,21 @@ class UserRepository extends Service<UserRepository>() {
   }
 }
 
-class PasswordHasher extends Service<PasswordHasher>() {
+class PasswordHasher extends Service<PasswordHasher>()('PasswordHasher') {
   hash() {
     return Result.ok('hash')
   }
 }
 
-class FactoryDependency extends Service<FactoryDependency>() {
+class FactoryDependency extends Service<FactoryDependency>()('FactoryDependency') {
   factoryOnly(): void {}
 }
 
-class ReplacementDependency extends Service<ReplacementDependency>() {
+class ReplacementDependency extends Service<ReplacementDependency>()('ReplacementDependency') {
   replacementOnly(): void {}
 }
 
-class AuthService extends Service<AuthService>() {
+class AuthService extends Service<AuthService>()('AuthService') {
   login() {
     return Effect.gen(async function* () {
       const users = yield* UserRepository
@@ -95,7 +95,7 @@ const PasswordsGeneratedLive = Layer.gen(PasswordHasher, async function* () {
 const PasswordsOverridden = Layer.override(PasswordsGeneratedLive, PasswordsLive)
 
 expectTypeOf<LayerMissing<typeof PasswordsGeneratedLive>>().toEqualTypeOf<
-  ServiceToken<FactoryDependency>
+  ServiceToken<'FactoryDependency', FactoryDependency>
 >()
 
 expectTypeOf<LayerMissing<typeof PasswordsOverridden>>().toEqualTypeOf<never>()
@@ -114,7 +114,7 @@ const PasswordsNeedsReplacementDependency = Layer.override(
 )
 
 expectTypeOf<LayerMissing<typeof PasswordsNeedsReplacementDependency>>().toEqualTypeOf<
-  ServiceToken<ReplacementDependency>
+  ServiceToken<'ReplacementDependency', ReplacementDependency>
 >()
 
 const PasswordsMultipleOverride = Layer.override(
@@ -124,7 +124,7 @@ const PasswordsMultipleOverride = Layer.override(
 )
 
 expectTypeOf<LayerMissing<typeof PasswordsMultipleOverride>>().toEqualTypeOf<
-  ServiceToken<ReplacementDependency>
+  ServiceToken<'ReplacementDependency', ReplacementDependency>
 >()
 
 const WithUnrelatedProvider = Layer.merge(DatabaseLive, PasswordsGeneratedLive)
@@ -135,16 +135,20 @@ expectTypeOf<LayerRawRequired<typeof OverriddenWithUnrelatedProvider>>().toEqual
 const Broken = Layer.merge(UsersLive, AuthLive)
 
 expectTypeOf<LayerMissing<typeof Broken>>().toEqualTypeOf<
-  ServiceToken<Database> | ServiceToken<PasswordHasher>
+  ServiceToken<'Database', Database> | ServiceToken<'PasswordHasher', PasswordHasher>
 >()
 
 expectTypeOf<CompleteLayer<typeof Broken>>().toMatchTypeOf<
   typeof Broken & {
-    readonly __betterEffectMissingServices: ServiceToken<Database> | ServiceToken<PasswordHasher>
+    readonly __betterEffectMissingServices:
+      | ServiceToken<'Database', Database>
+      | ServiceToken<'PasswordHasher', PasswordHasher>
   }
 >()
 
-expectTypeOf<LayerMissing<typeof UsersGeneratedLive>>().toEqualTypeOf<ServiceToken<Database>>()
+expectTypeOf<LayerMissing<typeof UsersGeneratedLive>>().toEqualTypeOf<
+  ServiceToken<'Database', Database>
+>()
 
 const Complete = Layer.merge(DatabaseLive, UsersLive, PasswordsLive, AuthLive)
 

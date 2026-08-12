@@ -16,13 +16,13 @@ bun add better-effect better-result
 import { Result } from 'better-result'
 import { Effect, Layer, Runtime, Service } from 'better-effect'
 
-class Database extends Service<Database>() {
+class Database extends Service<Database>()('Database') {
   findUser(id: string) {
     // ...
   }
 }
 
-class UserRepository extends Service<UserRepository>() {
+class UserRepository extends Service<UserRepository>()('UserRepository') {
   findUser(id: string) {
     return Effect.gen(async function* () {
       const database = yield* Database
@@ -38,6 +38,11 @@ await Runtime.make(UserRepositoryLive, backend)
 //                 ^^^^^^^^^^^^^^^^^^
 // Type error: Database is required but not provided
 ```
+
+The explicit self type keeps `yield*` inference exact, while the non-empty
+literal is the Service's stable logical identity. Services with identical
+methods but different tags are different dependencies; use a namespaced tag
+such as `@acme/Database` when identities must be shared across packages.
 
 `UserRepository` used `Database`, so `Database` became part of its environment requirements.
 

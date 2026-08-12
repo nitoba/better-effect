@@ -11,7 +11,7 @@ import { DatabaseFailure } from './errors'
  */
 export type DatabaseConnection = SQL
 
-export class Database extends Service<Database>() {
+export class Database extends Service<Database>()('Database') {
   constructor(readonly sql: SQL) {
     super()
   }

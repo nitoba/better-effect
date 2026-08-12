@@ -4,7 +4,8 @@ export {
   DuplicateServiceError,
   LayerDisposeError,
   LayerGeneratorYieldError,
-  LayerRegistrationError
+  LayerRegistrationError,
+  ServiceTagCollisionError
 } from './errors'
 
 export type {
