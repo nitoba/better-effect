@@ -127,7 +127,17 @@ Provider release callbacks remain owned by Scope, and pipeline, Resource,
 better-result, and graceful Runtime disposal code is not redesigned as part of
 identity migration.
 
-### 7. Migrate in proof-first phases
+### 7. Document the public API at its declaration sites
+
+Every symbol exported from the package entry points receives JSDoc at its
+declaration site. Class and method documentation explains ownership,
+lifecycle, type-level behavior, or error semantics where relevant; primary
+entry points include short TypeScript examples. Comments remain source-level
+documentation and are emitted into declaration output by the existing build,
+without adding a documentation runtime dependency or changing JavaScript
+behavior.
+
+### 8. Migrate in proof-first phases
 
 The first code change is an isolated type experiment proving exact `yield*` and
 `EffectRequirements` inference. Only after that proof passes will the Service

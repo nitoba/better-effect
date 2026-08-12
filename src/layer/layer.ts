@@ -25,6 +25,23 @@ interface LayerProvider extends LayerRegistration {
   readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
 }
 
+/**
+ * Declarative collection of Service providers.
+ *
+ * A Layer describes how to acquire implementations; it does not execute
+ * providers until a `Runtime` is created. Use `merge` to compose distinct
+ * providers and `override` when replacing an existing provider intentionally.
+ *
+ * @example
+ * ```ts
+ * const AppLive = Layer.merge(
+ *   Layer.succeed(Database, database),
+ *   Layer.make(UserRepository, () => new UserRepository())
+ * )
+ *
+ * const runtime = await Runtime.make(AppLive, backend)
+ * ```
+ */
 export class Layer<
   Specs extends AnyLayerSpec = AnyLayerSpec,
   Collisions extends AnyServiceToken = never
@@ -32,12 +49,25 @@ export class Layer<
   declare readonly [LayerTypeId]: Specs
   declare readonly [LayerCollisionTypeId]: Collisions
 
+  /** The provider registrations retained by this Layer. */
   readonly providers: readonly LayerProvider[]
 
   private constructor(providers: readonly LayerProvider[]) {
     this.providers = Object.freeze([...providers])
   }
 
+  /**
+   * Create a Layer that lazily acquires a Service instance.
+   *
+   * The acquire callback runs when the provider is first resolved by a
+   * Runtime. Dependencies declared by Effect-returning Service methods are
+   * tracked in the Layer's type.
+   *
+   * @example
+   * ```ts
+   * const DatabaseLive = Layer.make(Database, () => new Database())
+   * ```
+   */
   static make<S extends ServiceClass<any, any>>(
     service: S,
 
@@ -51,6 +81,16 @@ export class Layer<
     ])
   }
 
+  /**
+   * Create a Layer from an already-constructed Service instance.
+   *
+   * The instance is returned as-is whenever the Service is resolved.
+   *
+   * @example
+   * ```ts
+   * const DatabaseLive = Layer.succeed(Database, database)
+   * ```
+   */
   static succeed<S extends ServiceClass<any, any>>(
     service: S,
     instance: InstanceType<S>
@@ -59,10 +99,21 @@ export class Layer<
   }
 
   /**
-   * Define a dependency-free provider with Runtime-root cleanup.
+   * Define a provider with Runtime-root cleanup.
    *
    * The release callback intentionally keeps its compatibility-friendly
-   * one-argument shape. Use `scopedGen` when cleanup needs `ScopeOutcome`.
+   * one-argument shape and runs when the owning Runtime is disposed. Use
+   * `scopedGen` when acquisition needs contextual Services or cleanup needs
+   * `ScopeOutcome`.
+   *
+   * @example
+   * ```ts
+   * const DatabaseLive = Layer.scoped(
+   *   Database,
+   *   () => openDatabase(),
+   *   (database) => database.close()
+   * )
+   * ```
    */
   static scoped<S extends ServiceClass<any, any>>(
     service: S,
@@ -79,7 +130,24 @@ export class Layer<
     ])
   }
 
-  /** Define a contextual provider with Runtime-root, outcome-aware cleanup. */
+  /**
+   * Define a provider whose acquisition can yield contextual Services.
+   *
+   * The release callback receives the acquired instance and the final
+   * `ScopeOutcome` selected by the owning Runtime.
+   *
+   * @example
+   * ```ts
+   * const RepositoryLive = Layer.scopedGen(
+   *   UserRepository,
+   *   async function* () {
+   *     const database = yield* Database
+   *     return new UserRepository(database)
+   *   },
+   *   (repository, outcome) => repository.close(outcome)
+   * )
+   * ```
+   */
   static scopedGen<
     S extends ServiceClass<any, any>,
     Yield extends ServiceRequirement<AnyServiceToken>
@@ -97,6 +165,20 @@ export class Layer<
     ])
   }
 
+  /**
+   * Define a provider whose acquisition can yield contextual Services.
+   *
+   * Unlike `scopedGen`, this variant has no release callback. Use it for
+   * providers whose lifetime is managed elsewhere or that need no cleanup.
+   *
+   * @example
+   * ```ts
+   * const RepositoryLive = Layer.gen(UserRepository, async function* () {
+   *   const database = yield* Database
+   *   return new UserRepository(database)
+   * })
+   * ```
+   */
   static gen<S extends ServiceClass<any, any>, Yield extends ServiceRequirement<AnyServiceToken>>(
     service: S,
     factory: LayerGenerator<S, Yield>
@@ -104,6 +186,17 @@ export class Layer<
     return Layer.make(service, () => runLayerGenerator(service, factory))
   }
 
+  /**
+   * Compose Layers without replacing providers.
+   *
+   * Each Service tag may appear only once. Duplicate tags are rejected at
+   * runtime; use `override` when replacement is intentional.
+   *
+   * @example
+   * ```ts
+   * const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
+   * ```
+   */
   static merge<const Layers extends readonly Layer<any, any>[]>(
     ...layers: Layers
   ): Layer<
@@ -133,6 +226,19 @@ export class Layer<
     return new Layer([...providers.values()])
   }
 
+  /**
+   * Replace providers in a base Layer, using tag identity and compatible
+   * instance contracts.
+   *
+   * Overrides are applied from left to right; the last compatible provider for
+   * a tag wins. Incompatible same-tag replacements remain visible as a type
+   * diagnostic and cannot be passed as a complete Layer.
+   *
+   * @example
+   * ```ts
+   * const TestLive = Layer.override(AppLive, Layer.succeed(Database, fakeDb))
+   * ```
+   */
   static override<Base extends Layer<any, any>, const Overrides extends readonly Layer<any, any>[]>(
     base: Base,
     ...overrides: Overrides

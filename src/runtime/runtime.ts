@@ -12,10 +12,34 @@ import { classifyRuntimeOutcome, type RuntimeOptions } from './outcome'
 
 import type { ScopeOutcome } from '../scope'
 
+/**
+ * Long-lived execution environment backed by a complete Layer.
+ *
+ * A Runtime owns Layer resources until `dispose()` is called. Each `run()` is
+ * isolated in a child Scope, while Layer-scoped resources remain shared.
+ *
+ * @example
+ * ```ts
+ * const runtime = await Runtime.make(AppLive, new MemoryLayerBackend())
+ * const result = await runtime.run(loadUser('u1'))
+ * await runtime.dispose()
+ * ```
+ *
+ * @typeParam Provided The Service constructors supplied by the Layer.
+ */
 export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
   private constructor(private readonly handle: RuntimeHandle<Provided>) {}
 
-  /** Create a long-lived Runtime that owns its Layer resources. */
+  /**
+   * Create a long-lived Runtime that owns its Layer resources.
+   *
+   * @example
+   * ```ts
+   * const runtime = await Runtime.make(AppLive, backend)
+   * const result = await runtime.run(program)
+   * await runtime.dispose()
+   * ```
+   */
   static async make<L extends AnyLayer>(
     layer: CompleteLayer<L>,
     backend: LayerBackend,
@@ -26,7 +50,12 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
     return new Runtime<LayerProvided<L>>(handle)
   }
 
-  /** Run one program and dispose its Layer resources before resolving. */
+  /**
+   * Run one program and dispose its Layer resources before resolving.
+   *
+   * This is convenient for request-style or command-style execution where a
+   * Runtime should not outlive the operation.
+   */
   static async run<A, L extends AnyLayer>(
     layer: CompleteLayer<L>,
     backend: LayerBackend,

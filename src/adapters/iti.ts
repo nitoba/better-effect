@@ -11,6 +11,12 @@ import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
 import { assertServiceCompatibility } from '../layer/internal-identity'
 
+/**
+ * ITI-backed Layer backend.
+ *
+ * Install `iti` as the optional peer dependency and pass an instance to
+ * `Runtime.make` when using ITI's container implementation.
+ */
 export class ItiLayerBackend implements LayerBackend {
   private container: any = createContainer()
 
@@ -33,6 +39,7 @@ export class ItiLayerBackend implements LayerBackend {
     return key
   }
 
+  /** Register a Layer provider under its deterministic Service-tag key. */
   register(registration: LayerRegistration): void {
     const token = registration.service
     const tag = token.serviceTag
@@ -55,6 +62,7 @@ export class ItiLayerBackend implements LayerBackend {
     this.registered.set(tag, token)
   }
 
+  /** Resolve a registered Service through the ITI container. */
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>> {
     if (!this.registered.has(token.serviceTag)) {
       throw new ServiceNotFoundError(token)
@@ -77,6 +85,7 @@ export class ItiLayerBackend implements LayerBackend {
     return validate(resolved)
   }
 
+  /** Dispose all ITI-managed provider instances. */
   async disposeAll(): Promise<void> {
     await this.container.disposeAll()
   }

@@ -11,9 +11,26 @@ type ServiceTagLiteral<Tag extends string> = string extends Tag
     : Tag
 
 /**
- * Keep the instance self type explicit: TypeScript cannot specialize an
- * inherited static async iterator from a tag-only factory. The curried tag
- * call still infers the identity as a string literal.
+ * Declare a class-backed Service with a stable string-literal identity.
+ *
+ * The returned class is simultaneously the implementation type, the runtime
+ * dependency token, and the value yielded by `yield*` in an Effect generator.
+ * The explicit self type preserves exact instance inference, while the second
+ * call captures the tag as a literal for Layer composition and diagnostics.
+ *
+ * @example
+ * ```ts
+ * class Database extends Service<Database>()('Database') {
+ *   query(): string {
+ *     return 'ok'
+ *   }
+ * }
+ *
+ * const database = yield* Database
+ * database.query()
+ * ```
+ *
+ * @typeParam Self The instance type implemented by the declared Service.
  */
 export function Service<Self>() {
   return function <const Tag extends string>(tag: ServiceTagLiteral<Tag>) {
@@ -22,8 +39,10 @@ export function Service<Self>() {
     }
 
     abstract class BaseService {
+      /** The stable logical identity used by Layers and resolver backends. */
       static readonly serviceTag: Tag = tag
 
+      /** Resolve this Service from the resolver active in the current runtime. */
       // oxlint-disable-next-line require-yield
       static async *[Symbol.asyncIterator](
         this: ServiceToken<Tag, Self>

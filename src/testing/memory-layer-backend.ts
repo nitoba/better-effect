@@ -9,6 +9,12 @@ import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
 import { assertServiceCompatibility } from '../layer/internal-identity'
 
+/**
+ * In-memory Layer backend for tests and small local programs.
+ *
+ * Providers are lazy, instances are cached by Service tag, and all cached
+ * state is cleared by `disposeAll()`.
+ */
 export class MemoryLayerBackend implements LayerBackend {
   private readonly providers = new Map<string, LayerRegistration>()
 
@@ -16,6 +22,7 @@ export class MemoryLayerBackend implements LayerBackend {
 
   private readonly pending = new Map<string, Promise<unknown>>()
 
+  /** Register a provider, rejecting duplicate or colliding Service tags. */
   register(registration: LayerRegistration): void {
     const tag = registration.service.serviceTag
     const existing = this.providers.get(tag)
@@ -31,6 +38,7 @@ export class MemoryLayerBackend implements LayerBackend {
     this.providers.set(tag, registration)
   }
 
+  /** Resolve and cache a provider instance by Service tag. */
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
     const tag = token.serviceTag
     const provider = this.providers.get(tag)
@@ -71,6 +79,7 @@ export class MemoryLayerBackend implements LayerBackend {
     return validate(await acquisition)
   }
 
+  /** Clear pending acquisitions, cached instances, and provider registrations. */
   async disposeAll(): Promise<void> {
     if (this.pending.size > 0) {
       await Promise.allSettled(this.pending.values())

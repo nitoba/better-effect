@@ -32,6 +32,8 @@ while keeping the class constructor as the ergonomic `yield*` handle.
   the explicit replacement operation for compatible providers.
 - Update Service, Layer, Runtime, Effect, adapter, example, README, AGENTS, and
   runtime/type-test declarations to the tagged API.
+- Add user-facing JSDoc to exported classes, methods, functions, errors, and
+  public type contracts, with concise usage examples for primary entry points.
 - Keep Scope, Resource, better-result integration, pipeline behavior, and
   graceful Runtime disposal semantics unchanged.
 - **BREAKING**: Update the package's Service identity API and type helpers for

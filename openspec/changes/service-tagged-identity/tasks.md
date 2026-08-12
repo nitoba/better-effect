@@ -71,6 +71,8 @@
       backend behavior are the documented architecture.
 - [x] 6.5 Review package exports and preserve only genuinely useful public tag
       helpers; do not expose internal comparison predicates.
+- [x] 6.6 Add JSDoc descriptions and usage examples to exported public API
+      classes, methods, functions, errors, and type contracts.
 
 ## 7. Verify release readiness
 

@@ -1,6 +1,20 @@
 type Unary<A, B> = (value: A) => B
 
-/** Compose a value through a sequence of unary functions. */
+/**
+ * Compose a value through a sequence of unary functions.
+ *
+ * `pipe` is deliberately independent of Effect, Result, Promise, Scope, and
+ * Service metadata.
+ *
+ * @example
+ * ```ts
+ * const label = pipe(
+ *   'alice',
+ *   (name) => name.trim(),
+ *   (name) => name.toUpperCase()
+ * )
+ * ```
+ */
 export function pipe<A>(value: A): A
 export function pipe<A, B>(value: A, ab: Unary<A, B>): B
 export function pipe<A, B, C>(value: A, ab: Unary<A, B>, bc: Unary<B, C>): C

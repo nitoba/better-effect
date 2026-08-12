@@ -8,6 +8,26 @@ import { combineUseAndRelease, disposeResource, runRelease, runResult } from './
 
 import type { AcquireUseReleaseOptions } from './types'
 
+/**
+ * Acquire a resource, use it, and always attempt release afterward.
+ *
+ * Acquisition, use, and release may be synchronous or asynchronous Result
+ * operations. If both use and release fail, the use error remains primary and
+ * `onReleaseFailure` receives the cleanup failure as a diagnostic.
+ *
+ * When `release` is omitted, `Symbol.asyncDispose` is preferred over
+ * `Symbol.dispose`.
+ *
+ * @example
+ * ```ts
+ * const result = await Resource.acquireUseRelease({
+ *   name: 'database connection',
+ *   acquire: () => connect(),
+ *   use: (connection) => query(connection),
+ *   release: (connection) => connection.close()
+ * })
+ * ```
+ */
 const acquireUseRelease = <R, A, AcquireError, UseError>({
   name,
   acquire,
@@ -36,5 +56,6 @@ const acquireUseRelease = <R, A, AcquireError, UseError>({
   })
 
 export const Resource = {
+  /** Acquire, use, and release a resource with deterministic error precedence. */
   acquireUseRelease
 } as const

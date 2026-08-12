@@ -25,12 +25,15 @@ import type { ScopeOutcome } from '../scope'
 
 type LayerProvider = AnyLayer['providers'][number]
 
-/** Internal handle used by Runtime to own a Layer's resources. */
+/** Runtime-facing handle that owns a Layer's resources and execution scopes. */
 export interface RuntimeHandle<Provided extends AnyServiceToken = AnyServiceToken> {
+  /** The backend used to resolve this Layer's providers. */
   readonly backend: LayerBackend
 
+  /** Run a program in a child Scope of the Layer's root Scope. */
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>>
 
+  /** Stop new executions and release Layer-owned resources. */
   dispose(outcome?: ScopeOutcome): Promise<void>
 }
 
@@ -212,7 +215,7 @@ class RuntimeHandleImpl<Provided extends AnyServiceToken> implements RuntimeHand
   }
 }
 
-/** Build the internal Runtime handle for a complete Layer. */
+/** Build a Runtime handle for a complete Layer and register its providers. */
 export const createRuntimeHandle = async <L extends AnyLayer>(
   layer: CompleteLayer<L>,
   backend: LayerBackend,

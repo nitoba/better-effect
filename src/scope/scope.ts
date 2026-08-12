@@ -8,20 +8,32 @@ import { ScopeRuntime } from './runtime'
 
 import type { DisposableResource, MaybePromise, ScopeFinalizer, ScopeOutcome } from './types'
 
+/**
+ * Non-owning lifecycle context for finalizers and child Scopes.
+ *
+ * A Scope can register cleanup and create children, but it cannot close
+ * itself. Use `Scope.make()` or `Scope.run()` when your code owns the Scope.
+ */
 export interface Scope {
+  /** Register a finalizer that runs when the owning Scope closes. */
   addFinalizer(finalizer: ScopeFinalizer): void
 
+  /** Acquire a resource and register its outcome-aware release callback. */
   acquire<R>(
     acquire: () => MaybePromise<R>,
     release: (resource: R, outcome: ScopeOutcome) => MaybePromise<void>
   ): Promise<R>
 
+  /** Register an already-acquired disposable resource. */
   add<R extends DisposableResource>(resource: R): Promise<R>
 
+  /** Create a child Scope owned by this Scope. */
   fork(): CloseableScope
 }
 
+/** A Scope whose owner is responsible for calling `close()`. */
 export interface CloseableScope extends Scope {
+  /** Close the Scope and run children and finalizers in child-first LIFO order. */
   close(outcome?: ScopeOutcome): Promise<void>
 }
 
@@ -183,18 +195,22 @@ class ScopeImpl implements CloseableScope {
 }
 
 export const Scope = {
+  /** Create an owned, initially open Scope. */
   make(): CloseableScope {
     return new ScopeImpl()
   },
 
+  /** Return the non-owning Scope available in the current execution context. */
   current(): Scope {
     return ScopeRuntime.current()
   },
 
+  /** Run a callback with an existing Scope supplied as the current context. */
   provide<A>(scope: Scope, program: () => A): A {
     return ScopeRuntime.run(scope, program)
   },
 
+  /** Resolve the current Scope through `yield* Scope` inside an Effect. */
   // oxlint-disable-next-line require-yield
   *[Symbol.iterator](): Generator<never, Scope, unknown> {
     return ScopeRuntime.current()
@@ -206,6 +222,14 @@ export const Scope = {
    * Scope is independent from `better-result`, so returned values—including
    * `Result.err`—close this Scope with a successful outcome. Result-aware
    * outcome classification belongs to `Runtime.run`.
+   *
+   * @example
+   * ```ts
+   * await Scope.run(async (scope) => {
+   *   const connection = await scope.acquire(connect, (connection) => connection.close())
+   *   return connection.query()
+   * })
+   * ```
    */
   run<A>(program: (scope: Scope) => A | PromiseLike<A>): Promise<Awaited<A>> {
     const scope = new ScopeImpl()

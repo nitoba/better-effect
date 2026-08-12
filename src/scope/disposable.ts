@@ -8,6 +8,7 @@ type DisposableCandidate = {
   [Symbol.asyncDispose]?: unknown
 }
 
+/** Return a Scope finalizer for a value's async or sync disposal protocol. */
 export const getDisposeFinalizer = (resource: unknown): ScopeFinalizer | undefined => {
   const candidate = Object(resource) as DisposableCandidate
   const asyncDispose = candidate[Symbol.asyncDispose]
@@ -25,6 +26,7 @@ export const getDisposeFinalizer = (resource: unknown): ScopeFinalizer | undefin
   return undefined
 }
 
+/** Dispose a value immediately when it implements a disposal protocol. */
 export const disposeResource = (resource: unknown): void | PromiseLike<void> => {
   const finalizer = getDisposeFinalizer(resource)
 

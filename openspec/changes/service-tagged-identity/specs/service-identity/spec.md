@@ -183,3 +183,26 @@ examples or type contracts.
 - **WHEN** a consumer reads the main README or the executable example
 - **THEN** Service declarations MUST use literal tags with the explicit self
   type and `yield*` MUST still be shown as the access pattern
+
+### Requirement: Public API declarations are documented
+
+Every class, method, function, error class, and public type contract exposed by
+the package entry points MUST have declaration-site JSDoc explaining its role
+and relevant lifecycle or error semantics. Primary entry points SHOULD include
+short TypeScript usage examples, and the documentation MUST be preserved in
+the generated declaration files used by consumers.
+
+#### Scenario: Editor help explains a primary entry point
+
+- **WHEN** a consumer opens autocomplete or go-to-definition for `Service`,
+  `Layer`, `Effect`, `Runtime`, `Scope`, `Resource`, or `pipe`
+- **THEN** the generated declaration MUST expose a concise description and a
+  relevant usage example where the API has non-obvious setup or lifecycle
+  behavior
+
+#### Scenario: Public errors and contracts are discoverable
+
+- **WHEN** a consumer inspects an exported error class or type such as
+  `ServiceNotFoundError`, `ScopeOutcome`, or `AcquireUseReleaseOptions`
+- **THEN** its declaration MUST explain when it is used and what its public
+  fields or members represent

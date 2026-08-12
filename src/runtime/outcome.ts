@@ -6,16 +6,22 @@ import type { LayerDisposeError } from '../layer/errors'
 
 import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from '../scope'
 
+/** Aggregated cleanup information reported during Runtime shutdown. */
 export type RuntimeShutdownDiagnostic = {
+  /** Final outcome supplied to the Runtime root Scope. */
   readonly outcome: ScopeOutcome
+  /** Aggregated root-Scope and backend cleanup failure. */
   readonly error: LayerDisposeError
 }
 
+/** Observer notified about cleanup failures without changing primary results. */
 export type CleanupFailureObserver = (
   diagnostic: CleanupFailureDiagnostic | RuntimeShutdownDiagnostic
 ) => MaybePromise<void>
 
+/** Optional Runtime configuration for cleanup diagnostics. */
 export type RuntimeOptions = {
+  /** Optional observer for best-effort cleanup diagnostics. */
   readonly onCleanupFailure?: CleanupFailureObserver
 }
 

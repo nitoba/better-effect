@@ -1,5 +1,6 @@
 import type { AnyServiceToken, ServiceClass } from '../service'
 
+/** Thrown when a Layer registers the same Service tag more than once. */
 export class DuplicateServiceError extends Error {
   constructor(readonly service: ServiceClass<any>) {
     super(`Duplicate service tag "${service.serviceTag}"`)
@@ -8,6 +9,7 @@ export class DuplicateServiceError extends Error {
   }
 }
 
+/** Thrown when one Service tag is associated with incompatible constructors. */
 export class ServiceTagCollisionError extends Error {
   constructor(
     readonly existing: AnyServiceToken,
@@ -22,6 +24,7 @@ export class ServiceTagCollisionError extends Error {
   }
 }
 
+/** Thrown when a backend fails while registering a Layer provider. */
 export class LayerRegistrationError extends Error {
   constructor(
     readonly service: ServiceClass<any> | undefined,
@@ -39,6 +42,7 @@ export class LayerRegistrationError extends Error {
   }
 }
 
+/** Thrown when one or more Layer-owned resources fail during disposal. */
 export class LayerDisposeError extends Error {
   constructor(readonly causes: readonly unknown[]) {
     super(`Failed to dispose Layer (${causes.length} error${causes.length === 1 ? '' : 's'})`)
@@ -47,6 +51,7 @@ export class LayerDisposeError extends Error {
   }
 }
 
+/** Thrown when a Layer generator yields a value other than a Service requirement. */
 export class LayerGeneratorYieldError extends Error {
   constructor(readonly service: ServiceClass<any>) {
     super(`Layer.gen("${service.serviceTag}") yielded an unsupported value`)

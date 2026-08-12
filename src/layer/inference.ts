@@ -6,13 +6,17 @@ import type { Layer } from './layer'
 
 import type { AnyLayerSpec, LayerSpec } from './types'
 
+/** Any Layer shape accepted by type-level inference helpers. */
 export type AnyLayer = Layer<any, any>
 
+/** Extract the provider specification union from a Layer. */
 export type LayerSpecs<L extends AnyLayer> = L extends Layer<infer Specs, any> ? Specs : never
 
+/** Extract the Service constructor union provided by a Layer. */
 export type LayerProvided<L extends AnyLayer> =
   LayerSpecs<L> extends LayerSpec<infer Provided, any> ? Provided : never
 
+/** Extract all raw Service requirements declared by a Layer's providers. */
 export type LayerRawRequired<L extends AnyLayer> =
   LayerSpecs<L> extends LayerSpec<any, infer Required> ? Required : never
 
@@ -116,11 +120,13 @@ export type MissingServices<
   Provided extends AnyServiceToken
 > = Required extends AnyServiceToken ? MissingRequirement<Required, Provided> : never
 
+/** Extract the requirements missing from a Layer's provided environment. */
 export type LayerMissing<L extends AnyLayer> = MissingServices<
   LayerRawRequired<L>,
   LayerProvided<L>
 >
 
+/** Extract incompatible same-tag override contracts from a Layer. */
 export type LayerCollisions<L extends AnyLayer> =
   L extends Layer<any, infer Collisions> ? Collisions : never
 
@@ -142,6 +148,12 @@ type LayerCollisionServices<Collisions extends AnyServiceToken> = {
   readonly __betterEffectLayerOverrideCollisions: Collisions
 }
 
+/**
+ * A Layer accepted by Runtime boundaries after completeness validation.
+ *
+ * Incomplete Layers retain readable per-tag diagnostic properties so compiler
+ * errors identify the missing Services directly.
+ */
 export type CompleteLayer<L extends AnyLayer> = [LayerMissing<L>] extends [never]
   ? [LayerCollisions<L>] extends [never]
     ? L

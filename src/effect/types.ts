@@ -24,12 +24,17 @@ export interface ServiceRequirement<T extends AnyServiceToken> {
 }
 
 /**
- * A better-result Result with phantom metadata for required Services.
+ * A `better-result` Result with phantom metadata for required Services.
+ *
+ * @typeParam A The successful value.
+ * @typeParam E The error value.
+ * @typeParam Requirements The tagged Service contracts required to produce it.
  */
 export type EffectResult<A, E, Requirements = never> = ResultType<A, E> & {
   readonly [EffectRequirementsTypeId]?: Requirements
 }
 
+/** An Effect result with unknown success, error, and Service requirements. */
 export type AnyEffectResult = EffectResult<unknown, unknown, any>
 
 /** Values that an Effect generator may yield. */

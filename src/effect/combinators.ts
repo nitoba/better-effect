@@ -88,6 +88,18 @@ const andThenAsyncResult = <A, B, E1, E2, Requirements1, Requirements2>(
     (value) => Promise.resolve(next(value)) as Promise<ResultType<B, E2>>
   ) as Promise<EffectResult<B, E1 | E2, Requirements1 | Requirements2>>
 
+/**
+ * Map the successful value of a Result or Effect result.
+ *
+ * Supports both data-first and data-last forms and preserves asynchronous
+ * results and phantom Service requirements.
+ *
+ * @example
+ * ```ts
+ * const doubled = Effect.map(Result.ok(2), (value) => value * 2)
+ * const toLabel = Effect.map((value: number) => `#${value}`)
+ * ```
+ */
 export function map<A, B>(fn: (value: A) => B): MapOperation<A, B>
 export function map<Input, B>(
   effect: Input & AnyEffectInput,
@@ -109,6 +121,15 @@ export function map(first: unknown, second?: unknown): unknown {
   return mapResult(first as EffectResult<unknown, unknown, never>, fn)
 }
 
+/**
+ * Map the error value of a Result or Effect result while preserving its
+ * successful value, asynchronous shape, and Service requirements.
+ *
+ * @example
+ * ```ts
+ * const labelled = Effect.mapError(Result.err('missing'), (error) => ({ error }))
+ * ```
+ */
 export function mapError<E1, E2>(fn: (error: E1) => E2): MapErrorOperation<E1, E2>
 export function mapError<Input, E2>(
   effect: Input & AnyEffectInput,
@@ -130,6 +151,17 @@ export function mapError(first: unknown, second?: unknown): unknown {
   return mapErrorResult(first as EffectResult<unknown, unknown, never>, fn)
 }
 
+/**
+ * Chain a synchronous Result-producing operation after a successful result.
+ *
+ * The next operation is skipped when the input is an error. Both error types
+ * and both sets of Service requirements are preserved in the output.
+ *
+ * @example
+ * ```ts
+ * const user = Effect.andThen(Result.ok('u1'), (id) => repository.find(id))
+ * ```
+ */
 export function andThen<A, Next extends AnyEffectResult>(
   next: (value: A) => Next
 ): AndThenOperation<A, Next>
@@ -147,6 +179,17 @@ export function andThen(first: unknown, second?: unknown): unknown {
   return andThenResult(first as EffectResult<unknown, unknown, never>, next)
 }
 
+/**
+ * Chain an asynchronous Result-producing operation after a successful result.
+ *
+ * The returned value is always a Promise and retains both operations' error
+ * and Service-requirement metadata.
+ *
+ * @example
+ * ```ts
+ * const user = Effect.andThenAsync(loadUser(), (user) => fetchProfile(user.id))
+ * ```
+ */
 export function andThenAsync<A, Next extends AnyAsyncEffectInput>(
   next: (value: A) => Next
 ): AndThenAsyncOperation<A, Next>
