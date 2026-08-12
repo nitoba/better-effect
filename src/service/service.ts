@@ -42,6 +42,33 @@ export function Service<Self>() {
       /** The stable logical identity used by Layers and resolver backends. */
       static readonly serviceTag: Tag = tag
 
+      /**
+       * Type-check a structural implementation of this Service.
+       *
+       * This is an identity helper. It returns the supplied value unchanged
+       * and does not invoke a constructor or modify its prototype.
+       *
+       * @example
+       * ```ts
+       * class Database extends Service<Database>()('Database') {
+       *   query(sql: string): string {
+       *     return sql
+       *   }
+       * }
+       *
+       * const database = Database.of({
+       *   query: (sql) => `Result: ${sql}`
+       * })
+       *
+       * database.query('SELECT 1')
+       * // 'Result: SELECT 1'
+       * // database is the original object, not an instance of Database
+       * ```
+       */
+      static of(this: void, implementation: Self): Self {
+        return implementation
+      }
+
       /** Resolve this Service from the resolver active in the current runtime. */
       // oxlint-disable-next-line require-yield
       static async *[Symbol.asyncIterator](

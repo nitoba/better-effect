@@ -25,6 +25,13 @@ interface LayerProvider extends LayerRegistration {
   readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
 }
 
+/** A Service class whose constructor can be called without arguments. */
+type DefaultConstructibleServiceClass<Tag extends string = string, Instance = any> = ServiceClass<
+  Tag,
+  Instance
+> &
+  (new () => Instance)
+
 /**
  * Declarative collection of Service providers.
  *
@@ -36,7 +43,7 @@ interface LayerProvider extends LayerRegistration {
  * ```ts
  * const AppLive = Layer.merge(
  *   Layer.succeed(Database, database),
- *   Layer.make(UserRepository, () => new UserRepository())
+ *   Layer.make(UserRepository)
  * )
  *
  * const runtime = await Runtime.make(AppLive, backend)
@@ -59,24 +66,47 @@ export class Layer<
   /**
    * Create a Layer that lazily acquires a Service instance.
    *
+   * When the acquire callback is omitted, the Service must be constructible
+   * without required constructor arguments and is instantiated with `new`.
+   * Supplying an acquire callback remains available for custom construction.
+   *
    * The acquire callback runs when the provider is first resolved by a
    * Runtime. Dependencies declared by Effect-returning Service methods are
    * tracked in the Layer's type.
    *
    * @example
    * ```ts
-   * const DatabaseLive = Layer.make(Database, () => new Database())
+   * const DatabaseLive = Layer.make(Database)
+   * ```
+   *
+   * @example
+   * ```ts
+   * const DatabaseLive = Layer.make(Database, () => new Database(config))
    * ```
    */
+  static make<S extends DefaultConstructibleServiceClass<any, any>>(
+    service: S
+  ): Layer<LayerSpec<S, ServiceRequirements<S>>>
+
   static make<S extends ServiceClass<any, any>>(
     service: S,
-
     acquire: () => MaybePromise<InstanceType<S>>
+  ): Layer<LayerSpec<S, ServiceRequirements<S>>>
+
+  static make<S extends ServiceClass<any, any>>(
+    service: S,
+    acquire?: () => MaybePromise<InstanceType<S>>
   ): Layer<LayerSpec<S, ServiceRequirements<S>>> {
+    const defaultAcquire = (): InstanceType<S> => {
+      const Constructor = service as new () => InstanceType<S>
+
+      return new Constructor()
+    }
+
     return new Layer([
       {
         service,
-        acquire
+        acquire: acquire ?? defaultAcquire
       }
     ])
   }

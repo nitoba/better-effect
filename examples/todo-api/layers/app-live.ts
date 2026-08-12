@@ -20,15 +20,15 @@ const DatabaseLive = Layer.scoped(
 )
 
 const RepositoriesLive = Layer.merge(
-  Layer.make(UserRepository, () => new UserRepository()),
-  Layer.make(SessionRepository, () => new SessionRepository()),
-  Layer.make(TodoRepository, () => new TodoRepository())
+  Layer.make(UserRepository),
+  Layer.make(SessionRepository),
+  Layer.make(TodoRepository)
 )
 
 const ServicesLive = Layer.merge(
-  Layer.make(PasswordHasher, () => new PasswordHasher()),
-  Layer.make(AuthService, () => new AuthService()),
-  Layer.make(TodoService, () => new TodoService())
+  Layer.make(PasswordHasher),
+  Layer.make(AuthService),
+  Layer.make(TodoService)
 )
 
 export const AppLive = Layer.merge(DatabaseLive, RepositoriesLive, ServicesLive)

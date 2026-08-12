@@ -16,6 +16,12 @@ class Database extends Service<Database>()('Database') {
   }
 }
 
+class ConfiguredService extends Service<ConfiguredService>()('ConfiguredService') {
+  constructor(readonly value: number) {
+    super()
+  }
+}
+
 class UserRepository extends Service<UserRepository>()('UserRepository') {
   find(): string {
     return 'user'
@@ -57,6 +63,12 @@ class AuthService extends Service<AuthService>()('AuthService') {
 }
 
 Layer.make(Database, () => new Database())
+Layer.make(Database)
+
+Layer.make(ConfiguredService, () => new ConfiguredService(42))
+
+// @ts-expect-error ConfiguredService requires a constructor argument
+Layer.make(ConfiguredService)
 
 Layer.succeed(Database, new Database())
 

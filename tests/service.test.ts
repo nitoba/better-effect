@@ -17,6 +17,12 @@ class CounterService extends Service<CounterService>()('CounterService') {
   }
 }
 
+class StructuralService extends Service<StructuralService>()('StructuralService') {
+  query(sql: string): string {
+    return sql
+  }
+}
+
 describe('Service', () => {
   test('resolves a service using yield*', async () => {
     const instance = new CounterService(41)
@@ -52,6 +58,19 @@ describe('Service', () => {
     expectTypeOf(counter).toEqualTypeOf<CounterService>()
 
     expect(counter).toBe(instance)
+  })
+
+  test('creates a type-checked structural implementation without changing it', () => {
+    const implementation = {
+      query: (sql: string) => `Result: ${sql}`
+    }
+
+    const service = StructuralService.of(implementation)
+
+    expect(service).toBe(implementation)
+    expect(service.query('SELECT 1')).toBe('Result: SELECT 1')
+    expect(service).not.toBeInstanceOf(StructuralService)
+    expectTypeOf(service).toEqualTypeOf<StructuralService>()
   })
 
   test('does not leak the resolver outside the runtime context', async () => {

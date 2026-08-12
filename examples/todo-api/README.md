@@ -112,6 +112,22 @@ const database = yield * Database
 const todos = yield * TodoRepository
 ```
 
+When a service is a structural contract, `Service.of` type-checks an object
+implementation and returns it unchanged. It is useful for lightweight live
+implementations and test doubles:
+
+```ts
+const AuthorizationTest = Layer.succeed(
+  Authorization,
+  Authorization.of({
+    authorize: async (token) => token.length > 0
+  })
+)
+```
+
+The returned object is not an instance of the Service class; use `new` when a
+constructor or runtime invariants are part of the implementation.
+
 ### Layer
 
 `layers/app-live.ts` describes the live environment. `Database` is scoped so its

@@ -32,7 +32,7 @@ class UserRepository extends Service<UserRepository>()('UserRepository') {
   }
 }
 
-const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
+const UserRepositoryLive = Layer.make(UserRepository)
 
 await Runtime.make(UserRepositoryLive, backend)
 //                 ^^^^^^^^^^^^^^^^^^
@@ -48,10 +48,30 @@ such as `@acme/Database` when identities must be shared across packages.
 
 No dependency list was written manually.
 
+Services can also describe a contract without requiring a class instance. Use the
+static `of` helper to type-check a structural implementation; it returns the same
+object unchanged at runtime:
+
+```ts
+class Authorization extends Service<Authorization>()('Authorization') {
+  declare readonly authorize: (token: string) => Promise<boolean>
+}
+
+const authorization = Authorization.of({
+  authorize: async (token) => token.length > 0
+})
+
+const AuthorizationLive = Layer.succeed(Authorization, authorization)
+```
+
+`Authorization.of(...)` does not call a constructor or make the result an
+`instanceof Authorization`. For services with constructors, private fields or
+other runtime invariants, use `new Authorization(...)` instead.
+
 Provide it and the environment becomes complete:
 
 ```ts
-const DatabaseLive = Layer.make(Database, () => new Database())
+const DatabaseLive = Layer.make(Database)
 
 const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
 

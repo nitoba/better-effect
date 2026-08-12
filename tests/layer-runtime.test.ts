@@ -39,6 +39,23 @@ class ExampleService extends Service<ExampleService>()('ExampleService') {
   }
 }
 
+class DefaultService extends Service<DefaultService>()('DefaultService') {
+  static constructed = 0
+
+  readonly value = 42
+
+  constructor() {
+    super()
+    DefaultService.constructed++
+  }
+}
+
+class ConfiguredService extends Service<ConfiguredService>()('ConfiguredService') {
+  constructor(readonly value: number) {
+    super()
+  }
+}
+
 class ScopedDependency extends Service<ScopedDependency>()('ScopedDependency') {
   readonly value = 'dependency'
 }
@@ -128,6 +145,31 @@ class MemoryLayerBackend implements LayerBackend {
 }
 
 describe('createRuntimeHandle', () => {
+  test('uses the default constructor lazily when acquire is omitted', async () => {
+    DefaultService.constructed = 0
+
+    const layer = Layer.make(DefaultService)
+
+    expect(DefaultService.constructed).toBe(0)
+
+    const provider = layer.providers[0]
+    const instance = await provider!.acquire()
+
+    expect(DefaultService.constructed).toBe(1)
+    expect(instance).toBeInstanceOf(DefaultService)
+    expect((instance as DefaultService).value).toBe(42)
+  })
+
+  test('continues accepting an explicit acquire callback', async () => {
+    const layer = Layer.make(ConfiguredService, () => new ConfiguredService(42))
+
+    const provider = layer.providers[0]
+    const instance = await provider!.acquire()
+
+    expect(instance).toBeInstanceOf(ConfiguredService)
+    expect((instance as ConfiguredService).value).toBe(42)
+  })
+
   test('registers every provider in the backend', async () => {
     const layer = Layer.make(ExampleService, () => new ExampleService())
 
