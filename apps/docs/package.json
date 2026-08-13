@@ -13,8 +13,12 @@
     "check": "bun run typecheck && bun run lint && bun run format && bun run build"
   },
   "dependencies": {
+    "@base-ui/react": "^1.7.0",
+    "@fuma-translate/react": "^1.0.2",
+    "@fumadocs/base-ui": "^16.14.3",
     "better-effect": "workspace:*",
     "better-result": "^3.0.0",
+    "class-variance-authority": "^0.7.1",
     "cnfast": "^0.1.0",
     "fumadocs-core": "16.14.3",
     "fumadocs-mdx": "15.2.3",
