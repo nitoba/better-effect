@@ -20,6 +20,7 @@
     "check": "turbo run check"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.78.0",
     "lefthook": "^2.1.10",
     "oxfmt": "^0.63.0",
     "turbo": "^2.10.9"
