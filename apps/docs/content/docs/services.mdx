@@ -1,0 +1,33 @@
+---
+title: Services
+description: Declare and consume typed contextual dependencies.
+---
+
+A Service is a class, a runtime dependency token, and a yieldable dependency
+handle at the same time. Give it an explicit self type and a stable tag:
+
+```ts
+import { Service } from 'better-effect'
+
+class Database extends Service<Database>()('Database') {
+  findUser(id: string) {
+    // ...
+  }
+}
+```
+
+Request the service from an `Effect.gen` program:
+
+```ts
+import { Effect } from 'better-effect'
+import { Result } from 'better-result'
+
+const findUser = Effect.gen(async function* () {
+  const database = yield* Database
+
+  return Result.ok(await database.findUser('user-1'))
+})
+```
+
+The `Database` requirement is inferred from the generator. Layers and Runtime
+use the same token, so missing dependencies can be rejected before execution.

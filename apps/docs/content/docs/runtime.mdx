@@ -1,0 +1,23 @@
+---
+title: Runtime and Scope
+description: Execute programs and own resource lifetimes.
+---
+
+Create a Runtime from a complete Layer, then execute Effects against that
+environment:
+
+```ts
+const runtime = await Runtime.make(AppLive, backend)
+
+const result = await runtime.run(() => findUser)
+
+await runtime.dispose()
+```
+
+Each execution receives a child Scope. Resources acquired during that execution
+are released when it settles, while resources from `Layer.scoped` belong to the
+Runtime root and are released during `dispose()`.
+
+Scope cleanup is child-first and LIFO. Finalizers receive a success or failure
+`ScopeOutcome`, and Runtime shutdown waits for active executions before closing
+the root Scope.

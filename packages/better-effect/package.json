@@ -1,0 +1,72 @@
+{
+  "name": "better-effect",
+  "version": "0.5.0",
+  "description": "Effect-inspired application architecture for better-result with typechecked Services and environments, scoped resource lifetimes, and pluggable DI backends.",
+  "keywords": [
+    "better-result",
+    "dependency-injection",
+    "effect",
+    "layer",
+    "resource",
+    "result",
+    "typescript"
+  ],
+  "homepage": "https://github.com/nitoba/better-effect#readme",
+  "bugs": {
+    "url": "https://github.com/nitoba/better-effect/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nitoba/better-effect.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./adapters/iti": "./dist/adapters/iti.mjs",
+    "./testing": "./dist/testing.mjs",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "lint": "oxlint --type-aware .",
+    "lint:fix": "oxlint --type-aware --fix .",
+    "format": "oxfmt --write .",
+    "publint": "publint",
+    "check": "bun run typecheck && bun test && bun run lint && bun run format && bun run build && bun run publint",
+    "prepublishOnly": "bun run check",
+    "release:dry": "bun publish --dry-run"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "iti": "^0.8.0",
+    "lefthook": "^2.1.10",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "publint": "^0.3.23",
+    "tsdown": "^0.22.14"
+  },
+  "peerDependencies": {
+    "better-result": "^3.0.0",
+    "iti": "^0.8.0",
+    "typescript": ">=5.2.0"
+  },
+  "peerDependenciesMeta": {
+    "iti": {
+      "optional": true
+    }
+  }
+}

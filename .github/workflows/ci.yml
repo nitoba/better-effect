@@ -50,4 +50,5 @@ jobs:
         run: bun run publint
 
       - name: Inspect package contents
+        working-directory: packages/better-effect
         run: bun pm pack --dry-run

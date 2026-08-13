@@ -1,0 +1,29 @@
+---
+title: Introduction
+description: Effect-inspired application architecture for better-result.
+---
+
+`better-effect` adds a small set of Effect-inspired primitives to
+[`better-result`](https://github.com/nitoba/better-result): typed Services,
+declarative Layers, scoped resource lifetimes, and pluggable runtime backends.
+
+## What you get
+
+- **Services** describe contextual dependencies and are requested with
+  `yield*`.
+- **Layers** compose implementations into a complete application environment.
+- **Effects** preserve `better-result` success and failure semantics while
+  carrying dependency requirements through TypeScript.
+- **Scopes** own resources and finalizers with predictable child-first,
+  LIFO cleanup.
+- **Runtimes** provision a Layer and execute programs with checked Service
+  requirements.
+
+## Install
+
+```bash
+bun add better-effect better-result
+```
+
+Continue with [Services](/docs/services), then learn how to compose them with
+[Layers](/docs/layers).

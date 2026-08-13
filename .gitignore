@@ -1,10 +1,11 @@
 # dependencies (bun install)
 node_modules
 
-# output
+# build output
 out
 dist
 *.tgz
+.next
 
 # code coverage
 coverage
@@ -13,7 +14,7 @@ coverage
 # logs
 logs
 _.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # dotenv environment variable files
 .env
@@ -22,13 +23,16 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .env.production.local
 .env.local
 
-# caches
+# caches and local tooling
 .eslintcache
 .cache
+.source
 *.tsbuildinfo
+.turbo
 
-# IntelliJ based IDEs
+# IDE and OS files
 .idea
-
-# Finder (MacOS) folder config
 .DS_Store
+
+# generated nested lockfiles (the root lockfile is canonical)
+apps/docs/bun.lock

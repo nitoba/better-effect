@@ -1,0 +1,32 @@
+---
+title: Layers
+description: Compose application implementations declaratively.
+---
+
+Layers describe how Services are provided without coupling application code to
+a dependency-injection container.
+
+```ts
+import { Layer } from 'better-effect'
+
+const DatabaseLive = Layer.make(Database, () => new Database())
+const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
+
+const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
+```
+
+Use `Layer.override` when a replacement is intentional, for example in tests:
+
+```ts
+const AppTest = Layer.override(AppLive, DatabaseTest)
+```
+
+Scoped providers register their release callback with the Runtime root Scope:
+
+```ts
+const DatabaseLive = Layer.scoped(
+  Database,
+  () => Database.connect(),
+  (database) => database.close()
+)
+```
