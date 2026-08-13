@@ -11,7 +11,7 @@ import {
   useMemo,
   useState
 } from 'react'
-import { cn } from '../lib/cn'
+import { cn, resolveClassName } from '../lib/cn'
 import * as Unstyled from './ui/tabs'
 
 type CollectionKey = string | symbol
@@ -56,7 +56,7 @@ export function TabsList({ className, ...props }: React.ComponentProps<typeof Un
       className={(s) =>
         cn(
           'flex gap-3.5 text-fd-secondary-foreground overflow-x-auto px-4 not-prose',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
     />
@@ -73,7 +73,7 @@ export function TabsTrigger({
       className={(s) =>
         cn(
           'inline-flex items-center gap-2 whitespace-nowrap text-fd-muted-foreground border-b border-transparent py-2 text-sm font-medium transition-colors [&_svg]:size-4 hover:text-fd-accent-foreground disabled:pointer-events-none disabled:opacity-50 data-[active]:border-fd-primary data-[active]:text-fd-primary',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
     />
@@ -98,7 +98,7 @@ export function Tabs({
       className={(s) =>
         cn(
           'flex flex-col overflow-hidden rounded-xl border bg-fd-secondary my-4',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
       value={value}
@@ -161,7 +161,7 @@ export function TabsContent({
       className={(s) =>
         cn(
           'p-4 text-[0.9375rem] bg-fd-background rounded-xl outline-none prose-no-margin data-[inactive]:hidden [&>figure:only-child]:-m-4 [&>figure:only-child]:border-none',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
       {...props}

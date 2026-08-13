@@ -2,7 +2,7 @@
 
 import { Check, LinkIcon } from 'lucide-react'
 import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from 'react'
-import { cn } from '../lib/cn'
+import { cn, resolveClassName } from '../lib/cn'
 import { useCopyButton } from '@fumadocs/base-ui/utils/use-copy-button'
 import { buttonVariants } from './ui/button'
 import { mergeRefs } from '../lib/merge-refs'
@@ -45,7 +45,7 @@ export function Accordions({
       className={(s) =>
         cn(
           'divide-y divide-fd-border overflow-hidden rounded-lg border bg-fd-card',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
       {...props}

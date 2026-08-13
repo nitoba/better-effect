@@ -4,13 +4,15 @@ import {
   type ComponentProps,
   createContext,
   type HTMLAttributes,
+  isValidElement,
+  type ReactElement,
   type ReactNode,
   type RefObject,
   use,
   useMemo,
   useRef
 } from 'react'
-import { cn } from '../lib/cn'
+import { cn, resolveClassName } from '../lib/cn'
 import { useCopyButton } from '@fumadocs/base-ui/utils/use-copy-button'
 import { buttonVariants } from './ui/button'
 import { useTranslations } from '@fuma-translate/react'
@@ -25,7 +27,7 @@ export interface CodeBlockProps extends Omit<ComponentProps<'figure'>, 'title'> 
    *
    * When passed as a string, it assumes the value is the HTML of icon
    */
-  icon?: ReactNode
+  icon?: string | ReactElement
 
   /**
    * Allow to copy code with copy button
@@ -82,6 +84,14 @@ export function CodeBlock({
 }: CodeBlockProps) {
   const inTab = use(TabsContext) !== null
   const areaRef = useRef<HTMLDivElement>(null)
+  const viewportStyle = {
+    // space for toolbar
+    '--padding-right': !title ? 'calc(var(--spacing) * 8)' : undefined,
+    counterSet: props['data-line-numbers']
+      ? `line ${Number(props['data-line-numbers-start'] ?? 1) - 1}`
+      : undefined,
+    ...viewportProps.style
+  }
   if (allowCopy === 'true') allowCopy = true
   else if (allowCopy === 'false') allowCopy = false
   return (
@@ -100,7 +110,7 @@ export function CodeBlock({
     >
       {title ? (
         <div className="flex text-fd-muted-foreground items-center gap-2 h-9.5 border-b px-4">
-          {typeof icon === 'string' ? (
+          {!isValidElement(icon) && icon ? (
             <div
               className="[&_svg]:size-3.5"
               dangerouslySetInnerHTML={{
@@ -132,16 +142,7 @@ export function CodeBlock({
           'text-[0.8125rem] py-3.5 overflow-auto max-h-[600px] fd-scroll-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-fd-ring',
           viewportProps.className
         )}
-        style={
-          {
-            // space for toolbar
-            '--padding-right': !title ? 'calc(var(--spacing) * 8)' : undefined,
-            counterSet: props['data-line-numbers']
-              ? `line ${Number(props['data-line-numbers-start'] ?? 1) - 1}`
-              : undefined,
-            ...viewportProps.style
-          } as object
-        }
+        style={viewportStyle}
       >
         {children}
       </div>
@@ -161,7 +162,8 @@ function CopyButton({
     const pre = containerRef.current?.getElementsByTagName('pre').item(0)
     if (!pre) return
 
-    const clone = pre.cloneNode(true) as HTMLElement
+    const clone = pre.cloneNode(true)
+    if (!(clone instanceof HTMLElement)) return
     clone.querySelectorAll('.nd-copy-ignore').forEach((node) => {
       node.replaceWith('\n')
     })
@@ -200,11 +202,7 @@ export function CodeBlockTabs({ ref, className, ...props }: ComponentProps<typeo
       ref={mergeRefs(containerRef, ref)}
       {...props}
       className={(s) =>
-        cn(
-          'bg-fd-card rounded-xl border',
-          !nested && 'my-4',
-          typeof className === 'function' ? className(s) : className
-        )
+        cn('bg-fd-card rounded-xl border', !nested && 'my-4', resolveClassName(className, s))
       }
     >
       <TabsContext
@@ -229,7 +227,7 @@ export function CodeBlockTabsList({ className, ...props }: ComponentProps<typeof
       className={(s) =>
         cn(
           'flex flex-row px-2 overflow-x-auto text-fd-muted-foreground',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
     >
@@ -250,7 +248,7 @@ export function CodeBlockTabsTrigger({
         cn(
           'relative group inline-flex text-sm font-medium text-nowrap items-center transition-colors gap-2 px-2 py-1.5 [&_svg]:size-3.5',
           s.active ? 'text-fd-primary' : 'hover:text-fd-accent-foreground',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
     >

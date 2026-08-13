@@ -4,7 +4,7 @@ import { ChevronDown } from 'lucide-react'
 import type { TOCItemType } from 'fumadocs-core/toc'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
 import type { ComponentProps } from 'react'
-import { cn } from '../lib/cn'
+import { cn, resolveClassName } from '../lib/cn'
 import { useTranslations } from '@fuma-translate/react'
 
 export interface InlineTocProps extends ComponentProps<typeof Collapsible> {
@@ -20,7 +20,7 @@ export function InlineTOC({ items, className, ...props }: InlineTocProps) {
       className={(s) =>
         cn(
           'not-prose rounded-lg border bg-fd-card text-fd-card-foreground',
-          typeof className === 'function' ? className(s) : className
+          resolveClassName(className, s)
         )
       }
     >
