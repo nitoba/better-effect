@@ -2,13 +2,13 @@ pre-commit:
   parallel: true
   commands:
     lint:
-      glob: 'src/**/*.ts'
-      run: bun run lint {staged_files}
+      glob: "packages/better-effect/src/**/*.ts"
+      run: bunx oxlint --type-aware {staged_files}
       stage_fixed: true
     format:
-      glob: 'src/**/*.ts'
+      glob: "packages/better-effect/src/**/*.ts"
       run: bunx oxfmt --write {staged_files}
       stage_fixed: true
     typecheck:
-      glob: '*.{ts,json}'
+      glob: "{packages/better-effect,apps/docs}/**/*.{ts,tsx,json}"
       run: bun run typecheck
