@@ -1,0 +1,144 @@
+---
+title: Effects
+description: Compose better-result workflows while carrying Service requirements.
+icon: WandSparkles
+---
+
+`Effect` is a small namespace around `better-result` composition. It does not
+introduce a new runtime value class. An Effect result is a normal
+`Result<A, E>` with optional phantom metadata describing required Services.
+
+## `Effect.gen`
+
+Use a generator when a workflow has multiple steps or contextual dependencies:
+
+```ts
+import { Effect } from 'better-effect'
+import { Result } from 'better-result'
+
+const loadDashboard = Effect.gen(async function* () {
+  const users = yield* UserRepository
+  const permissions = yield* PermissionService
+
+  const user = yield* Result.await(users.findById('user-1'))
+  const access = yield* Result.await(permissions.forUser(user.id))
+
+  if (!access.canReadDashboard) {
+    return Result.err(
+      new Forbidden({
+        message: 'Dashboard access is required'
+      })
+    )
+  }
+
+  return Result.ok({ user, access })
+})
+```
+
+The generator may yield:
+
+- a Service token, resolved by the active Runtime;
+- a `better-result` `Err`, which short-circuits the workflow.
+
+The generator must finish with `Result.ok(...)` or `Result.err(...)` (or another
+`Result`). Do not return a raw object from `Result.gen`/`Effect.gen`.
+
+## Sync and async generators
+
+The sync overload returns an Effect result immediately. The async overload
+returns a Promise of an Effect result:
+
+<Tabs items={['Synchronous', 'Asynchronous']}>
+  <Tab>
+    ```ts
+    const parseId = Effect.gen(function* () {
+      const id = yield* parseInput()
+      return Result.ok(id)
+    })
+    ```
+  </Tab>
+  <Tab>
+    ```ts
+    const fetchUser = Effect.gen(async function* () {
+      const response = yield* Result.await(fetchUserResult())
+      return Result.ok(response)
+    })
+    // Promise<Result<User, FetchError>>
+    ```
+  </Tab>
+</Tabs>
+
+Use `Result.await` for a Promise of a Result. It makes asynchronous operations
+participate in the same short-circuiting generator control flow:
+
+```ts
+const user = yield * Result.await(repository.findById(id))
+```
+
+Thrown and rejected operations should be normalized by `better-result` helpers
+such as `Result.tryPromise` before they enter the workflow.
+
+## Acquire a resource inside an Effect
+
+`Effect.acquireRelease` acquires through the current Scope and registers an
+outcome-aware release callback:
+
+```ts
+const readFile = Effect.gen(async function* () {
+  const file = yield* Effect.acquireRelease(
+    () => openFile('notes.txt'),
+    (file, outcome) => file.close(outcome)
+  )
+
+  return yield* Result.await(file.read())
+})
+```
+
+Acquisition failures are part of the Effect's `UnhandledException` Result
+error channel. Release failures belong to Scope cleanup, so a Runtime can
+report them without silently changing a primary program failure.
+
+## Register an already-acquired disposable
+
+`Effect.add` does not acquire anything and does not create a Scope. It registers
+the exact object in the current Scope and yields that same object:
+
+```ts
+const program = Effect.gen(async function* () {
+  const socket = await connectSocket()
+  const managedSocket = yield* Effect.add(socket)
+
+  return yield* Result.await(managedSocket.send('hello'))
+})
+```
+
+The value must implement a callable `Symbol.asyncDispose` or `Symbol.dispose`.
+Without an active Scope, `Effect.add` preserves the missing-Scope failure.
+Prefer `Effect.acquireRelease` when acquisition is part of the workflow or the
+cleanup callback needs the final `ScopeOutcome`.
+
+## Error and requirement inference
+
+`EffectFromGenerator` combines:
+
+- errors yielded from `Result` operations;
+- errors returned by the final `Result`;
+- Service tokens yielded by the generator;
+- requirements already carried by nested Effects.
+
+```ts
+type Program = typeof loadDashboard
+type Success = EffectSuccess<Program>
+type Failure = EffectError<Program>
+type Needs = EffectRequirements<Program>
+```
+
+Use these types at integration boundaries when you need to name a contract;
+ordinary application code usually lets inference carry them for you.
+
+## What happens at runtime
+
+The Service requirement metadata is erased. `Effect.gen` delegates Result
+control flow to `better-result`, while Service iterators resolve their instance
+from the active `ServiceRuntime`. There is no fiber, scheduler, cancellation
+token or hidden task registry.

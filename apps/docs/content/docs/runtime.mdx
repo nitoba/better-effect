@@ -1,23 +1,139 @@
 ---
-title: Runtime and Scope
-description: Execute programs and own resource lifetimes.
+title: Runtime
+description: Provision a Layer, execute programs and shut down gracefully.
+icon: Play
 ---
 
-Create a Runtime from a complete Layer, then execute Effects against that
-environment:
+`Runtime` is the managed execution boundary. It connects a complete Layer to a
+backend, owns the Layer's root Scope, and checks each program against the
+Services that the Layer provides.
+
+## Long-lived Runtime
 
 ```ts
 const runtime = await Runtime.make(AppLive, backend)
 
-const result = await runtime.run(() => findUser)
+const result = await runtime.run(() => loadDashboard)
 
 await runtime.dispose()
 ```
 
-Each execution receives a child Scope. Resources acquired during that execution
-are released when it settles, while resources from `Layer.scoped` belong to the
-Runtime root and are released during `dispose()`.
+The Runtime is designed for servers, workers and applications that execute
+many programs against one environment. Layer-scoped resources remain alive
+between calls to `run`.
 
-Scope cleanup is child-first and LIFO. Finalizers receive a success or failure
-`ScopeOutcome`, and Runtime shutdown waits for active executions before closing
-the root Scope.
+## One-shot Runtime
+
+For a command, migration or script, use `Runtime.run`:
+
+```ts
+const result = await Runtime.run(AppLive, backend, () =>
+  Effect.gen(async function* () {
+    const database = yield* Database
+    return yield* Result.await(database.migrate())
+  })
+)
+```
+
+The one-shot form creates the Runtime, runs exactly one program, closes its
+execution and root Scopes with the final outcome, and always attempts backend
+cleanup. A successful program can therefore still expose a shutdown cleanup
+failure; a failed program preserves its exact primary failure.
+
+## Typed execution boundaries
+
+Every typed Runtime boundary validates the program's final
+`EffectRequirements` against `LayerProvided<typeof AppLive>`:
+
+```ts
+const AppLive = Layer.succeed(Database, database)
+
+const needsCache = Effect.gen(async function* () {
+  const cache = yield* Cache
+  return Result.ok(await cache.get('key'))
+})
+
+const runtime = await Runtime.make(AppLive, backend)
+
+await runtime.run(() => needsCache)
+// TypeScript error: Cache is not provided by AppLive.
+```
+
+The Runtime and its inferred `Provided` union retain this information. If an
+application boundary genuinely must erase it, an unparameterized annotation is
+an explicit unchecked escape hatch. Prefer `RuntimeFor` when naming a Runtime
+from a concrete Layer:
+
+```ts
+type AppRuntime = RuntimeFor<typeof AppLive>
+
+export function createServer(runtime: AppRuntime) {
+  return {
+    handle: () => runtime.run(() => needsDatabase)
+  }
+}
+```
+
+## Execution Scopes
+
+Every `runtime.run` creates a child Scope of the Runtime root. The child remains
+open until the program settles, including during re-entrant disposal:
+
+```text
+Runtime root
+├── Database from Layer.scoped
+└── run() child
+    ├── request body from Effect.acquireRelease
+    └── temporary file from Effect.add
+```
+
+The execution outcome is classified only at the Runtime boundary:
+
+- a plain value is success;
+- `Result.ok` is success;
+- `Result.err` is failure with its `error` as the cause;
+- a thrown or rejected value is failure with that exact cause.
+
+Intermediate Results do not close a Scope or change its outcome.
+
+## Graceful disposal
+
+`runtime.dispose()` is idempotent and shared by concurrent callers. Its order is
+deliberate:
+
+1. Transition to disposing and reject new `run` calls.
+2. Wait for the snapshot of active executions.
+3. Close the Runtime root Scope.
+4. Dispose the backend last.
+
+An execution failure never prevents root or backend cleanup. A long-lived
+Runtime closes its root with success regardless of earlier execution outcomes;
+the one-shot form closes with the complete final outcome.
+
+## Cleanup diagnostics
+
+Pass `onCleanupFailure` to observe aggregated cleanup failures without changing
+the primary program result:
+
+```ts
+const runtime = await Runtime.make(AppLive, backend, {
+  onCleanupFailure: async (diagnostic) => {
+    console.error('cleanup failed', diagnostic.error)
+  }
+})
+```
+
+Observers are best effort. If an observer itself throws, that observer failure
+is ignored. The precedence is:
+
+```text
+program failure > cleanup failure > program success
+```
+
+## Runtime errors
+
+- `LayerRegistrationError`: a backend could not register a provider; partial
+  construction is cleaned up and the registration cause remains primary.
+- `LayerDisposeError`: root and/or backend cleanup failed.
+- `ServiceNotFoundError`: the backend has no provider for a requested tag.
+- `RuntimeHandleDisposedError` (internal): a disposed handle rejects new work.

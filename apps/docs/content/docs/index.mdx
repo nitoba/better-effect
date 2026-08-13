@@ -1,29 +1,78 @@
 ---
 title: Introduction
-description: Effect-inspired application architecture for better-result.
+description: A small, typed architecture for Result-based TypeScript applications.
+icon: BookOpen
 ---
 
-`better-effect` adds a small set of Effect-inspired primitives to
-[`better-result`](https://github.com/nitoba/better-result): typed Services,
-declarative Layers, scoped resource lifetimes, and pluggable runtime backends.
+# Build applications around explicit dependencies
 
-## What you get
+Most application code has two independent questions:
 
-- **Services** describe contextual dependencies and are requested with
-  `yield*`.
-- **Layers** compose implementations into a complete application environment.
-- **Effects** preserve `better-result` success and failure semantics while
-  carrying dependency requirements through TypeScript.
-- **Scopes** own resources and finalizers with predictable child-first,
-  LIFO cleanup.
-- **Runtimes** provision a Layer and execute programs with checked Service
-  requirements.
+1. **Did this operation succeed?**
+2. **What does this operation need in order to run?**
 
-## Install
+[`better-result`](https://github.com/nitoba/better-result) answers the first
+question with a typed `Result`. `better-effect` answers the second without
+introducing a second error model, a fiber runtime, or a dependency container
+that your application has to learn.
 
-```bash
-bun add better-effect better-result
+```text
+Effect.gen        describes a Result workflow and its Service requirements
+Layer             describes how Services are provided
+Runtime           owns the environment and executes workflows
+Scope             owns resources and finalizers
+better-result     remains the source of truth for success and failure
 ```
 
-Continue with [Services](/docs/services), then learn how to compose them with
-[Layers](/docs/layers).
+## The complete path
+
+```text
+define a Service
+      ↓
+write an Effect.gen program
+      ↓
+provide implementations with Layer
+      ↓
+execute through Runtime
+      ↓
+release resources through Scope
+```
+
+The library is intentionally small. It gives you a composition root and
+lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
+dependency injection to ordinary TypeScript libraries or adapters.
+
+## Choose your starting point
+
+<Tabs
+  items={[
+    'I am new to better-effect',
+    'I already use better-result',
+    'I am integrating a container'
+  ]}
+>
+  <Tab>
+    Start with [Getting Started](/docs/getting-started), then read the [Mental
+    Model](/docs/mental-model). You will build one Service, provide it through a Layer, and run it
+    with a Runtime.
+  </Tab>
+  <Tab>
+    Read [Effects](/docs/effects) and [Pipelines](/docs/pipelines). They show how `Effect.gen`,
+    `Result.await`, `Effect.map` and `Effect.andThen` compose without replacing your existing Result
+    code.
+  </Tab>
+  <Tab>
+    Read [Backends](/docs/backends). The core contracts are deliberately container-agnostic; ITI is
+    an optional adapter and `MemoryLayerBackend` is useful for tests and small programs.
+  </Tab>
+</Tabs>
+
+## What this library is not
+
+`better-effect` is not a reimplementation of Effect. It does not add fibers,
+schedulers, streams, queues, a full Context abstraction, or a public
+`Effect<A, E, R>` runtime type. An Effect program here is a
+`better-result` Result (or Promise of one) carrying phantom Service metadata.
+
+That smaller boundary is a feature: use the pieces when they solve a concrete
+problem and keep the rest of your application conventional.

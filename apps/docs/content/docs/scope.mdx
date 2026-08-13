@@ -1,0 +1,125 @@
+---
+title: Scope
+description: Own finalizers with hierarchical, child-first cleanup.
+icon: Workflow
+---
+
+`Scope` is the lifecycle primitive. A Scope can register finalizers, acquire
+resources, add existing disposables and fork children. Only an owner can close
+it.
+
+## The contextual Scope
+
+Inside a Runtime execution, `yield* Scope` exposes the non-owning capability:
+
+```ts
+const program = Effect.gen(async function* () {
+  const scope = yield* Scope
+
+  scope.addFinalizer(async (outcome) => {
+    console.log('execution ended with', outcome.status)
+  })
+
+  return Result.ok()
+})
+```
+
+The contextual `Scope` interface intentionally has no `close()` method. Code
+inside a program can register cleanup and create children without accidentally
+closing the Runtime's owner-managed Scope.
+
+## Explicit ownership with `Scope.make` and `Scope.run`
+
+Use `Scope.make()` when the caller owns a closeable Scope:
+
+```ts
+const scope = Scope.make()
+
+try {
+  const resource = await scope.acquire(
+    () => connect(),
+    (connection, outcome) => connection.close(outcome)
+  )
+
+  await resource.query()
+} finally {
+  await scope.close({ status: 'success' })
+}
+```
+
+`Scope.run` creates and owns the Scope for you:
+
+```ts
+await Scope.run(async (scope) => {
+  const connection = await scope.acquire(connect, (value) => value.close())
+  return connection.query()
+})
+```
+
+Scope itself is independent of `better-result`: even a returned `Result.err`
+is a successful Scope outcome. Result-aware classification belongs to
+`Runtime.run`.
+
+## Register finalizers
+
+Finalizers receive the final `ScopeOutcome`:
+
+```ts
+scope.addFinalizer(async (outcome) => {
+  if (outcome.status === 'failure') {
+    await metrics.increment('failed-execution')
+  }
+})
+```
+
+The first `close(outcome?)` call fixes the outcome. Later calls return the same
+Promise. A parent closing propagates its outcome to still-attached children.
+
+## Hierarchy and order
+
+`fork()` creates a child owned by the parent until it closes:
+
+```ts
+const batch = scope.fork()
+
+await Scope.provide(batch, async () => {
+  // resources registered here belong to batch
+})
+
+await batch.close()
+```
+
+Parent closure is child-first and LIFO:
+
+```text
+parent closes
+├── newest child closes
+│   └── child finalizers, newest first
+├── older child closes
+└── parent finalizers, newest first
+```
+
+Closing continues after one finalizer fails. Failures are aggregated in
+`ScopeCloseError.causes`; nested `ScopeCloseError` values are flattened when a
+parent closes.
+
+## Resource acquisition
+
+`scope.acquire` closes a race where acquisition completes as closure begins. If
+registration fails after acquisition, the release callback is attempted
+immediately; if both registration and immediate release fail, both causes are
+preserved in an `AggregateError`.
+
+`scope.add` validates the disposal protocol at runtime and registers the exact
+object. It prefers `Symbol.asyncDispose`, then `Symbol.dispose`.
+
+## Scope errors
+
+- `ScopeRuntimeNotConfiguredError`: no current Scope exists.
+- `ScopeClosedError`: a resource, child or finalizer was added after closure
+  started.
+- `ResourceNotDisposableError`: a value has neither disposal protocol.
+- `ScopeCloseError`: one or more finalizers failed.
+
+Direct `Scope.close()` does not invoke cleanup observers. Observers belong to
+execution and Runtime boundaries, where a primary program result is available.

@@ -1,0 +1,118 @@
+---
+title: Testing
+description: Test behavior, wiring and lifetimes without a global container.
+icon: TestTube
+---
+
+Testing is one of the main reasons to keep Services and Layers separate. The
+Service contains behavior; the test Layer supplies controlled implementations.
+
+## Use the memory backend
+
+```ts
+import { MemoryLayerBackend } from 'better-effect/testing'
+
+const backend = new MemoryLayerBackend()
+const runtime = await Runtime.make(AppTest, backend)
+
+const result = await runtime.run(() => applicationProgram)
+
+await runtime.dispose()
+```
+
+The backend is lazy, caches by Service tag, and clears its state during
+`disposeAll`.
+
+## Override one provider
+
+```ts
+const DatabaseTest = Layer.succeed(
+  Database,
+  Database.of({
+    findById: async () => Result.ok({ id: 'test-user' })
+  })
+)
+
+const AppTest = Layer.override(AppLive, DatabaseTest)
+```
+
+Only the explicit replacement changes; other production providers remain in
+the environment. If the fake's contract is incompatible with the production
+Service, TypeScript reports an override collision instead of letting an invalid
+provider cross the Runtime boundary.
+
+## Resolver context isolation
+
+`ServiceRuntime` uses `AsyncLocalStorage`, so tests should enter context through
+`ServiceRuntime.run` or a Runtime boundary:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const repository = yield* UserRepository
+    return yield* Result.await(repository.findById('test-user'))
+  })
+)
+```
+
+Concurrent Runtime executions remain isolated. Avoid global “reset the
+container” helpers that create serial-test coupling.
+
+## Type-contract tests
+
+Type inference is part of the API. Use `expectTypeOf` in `tests/types`:
+
+```ts
+const program = Effect.gen(function* () {
+  const service = yield* AuthService
+  return Result.ok(service)
+})
+
+expectTypeOf(service).toEqualTypeOf<AuthService>()
+expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<AuthService>()
+```
+
+Protect contracts such as:
+
+- `yield* AuthService` infers exactly `AuthService`;
+- `ServiceRuntime.resolve(AuthService)` resolves to `AuthService`;
+- `Layer.merge` rejects duplicate tags;
+- `Runtime.run` rejects missing program requirements;
+- `Layer.override` rejects incompatible same-tag contracts;
+- `Effect.add` accepts only disposable values.
+
+## Test cleanup behavior
+
+Test both the happy path and the boundary guarantees:
+
+<Accordions>
+  <Accordion title="Resources release after Err, throw and reject" id="resource-release-cases">
+    `Resource.acquireUseRelease` must attempt release after every successful acquisition, even when
+    use returns an Err, throws or rejects.
+  </Accordion>
+  <Accordion title="Runtime disposal waits for active work" id="runtime-waits">
+    Start a program that is still pending, call `dispose`, and assert that root cleanup happens only
+    after the execution settles.
+  </Accordion>
+  <Accordion title="Scope order is child-first and LIFO" id="scope-order">
+    Register multiple finalizers and nested children; assert children close before parents and newer
+    registrations close before older ones.
+  </Accordion>
+</Accordions>
+
+## Recommended test layout
+
+<Files>
+  <Folder name="tests" defaultOpen>
+    <File name="service.test.ts" />
+    <File name="layer-runtime.test.ts" />
+    <File name="resource.test.ts" />
+    <File name="scope.test.ts" />
+    <Folder name="types">
+      <File name="runtime.types.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+Runtime tests belong in `tests/*.test.ts`; compile-time contracts belong in
+`tests/types/`. Use Bun's `bun:test` runner.

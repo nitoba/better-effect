@@ -1,15 +1,15 @@
-'use client';
-import { type ComponentProps, type ReactNode, useMemo } from 'react';
-import { AnchorProvider, type TOCItemType, useActiveAnchors } from 'fumadocs-core/toc';
-import { cn } from '../../lib/cn';
-import { useTreeContext } from 'fumadocs-ui/contexts/tree';
-import { Link, usePathname } from 'fumadocs-core/framework';
-import type * as PageTree from 'fumadocs-core/page-tree';
+'use client'
+import { type ComponentProps, type ReactNode, useMemo } from 'react'
+import { AnchorProvider, type TOCItemType, useActiveAnchors } from 'fumadocs-core/toc'
+import { cn } from '../../lib/cn'
+import { useTreeContext } from 'fumadocs-ui/contexts/tree'
+import { Link, usePathname } from 'fumadocs-core/framework'
+import type * as PageTree from 'fumadocs-core/page-tree'
 
 export interface DocsPageProps {
-  toc?: TOCItemType[];
+  toc?: TOCItemType[]
 
-  children: ReactNode;
+  children: ReactNode
 }
 
 export function DocsPage({ toc = [], ...props }: DocsPageProps) {
@@ -32,7 +32,7 @@ export function DocsPage({ toc = [], ...props }: DocsPageProps) {
         </div>
       )}
     </AnchorProvider>
-  );
+  )
 }
 
 export function DocsBody(props: ComponentProps<'div'>) {
@@ -40,18 +40,18 @@ export function DocsBody(props: ComponentProps<'div'>) {
     <div {...props} className={cn('prose', props.className)}>
       {props.children}
     </div>
-  );
+  )
 }
 
 export function DocsDescription(props: ComponentProps<'p'>) {
   // don't render if no description provided
-  if (props.children === undefined) return null;
+  if (props.children === undefined) return null
 
   return (
     <p {...props} className={cn('mb-8 text-lg text-fd-muted-foreground', props.className)}>
       {props.children}
     </p>
-  );
+  )
 }
 
 export function DocsTitle(props: ComponentProps<'h1'>) {
@@ -59,59 +59,59 @@ export function DocsTitle(props: ComponentProps<'h1'>) {
     <h1 {...props} className={cn('text-3xl font-semibold', props.className)}>
       {props.children}
     </h1>
-  );
+  )
 }
 
 function TocItem({ item }: { item: TOCItemType }) {
-  const isActive = useActiveAnchors().includes(item.url.slice(1));
+  const isActive = useActiveAnchors().includes(item.url.slice(1))
 
   return (
     <a
       href={item.url}
       className={cn('text-sm text-fd-foreground/80 py-1', isActive && 'text-fd-primary')}
       style={{
-        paddingLeft: Math.max(0, item.depth - 2) * 16,
+        paddingLeft: Math.max(0, item.depth - 2) * 16
       }}
     >
       {item.title}
     </a>
-  );
+  )
 }
 
 function Footer() {
-  const { root } = useTreeContext();
-  const pathname = usePathname();
+  const { root } = useTreeContext()
+  const pathname = usePathname()
   const flatten = useMemo(() => {
-    const result: PageTree.Item[] = [];
+    const result: PageTree.Item[] = []
 
     function scan(items: PageTree.Node[]) {
       for (const item of items) {
-        if (item.type === 'page') result.push(item);
+        if (item.type === 'page') result.push(item)
         else if (item.type === 'folder') {
-          if (item.index) result.push(item.index);
-          scan(item.children);
+          if (item.index) result.push(item.index)
+          scan(item.children)
         }
       }
     }
 
-    scan(root.children);
-    return result;
-  }, [root]);
+    scan(root.children)
+    return result
+  }, [root])
 
   const { previous, next } = useMemo(() => {
-    const idx = flatten.findIndex((item) => item.url === pathname);
+    const idx = flatten.findIndex((item) => item.url === pathname)
 
-    if (idx === -1) return {};
+    if (idx === -1) return {}
     return {
       previous: flatten[idx - 1],
-      next: flatten[idx + 1],
-    };
-  }, [flatten, pathname]);
+      next: flatten[idx + 1]
+    }
+  }, [flatten, pathname])
 
   return (
     <div className="flex flex-row justify-between gap-2 items-center font-medium">
       {previous ? <Link href={previous.url}>{previous.name}</Link> : null}
       {next ? <Link href={next.url}>{next.name}</Link> : null}
     </div>
-  );
+  )
 }

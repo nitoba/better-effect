@@ -1,33 +1,172 @@
 ---
 title: Services
-description: Declare and consume typed contextual dependencies.
+description: Declare contextual dependencies with exact TypeScript inference.
+icon: Boxes
 ---
 
-A Service is a class, a runtime dependency token, and a yieldable dependency
-handle at the same time. Give it an explicit self type and a stable tag:
+A Service is three things at once:
+
+1. the instance contract your application programs use;
+2. the runtime constructor token a backend resolves;
+3. the yieldable value that can be requested from `Effect.gen`.
+
+That combination means you do not maintain a second string key or a manually
+duplicated dependency list.
+
+## Declare a Service
+
+Use the explicit self type and a non-empty literal tag:
 
 ```ts
 import { Service } from 'better-effect'
 
 class Database extends Service<Database>()('Database') {
-  findUser(id: string) {
-    // ...
+  constructor(private readonly url: string) {
+    super()
+  }
+
+  query(sql: string) {
+    // return a Result or a Promise<Result> in a real application
+    return `${this.url}: ${sql}`
   }
 }
 ```
 
-Request the service from an `Effect.gen` program:
+The first call anchors the exact instance type. The second call captures the
+literal `serviceTag`, which is the stable logical identity used by Layers and
+backends. The constructor name is diagnostic only; identity comparisons use
+`serviceTag`.
+
+## Request a Service with `yield*`
 
 ```ts
 import { Effect } from 'better-effect'
 import { Result } from 'better-result'
 
-const findUser = Effect.gen(async function* () {
+const readUser = Effect.gen(async function* () {
   const database = yield* Database
 
-  return Result.ok(await database.findUser('user-1'))
+  const value = await database.query('select * from users')
+
+  return Result.ok(value)
 })
 ```
 
-The `Database` requirement is inferred from the generator. Layers and Runtime
-use the same token, so missing dependencies can be rejected before execution.
+`database` is inferred as exactly `Database`, not `unknown`, not a structural
+subset, and not the constructor type. The yielded token also adds `Database`
+to `EffectRequirements<typeof readUser>`.
+
+```ts
+import type { EffectRequirements } from 'better-effect'
+
+type Requirements = EffectRequirements<typeof readUser>
+// Database
+```
+
+The metadata is phantom: it disappears at runtime and does not wrap or replace
+the `better-result` value.
+
+## Structural implementations with `Service.of`
+
+Some Services are contracts rather than classes with meaningful construction.
+Declare the contract's members and use `Service.of` to type-check a plain
+object:
+
+```ts
+class Authorization extends Service<Authorization>()('Authorization') {
+  declare readonly authorize: (token: string) => Promise<boolean>
+}
+
+const authorization = Authorization.of({
+  authorize: async (token) => token.length > 0
+})
+```
+
+`Authorization.of` returns the same object unchanged. It does not call a
+constructor and the object is not an `instanceof Authorization`. Choose `new
+Authorization(...)` when private fields, constructor invariants or prototype
+behavior matter.
+
+## Tags are identities
+
+Tags must be non-empty string literals. Use a namespaced tag when a contract is
+intended to be shared between packages:
+
+```ts
+class Logger extends Service<Logger>()('@acme/Logger') {
+  info(message: string) {}
+}
+```
+
+Two classes with the same methods but different tags are different Services.
+Two classes with the same tag are expected to represent the same logical
+contract; Layers and backends check their compatibility before returning an
+instance.
+
+<Accordions>
+  <Accordion title="Why not use the class name as identity?" id="tag-not-class-name">
+    Minifiers, bundlers and duplicate package copies can change or duplicate a constructor name. The
+    literal `serviceTag` is intentional, inspectable and stable across those boundaries.
+  </Accordion>
+  <Accordion title="Why is an empty tag rejected?" id="empty-tag">
+    An empty tag cannot communicate ownership or identity and makes collision diagnostics ambiguous.
+    `Service` rejects it at declaration time.
+  </Accordion>
+</Accordions>
+
+## Service methods can carry requirements
+
+Requirements are inferred not only from a generator that yields a Service, but
+also from Service methods that return Effects. This lets a Layer provider carry
+the dependencies needed by its implementation:
+
+```ts
+class UserRepository extends Service<UserRepository>()('UserRepository') {
+  findById(id: string) {
+    return Effect.gen(async function* () {
+      const database = yield* Database
+      const user = yield* Result.await(database.findById(id))
+
+      return Result.ok(user)
+    })
+  }
+}
+
+const UserRepositoryLive = Layer.make(UserRepository)
+// UserRepositoryLive requires Database while being acquired.
+```
+
+`ServiceRequirements<typeof UserRepository>` extracts those method-level
+requirements for Layer completeness checks.
+
+## Direct resolver access
+
+Most application code should use `yield* Service`. Adapter and integration
+code can use the container-agnostic `ServiceRuntime` bridge:
+
+```ts
+import { ServiceRuntime } from 'better-effect'
+
+const resolver = {
+  resolve<T extends typeof Database>(token: T): InstanceType<T> {
+    // a real backend supplies this relationship
+    return new token('test') as InstanceType<T>
+  }
+}
+
+const result = ServiceRuntime.run(resolver, () => ServiceRuntime.resolve(Database))
+```
+
+The resolver is scoped with `AsyncLocalStorage`. It is restored after the
+callback and isolated across concurrent Runtime executions. Calling
+`ServiceRuntime.current()` or `resolve()` outside a configured context throws
+`ServiceRuntimeNotConfiguredError`.
+
+## Service checklist
+
+- Give every Service a literal, non-empty tag.
+- Use the explicit self type: `Service<Self>()('Tag')`.
+- Yield the constructor, never a string key.
+- Keep behavior in the Service and construction in its Layer.
+- Use `Service.of` for structural test doubles and lightweight contracts.
+- Let method return types expose dependencies through `Effect.gen`.

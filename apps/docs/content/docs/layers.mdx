@@ -1,27 +1,58 @@
 ---
 title: Layers
-description: Compose application implementations declaratively.
+description: Describe, compose and replace Service providers.
+icon: Layers
 ---
 
-Layers describe how Services are provided without coupling application code to
-a dependency-injection container.
+A Layer is a declarative collection of providers. It stores how a Service can
+be acquired and (optionally) released; it does not acquire instances while the
+Layer is being built.
+
+## `Layer.make`
+
+With no acquire callback, the Service must be constructible without arguments:
 
 ```ts
-import { Layer } from 'better-effect'
+class Clock extends Service<Clock>()('Clock') {
+  now() {
+    return new Date()
+  }
+}
 
-const DatabaseLive = Layer.make(Database, () => new Database())
-const UserRepositoryLive = Layer.make(UserRepository, () => new UserRepository())
-
-const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
+const ClockLive = Layer.make(Clock)
 ```
 
-Use `Layer.override` when a replacement is intentional, for example in tests:
+Pass a callback when construction needs configuration or asynchronous setup:
 
 ```ts
-const AppTest = Layer.override(AppLive, DatabaseTest)
+const DatabaseLive = Layer.make(Database, async () => {
+  const pool = await createPool(process.env.DATABASE_URL!)
+  return new Database(pool)
+})
 ```
 
-Scoped providers register their release callback with the Runtime root Scope:
+The callback is lazy and its return type must match the Service instance
+contract.
+
+## `Layer.succeed`
+
+Use `succeed` for a value that already exists:
+
+```ts
+const testClock = Clock.of({
+  now: () => new Date('2025-01-01T00:00:00.000Z')
+})
+
+const ClockTest = Layer.succeed(Clock, testClock)
+```
+
+The exact object is returned whenever the backend resolves the Service. The
+Layer does not own it unless you wrap its lifetime separately.
+
+## `Layer.scoped`
+
+`scoped` adds a Runtime-root release callback while retaining the simple,
+compatibility-friendly `(instance) => ...` shape:
 
 ```ts
 const DatabaseLive = Layer.scoped(
@@ -30,3 +61,104 @@ const DatabaseLive = Layer.scoped(
   (database) => database.close()
 )
 ```
+
+The resource is acquired lazily on first resolution, stays alive across
+`runtime.run` calls, and is released when the Runtime root closes. The callback
+does not receive a `ScopeOutcome`; use `scopedGen` when it needs one.
+
+## `Layer.gen` and `Layer.scopedGen`
+
+Provider factories can request contextual Services during acquisition:
+
+```ts
+const RepositoryLive = Layer.gen(UserRepository, async function* () {
+  const database = yield* Database
+  return new UserRepository(database)
+})
+```
+
+Add outcome-aware cleanup with `scopedGen`:
+
+```ts
+const RepositoryLive = Layer.scopedGen(
+  UserRepository,
+  async function* () {
+    const database = yield* Database
+    return new UserRepository(database)
+  },
+  (repository, outcome) => repository.close(outcome)
+)
+```
+
+The generator can yield only Service requirements. A different yielded value
+produces `LayerGeneratorYieldError` at runtime. The generator's requirements
+are included in the Layer completeness contract.
+
+## `Layer.merge`
+
+Merge distinct providers into an application environment:
+
+```ts
+const InfrastructureLive = Layer.merge(DatabaseLive, ClockLive)
+const ApplicationLive = Layer.merge(InfrastructureLive, UserRepositoryLive, UserServiceLive)
+```
+
+`merge` rejects duplicate tags. This is intentional: silently choosing one
+provider makes composition order a hidden dependency. The failure is either:
+
+- `DuplicateServiceError` when the same constructor is registered twice;
+- `ServiceTagCollisionError` when two constructors claim the same tag.
+
+## `Layer.override`
+
+Replacement is explicit:
+
+```ts
+const AppTest = Layer.override(
+  ApplicationLive,
+  Layer.succeed(Database, fakeDatabase),
+  Layer.succeed(Clock, testClock)
+)
+```
+
+Overrides are applied left to right; the last compatible provider for a tag
+wins. Compatibility is bidirectional: the two instance contracts must extend
+each other. An incompatible same-tag replacement remains visible in the type
+as `__betterEffectLayerOverrideCollisions` and cannot cross a complete Runtime
+boundary.
+
+<Accordions>
+  <Accordion title="Why does merge reject duplicates?" id="merge-duplicates">
+    A merge describes a complete environment. Rejecting duplicates prevents accidental replacement
+    and makes intentional test or tenant substitutions visible in code review. Use `override` for
+    replacement.
+  </Accordion>
+  <Accordion title="Does a Layer acquire providers immediately?" id="layer-lazy">
+    No. Layer creation stores provider callbacks. Backends acquire providers lazily on first
+    resolution and cache them according to backend behavior.
+  </Accordion>
+  <Accordion
+    title="Can a Layer provider depend on another provider?"
+    id="layer-provider-dependencies"
+  >
+    Yes. Use `Layer.gen` or `Layer.scopedGen` and `yield*` the dependency. The requirement is
+    inferred and the Runtime checks that it is supplied.
+  </Accordion>
+</Accordions>
+
+## Layer type helpers
+
+The public type helpers make application boundaries explicit:
+
+```ts
+import type { LayerMissing, LayerProvided, LayerRawRequired, LayerSpecs } from 'better-effect'
+
+type Provided = LayerProvided<typeof ApplicationLive>
+type RequiredDuringAcquire = LayerRawRequired<typeof ApplicationLive>
+type Missing = LayerMissing<typeof ApplicationLive>
+type Specs = LayerSpecs<typeof ApplicationLive>
+```
+
+Usually you do not need to annotate these types. They are useful for library
+authors, composition roots and diagnostics that intentionally expose a Layer's
+contract.

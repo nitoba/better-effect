@@ -1,0 +1,123 @@
+---
+title: Patterns and Recipes
+description: Practical designs for applications built with better-effect.
+icon: ChefHat
+---
+
+## Composition roots
+
+Keep one `AppLive` per process boundary:
+
+```ts
+const ConfigLive = Layer.succeed(Config, config)
+const DatabaseLive = Layer.scoped(Database, connect, close)
+const AppLive = Layer.merge(ConfigLive, DatabaseLive, ServicesLive)
+```
+
+The entry point chooses the backend and owns Runtime disposal. Business modules
+should export Services and provider Layers, not create global containers.
+
+## Service dependency chains
+
+Let dependencies appear where they are used:
+
+```ts
+class AuthService extends Service<AuthService>()('AuthService') {
+  login(input: LoginInput) {
+    return Effect.gen(async function* () {
+      const users = yield* UserRepository
+      const passwords = yield* PasswordHasher
+      const user = yield* Result.await(users.findByEmail(input.email))
+      const valid = yield* Result.await(passwords.verify(input.password, user.passwordHash))
+
+      return valid
+        ? Result.ok(user)
+        : Result.err(new InvalidCredentials({ message: 'Invalid credentials' }))
+    })
+  }
+}
+```
+
+No manual `requires: [UserRepository, PasswordHasher]` list can drift from the
+implementation.
+
+## Configuration as a Service
+
+Make configuration explicit and testable:
+
+```ts
+class Config extends Service<Config>()('Config') {
+  constructor(readonly databaseUrl: string) {
+    super()
+  }
+}
+
+const ConfigLive = Layer.succeed(Config, new Config(process.env.DATABASE_URL!))
+```
+
+Then use `Layer.scopedGen` to construct a dependent resource:
+
+```ts
+const DatabaseLive = Layer.scopedGen(
+  Database,
+  async function* () {
+    const config = yield* Config
+    return await Database.connect(config.databaseUrl)
+  },
+  (database) => database.close()
+)
+```
+
+## Request-local ownership
+
+Acquire a per-request resource inside the program:
+
+```ts
+const handleRequest = Effect.gen(async function* () {
+  const transaction = yield* Effect.acquireRelease(
+    () => database.beginTransaction(),
+    (tx, outcome) => tx.rollbackIfNeeded(outcome)
+  )
+
+  const value = yield* Result.await(transaction.run())
+  return Result.ok(value)
+})
+```
+
+The Runtime closes the execution Scope after the request, regardless of whether
+the program returns an Err or throws.
+
+## Test doubles without constructors
+
+Use `Service.of` and `Layer.succeed` for small structural fakes:
+
+```ts
+const MailerTest = Layer.succeed(
+  Mailer,
+  Mailer.of({
+    send: async () => Result.ok(undefined)
+  })
+)
+```
+
+This is usually clearer than mocking a global module or reaching into a
+container registry.
+
+## Multi-tenant or per-request environments
+
+Keep a long-lived base Runtime for shared infrastructure. For a truly
+different environment, build an explicit Layer override or a separate Runtime;
+do not mutate a shared backend while requests are in flight.
+
+## Observability
+
+Use `onCleanupFailure` for release and shutdown telemetry, and keep program
+errors as the primary diagnostic:
+
+```ts
+const options = {
+  onCleanupFailure: ({ error }: RuntimeShutdownDiagnostic) => {
+    logger.error({ error }, 'runtime cleanup failed')
+  }
+}
+```

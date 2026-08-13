@@ -1,0 +1,91 @@
+---
+title: Todo API Walkthrough
+description: See every primitive working together in the executable example.
+icon: ListTodo
+---
+
+The project includes an executable Bun API example. It combines Services,
+Layers, Effects, Runtime, Scope, better-result, Bun SQL and the ITI adapter.
+Use it as a reference for organizing a real application; in your own project,
+the example files can live wherever your application structure calls for them.
+
+## Dependency graph
+
+```text
+AuthService ──────────────┐
+  ├── UserRepository ─────┤
+  ├── SessionRepository ──┤── Database (Layer.scoped)
+  └── PasswordHasher       │
+TodoService ──────────────┘
+  └── TodoRepository ─────┘
+```
+
+The Services contain behavior and yield the dependencies they need. The Layer
+file is the composition root:
+
+```ts
+const DatabaseLive = Layer.scoped(
+  Database,
+  async () => {
+    const database = new Database(new SQL(':memory:', { adapter: 'sqlite' }))
+    await database.initialize()
+    return database
+  },
+  (database) => database.close()
+)
+
+const RepositoriesLive = Layer.merge(
+  Layer.make(UserRepository),
+  Layer.make(SessionRepository),
+  Layer.make(TodoRepository)
+)
+
+const ServicesLive = Layer.merge(
+  Layer.make(PasswordHasher),
+  Layer.make(AuthService),
+  Layer.make(TodoService)
+)
+
+export const AppLive = Layer.merge(DatabaseLive, RepositoriesLive, ServicesLive)
+```
+
+## Request lifecycle
+
+Each HTTP handler runs a program in the shared Runtime:
+
+```ts
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const { userId } = yield* Result.await(requireUser(request))
+    const todos = yield* TodoService
+    const items = yield* Result.await(todos.list(userId))
+
+    return Result.ok(items)
+  })
+)
+```
+
+The request gets an execution child Scope. The SQLite client belongs to the
+root Scope and remains available across requests. A request-local file, lease
+or stream can use `Effect.acquireRelease` and be cleaned up as soon as that
+handler settles.
+
+## Run a project based on this example
+
+```bash
+bun run src/index.ts
+```
+
+The server listens on `http://localhost:3333` and seeds
+`demo@example.com` / `demo1234` in the reference implementation. In a new
+application, use your own entry point and configuration. The important part is
+that the entry point creates one Runtime, passes it to request handlers, and
+calls `runtime.dispose()` during shutdown.
+
+## Why this shape scales
+
+- The HTTP layer knows only the Runtime and domain Results.
+- Services express behavior and dependencies without ITI imports.
+- Layers make production and test environments explicit.
+- Runtime owns graceful shutdown.
+- `better-result` keeps error unions typed from database to HTTP response.

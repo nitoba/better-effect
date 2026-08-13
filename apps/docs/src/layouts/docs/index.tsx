@@ -1,23 +1,24 @@
-'use client';
-import type * as PageTree from 'fumadocs-core/page-tree';
-import { type ComponentProps, createContext, type ReactNode, use, useMemo, useState } from 'react';
-import { cn } from '../../lib/cn';
-import { TreeContextProvider, useTreeContext } from 'fumadocs-ui/contexts/tree';
-import Link from 'fumadocs-core/link';
-import { useSearchContext } from 'fumadocs-ui/contexts/search';
-import { cva } from 'class-variance-authority';
-import { usePathname } from 'fumadocs-core/framework';
+'use client'
+import type * as PageTree from 'fumadocs-core/page-tree'
+import Image from 'next/image'
+import { type ComponentProps, createContext, type ReactNode, use, useMemo, useState } from 'react'
+import { cn } from '../../lib/cn'
+import { TreeContextProvider, useTreeContext } from 'fumadocs-ui/contexts/tree'
+import Link from 'fumadocs-core/link'
+import { useSearchContext } from 'fumadocs-ui/contexts/search'
+import { cva } from 'class-variance-authority'
+import { usePathname } from 'fumadocs-core/framework'
 
 interface SidebarContext {
-  open: boolean;
-  setOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  open: boolean
+  setOpen: React.Dispatch<React.SetStateAction<boolean>>
 }
 
-const SidebarContext = createContext<SidebarContext | null>(null);
+const SidebarContext = createContext<SidebarContext | null>(null)
 
 export interface DocsLayoutProps {
-  tree: PageTree.Root;
-  children: ReactNode;
+  tree: PageTree.Root
+  children: ReactNode
 }
 
 export function DocsLayout({ tree, children }: DocsLayoutProps) {
@@ -27,7 +28,10 @@ export function DocsLayout({ tree, children }: DocsLayoutProps) {
         <header className="sticky top-0 bg-fd-background h-14 z-20">
           <nav className="flex flex-row items-center gap-2 size-full px-4">
             <Link href="/" className="font-medium mr-auto">
-              My Docs
+              <span className="be-nav-brand">
+                <Image src="/logo.svg" alt="" width={24} height={24} className="be-nav-logo" />
+                <span>better-effect</span>
+              </span>
             </Link>
 
             <SearchToggle />
@@ -40,30 +44,30 @@ export function DocsLayout({ tree, children }: DocsLayoutProps) {
         </main>
       </SidebarProvider>
     </TreeContextProvider>
-  );
+  )
 }
 
 function SidebarProvider({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false)
 
   return (
     <SidebarContext
       value={useMemo(
         () => ({
           open,
-          setOpen,
+          setOpen
         }),
-        [open],
+        [open]
       )}
     >
       {children}
     </SidebarContext>
-  );
+  )
 }
 
 function SearchToggle(props: ComponentProps<'button'>) {
-  const { enabled, setOpenSearch } = useSearchContext();
-  if (!enabled) return;
+  const { enabled, setOpenSearch } = useSearchContext()
+  if (!enabled) return
 
   return (
     <button
@@ -73,22 +77,22 @@ function SearchToggle(props: ComponentProps<'button'>) {
     >
       Search
     </button>
-  );
+  )
 }
 
 function NavbarSidebarTrigger(props: ComponentProps<'button'>) {
-  const { open, setOpen } = use(SidebarContext)!;
+  const { open, setOpen } = use(SidebarContext)!
 
   return (
     <button {...props} className={cn('text-sm', props.className)} onClick={() => setOpen(!open)}>
       Sidebar
     </button>
-  );
+  )
 }
 
 function Sidebar() {
-  const { root } = useTreeContext();
-  const { open } = use(SidebarContext)!;
+  const { root } = useTreeContext()
+  const { open } = use(SidebarContext)!
 
   const children = useMemo(() => {
     function renderItems(items: PageTree.Node[]) {
@@ -96,23 +100,23 @@ function Sidebar() {
         <SidebarItem key={item.$id} item={item}>
           {item.type === 'folder' ? renderItems(item.children) : null}
         </SidebarItem>
-      ));
+      ))
     }
 
-    return renderItems(root.children);
-  }, [root]);
+    return renderItems(root.children)
+  }, [root])
 
   return (
     <aside
       className={cn(
         'fixed flex flex-col shrink-0 p-4 top-14 z-20 text-sm overflow-auto md:sticky md:h-[calc(100dvh-56px)] md:w-[300px]',
         'max-md:inset-x-0 max-md:bottom-0 max-md:bg-fd-background',
-        !open && 'max-md:invisible',
+        !open && 'max-md:invisible'
       )}
     >
       {children}
     </aside>
-  );
+  )
 }
 
 const linkVariants = cva(
@@ -121,27 +125,27 @@ const linkVariants = cva(
     variants: {
       active: {
         true: 'text-fd-primary font-medium',
-        false: 'hover:text-fd-accent-foreground',
-      },
-    },
-  },
-);
+        false: 'hover:text-fd-accent-foreground'
+      }
+    }
+  }
+)
 
 function SidebarItem({ item, children }: { item: PageTree.Node; children: ReactNode }) {
-  const pathname = usePathname();
+  const pathname = usePathname()
 
   if (item.type === 'page') {
     return (
       <Link
         href={item.url}
         className={linkVariants({
-          active: pathname === item.url,
+          active: pathname === item.url
         })}
       >
         {item.icon}
         {item.name}
       </Link>
-    );
+    )
   }
 
   if (item.type === 'separator') {
@@ -150,7 +154,7 @@ function SidebarItem({ item, children }: { item: PageTree.Node; children: ReactN
         {item.icon}
         {item.name}
       </p>
-    );
+    )
   }
 
   return (
@@ -158,7 +162,7 @@ function SidebarItem({ item, children }: { item: PageTree.Node; children: ReactN
       {item.index ? (
         <Link
           className={linkVariants({
-            active: pathname === item.index.url,
+            active: pathname === item.index.url
           })}
           href={item.index.url}
         >
@@ -173,5 +177,5 @@ function SidebarItem({ item, children }: { item: PageTree.Node; children: ReactN
       )}
       <div className="pl-4 border-l flex flex-col">{children}</div>
     </div>
-  );
+  )
 }

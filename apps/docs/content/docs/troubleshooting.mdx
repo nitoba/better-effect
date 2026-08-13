@@ -1,0 +1,50 @@
+---
+title: Troubleshooting
+description: Diagnose the most common type and lifecycle failures.
+icon: CircleQuestionMark
+---
+
+<Accordions>
+  <Accordion title="TypeScript says a Service is missing" id="missing-service">
+    Read the diagnostic tag `__betterEffectMissingService__...` or
+    `__betterEffectMissingRuntimeService__...`. Add the missing provider to the Layer, merge the
+    Layers, or use an explicit override for a test.
+  </Accordion>
+  <Accordion title="I used Layer.merge and got a duplicate error" id="duplicate-layer">
+    `merge` never silently replaces a provider. Use `Layer.override(base, replacement)` when
+    replacement is intentional, and ensure same-tag contracts are compatible.
+  </Accordion>
+  <Accordion title="A Service resolves outside Runtime" id="service-outside-runtime">
+    `yield* Service` and `ServiceRuntime.resolve` need an active resolver. Run the program through
+    `Runtime.run`, or wrap integration code with `ServiceRuntime.run(resolver, callback)`.
+  </Accordion>
+  <Accordion title="Scope says it is not configured" id="scope-outside-runtime">
+    `Scope.current`, `yield* Scope`, `Effect.add` and `Effect.acquireRelease` require an active
+    Scope. Use a Runtime execution, `Scope.run`, or `Scope.provide` with an existing Scope.
+  </Accordion>
+  <Accordion title="My resource did not release" id="resource-not-released">
+    Confirm acquisition succeeded, the resource was registered in the current Scope, and the release
+    callback or disposal protocol is callable. For `Effect.add`, the object must expose
+    `Symbol.asyncDispose` or `Symbol.dispose`.
+  </Accordion>
+  <Accordion title="Cleanup hid my original error" id="cleanup-primary-error">
+    Cleanup failures are secondary when the program failed. Configure `onCleanupFailure` to observe
+    them. A successful program can surface a cleanup failure because there is no more specific
+    primary failure.
+  </Accordion>
+  <Accordion title="Layer.gen yielded an unsupported value" id="bad-layer-yield">
+    Layer generators may yield Service tokens only. Use `Result.await` and `Effect.gen` for Result
+    operations in application programs; use `Layer.scopedGen` for contextual acquisition and
+    cleanup.
+  </Accordion>
+</Accordions>
+
+## A debugging checklist
+
+1. Confirm the Service tag is non-empty and stable.
+2. Inspect `LayerProvided`, `LayerRawRequired` and `LayerMissing` when a
+   composition root fails to typecheck.
+3. Verify the program runs inside the intended Runtime.
+4. Check whether the resource belongs to the root Scope or execution Scope.
+5. Preserve the primary Result/exception and inspect cleanup diagnostics
+   separately.

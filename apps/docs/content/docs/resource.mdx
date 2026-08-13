@@ -1,0 +1,82 @@
+---
+title: Resource
+description: Use acquire/use/release when a workflow owns one local resource.
+icon: PackageOpen
+---
+
+`Resource.acquireUseRelease` is a compatibility facade for local workflows that
+need deterministic cleanup but do not need a long-lived Runtime root. It keeps
+the operation in the `better-result` model.
+
+## The basic shape
+
+```ts
+const result = await Resource.acquireUseRelease({
+  name: 'database connection',
+  acquire: () => connect(),
+  use: (connection) => connection.query('select 1'),
+  release: (connection) => connection.close()
+})
+```
+
+`acquire`, `use` and `release` may return a Result or a Promise of a Result.
+Acquisition failure skips both use and release. Successful acquisition always
+attempts release, even when use returns `Err`, throws or rejects.
+
+## Error precedence
+
+The returned Result follows this order:
+
+1. the error from `use`;
+2. the error from `release` when use succeeded;
+3. the successful value from `use`.
+
+If both use and release fail, the use error remains primary. The release error
+is wrapped as `ResourceReleaseFailure` and can be observed without replacing
+the primary error:
+
+```ts
+const result = await Resource.acquireUseRelease({
+  name: 'temporary report',
+  acquire: () => Result.ok(createReport()),
+  use: () => Result.err(new ReportError({ message: 'render failed' })),
+  release: (report) => report.close(),
+  onReleaseFailure: (failure) => {
+    console.error(failure.resource, failure.cause)
+  }
+})
+```
+
+Observer failures are ignored. Diagnostics must not hide the operation error.
+
+## Automatic disposal
+
+Omit `release` when the resource implements a JavaScript disposal protocol:
+
+```ts
+const result = await Resource.acquireUseRelease({
+  name: 'temporary file',
+  acquire: () => createTemporaryFile(),
+  use: (file) => file.write('hello')
+})
+```
+
+`Symbol.asyncDispose` is preferred over `Symbol.dispose`. A value without a
+callable protocol produces a release failure. TypeScript's `DisposableResource`
+type requires at least one of those protocols at the call site.
+
+## Resource or Scope?
+
+<Tabs items={['Resource', 'Effect + Scope']}>
+  <Tab>
+    Choose Resource for one local acquire/use/release transaction. It creates and closes its own
+    private Scope internally and returns one Result.
+  </Tab>
+  <Tab>
+    Choose `Effect.acquireRelease`, `Effect.add` and `Scope` when the resource belongs to a Runtime
+    execution, needs Service access during acquisition, or must share a parent/child lifetime.
+  </Tab>
+</Tabs>
+
+`Resource` remains available for compatibility and simple local workflows. It
+does not replace the hierarchical Scope model.

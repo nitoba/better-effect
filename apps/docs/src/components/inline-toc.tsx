@@ -1,18 +1,18 @@
-'use client';
+'use client'
 
-import { ChevronDown } from 'lucide-react';
-import type { TOCItemType } from 'fumadocs-core/toc';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
-import type { ComponentProps } from 'react';
-import { cn } from '../lib/cn';
-import { useTranslations } from '@fuma-translate/react';
+import { ChevronDown } from 'lucide-react'
+import type { TOCItemType } from 'fumadocs-core/toc'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
+import type { ComponentProps } from 'react'
+import { cn } from '../lib/cn'
+import { useTranslations } from '@fuma-translate/react'
 
 export interface InlineTocProps extends ComponentProps<typeof Collapsible> {
-  items: TOCItemType[];
+  items: TOCItemType[]
 }
 
 export function InlineTOC({ items, className, ...props }: InlineTocProps) {
-  const t = useTranslations({ note: 'inline table of contents' });
+  const t = useTranslations({ note: 'inline table of contents' })
 
   return (
     <Collapsible
@@ -20,7 +20,7 @@ export function InlineTOC({ items, className, ...props }: InlineTocProps) {
       className={(s) =>
         cn(
           'not-prose rounded-lg border bg-fd-card text-fd-card-foreground',
-          typeof className === 'function' ? className(s) : className,
+          typeof className === 'function' ? className(s) : className
         )
       }
     >
@@ -36,7 +36,7 @@ export function InlineTOC({ items, className, ...props }: InlineTocProps) {
               href={item.url}
               className="border-s py-1.5 hover:text-fd-accent-foreground"
               style={{
-                paddingInlineStart: 12 * Math.max(item.depth - 1, 0),
+                paddingInlineStart: 12 * Math.max(item.depth - 1, 0)
               }}
             >
               {item.title}
@@ -45,5 +45,5 @@ export function InlineTOC({ items, className, ...props }: InlineTocProps) {
         </div>
       </CollapsibleContent>
     </Collapsible>
-  );
+  )
 }

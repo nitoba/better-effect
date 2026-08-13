@@ -1,0 +1,118 @@
+---
+title: Errors and Results
+description: Keep failures typed, explicit and compatible with better-result.
+icon: TriangleAlert
+---
+
+`better-effect` does not recreate `Result`, `TaggedError` or exception
+normalization. Import those primitives from `better-result` and use them as the
+single source of truth.
+
+## Define tagged domain errors
+
+```ts
+import { TaggedError } from 'better-result'
+
+class UserNotFound extends TaggedError('UserNotFound')<{
+  readonly id: string
+  readonly message: string
+}> {}
+
+class DatabaseFailure extends TaggedError('DatabaseFailure')<{
+  readonly operation: string
+  readonly cause: unknown
+  readonly message: string
+}> {}
+```
+
+Tagged errors make a union discriminated and support exhaustive matching in
+your application boundary.
+
+## Normalize exceptions at the edge
+
+Wrap throwing or rejecting operations with `Result.tryPromise`:
+
+```ts
+const response = await Result.tryPromise({
+  try: () => fetch(url),
+  catch: (cause) =>
+    new NetworkFailure({
+      url,
+      cause,
+      message: 'Network request failed'
+    })
+})
+```
+
+Then compose the normalized Result inside an Effect:
+
+```ts
+const load = Effect.gen(async function* () {
+  const response = yield* Result.await(fetchResponse())
+  const body = yield* Result.await(parseBody(response))
+
+  return Result.ok(body)
+})
+```
+
+Acquisition helpers such as `Effect.acquireRelease` normalize unexpected
+acquisition failures with `better-result`'s `UnhandledException` behavior.
+
+## Short-circuiting
+
+Yielding an `Err` stops the generator immediately:
+
+```ts
+const user = yield * Result.await(repository.findById(id))
+// no following line runs when findById returns Err
+const profile = yield * Result.await(loadProfile(user))
+```
+
+Return an explicit `Result.err` for a domain decision rather than throwing:
+
+```ts
+if (!user.active) {
+  return Result.err(
+    new InactiveUser({
+      id: user.id,
+      message: 'User is inactive'
+    })
+  )
+}
+```
+
+## Runtime failure classification
+
+At a Runtime boundary, `Result.err` is classified as a failed execution so
+Scope finalizers receive `{ status: 'failure', cause: result.error }`. This
+classification happens only at the boundary. Intermediate Result errors do
+not close an execution Scope while a generator is still running.
+
+`Scope.run` differs intentionally: it is Result-agnostic and treats returned
+values, including `Result.err`, as a successful Scope outcome.
+
+## Cleanup precedence
+
+Resource and Runtime cleanup preserve the primary failure:
+
+```text
+program/use failure  >  cleanup/release failure  >  success
+```
+
+Use cleanup observers for diagnostics. Do not replace a useful domain error
+with a secondary close error unless the program itself succeeded.
+
+## Handle errors explicitly
+
+Use `Result.isOk`, `Result.isError`, `.match` or your application's tagged-error
+matcher at the boundary:
+
+```ts
+const result = await runtime.run(() => getUser(id))
+
+if (Result.isError(result)) {
+  return toHttpResponse(result.error)
+}
+
+return Response.json(result.value)
+```

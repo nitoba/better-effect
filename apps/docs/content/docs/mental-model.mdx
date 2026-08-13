@@ -1,0 +1,78 @@
+---
+title: Mental Model
+description: Understand the four boundaries that make better-effect predictable.
+icon: Brain
+---
+
+## A program is a value plus requirements
+
+An `Effect.gen` program is not a class instance or a task scheduler. At runtime
+it is a `Result` (or a Promise of a Result). At compile time it additionally
+records the Services yielded by the generator.
+
+```text
+Effect.gen(...) ──► Result<A, E> & { phantom requirements: R }
+                              │
+                              ▼
+                     Runtime environment must provide R
+```
+
+The requirement channel is type-only. Service resolution still happens through
+the active resolver when the generator runs.
+
+## A Layer is a recipe, not an instance
+
+`Layer.make(Database, () => new Database(config))` stores an acquisition
+callback. It does not call the callback. A backend registers the provider, and
+the provider is acquired lazily the first time the Service is resolved.
+
+This distinction keeps startup cheap and makes ownership explicit:
+
+- `Layer.make` describes lazy acquisition without a release callback.
+- `Layer.succeed` describes an already-created value.
+- `Layer.scoped` describes lazy acquisition plus Runtime-root cleanup.
+- `Layer.gen` and `Layer.scopedGen` can request other Services during
+  acquisition.
+
+## Runtime is the long-lived owner
+
+A Runtime owns a root Scope. Every `runtime.run` creates a child Scope. This
+gives request-local resources a short lifetime while keeping database pools or
+clients shared for the lifetime of the application.
+
+```text
+Runtime root Scope
+├── Layer.scoped(Database)
+├── Layer.scoped(Cache)
+└── execution child Scope
+    ├── Effect.acquireRelease(request resource)
+    └── Effect.add(already acquired disposable)
+```
+
+When disposal starts, new executions are rejected, active executions finish,
+the root Scope closes, and the backend is disposed last.
+
+## Result remains the control-flow model
+
+Use `Result.ok`, `Result.err` and `Result.await` exactly as you do with
+`better-result`. `Effect.gen` delegates its runtime generator semantics to
+`Result.gen`; it only adds Service requirements to the inferred type.
+
+Every `Result.gen`/`Effect.gen` generator must finish by returning a `Result`.
+Returning a raw value is not a successful completion of the generator contract.
+
+<Accordions>
+  <Accordion title="When should I use Effect.gen?" id="when-to-use-effect-gen">
+    Use it when a workflow has several intermediate values, conditional paths, Service access,
+    acquisition, or a mixture of synchronous and asynchronous Result operations.
+  </Accordion>
+  <Accordion title="When should I use pipe and combinators?" id="when-to-use-pipe">
+    Use `pipe` for a short linear workflow. `Effect.map`, `Effect.mapError`, `Effect.andThen` and
+    `Effect.andThenAsync` preserve both Result semantics and Service metadata without adding a lazy
+    runtime.
+  </Accordion>
+  <Accordion title="Where does dependency injection live?" id="where-is-di">
+    In a backend adapter. The core only knows the Service constructor and its literal `serviceTag`.
+    ITI-specific identifiers stay inside the ITI adapter.
+  </Accordion>
+</Accordions>

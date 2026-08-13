@@ -1,0 +1,94 @@
+---
+title: Getting Started
+description: Install better-effect and build a complete typed workflow.
+icon: Rocket
+---
+
+## Install the two building blocks
+
+`better-effect` builds on `better-result`, so install both packages:
+
+```bash
+bun add better-effect better-result
+```
+
+<Tabs items={['Bun', 'npm', 'pnpm']} groupId="package-manager" persist>
+  <Tab>```bash bun add better-effect better-result ```</Tab>
+  <Tab>```bash npm install better-effect better-result ```</Tab>
+  <Tab>```bash pnpm add better-effect better-result ```</Tab>
+</Tabs>
+
+The public TypeScript peer range starts at 5.2. `better-effect` also uses the
+standard `Symbol.dispose` and `Symbol.asyncDispose` declarations for disposable
+resources, so your `tsconfig` should include a modern JavaScript library such as
+`ESNext.Disposable`.
+
+## A tiny complete application
+
+This example has one dependency and one program. The type of `program` records
+that it needs `GreetingService`; the Runtime is accepted only when its Layer
+provides that Service.
+
+```ts
+import { Result } from 'better-result'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { MemoryLayerBackend } from 'better-effect/testing'
+
+class GreetingService extends Service<GreetingService>()('GreetingService') {
+  greet(name: string) {
+    return `Hello, ${name}!`
+  }
+}
+
+const GreetingLive = Layer.make(GreetingService)
+
+const program = Effect.gen(function* () {
+  const greeting = yield* GreetingService
+
+  return Result.ok(greeting.greet('Ada'))
+})
+
+const runtime = await Runtime.make(GreetingLive, new MemoryLayerBackend())
+const result = await runtime.run(() => program)
+await runtime.dispose()
+
+if (Result.isOk(result)) {
+  console.log(result.value) // Hello, Ada!
+}
+```
+
+`MemoryLayerBackend` is exported from `better-effect/testing`; the root export
+does not include test-only backends. Import it explicitly in a real project:
+
+```ts
+import { MemoryLayerBackend } from 'better-effect/testing'
+```
+
+## Project shape
+
+<Files>
+  <Folder name="src" defaultOpen>
+    <Folder name="services">
+      <File name="greeting-service.ts" />
+    </Folder>
+    <Folder name="layers">
+      <File name="app-live.ts" />
+    </Folder>
+    <File name="main.ts" />
+  </Folder>
+  <Folder name="tests">
+    <File name="greeting-service.test.ts" />
+  </Folder>
+</Files>
+
+Keep behavior in Services and keep construction in Layers. Your application
+entry point should be the place where a concrete backend and Runtime are
+selected.
+
+## Next steps
+
+1. Learn how [Services](/docs/services) become typed dependency tokens.
+2. Compose implementations with [Layers](/docs/layers).
+3. Understand execution and shutdown in [Runtime](/docs/runtime).
+4. Add ownership to connections and files with [Scope](/docs/scope) and
+   [Resource](/docs/resource).

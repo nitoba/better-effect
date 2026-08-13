@@ -1,0 +1,97 @@
+---
+title: Backends and Adapters
+description: Connect Layers to ITI or your own dependency resolver.
+icon: Plug
+---
+
+The core depends on one small contract:
+
+```ts
+interface LayerBackend {
+  register(registration: LayerRegistration): MaybePromise<void>
+  resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>>
+  disposeAll(): MaybePromise<void>
+}
+```
+
+The backend translates Layer registrations into a container-specific graph,
+resolves providers, caches according to its policy and disposes its owned
+state. Core types never expose ITI keys or container types.
+
+## ITI adapter
+
+Install the optional peer and import the adapter from its subpath:
+
+```bash
+bun add iti
+```
+
+```ts
+import { ItiLayerBackend } from 'better-effect/adapters/iti'
+
+const runtime = await Runtime.make(AppLive, new ItiLayerBackend())
+```
+
+ITI registrations use an internal deterministic key derived from
+`better-effect:${serviceTag}`. That translation stays inside the adapter. The
+application continues to yield the Service constructor.
+
+ITI providers are lazy and cached by the container. `disposeAll()` calls ITI's
+container disposal after the Runtime root Scope closes.
+
+## Memory backend
+
+For tests and small local programs:
+
+```ts
+import { MemoryLayerBackend } from 'better-effect/testing'
+
+const backend = new MemoryLayerBackend()
+const runtime = await Runtime.make(AppLive, backend)
+```
+
+It rejects duplicate/colliding tags, acquires providers lazily, caches resolved
+instances, waits for concurrent acquisition of the same tag and clears all
+state in `disposeAll()`.
+
+## Write an adapter
+
+An adapter should keep the Service token → instance relationship intact:
+
+```ts
+class MyBackend implements LayerBackend {
+  async register(registration: LayerRegistration) {
+    // translate registration.service.serviceTag into a local identifier
+  }
+
+  resolve<T extends AnyServiceToken>(token: T): InstanceType<T> {
+    const value = this.lookup(token.serviceTag)
+    return value as InstanceType<T>
+  }
+
+  async disposeAll() {
+    // release container-owned instances and clear registrations
+  }
+}
+```
+
+Use a Map keyed by `AnyServiceToken` or by the literal tag internally, then
+cast only at the lookup boundary. Do not weaken the public resolver to an
+unrelated generic result such as `resolve<A>(token): A`.
+
+## Adapter responsibilities
+
+<Accordions>
+  <Accordion title="The adapter owns provider translation" id="adapter-translation">
+    Convert a class token or literal tag to whatever identifier your container needs. That
+    identifier must not leak into Service, Layer or Runtime APIs.
+  </Accordion>
+  <Accordion title="The adapter owns container cleanup" id="adapter-cleanup">
+    `disposeAll` releases backend-owned instances. A Layer provider's release callback belongs to
+    the better-effect root Scope and must not be registered directly with a DI container disposer.
+  </Accordion>
+  <Accordion title="The adapter does not own Service semantics" id="adapter-semantics">
+    Service identity, Scope outcomes, Layer collisions and Runtime shutdown ordering are core
+    contracts. Keep them independent of ITI or any other container.
+  </Accordion>
+</Accordions>

@@ -1,0 +1,99 @@
+---
+title: Pipelines
+description: Compose Result programs with pipeable combinators.
+icon: Workflow
+---
+
+Use `pipe` for ordinary unary function composition and the `Effect` combinators
+for Result-aware workflows. `pipe` deliberately knows nothing about Effect,
+Result, Promise, Scope or Service metadata.
+
+## `pipe` stays generic
+
+```ts
+import { pipe } from 'better-effect'
+
+const label = pipe(
+  '  ada  ',
+  (value) => value.trim(),
+  (value) => value.toUpperCase(),
+  (value) => `USER:${value}`
+)
+```
+
+It is useful for normal transformations, but it does not short-circuit or
+inspect Result values by itself.
+
+## Map success and errors
+
+`Effect.map` and `Effect.mapError` support data-first and data-last forms:
+
+<Tabs items={['Data-first', 'Data-last']}>
+  <Tab>
+    ```ts
+    const label = Effect.map(Result.ok(42), (value) => `#${value}`)
+    const readable = Effect.mapError(Result.err('missing'), (error) => ({ error }))
+    ```
+  </Tab>
+  <Tab>
+    ```ts
+    const label = pipe(
+      loadUser(id),
+      Effect.map((user) => user.name)
+    )
+    ```
+  </Tab>
+</Tabs>
+
+`map` transforms only `Ok`, and `mapError` transforms only `Err`. Both preserve
+the other channel, the synchronous/asynchronous shape and the phantom Service
+requirements.
+
+## Chain operations
+
+Use `Effect.andThen` when the next function returns a synchronous Result:
+
+```ts
+const profile = pipe(
+  findUser(id),
+  Effect.andThen((user) => validateProfile(user)),
+  Effect.map((profile) => profile.displayName)
+)
+```
+
+The next function is skipped when the input is an `Err`. The output error type
+is the union of both operations' error types, and requirements are the union of
+both operations' requirements.
+
+Use `Effect.andThenAsync` when the next operation is asynchronous:
+
+```ts
+const permissions = Effect.andThenAsync(findUser(id), (user) => loadPermissions(user.id))
+```
+
+`andThenAsync` always returns a Promise, including when the input is already an
+`Err` or a synchronous Result.
+
+## Choose a style
+
+<Accordions>
+  <Accordion title="Use Effect.gen for branching workflows" id="gen-for-branching">
+    Generators keep intermediate values local and make early Result errors read like normal control
+    flow. They are the best fit for multiple Services, conditionals and resource registration.
+  </Accordion>
+  <Accordion title="Use pipe for a linear workflow" id="pipe-for-linear">
+    A pipeline is compact when each step transforms or chains the previous Result without needing a
+    local variable or branch.
+  </Accordion>
+  <Accordion title="Do not build a second pipe abstraction" id="keep-pipe-generic">
+    `pipe` is intentionally generic. The Effect-aware behavior belongs in the Result combinators so
+    no runtime metadata or prototype API is necessary.
+  </Accordion>
+</Accordions>
+
+## Requirements survive the pipeline
+
+If `loadUser` requires `UserRepository` and `loadPermissions` requires
+`PermissionService`, the final pipeline requires both. The Runtime boundary
+sees that union even though the pipeline itself remains ordinary function
+composition.

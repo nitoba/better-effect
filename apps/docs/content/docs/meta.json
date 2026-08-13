@@ -1,0 +1,22 @@
+{
+  "title": "Guides",
+  "pages": [
+    "index",
+    "getting-started",
+    "mental-model",
+    "services",
+    "effects",
+    "layers",
+    "runtime",
+    "scope",
+    "resource",
+    "pipelines",
+    "errors",
+    "backends",
+    "testing",
+    "todo-api",
+    "patterns",
+    "troubleshooting"
+  ],
+  "defaultOpen": true
+}
