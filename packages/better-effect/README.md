@@ -68,6 +68,11 @@ const AuthorizationLive = Layer.succeed(Authorization, authorization)
 `instanceof Authorization`. For services with constructors, private fields or
 other runtime invariants, use `new Authorization(...)` instead.
 
+Service tokens themselves are always declared through `Service<Self>()(tag)`.
+`Service.of(...)` creates a type-checked structural implementation for an
+existing token; it does not create an alternate token. This keeps the token's
+instance contract tied to the class used by Layers and resolver backends.
+
 Provide it and the environment becomes complete:
 
 ```ts
@@ -113,6 +118,13 @@ Runtime can execute it
 We call this **typechecked wiring**.
 
 The Services your code uses, the implementations your Layers provide, and the programs your Runtime executes participate in the same type-level contract.
+
+A Layer's type describes its exact provider composition. Preserve the inferred
+Layer type at application boundaries so TypeScript cannot claim providers that
+are absent at runtime. Generic infrastructure that intentionally erases this
+metadata can use `Layer.Any`, including for an empty Layer. `Layer<any, any>`
+does not cover the `never` Specs of an empty Layer, and a bare `Layer` is not an
+implicit erasure boundary.
 
 ### Discover type helpers from their API
 

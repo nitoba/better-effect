@@ -52,7 +52,7 @@
     "publint": "publint",
     "check:public-type-namespaces": "bun run test:package-types && bun run test:package-types:minimum && bun tests/package/public-type-namespaces/check.ts",
     "check:public-type-variance": "bun run test:package-variance && bun run test:package-variance:minimum && bun tests/package/public-type-variance/check.ts",
-    "check": "bun run typecheck && bun test && bun run format && bun run build && bun run check:public-type-namespaces && bun run publint && bun run lint",
+    "check": "bun run typecheck && bun test && bun run format && bun run build && bun run check:public-type-namespaces && bun run check:public-type-variance && bun run publint && bun run lint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun publish --dry-run"
   },

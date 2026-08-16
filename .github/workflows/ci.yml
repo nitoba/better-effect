@@ -47,6 +47,10 @@ jobs:
         working-directory: packages/better-effect
         run: bun run check:public-type-namespaces
 
+      - name: Validate public type variance
+        working-directory: packages/better-effect
+        run: bun run check:public-type-variance
+
       - name: Validate package
         run: bun run publint
 
