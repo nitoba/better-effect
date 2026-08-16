@@ -8,7 +8,9 @@ import type {
   ServiceInstance,
   ServiceRequirements,
   ServiceTag,
-  ServiceToken
+  ServiceToken,
+  ServiceVariance,
+  ServiceVarianceTypeId
 } from './types'
 
 type ServiceTagLiteral<Tag extends string> = string extends Tag
@@ -16,6 +18,17 @@ type ServiceTagLiteral<Tag extends string> = string extends Tag
   : Tag extends ''
     ? never
     : Tag
+
+interface ServiceFactory<Self> {
+  <const Tag extends string>(
+    tag: ServiceTagLiteral<Tag>
+  ): (abstract new () => object) &
+    Pick<ServiceToken<Tag, Self>, keyof ServiceToken<any, any>> & {
+      readonly [Symbol.asyncIterator]: (
+        this: ServiceToken<Tag, Self>
+      ) => AsyncGenerator<ServiceRequirement<ServiceToken<Tag, Self>>, Self, unknown>
+    }
+}
 
 /**
  * Declare a class-backed Service with a stable string-literal identity.
@@ -39,7 +52,7 @@ type ServiceTagLiteral<Tag extends string> = string extends Tag
  *
  * @typeParam Self The instance type implemented by the declared Service.
  */
-export function Service<Self>() {
+export function Service<Self>(): ServiceFactory<Self> {
   return function <const Tag extends string>(tag: ServiceTagLiteral<Tag>) {
     if (tag.length === 0) {
       throw new TypeError('Service tags must not be empty')
@@ -48,6 +61,7 @@ export function Service<Self>() {
     abstract class BaseService {
       /** The stable logical identity used by Layers and resolver backends. */
       static readonly serviceTag: Tag = tag
+      declare static readonly [ServiceVarianceTypeId]: ServiceVariance<Tag, Self>
 
       /**
        * Type-check a structural implementation of this Service.
