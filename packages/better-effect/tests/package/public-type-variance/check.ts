@@ -33,6 +33,74 @@ const rootDeclaration = await canonicalizeDeclarationPath(join(distRoot, 'index.
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+const stripDeclarationComments = (source: string): string => {
+  let stripped = ''
+  let quote: string | undefined
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+
+    if (quote !== undefined) {
+      stripped += character
+
+      if (character === '\\') {
+        const escaped = source[index + 1]
+
+        if (escaped !== undefined) {
+          stripped += escaped
+          index += 1
+        }
+      } else if (character === quote) {
+        quote = undefined
+      }
+
+      continue
+    }
+
+    if (character === "'" || character === '"' || character === '`') {
+      stripped += character
+      quote = character
+      continue
+    }
+
+    if (character === '/' && source[index + 1] === '/') {
+      const commentStart = index
+
+      index += 2
+
+      while (index < source.length && source[index] !== '\r' && source[index] !== '\n') {
+        index += 1
+      }
+
+      stripped += source.slice(commentStart, index).replace(/[^\r\n]/g, ' ')
+      index -= 1
+      continue
+    }
+
+    if (character === '/' && source[index + 1] === '*') {
+      const commentStart = index
+
+      index += 2
+
+      while (index < source.length && !(source[index] === '*' && source[index + 1] === '/')) {
+        index += 1
+      }
+
+      if (index < source.length) {
+        index += 2
+      }
+
+      stripped += source.slice(commentStart, index).replace(/[^\r\n]/g, ' ')
+      index -= 1
+      continue
+    }
+
+    stripped += character
+  }
+
+  return stripped
+}
+
 const collectFiles = async (directory: string): Promise<string[]> => {
   const entries = await readdir(directory, { withFileTypes: true })
   const files: string[] = []
@@ -66,7 +134,7 @@ const readDeclarationGraph = async (entry: string): Promise<Map<string, string>>
     const source = await readFile(declarationPath, 'utf8')
     sources.set(declarationPath, source)
 
-    const localReferences = source.matchAll(
+    const localReferences = stripDeclarationComments(source).matchAll(
       /(?:\bfrom\s+|\bimport\s*\(\s*)["']((?:\.{1,2}\/)[^"']+\.mjs)["']/g
     )
 
@@ -175,23 +243,15 @@ assertCondition(
   'Generated Layer marker lost its variance declaration'
 )
 
-const declarationTrivia = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\r\n]*(?:\r\n|\r|\n|$))*`
-const exportedLayerSpecPattern = new RegExp(
-  String.raw`\bexport${declarationTrivia}(?:declare${declarationTrivia})?(?:type|interface|class)${declarationTrivia}LayerSpec\b`
-)
-const exportedLayerSpecListPattern = new RegExp(
-  String.raw`\bexport${declarationTrivia}(?:type${declarationTrivia})?\{[^}]*\bLayerSpec\b[^}]*\}`,
-  's'
-)
-const localStarExportPattern = new RegExp(
-  String.raw`\bexport${declarationTrivia}(?:type${declarationTrivia})?\*${declarationTrivia}from${declarationTrivia}["']((?:\.{1,2}\/)[^"']+\.mjs)["']`,
-  'g'
-)
+const exportedLayerSpecPattern = /\bexport\s+(?:declare\s+)?(?:type|interface|class)\s+LayerSpec\b/
+const exportedLayerSpecListPattern = /\bexport\s+(?:type\s+)?\{[^}]*\bLayerSpec\b[^}]*\}/s
+const localStarExportPattern =
+  /\bexport\s+(?:type\s+)?\*\s+from\s+["']((?:\.{1,2}\/)[^"']+\.mjs)["']/g
 
 const hasLayerSpecExport = (source: string): boolean =>
   exportedLayerSpecPattern.test(source) || exportedLayerSpecListPattern.test(source)
 
-const rootExportsLayerSpec = hasLayerSpecExport(rootSource)
+const rootExportsLayerSpec = hasLayerSpecExport(stripDeclarationComments(rootSource))
 
 const rootStarExportsLayerSpec = await (async () => {
   const visited = new Set<string>()
@@ -209,11 +269,13 @@ const rootStarExportsLayerSpec = await (async () => {
 
     assertCondition(source !== undefined, `Missing declaration source: ${declarationPath}`)
 
-    if (hasLayerSpecExport(source)) {
+    const strippedSource = stripDeclarationComments(source)
+
+    if (hasLayerSpecExport(strippedSource)) {
       return true
     }
 
-    for (const match of source.matchAll(localStarExportPattern)) {
+    for (const match of strippedSource.matchAll(localStarExportPattern)) {
       const specifier = match[1]
 
       assertCondition(
@@ -234,7 +296,7 @@ const rootStarExportsLayerSpec = await (async () => {
     return false
   }
 
-  for (const match of rootSource.matchAll(localStarExportPattern)) {
+  for (const match of stripDeclarationComments(rootSource).matchAll(localStarExportPattern)) {
     const specifier = match[1]
 
     assertCondition(specifier !== undefined, 'Invalid root declaration star export')
