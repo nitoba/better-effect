@@ -1,10 +1,9 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const packageRoot = fileURLToPath(new URL('../../../', import.meta.url))
-const distRoot = resolve(packageRoot, 'dist')
-const rootDeclaration = join(distRoot, 'index.d.mts')
+const distRoot = await realpath(resolve(packageRoot, 'dist'))
 
 const assertCondition = (condition: boolean, message: string): asserts condition => {
   if (!condition) {
@@ -21,6 +20,16 @@ const assertInsideDistRoot = (path: string): void => {
     `Resolved declaration path escapes dist root: ${path}`
   )
 }
+
+const canonicalizeDeclarationPath = async (path: string): Promise<string> => {
+  const declarationPath = await realpath(resolve(path))
+
+  assertInsideDistRoot(declarationPath)
+
+  return declarationPath
+}
+
+const rootDeclaration = await canonicalizeDeclarationPath(join(distRoot, 'index.d.mts'))
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -46,9 +55,7 @@ const readDeclarationGraph = async (entry: string): Promise<Map<string, string>>
   const sources = new Map<string, string>()
 
   const visit = async (path: string): Promise<void> => {
-    const declarationPath = resolve(path)
-
-    assertInsideDistRoot(declarationPath)
+    const declarationPath = await canonicalizeDeclarationPath(path)
 
     if (visited.has(declarationPath)) {
       return
@@ -84,7 +91,11 @@ const rootSource = declarationSources.get(rootDeclaration)
 assertCondition(rootSource !== undefined, `Missing root declaration source: ${rootDeclaration}`)
 const files = await collectFiles(distRoot)
 const esmFiles = files.filter((path) => path.endsWith('.mjs'))
-const esm = (await Promise.all(esmFiles.map((path) => readFile(path, 'utf8')))).join('\n')
+const esm = (
+  await Promise.all(
+    esmFiles.map(async (path) => readFile(await canonicalizeDeclarationPath(path), 'utf8'))
+  )
+).join('\n')
 
 const serviceStatics = declarations.match(
   /type ServiceStatics<out Tag extends string, in out Instance>\s*=\s*\{([\s\S]*?)\n?\};/
@@ -164,44 +175,58 @@ assertCondition(
   'Generated Layer marker lost its variance declaration'
 )
 
-const rootExportsLayerSpec =
-  /\bexport\s+(?:declare\s+)?(?:type|interface|class)\s+LayerSpec\b/.test(rootSource) ||
-  /\bexport\s+(?:type\s+)?\{[^}]*\bLayerSpec\b[^}]*\}/s.test(rootSource)
+const declarationTrivia = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\r\n]*(?:\r\n|\r|\n|$))*`
+const exportedLayerSpecPattern = new RegExp(
+  String.raw`\bexport${declarationTrivia}(?:declare${declarationTrivia})?(?:type|interface|class)${declarationTrivia}LayerSpec\b`
+)
+const exportedLayerSpecListPattern = new RegExp(
+  String.raw`\bexport${declarationTrivia}(?:type${declarationTrivia})?\{[^}]*\bLayerSpec\b[^}]*\}`,
+  's'
+)
+const localStarExportPattern = new RegExp(
+  String.raw`\bexport${declarationTrivia}(?:type${declarationTrivia})?\*${declarationTrivia}from${declarationTrivia}["']((?:\.{1,2}\/)[^"']+\.mjs)["']`,
+  'g'
+)
 
 const hasLayerSpecExport = (source: string): boolean =>
-  /\bexport\s+(?:declare\s+)?(?:type|interface|class)\s+LayerSpec\b/.test(source) ||
-  /\bexport\s+(?:type\s+)?\{[^}]*\bLayerSpec\b[^}]*\}/s.test(source)
+  exportedLayerSpecPattern.test(source) || exportedLayerSpecListPattern.test(source)
 
-const rootStarExportsLayerSpec = (() => {
+const rootExportsLayerSpec = hasLayerSpecExport(rootSource)
+
+const rootStarExportsLayerSpec = await (async () => {
   const visited = new Set<string>()
 
-  const visit = (path: string): boolean => {
-    if (visited.has(path)) {
+  const visit = async (path: string): Promise<boolean> => {
+    const declarationPath = await canonicalizeDeclarationPath(path)
+
+    if (visited.has(declarationPath)) {
       return false
     }
 
-    visited.add(path)
+    visited.add(declarationPath)
 
-    const source = declarationSources.get(path)
+    const source = declarationSources.get(declarationPath)
 
-    assertCondition(source !== undefined, `Missing declaration source: ${path}`)
+    assertCondition(source !== undefined, `Missing declaration source: ${declarationPath}`)
 
     if (hasLayerSpecExport(source)) {
       return true
     }
 
-    for (const match of source.matchAll(
-      /\bexport\s+(?:type\s+)?\*\s+from\s+["']((?:\.{1,2}\/)[^"']+\.mjs)["']/g
-    )) {
+    for (const match of source.matchAll(localStarExportPattern)) {
       const specifier = match[1]
 
-      assertCondition(specifier !== undefined, `Invalid declaration star export in ${path}`)
+      assertCondition(
+        specifier !== undefined,
+        `Invalid declaration star export in ${declarationPath}`
+      )
 
-      const declarationPath = resolve(dirname(path), specifier.replace(/\.mjs$/, '.d.mts'))
+      const referencedPath = resolve(
+        dirname(declarationPath),
+        specifier.replace(/\.mjs$/, '.d.mts')
+      )
 
-      assertInsideDistRoot(declarationPath)
-
-      if (visit(declarationPath)) {
+      if (await visit(referencedPath)) {
         return true
       }
     }
@@ -209,18 +234,14 @@ const rootStarExportsLayerSpec = (() => {
     return false
   }
 
-  for (const match of rootSource.matchAll(
-    /\bexport\s+(?:type\s+)?\*\s+from\s+["']((?:\.{1,2}\/)[^"']+\.mjs)["']/g
-  )) {
+  for (const match of rootSource.matchAll(localStarExportPattern)) {
     const specifier = match[1]
 
     assertCondition(specifier !== undefined, 'Invalid root declaration star export')
 
-    const declarationPath = resolve(dirname(rootDeclaration), specifier.replace(/\.mjs$/, '.d.mts'))
+    const referencedPath = resolve(dirname(rootDeclaration), specifier.replace(/\.mjs$/, '.d.mts'))
 
-    assertInsideDistRoot(declarationPath)
-
-    if (visit(declarationPath)) {
+    if (await visit(referencedPath)) {
       return true
     }
   }
