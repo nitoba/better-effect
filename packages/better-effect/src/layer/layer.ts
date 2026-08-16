@@ -1,6 +1,7 @@
 import type { ServiceRequirement } from '../effect/types'
 import type { AnyServiceToken, ServiceClass, ServiceRequirements } from '../service'
 import type { ScopeOutcome } from '../scope'
+import type { Covariant, Invariant } from '../internal/variance'
 import type { MaybePromise } from '../utils/types'
 
 import { DuplicateServiceError, ServiceTagCollisionError } from './errors'
@@ -19,6 +20,7 @@ import type { AnyLayerSpec } from './types'
 import type {
   AnyLayer,
   CompleteLayer,
+  LayerCollisions,
   LayerMissing,
   LayerProvided,
   LayerRawRequired,
@@ -28,7 +30,11 @@ import type {
 } from './inference'
 
 declare const LayerTypeId: unique symbol
-declare const LayerCollisionTypeId: unique symbol
+
+interface LayerVariance<in out Specs, out Collisions> {
+  readonly _Specs: Invariant<Specs>
+  readonly _Collisions: Covariant<Collisions>
+}
 
 interface LayerProvider extends LayerRegistration {
   readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
@@ -59,11 +65,10 @@ type DefaultConstructibleServiceClass<Tag extends string = string, Instance = an
  * ```
  */
 export class Layer<
-  Specs extends AnyLayerSpec = AnyLayerSpec,
-  Collisions extends AnyServiceToken = never
+  in out Specs extends AnyLayerSpec = AnyLayerSpec,
+  out Collisions extends AnyServiceToken = never
 > {
-  declare readonly [LayerTypeId]: Specs
-  declare readonly [LayerCollisionTypeId]: Collisions
+  declare readonly [LayerTypeId]: LayerVariance<Specs, Collisions>
 
   /** The provider registrations retained by this Layer. */
   readonly providers: readonly LayerProvider[]
@@ -222,7 +227,11 @@ export class Layer<
     service: S,
     factory: LayerGenerator<S, Yield>
   ): Layer<LayerSpec<S, LayerGeneratorRequirements<S, Yield>>> {
-    return Layer.make(service, () => runLayerGenerator(service, factory))
+    // SAFETY: Layer.make tracks method requirements; the generator requirements
+    // below are additional type-only metadata inferred from the factory.
+    return Layer.make(service, () => runLayerGenerator(service, factory)) as Layer<
+      LayerSpec<S, LayerGeneratorRequirements<S, Yield>>
+    >
   }
 
   /**
@@ -236,12 +245,9 @@ export class Layer<
    * const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
    * ```
    */
-  static merge<const Layers extends readonly Layer<any, any>[]>(
+  static merge<const Layers extends readonly AnyLayer[]>(
     ...layers: Layers
-  ): Layer<
-    Layers[number] extends Layer<infer Specs, any> ? Specs : never,
-    Layers[number] extends Layer<any, infer Collisions> ? Collisions : never
-  > {
+  ): Layer<LayerSpecs<Layers[number]>, LayerCollisions<Layers[number]>> {
     const providers = new Map<string, LayerProvider>()
 
     for (const layer of layers) {
@@ -278,14 +284,14 @@ export class Layer<
    * const TestLive = Layer.override(AppLive, Layer.succeed(Database, fakeDb))
    * ```
    */
-  static override<Base extends Layer<any, any>, const Overrides extends readonly Layer<any, any>[]>(
+  static override<Base extends AnyLayer, const Overrides extends readonly AnyLayer[]>(
     base: Base,
     ...overrides: Overrides
   ): Layer<
-    OverrideLayerSpecs<Base extends Layer<infer Specs, any> ? Specs : never, Overrides>,
-    | (Base extends Layer<any, infer Collisions> ? Collisions : never)
-    | (Overrides[number] extends Layer<any, infer Collisions> ? Collisions : never)
-    | OverrideLayerCollisions<Base extends Layer<infer Specs, any> ? Specs : never, Overrides>
+    OverrideLayerSpecs<LayerSpecs<Base>, Overrides>,
+    | LayerCollisions<Base>
+    | LayerCollisions<Overrides[number]>
+    | OverrideLayerCollisions<LayerSpecs<Base>, Overrides>
   > {
     const providers = new Map<string, LayerProvider>()
 
@@ -300,10 +306,10 @@ export class Layer<
     }
 
     return new Layer([...providers.values()]) as Layer<
-      OverrideLayerSpecs<Base extends Layer<infer Specs, any> ? Specs : never, Overrides>,
-      | (Base extends Layer<any, infer Collisions> ? Collisions : never)
-      | (Overrides[number] extends Layer<any, infer Collisions> ? Collisions : never)
-      | OverrideLayerCollisions<Base extends Layer<infer Specs, any> ? Specs : never, Overrides>
+      OverrideLayerSpecs<LayerSpecs<Base>, Overrides>,
+      | LayerCollisions<Base>
+      | LayerCollisions<Overrides[number]>
+      | OverrideLayerCollisions<LayerSpecs<Base>, Overrides>
     >
   }
 }

@@ -19,7 +19,7 @@ export declare const EffectRequirementsTypeId: unique symbol
  * This interface is intentionally phantom: it is used only while TypeScript
  * infers a generator's yielded values.
  */
-export interface ServiceRequirement<T extends AnyServiceToken> {
+export interface ServiceRequirement<out T extends AnyServiceToken> {
   readonly [ServiceRequirementTypeId]: T
 }
 

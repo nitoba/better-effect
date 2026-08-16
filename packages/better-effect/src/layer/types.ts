@@ -13,8 +13,8 @@ export interface LayerRegistration {
 
 /** Type-level description of one Layer provider and its Service requirements. */
 export type LayerSpec<
-  Provided extends AnyServiceToken,
-  Required extends AnyServiceToken = never
+  out Provided extends AnyServiceToken,
+  out Required extends AnyServiceToken = never
 > = {
   /** Service constructor provided by the Layer. */
   readonly provided: Provided

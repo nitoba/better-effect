@@ -91,7 +91,7 @@ export type ServiceRequirementsAlias = Expect<
   Equal<Service.Requirements<typeof Repository>, ServiceRequirements<typeof Repository>>
 >
 
-export type LayerAnyAlias = Expect<Equal<Layer.Any, Layer<any, any>>>
+export type LayerAnyAlias = Expect<Equal<Layer.Any, Layer<any, any> | Layer<never, any>>>
 export type LayerSpecsAlias = Expect<Equal<Layer.Specs<typeof AppLive>, LayerSpecs<typeof AppLive>>>
 export type LayerProvidedAlias = Expect<
   Equal<Layer.Provided<typeof AppLive>, LayerProvided<typeof AppLive>>

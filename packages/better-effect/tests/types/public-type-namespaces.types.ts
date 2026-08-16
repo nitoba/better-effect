@@ -80,7 +80,7 @@ expectTypeOf<Service.Requirements<typeof Repository>>().toEqualTypeOf<
 expectTypeOf<Service.Token>().toEqualTypeOf<ServiceToken>()
 expectTypeOf<Service.Class>().toEqualTypeOf<ServiceClass>()
 
-expectTypeOf<Layer.Any>().toEqualTypeOf<Layer<any, any>>()
+expectTypeOf<Layer.Any>().toEqualTypeOf<Layer<any, any> | Layer<never, any>>()
 expectTypeOf<Layer.Specs<typeof AppLive>>().toEqualTypeOf<LayerSpecs<typeof AppLive>>()
 expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<LayerProvided<typeof AppLive>>()
 expectTypeOf<Layer.Required<typeof AppLive>>().toEqualTypeOf<LayerRawRequired<typeof AppLive>>()

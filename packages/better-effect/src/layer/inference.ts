@@ -7,21 +7,23 @@ import type { Layer } from './layer'
 import type { AnyLayerSpec, LayerSpec } from './types'
 
 /** Any Layer shape accepted by type-level inference helpers. */
-export type AnyLayer = Layer<any, any>
+export type AnyLayer = Layer<any, any> | Layer<never, any>
 
 /** Extract the provider specification union from a Layer. */
-export type LayerSpecs<L extends AnyLayer> = L extends Layer<infer Specs, any> ? Specs : never
-
-/** Extract the Service constructor union provided by a Layer. */
-export type LayerProvided<L extends AnyLayer> =
-  LayerSpecs<L> extends LayerSpec<infer Provided, any> ? Provided : never
-
-/** Extract all raw Service requirements declared by a Layer's providers. */
-export type LayerRawRequired<L extends AnyLayer> =
-  LayerSpecs<L> extends LayerSpec<any, infer Required> ? Required : never
+export type LayerSpecs<L extends AnyLayer> =
+  L extends Layer<never, any> ? never : L extends Layer<infer Specs, any> ? Specs : never
 
 type LayerSpecProvided<Specs extends AnyLayerSpec> =
   Specs extends LayerSpec<infer Provided, any> ? Provided : never
+
+type LayerSpecRequired<Specs extends AnyLayerSpec> =
+  Specs extends LayerSpec<any, infer Required> ? Required : never
+
+/** Extract the Service constructor union provided by a Layer. */
+export type LayerProvided<L extends AnyLayer> = LayerSpecProvided<LayerSpecs<L>>
+
+/** Extract all raw Service requirements declared by a Layer's providers. */
+export type LayerRawRequired<L extends AnyLayer> = LayerSpecRequired<LayerSpecs<L>>
 
 type SameServiceTag<Left extends AnyServiceToken, Right extends AnyServiceToken> =
   string extends ServiceTag<Left>
@@ -128,7 +130,11 @@ export type LayerMissing<L extends AnyLayer> = MissingServices<
 
 /** Extract incompatible same-tag override contracts from a Layer. */
 export type LayerCollisions<L extends AnyLayer> =
-  L extends Layer<any, infer Collisions> ? Collisions : never
+  L extends Layer<never, infer Collisions>
+    ? Collisions
+    : L extends Layer<any, infer Collisions>
+      ? Collisions
+      : never
 
 type MissingLayerServices<Missing extends AnyServiceToken> = {
   readonly __betterEffectMissingServices: Missing
