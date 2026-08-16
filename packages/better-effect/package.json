@@ -44,6 +44,8 @@
     "test:coverage": "bun test --coverage",
     "test:package-types": "tsc --version && tsc -p tests/package/public-type-namespaces/tsconfig.json",
     "test:package-types:minimum": "bunx --bun --package typescript@5.2.2 tsc --version && bunx --bun --package typescript@5.2.2 tsc -p tests/package/public-type-namespaces/tsconfig.json",
+    "test:package-variance": "rm -rf tests/package/public-type-variance/out && tsc --version && tsc -p tests/package/public-type-variance/tsconfig.json && rm -rf tests/package/public-type-variance/out",
+    "test:package-variance:minimum": "rm -rf tests/package/public-type-variance/out && bunx --bun --package typescript@5.2.2 tsc --version && bunx --bun --package typescript@5.2.2 tsc -p tests/package/public-type-variance/tsconfig.json && rm -rf tests/package/public-type-variance/out",
     "lint": "oxlint --type-aware .",
     "lint:fix": "oxlint --type-aware --fix .",
     "format": "oxfmt --write .",
