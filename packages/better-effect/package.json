@@ -38,7 +38,8 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && bun run typecheck:example",
+    "typecheck:example": "tsc -p examples/todo-api/tsconfig.json",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "test:package-types": "tsc --version && tsc -p tests/package/public-type-namespaces/tsconfig.json",

@@ -62,7 +62,19 @@ is a successful Scope outcome. Result-aware classification belongs to
 
 ## Register finalizers
 
-Finalizers receive the final `ScopeOutcome`:
+Finalizers receive the final `Scope.Outcome`. A reusable observer can name that
+outcome explicitly:
+
+```ts
+const observeOutcome = (outcome: Scope.Outcome) => {
+  console.log('scope ended with', outcome.status)
+}
+```
+
+`Scope.Closeable`, `Scope.Finalizer` and `Scope.Disposable` are the associated
+type-only helpers for owned Scopes, cleanup callbacks and disposable values.
+The prefixed `CloseableScope`, `ScopeFinalizer`, `DisposableResource` and
+`ScopeOutcome` spellings remain public and undeprecated for compatibility.
 
 ```ts
 scope.addFinalizer(async (outcome) => {

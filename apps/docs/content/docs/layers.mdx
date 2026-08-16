@@ -151,14 +151,18 @@ boundary.
 The public type helpers make application boundaries explicit:
 
 ```ts
-import type { LayerMissing, LayerProvided, LayerRawRequired, LayerSpecs } from 'better-effect'
+import type { Layer } from 'better-effect'
 
-type Provided = LayerProvided<typeof ApplicationLive>
-type RequiredDuringAcquire = LayerRawRequired<typeof ApplicationLive>
-type Missing = LayerMissing<typeof ApplicationLive>
-type Specs = LayerSpecs<typeof ApplicationLive>
+type Provided = Layer.Provided<typeof ApplicationLive>
+type RequiredDuringAcquire = Layer.Required<typeof ApplicationLive>
+type Missing = Layer.Missing<typeof ApplicationLive>
+type Specs = Layer.Specs<typeof ApplicationLive>
+type Complete = Layer.Complete<typeof ApplicationLive>
 ```
 
 Usually you do not need to annotate these types. They are useful for library
 authors, composition roots and diagnostics that intentionally expose a Layer's
-contract.
+contract. `LayerProvided`, `LayerRawRequired`, `LayerMissing` and `LayerSpecs`
+remain compatible top-level exports. The source-only `AnyLayer` and
+`CompleteLayer` names are not package-root exports; use `Layer.Any` and
+`Layer.Complete` for those associated helpers.

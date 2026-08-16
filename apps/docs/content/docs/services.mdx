@@ -54,17 +54,22 @@ const readUser = Effect.gen(async function* () {
 
 `database` is inferred as exactly `Database`, not `unknown`, not a structural
 subset, and not the constructor type. The yielded token also adds `Database`
-to `EffectRequirements<typeof readUser>`.
+to `Effect.Requirements<typeof readUser>`.
 
 ```ts
-import type { EffectRequirements } from 'better-effect'
-
-type Requirements = EffectRequirements<typeof readUser>
+type Requirements = Effect.Requirements<typeof readUser>
 // Database
+
+type DatabaseInstance = Service.Instance<typeof Database>
+type DatabaseTag = Service.Tag<typeof Database>
 ```
 
-The metadata is phantom: it disappears at runtime and does not wrap or replace
-the `better-result` value.
+These associated helpers are type-only aliases: they disappear at runtime and
+do not wrap or replace the `better-result` value. `Service.Requirements<T>`
+derives method-level dependencies from a Service contract's Effect-returning
+methods, so Layers can include those requirements in their completeness checks.
+The prefixed `EffectRequirements` and `ServiceRequirements` spellings remain
+public compatibility aliases.
 
 ## Structural implementations with `Service.of`
 
@@ -136,7 +141,7 @@ const UserRepositoryLive = Layer.make(UserRepository)
 // UserRepositoryLive requires Database while being acquired.
 ```
 
-`ServiceRequirements<typeof UserRepository>` extracts those method-level
+`Service.Requirements<typeof UserRepository>` extracts those method-level
 requirements for Layer completeness checks.
 
 ## Direct resolver access

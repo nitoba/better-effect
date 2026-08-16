@@ -43,7 +43,7 @@ failure; a failed program preserves its exact primary failure.
 ## Typed execution boundaries
 
 Every typed Runtime boundary validates the program's final
-`EffectRequirements` against `LayerProvided<typeof AppLive>`:
+`Effect.Requirements` against `Layer.Provided<typeof AppLive>`:
 
 ```ts
 const AppLive = Layer.succeed(Database, database)
@@ -59,13 +59,11 @@ await runtime.run(() => needsCache)
 // TypeScript error: Cache is not provided by AppLive.
 ```
 
-The Runtime and its inferred `Provided` union retain this information. If an
-application boundary genuinely must erase it, an unparameterized annotation is
-an explicit unchecked escape hatch. Prefer `RuntimeFor` when naming a Runtime
-from a concrete Layer:
+The Runtime and its inferred `Provided` union retain this information. Prefer
+`Runtime.For` when naming a Runtime from a concrete Layer:
 
 ```ts
-type AppRuntime = RuntimeFor<typeof AppLive>
+type AppRuntime = Runtime.For<typeof AppLive>
 
 export function createServer(runtime: AppRuntime) {
   return {
@@ -73,6 +71,10 @@ export function createServer(runtime: AppRuntime) {
   }
 }
 ```
+
+`RuntimeFor<typeof AppLive>` remains an equivalent compatibility spelling. An
+unparameterized `Runtime` intentionally erases its environment precision and
+is an unchecked escape hatch.
 
 ## Execution Scopes
 

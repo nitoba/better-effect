@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Effect, type RuntimeFor } from './better-effect'
+import { Effect, type Runtime } from './better-effect'
 import {
   readJson,
   requireUser,
@@ -14,7 +14,7 @@ import { AuthService } from './services/auth-service'
 import { TodoService } from './services/todo-service'
 import type { AppLive } from './layers/app-live'
 
-type AppRuntime = RuntimeFor<typeof AppLive>
+type AppRuntime = Runtime.For<typeof AppLive>
 
 export const createServer = (runtime: AppRuntime) =>
   Bun.serve({
@@ -110,12 +110,11 @@ export const createServer = (runtime: AppRuntime) =>
 
               const todos = yield* TodoService
 
-              const todo = yield* Result.await(
-                todos.update(userId, request.params.id, {
-                  ...input,
+              const normalizedInput =
+                input.title === undefined ? input : { ...input, title: input.title.trim() }
 
-                  title: input.title?.trim()
-                })
+              const todo = yield* Result.await(
+                todos.update(userId, request.params.id, normalizedInput)
               )
 
               return Result.ok(todo)

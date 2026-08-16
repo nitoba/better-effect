@@ -128,13 +128,15 @@ cleanup callback needs the final `ScopeOutcome`.
 
 ```ts
 type Program = typeof loadDashboard
-type Success = EffectSuccess<Program>
-type Failure = EffectError<Program>
-type Needs = EffectRequirements<Program>
+type Success = Effect.Success<Program>
+type Failure = Effect.Error<Program>
+type Needs = Effect.Requirements<Program>
 ```
 
 Use these types at integration boundaries when you need to name a contract;
-ordinary application code usually lets inference carry them for you.
+ordinary application code usually lets inference carry them for you. The
+prefixed `EffectSuccess`, `EffectError` and `EffectRequirements` spellings
+remain compatible top-level aliases.
 
 ## What happens at runtime
 

@@ -114,6 +114,28 @@ We call this **typechecked wiring**.
 
 The Services your code uses, the implementations your Layers provide, and the programs your Runtime executes participate in the same type-level contract.
 
+### Discover type helpers from their API
+
+Public type helpers are also grouped under the runtime API they describe:
+
+```ts
+import type { Effect, Layer, Runtime, Scope, Service } from 'better-effect'
+
+type Program = ReturnType<UserRepository['findUser']>
+type Success = Effect.Success<Program>
+type Failure = Effect.Error<Program>
+type Dependencies = Effect.Requirements<Program>
+type Services = Layer.Provided<typeof AppLive>
+type AppRuntime = Runtime.For<typeof AppLive>
+type DatabaseTag = Service.Tag<typeof Database>
+type Outcome = Scope.Outcome
+```
+
+These are declaration-only aliases and add nothing to the JavaScript bundle.
+The existing prefixed spellings—including `EffectSuccess`,
+`EffectRequirements`, `LayerProvided`, `RuntimeFor`, `ServiceTag` and
+`ScopeOutcome`—remain public and are not deprecated.
+
 ---
 
 ## Why better-effect?
