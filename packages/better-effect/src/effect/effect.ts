@@ -6,7 +6,14 @@ import { Scope } from '../scope'
 
 import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
 
-import type { EffectFromGenerator, EffectYield } from './types'
+import type {
+  AnyEffectResult,
+  EffectError,
+  EffectFromGenerator,
+  EffectRequirements,
+  EffectSuccess,
+  EffectYield
+} from './types'
 
 import { andThen, andThenAsync, map, mapError } from './combinators'
 
@@ -123,3 +130,18 @@ export const Effect = {
   /** Chain an asynchronous Effect result. */
   andThenAsync
 } as const
+
+/** Type-level aliases for inspecting Effect result channels and requirements. */
+export declare namespace Effect {
+  /** Extract the success channel from an Effect result or Promise. */
+  export type Success<T> = EffectSuccess<T>
+
+  /** Extract the error channel from an Effect result or Promise. */
+  export type Error<T> = EffectError<T>
+
+  /** Extract the Service requirements from an Effect result or Promise. */
+  export type Requirements<T> = EffectRequirements<T>
+
+  /** An Effect result with unknown success, error, and requirements. */
+  export type AnyResult = AnyEffectResult
+}

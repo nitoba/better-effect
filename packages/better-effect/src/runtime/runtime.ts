@@ -8,9 +8,15 @@ import type { CompleteExecution } from '../layer/inference'
 
 import type { AnyServiceToken } from '../service'
 
-import { classifyRuntimeOutcome, type RuntimeOptions } from './outcome'
+import {
+  classifyRuntimeOutcome,
+  type RuntimeOptions,
+  type RuntimeShutdownDiagnostic
+} from './outcome'
 
 import type { ScopeOutcome } from '../scope'
+
+import type { RuntimeFor } from './types'
 
 /**
  * Long-lived execution environment backed by a complete Layer.
@@ -130,4 +136,16 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
   private disposeWithOutcome(outcome: ScopeOutcome): Promise<void> {
     return this.handle.dispose(outcome)
   }
+}
+
+/** Type-level aliases for naming Runtime handles and shutdown options. */
+export declare namespace Runtime {
+  /** Name a Runtime type from a concrete Layer. */
+  export type For<L extends AnyLayer> = RuntimeFor<L>
+
+  /** Optional Runtime shutdown configuration. */
+  export type Options = RuntimeOptions
+
+  /** Diagnostic reported for aggregated Runtime shutdown cleanup failures. */
+  export type ShutdownDiagnostic = RuntimeShutdownDiagnostic
 }

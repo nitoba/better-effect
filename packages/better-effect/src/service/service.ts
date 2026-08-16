@@ -2,7 +2,14 @@ import { ServiceRuntime } from './runtime'
 
 import type { ServiceRequirement } from '../effect/types'
 
-import type { ServiceToken } from './types'
+import type {
+  AnyServiceToken,
+  ServiceClass,
+  ServiceInstance,
+  ServiceRequirements,
+  ServiceTag,
+  ServiceToken
+} from './types'
 
 type ServiceTagLiteral<Tag extends string> = string extends Tag
   ? never
@@ -80,4 +87,25 @@ export function Service<Self>() {
 
     return BaseService
   }
+}
+
+/** Type-level aliases for Service tokens and their instance contracts. */
+export declare namespace Service {
+  /** The widened Service token constraint. */
+  export type Any = AnyServiceToken
+
+  /** A class-backed Service token with a stable tag and instance contract. */
+  export type Token<Tag extends string = string, Instance = any> = ServiceToken<Tag, Instance>
+
+  /** A constructible Service class with a stable tag and instance contract. */
+  export type Class<Tag extends string = string, Instance = any> = ServiceClass<Tag, Instance>
+
+  /** Extract the instance represented by a Service token. */
+  export type Instance<T extends AnyServiceToken> = ServiceInstance<T>
+
+  /** Extract the stable tag represented by a Service token. */
+  export type Tag<T extends AnyServiceToken> = ServiceTag<T>
+
+  /** Extract Effect Service requirements from a Service class. */
+  export type Requirements<T extends AnyServiceToken> = ServiceRequirements<T>
 }

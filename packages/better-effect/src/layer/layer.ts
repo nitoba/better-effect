@@ -16,7 +16,16 @@ import type {
 
 import type { AnyLayerSpec } from './types'
 
-import type { OverrideLayerCollisions, OverrideLayerSpecs } from './inference'
+import type {
+  AnyLayer,
+  CompleteLayer,
+  LayerMissing,
+  LayerProvided,
+  LayerRawRequired,
+  LayerSpecs,
+  OverrideLayerCollisions,
+  OverrideLayerSpecs
+} from './inference'
 
 declare const LayerTypeId: unique symbol
 declare const LayerCollisionTypeId: unique symbol
@@ -297,4 +306,25 @@ export class Layer<
       | OverrideLayerCollisions<Base extends Layer<infer Specs, any> ? Specs : never, Overrides>
     >
   }
+}
+
+/** Type-level aliases for inspecting Layer providers and completeness. */
+export declare namespace Layer {
+  /** The widened Layer shape accepted by inference helpers. */
+  export type Any = AnyLayer
+
+  /** Extract the provider specification union from a Layer. */
+  export type Specs<L extends AnyLayer> = LayerSpecs<L>
+
+  /** Extract the Service constructors provided by a Layer. */
+  export type Provided<L extends AnyLayer> = LayerProvided<L>
+
+  /** Extract the raw Service requirements declared by a Layer. */
+  export type Required<L extends AnyLayer> = LayerRawRequired<L>
+
+  /** Extract the Service requirements missing from a Layer. */
+  export type Missing<L extends AnyLayer> = LayerMissing<L>
+
+  /** Validate a Layer's requirements and override contracts. */
+  export type Complete<L extends AnyLayer> = CompleteLayer<L>
 }
