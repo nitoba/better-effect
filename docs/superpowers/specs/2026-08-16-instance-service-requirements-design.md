@@ -8,7 +8,7 @@ Make Service instance types the public representation of application environment
 Effect<User, UserError, Database | Logger>
 ```
 
-Service constructors remain the runtime resolver tokens and Layer registration handles. Each Service instance type gains a type-only identity that carries its literal tag and corresponding constructor token, allowing type-level infrastructure to recover exact identity without exposing `typeof Database` in ordinary Effect, Layer, or Runtime types.
+Service constructors remain the runtime resolver tokens and Layer registration handles. Each Service instance type gains a required, declaration-only identity carrying its literal tag. Canonical token contracts can be derived from the tag and instance, while Layer metadata separately retains each exact registering constructor. This preserves runtime identity without exposing `typeof Database` in ordinary Effect, Layer, or Runtime environment types.
 
 Replace the current underscored missing-Service diagnostic properties with a named `MissingDependencies<Missing>` diagnostic so compiler errors identify instance requirements directly.
 
@@ -80,63 +80,68 @@ At runtime, `Database` remains:
 3. the Layer registration handle;
 4. the yieldable dependency handle.
 
-In the type system, the instance `Database` additionally carries a hidden, optional identity:
+In the type system, the instance `Database` additionally carries a hidden, required identity:
 
 ```ts
 declare const ServiceIdentityTypeId: unique symbol
 
-type ServiceIdentity<Tag extends string, Token> = {
-  readonly [ServiceIdentityTypeId]?: {
-    readonly tag: Tag
-    readonly token: Token
-  }
+type ServiceIdentity<Tag extends string> = {
+  readonly [ServiceIdentityTypeId]: Tag
 }
 ```
 
-The generated Service base contributes an identity equivalent to:
+The generated Service base contributes `ServiceIdentity<'Database'>`. The member is declared with `declare`; it is never initialized or emitted.
+
+The marker is required so unrelated types such as `{}`, `object`, primitives, and arbitrary interfaces cannot satisfy the `Effect` environment constraint. An optional-only identity would create a weak-type loophole in TypeScript 5.2.
+
+### Structural implementation projection
+
+Application implementations must not manufacture the required phantom marker. Internal helpers therefore erase only the top-level identity member:
 
 ```ts
-ServiceIdentity<'Database', typeof Database>
+type ServiceContract<S extends AnyService> = Omit<S, typeof ServiceIdentityTypeId>
 ```
 
-The property is declared only. It is never initialized or emitted.
+Every boundary that accepts a structural implementation consumes `ServiceContract<InstanceType<Token>>` and returns or stores the branded Service type after one localized type-erasure cast:
 
-### Why the identity is optional
+- `Service.of`;
+- `Layer.make` acquisition callbacks;
+- `Layer.succeed`;
+- `Layer.scoped`;
+- `Layer.gen`;
+- `Layer.scopedGen`.
 
-The marker must distinguish declared Service types while allowing structural implementations:
+Release callbacks and resolved values continue to receive the branded Service type. Self-returning and recursively nested method types are not recursively stripped; only the inaccessible top-level marker is implementation metadata.
 
 ```ts
 const fake = Database.of({
   query: async () => user
 })
+// Database
 ```
 
-An optional unique-symbol member remains part of `Database`'s type identity but does not require application implementations to manufacture inaccessible metadata. Type-contract tests must prove both properties:
+### Recovering tags and canonical tokens
 
-- differently tagged, same-shape Service types are incompatible;
-- marker-free structural implementations remain accepted.
-
-### Recovering tags and tokens
-
-Internal type helpers recover exact metadata from the instance type:
+Internal helpers recover the literal tag and construct a canonical token contract:
 
 ```ts
-type ServiceIdentityOf<S> = // identity marker payload
-type ServiceTagOf<S> = ServiceIdentityOf<S>['tag']
-type ServiceTokenOf<S> = ServiceIdentityOf<S>['token']
+type ServiceTagOf<S extends AnyService> = S[typeof ServiceIdentityTypeId]
+
+type ServiceTokenOf<S extends AnyService> =
+  ServiceToken<ServiceTagOf<S>, S>
 ```
 
-Public Service helpers expose the useful relationships:
+With the existing `Service<Database>()('Database')` heritage syntax, the base factory cannot name the future derived static side. `Service.TokenOf<Database>` therefore intentionally means the canonical token contract, not exact `typeof Database`:
 
 ```ts
 type Tag = Service.Tag<Database>
 // 'Database'
 
 type Token = Service.TokenOf<Database>
-// typeof Database
+// ServiceToken<'Database', Database>
 ```
 
-Runtime resolver APIs continue to enforce the constructor-to-instance relationship:
+Exact constructors, constructor parameters, and additional static members remain available where a constructor value is already in hand, and Layer specs retain that exact constructor separately. Runtime resolver APIs continue to enforce the exact constructor-to-instance relationship:
 
 ```ts
 resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>>
@@ -204,7 +209,7 @@ type Requirements = Effect.Requirements<typeof program>
 // Database | Logger
 ```
 
-`EffectResult` is removed as the canonical public spelling rather than retained as a competing compatibility model.
+`EffectResult` and `AnyEffectResult` are removed from implementation barrels, the package root, declarations, docs, and tests. They are replaced by `Effect<A, E, R>` and a constrained `Effect.Any`/internal widened Effect spelling. No unconstrained compatibility alias remains to preserve the old loophole.
 
 ## Effect inference and composition
 
@@ -242,7 +247,7 @@ The optional readonly requirement metadata remains covariant. Public variance an
 
 ## Public Service model
 
-`Service.Any` becomes the widened instance-side Service constraint used by public environment types. Constructor infrastructure remains available through `AnyServiceToken`, `Service.Token`, and `Service.Class`.
+`Service.Any` becomes the widened required-marker instance constraint `ServiceIdentity<string>` used by public environment types. Constructor infrastructure remains available through `AnyServiceToken`, `Service.Token`, and `Service.Class`. A concrete Service is assignable to `Service.Any`; unrelated object types are not.
 
 Public helpers operate naturally on instance types:
 
@@ -280,9 +285,9 @@ type Missing = Layer.Missing<typeof AppLive>
 // Config
 ```
 
-`LayerSpec<Provided, Required>` uses instance-side Service identities. Exact provider constructors remain recoverable through each provided instance's identity marker when override and collision logic needs the registering token.
+`LayerSpec<Provided, Required, Token>` uses instance-side Service identities for `Provided` and `Required` and separately retains the exact registering constructor `Token`. Layer creation infers all three channels from the constructor argument. The token channel is internal provider metadata used by replacement, collision, registration, and diagnostics; public environment helpers project only `Provided` and `Required`.
 
-Completeness uses:
+This separation prevents constructor parameters or custom static members from changing instance contract compatibility. Completeness uses:
 
 1. literal tags recovered from instance identity;
 2. bidirectionally compatible implementation contracts;
@@ -310,7 +315,14 @@ type AppRuntime = Runtime.For<typeof AppLive>
 
 Every execution boundary validates an Effect's instance requirement union against the Runtime's provided instance union. Tags are recovered from the phantom identities, so a same-shape Service under another tag does not satisfy the requirement.
 
-Unparameterized Runtime annotations remain the intentional environment-erased escape hatch. Plain values, ordinary Results, Scope-only Effects, and requirement-free resource Effects remain executable in every Runtime.
+Unparameterized `Runtime` defaults to `Service.Any` and is the intentional unchecked environment boundary. Matching applies these rules in order:
+
+1. `never` requires no Services;
+2. `any`, `Runtime<any>`, and a widened `Service.Any` provided environment are explicit unchecked erasure sentinels;
+3. concrete instance unions use literal tag plus bidirectionally compatible `ServiceContract` comparison;
+4. generic `R extends Service.Any` remains checked when its concrete caller type is known.
+
+`Effect.Any` uses the widened `Service.Any` environment rather than an unconstrained metadata shape. TypeScript's unavoidable explicit `any` remains an unchecked escape hatch and is tested as such. `Layer.Any` retains its deliberate Layer metadata-erasure role. Plain values, ordinary Results, Scope-only Effects, and requirement-free resource Effects remain executable in every Runtime.
 
 Runtime resolution still calls the backend with the yielded constructor token. No runtime conversion from instance values is needed: all environment comparison happens at compile time.
 
@@ -350,7 +362,7 @@ Layer<...> & MissingDependencies<Database>
 
 The TypeScript CLI controls final wording, but the principal named type identifies the missing instance union without internal-looking property names. A TypeScript 5.2.2 diagnostic spike confirmed that named generic diagnostic aliases appear in the primary assignability error.
 
-`Layer.Missing<L>` remains the machine-readable inspection API and returns the missing instance union directly. `MissingDependencies` exists to shape boundary errors and is not added as a root application-facing export unless declaration generation requires public visibility.
+`Layer.Missing<L>` remains the machine-readable inspection API and returns the missing instance union directly. `MissingDependencies` lives in `src/internal/missing-dependencies.ts` with its declaration-only unique symbol. It is package-private: bundled declarations retain the named helper because public boundary signatures reference it, but package barrels do not export it. Built-package diagnostic fixtures under both supported compilers must assert that stderr contains the literal `MissingDependencies<...>` name; a declaration-name regression is a test failure.
 
 ## Identity and structural compatibility
 
@@ -376,7 +388,7 @@ This intentionally replaces the previous test contract that same-shape, differen
 
 ### Same tag and compatible contract
 
-Two Service constructors with the same literal tag and bidirectionally compatible instance contracts remain compatible for explicit Layer override semantics. Their instance identity payloads carry the same tag, and contract comparison ignores constructor names.
+Two Service constructors with the same literal tag and bidirectionally compatible `ServiceContract` shapes remain compatible for explicit Layer override semantics. Contract comparison removes only the top-level identity marker and never inspects the exact LayerSpec token channel. Constructor parameter lists, custom statics, and constructor names therefore cannot make otherwise compatible implementations collide. Tests cover self-returning methods and recursively nested Service values so the identity erasure rule does not accidentally reintroduce static-side comparisons.
 
 ### Structural implementations
 
@@ -430,7 +442,7 @@ type Provided = Layer.Provided<typeof AppLive>
 
 Source and package tests, examples, README content, docs, and OpenSpec contracts must migrate together. The package release should treat the change according to the project's breaking-change policy.
 
-The implementation should remove obsolete compatibility aliases when they only preserve the old token-based public model. Runtime token types remain public where consumers implement adapters or resolvers.
+The implementation removes `EffectResult` and `AnyEffectResult` rather than redefining or retaining them. Runtime token types remain public where consumers implement adapters or resolvers.
 
 ## Runtime behavior
 
@@ -454,11 +466,14 @@ Type tests must prove:
 
 - `yield* Database` is exactly `Database`.
 - `Service.Tag<Database>` is the literal tag.
-- `Service.TokenOf<Database>` is the exact constructor token.
+- `Service.TokenOf<Database>` is `ServiceToken<'Database', Database>`;
+- generic and union tag/token extraction distributes correctly;
 - same-shape, different-tag Service instances are incompatible;
-- same-tag, compatible contracts retain override compatibility;
+- same-tag, compatible contracts retain override compatibility despite different constructors and statics;
+- self-returning and recursively nested contracts terminate and compare correctly;
 - `Service.of` accepts marker-free structural implementations;
-- Layer creation accepts safe structural implementations;
+- every Layer provider constructor accepts safe marker-free structural implementations;
+- `{}`, `object`, arbitrary interfaces, primitives, and `unknown` are rejected as Effect environments;
 - the marker emits no JavaScript.
 
 ### Effect types
@@ -468,7 +483,7 @@ Type tests must prove:
 - inferred programs are `Effect<A, E, Database | Logger>`;
 - `Effect.Requirements<T>` is the exact instance union;
 - non-Service requirement types are rejected;
-- `never` and intentional `any` erasure remain supported where designed;
+- `never` is requirement-free, while explicit `any` and widened `Service.Any` follow the documented unchecked-erasure rules;
 - nested and pipeline composition unions all instance requirements;
 - ordinary Results and Scope/resource-only Effects remain requirement-free;
 - requirement covariance remains safe.
@@ -494,8 +509,10 @@ Built-package fixtures must run with the current compiler and TypeScript 5.2.2 a
 - `Effect<A, E, R>` and namespaced helpers are importable;
 - public instance environments are exact;
 - invalid non-Service requirements fail;
-- missing dependency diagnostics retain their name and missing instance union;
-- declaration variance contracts remain intact;
+- missing dependency diagnostics retain their name and missing instance union, verified from captured compiler stderr;
+- default Runtime, `Runtime<any>`, `Effect.Any`, generic environments, and Layer erasure follow their explicit sentinel rules;
+- resolver declarations preserve `T -> InstanceType<T>`;
+- declaration variance contracts remain intact and recursive Service unions do not exceed instantiation depth;
 - runtime JavaScript contains no type namespace or identity metadata.
 
 ### Runtime regression
@@ -526,11 +543,14 @@ Remove or rewrite examples that call an instance projection a canonical requirem
 - `packages/better-effect/src/layer/types.ts`
 - `packages/better-effect/src/layer/inference.ts`
 - `packages/better-effect/src/layer/layer.ts`
+- `packages/better-effect/src/layer/internal.ts`
 - `packages/better-effect/src/layer/runtime.ts`
 - `packages/better-effect/src/runtime/runtime.ts`
+- `packages/better-effect/src/runtime/types.ts`
+- `packages/better-effect/src/internal/missing-dependencies.ts`
 - public barrels and package exports
-- source, package, variance, and declaration tests
-- README, docs, examples, OpenSpec contracts, and project guidance
+- source, package, variance, declaration, and intentionally failing diagnostic fixtures/scripts
+- README, docs (including troubleshooting/testing diagnostics), examples, OpenSpec contracts, and project guidance
 
 ## Acceptance criteria
 
