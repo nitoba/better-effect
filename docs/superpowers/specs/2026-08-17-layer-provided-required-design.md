@@ -94,7 +94,9 @@ export class Layer<
 
 `Required` is covariant. Widening the external requirement union is conservative; narrowing it is unsafe.
 
-A bare `Layer` is not an implicit metadata-erasure boundary. `Layer.Any` remains the explicit widened spelling accepted by generic infrastructure, including the empty Layer case.
+A bare `Layer` is not an implicit metadata-erasure boundary. Its defaults are `Layer<Service.Any, Service.Any>`, so it is not complete and cannot be passed to Runtime boundaries. The same applies to the one-argument spelling `Layer<Provided>`, whose `Required` channel uses the default `Service.Any`.
+
+`Layer.Any` remains the explicit unchecked spelling accepted by generic infrastructure, including the empty Layer case. Its implementation may retain the compatibility shape `Layer<any, any> | Layer<never, any>`. `Layer<any, any>` and `Layer.Any` deliberately erase completeness and override validation; composition involving either propagates an unchecked `any` environment rather than deriving a falsely precise result. `Layer<never, any>` is the erased empty-Layer branch. Widened `Service.Any` is not an unchecked Layer sentinel.
 
 ### Constructor results
 
@@ -259,7 +261,16 @@ An explicit annotation can intentionally erase exact provenance:
 const app: Layer<Database | UserRepository, Config> = AppLive
 ```
 
-The public environment remains safe because variance prevents dropping required Services or inventing provided Services. Subsequent composition uses a conservative fallback entry derived from the annotated `Provided` and `Required` channels.
+The public environment remains safe because variance prevents dropping required Services or inventing provided Services. Subsequent composition uses a distinct opaque fallback, not an ordinary provider entry:
+
+```ts
+type ErasedProvenance<Provided, Required> = {
+  readonly provided: Provided
+  readonly stickyRequired: Required
+}
+```
+
+`stickyRequired` is not associated with any individual provider. `override` must never remove it merely because one member of `Provided` was replaced. It can disappear only when the final provided environment independently satisfies it through the normal literal-tag and bidirectional-contract rules. `Provided = never` is valid and retains all sticky requirements. Union members inside an erased `Provided` channel remain one opaque environment and are never treated as precise per-provider entries.
 
 For maximum precision across later overrides, documentation recommends inference or `satisfies`:
 
@@ -278,11 +289,12 @@ When provenance is erased, an override may retain an old external requirement th
 `Layer.merge`:
 
 1. extracts precise entry unions when available;
-2. uses a conservative entry for an explicitly erased Layer;
-3. unions the retained entries;
+2. retains erased environments as `ErasedProvenance` with sticky requirements;
+3. unions the precise entries and opaque provided environments;
 4. computes the public provided union;
-5. subtracts provided Services from the raw requirement union using the existing literal-tag and bidirectional-contract matching rules;
-6. retains current runtime duplicate-tag checks and provider ordering.
+5. subtracts the final provided environment from both precise raw requirements and sticky requirements using the existing literal-tag and bidirectional-contract matching rules;
+6. propagates `any` unchanged when an input is `Layer.Any` or `Layer<any, any>`;
+7. retains current runtime duplicate-tag checks and provider ordering.
 
 Tags, not constructor names, determine Service identity.
 
@@ -314,6 +326,20 @@ For erased provenance, override keeps requirements conservatively unless they ar
 
 Overrides remain ordered left to right; the last compatible replacement for a tag wins.
 
+### Union-typed Layer values
+
+A concrete union such as:
+
+```ts
+Layer<Database, never> | Layer<Logger, never>
+```
+
+represents one runtime branch, not a Layer that provides both Services. Flattening it to `Layer<Database | Logger, never>` would be unsound. Concrete Layer unions are therefore rejected by `Layer.merge`, `Layer.override`, `Runtime.make`, one-shot `Runtime.run`, and `createRuntimeHandle`. The caller must narrow or resolve the branch before composition or execution.
+
+The exact `Layer.Any` sentinel is exempt because it is already an explicit unchecked erasure. Internal union detection must test the `any`/`Layer.Any` sentinel before reporting an ambiguous Layer union. Namespace projection helpers may expose distributive inspection results for a concrete union, but `Layer.Complete<L>` must retain an ambiguous-union diagnostic and never make such a value executable.
+
+Tuple element unions are validated individually. The implementation must not confuse the internal `Layers[number]` union used to aggregate a concrete merge tuple with one argument whose own type is a Layer union.
+
 ## Incompatible overrides
 
 The old model stores collision metadata in `Layer`'s second generic and rejects it later at a complete-Layer boundary. That state cannot be represented safely after the second generic becomes `Required`: an explicit `Layer<Provided, Required>` annotation could erase an opaque collision marker.
@@ -333,6 +359,17 @@ Compatibility still means:
 Different tags do not replace one another. Same-tag compatible constructors may differ in constructor parameters, names, and custom static members.
 
 The diagnostic may use `Service.TokenOf<ReplacementProvided>` or a dedicated package-private named collision helper, but it must identify the incompatible replacement without adding a public collision generic.
+
+Validation follows these rules:
+
+1. every concrete same-tag pair between the current provided environment and the next replacement is checked;
+2. the existence of one compatible pair does not hide another incompatible same-tag pair;
+3. multiple overrides are validated left to right against the provided state produced by earlier accepted overrides;
+4. concrete union-typed Layer arguments are rejected before pair validation;
+5. erased provenance still validates contracts from its known concrete `Provided` union;
+6. widened `Service.Any` cannot prove compatibility and is rejected for a typed override;
+7. exact `Layer.Any`/`Layer<any, any>` skips validation only as an explicit unchecked escape hatch;
+8. parameter constraints use the original inferred `Base` and `const Overrides` types, with `NoInfer` or an equivalent tuple intersection where necessary, so inference cannot widen an invalid argument to `Layer.Any` to evade the diagnostic.
 
 Runtime backends continue to retain the registering constructor and perform their current best-effort member check when a different constructor with the same tag is requested. Untyped JavaScript and explicit unsafe casts therefore remain defensively checked.
 
@@ -367,7 +404,9 @@ Layer.Required<L>
 Layer.Complete<L>
 ```
 
-Every complete-Layer boundary validates that `Layer.Required<L>` is `never`.
+Every typed complete-Layer boundary validates that `Layer.Required<L>` is `never`. `Layer<any, any>` and exact `Layer.Any` are the only explicit unchecked exceptions. Bare `Layer`, `Layer<Provided>`, and `Layer<Service.Any, Service.Any>` remain incomplete because widened `Service.Any` is not the Layer erasure sentinel.
+
+Concrete Layer unions are rejected before completeness or provided-environment extraction. A Runtime must never turn `Layer<A, never> | Layer<B, never>` into `Runtime<A | B>`.
 
 The runtime provider loop, backend registration, root Scope, execution child Scopes, graceful disposal, cleanup precedence, and resolver context are unchanged.
 
@@ -482,7 +521,10 @@ Tests must prove:
 - compatible same-tag structural contracts replace successfully;
 - Rich/Lean incompatible same-tag contracts fail at `Layer.override`;
 - different-tag, same-shape Services do not replace one another;
-- an explicitly erased Layer remains safe and conservative.
+- an explicitly erased Layer retains sticky requirements safely and conservatively;
+- `Layer<never, Required>` retains all sticky requirements through override;
+- concrete Layer unions fail merge, override, and complete Runtime boundaries;
+- `Layer.Any` remains the only union-shaped unchecked sentinel accepted by those boundaries.
 
 ### Variance and erasure
 
@@ -491,8 +533,11 @@ Tests must prove:
 - provided Services cannot be invented or silently discarded;
 - required Services cannot be narrowed;
 - conservative requirement widening is accepted;
-- bare `Layer` is not implicit erasure;
+- bare `Layer` and `Layer<P>` are incomplete rather than unchecked;
+- `Layer<Service.Any, Service.Any>` does not inherit Runtime's widened-Service erasure behavior;
+- `Layer.Any` and `Layer<any, any>` are explicit unchecked sentinels and propagate `any` through merge, override, and Runtime boundaries;
 - `Layer.Any` accepts ordinary and empty Layers;
+- zero-argument merge, `Layer<never, Required>`, and empty override tuples preserve their defined channels;
 - `satisfies Layer<P, R>` checks the public contract without erasing inferred provenance.
 
 ### Package surface
@@ -517,7 +562,7 @@ Update together:
 
 - package README;
 - Layers, Runtime, Services, testing, troubleshooting, and getting-started docs where Layer types or missing requirements appear;
-- TODO example annotations if affected;
+- `examples/todo-api` annotations if affected;
 - project guidance in `AGENTS.md`;
 - main OpenSpec Layer and Runtime requirement contracts;
 - public namespace and package declaration fixtures.
@@ -550,7 +595,9 @@ Expected areas include:
 - `Layer.merge` removes requirements supplied by any retained provider.
 - Inferred `Layer.override` precisely removes only the replaced provider's requirements.
 - Explicit provenance erasure remains type-safe and conservative.
-- Incompatible same-tag overrides fail at `Layer.override`.
+- Incompatible same-tag overrides fail at `Layer.override` without inference widening around the diagnostic.
+- Concrete union-typed Layers are rejected by composition and Runtime boundaries; exact `Layer.Any` remains explicitly unchecked.
+- Bare and one-argument Layer annotations are incomplete, while `Layer<any, any>` is explicitly unchecked.
 - `LayerSpec`, spec helpers, `Layer.Missing`, and top-level Layer inference aliases are absent from public exports.
 - Type-level token contracts are derived from provided instances; runtime providers still retain actual constructors.
 - Missing Layer dependencies use `MissingDependencies<Layer.Required<L>>`.
