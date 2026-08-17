@@ -78,6 +78,22 @@ class RuntimeDatabaseOverride extends Service<RuntimeDatabaseOverride>()('Runtim
   }
 }
 
+class RegisteredDatabase extends Service<RegisteredDatabase>()('RegisteredDatabase') {
+  query(): string {
+    return 'registered'
+  }
+}
+
+class RegisteredRepository extends Service<RegisteredRepository>()('RegisteredRepository') {
+  load() {
+    return Effect.gen(async function* () {
+      const database = yield* RegisteredDatabase
+
+      return Result.ok(database.query())
+    })
+  }
+}
+
 class MemoryLayerBackend implements LayerBackend {
   readonly providers = new Map<string, LayerRegistration>()
 
@@ -197,6 +213,41 @@ describe('createRuntimeHandle', () => {
       expect(backend.providers.has(ExampleService.serviceTag)).toBe(true)
 
       expect(backend.instances.size).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('registers exact constructors while keeping provenance declaration-only', async () => {
+    const layer = Layer.merge(
+      Layer.make(RegisteredDatabase),
+      Layer.gen(RegisteredRepository, async function* () {
+        const database = yield* RegisteredDatabase
+
+        void database
+
+        return new RegisteredRepository()
+      })
+    )
+    const backend = new MemoryLayerBackend()
+    const runtime = await createRuntimeHandle(layer, backend)
+
+    try {
+      expect([...backend.providers.values()].map((provider) => provider.service)).toEqual([
+        RegisteredDatabase,
+        RegisteredRepository
+      ])
+      expect(Object.getOwnPropertySymbols(layer)).toEqual([])
+
+      const instances = await runtime.run(async () => ({
+        database: await backend.resolve(RegisteredDatabase),
+        repository: await backend.resolve(RegisteredRepository)
+      }))
+
+      expect(Object.getOwnPropertySymbols(Object(instances.database))).toEqual([])
+      expect(Object.getOwnPropertySymbols(Object(instances.repository))).toEqual([])
+      expect(Object.getOwnPropertyNames(instances.database)).not.toContain('LayerProvenanceTypeId')
+      expect(Object.getOwnPropertyNames(instances.repository)).not.toContain('LayerProvenanceTypeId')
     } finally {
       await runtime.dispose()
     }

@@ -220,7 +220,8 @@ try {
   for (const marker of [
     'ServiceIdentityTypeId',
     'EffectRequirementsTypeId',
-    'MissingDependenciesTypeId'
+    'MissingDependenciesTypeId',
+    'LayerProvenanceTypeId'
   ]) {
     assertCondition(!esm.includes(marker), `Type metadata leaked into generated ESM: ${marker}`)
   }

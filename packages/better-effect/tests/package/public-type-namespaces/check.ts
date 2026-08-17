@@ -75,7 +75,7 @@ const aliases = {
     'FactoryOf',
     'Requirements'
   ],
-  Layer: ['Any', 'Specs', 'Provided', 'Required', 'Missing', 'Complete'],
+  Layer: ['Any', 'Provided', 'Required', 'Complete'],
   Runtime: ['For', 'Options', 'ShutdownDiagnostic'],
   Scope: ['Closeable', 'Outcome', 'Finalizer', 'Disposable']
 } satisfies Record<string, readonly string[]>
@@ -120,6 +120,13 @@ for (const [namespaceName, members] of Object.entries(aliases)) {
   const namespaceIifePattern = new RegExp(`\\(\\s*function\\s*\\(\\s*${namespaceName}\\s*\\)`)
 
   assertCondition(!namespaceIifePattern.test(esm), `Unexpected namespace IIFE for ${namespaceName}`)
+
+  if (namespaceName === 'Layer') {
+    assertCondition(
+      !/\btype\s+(?:Specs|Missing)(?:\s*<|\s*=)/.test(namespaceBody),
+      'Removed Layer namespace members remain'
+    )
+  }
 }
 
 const built = await import(pathToFileURL(join(distRoot, 'index.mjs')).href)
@@ -144,7 +151,18 @@ for (const [namespaceName, members] of Object.entries(aliases)) {
   }
 }
 
-for (const staleName of ['EffectResult', 'AnyEffectResult']) {
+for (const staleName of [
+  'EffectResult',
+  'AnyEffectResult',
+  'LayerSpec',
+  'AnyLayerSpec',
+  'LayerSpecs',
+  'AnyLayer',
+  'LayerProvided',
+  'LayerRawRequired',
+  'LayerMissing',
+  'CompleteLayer'
+]) {
   assertCondition(
     !declarations.includes(staleName),
     `Stale public Effect name remains: ${staleName}`
@@ -154,12 +172,84 @@ for (const staleName of ['EffectResult', 'AnyEffectResult']) {
 for (const typeMetadata of [
   'ServiceIdentityTypeId',
   'EffectRequirementsTypeId',
-  'MissingDependenciesTypeId'
+  'MissingDependenciesTypeId',
+  'LayerProvenanceTypeId'
 ]) {
   assertCondition(
     !esm.includes(typeMetadata),
     `Type metadata leaked into generated ESM: ${typeMetadata}`
   )
+}
+
+const invalidLayerExports = [
+  {
+    label: 'current TypeScript',
+    command: [
+      'bun',
+      'run',
+      '--silent',
+      'tsc',
+      '--',
+      '-p',
+      'tests/package/public-type-namespaces/tsconfig.invalid-layer-exports.json',
+      '--pretty',
+      'false'
+    ]
+  },
+  {
+    label: 'TypeScript 5.7.2',
+    command: [
+      'bunx',
+      '--bun',
+      '--package',
+      'typescript@5.7.2',
+      'tsc',
+      '-p',
+      'tests/package/public-type-namespaces/tsconfig.invalid-layer-exports.json',
+      '--pretty',
+      'false'
+    ]
+  }
+] as const
+
+const removedLayerNames = [
+  'AnyLayer',
+  'AnyLayerSpec',
+  'CompleteLayer',
+  'LayerMissing',
+  'LayerProvided',
+  'LayerRawRequired',
+  'LayerSpec',
+  'LayerSpecs'
+] as const
+const decoder = new TextDecoder()
+
+for (const fixture of invalidLayerExports) {
+  const result = Bun.spawnSync(fixture.command, {
+    cwd: packageRoot,
+    stdout: 'pipe',
+    stderr: 'pipe'
+  })
+  const output = `${decoder.decode(result.stdout)}\n${decoder.decode(result.stderr)}`
+
+  assertCondition(
+    result.exitCode !== 0,
+    `Invalid Layer export fixture unexpectedly typechecked under ${fixture.label}`
+  )
+
+  for (const name of removedLayerNames) {
+    const source = await readFile(
+      join(packageRoot, 'tests/package/public-type-namespaces/invalid-layer-exports.ts'),
+      'utf8'
+    )
+    const line = source.split('\n').findIndex((candidate) => candidate.includes(name)) + 1
+
+    assertCondition(line > 0, `Missing invalid fixture line for ${name}`)
+    assertCondition(
+      new RegExp(`invalid-layer-exports\\.ts\\(${line},`).test(output),
+      `Removed export ${name} was not rejected at its source line under ${fixture.label}`
+    )
+  }
 }
 
 const diagnostic = Bun.spawnSync(
@@ -180,7 +270,6 @@ const diagnostic = Bun.spawnSync(
     stderr: 'pipe'
   }
 )
-const decoder = new TextDecoder()
 const diagnosticOutput = `${decoder.decode(diagnostic.stdout)}\n${decoder.decode(diagnostic.stderr)}`
 
 assertCondition(diagnostic.exitCode !== 0, 'Invalid Runtime fixture unexpectedly typechecked')

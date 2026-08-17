@@ -69,26 +69,14 @@ export class Logger extends Service<Logger>()('Logger') {
   log(): void {}
 }
 
-type DatabaseSpec = {
-  readonly provided: Database
-  readonly required: never
-  readonly token: typeof Database
-}
-
-type LoggerSpec = {
-  readonly provided: Logger
-  readonly required: never
-  readonly token: typeof Logger
-}
-
 const DatabaseLive = Layer.make(Database)
-declare const AppLive: Layer<DatabaseSpec | LoggerSpec>
+declare const AppLive: Layer<Database | Logger, never>
 
 // @ts-expect-error built Layer declarations cannot invent providers
-const invented: Layer<DatabaseSpec | LoggerSpec> = DatabaseLive
+const invented: Layer<Database | Logger, never> = DatabaseLive
 
 // @ts-expect-error built Layer declarations cannot discard providers
-const narrowed: Layer<DatabaseSpec> = AppLive
+const narrowed: Layer<Database, never> = AppLive
 
 // @ts-expect-error bare Layer is not an implicit erasure boundary
 const bare: Layer = DatabaseLive
@@ -99,11 +87,20 @@ const erasedOrdinaryLayer: Layer<any, any> = DatabaseLive
 const EmptyLive = Layer.merge()
 const erasedEmptyLayer: Layer.Any = EmptyLive
 
-// @ts-expect-error Layer<any, any> does not erase never Specs
+// @ts-expect-error Layer<any, any> does not erase an inferred empty Layer
 const incorrectlyErasedEmpty: Layer<any, any> = EmptyLive
 
 export type EmptyProvided = Expect<Equal<Layer.Provided<typeof EmptyLive>, never>>
 export type EmptyRequired = Expect<Equal<Layer.Required<typeof EmptyLive>, never>>
+
+const exactLayer: Layer<Database, never> = DatabaseLive
+const conservativeRequired: Layer<Database, Database | Logger> = exactLayer
+// @ts-expect-error required Services cannot be narrowed
+const narrowedRequired: Layer<Database, Database> = conservativeRequired
+
+declare const partialRequired: Layer<Database, any>
+// @ts-expect-error partial any is not an unchecked Layer sentinel
+const invalidPartialComplete: Layer.Complete<typeof partialRequired> = partialRequired
 
 declare const databaseRequirement: ServiceRequirement<Database>
 const covariantRequirement: ServiceRequirement<AnyService> = databaseRequirement
@@ -135,6 +132,8 @@ void erasedByAlias
 void erasedOrdinaryLayer
 void erasedEmptyLayer
 void incorrectlyErasedEmpty
+void narrowedRequired
+void invalidPartialComplete
 void covariantRequirement
 void conservativeProgram
 void incompleteProgram

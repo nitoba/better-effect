@@ -13,10 +13,6 @@ import {
   type EffectError,
   type EffectRequirements,
   type EffectSuccess,
-  type LayerMissing,
-  type LayerProvided,
-  type LayerRawRequired,
-  type LayerSpecs,
   type RuntimeFor,
   type RuntimeOptions,
   type RuntimeShutdownDiagnostic,
@@ -45,13 +41,23 @@ class Database extends Service<Database>()('Database') {
   }
 }
 
-class Repository extends Service<Repository>()('Repository') {
-  load() {
-    return Effect.gen(async function* () {
-      const database = yield* Database
+class Repository extends Service<Repository>()('Repository') {}
 
-      return Result.ok(database.query())
-    })
+class Config extends Service<Config>()('Config') {}
+
+class Mailer extends Service<Mailer>()('Mailer') {}
+
+class RichDatabase extends Service<RichDatabase>()('DeclarationDatabase') {
+  query(): string {
+    return 'rich'
+  }
+
+  migrate(): void {}
+}
+
+class LeanDatabase extends Service<LeanDatabase>()('DeclarationDatabase') {
+  query(): string {
+    return 'lean'
   }
 }
 
@@ -63,8 +69,33 @@ const program = Effect.gen(async function* () {
 })
 
 const DatabaseLive = Layer.succeed(Database, new Database())
-const RepositoryLive = Layer.make(Repository)
+const RepositoryLive = Layer.gen(Repository, async function* () {
+  const database = yield* Database
+  void database
+  return new Repository()
+}) satisfies Layer<Repository, Database>
+const MailerLive = Layer.gen(Mailer, async function* () {
+  const config = yield* Config
+  void config
+  return new Mailer()
+})
 const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
+const MixedLive = Layer.merge(RepositoryLive, MailerLive)
+const RepositoryFake = Layer.succeed(Repository, new Repository())
+const PreciseOverride = Layer.override(MixedLive, RepositoryFake)
+const ErasedMailer: Layer<Mailer, Config> = MailerLive
+const MixedErasedLive = Layer.merge(RepositoryLive, ErasedMailer)
+const ErasedMailerOverride = Layer.override(MixedErasedLive, Layer.succeed(Mailer, new Mailer()))
+
+export type MixedRequired = Expect<Equal<Layer.Required<typeof PreciseOverride>, Config>>
+export type ErasedRequired = Expect<
+  Equal<Layer.Required<typeof ErasedMailerOverride>, Database | Config>
+>
+
+const RichLive = Layer.make(RichDatabase)
+const LeanLive = Layer.make(LeanDatabase)
+// @ts-expect-error incompatible same-tag overrides fail at the call site
+Layer.override(RichLive, LeanLive)
 
 type Program = typeof program
 
@@ -106,16 +137,10 @@ export type ServiceRequirementsAlias = Expect<
 >
 
 export type LayerAnyAlias = Expect<Equal<Layer.Any, Layer<any, any> | Layer<never, any>>>
-export type LayerSpecsAlias = Expect<Equal<Layer.Specs<typeof AppLive>, LayerSpecs<typeof AppLive>>>
 export type LayerProvidedAlias = Expect<
-  Equal<Layer.Provided<typeof AppLive>, LayerProvided<typeof AppLive>>
+  Equal<Layer.Provided<typeof AppLive>, Database | Repository>
 >
-export type LayerRequiredAlias = Expect<
-  Equal<Layer.Required<typeof AppLive>, LayerRawRequired<typeof AppLive>>
->
-export type LayerMissingAlias = Expect<
-  Equal<Layer.Missing<typeof AppLive>, LayerMissing<typeof AppLive>>
->
+export type LayerRequiredAlias = Expect<Equal<Layer.Required<typeof AppLive>, never>>
 export type LayerCompleteAlias = Expect<Equal<Layer.Complete<typeof AppLive>, typeof AppLive>>
 
 export type RuntimeForAlias = Expect<Equal<Runtime.For<typeof AppLive>, RuntimeFor<typeof AppLive>>>

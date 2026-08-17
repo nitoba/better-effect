@@ -191,10 +191,10 @@ assertCondition(
   'Generated Layer.Any boundary lost its never-Specs branch'
 )
 assertCondition(
-  /type LayerSpec<out Provided extends AnyService, out Required extends AnyService = never, out Token extends AnyServiceToken = ServiceTokenOf<Provided>>/.test(
+  /declare class Layer<in out Provided extends AnyService = AnyService, out Required extends AnyService = AnyService>/.test(
     declarations
   ),
-  'Generated declarations lost the three covariant LayerSpec channels'
+  'Generated declarations lost the two public Layer environment channels'
 )
 assertCondition(
   /interface ServiceRequirement<out T>/.test(declarations),
@@ -208,7 +208,7 @@ assertCondition(
 )
 
 const layerMarker = declarations.match(
-  /declare class Layer<in out Specs extends AnyLayerSpec = AnyLayerSpec, out Collisions extends AnyServiceToken = never>\s*\{\s*readonly \[([A-Za-z_$][\w$]*)\]: ([A-Za-z_$][\w$]*)<Specs, Collisions>;/
+  /declare class Layer<in out Provided extends AnyService = AnyService, out Required extends AnyService = AnyService>\s*\{\s*readonly \[([A-Za-z_$][\w$]*)\]: ([A-Za-z_$][\w$]*)<Provided, Required>;/
 )
 
 assertCondition(layerMarker !== null, 'Generated Layer lost its variance marker')
@@ -223,7 +223,7 @@ assertCondition(
   'Generated Layer phantom key is not a unique symbol'
 )
 assertCondition(
-  new RegExp(`interface ${escapeRegExp(layerVarianceName)}<in out Specs, out Collisions>`).test(
+  new RegExp(`interface ${escapeRegExp(layerVarianceName)}<in out Provided, out Required>`).test(
     declarations
   ),
   'Generated Layer marker lost its variance declaration'
@@ -307,7 +307,8 @@ for (const typeOnlyName of [
   layerVarianceName,
   'ServiceIdentityTypeId',
   'EffectRequirementsTypeId',
-  'MissingDependenciesTypeId'
+  'MissingDependenciesTypeId',
+  'LayerProvenanceTypeId'
 ]) {
   assertCondition(
     !esm.includes(typeOnlyName),

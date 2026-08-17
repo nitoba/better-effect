@@ -8,8 +8,6 @@ import {
   ServiceRuntime,
   type EffectRequirements,
   type LayerBackend,
-  type LayerMissing,
-  type LayerProvided,
   type RuntimeFor,
   type ServiceResolver,
   type ServiceToken
@@ -48,8 +46,8 @@ const DatabaseLive = Layer.make(Database)
 const LoggerLive = Layer.make(Logger)
 const AppLive = Layer.merge(DatabaseLive, LoggerLive)
 
-export type Provided = Expect<Equal<LayerProvided<typeof AppLive>, Database | Logger>>
-export type Missing = Expect<Equal<LayerMissing<typeof AppLive>, never>>
+export type Provided = Expect<Equal<Layer.Provided<typeof AppLive>, Database | Logger>>
+export type Required = Expect<Equal<Layer.Required<typeof AppLive>, never>>
 export type RuntimeEnvironment = Expect<
   Equal<RuntimeFor<typeof AppLive>, Runtime<Database | Logger>>
 >
