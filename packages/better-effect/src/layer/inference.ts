@@ -120,7 +120,9 @@ export type PreciseEntries<L extends LayerInput> =
 export type ErasedEntries<L extends LayerInput> =
   L extends LayerProvenance<any, infer Erased>
     ? Erased
-    : ErasedProvenance<ProvidedEnvironment<L>, RequiredEnvironment<L>>
+    : [ProvidedEnvironment<L> | RequiredEnvironment<L>] extends [never]
+      ? never
+      : ErasedProvenance<ProvidedEnvironment<L>, RequiredEnvironment<L>>
 
 type LayerMetadata<Entries extends AnyProviderEntry, Erased extends AnyErasedProvenance> = [
   Entries | Erased
