@@ -34,9 +34,6 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Lint
-        run: bun run lint
-
       - name: Check formatting
         run: bun run format
 
@@ -46,9 +43,24 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Validate public type namespaces
+        working-directory: packages/better-effect
+        run: bun run check:public-type-namespaces
+
+      - name: Validate public type variance
+        working-directory: packages/better-effect
+        run: bun run check:public-type-variance
+
+      - name: Validate instance requirements
+        working-directory: packages/better-effect
+        run: bun run check:instance-requirements
+
       - name: Validate package
         run: bun run publint
 
       - name: Inspect package contents
         working-directory: packages/better-effect
         run: bun pm pack --dry-run
+
+      - name: Lint
+        run: bun run lint

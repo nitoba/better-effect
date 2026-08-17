@@ -6,11 +6,10 @@ import {
   Effect,
   type EffectError,
   type EffectRequirements,
-  type EffectResult,
   type EffectSuccess
 } from '../../src/effect'
 import { Runtime } from '../../src/runtime'
-import { Service, type ServiceToken } from '../../src/service'
+import { Service } from '../../src/service'
 import { pipe } from '../../src/function'
 
 class Database extends Service<Database>()('Database') {
@@ -56,9 +55,7 @@ const mapped = pipe(
 
 expectTypeOf<EffectSuccess<typeof mapped>>().toEqualTypeOf<string>()
 expectTypeOf<EffectError<typeof mapped>>().toEqualTypeOf<never>()
-expectTypeOf<EffectRequirements<typeof mapped>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof mapped>>().toEqualTypeOf<Database>()
 
 // oxlint-disable-next-line require-yield
 const syncSource = Effect.gen(function* () {
@@ -87,7 +84,7 @@ const syncErrAsyncChained = Effect.andThenAsync(Result.err<number, string>('fail
   Promise.resolve(Result.ok(value + 1))
 )
 
-expectTypeOf(syncErrAsyncChained).toEqualTypeOf<Promise<EffectResult<number, string, never>>>()
+expectTypeOf(syncErrAsyncChained).toEqualTypeOf<Promise<Effect<number, string, never>>>()
 
 const invalidAsyncAndThen = Effect.andThen(Result.ok(1), (value) =>
   // @ts-expect-error `Effect.andThen` is the synchronous combinator.
@@ -100,9 +97,7 @@ const mappedDataFirst = Effect.map(source, (user: { id: string }) => user.id)
 
 expectTypeOf<EffectSuccess<typeof mappedDataFirst>>().toEqualTypeOf<string>()
 expectTypeOf<EffectError<typeof mappedDataFirst>>().toEqualTypeOf<never>()
-expectTypeOf<EffectRequirements<typeof mappedDataFirst>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof mappedDataFirst>>().toEqualTypeOf<Database>()
 
 const errorSource = Effect.gen(async function* () {
   if (Math.random() < 0) {
@@ -142,9 +137,7 @@ const mappedErrorWithRequirement = pipe(
   Effect.mapError((cause: FirstFailure) => new NormalizedFailure(cause))
 )
 
-expectTypeOf<EffectRequirements<typeof mappedErrorWithRequirement>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof mappedErrorWithRequirement>>().toEqualTypeOf<Database>()
 
 const chained = pipe(
   source,
@@ -163,9 +156,7 @@ const chained = pipe(
 
 expectTypeOf<EffectSuccess<typeof chained>>().toEqualTypeOf<string>()
 expectTypeOf<EffectError<typeof chained>>().toEqualTypeOf<SecondFailure>()
-expectTypeOf<EffectRequirements<typeof chained>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
->()
+expectTypeOf<EffectRequirements<typeof chained>>().toEqualTypeOf<Database | Cache>()
 
 const finalPipeline = pipe(
   chained,
@@ -175,9 +166,7 @@ const finalPipeline = pipe(
 
 expectTypeOf<EffectSuccess<typeof finalPipeline>>().toEqualTypeOf<number>()
 expectTypeOf<EffectError<typeof finalPipeline>>().toEqualTypeOf<NormalizedFailure>()
-expectTypeOf<EffectRequirements<typeof finalPipeline>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
->()
+expectTypeOf<EffectRequirements<typeof finalPipeline>>().toEqualTypeOf<Database | Cache>()
 
 const chainedDataFirst = Effect.andThenAsync(source, (user: { id: string }) =>
   Effect.gen(async function* () {
@@ -188,9 +177,7 @@ const chainedDataFirst = Effect.andThenAsync(source, (user: { id: string }) =>
 )
 
 expectTypeOf<EffectSuccess<typeof chainedDataFirst>>().toEqualTypeOf<string>()
-expectTypeOf<EffectRequirements<typeof chainedDataFirst>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
->()
+expectTypeOf<EffectRequirements<typeof chainedDataFirst>>().toEqualTypeOf<Database | Cache>()
 
 const chainedErrors = pipe(
   errorSource,
@@ -233,8 +220,10 @@ const numberPipeline = pipe(
 
 expectTypeOf(numberPipeline).toEqualTypeOf<number>()
 
-const databaseRuntime = {} as Runtime<typeof Database>
-const completeRuntime = {} as Runtime<typeof Database | typeof Cache>
+// SAFETY: Compile-time-only Runtime receivers for requirement validation.
+const databaseRuntime = {} as Runtime<Database>
+// SAFETY: Compile-time-only Runtime receivers for requirement validation.
+const completeRuntime = {} as Runtime<Database | Cache>
 
 void completeRuntime.run(() => chained)
 

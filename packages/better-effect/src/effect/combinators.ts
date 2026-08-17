@@ -2,27 +2,27 @@ import { Result } from 'better-result'
 
 import type { Result as ResultType } from 'better-result'
 
-import type { EffectError, EffectRequirements, EffectResult, EffectSuccess } from './types'
+import type { AnyService } from '../service'
+import { isPromiseLike } from '../utils/runtime'
+import type { Effect, EffectError, EffectRequirements, EffectSuccess } from './types'
 
-type EffectInput<A, E, Requirements> =
-  | EffectResult<A, E, Requirements>
-  | PromiseLike<EffectResult<A, E, Requirements>>
+type EffectInput<A, E, Requirements extends AnyService> =
+  | Effect<A, E, Requirements>
+  | PromiseLike<Effect<A, E, Requirements>>
 
 type AnyEffectInput = EffectInput<any, any, any>
-type AnyEffectResult = EffectResult<any, any, any>
-type AnyAsyncEffectInput = PromiseLike<AnyEffectResult>
+type AnyEffectValue = Effect<any, any, any>
+type AnyAsyncEffectInput = PromiseLike<AnyEffectValue>
+type CombinatorCallback = (value: any) => any
+type CombinatorInput = AnyEffectInput | CombinatorCallback
 
 type PreserveAsync<Input, Output> = Input extends PromiseLike<unknown> ? Promise<Output> : Output
 
-type MappedResult<Input, B> = EffectResult<B, EffectError<Input>, EffectRequirements<Input>>
+type MappedResult<Input, B> = Effect<B, EffectError<Input>, EffectRequirements<Input>>
 
-type ErrorMappedResult<Input, E2> = EffectResult<
-  EffectSuccess<Input>,
-  E2,
-  EffectRequirements<Input>
->
+type ErrorMappedResult<Input, E2> = Effect<EffectSuccess<Input>, E2, EffectRequirements<Input>>
 
-type ChainedResult<First, Next> = EffectResult<
+type ChainedResult<First, Next> = Effect<
   EffectSuccess<Next>,
   EffectError<First> | EffectError<Next>,
   EffectRequirements<First> | EffectRequirements<Next>
@@ -43,50 +43,69 @@ type MapErrorOperation<E1, E2> = {
 }
 
 type AndThenOperation<A, Next> = {
-  <Input>(effect: Input & EffectResult<A, any, any>): ChainedOutput<Input, Next>
+  <Input>(effect: Input & Effect<A, any, any>): ChainedOutput<Input, Next>
 }
 
 type AndThenAsyncOperation<A, Next> = {
   <Input>(effect: Input & EffectInput<A, any, any>): AsyncChainedOutput<Input, Next>
 }
 
-const isPromiseLike = (value: unknown): value is PromiseLike<unknown> => {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-    return false
-  }
-
-  return 'then' in value && typeof value.then === 'function'
+const mapResult = <A, B, E, Requirements extends AnyService>(
+  result: Effect<A, E, Requirements>,
+  fn: (value: A) => B
+): Effect<B, E, Requirements> => {
+  // SAFETY: Result.map changes only the success channel; Effect requirements are phantom metadata restored by this adapter.
+  return Result.map(result, fn) as Effect<B, E, Requirements>
 }
 
-const mapResult = <A, B, E, Requirements>(
-  result: EffectResult<A, E, Requirements>,
-  fn: (value: A) => B
-): EffectResult<B, E, Requirements> => Result.map(result, fn) as EffectResult<B, E, Requirements>
-
-const mapErrorResult = <A, E1, E2, Requirements>(
-  result: EffectResult<A, E1, Requirements>,
+const mapErrorResult = <A, E1, E2, Requirements extends AnyService>(
+  result: Effect<A, E1, Requirements>,
   fn: (error: E1) => E2
-): EffectResult<A, E2, Requirements> =>
-  Result.mapError(result, fn) as EffectResult<A, E2, Requirements>
+): Effect<A, E2, Requirements> => {
+  // SAFETY: Result.mapError changes only the error channel; Effect requirements are phantom metadata restored by this adapter.
+  return Result.mapError(result, fn) as Effect<A, E2, Requirements>
+}
 
-const andThenResult = <A, B, E1, E2, Requirements1, Requirements2>(
-  result: EffectResult<A, E1, Requirements1>,
-  next: (value: A) => EffectResult<B, E2, Requirements2>
-): EffectResult<B, E1 | E2, Requirements1 | Requirements2> =>
-  Result.andThen(result, next as (value: A) => ResultType<B, E2>) as EffectResult<
-    B,
-    E1 | E2,
-    Requirements1 | Requirements2
+const andThenResult = <
+  A,
+  B,
+  E1,
+  E2,
+  Requirements1 extends AnyService,
+  Requirements2 extends AnyService
+>(
+  result: Effect<A, E1, Requirements1>,
+  next: (value: A) => Effect<B, E2, Requirements2>
+): Effect<B, E1 | E2, Requirements1 | Requirements2> => {
+  // SAFETY: The public callback returns an Effect, whose only runtime contract is the underlying Result.
+  const resultNext = next as (value: A) => ResultType<B, E2>
+
+  // SAFETY: Result.andThen unions Result errors; Effect requirements are phantom metadata restored by this adapter.
+  return Result.andThen(result, resultNext) as Effect<B, E1 | E2, Requirements1 | Requirements2>
+}
+
+const andThenAsyncResult = <
+  A,
+  B,
+  E1,
+  E2,
+  Requirements1 extends AnyService,
+  Requirements2 extends AnyService
+>(
+  result: Effect<A, E1, Requirements1>,
+  next: (value: A) => PromiseLike<Effect<B, E2, Requirements2>>
+): Promise<Effect<B, E1 | E2, Requirements1 | Requirements2>> => {
+  // SAFETY: The public callback returns an Effect, whose only runtime contract is the underlying Result.
+  const resultNext = (value: A) => {
+    // SAFETY: Promise resolution preserves the callback's Result value; only phantom Effect metadata is erased.
+    return Promise.resolve(next(value)) as Promise<ResultType<B, E2>>
+  }
+
+  // SAFETY: Result.andThenAsync unions Result errors; Effect requirements are phantom metadata restored by this adapter.
+  return Result.andThenAsync(result, resultNext) as Promise<
+    Effect<B, E1 | E2, Requirements1 | Requirements2>
   >
-
-const andThenAsyncResult = <A, B, E1, E2, Requirements1, Requirements2>(
-  result: EffectResult<A, E1, Requirements1>,
-  next: (value: A) => PromiseLike<EffectResult<B, E2, Requirements2>>
-): Promise<EffectResult<B, E1 | E2, Requirements1 | Requirements2>> =>
-  Result.andThenAsync(
-    result,
-    (value) => Promise.resolve(next(value)) as Promise<ResultType<B, E2>>
-  ) as Promise<EffectResult<B, E1 | E2, Requirements1 | Requirements2>>
+}
 
 /**
  * Map the successful value of a Result or Effect result.
@@ -105,20 +124,29 @@ export function map<Input, B>(
   effect: Input & AnyEffectInput,
   fn: (value: EffectSuccess<Input>) => B
 ): PreserveAsync<Input, MappedResult<Input, B>>
-export function map(first: unknown, second?: unknown): unknown {
-  if (typeof first === 'function' && second === undefined) {
-    return (effect: unknown) => map(effect as never, first as never)
+export function map(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    // SAFETY: The curried overload accepts a unary mapping callback in this branch.
+    const callback = first as CombinatorCallback
+
+    return (effect: AnyEffectInput) => {
+      // SAFETY: The overload implementation has already established the callback and Effect input positions.
+      return map(effect as never, callback as never)
+    }
   }
 
-  const fn = second as (value: unknown) => unknown
+  // SAFETY: The data-first overload requires the second argument to be a unary mapping callback.
+  const fn = second as CombinatorCallback
 
   if (isPromiseLike(first)) {
-    return Promise.resolve(first).then((result) =>
-      mapResult(result as EffectResult<unknown, unknown, never>, fn)
-    )
+    return Promise.resolve(first).then((result) => {
+      // SAFETY: Result is the runtime representation shared by Effect and better-result.
+      return mapResult(result as Effect<any, any, never>, fn)
+    })
   }
 
-  return mapResult(first as EffectResult<unknown, unknown, never>, fn)
+  // SAFETY: The data-first overload supplies a Result-compatible Effect value.
+  return mapResult(first as Effect<any, any, never>, fn)
 }
 
 /**
@@ -135,20 +163,29 @@ export function mapError<Input, E2>(
   effect: Input & AnyEffectInput,
   fn: (error: EffectError<Input>) => E2
 ): PreserveAsync<Input, ErrorMappedResult<Input, E2>>
-export function mapError(first: unknown, second?: unknown): unknown {
-  if (typeof first === 'function' && second === undefined) {
-    return (effect: unknown) => mapError(effect as never, first as never)
+export function mapError(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    // SAFETY: The curried overload accepts a unary error-mapping callback in this branch.
+    const callback = first as CombinatorCallback
+
+    return (effect: AnyEffectInput) => {
+      // SAFETY: The overload implementation has already established the callback and Effect input positions.
+      return mapError(effect as never, callback as never)
+    }
   }
 
-  const fn = second as (error: unknown) => unknown
+  // SAFETY: The data-first overload requires the second argument to be a unary error-mapping callback.
+  const fn = second as CombinatorCallback
 
   if (isPromiseLike(first)) {
-    return Promise.resolve(first).then((result) =>
-      mapErrorResult(result as EffectResult<unknown, unknown, never>, fn)
-    )
+    return Promise.resolve(first).then((result) => {
+      // SAFETY: Result is the runtime representation shared by Effect and better-result.
+      return mapErrorResult(result as Effect<any, any, never>, fn)
+    })
   }
 
-  return mapErrorResult(first as EffectResult<unknown, unknown, never>, fn)
+  // SAFETY: The data-first overload supplies a Result-compatible Effect value.
+  return mapErrorResult(first as Effect<any, any, never>, fn)
 }
 
 /**
@@ -162,21 +199,29 @@ export function mapError(first: unknown, second?: unknown): unknown {
  * const user = Effect.andThen(Result.ok('u1'), (id) => repository.find(id))
  * ```
  */
-export function andThen<A, Next extends AnyEffectResult>(
+export function andThen<A, Next extends AnyEffectValue>(
   next: (value: A) => Next
 ): AndThenOperation<A, Next>
-export function andThen<Input, Next extends AnyEffectResult>(
-  effect: Input & AnyEffectResult,
+export function andThen<Input, Next extends AnyEffectValue>(
+  effect: Input & AnyEffectValue,
   next: (value: EffectSuccess<Input>) => Next
 ): ChainedOutput<Input, Next>
-export function andThen(first: unknown, second?: unknown): unknown {
-  if (typeof first === 'function' && second === undefined) {
-    return (effect: unknown) => andThen(effect as never, first as never)
+export function andThen(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    // SAFETY: The curried overload accepts a unary continuation in this branch.
+    const callback = first as CombinatorCallback
+
+    return (effect: AnyEffectInput) => {
+      // SAFETY: The overload implementation has already established the callback and Effect input positions.
+      return andThen(effect as never, callback as never)
+    }
   }
 
-  const next = second as (value: unknown) => EffectResult<unknown, unknown, never>
+  // SAFETY: The data-first overload requires the second argument to return an Effect.
+  const next = second as CombinatorCallback
 
-  return andThenResult(first as EffectResult<unknown, unknown, never>, next)
+  // SAFETY: The data-first overload supplies a Result-compatible Effect value.
+  return andThenResult(first as Effect<any, any, never>, next)
 }
 
 /**
@@ -197,18 +242,27 @@ export function andThenAsync<Input, Next extends AnyAsyncEffectInput>(
   effect: Input & AnyEffectInput,
   next: (value: EffectSuccess<Input>) => Next
 ): AsyncChainedOutput<Input, Next>
-export function andThenAsync(first: unknown, second?: unknown): unknown {
-  if (typeof first === 'function' && second === undefined) {
-    return (effect: unknown) => andThenAsync(effect as never, first as never)
+export function andThenAsync(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    // SAFETY: The curried overload accepts a unary asynchronous continuation in this branch.
+    const callback = first as CombinatorCallback
+
+    return (effect: AnyEffectInput) => {
+      // SAFETY: The overload implementation has already established the callback and Effect input positions.
+      return andThenAsync(effect as never, callback as never)
+    }
   }
 
-  const next = second as (value: unknown) => PromiseLike<EffectResult<unknown, unknown, never>>
+  // SAFETY: The data-first overload requires the second argument to return a PromiseLike Effect.
+  const next = second as CombinatorCallback
 
   if (isPromiseLike(first)) {
-    return Promise.resolve(first).then((result) =>
-      andThenAsyncResult(result as EffectResult<unknown, unknown, never>, next)
-    )
+    return Promise.resolve(first).then((result) => {
+      // SAFETY: Result is the runtime representation shared by Effect and better-result.
+      return andThenAsyncResult(result as Effect<any, any, never>, next)
+    })
   }
 
-  return andThenAsyncResult(first as EffectResult<unknown, unknown, never>, next)
+  // SAFETY: The data-first overload supplies a Result-compatible Effect value.
+  return andThenAsyncResult(first as Effect<any, any, never>, next)
 }

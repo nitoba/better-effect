@@ -54,17 +54,29 @@ const readUser = Effect.gen(async function* () {
 
 `database` is inferred as exactly `Database`, not `unknown`, not a structural
 subset, and not the constructor type. The yielded token also adds `Database`
-to `EffectRequirements<typeof readUser>`.
+to `Effect.Requirements<typeof readUser>`.
 
 ```ts
-import type { EffectRequirements } from 'better-effect'
-
-type Requirements = EffectRequirements<typeof readUser>
+type Requirements = Effect.Requirements<typeof readUser>
 // Database
+
+type DatabaseInstance = Service.Instance<typeof Database>
+type DatabaseTag = Service.Tag<Database>
+// 'Database'
+type DatabaseToken = Service.TokenOf<Database>
+// Service.Token<'Database', Database>
 ```
 
-The metadata is phantom: it disappears at runtime and does not wrap or replace
-the `better-result` value.
+These associated helpers are type-only aliases: they disappear at runtime and
+do not wrap or replace the `better-result` value. Every Service instance has a
+required declaration-only `Service.Identity<Tag>` marker, but no identity
+property is emitted at runtime. `Service.TokenOf<Database>` recovers the
+canonical constructor contract while Layers retain the exact registering
+constructor separately. `Service.Requirements<T>` derives method-level
+instance dependencies from a Service contract's Effect-returning methods, so
+Layers can include those requirements in their completeness checks.
+The prefixed `EffectRequirements` and `ServiceRequirements` spellings remain
+public compatibility aliases.
 
 ## Structural implementations with `Service.of`
 
@@ -82,8 +94,11 @@ const authorization = Authorization.of({
 })
 ```
 
-`Authorization.of` returns the same object unchanged. It does not call a
-constructor and the object is not an `instanceof Authorization`. Choose `new
+`Service.Contract<Authorization>` is the marker-free shape accepted here and by
+`Layer.make`, `Layer.succeed`, `Layer.scoped`, `Layer.gen` and
+`Layer.scopedGen`. `Authorization.of` returns the same object typed as
+`Authorization`; it does not call a constructor or emit the identity marker,
+and the object is not an `instanceof Authorization`. Choose `new
 Authorization(...)` when private fields, constructor invariants or prototype
 behavior matter.
 
@@ -133,10 +148,11 @@ class UserRepository extends Service<UserRepository>()('UserRepository') {
 }
 
 const UserRepositoryLive = Layer.make(UserRepository)
-// UserRepositoryLive requires Database while being acquired.
+// Layer<UserRepository, Database>
+// Database remains external while the provider is acquired.
 ```
 
-`ServiceRequirements<typeof UserRepository>` extracts those method-level
+`Service.Requirements<UserRepository>` extracts those method-level instance
 requirements for Layer completeness checks.
 
 ## Direct resolver access
@@ -145,12 +161,14 @@ Most application code should use `yield* Service`. Adapter and integration
 code can use the container-agnostic `ServiceRuntime` bridge:
 
 ```ts
-import { ServiceRuntime } from 'better-effect'
+import { ServiceRuntime, type AnyServiceToken } from 'better-effect'
+
+const instances = new Map<AnyServiceToken, unknown>([[Database, new Database('test')]])
 
 const resolver = {
-  resolve<T extends typeof Database>(token: T): InstanceType<T> {
-    // a real backend supplies this relationship
-    return new token('test') as InstanceType<T>
+  resolve<T extends AnyServiceToken>(token: T): InstanceType<T> {
+    // a real backend preserves this token → instance relationship
+    return instances.get(token) as InstanceType<T>
   }
 }
 

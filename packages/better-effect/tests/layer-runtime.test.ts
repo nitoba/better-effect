@@ -27,7 +27,7 @@ import {
   type AnyServiceToken
 } from '../src/service'
 
-const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
+const captureRejection = async (promise: Promise<unknown>) =>
   promise.then(
     () => undefined,
     (cause) => cause
@@ -66,10 +66,40 @@ class ScopedConsumer extends Service<ScopedConsumer>()('ScopedConsumer') {
   }
 }
 
+class RuntimeDatabase extends Service<RuntimeDatabase>()('RuntimeDatabase') {
+  query(): string {
+    return 'primary'
+  }
+}
+
+class RuntimeDatabaseOverride extends Service<RuntimeDatabaseOverride>()('RuntimeDatabase') {
+  query(): string {
+    return 'override'
+  }
+}
+
+class RegisteredDatabase extends Service<RegisteredDatabase>()('RegisteredDatabase') {
+  query(): string {
+    return 'registered'
+  }
+}
+
+class RegisteredRepository extends Service<RegisteredRepository>()('RegisteredRepository') {
+  load() {
+    return Effect.gen(async function* () {
+      const database = yield* RegisteredDatabase
+
+      return Result.ok(database.query())
+    })
+  }
+}
+
 class MemoryLayerBackend implements LayerBackend {
   readonly providers = new Map<string, LayerRegistration>()
 
   readonly instances = new Map<string, unknown>()
+
+  readonly resolvedTokens: AnyServiceToken[] = []
 
   disposed = false
 
@@ -112,9 +142,12 @@ class MemoryLayerBackend implements LayerBackend {
   }
 
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    this.resolvedTokens.push(token)
+
     const tag = token.serviceTag
 
     if (this.instances.has(tag)) {
+      // SAFETY: The cache is keyed by the same Service tag used by the requested token.
       return this.instances.get(tag) as InstanceType<T>
     }
 
@@ -128,6 +161,7 @@ class MemoryLayerBackend implements LayerBackend {
 
     this.instances.set(tag, instance)
 
+    // SAFETY: The provider selected by the requested tag returns the requested Service contract.
     return instance as InstanceType<T>
   }
 
@@ -157,7 +191,10 @@ describe('createRuntimeHandle', () => {
 
     expect(DefaultService.constructed).toBe(1)
     expect(instance).toBeInstanceOf(DefaultService)
-    expect((instance as DefaultService).value).toBe(42)
+
+    if (instance instanceof DefaultService) {
+      expect(instance.value).toBe(42)
+    }
   })
 
   test('continues accepting an explicit acquire callback', async () => {
@@ -167,7 +204,10 @@ describe('createRuntimeHandle', () => {
     const instance = await provider!.acquire()
 
     expect(instance).toBeInstanceOf(ConfiguredService)
-    expect((instance as ConfiguredService).value).toBe(42)
+
+    if (instance instanceof ConfiguredService) {
+      expect(instance.value).toBe(42)
+    }
   })
 
   test('registers every provider in the backend', async () => {
@@ -181,6 +221,79 @@ describe('createRuntimeHandle', () => {
       expect(backend.providers.has(ExampleService.serviceTag)).toBe(true)
 
       expect(backend.instances.size).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('registers exact constructors while keeping provenance declaration-only', async () => {
+    const layer = Layer.merge(
+      Layer.make(RegisteredDatabase),
+      Layer.gen(RegisteredRepository, async function* () {
+        const database = yield* RegisteredDatabase
+
+        void database
+
+        return new RegisteredRepository()
+      })
+    )
+    const backend = new MemoryLayerBackend()
+    const runtime = await createRuntimeHandle(layer, backend)
+
+    try {
+      expect([...backend.providers.values()].map((provider) => provider.service)).toEqual([
+        RegisteredDatabase,
+        RegisteredRepository
+      ])
+      expect(Object.getOwnPropertySymbols(layer)).toEqual([])
+
+      const instances = await runtime.run(async () => ({
+        database: await backend.resolve(RegisteredDatabase),
+        repository: await backend.resolve(RegisteredRepository)
+      }))
+
+      expect(Object.getOwnPropertySymbols(Object(instances.database))).toEqual([])
+      expect(Object.getOwnPropertySymbols(Object(instances.repository))).toEqual([])
+      expect(Object.getOwnPropertyNames(instances.database)).not.toContain('LayerProvenanceTypeId')
+      expect(Object.getOwnPropertyNames(instances.repository)).not.toContain(
+        'LayerProvenanceTypeId'
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('keeps constructor tokens at runtime without emitting instance identity metadata', async () => {
+    const layer = Layer.override(
+      Layer.make(RuntimeDatabase, () => new RuntimeDatabase()),
+      Layer.make(RuntimeDatabaseOverride, () => new RuntimeDatabaseOverride())
+    )
+    const backend = new MemoryLayerBackend()
+    const runtime = await createRuntimeHandle(layer, backend)
+
+    try {
+      expect(backend.providers.get(RuntimeDatabase.serviceTag)?.service).toBe(
+        RuntimeDatabaseOverride
+      )
+
+      const result = await runtime.run(() =>
+        Effect.gen(async function* () {
+          const database = yield* RuntimeDatabase
+
+          return Result.ok(database)
+        })
+      )
+
+      expect(backend.resolvedTokens).toContain(RuntimeDatabase)
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value.query()).toBe('override')
+        expect(Object.getOwnPropertySymbols(result.value)).toEqual([])
+        expect(Object.getOwnPropertyNames(result.value)).not.toContain('ServiceIdentityTypeId')
+      }
+
+      expect(Object.getOwnPropertySymbols(RuntimeDatabaseOverride.prototype)).toEqual([])
     } finally {
       await runtime.dispose()
     }

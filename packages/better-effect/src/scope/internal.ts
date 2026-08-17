@@ -2,7 +2,7 @@ import { ScopeCloseError } from './errors'
 
 import { ScopeRuntime } from './runtime'
 
-import type { CloseableScope, Scope } from './scope'
+import type { CloseableScope } from './scope'
 
 import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from './types'
 
@@ -39,7 +39,7 @@ export const runScoped = async <A>(
   let programFailure: unknown
 
   try {
-    value = await ScopeRuntime.run(scope as Scope, program)
+    value = await ScopeRuntime.run(scope, program)
   } catch (cause) {
     programFailed = true
     programFailure = cause

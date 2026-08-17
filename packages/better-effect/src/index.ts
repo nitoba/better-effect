@@ -6,13 +6,17 @@ export {
 } from './service'
 
 export type {
+  AnyService,
   AnyServiceToken,
   ServiceClass,
+  ServiceContract,
+  ServiceIdentity,
   ServiceInstance,
   ServiceRequirements,
   ServiceResolver,
   ServiceTag,
-  ServiceToken
+  ServiceToken,
+  ServiceTokenOf
 } from './service'
 
 export {
@@ -24,24 +28,16 @@ export {
   ServiceTagCollisionError
 } from './layer'
 
-export type {
-  LayerBackend,
-  LayerRegistration,
-  LayerMissing,
-  LayerProvided,
-  LayerRawRequired,
-  LayerSpecs
-} from './layer'
+export type { LayerBackend, LayerRegistration } from './layer'
 
 export { Effect } from './effect'
 
 export { pipe } from './function'
 
 export type {
-  AnyEffectResult,
+  AnyEffect,
   EffectError,
   EffectRequirements,
-  EffectResult,
   EffectSuccess,
   EffectYield,
   ServiceRequirement

@@ -2,171 +2,120 @@
 
 ## Purpose
 
-Ensures every typed Runtime execution can request only Services supplied by its Layer, turning existing Effect requirement metadata into compile-time environment validation.
+Ensures typed Runtime boundaries retain Layer-provided Service instance
+environments and reject unavailable Effect requirements with named diagnostics.
 
 ## Requirements
 
-### Requirement: Runtime handles preserve their provided Services
+### Requirement: Runtime values retain Layer.Provided environments
 
-A `Runtime` created from a complete Layer MUST retain the Layer's exact
-provided tagged Service-constructor union in its public type. A built Layer
-handle MUST retain the same union. Layer merge and compatible override
-semantics MUST be reflected by the retained type without changing runtime
-behavior.
+A Runtime or RuntimeHandle created from a complete Layer MUST retain the exact `Layer.Provided<L>` instance union. Merge and compatible override semantics MUST be reflected without changing runtime registration or resolution.
 
 #### Scenario: Runtime.make infers the Layer environment
 
-- **WHEN** `Runtime.make()` receives a complete Layer that provides Database and
-  Logger
-- **THEN** the returned Runtime type MUST retain exactly `typeof Database |
-typeof Logger` as its provided Services
+- **WHEN** AppLive provides Database and Logger
+- **THEN** `Runtime.make(AppLive, backend)` MUST return `Runtime<Database | Logger>`
 
-#### Scenario: Built Layer preserves the same environment
+#### Scenario: Runtime.For names the same environment
 
-- **WHEN** a built Layer handle receives that complete Layer
-- **THEN** the handle type MUST retain the same exact provided-Service union as
-  `Runtime.make()`
+- **WHEN** a consumer writes `Runtime.For<typeof AppLive>`
+- **THEN** it MUST equal `Runtime<Layer.Provided<typeof AppLive>>`
 
-#### Scenario: buildLayer preserves the same environment
+#### Scenario: RuntimeHandle preserves the same environment
 
-- **WHEN** `buildLayer()` receives that complete Layer
-- **THEN** the returned BuiltLayer type MUST retain exactly `typeof Database |
-typeof Logger` as its provided Services
+- **WHEN** a RuntimeHandle is built from AppLive
+- **THEN** it MUST retain the same `Layer.Provided` union
 
-#### Scenario: Overrides determine the retained environment
+### Requirement: Typed executions validate Effect requirements
 
-- **WHEN** a Runtime is built from a Layer whose provider is replaced by a
-  compatible `Layer.override()`
-- **THEN** the Runtime type MUST reflect the final overridden Layer
-  specification rather than obsolete provider specifications
+Runtime and RuntimeHandle `run` methods MUST accept a program only when every concrete instance in its final `Effect.Requirements` is supplied by the provided environment under literal-tag and bidirectional-contract compatibility. The awaited program type MUST be preserved.
 
-### Requirement: Managed executions validate Effect requirements
+#### Scenario: One requirement is missing
 
-Instance `run()` on Runtime and built Layer handles MUST accept an Effect
-program only when every exact tag-aware contract in its final
-`EffectRequirements` is supplied by the handle's provided-Service union under
-the tagged compatibility rules. Different tags MUST never satisfy one
-another, even for identical contracts. The validation MUST inspect the
-complete returned Effect type, including requirements composed from nested
-Effect results.
+- **WHEN** `Runtime<Database>` runs an Effect requiring Database | Logger
+- **THEN** TypeScript MUST reject the callback with `MissingDependencies<Logger>`
 
-#### Scenario: All program requirements are available
+#### Scenario: Multiple requirements are missing
 
-- **WHEN** a Runtime provides Database and Logger and a program requires both
-  Services
-- **THEN** `runtime.run(program)` MUST compile and preserve the program's
-  original result type
+- **WHEN** `Runtime<Database>` runs an Effect requiring Logger | Cache
+- **THEN** the diagnostic MUST be `MissingDependencies<Logger | Cache>`
 
-#### Scenario: One program requirement is missing
+#### Scenario: Different-tag same-shape Service is rejected
 
-- **WHEN** a Runtime provides Database and a program requires Database and
-  Logger
-- **THEN** the `runtime.run(program)` call MUST be rejected at compile time and
-  its diagnostic contract MUST identify `ServiceToken<'Logger', Logger>` as
-  missing
+- **WHEN** a Runtime provides ReplicaDatabase while a program requires PrimaryDatabase
+- **THEN** execution MUST be rejected despite structural similarity
 
-#### Scenario: Different-tag compatible Service is rejected
+#### Scenario: Returned requirements remain validated
 
-- **WHEN** a Runtime provides ReplicaDatabase and a program requires
-  PrimaryDatabase with an identical instance shape but a different tag
-- **THEN** the execution MUST be rejected at compile time
+- **WHEN** a program directly requires Database and returns an Effect requiring Logger
+- **THEN** the Runtime MUST validate both instances
 
-#### Scenario: Multiple program requirements are missing
+### Requirement: Complete Layer boundaries are enforced by Runtime
 
-- **WHEN** a program requires several Services absent from the Runtime
-- **THEN** the compile-time missing-Service contract MUST contain the exact
-  union of absent tagged contracts
+Managed Runtime creation, one-shot `Runtime.run`, and `createRuntimeHandle` MUST validate the original Layer input through `Layer.Complete` semantics. The final external requirement channel is `Layer.Required<L>`.
 
-#### Scenario: Returned Effect requirements remain validated
+#### Scenario: Layer itself is incomplete
 
-- **WHEN** an Effect program directly requires one Service and returns a
-  composed Effect result requiring another
-- **THEN** the Runtime MUST validate both requirements before accepting the
-  execution
+- **WHEN** a Layer provider requires Database but no Database provider exists
+- **THEN** the Layer parameter constraint MUST include `MissingDependencies<Database>`
 
-#### Scenario: Built Layer enforces the same execution contract
+#### Scenario: Complete one-shot execution compiles
 
-- **WHEN** a caller uses a built Layer handle directly and runs an Effect
-  program requiring an unavailable Service
-- **THEN** the handle's `run(program)` MUST be rejected by the same compile-time
-  contract as `Runtime.run()`
+- **WHEN** the Layer supplies every required instance and the program's requirements are available
+- **THEN** the one-shot call MUST compile and preserve the awaited result type
 
-#### Scenario: BuiltLayer enforces the same execution contract
+### Requirement: Runtime input classification rejects unsafe Layer shapes
 
-- **WHEN** a caller uses `BuiltLayer.run()` with an Effect program requiring an
-  unavailable Service
-- **THEN** the call MUST be rejected by the same compile-time contract as
-  `Runtime.run()`
+Concrete Layer unions MUST be rejected by Runtime.make, one-shot Runtime.run, and createRuntimeHandle before provided-environment extraction. Partial-`any` shapes, bare Layers, one-argument Layers, and widened `Service.Any` channels MUST remain typed/incomplete rather than being mistaken for unchecked Layer erasure. Exact `Layer.Any`, `Layer<any, any>`, and `Layer<never, any>` remain explicit unchecked exceptions.
 
-### Requirement: One-shot Runtime execution validates its Layer
+#### Scenario: Concrete union is not flattened
 
-Static `Runtime.run(layer, backend, program)` MUST validate the program's
-final Effect requirements against the exact tagged Services provided by the
-supplied complete Layer. Its accepted program result and error types MUST
-remain unchanged.
+- **WHEN** a runtime receives `Layer<Database, never> | Layer<Logger, never>`
+- **THEN** the call MUST be rejected instead of producing `Runtime<Database | Logger>`
 
-#### Scenario: One-shot execution has a complete environment
+#### Scenario: Exact sentinel is accepted
 
-- **WHEN** every Service required by a one-shot program is provided by its
-  Layer under the tagged compatibility rules
-- **THEN** static `Runtime.run()` MUST compile and return the same awaited
-  program type as before
+- **WHEN** Runtime receives exact `Layer.Any` or an exact unchecked arm
+- **THEN** the call MUST be accepted as an explicit unchecked boundary
 
-#### Scenario: One-shot execution is missing a Service
+#### Scenario: Partial any is rejected
 
-- **WHEN** a one-shot program requires a Service absent from its Layer,
-  including a same-shape Service with a different tag
-- **THEN** static `Runtime.run()` MUST be rejected at compile time with that
-  exact Service identified by the missing-Service contract
+- **WHEN** Runtime receives `Layer<Database, any>`, `Layer<any, never>`, or a cross-partial union
+- **THEN** TypeScript MUST reject the original argument without inference widening
+
+### Requirement: Erased and generic execution boundaries remain deliberate
+
+Unparameterized Runtime, `Runtime<any>`, `Runtime<Service.Any>`, `Effect.Any`, and `Effect<A, E, any>` MUST remain explicit unchecked execution boundaries. A concrete generic relationship MUST be accepted only when proven.
+
+#### Scenario: Erased Runtime accepts a concrete program
+
+- **WHEN** an unparameterized Runtime, Runtime<any>, or Runtime<Service.Any> runs a concrete Effect
+- **THEN** execution MUST compile as an intentional escape hatch
+
+#### Scenario: Same generic environment runs
+
+- **WHEN** `Runtime<R>` runs `Effect<A, E, R>` for `R extends Service.Any`
+- **THEN** execution MUST compile
+
+#### Scenario: Unrelated generic environment is rejected
+
+- **WHEN** `Runtime<Database>` receives `Effect<A, E, R>` for unrelated `R extends Service.Any`
+- **THEN** execution MUST remain rejected
 
 ### Requirement: Requirement-free programs remain supported
 
-Programs whose inferred `EffectRequirements` are `never` MUST remain accepted by
-any Runtime or BuiltLayer. This includes callbacks returning plain values,
-ordinary `better-result` Results, Scope-only Effects, and Effects that use
-`Effect.acquireRelease` without yielding Services. Runtime and BuiltLayer
-annotations without an explicit provided-Service parameter MUST remain
-source-compatible as intentionally environment-erased types.
+Programs with `Effect.Requirements` equal to `never` MUST run in every Runtime. This includes plain values, ordinary Results, Scope-only Effects, `Effect.acquireRelease`, and `Effect.add` programs that yield no Service constructor.
 
-#### Scenario: Plain program runs in any environment
+### Requirement: MissingDependencies is package-private and type-only
 
-- **WHEN** a program returns a plain value or an ordinary Result without Effect
-  requirement metadata
-- **THEN** any Runtime or BuiltLayer MUST accept it without introducing a
-  Service requirement
+The named `MissingDependencies<Missing>` helper MUST remain absent from package barrels while remaining nameable in built declaration diagnostics. It and all identity, requirement and provenance markers MUST emit no JavaScript.
 
-#### Scenario: Scope-only Effect runs in any environment
+#### Scenario: Built diagnostic retains the name
 
-- **WHEN** an Effect uses Scope or `Effect.acquireRelease` but yields no Service
-  token
-- **THEN** its execution MUST remain accepted because its Service requirements
-  are `never`
+- **WHEN** current TypeScript or TypeScript 5.7.2 rejects a missing Runtime or Layer dependency
+- **THEN** compiler output MUST include the precise `MissingDependencies<...>` instance union
 
-#### Scenario: Existing unparameterized Runtime annotation remains valid
+### Requirement: Runtime behavior remains constructor based
 
-- **WHEN** existing code uses `Runtime` or `BuiltLayer` as a type annotation
-  without a generic argument
-- **THEN** that annotation MUST continue to compile as an explicitly erased
-  environment and MUST NOT force an immediate source migration
-
-### Requirement: Missing execution Services have readable diagnostics
-
-The compile-time constraint used by execution APIs MUST expose a stable named
-marker whose value is the exact missing tagged Service-contract union. The
-marker MUST be absent when all requirements are satisfied and MUST NOT alter
-emitted JavaScript or runtime execution.
-
-#### Scenario: Diagnostic names the missing-Service set
-
-- **WHEN** an execution is rejected because its Runtime lacks required Services
-- **THEN** TypeScript's expected parameter contract MUST include
-  `__betterEffectMissingRuntimeServices` with the exact missing-token union and
-  a readable `__betterEffectMissingRuntimeService__<Tag>` member for each
-  missing Service tag
-
-#### Scenario: Complete execution has no marker
-
-- **WHEN** the Runtime provides every requirement under the tagged compatibility
-  rules
-- **THEN** no missing-runtime-Service marker MUST be required and the original
-  program callback type MUST remain assignable
+- **WHEN** a program evaluates `yield* Database`
+- **THEN** the backend MUST receive the Database constructor and generated JavaScript MUST contain no phantom metadata

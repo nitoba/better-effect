@@ -2,15 +2,21 @@ import type { LayerBackend } from '../layer'
 
 import { createRuntimeHandle, type RuntimeHandle } from '../layer/runtime'
 
-import type { AnyLayer, CompleteLayer, LayerProvided } from '../layer/inference'
+import type { LayerInput, CompleteInput, ProvidedEnvironment } from '../layer/inference'
 
 import type { CompleteExecution } from '../layer/inference'
 
-import type { AnyServiceToken } from '../service'
+import type { AnyService } from '../service'
 
-import { classifyRuntimeOutcome, type RuntimeOptions } from './outcome'
+import {
+  classifyRuntimeOutcome,
+  type RuntimeOptions,
+  type RuntimeShutdownDiagnostic
+} from './outcome'
 
 import type { ScopeOutcome } from '../scope'
+
+import type { RuntimeFor } from './types'
 
 /**
  * Long-lived execution environment backed by a complete Layer.
@@ -25,10 +31,10 @@ import type { ScopeOutcome } from '../scope'
  * await runtime.dispose()
  * ```
  *
- * @typeParam Provided The Service constructors supplied by the Layer.
+ * @typeParam Provided The branded Service instances supplied by the Layer.
  */
-export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
-  private constructor(private readonly handle: RuntimeHandle<Provided>) {}
+export class Runtime<Provided extends AnyService = any> {
+  private constructor(private readonly handle: RuntimeHandle<any>) {}
 
   /**
    * Create a long-lived Runtime that owns its Layer resources.
@@ -40,14 +46,14 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
    * await runtime.dispose()
    * ```
    */
-  static async make<L extends AnyLayer>(
-    layer: CompleteLayer<L>,
+  static async make<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
     backend: LayerBackend,
     options: RuntimeOptions = {}
-  ): Promise<Runtime<LayerProvided<L>>> {
+  ): Promise<Runtime<ProvidedEnvironment<L>>> {
     const handle = await createRuntimeHandle(layer, backend, options)
 
-    return new Runtime<LayerProvided<L>>(handle)
+    return new Runtime<ProvidedEnvironment<L>>(handle)
   }
 
   /**
@@ -56,10 +62,10 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
    * This is convenient for request-style or command-style execution where a
    * Runtime should not outlive the operation.
    */
-  static async run<A, L extends AnyLayer>(
-    layer: CompleteLayer<L>,
+  static async run<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
     backend: LayerBackend,
-    program: CompleteExecution<LayerProvided<L>, A>,
+    program: CompleteExecution<ProvidedEnvironment<L>, A>,
     options: RuntimeOptions = {}
   ): Promise<Awaited<A>> {
     const runtime = await Runtime.make(layer, backend, options)
@@ -119,6 +125,7 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
   }
 
   private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+    // SAFETY: One-shot Runtime.run performs the same complete-program validation at its public boundary before using this internal escape hatch.
     return this.handle.run(program as CompleteExecution<Provided, A>)
   }
 
@@ -130,4 +137,16 @@ export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
   private disposeWithOutcome(outcome: ScopeOutcome): Promise<void> {
     return this.handle.dispose(outcome)
   }
+}
+
+/** Type-level aliases for naming Runtime handles and shutdown options. */
+export declare namespace Runtime {
+  /** Name a Runtime type from a concrete Layer. */
+  export type For<L extends LayerInput> = RuntimeFor<L>
+
+  /** Optional Runtime shutdown configuration. */
+  export type Options = RuntimeOptions
+
+  /** Diagnostic reported for aggregated Runtime shutdown cleanup failures. */
+  export type ShutdownDiagnostic = RuntimeShutdownDiagnostic
 }

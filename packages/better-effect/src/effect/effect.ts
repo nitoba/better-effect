@@ -5,20 +5,29 @@ import type { Err, Result as ResultType, UnhandledException } from 'better-resul
 import { Scope } from '../scope'
 
 import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
+import type { AnyService } from '../service'
 
-import type { EffectFromGenerator, EffectYield } from './types'
+import type {
+  AnyEffect,
+  Effect as EffectType,
+  EffectError,
+  EffectFromGenerator,
+  EffectRequirements,
+  EffectSuccess,
+  EffectYield
+} from './types'
 
 import { andThen, andThenAsync, map, mapError } from './combinators'
 
-type AnyResult = ResultType<any, any>
+export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
-type RuntimeGenerator =
-  | (() => Generator<Err<never, unknown>, AnyResult, unknown>)
-  | (() => AsyncGenerator<Err<never, unknown>, AnyResult, unknown>)
+type AnyResult = ResultType<any, any>
 
 type EffectGenerator =
   | (() => Generator<EffectYield, AnyResult, unknown>)
   | (() => AsyncGenerator<EffectYield, AnyResult, unknown>)
+
+type RuntimeResultGenerator = (body: EffectGenerator) => AnyResult | Promise<AnyResult>
 
 /**
  * Compose `better-result` operations while preserving Service requirements in
@@ -52,9 +61,10 @@ export function gen(body: EffectGenerator): AnyResult | Promise<AnyResult> {
    * instance without yielding a marker, so Result.gen still receives only
    * the Err values that exist at runtime.
    */
-  return (Result.gen as unknown as (body: RuntimeGenerator) => AnyResult | Promise<AnyResult>)(
-    body as RuntimeGenerator
-  )
+  // SAFETY: Service iterators yield no runtime markers, so the phantom Service yield channel is erased before delegating to better-result.
+  const runResultGenerator = Result.gen as RuntimeResultGenerator
+
+  return runResultGenerator(body)
 }
 
 /**
@@ -123,3 +133,18 @@ export const Effect = {
   /** Chain an asynchronous Effect result. */
   andThenAsync
 } as const
+
+/** Type-level aliases for inspecting Effect result channels and requirements. */
+export declare namespace Effect {
+  /** Extract the success channel from an Effect result or Promise. */
+  export type Success<T> = EffectSuccess<T>
+
+  /** Extract the error channel from an Effect result or Promise. */
+  export type Error<T> = EffectError<T>
+
+  /** Extract the Service requirements from an Effect result or Promise. */
+  export type Requirements<T> = EffectRequirements<T>
+
+  /** An Effect with erased success, error, and requirements. */
+  export type Any = AnyEffect
+}

@@ -9,7 +9,7 @@ import {
   type EffectSuccess
 } from '../../src/effect'
 import { Scope, type ScopeOutcome } from '../../src/scope'
-import { Service, type ServiceRequirements, type ServiceToken } from '../../src/service'
+import { Service, type ServiceRequirements } from '../../src/service'
 
 class Database extends Service<Database>()('Database') {
   query(): string {
@@ -71,8 +71,9 @@ const combinedProgram = Effect.gen(async function* () {
   return await nestedProgram
 })
 
-expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
+expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<Database | Cache>()
+expectTypeOf<Awaited<typeof program>>().toEqualTypeOf<
+  Effect<{ database: Database; cache: Cache }, never, Database | Cache>
 >()
 
 expectTypeOf<EffectSuccess<typeof program>>().toEqualTypeOf<{ database: Database; cache: Cache }>()
@@ -82,19 +83,13 @@ expectTypeOf<EffectError<typeof program>>().toEqualTypeOf<never>()
 expectTypeOf<EffectError<typeof failedProgram>>().toEqualTypeOf<string>()
 expectTypeOf<EffectRequirements<typeof failedProgram>>().toEqualTypeOf<never>()
 
-expectTypeOf<EffectRequirements<typeof combinedProgram>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
->()
+expectTypeOf<EffectRequirements<typeof combinedProgram>>().toEqualTypeOf<Database | Cache>()
 
 const plainResult = Result.ok('plain')
 
 expectTypeOf<EffectRequirements<typeof plainResult>>().toEqualTypeOf<never>()
-expectTypeOf<EffectRequirements<Promise<typeof nestedProgram>>>().toEqualTypeOf<
-  ServiceToken<'Cache', Cache>
->()
-expectTypeOf<EffectRequirements<typeof nestedProgram | typeof plainResult>>().toEqualTypeOf<
-  ServiceToken<'Cache', Cache>
->()
+expectTypeOf<EffectRequirements<Promise<typeof nestedProgram>>>().toEqualTypeOf<Cache>()
+expectTypeOf<EffectRequirements<typeof nestedProgram | typeof plainResult>>().toEqualTypeOf<Cache>()
 
 const scopeProgram = Effect.gen(async function* () {
   const scope = yield* Scope
@@ -139,12 +134,10 @@ const legacyReleaseProgram = Effect.gen(async function* () {
   return Result.ok(connection)
 })
 
-expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof scopeProgram>>().toEqualTypeOf<Database>()
 
 expectTypeOf<EffectRequirements<ReturnType<UserRepository['load']>>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
+  Database | Cache
 >()
 
 expectTypeOf<EffectSuccess<typeof acquireReleaseProgram>>().toEqualTypeOf<Connection>()
@@ -163,10 +156,24 @@ expectTypeOf<
   EffectError<typeof serviceAndAcquireReleaseProgram>
 >().toEqualTypeOf<UnhandledException>()
 
-expectTypeOf<EffectRequirements<typeof serviceAndAcquireReleaseProgram>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof serviceAndAcquireReleaseProgram>>().toEqualTypeOf<Database>()
 
-expectTypeOf<ServiceRequirements<typeof UserRepository>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Cache', Cache>
->()
+expectTypeOf<ServiceRequirements<UserRepository>>().toEqualTypeOf<Database | Cache>()
+
+type RequirementFree = Effect<string, Error>
+expectTypeOf<RequirementFree>().toEqualTypeOf<Effect<string, Error, never>>()
+expectTypeOf<EffectRequirements<RequirementFree>>().toBeNever()
+expectTypeOf<EffectRequirements<Effect.Any>>().toEqualTypeOf<Service.Any>()
+
+type RandomEnvironment = { readonly random: true }
+
+// @ts-expect-error empty objects are not Service environments
+export type InvalidEmptyEnvironment = Effect<string, Error, {}>
+// @ts-expect-error object is not a Service environment
+export type InvalidObjectEnvironment = Effect<string, Error, object>
+// @ts-expect-error primitives are not Service environments
+export type InvalidPrimitiveEnvironment = Effect<string, Error, string>
+// @ts-expect-error arbitrary interfaces are not Service environments
+export type InvalidRandomEnvironment = Effect<string, Error, RandomEnvironment>
+// @ts-expect-error unknown is not a Service environment
+export type InvalidUnknownEnvironment = Effect<string, Error, unknown>

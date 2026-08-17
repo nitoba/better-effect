@@ -1,6 +1,6 @@
 import type { Err, InferErr, InferOk, Result as ResultType } from 'better-result'
 
-import type { AnyServiceToken } from '../service/types'
+import type { AnyService } from '../service/types'
 
 /**
  * Type-only identity for a Service requirement yielded by a generator.
@@ -19,55 +19,53 @@ export declare const EffectRequirementsTypeId: unique symbol
  * This interface is intentionally phantom: it is used only while TypeScript
  * infers a generator's yielded values.
  */
-export interface ServiceRequirement<T extends AnyServiceToken> {
+export interface ServiceRequirement<out T> {
   readonly [ServiceRequirementTypeId]: T
 }
 
-/**
- * A `better-result` Result with phantom metadata for required Services.
- *
- * @typeParam A The successful value.
- * @typeParam E The error value.
- * @typeParam Requirements The tagged Service contracts required to produce it.
- */
-export type EffectResult<A, E, Requirements = never> = ResultType<A, E> & {
-  readonly [EffectRequirementsTypeId]?: Requirements
+/** A `better-result` Result with phantom metadata for required Services. */
+export type Effect<A, E, R extends AnyService = never> = ResultType<A, E> & {
+  readonly [EffectRequirementsTypeId]?: R
 }
 
-/** An Effect result with unknown success, error, and Service requirements. */
-export type AnyEffectResult = EffectResult<unknown, unknown, any>
+/** An Effect with erased success, error, and Service requirements. */
+export type AnyEffect = Effect<unknown, unknown, AnyService>
 
 /** Values that an Effect generator may yield. */
-export type EffectYield = Err<never, unknown> | ServiceRequirement<AnyServiceToken>
+export type EffectYield = Err<never, unknown> | ServiceRequirement<unknown>
 
 /** Extract the error channel from Result values yielded by a generator. */
 export type InferYieldError<Y> = Y extends Err<never, infer E> ? E : never
 
-/** Extract Service tokens carried by yielded Service requirements. */
+/** Extract branded Service instances carried by yielded Service requirements. */
 export type InferYieldRequirements<Y> =
-  Y extends ServiceRequirement<infer Requirement> ? Requirement : never
+  Y extends ServiceRequirement<infer Requirement>
+    ? Requirement extends AnyService
+      ? Requirement
+      : never
+    : never
 
 type InferEffectRequirements<T> = T extends unknown
   ? typeof EffectRequirementsTypeId extends keyof T
     ? T extends {
-        readonly [EffectRequirementsTypeId]?: infer Requirements
+        readonly [EffectRequirementsTypeId]?: infer Requirements extends AnyService
       }
       ? Requirements
       : never
     : never
   : never
 
-/** Extract phantom Service requirements from an Effect result or Promise. */
+/** Extract phantom Service requirements from an Effect or Promise. */
 export type EffectRequirements<T> = InferEffectRequirements<Awaited<T>>
 
-/** Extract the success value from an Effect result or Promise. */
+/** Extract the success value from an Effect or Promise. */
 export type EffectSuccess<T> = Awaited<T> extends ResultType<infer A, unknown> ? A : never
 
-/** Extract the error value from an Effect result or Promise. */
+/** Extract the error value from an Effect or Promise. */
 export type EffectError<T> = Awaited<T> extends ResultType<unknown, infer E> ? E : never
 
-/** Build the public result type produced from an Effect generator. */
-export type EffectFromGenerator<Yield, Returned extends ResultType<any, any>> = EffectResult<
+/** Build the public Effect type produced from a generator. */
+export type EffectFromGenerator<Yield, Returned extends ResultType<any, any>> = Effect<
   InferOk<Returned>,
   InferYieldError<Yield> | InferErr<Returned>,
   InferYieldRequirements<Yield> | EffectRequirements<Returned>

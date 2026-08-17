@@ -2,6 +2,10 @@ import type { AnyServiceToken } from '../service'
 
 import { ServiceTagCollisionError } from './errors'
 
+import type { LayerRegistration } from './types'
+
+type LayerAcquiredValue = Awaited<ReturnType<LayerRegistration['acquire']>>
+
 const serviceMemberNames = (token: AnyServiceToken): readonly (string | symbol)[] => {
   const names = new Set<string | symbol>()
   let prototype = token.prototype
@@ -31,18 +35,21 @@ const serviceMemberNames = (token: AnyServiceToken): readonly (string | symbol)[
 export const assertServiceCompatibility = (
   requested: AnyServiceToken,
   registered: AnyServiceToken,
-  instance: unknown
+  instance: LayerAcquiredValue
 ): void => {
   if (requested === registered || requested.serviceTag !== registered.serviceTag) {
     return
   }
 
-  if ((typeof instance !== 'object' && typeof instance !== 'function') || instance === null) {
+  const candidate = Object(instance)
+
+  // SAFETY: Service providers are object instances; Object() lets this runtime boundary reject rogue primitive values without trusting their static type.
+  if (candidate !== instance) {
     throw new ServiceTagCollisionError(registered, requested)
   }
 
   for (const name of serviceMemberNames(requested)) {
-    if (!(name in instance)) {
+    if (!(name in candidate)) {
       throw new ServiceTagCollisionError(registered, requested)
     }
   }

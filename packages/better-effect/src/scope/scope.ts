@@ -239,3 +239,18 @@ export const Scope = {
     })
   }
 } as const
+
+/** Type-level aliases for Scope ownership, outcomes, and cleanup contracts. */
+export declare namespace Scope {
+  /** A Scope whose owner is responsible for calling `close()`. */
+  export type Closeable = CloseableScope
+
+  /** The outcome supplied to Scope finalizers and resource releases. */
+  export type Outcome = ScopeOutcome
+
+  /** A cleanup callback registered with a Scope. */
+  export type Finalizer = ScopeFinalizer
+
+  /** A value implementing a JavaScript disposal protocol. */
+  export type Disposable = DisposableResource
+}

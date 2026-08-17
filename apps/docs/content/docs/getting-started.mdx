@@ -18,7 +18,7 @@ bun add better-effect better-result
   <Tab>```bash pnpm add better-effect better-result ```</Tab>
 </Tabs>
 
-The public TypeScript peer range starts at 5.2. `better-effect` also uses the
+The public TypeScript peer range starts at 5.7. `better-effect` also uses the
 standard `Symbol.dispose` and `Symbol.asyncDispose` declarations for disposable
 resources, so your `tsconfig` should include a modern JavaScript library such as
 `ESNext.Disposable`.
@@ -56,6 +56,11 @@ if (Result.isOk(result)) {
   console.log(result.value) // Hello, Ada!
 }
 ```
+
+A Layer's public type is `Layer<Provided, Required>`: `Provided` is the tagged
+Service instance union it creates, and `Required` is the external dependency
+union left after composition. Prefer inferred Layers or `satisfies Layer<..., ...>`
+when naming a composition root.
 
 `MemoryLayerBackend` is exported from `better-effect/testing`; the root export
 does not include test-only backends. Import it explicitly in a real project:

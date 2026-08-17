@@ -3,18 +3,12 @@ import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../../src/effect'
-import {
-  Layer,
-  type CompleteLayer,
-  type LayerBackend,
-  type LayerMissing,
-  type LayerProvided,
-  type LayerRawRequired
-} from '../../src/layer'
+import { Layer, type LayerBackend } from '../../src/layer'
+import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { createRuntimeHandle } from '../../src/layer/runtime'
 import { Runtime } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
-import { Service, type ServiceToken } from '../../src/service'
+import { Service } from '../../src/service'
 
 class Database extends Service<Database>()('Database') {
   query(): string {
@@ -42,9 +36,21 @@ class UserRepository extends Service<UserRepository>()('UserRepository') {
   }
 }
 
-const backend = {} as LayerBackend
+declare const backend: LayerBackend
 const DatabaseLive = Layer.succeed(Database, new Database())
 const LoggerLive = Layer.succeed(Logger, new Logger())
+
+const StructuralDatabaseLive = Layer.scopedGen(
+  Database,
+  // oxlint-disable-next-line require-yield
+  async function* () {
+    return { query: () => 'structurally acquired' }
+  },
+  (database, outcome) => {
+    expectTypeOf(database).toEqualTypeOf<Database>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+  }
+)
 
 const UserRepositoryLive = Layer.scopedGen(
   UserRepository,
@@ -62,33 +68,23 @@ const UserRepositoryLive = Layer.scopedGen(
   }
 )
 
-expectTypeOf<LayerProvided<typeof UserRepositoryLive>>().toEqualTypeOf<typeof UserRepository>()
-expectTypeOf<LayerRawRequired<typeof UserRepositoryLive>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
->()
-expectTypeOf<LayerMissing<typeof UserRepositoryLive>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
->()
+expectTypeOf<Layer.Provided<typeof UserRepositoryLive>>().toEqualTypeOf<UserRepository>()
+expectTypeOf<Layer.Required<typeof UserRepositoryLive>>().toEqualTypeOf<Database | Logger>()
 
 const Complete = Layer.merge(DatabaseLive, LoggerLive, UserRepositoryLive)
 
-expectTypeOf<LayerMissing<typeof Complete>>().toEqualTypeOf<never>()
-expectTypeOf<CompleteLayer<typeof Complete>>().toEqualTypeOf<typeof Complete>()
+expectTypeOf<Layer.Required<typeof Complete>>().toBeNever()
+expectTypeOf<Layer.Complete<typeof Complete>>().toEqualTypeOf<typeof Complete>()
 
 void createRuntimeHandle(Complete, backend)
 void Runtime.make(Complete, backend)
+void StructuralDatabaseLive
 
 const Incomplete = Layer.merge(UserRepositoryLive)
 
-expectTypeOf<LayerMissing<typeof Incomplete>>().toEqualTypeOf<
-  ServiceToken<'Database', Database> | ServiceToken<'Logger', Logger>
->()
-expectTypeOf<CompleteLayer<typeof Incomplete>>().toMatchTypeOf<
-  typeof Incomplete & {
-    readonly __betterEffectMissingServices:
-      | ServiceToken<'Database', Database>
-      | ServiceToken<'Logger', Logger>
-  }
+expectTypeOf<Layer.Required<typeof Incomplete>>().toEqualTypeOf<Database | Logger>()
+expectTypeOf<Layer.Complete<typeof Incomplete>>().toMatchTypeOf<
+  typeof Incomplete & MissingDependencies<Database | Logger>
 >()
 
 // @ts-expect-error Database and Logger are not supplied by this Layer.
@@ -130,4 +126,4 @@ const ScopeOnly = Layer.scopedGen(
   }
 )
 
-expectTypeOf<LayerRawRequired<typeof ScopeOnly>>().toEqualTypeOf<ServiceToken<'Logger', Logger>>()
+expectTypeOf<Layer.Required<typeof ScopeOnly>>().toEqualTypeOf<Logger>()

@@ -9,6 +9,8 @@ import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
 import { assertServiceCompatibility } from '../layer/internal-identity'
 
+type LayerAcquiredValue = Awaited<ReturnType<LayerRegistration['acquire']>>
+
 /**
  * In-memory Layer backend for tests and small local programs.
  *
@@ -18,9 +20,9 @@ import { assertServiceCompatibility } from '../layer/internal-identity'
 export class MemoryLayerBackend implements LayerBackend {
   private readonly providers = new Map<string, LayerRegistration>()
 
-  private readonly instances = new Map<string, unknown>()
+  private readonly instances = new Map<string, LayerAcquiredValue>()
 
-  private readonly pending = new Map<string, Promise<unknown>>()
+  private readonly pending = new Map<string, Promise<LayerAcquiredValue>>()
 
   /** Register a provider, rejecting duplicate or colliding Service tags. */
   register(registration: LayerRegistration): void {
@@ -47,14 +49,17 @@ export class MemoryLayerBackend implements LayerBackend {
       throw new ServiceNotFoundError(token)
     }
 
-    const validate = (instance: unknown): InstanceType<T> => {
+    const validate = (instance: LayerAcquiredValue): InstanceType<T> => {
       assertServiceCompatibility(token, provider.service, instance)
 
+      // SAFETY: The provider and requested token share a tag, and compatibility checks verify the registered members before restoring the token-specific instance type.
       return instance as InstanceType<T>
     }
 
-    if (this.instances.has(tag)) {
-      return validate(this.instances.get(tag))
+    const cached = this.instances.get(tag)
+
+    if (cached !== undefined) {
+      return validate(cached)
     }
 
     const pending = this.pending.get(tag)

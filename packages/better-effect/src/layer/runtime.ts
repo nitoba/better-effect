@@ -1,6 +1,6 @@
 import { ServiceRuntime } from '../service'
 
-import type { AnyServiceToken } from '../service'
+import type { AnyService } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
@@ -17,16 +17,15 @@ import { LayerDisposeError, LayerRegistrationError } from './errors'
 
 import type { LayerBackend } from './backend'
 
-import type { AnyLayer, CompleteExecution, CompleteLayer, LayerProvided } from './inference'
+import type { LayerInput, CompleteExecution, CompleteInput, ProvidedEnvironment } from './inference'
 
 import type { LayerRegistration } from './types'
 
 import type { ScopeOutcome } from '../scope'
 
-type LayerProvider = AnyLayer['providers'][number]
+type LayerProvider = LayerInput['providers'][number]
 
-/** Runtime-facing handle that owns a Layer's resources and execution scopes. */
-export interface RuntimeHandle<Provided extends AnyServiceToken = AnyServiceToken> {
+interface RuntimeHandleCore<Provided extends AnyService> {
   /** The backend used to resolve this Layer's providers. */
   readonly backend: LayerBackend
 
@@ -36,6 +35,9 @@ export interface RuntimeHandle<Provided extends AnyServiceToken = AnyServiceToke
   /** Stop new executions and release Layer-owned resources. */
   dispose(outcome?: ScopeOutcome): Promise<void>
 }
+
+/** Runtime-facing handle that owns a Layer's resources and execution scopes. */
+export type RuntimeHandle<Provided extends AnyService = any> = RuntimeHandleCore<Provided>
 
 const SCOPE_SUCCESS: ScopeOutcome = Object.freeze({ status: 'success' })
 
@@ -89,7 +91,7 @@ const bindProviderToScope = (
     })
 })
 
-class RuntimeHandleImpl<Provided extends AnyServiceToken> implements RuntimeHandle<Provided> {
+class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCore<Provided> {
   private disposePromise: Promise<void> | undefined
 
   private readonly executions = new Set<Promise<unknown>>()
@@ -216,11 +218,11 @@ class RuntimeHandleImpl<Provided extends AnyServiceToken> implements RuntimeHand
 }
 
 /** Build a Runtime handle for a complete Layer and register its providers. */
-export const createRuntimeHandle = async <L extends AnyLayer>(
-  layer: CompleteLayer<L>,
+export const createRuntimeHandle = async <L extends LayerInput>(
+  layer: L & CompleteInput<L>,
   backend: LayerBackend,
   options: RuntimeOptions = {}
-): Promise<RuntimeHandle<LayerProvided<L>>> => {
+): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const rootScope = Scope.make()
   let current: LayerProvider | undefined
 
@@ -258,16 +260,15 @@ export const createRuntimeHandle = async <L extends AnyLayer>(
       })
     }
 
-    let cleanupCause: unknown
-
-    if (cleanupCauses.length === 1) {
-      cleanupCause = cleanupCauses[0]
-    } else if (cleanupCauses.length > 1) {
-      cleanupCause = new LayerDisposeError(cleanupCauses.flatMap(normalizeDisposeCauses))
-    }
+    const cleanupCause =
+      cleanupCauses.length === 1
+        ? cleanupCauses[0]
+        : cleanupCauses.length > 1
+          ? new LayerDisposeError(cleanupCauses.flatMap(normalizeDisposeCauses))
+          : undefined
 
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new RuntimeHandleImpl<LayerProvided<L>>(backend, rootScope, options.onCleanupFailure)
+  return new RuntimeHandleImpl<ProvidedEnvironment<L>>(backend, rootScope, options.onCleanupFailure)
 }

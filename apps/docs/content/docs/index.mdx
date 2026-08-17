@@ -42,6 +42,10 @@ The library is intentionally small. It gives you a composition root and
 lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
 dependency injection to ordinary TypeScript libraries or adapters.
 
+Layers expose a simple `Layer<Provided, Required>` contract. `Provided` and
+`Required` are tagged Service instance unions; after composition, `Required`
+contains only dependencies that remain external.
+
 ## Choose your starting point
 
 <Tabs
@@ -70,9 +74,10 @@ dependency injection to ordinary TypeScript libraries or adapters.
 ## What this library is not
 
 `better-effect` is not a reimplementation of Effect. It does not add fibers,
-schedulers, streams, queues, a full Context abstraction, or a public
-`Effect<A, E, R>` runtime type. An Effect program here is a
-`better-result` Result (or Promise of one) carrying phantom Service metadata.
+schedulers, streams, queues, a full Context abstraction, or a lazy instruction
+tree. Its public `Effect<A, E, R>` is a type-only facade over a `better-result`
+Result (or Promise of one), with `R` carrying phantom tagged Service instance
+requirements.
 
 That smaller boundary is a feature: use the pieces when they solve a concrete
 problem and keep the rest of your application conventional.

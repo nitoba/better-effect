@@ -1,14 +1,15 @@
-import type { AnyLayer, LayerProvided } from '../layer'
+import type { Layer } from '../layer/layer'
+import type { LayerInput } from '../layer/inference'
 
 import type { Runtime } from './runtime'
 
 /**
  * Name a Runtime type from a concrete Layer without repeating its provided
- * Service constructor union.
+ * branded Service instance union.
  *
  * @example
  * ```ts
  * type AppRuntime = RuntimeFor<typeof AppLive>
  * ```
  */
-export type RuntimeFor<L extends AnyLayer> = Runtime<LayerProvided<L>>
+export type RuntimeFor<L extends LayerInput> = Runtime<Layer.Provided<L>>

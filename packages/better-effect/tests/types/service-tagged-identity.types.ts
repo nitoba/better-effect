@@ -3,7 +3,12 @@ import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect, type EffectRequirements } from '../../src/effect'
-import { Service, ServiceRuntime, type ServiceToken } from '../../src/service'
+import {
+  Service,
+  ServiceRuntime,
+  type ServiceContract,
+  type ServiceIdentity
+} from '../../src/service'
 
 class Database extends Service<Database>()('Database') {
   query(): string {
@@ -19,9 +24,7 @@ const program = Effect.gen(async function* () {
   return Result.ok(database)
 })
 
-expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<Database>()
 
 const database = await ServiceRuntime.resolve(Database)
 
@@ -32,6 +35,8 @@ const DATABASE_TAG = 'Database' as const
 class DatabaseWithConstTag extends Service<DatabaseWithConstTag>()(DATABASE_TAG) {}
 
 expectTypeOf(DatabaseWithConstTag.serviceTag).toEqualTypeOf<'Database'>()
+expectTypeOf<DatabaseWithConstTag>().toMatchTypeOf<ServiceIdentity<'Database'>>()
+expectTypeOf<ServiceContract<DatabaseWithConstTag>>().toEqualTypeOf<{}>()
 
 declare const dynamicTag: string
 

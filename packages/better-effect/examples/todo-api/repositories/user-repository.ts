@@ -26,6 +26,7 @@ export class UserRepository extends Service<UserRepository>()('UserRepository') 
       const rows = yield* Result.await(
         database.run(
           'user.findByEmail',
+          // SAFETY: The SQL projection matches every field declared by UserRow.
           async (sql) =>
             (await sql`
                   SELECT

@@ -31,8 +31,9 @@ const DatabaseLive = Layer.make(Database, async () => {
 })
 ```
 
-The callback is lazy and its return type must match the Service instance
-contract.
+The callback is lazy and accepts the marker-free `Service.Contract<Database>`
+shape. The Layer provides the branded `Database` instance type; no identity
+property is added at runtime.
 
 ## `Layer.succeed`
 
@@ -122,10 +123,9 @@ const AppTest = Layer.override(
 ```
 
 Overrides are applied left to right; the last compatible provider for a tag
-wins. Compatibility is bidirectional: the two instance contracts must extend
-each other. An incompatible same-tag replacement remains visible in the type
-as `__betterEffectLayerOverrideCollisions` and cannot cross a complete Runtime
-boundary.
+wins. Compatibility is bidirectional: the two marker-free instance contracts
+must extend each other. An incompatible same-tag replacement is rejected at
+`Layer.override`, before it can cross a Runtime boundary.
 
 <Accordions>
   <Accordion title="Why does merge reject duplicates?" id="merge-duplicates">
@@ -148,17 +148,41 @@ boundary.
 
 ## Layer type helpers
 
-The public type helpers make application boundaries explicit:
+The public Layer contract has exactly two channels:
 
 ```ts
-import type { LayerMissing, LayerProvided, LayerRawRequired, LayerSpecs } from 'better-effect'
+import type { Layer } from 'better-effect'
 
-type Provided = LayerProvided<typeof ApplicationLive>
-type RequiredDuringAcquire = LayerRawRequired<typeof ApplicationLive>
-type Missing = LayerMissing<typeof ApplicationLive>
-type Specs = LayerSpecs<typeof ApplicationLive>
+const RepositoryLive = Layer.gen(UserRepository, async function* () {
+  const database = yield* Database
+  return new UserRepository(database)
+})
+// Layer<UserRepository, Database>
+
+const ApplicationLive = Layer.merge(Layer.make(Database), RepositoryLive)
+// Layer<Database | UserRepository, never>
+
+type Provided = Layer.Provided<typeof ApplicationLive>
+// Database | UserRepository
+type Required = Layer.Required<typeof ApplicationLive>
+// never
+type Complete = Layer.Complete<typeof ApplicationLive>
 ```
 
-Usually you do not need to annotate these types. They are useful for library
-authors, composition roots and diagnostics that intentionally expose a Layer's
-contract.
+`Required` is the external environment left after composition, not a raw union
+of every provider's dependencies. Inferred Layers retain private provenance so
+a precise override can remove only the replaced provider's requirements:
+
+```ts
+const AppChecked = Layer.merge(Layer.make(Database), RepositoryLive) satisfies Layer<
+  Database | UserRepository,
+  never
+>
+```
+
+Prefer inference or `satisfies` when later overrides should remain precise. A
+normal `:` annotation is safe but intentionally erases per-provider provenance,
+so later overrides retain requirements conservatively. `Layer.Any` is the
+explicit unchecked generic boundary. Bare Layers, partial-`any` channels and
+concrete Layer unions must be narrowed or completed before composition or
+Runtime creation.

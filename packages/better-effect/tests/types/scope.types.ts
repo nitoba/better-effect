@@ -12,7 +12,6 @@ import {
   type RuntimeShutdownDiagnostic,
   Scope,
   Service,
-  type ServiceToken,
   type ScopeFinalizer,
   type ScopeOutcome
 } from '../../src'
@@ -28,9 +27,7 @@ const program = Effect.gen(async function* () {
   return Result.ok({ scope, database })
 })
 
-expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<Database>()
 
 const onlyScope = Effect.gen(async function* () {
   const scope = yield* Scope
@@ -67,7 +64,7 @@ const finalizer: ScopeFinalizer = (outcome) => {
 
 void finalizer
 
-const cleanupDiagnostic = null as unknown as CleanupFailureDiagnostic
+declare const cleanupDiagnostic: CleanupFailureDiagnostic
 
 expectTypeOf(cleanupDiagnostic.outcome).toEqualTypeOf<ScopeOutcome>()
 expectTypeOf(cleanupDiagnostic.error.causes).toEqualTypeOf<readonly unknown[]>()

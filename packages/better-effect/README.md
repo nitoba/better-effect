@@ -44,9 +44,17 @@ literal is the Service's stable logical identity. Services with identical
 methods but different tags are different dependencies; use a namespaced tag
 such as `@acme/Database` when identities must be shared across packages.
 
-`UserRepository` used `Database`, so `Database` became part of its environment requirements.
+`UserRepository` used `Database`, so `Database` became part of its environment requirements:
 
-No dependency list was written manually.
+```ts
+type FindUser = Awaited<ReturnType<UserRepository['findUser']>>
+// Effect<User, never, Database>
+```
+
+`Effect<A, E, R>` is a type-only facade over a `better-result` Result, not an Effect TS
+instruction tree. Constructors remain the handles used by `yield*`, Layers and resolver backends;
+the public requirement `R` is a union of tagged Service instances. No dependency list was written
+manually.
 
 Services can also describe a contract without requiring a class instance. Use the
 static `of` helper to type-check a structural implementation; it returns the same
@@ -67,6 +75,15 @@ const AuthorizationLive = Layer.succeed(Authorization, authorization)
 `Authorization.of(...)` does not call a constructor or make the result an
 `instanceof Authorization`. For services with constructors, private fields or
 other runtime invariants, use `new Authorization(...)` instead.
+
+Service tokens themselves are always declared through `Service<Self>()(tag)`.
+Every instance carries a required, declaration-only `ServiceIdentity<Tag>`; no
+identity property exists at runtime. `Service.Contract<Authorization>` projects
+the marker-free implementation shape accepted by `Service.of` and all Layer
+provider APIs. Those boundaries return or provide the branded Service type
+without modifying the implementation object. `Service.of(...)` does not create
+an alternate token, so the instance contract stays tied to the constructor used
+by Layers and resolver backends.
 
 Provide it and the environment becomes complete:
 
@@ -113,6 +130,40 @@ Runtime can execute it
 We call this **typechecked wiring**.
 
 The Services your code uses, the implementations your Layers provide, and the programs your Runtime executes participate in the same type-level contract.
+
+A Layer's public type is `Layer<Provided, Required>`. `Provided` is the Service
+instance union produced by the Layer and `Required` is only the external
+requirement union left after composition. Preserve inferred Layers when possible;
+use `satisfies Layer<Provided, Required>` when checking an application boundary
+without erasing provider provenance.
+
+Generic infrastructure that intentionally erases this metadata can use the
+explicit `Layer.Any` sentinel, including for an empty Layer. Bare Layers,
+partial-`any` shapes and concrete unions such as `Layer<A> | Layer<B>` are not
+implicit unchecked boundaries.
+
+### Discover type helpers from their API
+
+Public type helpers are also grouped under the runtime API they describe:
+
+```ts
+import type { Effect, Layer, Runtime, Scope, Service } from 'better-effect'
+
+type Program = ReturnType<UserRepository['findUser']>
+type Success = Effect.Success<Program>
+type Failure = Effect.Error<Program>
+type Dependencies = Effect.Requirements<Program>
+type Services = Layer.Provided<typeof AppLive>
+type AppRuntime = Runtime.For<typeof AppLive>
+type DatabaseTag = Service.Tag<Database> // 'Database'
+type DatabaseToken = Service.TokenOf<Database> // Service.Token<'Database', Database>
+type Outcome = Scope.Outcome
+```
+
+These are declaration-only aliases and add nothing to the JavaScript bundle.
+The associated `Layer` helpers are intentionally namespaced; use
+`Layer.Provided`, `Layer.Required`, `Layer.Complete` and `Layer.Any` rather than
+low-level provider metadata names.
 
 ---
 
@@ -193,9 +244,11 @@ Resources acquired during an individual execution belong to that execution inste
 
 `better-effect` is not a replacement implementation of Effect.
 
-It does not introduce a fiber runtime, scheduler, streams, queues or a public `Effect<A, E, R>` abstraction.
+It does not introduce a fiber runtime, scheduler, streams, queues or a lazy runtime instruction tree.
 
-`Effect.gen` builds on `better-result` generator composition while carrying Service requirements through the TypeScript type system.
+Its public `Effect<A, E, R>` is only a type-level Result facade. `Effect.gen` builds on
+`better-result` generator composition while carrying Service instance requirements through the
+TypeScript type system.
 
 Dependency resolution stays behind a pluggable backend.
 
@@ -270,8 +323,9 @@ Application resources live with the Runtime. Execution resources live with the e
 Keep `better-result` as the source of truth for typed successes, failures, short-circuiting
 and generator control flow. `Effect.gen` delegates to `Result.gen`; it adds only the
 phantom Service requirements that TypeScript needs to check the application environment.
-At runtime, an `EffectResult` is still a `better-result` Result; the requirements exist
-only in the type.
+At runtime, an `Effect<A, E, R>` is still a `better-result` Result; the requirements exist
+only in the type. `Effect.Requirements`, `Layer.Provided`, `Layer.Required` and
+`Runtime.For` expose tagged Service instance unions.
 
 For a linear workflow, `pipe` composes the same kind of program without introducing a
 second Result model or a lazy Effect runtime:

@@ -1,4 +1,7 @@
 import type { AnyServiceToken, ServiceClass } from '../service'
+import type { ScopeOutcome } from '../scope'
+
+type LayerCause = Extract<ScopeOutcome, { readonly status: 'failure' }>['cause']
 
 /** Thrown when a Layer registers the same Service tag more than once. */
 export class DuplicateServiceError extends Error {
@@ -28,8 +31,8 @@ export class ServiceTagCollisionError extends Error {
 export class LayerRegistrationError extends Error {
   constructor(
     readonly service: ServiceClass<any> | undefined,
-    readonly registrationCause: unknown,
-    readonly cleanupCause?: unknown
+    readonly registrationCause: LayerCause,
+    readonly cleanupCause?: LayerCause
   ) {
     super(
       service ? `Failed to register service "${service.serviceTag}"` : 'Failed to build Layer',

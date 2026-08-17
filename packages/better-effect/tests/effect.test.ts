@@ -21,7 +21,7 @@ class GreetingService extends Service<GreetingService>()('GreetingService') {
   }
 }
 
-const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
+const captureRejection = async (promise: Promise<unknown>) =>
   promise.then(
     () => undefined,
     (cause) => cause
@@ -371,6 +371,7 @@ describe('Effect.gen', () => {
 
     if (Result.isError(result)) {
       expect(result.error).toBeInstanceOf(UnhandledException)
+      // SAFETY: The preceding assertion verifies better-result normalized the failure as UnhandledException.
       expect((result.error as UnhandledException).cause).toBe(cause)
     }
 
@@ -395,6 +396,7 @@ describe('Effect.gen', () => {
 
     if (Result.isError(result)) {
       expect(result.error).toBeInstanceOf(UnhandledException)
+      // SAFETY: The preceding assertion verifies better-result normalized the failure as UnhandledException.
       expect((result.error as UnhandledException).cause).toBe(cause)
     }
 
@@ -413,6 +415,7 @@ describe('Effect.gen', () => {
       })
     )
 
+    // SAFETY: Effect generator failures expose their original cause through the normalized rejection object.
     expect((error as { cause?: unknown }).cause).toBeInstanceOf(ScopeRuntimeNotConfiguredError)
   })
 
@@ -432,6 +435,7 @@ describe('Effect.gen', () => {
       })
     )
 
+    // SAFETY: Effect generator failures expose their original cause through the normalized rejection object.
     expect((error as { cause?: unknown }).cause).toBeInstanceOf(ScopeRuntimeNotConfiguredError)
     expect(disposed).toBe(0)
   })
@@ -474,6 +478,7 @@ describe('Effect.gen', () => {
 
     if (Result.isError(result)) {
       expect(result.error).toBeInstanceOf(UnhandledException)
+      // SAFETY: The preceding assertion verifies better-result normalized the failure as UnhandledException.
       expect((result.error as UnhandledException).cause).toBeInstanceOf(ScopeClosedError)
     }
 
@@ -520,6 +525,7 @@ describe('Effect.gen', () => {
     if (Result.isError(result)) {
       expect(result.error).toBeInstanceOf(UnhandledException)
 
+      // SAFETY: The preceding assertion verifies better-result normalized the failure as UnhandledException.
       const cause = (result.error as UnhandledException).cause
 
       expect(cause).toBeInstanceOf(AggregateError)

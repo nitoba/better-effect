@@ -25,13 +25,20 @@ export type RuntimeOptions = {
   readonly onCleanupFailure?: CleanupFailureObserver
 }
 
-const isResultLike = (value: unknown): value is ResultType<unknown, unknown> =>
-  typeof value === 'object' &&
-  value !== null &&
-  'status' in value &&
-  (value.status === 'ok' || value.status === 'error')
+type ResultLike = ResultType<any, any>
 
-export const classifyRuntimeOutcome = (value: unknown): ScopeOutcome => {
+const isResultLike = <A>(value: A): value is A & ResultLike => {
+  const candidate = Object(value)
+  const tag = Object.prototype.toString.call(value)
+
+  return (
+    tag !== '[object Function]' &&
+    'status' in candidate &&
+    (candidate.status === 'ok' || candidate.status === 'error')
+  )
+}
+
+export const classifyRuntimeOutcome = <A>(value: A): ScopeOutcome => {
   if (isResultLike(value) && Result.isError(value)) {
     return {
       status: 'failure',

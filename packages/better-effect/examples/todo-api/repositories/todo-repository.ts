@@ -30,6 +30,7 @@ export class TodoRepository extends Service<TodoRepository>()('TodoRepository') 
       const rows = yield* Result.await(
         database.run(
           'todo.list',
+          // SAFETY: The SQL projection matches every field declared by TodoRow.
           async (sql) =>
             (await sql`
                   SELECT
@@ -57,6 +58,7 @@ export class TodoRepository extends Service<TodoRepository>()('TodoRepository') 
       const rows = yield* Result.await(
         database.run(
           'todo.findById',
+          // SAFETY: The SQL projection matches every field declared by TodoRow.
           async (sql) =>
             (await sql`
                   SELECT
@@ -89,6 +91,7 @@ export class TodoRepository extends Service<TodoRepository>()('TodoRepository') 
       const rows = yield* Result.await(
         database.run(
           'todo.create',
+          // SAFETY: The INSERT RETURNING projection matches every field declared by TodoRow.
           async (sql) =>
             (await sql`
                   INSERT INTO todos (
@@ -135,6 +138,7 @@ export class TodoRepository extends Service<TodoRepository>()('TodoRepository') 
       const rows = yield* Result.await(
         database.run(
           'todo.update',
+          // SAFETY: The UPDATE RETURNING projection matches every field declared by TodoRow.
           async (sql) =>
             (await sql`
                   UPDATE todos
@@ -175,6 +179,7 @@ export class TodoRepository extends Service<TodoRepository>()('TodoRepository') 
       const rows = yield* Result.await(
         database.run(
           'todo.delete',
+          // SAFETY: The DELETE RETURNING projection contains the declared identifier field.
           async (sql) =>
             (await sql`
                   DELETE FROM todos
