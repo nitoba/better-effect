@@ -114,6 +114,8 @@ of(
 
 Constraining the outer `Service<Self>()` call to `Self extends AnyService` is forbidden because the derived class receives that identity from the base currently being constructed and TypeScript 5.2 rejects the circular constraint.
 
+`ServiceIdentity<Tag>` is an exported, type-only opaque interface because consumer declaration emit must be able to name the base instance type of exported Service subclasses. Its `unique symbol` remains a non-exported declaration detail, so consumers cannot construct the marker and no runtime symbol is emitted. The package may also expose the discoverable alias `Service.Identity<Tag>`; the top-level interface remains available for declaration portability.
+
 Every Layer boundary that accepts a structural implementation consumes `ServiceContract<InstanceType<Token>>` and returns or stores the branded Service type after one localized type-erasure cast:
 
 - `Service.of`;
@@ -237,23 +239,26 @@ type Requirements = Effect.Requirements<typeof program>
 
 ### Service yields
 
-The outer `Service<Self>()` factory cannot constrain recursive `Self` to `AnyService`. Instead, the iterator uses its exact generic constructor `this`, whose instance is already known to include the required base identity:
+The outer `Service<Self>()` factory cannot constrain recursive `Self` to `AnyService`, and a generic-`this` iterator leaves its type parameter unresolved under `yield*` on TypeScript 5.2. The iterator therefore uses the explicit recursive `Self` directly:
 
 ```ts
-type YieldableService<Tag extends string, Self> =
-  ServiceToken<Tag, Self> &
-  (abstract new (...args: any[]) => AnyService)
-
-[Symbol.asyncIterator]<T extends YieldableService<Tag, Self>>(
-  this: T
-): AsyncGenerator<
-  ServiceRequirement<InstanceType<T>>,
-  InstanceType<T>,
-  unknown
->
+[Symbol.asyncIterator](
+  this: ServiceToken<Tag, Self>
+): AsyncGenerator<ServiceRequirement<Self>, Self, unknown>
 ```
 
-At `yield* Database`, `T` is the exact constructor side and `InstanceType<T>` is exactly the branded `Database`. The runtime implementation still delegates `this` to `ServiceRuntime.resolve`. `ServiceRequirement` remains constrained to instance-side Service identities.
+`ServiceRequirement<T>` is an unconstrained covariant phantom carrier so the factory can mention recursive `Self` before the base identity is complete. It cannot be constructed by consumers because its unique-symbol member is private. Requirement extraction filters distributively:
+
+```ts
+type InferYieldRequirements<Y> =
+  Y extends ServiceRequirement<infer Requirement>
+    ? Requirement extends AnyService
+      ? Requirement
+      : never
+    : never
+```
+
+At `yield* Database`, both the yielded value and extracted requirement are exactly the completed branded `Database`. The runtime implementation still delegates `this` to `ServiceRuntime.resolve`. A TypeScript 5.2 declaration-emission spike validated exact yield inference for an exported subclass.
 
 ### Generator results
 
@@ -279,7 +284,7 @@ The optional readonly requirement metadata remains covariant. Public variance an
 
 ## Public Service model
 
-`Service.Any` becomes the widened required-marker instance constraint `ServiceIdentity<string>` used by public environment types. Constructor infrastructure remains available through `AnyServiceToken`, `Service.Token`, and `Service.Class`. A concrete Service is assignable to `Service.Any`; unrelated object types are not.
+`Service.Any` becomes the widened required-marker instance constraint `ServiceIdentity<string>` used by public environment types. `ServiceIdentity<Tag>` is a public type-only declaration bridge, with `Service.Identity<Tag>` as its namespaced spelling. Constructor infrastructure remains available through `AnyServiceToken`, `Service.Token`, and `Service.Class`. A concrete Service is assignable to `Service.Any`; unrelated object types are not.
 
 Public helpers operate naturally on instance types:
 
@@ -519,7 +524,9 @@ Generated-output tests must verify these properties.
 
 Type tests must prove:
 
-- `yield* Database` is exactly `Database`.
+- `yield* Database` and its inferred requirement are exactly `Database` under TypeScript 5.2.2;
+- exported Service subclasses emit declarations through the public opaque `ServiceIdentity<Tag>` without TS4020;
+- the identity unique symbol remains private and no runtime symbol is emitted;
 - `Service.Tag<Database>` is the literal tag.
 - `Service.TokenOf<Database>` is `ServiceToken<'Database', Database>`;
 - generic and union tag/token extraction distributes correctly;
@@ -561,6 +568,7 @@ Type tests must prove:
 Built-package fixtures must run with the current compiler and TypeScript 5.2.2 and verify:
 
 - value/type/namespace coexistence for `Effect`;
+- exported consumer Service subclasses emit portable declarations naming `ServiceIdentity<Tag>` under both compilers;
 - `Effect<A, E, R>` and namespaced helpers are importable;
 - public instance environments are exact;
 - invalid non-Service requirements fail;
