@@ -5,11 +5,7 @@ import { Result } from 'better-result'
 import { Effect } from '../../src/effect'
 import {
   Layer,
-  type CompleteLayer,
   type LayerBackend,
-  type LayerMissing,
-  type LayerProvided,
-  type LayerRawRequired
 } from '../../src/layer'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { createRuntimeHandle } from '../../src/layer/runtime'
@@ -75,14 +71,13 @@ const UserRepositoryLive = Layer.scopedGen(
   }
 )
 
-expectTypeOf<LayerProvided<typeof UserRepositoryLive>>().toEqualTypeOf<UserRepository>()
-expectTypeOf<LayerRawRequired<typeof UserRepositoryLive>>().toEqualTypeOf<Database | Logger>()
-expectTypeOf<LayerMissing<typeof UserRepositoryLive>>().toEqualTypeOf<Database | Logger>()
+expectTypeOf<Layer.Provided<typeof UserRepositoryLive>>().toEqualTypeOf<UserRepository>()
+expectTypeOf<Layer.Required<typeof UserRepositoryLive>>().toEqualTypeOf<Database | Logger>()
 
 const Complete = Layer.merge(DatabaseLive, LoggerLive, UserRepositoryLive)
 
-expectTypeOf<LayerMissing<typeof Complete>>().toBeNever()
-expectTypeOf<CompleteLayer<typeof Complete>>().toEqualTypeOf<typeof Complete>()
+expectTypeOf<Layer.Required<typeof Complete>>().toBeNever()
+expectTypeOf<Layer.Complete<typeof Complete>>().toEqualTypeOf<typeof Complete>()
 
 void createRuntimeHandle(Complete, backend)
 void Runtime.make(Complete, backend)
@@ -90,8 +85,8 @@ void StructuralDatabaseLive
 
 const Incomplete = Layer.merge(UserRepositoryLive)
 
-expectTypeOf<LayerMissing<typeof Incomplete>>().toEqualTypeOf<Database | Logger>()
-expectTypeOf<CompleteLayer<typeof Incomplete>>().toMatchTypeOf<
+expectTypeOf<Layer.Required<typeof Incomplete>>().toEqualTypeOf<Database | Logger>()
+expectTypeOf<Layer.Complete<typeof Incomplete>>().toMatchTypeOf<
   typeof Incomplete & MissingDependencies<Database | Logger>
 >()
 
@@ -134,4 +129,4 @@ const ScopeOnly = Layer.scopedGen(
   }
 )
 
-expectTypeOf<LayerRawRequired<typeof ScopeOnly>>().toEqualTypeOf<Logger>()
+expectTypeOf<Layer.Required<typeof ScopeOnly>>().toEqualTypeOf<Logger>()

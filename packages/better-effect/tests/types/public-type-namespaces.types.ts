@@ -9,10 +9,6 @@ import {
   type EffectRequirements,
   type EffectSuccess,
   Layer,
-  type LayerMissing,
-  type LayerProvided,
-  type LayerRawRequired,
-  type LayerSpecs,
   Runtime,
   type RuntimeFor,
   type RuntimeOptions,
@@ -90,10 +86,8 @@ expectTypeOf<Service.Token>().toEqualTypeOf<ServiceToken>()
 expectTypeOf<Service.Class>().toEqualTypeOf<ServiceClass>()
 
 expectTypeOf<Layer.Any>().toEqualTypeOf<Layer<any, any> | Layer<never, any>>()
-expectTypeOf<Layer.Specs<typeof AppLive>>().toEqualTypeOf<LayerSpecs<typeof AppLive>>()
-expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<LayerProvided<typeof AppLive>>()
-expectTypeOf<Layer.Required<typeof AppLive>>().toEqualTypeOf<LayerRawRequired<typeof AppLive>>()
-expectTypeOf<Layer.Missing<typeof AppLive>>().toEqualTypeOf<LayerMissing<typeof AppLive>>()
+expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<Database | Repository>()
+expectTypeOf<Layer.Required<typeof AppLive>>().toBeNever()
 expectTypeOf<Layer.Complete<typeof AppLive>>().toEqualTypeOf<typeof AppLive>()
 
 expectTypeOf<Runtime.For<typeof AppLive>>().toEqualTypeOf<RuntimeFor<typeof AppLive>>()

@@ -1,4 +1,5 @@
-import type { AnyLayer, LayerProvided } from '../layer'
+import type { Layer } from '../layer/layer'
+import type { LayerInput } from '../layer/inference'
 
 import type { Runtime } from './runtime'
 
@@ -11,4 +12,4 @@ import type { Runtime } from './runtime'
  * type AppRuntime = RuntimeFor<typeof AppLive>
  * ```
  */
-export type RuntimeFor<L extends AnyLayer> = Runtime<LayerProvided<L>>
+export type RuntimeFor<L extends LayerInput> = Runtime<Layer.Provided<L>>

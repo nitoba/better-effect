@@ -17,13 +17,13 @@ import { LayerDisposeError, LayerRegistrationError } from './errors'
 
 import type { LayerBackend } from './backend'
 
-import type { AnyLayer, CompleteExecution, CompleteLayer, LayerProvided } from './inference'
+import type { LayerInput, CompleteExecution, CompleteInput, ProvidedEnvironment } from './inference'
 
 import type { LayerRegistration } from './types'
 
 import type { ScopeOutcome } from '../scope'
 
-type LayerProvider = AnyLayer['providers'][number]
+type LayerProvider = LayerInput['providers'][number]
 
 interface RuntimeHandleCore<Provided extends AnyService> {
   /** The backend used to resolve this Layer's providers. */
@@ -218,11 +218,11 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 }
 
 /** Build a Runtime handle for a complete Layer and register its providers. */
-export const createRuntimeHandle = async <L extends AnyLayer>(
-  layer: CompleteLayer<L>,
+export const createRuntimeHandle = async <L extends LayerInput>(
+  layer: L & CompleteInput<L>,
   backend: LayerBackend,
   options: RuntimeOptions = {}
-): Promise<RuntimeHandle<LayerProvided<L>>> => {
+): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const rootScope = Scope.make()
   let current: LayerProvider | undefined
 
@@ -271,5 +271,5 @@ export const createRuntimeHandle = async <L extends AnyLayer>(
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new RuntimeHandleImpl<LayerProvided<L>>(backend, rootScope, options.onCleanupFailure)
+  return new RuntimeHandleImpl<ProvidedEnvironment<L>>(backend, rootScope, options.onCleanupFailure)
 }

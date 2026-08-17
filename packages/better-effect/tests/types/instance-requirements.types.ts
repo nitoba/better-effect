@@ -2,7 +2,7 @@ import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect, type EffectRequirements } from '../../src/effect'
-import { Layer, type LayerMissing, type LayerProvided } from '../../src/layer'
+import { Layer } from '../../src/layer'
 import type { MissingServices } from '../../src/layer/inference'
 import { Runtime, type RuntimeFor } from '../../src/runtime'
 import {
@@ -70,9 +70,9 @@ const LoggerLive = Layer.make(Logger)
 const RepositoryLive = Layer.make(Repository)
 const AppLive = Layer.merge(DatabaseLive, LoggerLive, RepositoryLive)
 
-expectTypeOf<LayerProvided<typeof AppLive>>().toEqualTypeOf<Database | Logger | Repository>()
-expectTypeOf<LayerMissing<typeof AppLive>>().toBeNever()
-expectTypeOf<LayerMissing<typeof RepositoryLive>>().toEqualTypeOf<Database | Logger>()
+expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<Database | Logger | Repository>()
+expectTypeOf<Layer.Required<typeof AppLive>>().toBeNever()
+expectTypeOf<Layer.Required<typeof RepositoryLive>>().toEqualTypeOf<Database | Logger>()
 expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger | Repository>>()
 expectTypeOf<MissingServices<Logger, Database>>().toEqualTypeOf<Logger>()
 expectTypeOf<MissingServices<Database | Logger, Database>>().toEqualTypeOf<Logger>()

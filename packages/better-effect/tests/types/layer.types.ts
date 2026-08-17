@@ -5,7 +5,6 @@ import { Result } from 'better-result'
 import { Effect } from '../../src/effect'
 import { Layer } from '../../src/layer'
 import { createRuntimeHandle } from '../../src/layer/runtime'
-import type { CompleteLayer, LayerMissing, LayerRawRequired } from '../../src/layer'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { Runtime } from '../../src/runtime'
 import type { ScopeOutcome } from '../../src/scope'
@@ -149,9 +148,9 @@ const PasswordsGeneratedLive = Layer.gen(PasswordHasher, async function* () {
 
 const PasswordsOverridden = Layer.override(PasswordsGeneratedLive, PasswordsLive)
 
-expectTypeOf<LayerMissing<typeof PasswordsGeneratedLive>>().toEqualTypeOf<FactoryDependency>()
+expectTypeOf<Layer.Required<typeof PasswordsGeneratedLive>>().toEqualTypeOf<FactoryDependency>()
 
-expectTypeOf<LayerMissing<typeof PasswordsOverridden>>().toBeNever()
+expectTypeOf<Layer.Required<typeof PasswordsOverridden>>().toBeNever()
 
 const PasswordsReplacementWithRequirement = Layer.gen(PasswordHasher, async function* () {
   const dependency = yield* ReplacementDependency
@@ -167,7 +166,7 @@ const PasswordsNeedsReplacementDependency = Layer.override(
 )
 
 expectTypeOf<
-  LayerMissing<typeof PasswordsNeedsReplacementDependency>
+  Layer.Required<typeof PasswordsNeedsReplacementDependency>
 >().toEqualTypeOf<ReplacementDependency>()
 
 const PasswordsMultipleOverride = Layer.override(
@@ -177,27 +176,27 @@ const PasswordsMultipleOverride = Layer.override(
 )
 
 expectTypeOf<
-  LayerMissing<typeof PasswordsMultipleOverride>
+  Layer.Required<typeof PasswordsMultipleOverride>
 >().toEqualTypeOf<ReplacementDependency>()
 
 const WithUnrelatedProvider = Layer.merge(DatabaseLive, PasswordsGeneratedLive)
 const OverriddenWithUnrelatedProvider = Layer.override(WithUnrelatedProvider, PasswordsLive)
 
-expectTypeOf<LayerRawRequired<typeof OverriddenWithUnrelatedProvider>>().toBeNever()
+expectTypeOf<Layer.Required<typeof OverriddenWithUnrelatedProvider>>().toBeNever()
 
 const Broken = Layer.merge(UsersLive, AuthLive)
 
-expectTypeOf<LayerMissing<typeof Broken>>().toEqualTypeOf<Database | PasswordHasher>()
+expectTypeOf<Layer.Required<typeof Broken>>().toEqualTypeOf<Database | PasswordHasher>()
 
-expectTypeOf<CompleteLayer<typeof Broken>>().toMatchTypeOf<
+expectTypeOf<Layer.Complete<typeof Broken>>().toMatchTypeOf<
   typeof Broken & MissingDependencies<Database | PasswordHasher>
 >()
 
-expectTypeOf<LayerMissing<typeof UsersGeneratedLive>>().toEqualTypeOf<Database>()
+expectTypeOf<Layer.Required<typeof UsersGeneratedLive>>().toEqualTypeOf<Database>()
 
 const Complete = Layer.merge(DatabaseLive, UsersLive, PasswordsLive, AuthLive)
 
-expectTypeOf<LayerMissing<typeof Complete>>().toBeNever()
+expectTypeOf<Layer.Required<typeof Complete>>().toBeNever()
 
 // @ts-expect-error Broken does not provide Database or PasswordHasher
 void Runtime.make(Broken, {} as never)

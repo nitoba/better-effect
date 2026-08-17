@@ -16,19 +16,4 @@ export type {
 
 export type { LayerBackend } from './backend'
 
-export type {
-  AnyLayer,
-  CompleteLayer,
-  LayerMissing,
-  LayerProvided,
-  LayerRawRequired,
-  LayerSpecs
-} from './inference'
-
-export type {
-  AnyLayerSpec,
-  LayerGenerator,
-  LayerGeneratorRequirements,
-  LayerRegistration,
-  LayerSpec
-} from './types'
+export type { LayerGenerator, LayerGeneratorRequirements, LayerRegistration } from './types'

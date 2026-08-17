@@ -3,16 +3,10 @@ import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../../src/effect'
-import {
-  type CompleteLayer,
-  Layer,
-  type LayerMissing,
-  type LayerProvided,
-  type LayerRawRequired
-} from '../../src/layer'
+import { Layer } from '../../src/layer'
 import type { MissingServices } from '../../src/layer/inference'
 import { Runtime } from '../../src/runtime'
-import { Service, type ServiceContract, type ServiceToken } from '../../src/service'
+import { Service, type ServiceContract } from '../../src/service'
 
 class EmptyPrimary extends Service<EmptyPrimary>()('EmptyPrimary') {}
 
@@ -95,8 +89,7 @@ const NeedsPrimaryDatabaseLive = Layer.make(NeedsPrimaryDatabase, () => new Need
 const ReplicaDatabaseLive = Layer.make(ReplicaDatabase, () => new ReplicaDatabase())
 const DifferentTagProvider = Layer.merge(NeedsPrimaryDatabaseLive, ReplicaDatabaseLive)
 
-expectTypeOf<LayerRawRequired<typeof DifferentTagProvider>>().toEqualTypeOf<PrimaryDatabase>()
-expectTypeOf<LayerMissing<typeof DifferentTagProvider>>().toEqualTypeOf<PrimaryDatabase>()
+expectTypeOf<Layer.Required<typeof DifferentTagProvider>>().toEqualTypeOf<PrimaryDatabase>()
 
 // SAFETY: Compile-time-only Runtime receiver for different-tag validation.
 const replicaRuntime = {} as Runtime<ReplicaDatabase>
@@ -136,7 +129,7 @@ const NeedsDatabaseALive = Layer.make(NeedsDatabaseA, () => new NeedsDatabaseA()
 const DatabaseBLive = Layer.make(DatabaseB, () => new DatabaseB())
 const SameTagCompatibleProvider = Layer.merge(NeedsDatabaseALive, DatabaseBLive)
 
-expectTypeOf<LayerMissing<typeof SameTagCompatibleProvider>>().toBeNever()
+expectTypeOf<Layer.Required<typeof SameTagCompatibleProvider>>().toBeNever()
 
 const DatabaseAWithDependency = Layer.gen(
   DatabaseA,
@@ -147,8 +140,8 @@ const DatabaseAWithDependency = Layer.gen(
 )
 const DatabaseAOverridden = Layer.override(DatabaseAWithDependency, DatabaseBLive)
 
-expectTypeOf<LayerProvided<typeof DatabaseAOverridden>>().toEqualTypeOf<DatabaseB>()
-expectTypeOf<LayerMissing<typeof DatabaseAOverridden>>().toBeNever()
+expectTypeOf<Layer.Provided<typeof DatabaseAOverridden>>().toEqualTypeOf<DatabaseB>()
+expectTypeOf<Layer.Required<typeof DatabaseAOverridden>>().toBeNever()
 
 class IncompatibleDatabaseA extends Service<IncompatibleDatabaseA>()('IncompatibleDatabase') {
   query(): string {
@@ -187,33 +180,21 @@ const SameTagIncompatibleProvider = Layer.merge(
   IncompatibleDatabaseBLive
 )
 
-expectTypeOf<
-  LayerRawRequired<typeof SameTagIncompatibleProvider>
->().toEqualTypeOf<IncompatibleDatabaseA>()
-expectTypeOf<
-  LayerMissing<typeof SameTagIncompatibleProvider>
->().toEqualTypeOf<IncompatibleDatabaseA>()
+expectTypeOf<Layer.Required<typeof SameTagIncompatibleProvider>>().toEqualTypeOf<IncompatibleDatabaseA>()
 
-const IncompatibleDatabaseOverridden = Layer.override(
-  Layer.make(IncompatibleDatabaseA, () => new IncompatibleDatabaseA()),
-  IncompatibleDatabaseBLive
+const IncompatibleDatabaseALive = Layer.make(
+  IncompatibleDatabaseA,
+  () => new IncompatibleDatabaseA()
 )
 
-expectTypeOf<CompleteLayer<typeof IncompatibleDatabaseOverridden>>().toMatchTypeOf<{
-  readonly __betterEffectLayerOverrideCollisions: ServiceToken<
-    'IncompatibleDatabase',
-    IncompatibleDatabaseB
-  >
-}>()
-
-// @ts-expect-error Incompatible same-tag overrides cannot form a complete Layer.
-void Runtime.make(IncompatibleDatabaseOverridden, {} as never)
+// @ts-expect-error incompatible same-tag overrides fail at Layer.override
+Layer.override(IncompatibleDatabaseALive, IncompatibleDatabaseBLive)
 
 const structuralDatabase = Layer.succeed(DatabaseA, {
   query: () => 'fake'
 })
 
-expectTypeOf<LayerProvided<typeof structuralDatabase>>().toEqualTypeOf<DatabaseA>()
+expectTypeOf<Layer.Provided<typeof structuralDatabase>>().toEqualTypeOf<DatabaseA>()
 
 class RichDatabase extends Service<RichDatabase>()('DirectionalDatabase') {
   query(): string {
@@ -248,7 +229,7 @@ class NeedsRichDatabase extends Service<NeedsRichDatabase>()('NeedsRichDatabase'
 }
 
 const DirectionallyIncomplete = Layer.merge(Layer.make(NeedsRichDatabase), Layer.make(LeanDatabase))
-expectTypeOf<LayerMissing<typeof DirectionallyIncomplete>>().toEqualTypeOf<RichDatabase>()
+expectTypeOf<Layer.Required<typeof DirectionallyIncomplete>>().toEqualTypeOf<RichDatabase>()
 
 // SAFETY: Compile-time-only Runtime receiver for bidirectional same-tag contract validation.
 const leanRuntime = {} as Runtime<LeanDatabase>
@@ -265,5 +246,5 @@ const SameTagOverride = Layer.override(
   Layer.make(SameTagLeft, () => new SameTagLeft('left')),
   Layer.make(SameTagRight, () => new SameTagRight(1))
 )
-expectTypeOf<LayerProvided<typeof SameTagOverride>>().toEqualTypeOf<SameTagRight>()
-expectTypeOf<LayerMissing<typeof SameTagOverride>>().toBeNever()
+expectTypeOf<Layer.Provided<typeof SameTagOverride>>().toEqualTypeOf<SameTagRight>()
+expectTypeOf<Layer.Required<typeof SameTagOverride>>().toBeNever()

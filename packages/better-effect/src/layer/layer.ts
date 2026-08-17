@@ -1,45 +1,32 @@
 import type { ServiceRequirement } from '../effect/types'
-import type {
-  AnyService,
-  AnyServiceToken,
-  ServiceClass,
-  ServiceContract,
-  ServiceRequirements
-} from '../service'
+import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } from '../service'
 import type { ScopeOutcome } from '../scope'
 import type { Covariant, Invariant } from '../internal/variance'
 import type { MaybePromise } from '../utils/types'
 
 import { DuplicateServiceError, ServiceTagCollisionError } from './errors'
-
 import { runLayerGenerator } from './internal'
 
 import type {
-  LayerGenerator,
-  LayerGeneratorRequirements,
-  LayerRegistration,
-  LayerSpec
-} from './types'
-
-import type { AnyLayerSpec } from './types'
-
-import type {
-  AnyLayer,
-  CompleteLayer,
-  LayerCollisions,
-  LayerMissing,
-  LayerProvided,
-  LayerRawRequired,
-  LayerSpecs,
-  OverrideLayerCollisions,
-  OverrideLayerSpecs
+  LayerInput,
+  CompleteInput,
+  LayerResult,
+  MergeResult,
+  OverrideLayerResult,
+  ValidateLayerInput,
+  ValidateLayerTuple,
+  ValidateOverrides,
+  ProvidedEnvironment,
+  RequiredEnvironment
 } from './inference'
+import type { ProviderEntry } from './metadata'
+import type { LayerGenerator, LayerGeneratorRequirements, LayerRegistration } from './types'
 
 declare const LayerTypeId: unique symbol
 
-interface LayerVariance<in out Specs, out Collisions> {
-  readonly _Specs: Invariant<Specs>
-  readonly _Collisions: Covariant<Collisions>
+interface LayerVariance<in out Provided, out Required> {
+  readonly _Provided: Invariant<Provided>
+  readonly _Required: Covariant<Required>
 }
 
 interface LayerProvider extends LayerRegistration {
@@ -53,15 +40,6 @@ type DefaultConstructibleServiceClass<
   Tag extends string = string,
   Instance extends AnyService = AnyService
 > = ServiceClass<Tag, Instance> & (new () => Instance)
-
-const normalizeAcquire =
-  <S extends ServiceClass<any, any>>(
-    acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>
-  ): (() => MaybePromise<InstanceType<S>>) =>
-  () => {
-    // SAFETY: ServiceContract removes only the declaration-only identity; runtime values are unchanged.
-    return acquire() as MaybePromise<InstanceType<S>>
-  }
 
 /**
  * Declarative collection of Service providers.
@@ -81,10 +59,10 @@ const normalizeAcquire =
  * ```
  */
 export class Layer<
-  in out Specs extends AnyLayerSpec = AnyLayerSpec,
-  out Collisions extends AnyServiceToken = never
+  in out Provided extends AnyService = AnyService,
+  out Required extends AnyService = AnyService
 > {
-  declare readonly [LayerTypeId]: LayerVariance<Specs, Collisions>
+  declare readonly [LayerTypeId]: LayerVariance<Provided, Required>
 
   /** The provider registrations retained by this Layer. */
   readonly providers: readonly LayerProvider[]
@@ -93,40 +71,20 @@ export class Layer<
     this.providers = Object.freeze([...providers])
   }
 
-  /**
-   * Create a Layer that lazily acquires a Service instance.
-   *
-   * When the acquire callback is omitted, the Service must be constructible
-   * without required constructor arguments and is instantiated with `new`.
-   * Supplying an acquire callback remains available for custom construction.
-   *
-   * The acquire callback runs when the provider is first resolved by a
-   * Runtime. Dependencies declared by Effect-returning Service methods are
-   * tracked in the Layer's type.
-   *
-   * @example
-   * ```ts
-   * const DatabaseLive = Layer.make(Database)
-   * ```
-   *
-   * @example
-   * ```ts
-   * const DatabaseLive = Layer.make(Database, () => new Database(config))
-   * ```
-   */
+  /** Create a Layer that lazily acquires a Service instance. */
   static make<S extends DefaultConstructibleServiceClass<any, any>>(
     service: S
-  ): Layer<LayerSpec<InstanceType<S>, ServiceRequirements<InstanceType<S>>, S>>
+  ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
 
   static make<S extends ServiceClass<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>
-  ): Layer<LayerSpec<InstanceType<S>, ServiceRequirements<InstanceType<S>>, S>>
+  ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
 
   static make<S extends ServiceClass<any, any>>(
     service: S,
     acquire?: () => MaybePromise<ServiceContract<InstanceType<S>>>
-  ): Layer<LayerSpec<InstanceType<S>, ServiceRequirements<InstanceType<S>>, S>> {
+  ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
     const defaultAcquire = (): InstanceType<S> => {
       // SAFETY: The no-argument overload constrains `service` to a default constructible class.
       const Constructor = service as new () => InstanceType<S>
@@ -136,96 +94,57 @@ export class Layer<
 
     const normalizedAcquire = normalizeAcquire<S>(acquire ?? defaultAcquire)
 
+    // SAFETY: Runtime storage erases only the concrete provider metadata; the public constructor result restores its typed provenance.
     return new Layer([
       {
         service,
         acquire: normalizedAcquire
       }
-    ])
+    ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
   }
 
-  /**
-   * Create a Layer from an already-constructed Service instance.
-   *
-   * The instance is returned as-is whenever the Service is resolved.
-   *
-   * @example
-   * ```ts
-   * const DatabaseLive = Layer.succeed(Database, database)
-   * ```
-   */
+  /** Create a Layer from an already-constructed Service instance. */
   static succeed<S extends ServiceClass<any, any>>(
     service: S,
     instance: ServiceContract<InstanceType<S>>
-  ): Layer<LayerSpec<InstanceType<S>, ServiceRequirements<InstanceType<S>>, S>> {
+  ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
     const normalizedAcquire = normalizeAcquire<S>(() => instance)
 
+    // SAFETY: The structural instance has been checked against the requested Service contract.
     return new Layer([
       {
         service,
         acquire: normalizedAcquire
       }
-    ])
+    ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
   }
 
-  /**
-   * Define a provider with Runtime-root cleanup.
-   *
-   * The release callback intentionally keeps its compatibility-friendly
-   * one-argument shape and runs when the owning Runtime is disposed. Use
-   * `scopedGen` when acquisition needs contextual Services or cleanup needs
-   * `ScopeOutcome`.
-   *
-   * @example
-   * ```ts
-   * const DatabaseLive = Layer.scoped(
-   *   Database,
-   *   () => openDatabase(),
-   *   (database) => database.close()
-   * )
-   * ```
-   */
+  /** Define a provider with Runtime-root cleanup. */
   static scoped<S extends ServiceClass<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>,
     release: (instance: InstanceType<S>) => MaybePromise<void>
-  ): Layer<LayerSpec<InstanceType<S>, ServiceRequirements<InstanceType<S>>, S>> {
+  ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
+    // SAFETY: The public callbacks constrain acquisition and release to the requested Service.
     return new Layer([
       {
         service,
         acquire: normalizeAcquire<S>(acquire),
-
         release: (instance) => {
           // SAFETY: The backend invokes release with the instance acquired for this token.
           return release(instance as InstanceType<S>)
         }
       }
-    ])
+    ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
   }
 
-  /**
-   * Define a provider whose acquisition can yield contextual Services.
-   *
-   * The release callback receives the acquired instance and the final
-   * `ScopeOutcome` selected by the owning Runtime.
-   *
-   * @example
-   * ```ts
-   * const RepositoryLive = Layer.scopedGen(
-   *   UserRepository,
-   *   async function* () {
-   *     const database = yield* Database
-   *     return new UserRepository(database)
-   *   },
-   *   (repository, outcome) => repository.close(outcome)
-   * )
-   * ```
-   */
+  /** Define a provider whose acquisition can yield contextual Services. */
   static scopedGen<S extends ServiceClass<any, any>, Yield extends ServiceRequirement<unknown>>(
     service: S,
     factory: LayerGenerator<S, Yield>,
     release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
-  ): Layer<LayerSpec<InstanceType<S>, LayerGeneratorRequirements<S, Yield>, S>> {
+  ): LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>> {
+    // SAFETY: The generator and release callback are checked against the requested Service.
     return new Layer([
       {
         service,
@@ -235,55 +154,32 @@ export class Layer<
           return release(instance as InstanceType<S>, outcome)
         }
       }
-    ])
+    ]) as LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>>
   }
 
-  /**
-   * Define a provider whose acquisition can yield contextual Services.
-   *
-   * Unlike `scopedGen`, this variant has no release callback. Use it for
-   * providers whose lifetime is managed elsewhere or that need no cleanup.
-   *
-   * @example
-   * ```ts
-   * const RepositoryLive = Layer.gen(UserRepository, async function* () {
-   *   const database = yield* Database
-   *   return new UserRepository(database)
-   * })
-   * ```
-   */
+  /** Define a provider whose acquisition can yield contextual Services. */
   static gen<S extends ServiceClass<any, any>, Yield extends ServiceRequirement<unknown>>(
     service: S,
     factory: LayerGenerator<S, Yield>
-  ): Layer<LayerSpec<InstanceType<S>, LayerGeneratorRequirements<S, Yield>, S>> {
-    // SAFETY: Layer.make tracks method requirements; the generator requirements
-    // below are additional type-only metadata inferred from the factory.
-    return Layer.make(
-      service,
-      () => runLayerGenerator(service, factory) as Promise<ServiceContract<InstanceType<S>>>
-    ) as Layer<LayerSpec<InstanceType<S>, LayerGeneratorRequirements<S, Yield>, S>>
+  ): LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>> {
+    // SAFETY: The generator result is normalized to the requested Service at the runtime boundary.
+    return new Layer([
+      {
+        service,
+        acquire: () => runLayerGenerator(service, factory)
+      }
+    ]) as LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>>
   }
 
-  /**
-   * Compose Layers without replacing providers.
-   *
-   * Each Service tag may appear only once. Duplicate tags are rejected at
-   * runtime; use `override` when replacement is intentional.
-   *
-   * @example
-   * ```ts
-   * const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
-   * ```
-   */
-  static merge<const Layers extends readonly AnyLayer[]>(
-    ...layers: Layers
-  ): Layer<LayerSpecs<Layers[number]>, LayerCollisions<Layers[number]>> {
+  /** Compose Layers without replacing providers. */
+  static merge<const Layers extends readonly LayerInput[]>(
+    ...layers: Layers & ValidateLayerTuple<Layers>
+  ): MergeResult<Layers> {
     const providers = new Map<string, LayerProvider>()
 
     for (const layer of layers) {
       for (const provider of layer.providers) {
         const service = provider.service
-
         const existing = providers.get(service.serviceTag)
 
         if (existing) {
@@ -298,31 +194,15 @@ export class Layer<
       }
     }
 
-    return new Layer([...providers.values()])
+    // SAFETY: The heterogeneous provider list is erased only at this internal storage boundary.
+    return new Layer([...providers.values()]) as MergeResult<Layers>
   }
 
-  /**
-   * Replace providers in a base Layer, using tag identity and compatible
-   * instance contracts.
-   *
-   * Overrides are applied from left to right; the last compatible provider for
-   * a tag wins. Incompatible same-tag replacements remain visible as a type
-   * diagnostic and cannot be passed as a complete Layer.
-   *
-   * @example
-   * ```ts
-   * const TestLive = Layer.override(AppLive, Layer.succeed(Database, fakeDb))
-   * ```
-   */
-  static override<Base extends AnyLayer, const Overrides extends readonly AnyLayer[]>(
-    base: Base,
-    ...overrides: Overrides
-  ): Layer<
-    OverrideLayerSpecs<LayerSpecs<Base>, Overrides>,
-    | LayerCollisions<Base>
-    | LayerCollisions<Overrides[number]>
-    | OverrideLayerCollisions<LayerSpecs<Base>, Overrides>
-  > {
+  /** Replace providers in a base Layer, using tag identity and compatible contracts. */
+  static override<Base extends LayerInput, const Overrides extends readonly LayerInput[]>(
+    base: Base & ValidateLayerInput<Base>,
+    ...overrides: Overrides & ValidateOverrides<Base, Overrides>
+  ): OverrideLayerResult<Base, Overrides> {
     const providers = new Map<string, LayerProvider>()
 
     for (const provider of base.providers) {
@@ -336,32 +216,30 @@ export class Layer<
     }
 
     // SAFETY: Runtime provider replacement preserves the computed override metadata.
-    return new Layer([...providers.values()]) as Layer<
-      OverrideLayerSpecs<LayerSpecs<Base>, Overrides>,
-      | LayerCollisions<Base>
-      | LayerCollisions<Overrides[number]>
-      | OverrideLayerCollisions<LayerSpecs<Base>, Overrides>
-    >
+    return new Layer([...providers.values()]) as OverrideLayerResult<Base, Overrides>
   }
 }
 
-/** Type-level aliases for inspecting Layer providers and completeness. */
-export declare namespace Layer {
-  /** The widened Layer shape accepted by inference helpers. */
-  export type Any = AnyLayer
+const normalizeAcquire =
+  <S extends ServiceClass<any, any>>(
+    acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>
+  ): (() => MaybePromise<InstanceType<S>>) =>
+  () => {
+    // SAFETY: ServiceContract removes only the declaration-only identity; runtime values are unchanged.
+    return acquire() as MaybePromise<InstanceType<S>>
+  }
 
-  /** Extract the provider specification union from a Layer. */
-  export type Specs<L extends AnyLayer> = LayerSpecs<L>
+/** Type-level aliases for inspecting Layer environments and completeness. */
+export declare namespace Layer {
+  /** The widened Layer shape accepted by generic Layer infrastructure. */
+  export type Any = LayerInput
 
   /** Extract the branded Service instances provided by a Layer. */
-  export type Provided<L extends AnyLayer> = LayerProvided<L>
+  export type Provided<L extends LayerInput> = ProvidedEnvironment<L>
 
-  /** Extract the raw Service requirements declared by a Layer. */
-  export type Required<L extends AnyLayer> = LayerRawRequired<L>
+  /** Extract the external Service requirements of a Layer. */
+  export type Required<L extends LayerInput> = RequiredEnvironment<L>
 
-  /** Extract the Service requirements missing from a Layer. */
-  export type Missing<L extends AnyLayer> = LayerMissing<L>
-
-  /** Validate a Layer's requirements and override contracts. */
-  export type Complete<L extends AnyLayer> = CompleteLayer<L>
+  /** Validate a Layer's requirements and input shape. */
+  export type Complete<L extends LayerInput> = CompleteInput<L>
 }

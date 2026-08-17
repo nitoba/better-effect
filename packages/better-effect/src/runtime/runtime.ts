@@ -2,7 +2,7 @@ import type { LayerBackend } from '../layer'
 
 import { createRuntimeHandle, type RuntimeHandle } from '../layer/runtime'
 
-import type { AnyLayer, CompleteLayer, LayerProvided } from '../layer/inference'
+import type { LayerInput, CompleteInput, ProvidedEnvironment } from '../layer/inference'
 
 import type { CompleteExecution } from '../layer/inference'
 
@@ -46,14 +46,14 @@ export class Runtime<Provided extends AnyService = any> {
    * await runtime.dispose()
    * ```
    */
-  static async make<L extends AnyLayer>(
-    layer: CompleteLayer<L>,
+  static async make<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
     backend: LayerBackend,
     options: RuntimeOptions = {}
-  ): Promise<Runtime<LayerProvided<L>>> {
+  ): Promise<Runtime<ProvidedEnvironment<L>>> {
     const handle = await createRuntimeHandle(layer, backend, options)
 
-    return new Runtime<LayerProvided<L>>(handle)
+    return new Runtime<ProvidedEnvironment<L>>(handle)
   }
 
   /**
@@ -62,10 +62,10 @@ export class Runtime<Provided extends AnyService = any> {
    * This is convenient for request-style or command-style execution where a
    * Runtime should not outlive the operation.
    */
-  static async run<A, L extends AnyLayer>(
-    layer: CompleteLayer<L>,
+  static async run<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
     backend: LayerBackend,
-    program: CompleteExecution<LayerProvided<L>, A>,
+    program: CompleteExecution<ProvidedEnvironment<L>, A>,
     options: RuntimeOptions = {}
   ): Promise<Awaited<A>> {
     const runtime = await Runtime.make(layer, backend, options)
@@ -141,7 +141,7 @@ export class Runtime<Provided extends AnyService = any> {
 /** Type-level aliases for naming Runtime handles and shutdown options. */
 export declare namespace Runtime {
   /** Name a Runtime type from a concrete Layer. */
-  export type For<L extends AnyLayer> = RuntimeFor<L>
+  export type For<L extends LayerInput> = RuntimeFor<L>
 
   /** Optional Runtime shutdown configuration. */
   export type Options = RuntimeOptions

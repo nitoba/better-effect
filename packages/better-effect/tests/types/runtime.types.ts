@@ -8,7 +8,7 @@ import {
   type EffectRequirements,
   type EffectSuccess
 } from '../../src/effect'
-import { Layer, type LayerBackend, type LayerProvided } from '../../src/layer'
+import { Layer, type LayerBackend } from '../../src/layer'
 import { createRuntimeHandle, type RuntimeHandle } from '../../src/layer/runtime'
 import type { LayerRegistration } from '../../src'
 import { Runtime, type RuntimeFor } from '../../src/runtime'
@@ -59,8 +59,8 @@ const LoggerLive = Layer.succeed(Logger, new Logger())
 const AppLive = Layer.merge(DatabaseLive, LoggerLive)
 const AppWithTestDatabase = Layer.override(AppLive, Layer.succeed(Database, new Database()))
 
-expectTypeOf<LayerProvided<typeof AppLive>>().toEqualTypeOf<Database | Logger>()
-expectTypeOf<LayerProvided<typeof AppWithTestDatabase>>().toEqualTypeOf<Database | Logger>()
+expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<Database | Logger>()
+expectTypeOf<Layer.Provided<typeof AppWithTestDatabase>>().toEqualTypeOf<Database | Logger>()
 
 const builtPromise = createRuntimeHandle(AppLive, backend)
 const runtimePromise = Runtime.make(AppLive, backend)

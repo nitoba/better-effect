@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "files": ["layer-environments.types.ts"],
+  "include": []
+}
