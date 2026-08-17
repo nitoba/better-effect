@@ -131,12 +131,16 @@ We call this **typechecked wiring**.
 
 The Services your code uses, the implementations your Layers provide, and the programs your Runtime executes participate in the same type-level contract.
 
-A Layer's type describes its exact provider composition. Preserve the inferred
-Layer type at application boundaries so TypeScript cannot claim providers that
-are absent at runtime. Generic infrastructure that intentionally erases this
-metadata can use `Layer.Any`, including for an empty Layer. `Layer<any, any>`
-does not cover the `never` Specs of an empty Layer, and a bare `Layer` is not an
-implicit erasure boundary.
+A Layer's public type is `Layer<Provided, Required>`. `Provided` is the Service
+instance union produced by the Layer and `Required` is only the external
+requirement union left after composition. Preserve inferred Layers when possible;
+use `satisfies Layer<Provided, Required>` when checking an application boundary
+without erasing provider provenance.
+
+Generic infrastructure that intentionally erases this metadata can use the
+explicit `Layer.Any` sentinel, including for an empty Layer. Bare Layers,
+partial-`any` shapes and concrete unions such as `Layer<A> | Layer<B>` are not
+implicit unchecked boundaries.
 
 ### Discover type helpers from their API
 
@@ -157,9 +161,9 @@ type Outcome = Scope.Outcome
 ```
 
 These are declaration-only aliases and add nothing to the JavaScript bundle.
-The existing prefixed spellings—including `EffectSuccess`,
-`EffectRequirements`, `LayerProvided`, `RuntimeFor`, `ServiceTag` and
-`ScopeOutcome`—remain public and are not deprecated.
+The associated `Layer` helpers are intentionally namespaced; use
+`Layer.Provided`, `Layer.Required`, `Layer.Complete` and `Layer.Any` rather than
+low-level provider metadata names.
 
 ---
 
@@ -320,8 +324,8 @@ Keep `better-result` as the source of truth for typed successes, failures, short
 and generator control flow. `Effect.gen` delegates to `Result.gen`; it adds only the
 phantom Service requirements that TypeScript needs to check the application environment.
 At runtime, an `Effect<A, E, R>` is still a `better-result` Result; the requirements exist
-only in the type. `Effect.Requirements`, `Layer.Provided`, `Layer.Missing` and `Runtime.For`
-expose tagged Service instance unions.
+only in the type. `Effect.Requirements`, `Layer.Provided`, `Layer.Required` and
+`Runtime.For` expose tagged Service instance unions.
 
 For a linear workflow, `pipe` composes the same kind of program without introducing a
 second Result model or a lazy Effect runtime:

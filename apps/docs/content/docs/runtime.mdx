@@ -59,8 +59,19 @@ await runtime.run(() => needsCache)
 // TypeScript error includes MissingDependencies<Cache>.
 ```
 
-The Runtime and its inferred `Provided` union retain this information. Prefer
-`Runtime.For` when naming a Runtime from a concrete Layer:
+The Runtime and its inferred `Provided` union retain this information. A
+Layer has exactly two public channels: `Layer<Provided, Required>`. `Required`
+contains only dependencies still external after composition. Prefer inferred
+Layers or `satisfies Layer<Provided, Required>` when naming a composition root;
+a normal annotation is safe but erases precise per-provider provenance and makes
+later overrides conservative.
+
+Concrete `Layer<A> | Layer<B>` values are rejected at Runtime boundaries because
+a runtime branch cannot guarantee both environments. Narrow the branch first.
+`Layer.Any` is the explicit unchecked boundary; bare Layers and partial-`any`
+shapes are not treated as unchecked.
+
+Prefer `Runtime.For` when naming a Runtime from a concrete Layer:
 
 ```ts
 type AppRuntime = Runtime.For<typeof AppLive>

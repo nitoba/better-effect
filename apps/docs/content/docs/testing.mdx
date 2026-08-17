@@ -38,8 +38,8 @@ const AppTest = Layer.override(AppLive, DatabaseTest)
 
 Only the explicit replacement changes; other production providers remain in
 the environment. If the fake's contract is incompatible with the production
-Service, TypeScript reports an override collision instead of letting an invalid
-provider cross the Runtime boundary.
+Service, TypeScript rejects the `Layer.override` call instead of letting an
+invalid provider cross the Runtime boundary.
 
 ## Resolver context isolation
 

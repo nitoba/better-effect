@@ -2,7 +2,9 @@
 
 ## Purpose
 
-Defines instance-facing Effect and Layer dependency metadata, exact constructor retention for providers, and readable compile-time completeness diagnostics without changing Result or Layer runtime behavior.
+Defines the instance-facing Layer environment contract, precise composition
+semantics, and named compile-time completeness diagnostics without changing
+Result or Layer runtime behavior.
 
 ## Requirements
 
@@ -20,112 +22,132 @@ The canonical public program type MUST be `Effect<A, E, R extends Service.Any = 
 - **WHEN** a generator returns a plain `better-result` Result and yields no Service
 - **THEN** `Effect.Requirements` MUST be `never`
 
-#### Scenario: Promise-wrapped requirements remain precise
+### Requirement: Layer exposes two public environment channels
 
-- **WHEN** requirement extraction receives a Promise of an Effect
-- **THEN** it MUST return the same instance union as the awaited Effect
+The public Layer class MUST have exactly two generic parameters: `Layer<Provided, Required>`. Both channels MUST be tagged Service instance unions. `Provided` MUST be invariant and `Required` MUST be covariant. `Layer.Provided<L>`, `Layer.Required<L>`, `Layer.Complete<L>` and `Layer.Any` are the only public Layer inspection aliases.
 
-### Requirement: Layer metadata exposes instances and retains exact tokens
+`Provided` MUST contain the Services produced by the Layer. `Required` MUST contain only requirements external to the composed Layer after all retained providers are considered.
 
-Each provider specification MUST carry a provided instance, required instance union, and exact registering constructor. Public `Layer.Provided`, `Layer.Required`, and `Layer.Missing` MUST expose only instance unions; registration and override internals MUST retain the exact constructor channel.
-
-#### Scenario: Layer creation infers all channels
+#### Scenario: Provider construction uses instance channels
 
 - **WHEN** `Layer.make(Database)` is declared
-- **THEN** its specification MUST provide `Database`, include `Service.Requirements<Database>`, and retain `typeof Database` as its exact token
+- **THEN** its public type MUST provide `Database` and require `Service.Requirements<Database>` after external subtraction
 
-#### Scenario: Public projections use instances
+#### Scenario: Generator dependency is inferred
 
-- **WHEN** AppLive provides Database and Logger
-- **THEN** `Layer.Provided<typeof AppLive>` MUST be `Database | Logger`
+- **WHEN** a UserRepository generator yields Database
+- **THEN** the Layer MUST be `Layer<UserRepository, Database>` before Database is composed
 
-#### Scenario: Structural providers remain accepted
+#### Scenario: Composition removes supplied requirements
 
-- **WHEN** a Layer provider returns `Service.Contract<Database>` without an identity marker
-- **THEN** the Layer MUST accept it and expose `Database` as provided
+- **WHEN** `AppLive = Layer.merge(Layer.make(Database), UserRepositoryLive)` and UserRepositoryLive requires Database and Config
+- **THEN** `Layer.Provided<typeof AppLive>` MUST be `Database | UserRepository` and `Layer.Required<typeof AppLive>` MUST be `Config`
 
-### Requirement: Missing Layer requirements are precise and named
+#### Scenario: Empty composition is empty
 
-A requirement is supplied only by the same literal tag with a bidirectionally compatible marker-free contract. `Layer.Missing<L>` MUST be the exact absent instance union. A complete-Layer boundary MUST intersect incomplete Layers with package-private `MissingDependencies<Missing>`.
+- **WHEN** `Layer.merge()` is declared
+- **THEN** its public channels MUST be `never` and `never`
 
-#### Scenario: Multiple missing Services are visible
+### Requirement: Provider provenance is package-private and declaration-only
 
-- **WHEN** a Layer requires Database and PasswordHasher but provides neither
-- **THEN** `Layer.Missing<L>` MUST be `Database | PasswordHasher`
+Inferred Layers MUST carry precise per-provider requirement provenance through a package-private declaration-only unique-symbol carrier. Explicit `Layer<Provided, Required>` annotations MUST erase precise ownership into an opaque provided environment with sticky requirements. The carrier MUST emit no JavaScript and MUST NOT be exported from a public barrel.
+
+#### Scenario: Precise override removes only the replaced requirement
+
+- **WHEN** one inferred provider requires Database, another requires Config, and the first is replaced by a requirement-free compatible provider
+- **THEN** only Database MUST be removed from the resulting external `Layer.Required` channel
+
+#### Scenario: Erased requirements remain conservative
+
+- **WHEN** an explicitly annotated `Layer<Mailer, Config>` is overridden with a compatible Mailer provider
+- **THEN** Config MUST remain required unless the final provided environment independently satisfies Config
+
+#### Scenario: Satisfies preserves inference
+
+- **WHEN** an inferred Layer is checked with `satisfies Layer<Provided, Required>`
+- **THEN** the public contract MUST be checked without discarding its private provenance
+
+### Requirement: Layer requirements use tag and bidirectional contract matching
+
+A concrete requirement MUST be supplied only by a Service with the same literal `serviceTag` and a bidirectionally compatible `Service.Contract` shape. Different tags MUST never satisfy one another, even when method shapes are identical. Self-requirements supplied by the Layer's own `Provided` channel MUST be removed.
+
+#### Scenario: Same-shape different tag remains external
+
+- **WHEN** a Layer requires PrimaryDatabase and provides same-shaped ReplicaDatabase
+- **THEN** `Layer.Required` MUST still contain PrimaryDatabase
+
+#### Scenario: Self requirement is internal
+
+- **WHEN** a Service method requires its own Service and the Layer provides that Service
+- **THEN** the self requirement MUST NOT appear in `Layer.Required`
+
+### Requirement: Complete Layer boundaries name missing dependencies
+
+A typed concrete Layer is complete only when `Layer.Required<L>` is exactly `never`. An incomplete Layer crossing a complete boundary MUST intersect with package-private `MissingDependencies<Layer.Required<L>>`. `Layer.Complete<L>` MUST classify the original input shape before applying this check.
 
 #### Scenario: Compiler diagnostic is readable
 
-- **WHEN** that Layer crosses a complete-Layer boundary
-- **THEN** the expected contract MUST contain `MissingDependencies<Database | PasswordHasher>`
-
-#### Scenario: Same-shape different tag remains missing
-
-- **WHEN** a Layer requires PrimaryDatabase and provides only same-shaped ReplicaDatabase
-- **THEN** `Layer.Missing<L>` MUST contain PrimaryDatabase
+- **WHEN** a Layer requires Database but no Database provider is composed
+- **THEN** the boundary MUST contain `MissingDependencies<Database>`
 
 #### Scenario: Complete Layer has no missing diagnostic
 
-- **WHEN** every concrete requirement is supplied
-- **THEN** `Layer.Missing<L>` MUST be `never` and no `MissingDependencies` intersection is required
+- **WHEN** every concrete external requirement is supplied
+- **THEN** `Layer.Required<L>` MUST be `never` and no MissingDependencies intersection is required
 
-### Requirement: Erasure sentinels are explicit
+### Requirement: Erasure and union boundaries are explicit
 
-`any` and widened `Service.Any` on either side of completeness matching MUST be unchecked erasure sentinels. Concrete generic relationships MUST remain conditional rather than being erased accidentally.
+Only exact `Layer<any, any>`, exact `Layer<never, any>`, and exact `Layer.Any` MAY be unchecked Layer erasure sentinels. Partial-`any` shapes, bare or one-argument Layers, widened `Service.Any` channels, and concrete Layer unions MUST NOT be silently widened to `Layer.Any`.
 
-#### Scenario: Erased environments do not report missing Services
+#### Scenario: Exact sentinels propagate
 
-- **WHEN** either the required or provided set is `any` or `Service.Any`
-- **THEN** missing-Service inference MUST be `never`
+- **WHEN** an exact unchecked sentinel participates in merge or override
+- **THEN** the result MUST be `Layer<any, any>` and ordinary completeness checks MUST be skipped
 
-#### Scenario: Same generic environment is accepted
+#### Scenario: Partial erasure is rejected
 
-- **WHEN** both required and provided types are the same `R extends Service.Any`
-- **THEN** matching MUST accept the proven relationship
+- **WHEN** `Layer<Database, any>` or `Layer<any, never>` crosses merge, override, `Layer.Complete`, or a Runtime boundary
+- **THEN** TypeScript MUST reject it with a package-private invalid-erasure diagnostic
 
-#### Scenario: Unrelated generic remains unproven
+#### Scenario: Concrete Layer union is rejected
 
-- **WHEN** a concrete Database environment is compared with unrelated `R extends Service.Any`
-- **THEN** the boundary MUST not assume R is provided
+- **WHEN** a value has type `Layer<Database, never> | Layer<Logger, never>`
+- **THEN** merge, override and complete Runtime boundaries MUST reject the original union rather than flattening it
 
-### Requirement: Overrides replace complete provider specifications
+#### Scenario: Widened Service.Any is not a Layer sentinel
 
-A compatible same-tag override MUST remove the previous specification and retain the complete winning specification, including its exact constructor and requirements. Compatibility MUST compare provided instance tags and `Service.Contract` shapes only. Incompatible collisions MUST retain the replacement constructor for diagnostics.
+- **WHEN** a typed Layer contains widened `Service.Any` in a channel
+- **THEN** it MUST remain incomplete and MUST NOT prove concrete requirement satisfaction or override compatibility
 
-#### Scenario: Replacement removes obsolete requirements
+### Requirement: Overrides reject incompatible contracts at the call site
 
-- **WHEN** a compatible replacement no longer needs a base provider's acquisition dependency
-- **THEN** the obsolete requirement MUST disappear
+`Layer.override` MUST validate every concrete same-tag pair between the current provided environment and each replacement's provided environment. Compatibility MUST compare only literal tags and bidirectional `Service.Contract` shapes. A compatible pair MUST NOT hide another incompatible pair. Ordered overrides MUST validate each replacement against the state produced by earlier replacements. The old public collision generic MUST NOT be used.
 
-#### Scenario: Replacement requirements remain tracked
+#### Scenario: Incompatible same-tag override fails immediately
 
-- **WHEN** the replacement requires another Service
-- **THEN** that instance requirement MUST remain until provided
+- **WHEN** RichDatabase and LeanDatabase share a tag but their contracts are incompatible
+- **THEN** `Layer.override(RichLive, LeanLive)` MUST fail at that call site
 
 #### Scenario: Constructor differences do not collide
 
-- **WHEN** compatible same-tag constructors differ only in parameters, statics, or names
-- **THEN** override MUST succeed and retain the replacement constructor
+- **WHEN** compatible same-tag constructors differ in parameters, statics or names
+- **THEN** override MUST succeed and the replacement instance MUST be represented in `Provided`
 
 #### Scenario: Last compatible override wins
 
 - **WHEN** multiple compatible overrides target one tag
-- **THEN** the final specification MUST be the last override in argument order
+- **THEN** the final replacement MUST determine the provided instance and requirements
 
-### Requirement: Generator providers preserve instance requirements
+### Requirement: Runtime provider behavior remains constructor-backed
 
-`Layer.gen` and `Layer.scopedGen` MUST infer yielded Service instances and method requirements. Their factories MAY return marker-free structural contracts; release callbacks MUST receive the branded exact instance, and `scopedGen` release MUST also receive `ScopeOutcome`.
+Layer runtime storage, provider ordering, duplicate-tag errors, backend registration, lazy acquisition, Scope ownership and release behavior MUST remain unchanged. Runtime registrations MUST receive actual Service constructors, not instance values or provenance metadata.
 
-#### Scenario: Generator dependency is inferred
+#### Scenario: Runtime registration uses constructors
 
-- **WHEN** a UserRepository factory yields Database
-- **THEN** the Layer MUST provide UserRepository and require Database
+- **WHEN** a merged Layer is registered
+- **THEN** the backend MUST receive the exact registering constructors in Layer order
 
-#### Scenario: Scope adds no Service requirement
+#### Scenario: Type metadata emits no runtime values
 
-- **WHEN** a factory uses Scope but yields no Service constructor
-- **THEN** Scope MUST NOT enter the Layer requirement union
-
-#### Scenario: Release receives exact public types
-
-- **WHEN** TypeScript infers a scoped generator release callback
-- **THEN** its parameters MUST be exactly the requested Service instance and `ScopeOutcome`
+- **WHEN** generated Services and Layer values are inspected
+- **THEN** no identity or provenance symbol/property MUST be present

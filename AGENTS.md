@@ -184,10 +184,10 @@ Layer.override(...)
 `Layer.override` is the explicit mechanism for intentional replacement.
 
 Overrides with the same tag and bidirectionally compatible instance contracts
-replace the prior provider. An incompatible same-tag override carries a typed
-collision diagnostic and MUST NOT pass a complete-Layer boundary. Runtime
-backends retain the registering constructor and perform a best-effort member
-check when a different constructor is requested for the same tag.
+replace the prior provider. An incompatible same-tag override fails at the
+`Layer.override` call site. Runtime backends retain the registering constructor
+and perform a best-effort member check when a different constructor is requested
+for the same tag.
 
 Service identity comparisons must use the literal tag:
 
@@ -201,10 +201,18 @@ not a diagnostic-only constructor name:
 provider.service.name === 'Database'
 ```
 
-Public Layer metadata exposes provided and required Service instance unions.
-A private LayerSpec token channel retains the exact registering constructor for
-registration, replacement and collision diagnostics; `name` may be used for
+Public Layer types are exactly `Layer<Provided, Required>`, where both channels
+are tagged Service instance unions and `Required` contains only dependencies
+external to the composed Layer. A package-private, declaration-only provenance
+carrier retains precise provider requirements and erased sticky requirements;
+type-level tokens derive from `Service.TokenOf<Provided>`. Runtime providers
+still retain the actual registering constructors, and `name` may be used for
 diagnostics only.
+
+Incompatible same-tag overrides fail at `Layer.override`; concrete Layer unions
+are rejected at composition and Runtime boundaries; only the exact `Layer.Any`
+erasure sentinel is unchecked. Do not export provenance helpers or restore the
+removed Layer metadata aliases.
 
 ### Layer type erasure
 
@@ -248,8 +256,8 @@ Unavailable requirements must appear through the package-private named
 Use `Runtime.For<typeof AppLive>` when a Runtime inferred from a concrete Layer
 must be named in an application boundary. It is a type-only alias for
 `Runtime<Layer.Provided<typeof AppLive>>` and must preserve the same execution
-checks. The compatible top-level spellings `RuntimeFor<typeof AppLive>` and
-`LayerProvided<typeof AppLive>` remain public and equivalent.
+checks. The compatible top-level spelling `RuntimeFor<typeof AppLive>` remains
+public and equivalent; Layer environment inspection is namespaced under `Layer`.
 
 ### Scope
 

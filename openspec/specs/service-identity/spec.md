@@ -79,12 +79,12 @@ Different literal tags MUST remain incompatible even when behavior is identical.
 #### Scenario: Same-tag compatible override succeeds
 
 - **WHEN** two same-tag constructors have compatible behavior but different constructor parameters or custom statics
-- **THEN** `Layer.override` MUST retain the winning exact constructor and treat the instance contracts as compatible
+- **THEN** `Layer.override` MUST accept the call, represent the replacement instance in `Layer.Provided`, and retain the winning constructor at runtime
 
 #### Scenario: Same-tag incompatible override is rejected
 
 - **WHEN** same-tag declarations have incompatible behavioral contracts
-- **THEN** the collision MUST prevent the Layer from crossing a complete-Layer boundary
+- **THEN** `Layer.override` MUST reject the call directly with a typed diagnostic
 
 ### Requirement: Runtime identity remains constructor and tag based
 
