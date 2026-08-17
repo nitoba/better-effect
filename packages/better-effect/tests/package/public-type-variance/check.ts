@@ -166,7 +166,7 @@ const esm = (
 ).join('\n')
 
 const serviceStatics = declarations.match(
-  /type ServiceStatics<out Tag extends string, in out Instance>\s*=\s*\{([\s\S]*?)\n?\};/
+  /type ServiceStatics<out Tag extends string, in out Instance extends AnyService>\s*=\s*\{([\s\S]*?)\n?\};/
 )
 
 assertCondition(serviceStatics !== null, 'Generated declarations lost ServiceStatics variance')
@@ -175,50 +175,36 @@ const serviceStaticsBody = serviceStatics[1]
 
 assertCondition(serviceStaticsBody !== undefined, 'Generated ServiceStatics has no body')
 assertCondition(
-  /readonly of: \(this: void, implementation: Instance\) => Instance;/.test(serviceStaticsBody),
-  'Generated ServiceStatics lost its function-property contract'
-)
-
-const serviceMarker = serviceStaticsBody.match(
-  /readonly \[([A-Za-z_$][\w$]*)\]: ([A-Za-z_$][\w$]*)<Tag, Instance>;/
-)
-
-assertCondition(serviceMarker !== null, 'Generated ServiceStatics lost its phantom marker')
-
-const serviceMarkerName = serviceMarker[1]
-const serviceVarianceName = serviceMarker[2]
-
-assertCondition(serviceMarkerName !== undefined, 'Generated Service marker name is missing')
-assertCondition(serviceVarianceName !== undefined, 'Generated Service variance name is missing')
-assertCondition(
-  new RegExp(`declare const ${escapeRegExp(serviceMarkerName)}: unique symbol;`).test(declarations),
-  'Generated Service phantom key is not a unique symbol'
+  /readonly of: \(this: void, implementation: ServiceContract<Instance>\) => Instance;/.test(
+    serviceStaticsBody
+  ),
+  'Generated ServiceStatics lost its structural invariant function-property contract'
 )
 assertCondition(
-  new RegExp(
-    `interface ${escapeRegExp(serviceVarianceName)}<out Tag extends string, in out Instance>`
-  ).test(declarations),
-  'Generated Service marker lost its variance declaration'
-)
-assertCondition(
-  /interface ServiceToken<out Tag extends string = string, in out Instance = any>\s+extends AbstractServiceConstructor<Instance>,\s*ServiceStatics<Tag, Instance>/.test(
+  /interface ServiceToken<\s*out Tag extends string = string,\s*in out Instance extends AnyService = any\s*>\s+extends AbstractServiceConstructor<Instance>,\s*ServiceStatics<Tag, Instance>/.test(
     declarations
   ),
-  'Generated ServiceToken lost its public variance contract'
+  'Generated ServiceToken lost its public variance and identity constraints'
 )
 assertCondition(
   /type [A-Za-z_$][\w$]*\s*=\s*Layer<any, any>\s*\|\s*Layer<never, any>/.test(declarations),
   'Generated Layer.Any boundary lost its never-Specs branch'
 )
 assertCondition(
-  /type LayerSpec<out Provided extends AnyServiceToken, out Required extends AnyServiceToken = never>/.test(
+  /type LayerSpec<out Provided extends AnyService, out Required extends AnyService = never, out Token extends AnyServiceToken = ServiceTokenOf<Provided>>/.test(
     declarations
   ),
-  'Generated declarations lost LayerSpec covariance'
+  'Generated declarations lost the three covariant LayerSpec channels'
 )
 assertCondition(
-  /interface ServiceRequirement<out T extends AnyServiceToken>/.test(declarations),
-  'Generated declarations lost ServiceRequirement covariance'
+  /interface ServiceRequirement<out T>/.test(declarations),
+  'Generated declarations lost unconstrained ServiceRequirement covariance'
+)
+assertCondition(
+  /interface ServiceIdentity<out Tag extends string = string>\s*\{\s*readonly \[[A-Za-z_$][\w$]*\]: Tag;\s*\}/.test(
+    declarations
+  ),
+  'Generated declarations lost required Service instance identity'
 )
 
 const layerMarker = declarations.match(
@@ -317,10 +303,11 @@ assertCondition(
 )
 
 for (const typeOnlyName of [
-  serviceMarkerName,
-  serviceVarianceName,
   layerMarkerName,
-  layerVarianceName
+  layerVarianceName,
+  'ServiceIdentityTypeId',
+  'EffectRequirementsTypeId',
+  'MissingDependenciesTypeId'
 ]) {
   assertCondition(
     !esm.includes(typeOnlyName),

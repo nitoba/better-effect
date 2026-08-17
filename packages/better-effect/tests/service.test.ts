@@ -67,7 +67,8 @@ describe('Service', () => {
 
     const service = StructuralService.of(implementation)
 
-    expect(service).toBe(implementation)
+    // SAFETY: `of` returns the branded Service view of this exact object.
+    expect(service as object).toBe(implementation)
     expect(service.query('SELECT 1')).toBe('Result: SELECT 1')
     expect(service).not.toBeInstanceOf(StructuralService)
     expectTypeOf(service).toEqualTypeOf<StructuralService>()

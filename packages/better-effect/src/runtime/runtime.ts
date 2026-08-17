@@ -6,7 +6,7 @@ import type { AnyLayer, CompleteLayer, LayerProvided } from '../layer/inference'
 
 import type { CompleteExecution } from '../layer/inference'
 
-import type { AnyServiceToken } from '../service'
+import type { AnyService } from '../service'
 
 import {
   classifyRuntimeOutcome,
@@ -31,10 +31,10 @@ import type { RuntimeFor } from './types'
  * await runtime.dispose()
  * ```
  *
- * @typeParam Provided The Service constructors supplied by the Layer.
+ * @typeParam Provided The branded Service instances supplied by the Layer.
  */
-export class Runtime<Provided extends AnyServiceToken = AnyServiceToken> {
-  private constructor(private readonly handle: RuntimeHandle<Provided>) {}
+export class Runtime<Provided extends AnyService = any> {
+  private constructor(private readonly handle: RuntimeHandle<any>) {}
 
   /**
    * Create a long-lived Runtime that owns its Layer resources.

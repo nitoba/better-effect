@@ -1,13 +1,13 @@
 import { LayerGeneratorYieldError } from './errors'
 
 import type { ServiceRequirement } from '../effect/types'
-import type { AnyServiceToken, ServiceClass } from '../service'
+import type { ServiceClass } from '../service'
 
 import type { LayerGenerator } from './types'
 
 export const runLayerGenerator = async <
   S extends ServiceClass<any, any>,
-  Yield extends ServiceRequirement<AnyServiceToken>
+  Yield extends ServiceRequirement<unknown>
 >(
   service: S,
   factory: LayerGenerator<S, Yield>
@@ -18,12 +18,14 @@ export const runLayerGenerator = async <
 
   if (!state.done) {
     try {
-      await iterator.return(undefined as InstanceType<S>)
+      // SAFETY: The iterator is closed only to discard an invalid yield; its return value is ignored.
+      await iterator.return(undefined as never)
     } finally {
       // oxlint-disable-next-line no-unsafe-finally
       throw new LayerGeneratorYieldError(service)
     }
   }
 
-  return state.value
+  // SAFETY: The public generator boundary accepts only the requested Service contract.
+  return state.value as InstanceType<S>
 }

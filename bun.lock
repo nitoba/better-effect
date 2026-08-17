@@ -59,7 +59,7 @@
       "peerDependencies": {
         "better-result": "^3.0.0",
         "iti": "^0.8.0",
-        "typescript": ">=5.2.0",
+        "typescript": ">=5.7.0",
       },
       "optionalPeers": [
         "iti",

@@ -1,8 +1,10 @@
 import {
   Layer,
   Service,
-  type EffectResult,
+  type AnyService,
+  type Effect,
   type ServiceClass,
+  type ServiceContract,
   type ServiceRequirement,
   type ServiceToken
 } from 'better-effect'
@@ -68,13 +70,15 @@ export class Logger extends Service<Logger>()('Logger') {
 }
 
 type DatabaseSpec = {
-  readonly provided: typeof Database
+  readonly provided: Database
   readonly required: never
+  readonly token: typeof Database
 }
 
 type LoggerSpec = {
-  readonly provided: typeof Logger
+  readonly provided: Logger
   readonly required: never
+  readonly token: typeof Logger
 }
 
 const DatabaseLive = Layer.make(Database)
@@ -101,17 +105,22 @@ const incorrectlyErasedEmpty: Layer<any, any> = EmptyLive
 export type EmptyProvided = Expect<Equal<Layer.Provided<typeof EmptyLive>, never>>
 export type EmptyRequired = Expect<Equal<Layer.Required<typeof EmptyLive>, never>>
 
-declare const databaseRequirement: ServiceRequirement<typeof Database>
-const covariantRequirement: ServiceRequirement<ServiceToken<string, Database>> = databaseRequirement
+declare const databaseRequirement: ServiceRequirement<Database>
+const covariantRequirement: ServiceRequirement<AnyService> = databaseRequirement
 
-declare const databaseProgram: EffectResult<string, Error, typeof Database>
-const conservativeProgram: EffectResult<string, Error, typeof Database | typeof Logger> =
-  databaseProgram
-
-declare const fullProgram: EffectResult<string, Error, typeof Database | typeof Logger>
+declare const databaseProgram: Effect<string, Error, Database>
+const conservativeProgram: Effect<string, Error, Database | Logger> = databaseProgram
+declare const fullProgram: Effect<string, Error, Database | Logger>
 
 // @ts-expect-error built Effect requirements cannot be narrowed
-const incompleteProgram: EffectResult<string, Error, typeof Database> = fullProgram
+const incompleteProgram: Effect<string, Error, Database> = fullProgram
+
+const structuralDatabase: ServiceContract<Database> = {
+  query: () => 'structural'
+}
+
+// @ts-expect-error arbitrary structural implementations do not carry Service identity
+const brandedDatabase: Database = structuralDatabase
 
 void widenedClass
 void widenedToken
@@ -129,3 +138,5 @@ void incorrectlyErasedEmpty
 void covariantRequirement
 void conservativeProgram
 void incompleteProgram
+void structuralDatabase
+void brandedDatabase

@@ -3,14 +3,17 @@ import { ServiceRuntime } from './runtime'
 import type { ServiceRequirement } from '../effect/types'
 
 import type {
+  AnyService,
   AnyServiceToken,
   ServiceClass,
+  ServiceContract,
+  ServiceIdentity,
+  ServiceIdentityTypeId,
   ServiceInstance,
   ServiceRequirements,
   ServiceTag,
   ServiceToken,
-  ServiceVariance,
-  ServiceVarianceTypeId
+  ServiceTokenOf
 } from './types'
 
 type ServiceTagLiteral<Tag extends string> = string extends Tag
@@ -22,12 +25,15 @@ type ServiceTagLiteral<Tag extends string> = string extends Tag
 interface ServiceFactory<Self> {
   <const Tag extends string>(
     tag: ServiceTagLiteral<Tag>
-  ): (abstract new () => object) &
-    Pick<ServiceToken<Tag, Self>, keyof ServiceToken<any, any>> & {
-      readonly [Symbol.asyncIterator]: (
-        this: ServiceToken<Tag, Self>
-      ) => AsyncGenerator<ServiceRequirement<ServiceToken<Tag, Self>>, Self, unknown>
-    }
+  ): (abstract new () => ServiceIdentity<Tag>) & {
+    readonly name: string
+    readonly serviceTag: Tag
+  } & {
+    readonly of: Service.FactoryOf<Self, Tag>
+    readonly [Symbol.asyncIterator]: (
+      this: ServiceToken<Tag, Self & ServiceIdentity<Tag>>
+    ) => AsyncGenerator<ServiceRequirement<Self>, Self, unknown>
+  }
 }
 
 /**
@@ -58,10 +64,10 @@ export function Service<Self>(): ServiceFactory<Self> {
       throw new TypeError('Service tags must not be empty')
     }
 
-    abstract class BaseService {
+    abstract class BaseService implements ServiceIdentity<Tag> {
       /** The stable logical identity used by Layers and resolver backends. */
       static readonly serviceTag: Tag = tag
-      declare static readonly [ServiceVarianceTypeId]: ServiceVariance<Tag, Self>
+      declare readonly [ServiceIdentityTypeId]: Tag
 
       /**
        * Type-check a structural implementation of this Service.
@@ -86,15 +92,16 @@ export function Service<Self>(): ServiceFactory<Self> {
        * // database is the original object, not an instance of Database
        * ```
        */
-      static of(this: void, implementation: Self): Self {
-        return implementation
+      static of(this: void, implementation: ServiceContract<Self & ServiceIdentity<Tag>>): Self {
+        // SAFETY: ServiceContract removes only the phantom marker; this boundary restores Self.
+        return implementation as Self
       }
 
       /** Resolve this Service from the resolver active in the current runtime. */
       // oxlint-disable-next-line require-yield
       static async *[Symbol.asyncIterator](
-        this: ServiceToken<Tag, Self>
-      ): AsyncGenerator<ServiceRequirement<ServiceToken<Tag, Self>>, Self, unknown> {
+        this: ServiceToken<Tag, Self & ServiceIdentity<Tag>>
+      ): AsyncGenerator<ServiceRequirement<Self>, Self, unknown> {
         return await ServiceRuntime.resolve(this)
       }
     }
@@ -105,21 +112,42 @@ export function Service<Self>(): ServiceFactory<Self> {
 
 /** Type-level aliases for Service tokens and their instance contracts. */
 export declare namespace Service {
-  /** The widened Service token constraint. */
-  export type Any = AnyServiceToken
+  /** The widened Service instance constraint. */
+  export type Any = AnyService
 
   /** A class-backed Service token with a stable tag and instance contract. */
-  export type Token<Tag extends string = string, Instance = any> = ServiceToken<Tag, Instance>
+  export type Token<Tag extends string = string, Instance extends AnyService = any> = ServiceToken<
+    Tag,
+    Instance
+  >
 
   /** A constructible Service class with a stable tag and instance contract. */
-  export type Class<Tag extends string = string, Instance = any> = ServiceClass<Tag, Instance>
+  export type Class<
+    Tag extends string = string,
+    Instance extends AnyService = AnyService
+  > = ServiceClass<Tag, Instance>
 
   /** Extract the instance represented by a Service token. */
   export type Instance<T extends AnyServiceToken> = ServiceInstance<T>
 
-  /** Extract the stable tag represented by a Service token. */
-  export type Tag<T extends AnyServiceToken> = ServiceTag<T>
+  /** Extract the stable tag represented by a Service instance. */
+  export type Tag<S extends AnyService> = ServiceTag<S>
 
-  /** Extract Effect Service requirements from a Service class. */
-  export type Requirements<T extends AnyServiceToken> = ServiceRequirements<T>
+  /** A branded Service instance identity with a stable tag. */
+  export type Identity<Tag extends string = string> = ServiceIdentity<Tag>
+
+  /** Remove the internal identity marker from a Service implementation contract. */
+  export type Contract<S extends AnyService> = ServiceContract<S>
+
+  /** Extract the Service token represented by a branded Service instance. */
+  export type TokenOf<S extends AnyService> = ServiceTokenOf<S>
+
+  /** Declaration bridge for the recursive structural `Service.of` signature. */
+  export type FactoryOf<Self, Tag extends string> = (
+    this: void,
+    implementation: ServiceContract<Self & ServiceIdentity<Tag>>
+  ) => Self
+
+  /** Extract Effect Service requirements from a Service instance. */
+  export type Requirements<S extends AnyService> = ServiceRequirements<S>
 }

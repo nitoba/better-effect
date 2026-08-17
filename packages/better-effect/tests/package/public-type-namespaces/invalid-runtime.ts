@@ -16,9 +16,4 @@ const needsCache = () =>
     return Result.ok(cache)
   })
 
-const diagnosticProperty: `__betterEffectMissingRuntimeService__${Service.Tag<typeof Cache>}` = `__betterEffectMissingRuntimeService__${Cache.serviceTag}`
-const invalidProgram = Object.assign(needsCache, {
-  [diagnosticProperty]: 'invalid'
-})
-
-void Runtime.run(DatabaseLive, backend, invalidProgram)
+void Runtime.run(DatabaseLive, backend, needsCache)

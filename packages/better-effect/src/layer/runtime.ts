@@ -1,6 +1,6 @@
 import { ServiceRuntime } from '../service'
 
-import type { AnyServiceToken } from '../service'
+import type { AnyService } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
@@ -25,8 +25,7 @@ import type { ScopeOutcome } from '../scope'
 
 type LayerProvider = AnyLayer['providers'][number]
 
-/** Runtime-facing handle that owns a Layer's resources and execution scopes. */
-export interface RuntimeHandle<Provided extends AnyServiceToken = AnyServiceToken> {
+interface RuntimeHandleCore<Provided extends AnyService> {
   /** The backend used to resolve this Layer's providers. */
   readonly backend: LayerBackend
 
@@ -36,6 +35,9 @@ export interface RuntimeHandle<Provided extends AnyServiceToken = AnyServiceToke
   /** Stop new executions and release Layer-owned resources. */
   dispose(outcome?: ScopeOutcome): Promise<void>
 }
+
+/** Runtime-facing handle that owns a Layer's resources and execution scopes. */
+export type RuntimeHandle<Provided extends AnyService = any> = RuntimeHandleCore<Provided>
 
 const SCOPE_SUCCESS: ScopeOutcome = Object.freeze({ status: 'success' })
 
@@ -89,7 +91,7 @@ const bindProviderToScope = (
     })
 })
 
-class RuntimeHandleImpl<Provided extends AnyServiceToken> implements RuntimeHandle<Provided> {
+class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCore<Provided> {
   private disposePromise: Promise<void> | undefined
 
   private readonly executions = new Set<Promise<unknown>>()

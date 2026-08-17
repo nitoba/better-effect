@@ -4,7 +4,7 @@ import type { Runtime } from './runtime'
 
 /**
  * Name a Runtime type from a concrete Layer without repeating its provided
- * Service constructor union.
+ * branded Service instance union.
  *
  * @example
  * ```ts

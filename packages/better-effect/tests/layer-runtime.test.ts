@@ -66,10 +66,24 @@ class ScopedConsumer extends Service<ScopedConsumer>()('ScopedConsumer') {
   }
 }
 
+class RuntimeDatabase extends Service<RuntimeDatabase>()('RuntimeDatabase') {
+  query(): string {
+    return 'primary'
+  }
+}
+
+class RuntimeDatabaseOverride extends Service<RuntimeDatabaseOverride>()('RuntimeDatabase') {
+  query(): string {
+    return 'override'
+  }
+}
+
 class MemoryLayerBackend implements LayerBackend {
   readonly providers = new Map<string, LayerRegistration>()
 
   readonly instances = new Map<string, unknown>()
+
+  readonly resolvedTokens: AnyServiceToken[] = []
 
   disposed = false
 
@@ -112,6 +126,8 @@ class MemoryLayerBackend implements LayerBackend {
   }
 
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    this.resolvedTokens.push(token)
+
     const tag = token.serviceTag
 
     if (this.instances.has(tag)) {
@@ -181,6 +197,42 @@ describe('createRuntimeHandle', () => {
       expect(backend.providers.has(ExampleService.serviceTag)).toBe(true)
 
       expect(backend.instances.size).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('keeps constructor tokens at runtime without emitting instance identity metadata', async () => {
+    const layer = Layer.override(
+      Layer.make(RuntimeDatabase, () => new RuntimeDatabase()),
+      Layer.make(RuntimeDatabaseOverride, () => new RuntimeDatabaseOverride())
+    )
+    const backend = new MemoryLayerBackend()
+    const runtime = await createRuntimeHandle(layer, backend)
+
+    try {
+      expect(backend.providers.get(RuntimeDatabase.serviceTag)?.service).toBe(
+        RuntimeDatabaseOverride
+      )
+
+      const result = await runtime.run(() =>
+        Effect.gen(async function* () {
+          const database = yield* RuntimeDatabase
+
+          return Result.ok(database)
+        })
+      )
+
+      expect(backend.resolvedTokens).toContain(RuntimeDatabase)
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value.query()).toBe('override')
+        expect(Object.getOwnPropertySymbols(result.value)).toEqual([])
+        expect(Object.getOwnPropertyNames(result.value)).not.toContain('ServiceIdentityTypeId')
+      }
+
+      expect(Object.getOwnPropertySymbols(RuntimeDatabaseOverride.prototype)).toEqual([])
     } finally {
       await runtime.dispose()
     }

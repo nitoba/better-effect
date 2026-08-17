@@ -1,5 +1,12 @@
 import type { InferYieldRequirements, ServiceRequirement } from '../effect/types'
-import type { AnyServiceToken, ServiceClass, ServiceRequirements } from '../service'
+import type {
+  AnyService,
+  AnyServiceToken,
+  ServiceClass,
+  ServiceContract,
+  ServiceRequirements,
+  ServiceTokenOf
+} from '../service'
 import type { MaybePromise } from '../utils/types'
 
 /** Runtime-facing provider registration supplied by a Layer backend. */
@@ -13,26 +20,29 @@ export interface LayerRegistration {
 
 /** Type-level description of one Layer provider and its Service requirements. */
 export type LayerSpec<
-  out Provided extends AnyServiceToken,
-  out Required extends AnyServiceToken = never
+  out Provided extends AnyService,
+  out Required extends AnyService = never,
+  out Token extends AnyServiceToken = ServiceTokenOf<Provided>
 > = {
-  /** Service constructor provided by the Layer. */
+  /** Branded Service instance provided by the Layer. */
   readonly provided: Provided
-  /** Service constructors required while acquiring the provider. */
+  /** Branded Service instances required while acquiring the provider. */
   readonly required: Required
+  /** Exact constructor retained for registration and override diagnostics. */
+  readonly token: Token
 }
 
 /** Widened Layer specification used by generic Layer utilities. */
-export type AnyLayerSpec = LayerSpec<AnyServiceToken, AnyServiceToken>
+export type AnyLayerSpec = LayerSpec<AnyService, AnyService, AnyServiceToken>
 
 /** Generator shape used by `Layer.gen` and `Layer.scopedGen`. */
 export type LayerGenerator<
   S extends ServiceClass<any, any>,
-  Yield extends ServiceRequirement<AnyServiceToken> = ServiceRequirement<AnyServiceToken>
-> = () => AsyncGenerator<Yield, InstanceType<S>, unknown>
+  Yield extends ServiceRequirement<unknown> = ServiceRequirement<unknown>
+> = () => AsyncGenerator<Yield, ServiceContract<InstanceType<S>>, unknown>
 
 /** Service requirements inferred from a provider's methods and generator. */
 export type LayerGeneratorRequirements<
   S extends ServiceClass<any, any>,
-  Yield extends ServiceRequirement<AnyServiceToken>
-> = ServiceRequirements<S> | InferYieldRequirements<Yield>
+  Yield extends ServiceRequirement<unknown>
+> = ServiceRequirements<InstanceType<S>> | InferYieldRequirements<Yield>

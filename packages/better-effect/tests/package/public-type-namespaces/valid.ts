@@ -6,8 +6,8 @@ import {
   Runtime,
   Scope,
   Service,
-  type AnyEffectResult,
-  type AnyServiceToken,
+  type AnyEffect,
+  type AnyService,
   type CloseableScope,
   type DisposableResource,
   type EffectError,
@@ -23,10 +23,13 @@ import {
   type ScopeFinalizer,
   type ScopeOutcome,
   type ServiceClass,
+  type ServiceContract,
+  type ServiceIdentity,
   type ServiceInstance,
   type ServiceRequirements,
   type ServiceTag,
-  type ServiceToken
+  type ServiceToken,
+  type ServiceTokenOf
 } from 'better-effect'
 
 type Equal<Left, Right> =
@@ -70,9 +73,9 @@ export type EffectErrorAlias = Expect<Equal<Effect.Error<Program>, EffectError<P
 export type EffectRequirementsAlias = Expect<
   Equal<Effect.Requirements<Program>, EffectRequirements<Program>>
 >
-export type EffectAnyAlias = Expect<Equal<Effect.AnyResult, AnyEffectResult>>
+export type EffectAnyAlias = Expect<Equal<Effect.Any, AnyEffect>>
 
-export type ServiceAnyAlias = Expect<Equal<Service.Any, AnyServiceToken>>
+export type ServiceAnyAlias = Expect<Equal<Service.Any, AnyService>>
 export type ServiceTokenDefault = Expect<Equal<Service.Token, ServiceToken>>
 export type ServiceTokenAlias = Expect<
   Equal<Service.Token<'Database', Database>, ServiceToken<'Database', Database>>
@@ -81,14 +84,25 @@ export type ServiceClassDefault = Expect<Equal<Service.Class, ServiceClass>>
 export type ServiceClassAlias = Expect<
   Equal<Service.Class<'Database', Database>, ServiceClass<'Database', Database>>
 >
+export type ServiceIdentityAlias = Expect<
+  Equal<Service.Identity<'Database'>, ServiceIdentity<'Database'>>
+>
+export type ServiceContractAlias = Expect<
+  Equal<Service.Contract<Database>, ServiceContract<Database>>
+>
+export type ServiceTokenOfAlias = Expect<Equal<Service.TokenOf<Database>, ServiceTokenOf<Database>>>
+export type ServiceFactoryOfAlias = Expect<
+  Equal<
+    Service.FactoryOf<Database, 'Database'>,
+    (this: void, implementation: ServiceContract<Database>) => Database
+  >
+>
 export type ServiceInstanceAlias = Expect<
   Equal<Service.Instance<typeof Database>, ServiceInstance<typeof Database>>
 >
-export type ServiceTagAlias = Expect<
-  Equal<Service.Tag<typeof Database>, ServiceTag<typeof Database>>
->
+export type ServiceTagAlias = Expect<Equal<Service.Tag<Database>, ServiceTag<Database>>>
 export type ServiceRequirementsAlias = Expect<
-  Equal<Service.Requirements<typeof Repository>, ServiceRequirements<typeof Repository>>
+  Equal<Service.Requirements<Repository>, ServiceRequirements<Repository>>
 >
 
 export type LayerAnyAlias = Expect<Equal<Layer.Any, Layer<any, any> | Layer<never, any>>>

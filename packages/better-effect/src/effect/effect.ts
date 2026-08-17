@@ -5,9 +5,11 @@ import type { Err, Result as ResultType, UnhandledException } from 'better-resul
 import { Scope } from '../scope'
 
 import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
+import type { AnyService } from '../service'
 
 import type {
-  AnyEffectResult,
+  AnyEffect,
+  Effect as EffectType,
   EffectError,
   EffectFromGenerator,
   EffectRequirements,
@@ -16,6 +18,8 @@ import type {
 } from './types'
 
 import { andThen, andThenAsync, map, mapError } from './combinators'
+
+export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
 type AnyResult = ResultType<any, any>
 
@@ -142,6 +146,6 @@ export declare namespace Effect {
   /** Extract the Service requirements from an Effect result or Promise. */
   export type Requirements<T> = EffectRequirements<T>
 
-  /** An Effect result with unknown success, error, and requirements. */
-  export type AnyResult = AnyEffectResult
+  /** An Effect with erased success, error, and requirements. */
+  export type Any = AnyEffect
 }

@@ -4,7 +4,7 @@ import { Result } from 'better-result'
 
 import {
   Effect,
-  type AnyEffectResult,
+  type AnyEffect,
   type EffectError,
   type EffectRequirements,
   type EffectSuccess,
@@ -18,6 +18,7 @@ import {
   type RuntimeOptions,
   type RuntimeShutdownDiagnostic,
   Scope,
+  type AnyService,
   type CloseableScope,
   type DisposableResource,
   type ScopeFinalizer,
@@ -25,10 +26,13 @@ import {
   Service,
   type AnyServiceToken,
   type ServiceClass,
+  type ServiceContract,
+  type ServiceIdentity,
   type ServiceInstance,
   type ServiceRequirements,
   type ServiceTag,
-  type ServiceToken
+  type ServiceToken,
+  type ServiceTokenOf
 } from '../../src'
 
 class Database extends Service<Database>()('Database') {
@@ -63,20 +67,25 @@ expectTypeOf<Effect.Error<typeof program>>().toEqualTypeOf<EffectError<typeof pr
 expectTypeOf<Effect.Requirements<typeof program>>().toEqualTypeOf<
   EffectRequirements<typeof program>
 >()
-expectTypeOf<Effect.AnyResult>().toEqualTypeOf<AnyEffectResult>()
+expectTypeOf<Effect.Any>().toEqualTypeOf<AnyEffect>()
 
-expectTypeOf<Service.Any>().toEqualTypeOf<AnyServiceToken>()
+expectTypeOf<Service.Any>().toEqualTypeOf<AnyService>()
+expectTypeOf<AnyServiceToken>().toEqualTypeOf<ServiceToken>()
 expectTypeOf<Service.Token<'Database', Database>>().toEqualTypeOf<
   ServiceToken<'Database', Database>
 >()
 expectTypeOf<Service.Class<'Database', Database>>().toEqualTypeOf<
   ServiceClass<'Database', Database>
 >()
-expectTypeOf<Service.Instance<typeof Database>>().toEqualTypeOf<ServiceInstance<typeof Database>>()
-expectTypeOf<Service.Tag<typeof Database>>().toEqualTypeOf<ServiceTag<typeof Database>>()
-expectTypeOf<Service.Requirements<typeof Repository>>().toEqualTypeOf<
-  ServiceRequirements<typeof Repository>
+expectTypeOf<Service.Identity<'Database'>>().toEqualTypeOf<ServiceIdentity<'Database'>>()
+expectTypeOf<Service.Contract<Database>>().toEqualTypeOf<ServiceContract<Database>>()
+expectTypeOf<Service.TokenOf<Database>>().toEqualTypeOf<ServiceTokenOf<Database>>()
+expectTypeOf<Service.FactoryOf<Database, 'Database'>>().toEqualTypeOf<
+  (this: void, implementation: ServiceContract<Database>) => Database
 >()
+expectTypeOf<Service.Instance<typeof Database>>().toEqualTypeOf<ServiceInstance<typeof Database>>()
+expectTypeOf<Service.Tag<Database>>().toEqualTypeOf<ServiceTag<Database>>()
+expectTypeOf<Service.Requirements<Repository>>().toEqualTypeOf<ServiceRequirements<Repository>>()
 expectTypeOf<Service.Token>().toEqualTypeOf<ServiceToken>()
 expectTypeOf<Service.Class>().toEqualTypeOf<ServiceClass>()
 
@@ -101,6 +110,12 @@ expectTypeOf<Service.Token<42>>()
 
 // @ts-expect-error Service.Instance requires a Service token.
 expectTypeOf<Service.Instance<object>>()
+
+// @ts-expect-error Service.Tag requires a branded Service instance.
+expectTypeOf<Service.Tag<object>>()
+
+// @ts-expect-error Service.Contract requires a branded Service instance.
+expectTypeOf<Service.Contract<object>>()
 
 // @ts-expect-error Layer.Provided requires a Layer.
 expectTypeOf<Layer.Provided<object>>()

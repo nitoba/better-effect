@@ -62,8 +62,19 @@ const readDeclarationGraph = async (entry: string): Promise<string> => {
 }
 
 const aliases = {
-  Effect: ['Success', 'Error', 'Requirements', 'AnyResult'],
-  Service: ['Any', 'Token', 'Class', 'Instance', 'Tag', 'Requirements'],
+  Effect: ['Success', 'Error', 'Requirements', 'Any'],
+  Service: [
+    'Any',
+    'Identity',
+    'Token',
+    'Class',
+    'Instance',
+    'Tag',
+    'TokenOf',
+    'Contract',
+    'FactoryOf',
+    'Requirements'
+  ],
   Layer: ['Any', 'Specs', 'Provided', 'Required', 'Missing', 'Complete'],
   Runtime: ['For', 'Options', 'ShutdownDiagnostic'],
   Scope: ['Closeable', 'Outcome', 'Finalizer', 'Disposable']
@@ -133,8 +144,36 @@ for (const [namespaceName, members] of Object.entries(aliases)) {
   }
 }
 
+for (const staleName of ['EffectResult', 'AnyEffectResult']) {
+  assertCondition(
+    !declarations.includes(staleName),
+    `Stale public Effect name remains: ${staleName}`
+  )
+}
+
+for (const typeMetadata of [
+  'ServiceIdentityTypeId',
+  'EffectRequirementsTypeId',
+  'MissingDependenciesTypeId'
+]) {
+  assertCondition(
+    !esm.includes(typeMetadata),
+    `Type metadata leaked into generated ESM: ${typeMetadata}`
+  )
+}
+
 const diagnostic = Bun.spawnSync(
-  ['bun', 'x', 'tsc', '-p', 'tests/package/public-type-namespaces/tsconfig.diagnostic.json'],
+  [
+    'bun',
+    'run',
+    '--silent',
+    'tsc',
+    '--',
+    '-p',
+    'tests/package/public-type-namespaces/tsconfig.diagnostic.json',
+    '--pretty',
+    'false'
+  ],
   {
     cwd: packageRoot,
     stdout: 'pipe',
@@ -146,10 +185,8 @@ const diagnosticOutput = `${decoder.decode(diagnostic.stdout)}\n${decoder.decode
 
 assertCondition(diagnostic.exitCode !== 0, 'Invalid Runtime fixture unexpectedly typechecked')
 assertCondition(
-  diagnosticOutput.includes(
-    "Types of property '__betterEffectMissingRuntimeService__Cache' are incompatible."
-  ),
-  'Runtime diagnostic did not compare the expected missing-service property'
+  /MissingDependencies\s*<\s*Cache\s*>/.test(diagnosticOutput),
+  'Runtime diagnostic did not name MissingDependencies<Cache>'
 )
 
 console.log('Public type namespace package checks passed')
