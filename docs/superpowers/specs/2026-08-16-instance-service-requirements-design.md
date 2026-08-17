@@ -24,7 +24,7 @@ This is an intentional breaking public type-model change. Backward compatibility
 - Preserve structural implementations through `Service.of` and Layer provider boundaries.
 - Replace internal-looking missing-Service diagnostics with `MissingDependencies<...>`.
 - Add no runtime representation, scheduler, Context, Fiber, or dependency.
-- Support TypeScript 5.2.2 and the current project compiler.
+- Support TypeScript 5.7.2 and the current project compiler.
 
 ## Non-goals
 
@@ -42,11 +42,7 @@ This is an intentional breaking public type-model change. Backward compatibility
 The current requirement channel carries constructor tokens:
 
 ```ts
-type Program = EffectResult<
-  User,
-  UserError,
-  typeof Database | typeof Logger
->
+type Program = EffectResult<User, UserError, typeof Database | typeof Logger>
 ```
 
 This is correct because constructors own `serviceTag`, but it makes the public environment harder to read than the application architecture it describes. It also creates an unsafe loophole: `EffectResult<User, UserError, Database>` compiles because the requirement parameter is unconstrained, then token-only missing-Service logic treats the instance type as no requirement.
@@ -92,16 +88,14 @@ type ServiceIdentity<Tag extends string> = {
 
 The generated Service base contributes `ServiceIdentity<'Database'>`. The member is declared with `declare`; it is never initialized or emitted.
 
-The marker is required so unrelated types such as `{}`, `object`, primitives, and arbitrary interfaces cannot satisfy the `Effect` environment constraint. An optional-only identity would create a weak-type loophole in TypeScript 5.2.
+The marker is required so unrelated types such as `{}`, `object`, primitives, and arbitrary interfaces cannot satisfy the `Effect` environment constraint. An optional-only identity would create a weak-type loophole in TypeScript 5.7.
 
 ### Structural implementation projection
 
 Application implementations must not manufacture the required phantom marker. The stripping helper is intentionally unconstrained and distributive so it can participate in the recursive `Service<Self>()` heritage expression before `Self` has acquired its base marker:
 
 ```ts
-type ServiceContract<S> = S extends unknown
-  ? Omit<S, typeof ServiceIdentityTypeId>
-  : never
+type ServiceContract<S> = S extends unknown ? Omit<S, typeof ServiceIdentityTypeId> : never
 ```
 
 The `Service()` factory bridges the recursive self type with the known base identity rather than constraining `Self` prematurely:
@@ -112,7 +106,7 @@ of(
 ): Self
 ```
 
-Constraining the outer `Service<Self>()` call to `Self extends AnyService` is forbidden because the derived class receives that identity from the base currently being constructed and TypeScript 5.2 rejects the circular constraint.
+Constraining the outer `Service<Self>()` call to `Self extends AnyService` is forbidden because the derived class receives that identity from the base currently being constructed and TypeScript 5.7 rejects the circular constraint.
 
 `ServiceIdentity<Tag>` is an exported, type-only opaque interface because consumer declaration emit must be able to name the base instance type of exported Service subclasses. Its `unique symbol` remains a non-exported declaration detail, so consumers cannot construct the marker and no runtime symbol is emitted. The package may also expose the discoverable alias `Service.Identity<Tag>`; the top-level interface remains available for declaration portability.
 
@@ -141,10 +135,9 @@ Internal helpers recover the literal tag and construct a canonical token contrac
 ```ts
 type ServiceTagOf<S extends AnyService> = S[typeof ServiceIdentityTypeId]
 
-type ServiceTokenOf<S extends AnyService> =
-  S extends AnyService
-    ? ServiceToken<ServiceTagOf<S>, S>
-    : never
+type ServiceTokenOf<S extends AnyService> = S extends AnyService
+  ? ServiceToken<ServiceTagOf<S>, S>
+  : never
 ```
 
 The explicit conditional makes token extraction distributive:
@@ -173,14 +166,10 @@ resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<Inst
 
 ## Public Effect type
 
-The exported `Effect` value, generic type, and declaration-only namespace coexist under TypeScript's separate value and type namespaces. This shape was validated with declaration emit on TypeScript 5.2.2.
+The exported `Effect` value, generic type, and declaration-only namespace coexist under TypeScript's separate value and type namespaces. This shape was validated with declaration emit on TypeScript 5.7.2.
 
 ```ts
-export type Effect<
-  A,
-  E,
-  R extends AnyService = never
-> = ResultType<A, E> & {
+export type Effect<A, E, R extends AnyService = never> = ResultType<A, E> & {
   readonly [EffectRequirementsTypeId]?: R
 }
 ```
@@ -239,7 +228,7 @@ type Requirements = Effect.Requirements<typeof program>
 
 ### Service yields
 
-The outer `Service<Self>()` factory cannot constrain recursive `Self` to `AnyService`, and a generic-`this` iterator leaves its type parameter unresolved under `yield*` on TypeScript 5.2. The iterator therefore uses the explicit recursive `Self` directly:
+The outer `Service<Self>()` factory cannot constrain recursive `Self` to `AnyService`, and a generic-`this` iterator leaves its type parameter unresolved under `yield*` on TypeScript 5.7. The iterator therefore uses the explicit recursive `Self` directly:
 
 ```ts
 [Symbol.asyncIterator](
@@ -258,7 +247,7 @@ type InferYieldRequirements<Y> =
     : never
 ```
 
-At `yield* Database`, both the yielded value and extracted requirement are exactly the completed branded `Database`. The runtime implementation still delegates `this` to `ServiceRuntime.resolve`. A TypeScript 5.2 declaration-emission spike validated exact yield inference for an exported subclass.
+At `yield* Database`, both the yielded value and extracted requirement are exactly the completed branded `Database`. The runtime implementation still delegates `this` to `ServiceRuntime.resolve`. A TypeScript 5.7 declaration-emission spike validated exact yield inference for an exported subclass.
 
 ### Generator results
 
@@ -325,13 +314,7 @@ type Missing = Layer.Missing<typeof AppLive>
 `LayerSpec<Provided, Required, Token>` uses instance-side Service identities for `Provided` and `Required` and separately retains the exact registering constructor `Token`. Layer creation infers all three channels from the constructor argument. The normative `make` result shape is:
 
 ```ts
-Layer<
-  LayerSpec<
-    InstanceType<S>,
-    Service.Requirements<InstanceType<S>>,
-    S
-  >
->
+Layer<LayerSpec<InstanceType<S>, Service.Requirements<InstanceType<S>>, S>>
 ```
 
 Acquisition callbacks and generator returns accept `ServiceContract<InstanceType<S>>`; release callbacks receive the branded `InstanceType<S>`. The same relationship applies to `succeed`, `scoped`, `gen`, and `scopedGen`.
@@ -366,7 +349,7 @@ type AppRuntime = Runtime.For<typeof AppLive>
 
 Every execution boundary validates an Effect's instance requirement union against the Runtime's provided instance union. Tags are recovered from the phantom identities, so a same-shape Service under another tag does not satisfy the requirement.
 
-Unparameterized `Runtime` defaults to `Service.Any` and is the intentional unchecked environment boundary. Matching applies these rules in order:
+Unparameterized `Runtime` defaults to `any` and is the intentional unchecked environment boundary; `Runtime<Service.Any>` is the explicit widened-marker spelling with equivalent erasure behavior. Matching applies these rules in order:
 
 1. `never` requires no Services;
 2. `any` on either environment side is explicit unchecked erasure;
@@ -410,8 +393,7 @@ type MissingDependencies<Missing extends AnyService> = {
 An incomplete Runtime execution should be reported through a parameter type equivalent to:
 
 ```ts
-(() => Effect<User, UserError, Logger | Cache>) &
-  MissingDependencies<Logger | Cache>
+;(() => Effect<User, UserError, Logger | Cache>) & MissingDependencies<Logger | Cache>
 ```
 
 An incomplete Layer boundary should include:
@@ -420,7 +402,7 @@ An incomplete Layer boundary should include:
 Layer<...> & MissingDependencies<Database>
 ```
 
-The TypeScript CLI controls final wording, but the principal named type identifies the missing instance union without internal-looking property names. A TypeScript 5.2.2 diagnostic spike confirmed that named generic diagnostic aliases appear in the primary assignability error.
+The TypeScript CLI controls final wording, but the principal named type identifies the missing instance union without internal-looking property names. A TypeScript 5.7.2 diagnostic spike confirmed that named generic diagnostic aliases appear in the primary assignability error.
 
 `Layer.Missing<L>` remains the machine-readable inspection API and returns the missing instance union directly. `MissingDependencies` lives in `src/internal/missing-dependencies.ts` with its declaration-only unique symbol. It is package-private: bundled declarations retain the named helper because public boundary signatures reference it, but package barrels do not export it. Built-package diagnostic fixtures under both supported compilers must assert that stderr contains the literal `MissingDependencies<...>` name; a declaration-name regression is a test failure.
 
@@ -524,7 +506,7 @@ Generated-output tests must verify these properties.
 
 Type tests must prove:
 
-- `yield* Database` and its inferred requirement are exactly `Database` under TypeScript 5.2.2;
+- `yield* Database` and its inferred requirement are exactly `Database` under TypeScript 5.7.2;
 - exported Service subclasses emit declarations through the public opaque `ServiceIdentity<Tag>` without TS4020;
 - the identity unique symbol remains private and no runtime symbol is emitted;
 - `Service.Tag<Database>` is the literal tag.
@@ -565,7 +547,7 @@ Type tests must prove:
 
 ### Package declarations
 
-Built-package fixtures must run with the current compiler and TypeScript 5.2.2 and verify:
+Built-package fixtures must run with the current compiler and TypeScript 5.7.2 and verify:
 
 - value/type/namespace coexistence for `Effect`;
 - exported consumer Service subclasses emit portable declarations naming `ServiceIdentity<Tag>` under both compilers;
@@ -625,4 +607,4 @@ Remove or rewrite examples that call an instance projection a canonical requirem
 - resolver and backend APIs continue to use constructor tokens.
 - Result, generator, Scope, Layer lifecycle, and Runtime behavior do not change.
 - generated JavaScript contains no Service identity or Effect requirement metadata.
-- all current and TypeScript 5.2.2 verification suites pass after migration.
+- all current and TypeScript 5.7.2 verification suites pass after migration.

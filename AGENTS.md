@@ -81,10 +81,18 @@ Services are declared using an explicit self type and a non-empty literal tag:
 class AuthService extends Service<AuthService>()('AuthService') {}
 ```
 
-The class constructor remains the ergonomic runtime and type-level handle. The
+The class constructor remains the ergonomic runtime token and Layer handle. The
 literal `serviceTag` is the stable logical identity used by Layer composition
-and dependency backends. The self type anchors exact instance inference while
-the tag is carried in the phantom requirement contract.
+and dependency backends. The self type anchors exact instance inference. Every
+Service instance carries a required, declaration-only `ServiceIdentity<Tag>`;
+that marker emits no runtime property. Public Effect, Layer and Runtime
+environments use unions of those tagged instances, while constructors remain
+resolver tokens.
+
+Structural implementations pass through `ServiceContract<S>`, which removes
+the inaccessible identity marker. `Service.of` and every Layer provider API
+accept that marker-free contract and return or provide the branded Service
+type without adding runtime metadata.
 
 A Service should resolve like:
 
@@ -193,8 +201,10 @@ not a diagnostic-only constructor name:
 provider.service.name === 'Database'
 ```
 
-The registering constructor is retained for type relationships and collision
-diagnostics; `name` may be used for diagnostics only.
+Public Layer metadata exposes provided and required Service instance unions.
+A private LayerSpec token channel retains the exact registering constructor for
+registration, replacement and collision diagnostics; `name` may be used for
+diagnostics only.
 
 ### Layer type erasure
 
@@ -227,11 +237,13 @@ release logic needs the final `ScopeOutcome`; its callback explicitly receives b
 
 ### Typed execution requirements
 
-Every typed execution boundary (`BuiltLayer.run`, managed `Runtime.run`, and
+Every typed execution boundary (`RuntimeHandle.run`, managed `Runtime.run`, and
 one-shot `Runtime.run`) MUST validate the final `EffectRequirements` of its
-program against the Service-token union provided by its Layer. The inferred
-Runtime and BuiltLayer handles retain that union; unparameterized annotations
-intentionally erase it as an explicit unchecked escape hatch.
+program against the tagged Service instance union provided by its Layer. The
+inferred Runtime and RuntimeHandle values retain that union; unparameterized
+annotations intentionally erase it as an explicit unchecked escape hatch.
+Unavailable requirements must appear through the package-private named
+`MissingDependencies<Missing>` diagnostic, not underscored diagnostic members.
 
 Use `Runtime.For<typeof AppLive>` when a Runtime inferred from a concrete Layer
 must be named in an application boundary. It is a type-only alias for
@@ -365,9 +377,9 @@ Use `better-result` as the source of truth for:
 - `TaggedError`
 - `UnhandledException`
 
-The public TypeScript peer range starts at 5.2. The lower bound is required by the
-`Symbol.dispose` and `Symbol.asyncDispose` declarations used by `DisposableResource`;
-the phantom Service-requirement types themselves do not require TypeScript 7.
+The public TypeScript peer range starts at 5.7. The package and declaration
+fixtures MUST support TypeScript 5.7.2 and the current project compiler. The
+phantom Service-requirement types do not require TypeScript 7.
 
 Every `Result.gen` generator must finish by returning a `Result`.
 
@@ -380,6 +392,15 @@ return Result.ok(value)
 ```
 
 Do not assume a raw value can be returned from `Result.gen`.
+
+### Effect type
+
+The public `Effect<A, E, R extends Service.Any = never>` is a type-only facade
+over a `better-result` Result. `R` is a tagged Service instance union. It MUST
+NOT become a lazy instruction tree, runtime Effect representation, Context,
+Fiber or scheduler abstraction. Constructors remain the values yielded and
+resolved at runtime; only their instance types enter public requirement
+metadata.
 
 ### Pipelines
 

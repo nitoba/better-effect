@@ -31,8 +31,9 @@ const DatabaseLive = Layer.make(Database, async () => {
 })
 ```
 
-The callback is lazy and its return type must match the Service instance
-contract.
+The callback is lazy and accepts the marker-free `Service.Contract<Database>`
+shape. The Layer provides the branded `Database` instance type; no identity
+property is added at runtime.
 
 ## `Layer.succeed`
 
@@ -154,8 +155,10 @@ The public type helpers make application boundaries explicit:
 import type { Layer } from 'better-effect'
 
 type Provided = Layer.Provided<typeof ApplicationLive>
+// Database | Clock | UserRepository | UserService
 type RequiredDuringAcquire = Layer.Required<typeof ApplicationLive>
 type Missing = Layer.Missing<typeof ApplicationLive>
+// tagged Service instance union, or never when complete
 type Specs = Layer.Specs<typeof ApplicationLive>
 type Complete = Layer.Complete<typeof ApplicationLive>
 ```

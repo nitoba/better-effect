@@ -6,9 +6,9 @@ icon: CircleQuestionMark
 
 <Accordions>
   <Accordion title="TypeScript says a Service is missing" id="missing-service">
-    Read the diagnostic tag `__betterEffectMissingService__...` or
-    `__betterEffectMissingRuntimeService__...`. Add the missing provider to the Layer, merge the
-    Layers, or use an explicit override for a test.
+    Read the named diagnostic, for example `MissingDependencies<Logger | Cache>`. The generic
+    argument is the exact tagged Service instance union that is unavailable. Add those providers to
+    the Layer, merge the Layers, or use an explicit compatible override for a test.
   </Accordion>
   <Accordion title="I used Layer.merge and got a duplicate error" id="duplicate-layer">
     `merge` never silently replaces a provider. Use `Layer.override(base, replacement)` when
@@ -33,9 +33,9 @@ icon: CircleQuestionMark
     primary failure.
   </Accordion>
   <Accordion title="Layer.gen yielded an unsupported value" id="bad-layer-yield">
-    Layer generators may yield Service tokens only. Use `Result.await` and `Effect.gen` for Result
-    operations in application programs; use `Layer.scopedGen` for contextual acquisition and
-    cleanup.
+    Layer generators may yield Service constructors only; their public requirement metadata uses
+    the corresponding instance types. Use `Result.await` and `Effect.gen` for Result operations in
+    application programs; use `Layer.scopedGen` for contextual acquisition and cleanup.
   </Accordion>
 </Accordions>
 

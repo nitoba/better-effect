@@ -4,9 +4,10 @@ description: Compose better-result workflows while carrying Service requirements
 icon: WandSparkles
 ---
 
-`Effect` is a small namespace around `better-result` composition. It does not
-introduce a new runtime value class. An Effect result is a normal
-`Result<A, E>` with optional phantom metadata describing required Services.
+`Effect` is a small namespace around `better-result` composition. Its canonical
+`Effect<A, E, R>` annotation is a type-only facade over a normal `Result<A, E>`;
+it does not introduce a runtime value class or an Effect TS instruction tree.
+`R` is a union of tagged Service instance requirements.
 
 ## `Effect.gen`
 
@@ -33,11 +34,14 @@ const loadDashboard = Effect.gen(async function* () {
 
   return Result.ok({ user, access })
 })
+
+type LoadDashboard = Awaited<typeof loadDashboard>
+// Effect<{ user: User; access: Access }, Forbidden, UserRepository | PermissionService>
 ```
 
 The generator may yield:
 
-- a Service token, resolved by the active Runtime;
+- a Service constructor token, resolved by the active Runtime and recorded publicly as its instance type;
 - a `better-result` `Err`, which short-circuits the workflow.
 
 The generator must finish with `Result.ok(...)` or `Result.err(...)` (or another
@@ -123,14 +127,15 @@ cleanup callback needs the final `ScopeOutcome`.
 
 - errors yielded from `Result` operations;
 - errors returned by the final `Result`;
-- Service tokens yielded by the generator;
-- requirements already carried by nested Effects.
+- tagged Service instances corresponding to constructors yielded by the generator;
+- instance requirements already carried by nested Effects.
 
 ```ts
 type Program = typeof loadDashboard
 type Success = Effect.Success<Program>
 type Failure = Effect.Error<Program>
 type Needs = Effect.Requirements<Program>
+// UserRepository | PermissionService
 ```
 
 Use these types at integration boundaries when you need to name a contract;

@@ -6,7 +6,7 @@
 
 **Architecture:** Add a required declaration-only identity to Service instances and accept marker-free implementations through a top-level `ServiceContract` projection. Replace token-based public Effect, Layer, and Runtime environment metadata with tagged instance unions; retain exact constructors in a private LayerSpec channel for registration and override semantics. Keep all runtime behavior delegated to `better-result`, ServiceRuntime, Scope, and Layer backends.
 
-**Tech Stack:** TypeScript 5.2+, Bun, better-result, bun:test, tsdown, Oxfmt, Oxlint, Turbo, OpenSpec markdown specifications.
+**Tech Stack:** TypeScript 5.7+, Bun, better-result, bun:test, tsdown, Oxfmt, Oxlint, Turbo, OpenSpec markdown specifications.
 
 **Design:** `docs/superpowers/specs/2026-08-16-instance-service-requirements-design.md`
 
@@ -57,6 +57,7 @@
 ## Task 1: Add the end-to-end instance requirement type test
 
 **Files:**
+
 - Create: `packages/better-effect/tests/types/instance-requirements.types.ts`
 - Reference: `docs/superpowers/specs/2026-08-16-instance-service-requirements-design.md`
 
@@ -149,14 +150,10 @@ const LoggerLive = Layer.make(Logger)
 const RepositoryLive = Layer.make(Repository)
 const AppLive = Layer.merge(DatabaseLive, LoggerLive, RepositoryLive)
 
-expectTypeOf<LayerProvided<typeof AppLive>>().toEqualTypeOf<
-  Database | Logger | Repository
->()
+expectTypeOf<LayerProvided<typeof AppLive>>().toEqualTypeOf<Database | Logger | Repository>()
 expectTypeOf<LayerMissing<typeof AppLive>>().toBeNever()
 expectTypeOf<LayerMissing<typeof RepositoryLive>>().toEqualTypeOf<Database | Logger>()
-expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<
-  Runtime<Database | Logger | Repository>
->()
+expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger | Repository>>()
 
 // @ts-expect-error arbitrary objects are not Service environments
 type InvalidObjectEffect = Effect<string, Error, object>
@@ -188,10 +185,7 @@ type RequirementFree = Effect<string, Error>
 expectTypeOf<RequirementFree>().toEqualTypeOf<Effect<string, Error, never>>()
 expectTypeOf<EffectRequirements<RequirementFree>>().toBeNever()
 
-function runSame<R extends Service.Any>(
-  runtime: Runtime<R>,
-  effect: Effect<unknown, never, R>
-) {
+function runSame<R extends Service.Any>(runtime: Runtime<R>, effect: Effect<unknown, never, R>) {
   void runtime.run(() => effect)
 }
 
@@ -204,7 +198,7 @@ function rejectUnrelated<R extends Service.Any>(
 }
 ```
 
-Use `.toBeNever()` for every new `never` assertion so the test remains valid with Bun's TypeScript 5.2 declarations.
+Use `.toBeNever()` for every new `never` assertion so the test remains valid with Bun's TypeScript 5.7 declarations.
 
 - [ ] **Step 3: Run the test suite and verify RED**
 
@@ -238,6 +232,7 @@ Tasks 2–4 are one atomic RED→GREEN migration. The end-to-end contract from C
 ## Task 2: Add branded Service instances and structural implementation boundaries
 
 **Files:**
+
 - Modify: `packages/better-effect/src/service/types.ts`
 - Modify: `packages/better-effect/src/service/service.ts`
 - Modify: `packages/better-effect/src/service/index.ts`
@@ -260,9 +255,7 @@ Before implementation, update Service-focused type tests to require:
 ```ts
 expectTypeOf<Database>().toMatchTypeOf<ServiceIdentity<'Database'>>()
 expectTypeOf<ServiceTag<Database>>().toEqualTypeOf<'Database'>()
-expectTypeOf<ServiceTokenOf<Database>>().toEqualTypeOf<
-  ServiceToken<'Database', Database>
->()
+expectTypeOf<ServiceTokenOf<Database>>().toEqualTypeOf<ServiceToken<'Database', Database>>()
 expectTypeOf<ServiceContract<Database>>().toEqualTypeOf<{
   query(): string
 }>()
@@ -289,11 +282,19 @@ Add marker-free structural acceptance tests for:
 Database.of({ query: () => 'fake' })
 Layer.make(Database, () => ({ query: () => 'fake' }))
 Layer.succeed(Database, { query: () => 'fake' })
-Layer.scoped(Database, () => ({ query: () => 'fake' }), (database) => database.query())
-Layer.gen(Database, async function* () { return { query: () => 'fake' } })
+Layer.scoped(
+  Database,
+  () => ({ query: () => 'fake' }),
+  (database) => database.query()
+)
+Layer.gen(Database, async function* () {
+  return { query: () => 'fake' }
+})
 Layer.scopedGen(
   Database,
-  async function* () { return { query: () => 'fake' } },
+  async function* () {
+    return { query: () => 'fake' }
+  },
   (database) => database.query()
 )
 ```
@@ -322,9 +323,7 @@ export interface ServiceIdentity<out Tag extends string = string> {
 
 export type AnyService = ServiceIdentity<string>
 
-export type ServiceContract<S> = S extends unknown
-  ? Omit<S, typeof ServiceIdentityTypeId>
-  : never
+export type ServiceContract<S> = S extends unknown ? Omit<S, typeof ServiceIdentityTypeId> : never
 
 export type ServiceTagOf<S extends AnyService> = S[typeof ServiceIdentityTypeId]
 
@@ -433,6 +432,7 @@ Expected: still non-zero because the atomic migration is incomplete. Inspect dia
 ## Task 3: Replace EffectResult with Effect<A, E, R>
 
 **Files:**
+
 - Modify: `packages/better-effect/src/effect/types.ts`
 - Modify: `packages/better-effect/src/effect/effect.ts`
 - Modify: `packages/better-effect/src/effect/combinators.ts`
@@ -514,7 +514,7 @@ import type { AnyService } from '../service'
 
 export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
-export const Effect = { /* unchanged runtime value */ } as const
+export const Effect = {/* unchanged runtime value */} as const
 ```
 
 Barrels export the merged `Effect` from `effect.ts` once; they must not separately re-export a conflicting same-named alias from `types.ts`. Update the namespace:
@@ -561,6 +561,7 @@ Expected: Effect/Service/pipeline contracts pass. Layer/Runtime token expectatio
 ## Task 4: Migrate Layer and Runtime environments and diagnostics
 
 **Files:**
+
 - Create: `packages/better-effect/src/internal/missing-dependencies.ts`
 - Modify: `packages/better-effect/src/layer/types.ts`
 - Modify: `packages/better-effect/src/layer/inference.ts`
@@ -647,13 +648,7 @@ If the token field must be phantom rather than an ordinary structural property, 
 Every Layer constructor returns:
 
 ```ts
-Layer<
-  LayerSpec<
-    InstanceType<S>,
-    ServiceRequirements<InstanceType<S>> | GeneratorRequirements,
-    S
-  >
->
+Layer<LayerSpec<InstanceType<S>, ServiceRequirements<InstanceType<S>> | GeneratorRequirements, S>>
 ```
 
 Preserve exact `S` through merge/override. Compare only `Provided`/`Required` contracts; never compare static constructor shape for compatibility.
@@ -696,8 +691,8 @@ Replace complete Layer and execution diagnostics with intersections containing `
 Change defaults and construction results:
 
 ```ts
-RuntimeHandle<Provided extends AnyService = AnyService>
-Runtime<Provided extends AnyService = AnyService>
+RuntimeHandle<Provided extends AnyService = any>
+Runtime<Provided extends AnyService = any>
 Runtime.make(...) // Runtime<LayerProvided<L>>
 Runtime.For<L> // Runtime<Layer.Provided<L>>
 ```
@@ -760,6 +755,7 @@ Do not commit yet. Existing built-package fixtures still target `EffectResult`; 
 ## Task 5: Add current and minimum-compiler package fixtures
 
 **Files:**
+
 - Create: `packages/better-effect/tests/package/instance-requirements/exported-service.ts`
 - Create: `packages/better-effect/tests/package/instance-requirements/valid.ts`
 - Create: `packages/better-effect/tests/package/instance-requirements/invalid-environment.ts`
@@ -800,12 +796,8 @@ In `valid.ts`, import from bare `better-effect` and prove:
 ```ts
 declare const program: Effect<string, Error, Database | Logger>
 
-type Requirements = Expect<
-  Equal<Effect.Requirements<typeof program>, Database | Logger>
->
-type Token = Expect<
-  Equal<Service.TokenOf<Database>, Service.Token<'Database', Database>>
->
+type Requirements = Expect<Equal<Effect.Requirements<typeof program>, Database | Logger>>
+type Token = Expect<Equal<Service.TokenOf<Database>, Service.Token<'Database', Database>>>
 ```
 
 Also cover default `Runtime`, `Runtime<any>`, `Runtime<Service.Any>`, `Effect.Any`, generic same-environment execution, Layer erasure, and resolver `T -> InstanceType<T>`.
@@ -832,7 +824,7 @@ bun run --silent tsc -- -p tests/package/instance-requirements/tsconfig.json --p
 Expected: failure before the built API and fixtures are migrated. Do not use unpinned `bunx tsc`; it can resolve a compiler different from the project's compiler. Minimum checks must use exactly:
 
 ```bash
-bunx --bun --package typescript@5.2.2 tsc
+bunx --bun --package typescript@5.7.2 tsc
 ```
 
 - [ ] **Step 3: Add declaration-emission configs**
@@ -841,10 +833,10 @@ bunx --bun --package typescript@5.2.2 tsc
 
 ```text
 tests/package/instance-requirements/out/current
-tests/package/instance-requirements/out/ts5.2
+tests/package/instance-requirements/out/ts5.7
 ```
 
-Emit with the project compiler and TypeScript 5.2.2, inspect both declarations for `ServiceIdentity<"Database">`, reject TS4020, and then typecheck the emitted declaration entry points. Remove both output directories in a `finally` path.
+Emit with the project compiler and TypeScript 5.7.2, inspect both declarations for `ServiceIdentity<"Database">`, reject TS4020, and then typecheck the emitted declaration entry points. Remove both output directories in a `finally` path.
 
 - [ ] **Step 4: Migrate namespace and variance fixtures semantically**
 
@@ -852,7 +844,17 @@ Use the new alias families:
 
 ```ts
 Effect: ['Success', 'Error', 'Requirements', 'Any']
-Service: ['Any', 'Identity', 'Token', 'Class', 'Instance', 'Tag', 'TokenOf', 'Contract', 'Requirements']
+Service: [
+  'Any',
+  'Identity',
+  'Token',
+  'Class',
+  'Instance',
+  'Tag',
+  'TokenOf',
+  'Contract',
+  'Requirements'
+]
 ```
 
 Prove:
@@ -879,7 +881,7 @@ Use `Bun.spawnSync`. For every compiler invocation:
 - decode `stdout + stderr` because TypeScript may report diagnostics on stdout;
 - require expected success/non-zero exit explicitly.
 
-Run valid, invalid-environment, invalid-runtime, and invalid-layer configs under both the project compiler and TypeScript 5.2.2. For invalid environments, assert all five uniquely named aliases/types appear with the intended Service constraint diagnostic. For Runtime/Layer diagnostics, use whitespace-tolerant matching that proves both the `MissingDependencies` name and precise missing union.
+Run valid, invalid-environment, invalid-runtime, and invalid-layer configs under both the project compiler and TypeScript 5.7.2. For invalid environments, assert all five uniquely named aliases/types appear with the intended Service constraint diagnostic. For Runtime/Layer diagnostics, use whitespace-tolerant matching that proves both the `MissingDependencies` name and precise missing union.
 
 Scan every generated `.mjs` chunk and reject:
 
@@ -945,6 +947,7 @@ git commit -m "feat: use instance service requirements"
 ## Task 6: Update public documentation and executable examples
 
 **Files:**
+
 - Modify: `packages/better-effect/README.md`
 - Modify: `apps/docs/content/docs/index.mdx`
 - Modify: `apps/docs/content/docs/effects.mdx`
@@ -1027,6 +1030,7 @@ Expected: docs build succeeds with no invalid imports or MDX errors. This comman
 ## Task 7: Update normative project and OpenSpec contracts
 
 **Files:**
+
 - Modify: `AGENTS.md`
 - Modify: `openspec/specs/service-identity/spec.md`
 - Modify: `openspec/specs/typed-layer-requirements/spec.md`
@@ -1127,6 +1131,7 @@ git commit -m "docs: describe instance service environments"
 ## Task 8: Final verification and review
 
 **Files:**
+
 - Verify all modified files
 - Reference: `docs/superpowers/specs/2026-08-16-instance-service-requirements-design.md`
 
@@ -1173,7 +1178,7 @@ Confirm from the fixtures:
 - `Effect<A, E, Database | Logger>` is exact;
 - invalid non-Service environments fail;
 - missing Runtime/Layer dependencies show `MissingDependencies<...>`;
-- exported Service subclass declarations compile on TypeScript 5.2.2;
+- exported Service subclass declarations compile on TypeScript 5.7.2;
 - runtime JavaScript contains no phantom metadata.
 
 - [ ] **Step 4: Request code review**
@@ -1184,7 +1189,7 @@ Dispatch a reviewer with:
 - implementation plan: this file;
 - base SHA before implementation;
 - final HEAD SHA;
-- explicit attention to TypeScript 5.2 recursive types, erasure sentinels, Layer override compatibility, declaration output, diagnostics, runtime neutrality, README/docs accuracy, main OpenSpec consistency, AGENTS invariants, archive immutability, and stale-search results.
+- explicit attention to TypeScript 5.7 recursive types, erasure sentinels, Layer override compatibility, declaration output, diagnostics, runtime neutrality, README/docs accuracy, main OpenSpec consistency, AGENTS invariants, archive immutability, and stale-search results.
 
 Fix every Critical or Important issue. Stage only reviewed paths, commit fixes, capture the new HEAD, rerun `bun run check`, and request follow-up review against the updated commit.
 
@@ -1215,7 +1220,7 @@ Expected: no whitespace errors, no unintended/uncommitted files, and unchanged O
 - [ ] Different concrete tags never satisfy each other.
 - [ ] Same-tag compatible overrides ignore static constructor differences.
 - [ ] `MissingDependencies<...>` remains package-private and appears in built-package Runtime/Layer diagnostics.
-- [ ] Current and TypeScript 5.2.2 declaration fixtures pass.
+- [ ] Current and TypeScript 5.7.2 declaration fixtures pass.
 - [ ] No phantom metadata exists in generated JavaScript.
 - [ ] README, docs, examples, OpenSpec specs, and AGENTS.md agree.
 - [ ] Docs build and executable example typecheck pass.

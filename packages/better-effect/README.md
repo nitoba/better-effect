@@ -44,9 +44,17 @@ literal is the Service's stable logical identity. Services with identical
 methods but different tags are different dependencies; use a namespaced tag
 such as `@acme/Database` when identities must be shared across packages.
 
-`UserRepository` used `Database`, so `Database` became part of its environment requirements.
+`UserRepository` used `Database`, so `Database` became part of its environment requirements:
 
-No dependency list was written manually.
+```ts
+type FindUser = Awaited<ReturnType<UserRepository['findUser']>>
+// Effect<User, never, Database>
+```
+
+`Effect<A, E, R>` is a type-only facade over a `better-result` Result, not an Effect TS
+instruction tree. Constructors remain the handles used by `yield*`, Layers and resolver backends;
+the public requirement `R` is a union of tagged Service instances. No dependency list was written
+manually.
 
 Services can also describe a contract without requiring a class instance. Use the
 static `of` helper to type-check a structural implementation; it returns the same
@@ -69,9 +77,13 @@ const AuthorizationLive = Layer.succeed(Authorization, authorization)
 other runtime invariants, use `new Authorization(...)` instead.
 
 Service tokens themselves are always declared through `Service<Self>()(tag)`.
-`Service.of(...)` creates a type-checked structural implementation for an
-existing token; it does not create an alternate token. This keeps the token's
-instance contract tied to the class used by Layers and resolver backends.
+Every instance carries a required, declaration-only `ServiceIdentity<Tag>`; no
+identity property exists at runtime. `Service.Contract<Authorization>` projects
+the marker-free implementation shape accepted by `Service.of` and all Layer
+provider APIs. Those boundaries return or provide the branded Service type
+without modifying the implementation object. `Service.of(...)` does not create
+an alternate token, so the instance contract stays tied to the constructor used
+by Layers and resolver backends.
 
 Provide it and the environment becomes complete:
 
@@ -139,7 +151,8 @@ type Failure = Effect.Error<Program>
 type Dependencies = Effect.Requirements<Program>
 type Services = Layer.Provided<typeof AppLive>
 type AppRuntime = Runtime.For<typeof AppLive>
-type DatabaseTag = Service.Tag<typeof Database>
+type DatabaseTag = Service.Tag<Database> // 'Database'
+type DatabaseToken = Service.TokenOf<Database> // Service.Token<'Database', Database>
 type Outcome = Scope.Outcome
 ```
 
@@ -227,9 +240,11 @@ Resources acquired during an individual execution belong to that execution inste
 
 `better-effect` is not a replacement implementation of Effect.
 
-It does not introduce a fiber runtime, scheduler, streams, queues or a public `Effect<A, E, R>` abstraction.
+It does not introduce a fiber runtime, scheduler, streams, queues or a lazy runtime instruction tree.
 
-`Effect.gen` builds on `better-result` generator composition while carrying Service requirements through the TypeScript type system.
+Its public `Effect<A, E, R>` is only a type-level Result facade. `Effect.gen` builds on
+`better-result` generator composition while carrying Service instance requirements through the
+TypeScript type system.
 
 Dependency resolution stays behind a pluggable backend.
 
@@ -304,8 +319,9 @@ Application resources live with the Runtime. Execution resources live with the e
 Keep `better-result` as the source of truth for typed successes, failures, short-circuiting
 and generator control flow. `Effect.gen` delegates to `Result.gen`; it adds only the
 phantom Service requirements that TypeScript needs to check the application environment.
-At runtime, an `EffectResult` is still a `better-result` Result; the requirements exist
-only in the type.
+At runtime, an `Effect<A, E, R>` is still a `better-result` Result; the requirements exist
+only in the type. `Effect.Requirements`, `Layer.Provided`, `Layer.Missing` and `Runtime.For`
+expose tagged Service instance unions.
 
 For a linear workflow, `pipe` composes the same kind of program without introducing a
 second Result model or a lazy Effect runtime:
