@@ -183,7 +183,15 @@ type Required = Layer.Required<typeof AppLive>
 // Config
 ```
 
-`Layer.Complete<L>` accepts a Layer unchanged when `Layer.Required<L>` is `never`. Otherwise it intersects the Layer with the existing named `MissingDependencies<Layer.Required<L>>` diagnostic.
+`Layer.Complete<L>` first classifies the original Layer shape using the same non-widening rules as Runtime boundaries:
+
+1. a recognized exact sentinel is accepted unchanged;
+2. a partial-`any` shape receives the package-private invalid-erasure diagnostic;
+3. a non-sentinel concrete Layer union receives the ambiguous-union diagnostic;
+4. only a typed concrete Layer proceeds to the requirement check;
+5. the typed Layer is accepted unchanged when `Layer.Required<L>` is `never`, otherwise it is intersected with `MissingDependencies<Layer.Required<L>>`.
+
+Completeness must inspect the original Layer type, not merely aggregate `Provided` and `Required` projections. Consequently `Layer<any, never>` and cross-partial unions are rejected, concrete Layer unions cannot become complete because every branch has `Required = never`, and the recognized unchecked sentinels remain accepted.
 
 `Layer.Missing` is removed because it would be identical to `Layer.Required` under the new semantics.
 
@@ -590,7 +598,7 @@ Tests must prove:
 - Rich/Lean incompatible same-tag contracts fail at `Layer.override`;
 - different-tag, same-shape Services do not replace one another;
 - an explicitly erased Layer retains sticky requirements safely and conservatively;
-- `Layer<never, Required>` retains all sticky requirements through override;
+- `Layer<never, Required>` retains sticky requirements through override unless the final provided environment independently satisfies them;
 - concrete Layer unions fail merge, override, and complete Runtime boundaries;
 - `Layer.Any` remains the only union-shaped unchecked sentinel accepted by those boundaries.
 
@@ -607,6 +615,7 @@ Tests must prove:
 - recognized sentinel inputs propagate `Layer<any, any>` through merge and override;
 - partial-`any` shapes such as `Layer<P, any>` and `Layer<any, never>` are rejected at typed boundaries;
 - a concrete union containing `Layer<never, any>` is rejected unless it is exactly `Layer.Any`;
+- cross-partial unions such as `Layer<any, never> | Layer<never, any>` remain invalid rather than being classified from aggregated channels;
 - bare or widened `Layer<Service.Any, Service.Any>` remains incomplete after merge and does not trigger `MissingServices` erasure;
 - concrete Layer union rejection cannot be bypassed by inference widening at merge, override, or Runtime boundaries;
 - `Layer.Any` accepts ordinary and empty Layers;
