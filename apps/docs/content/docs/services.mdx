@@ -148,7 +148,8 @@ class UserRepository extends Service<UserRepository>()('UserRepository') {
 }
 
 const UserRepositoryLive = Layer.make(UserRepository)
-// UserRepositoryLive requires Database while being acquired.
+// Layer<UserRepository, Database>
+// Database remains external while the provider is acquired.
 ```
 
 `Service.Requirements<UserRepository>` extracts those method-level instance

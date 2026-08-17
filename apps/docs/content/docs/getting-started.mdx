@@ -57,6 +57,11 @@ if (Result.isOk(result)) {
 }
 ```
 
+A Layer's public type is `Layer<Provided, Required>`: `Provided` is the tagged
+Service instance union it creates, and `Required` is the external dependency
+union left after composition. Prefer inferred Layers or `satisfies Layer<..., ...>`
+when naming a composition root.
+
 `MemoryLayerBackend` is exported from `better-effect/testing`; the root export
 does not include test-only backends. Import it explicitly in a real project:
 
