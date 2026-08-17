@@ -96,13 +96,25 @@ The marker is required so unrelated types such as `{}`, `object`, primitives, an
 
 ### Structural implementation projection
 
-Application implementations must not manufacture the required phantom marker. Internal helpers therefore erase only the top-level identity member:
+Application implementations must not manufacture the required phantom marker. The stripping helper is intentionally unconstrained and distributive so it can participate in the recursive `Service<Self>()` heritage expression before `Self` has acquired its base marker:
 
 ```ts
-type ServiceContract<S extends AnyService> = Omit<S, typeof ServiceIdentityTypeId>
+type ServiceContract<S> = S extends unknown
+  ? Omit<S, typeof ServiceIdentityTypeId>
+  : never
 ```
 
-Every boundary that accepts a structural implementation consumes `ServiceContract<InstanceType<Token>>` and returns or stores the branded Service type after one localized type-erasure cast:
+The `Service()` factory bridges the recursive self type with the known base identity rather than constraining `Self` prematurely:
+
+```ts
+of(
+  implementation: ServiceContract<Self & ServiceIdentity<Tag>>
+): Self
+```
+
+Constraining the outer `Service<Self>()` call to `Self extends AnyService` is forbidden because the derived class receives that identity from the base currently being constructed and TypeScript 5.2 rejects the circular constraint.
+
+Every Layer boundary that accepts a structural implementation consumes `ServiceContract<InstanceType<Token>>` and returns or stores the branded Service type after one localized type-erasure cast:
 
 - `Service.of`;
 - `Layer.make` acquisition callbacks;
@@ -128,7 +140,17 @@ Internal helpers recover the literal tag and construct a canonical token contrac
 type ServiceTagOf<S extends AnyService> = S[typeof ServiceIdentityTypeId]
 
 type ServiceTokenOf<S extends AnyService> =
-  ServiceToken<ServiceTagOf<S>, S>
+  S extends AnyService
+    ? ServiceToken<ServiceTagOf<S>, S>
+    : never
+```
+
+The explicit conditional makes token extraction distributive:
+
+```ts
+ServiceTokenOf<Database | Logger>
+// ServiceToken<'Database', Database>
+// | ServiceToken<'Logger', Logger>
 ```
 
 With the existing `Service<Database>()('Database')` heritage syntax, the base factory cannot name the future derived static side. `Service.TokenOf<Database>` therefore intentionally means the canonical token contract, not exact `typeof Database`:
@@ -215,13 +237,23 @@ type Requirements = Effect.Requirements<typeof program>
 
 ### Service yields
 
-A Service iterator continues to return `Self` at runtime, but its phantom yield requirement becomes the instance-side `Self` rather than `ServiceToken<Tag, Self>`:
+The outer `Service<Self>()` factory cannot constrain recursive `Self` to `AnyService`. Instead, the iterator uses its exact generic constructor `this`, whose instance is already known to include the required base identity:
 
 ```ts
-AsyncGenerator<ServiceRequirement<Self>, Self, unknown>
+type YieldableService<Tag extends string, Self> =
+  ServiceToken<Tag, Self> &
+  (abstract new (...args: any[]) => AnyService)
+
+[Symbol.asyncIterator]<T extends YieldableService<Tag, Self>>(
+  this: T
+): AsyncGenerator<
+  ServiceRequirement<InstanceType<T>>,
+  InstanceType<T>,
+  unknown
+>
 ```
 
-`ServiceRequirement` is constrained to instance-side Service identities.
+At `yield* Database`, `T` is the exact constructor side and `InstanceType<T>` is exactly the branded `Database`. The runtime implementation still delegates `this` to `ServiceRuntime.resolve`. `ServiceRequirement` remains constrained to instance-side Service identities.
 
 ### Generator results
 
@@ -285,9 +317,23 @@ type Missing = Layer.Missing<typeof AppLive>
 // Config
 ```
 
-`LayerSpec<Provided, Required, Token>` uses instance-side Service identities for `Provided` and `Required` and separately retains the exact registering constructor `Token`. Layer creation infers all three channels from the constructor argument. The token channel is internal provider metadata used by replacement, collision, registration, and diagnostics; public environment helpers project only `Provided` and `Required`.
+`LayerSpec<Provided, Required, Token>` uses instance-side Service identities for `Provided` and `Required` and separately retains the exact registering constructor `Token`. Layer creation infers all three channels from the constructor argument. The normative `make` result shape is:
 
-This separation prevents constructor parameters or custom static members from changing instance contract compatibility. Completeness uses:
+```ts
+Layer<
+  LayerSpec<
+    InstanceType<S>,
+    Service.Requirements<InstanceType<S>>,
+    S
+  >
+>
+```
+
+Acquisition callbacks and generator returns accept `ServiceContract<InstanceType<S>>`; release callbacks receive the branded `InstanceType<S>`. The same relationship applies to `succeed`, `scoped`, `gen`, and `scopedGen`.
+
+The token channel is internal provider metadata used by replacement, collision, registration, and diagnostics; public environment helpers project only `Provided` and `Required`. Override and completeness comparisons inspect only the instance channels, while replacement retains the exact `S` token channel from the winning Layer spec.
+
+This separation prevents constructor parameters or custom static members from changing instance contract compatibility. Completeness distributes requirement/provider unions before comparing each pair and uses:
 
 1. literal tags recovered from instance identity;
 2. bidirectionally compatible implementation contracts;
@@ -318,11 +364,20 @@ Every execution boundary validates an Effect's instance requirement union agains
 Unparameterized `Runtime` defaults to `Service.Any` and is the intentional unchecked environment boundary. Matching applies these rules in order:
 
 1. `never` requires no Services;
-2. `any`, `Runtime<any>`, and a widened `Service.Any` provided environment are explicit unchecked erasure sentinels;
-3. concrete instance unions use literal tag plus bidirectionally compatible `ServiceContract` comparison;
-4. generic `R extends Service.Any` remains checked when its concrete caller type is known.
+2. `any` on either environment side is explicit unchecked erasure;
+3. a widened `Service.Any` on either the required or provided side is explicit unchecked erasure;
+4. concrete instance unions use literal tag plus bidirectionally compatible distributive `ServiceContract` comparison;
+5. an unresolved generic `R extends Service.Any` remains a conditional missing set and is accepted only when the caller proves its relationship to the provided environment; `Runtime<R>` running `Effect<..., R>` is accepted, while `Runtime<Database>` cannot accept an unrelated generic `R`.
 
-`Effect.Any` uses the widened `Service.Any` environment rather than an unconstrained metadata shape. TypeScript's unavoidable explicit `any` remains an unchecked escape hatch and is tested as such. `Layer.Any` retains its deliberate Layer metadata-erasure role. Plain values, ordinary Results, Scope-only Effects, and requirement-free resource Effects remain executable in every Runtime.
+The required equations are:
+
+```ts
+ExecutionMissing<Database, Effect.Any> // never
+ExecutionMissing<Service.Any, Effect<Value, Error, Database>> // never
+ExecutionMissing<Database, Effect<Value, Error, any>> // never
+```
+
+`Effect.Any` is therefore an explicit unchecked Effect spelling, not an Effect requiring every possible Service. It uses the widened `Service.Any` environment rather than unconstrained metadata. `Runtime<any>` is likewise unchecked. `Layer.Any` retains its deliberate Layer metadata-erasure role. Plain values, ordinary Results, Scope-only Effects, and requirement-free resource Effects remain executable in every Runtime.
 
 Runtime resolution still calls the backend with the yielded constructor token. No runtime conversion from instance values is needed: all environment comparison happens at compile time.
 
