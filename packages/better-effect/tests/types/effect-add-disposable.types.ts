@@ -64,7 +64,7 @@ const resource: DisposableResource = dualFile
 void resource
 
 const plain = {}
-const weak: { [Symbol.dispose]?: () => void } = {}
+const weak = {} satisfies { [Symbol.dispose]?: () => void }
 
 // @ts-expect-error plain objects do not expose a disposal protocol.
 void Scope.make().add(plain)

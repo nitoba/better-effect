@@ -10,6 +10,9 @@ import {
 import { ServiceNotFoundError, type AnyServiceToken } from '../service'
 
 import { assertServiceCompatibility } from '../layer/internal-identity'
+import { isPromiseLike } from '../utils/runtime'
+
+type LayerAcquiredValue = Awaited<ReturnType<LayerRegistration['acquire']>>
 
 /**
  * ITI-backed Layer backend.
@@ -64,21 +67,23 @@ export class ItiLayerBackend implements LayerBackend {
 
   /** Resolve a registered Service through the ITI container. */
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>> {
-    if (!this.registered.has(token.serviceTag)) {
+    const registered = this.registered.get(token.serviceTag)
+
+    if (registered === undefined) {
       throw new ServiceNotFoundError(token)
     }
 
-    const registered = this.registered.get(token.serviceTag)
     const key = this.keyFor(token)
-    const resolved = this.container.get(key) as unknown
+    const resolved = this.container.get(key)
 
-    const validate = (instance: unknown): InstanceType<T> => {
-      assertServiceCompatibility(token, registered!, instance)
+    const validate = (instance: LayerAcquiredValue): InstanceType<T> => {
+      assertServiceCompatibility(token, registered, instance)
 
+      // SAFETY: The registered tag and compatibility check establish the constructor-to-instance relationship after ITI erases it.
       return instance as InstanceType<T>
     }
 
-    if (resolved && typeof (resolved as PromiseLike<unknown>).then === 'function') {
+    if (isPromiseLike(resolved)) {
       return Promise.resolve(resolved).then(validate)
     }
 

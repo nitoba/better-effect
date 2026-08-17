@@ -132,6 +132,9 @@ describe('tagged Service identity', () => {
     )
 
     expect(cause).toBeInstanceOf(Error)
-    expect((cause as Error).message).toContain('ReplicaDatabase')
+
+    if (cause instanceof Error) {
+      expect(cause.message).toContain('ReplicaDatabase')
+    }
   })
 })

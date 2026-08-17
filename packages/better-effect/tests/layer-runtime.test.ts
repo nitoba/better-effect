@@ -27,7 +27,7 @@ import {
   type AnyServiceToken
 } from '../src/service'
 
-const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
+const captureRejection = async (promise: Promise<unknown>) =>
   promise.then(
     () => undefined,
     (cause) => cause
@@ -147,6 +147,7 @@ class MemoryLayerBackend implements LayerBackend {
     const tag = token.serviceTag
 
     if (this.instances.has(tag)) {
+      // SAFETY: The cache is keyed by the same Service tag used by the requested token.
       return this.instances.get(tag) as InstanceType<T>
     }
 
@@ -160,6 +161,7 @@ class MemoryLayerBackend implements LayerBackend {
 
     this.instances.set(tag, instance)
 
+    // SAFETY: The provider selected by the requested tag returns the requested Service contract.
     return instance as InstanceType<T>
   }
 
@@ -189,7 +191,10 @@ describe('createRuntimeHandle', () => {
 
     expect(DefaultService.constructed).toBe(1)
     expect(instance).toBeInstanceOf(DefaultService)
-    expect((instance as DefaultService).value).toBe(42)
+
+    if (instance instanceof DefaultService) {
+      expect(instance.value).toBe(42)
+    }
   })
 
   test('continues accepting an explicit acquire callback', async () => {
@@ -199,7 +204,10 @@ describe('createRuntimeHandle', () => {
     const instance = await provider!.acquire()
 
     expect(instance).toBeInstanceOf(ConfiguredService)
-    expect((instance as ConfiguredService).value).toBe(42)
+
+    if (instance instanceof ConfiguredService) {
+      expect(instance.value).toBe(42)
+    }
   })
 
   test('registers every provider in the backend', async () => {

@@ -14,7 +14,7 @@ import {
 import type { ScopeOutcome } from '../src/scope'
 import type { DisposableResource } from '../src/scope'
 
-const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
+const captureRejection = async (promise: Promise<unknown>) =>
   promise.then(
     () => undefined,
     (cause) => cause
@@ -174,7 +174,8 @@ describe('Scope', () => {
   test('rejects resources without a disposer', async () => {
     const scope = Scope.make()
 
-    const invalid = {} as unknown as DisposableResource
+    // SAFETY: This cast deliberately simulates an invalid runtime resource to verify Scope.add rejects it.
+    const invalid = {} as DisposableResource
     const error = await captureRejection(scope.add(invalid))
 
     expect(error).toBeInstanceOf(ResourceNotDisposableError)

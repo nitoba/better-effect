@@ -260,13 +260,12 @@ export const createRuntimeHandle = async <L extends LayerInput>(
       })
     }
 
-    let cleanupCause: unknown
-
-    if (cleanupCauses.length === 1) {
-      cleanupCause = cleanupCauses[0]
-    } else if (cleanupCauses.length > 1) {
-      cleanupCause = new LayerDisposeError(cleanupCauses.flatMap(normalizeDisposeCauses))
-    }
+    const cleanupCause =
+      cleanupCauses.length === 1
+        ? cleanupCauses[0]
+        : cleanupCauses.length > 1
+          ? new LayerDisposeError(cleanupCauses.flatMap(normalizeDisposeCauses))
+          : undefined
 
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }

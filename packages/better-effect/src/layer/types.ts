@@ -7,7 +7,7 @@ export interface LayerRegistration {
   /** The class-backed Service token provided by this registration. */
   readonly service: ServiceClass<any, any>
 
-  /** Lazily acquire the Service instance. */
+  /** Lazily acquire the Service instance; concrete types are erased at this backend boundary. */
   readonly acquire: () => MaybePromise<unknown>
 }
 

@@ -35,7 +35,7 @@ class Cache extends Service<Cache>()('Cache') {
   }
 }
 
-const backend = {} as LayerBackend
+declare const backend: LayerBackend
 
 const registration: LayerRegistration = {
   service: Database,
@@ -92,8 +92,13 @@ expectTypeOf<MissingLogger>().toEqualTypeOf<Logger>()
 type IncompleteProgram = CompleteExecution<Database, CompleteProgram>
 expectTypeOf<IncompleteProgram>().toMatchTypeOf<MissingDependencies<Logger>>()
 
-const typedRuntime = {} as Runtime<Database | Logger>
-const typedBuiltLayer = {} as RuntimeHandle<Database | Logger>
+declare const typedRuntime: Runtime<Database | Logger>
+declare const typedBuiltLayer: RuntimeHandle<Database | Logger>
+
+declare const databaseRuntime: Runtime<Database>
+declare const databaseHandle: RuntimeHandle<Database>
+declare const emptyRuntime: Runtime<never>
+declare const emptyHandle: RuntimeHandle<never>
 
 const managedResult = typedRuntime.run(requiresDatabaseAndLogger)
 const builtResult = typedBuiltLayer.run(requiresDatabaseAndLogger)
@@ -110,10 +115,10 @@ expectTypeOf(oneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(explicitlyTypedOneShot).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 
 // @ts-expect-error Logger is not supplied by this managed Runtime.
-void ({} as Runtime<Database>).run(requiresDatabaseAndLogger)
+void databaseRuntime.run(requiresDatabaseAndLogger)
 
 // @ts-expect-error Logger is not supplied by this RuntimeHandle.
-void ({} as RuntimeHandle<Database>).run(requiresDatabaseAndLogger)
+void databaseHandle.run(requiresDatabaseAndLogger)
 
 // @ts-expect-error Logger is not supplied by this one-shot Layer.
 void Runtime.run(DatabaseLive, backend, requiresDatabaseAndLogger)
@@ -131,10 +136,10 @@ expectTypeOf<ExecutionMissing<Database, ReturnType<typeof requiresLoggerAndCache
 >()
 
 // @ts-expect-error Both Logger and Cache are absent from this managed Runtime.
-void ({} as Runtime<Database>).run(requiresLoggerAndCache)
+void databaseRuntime.run(requiresLoggerAndCache)
 
 // @ts-expect-error Both Logger and Cache are absent from this RuntimeHandle.
-void ({} as RuntimeHandle<Database>).run(requiresLoggerAndCache)
+void databaseHandle.run(requiresLoggerAndCache)
 
 // @ts-expect-error Both Logger and Cache are absent from this one-shot Layer.
 void Runtime.run(DatabaseLive, backend, requiresLoggerAndCache)
@@ -153,8 +158,8 @@ const requiresDatabaseThenLogger = () =>
   })
 
 // @ts-expect-error Returned composed Effects contribute Logger to the final requirements.
-void ({} as Runtime<Database>).run(requiresDatabaseThenLogger)
-void ({} as Runtime<Database | Logger>).run(requiresDatabaseThenLogger)
+void databaseRuntime.run(requiresDatabaseThenLogger)
+void typedRuntime.run(requiresDatabaseThenLogger)
 
 const plainValue = () => 42
 const plainResult = () => Result.ok('plain')
@@ -181,22 +186,24 @@ expectTypeOf<EffectRequirements<ReturnType<typeof plainResult>>>().toEqualTypeOf
 expectTypeOf<EffectRequirements<ReturnType<typeof scopeOnly>>>().toEqualTypeOf<never>()
 expectTypeOf<EffectRequirements<ReturnType<typeof acquireReleaseOnly>>>().toEqualTypeOf<never>()
 
-void ({} as Runtime<never>).run(plainValue)
-void ({} as Runtime<never>).run(plainResult)
-void ({} as Runtime<never>).run(scopeOnly)
-void ({} as Runtime<never>).run(acquireReleaseOnly)
-void ({} as RuntimeHandle<never>).run(plainValue)
-void ({} as RuntimeHandle<never>).run(plainResult)
-void ({} as RuntimeHandle<never>).run(scopeOnly)
-void ({} as RuntimeHandle<never>).run(acquireReleaseOnly)
+void emptyRuntime.run(plainValue)
+void emptyRuntime.run(plainResult)
+void emptyRuntime.run(scopeOnly)
+void emptyRuntime.run(acquireReleaseOnly)
+void emptyHandle.run(plainValue)
+void emptyHandle.run(plainResult)
+void emptyHandle.run(scopeOnly)
+void emptyHandle.run(acquireReleaseOnly)
 void Runtime.run(DatabaseLive, backend, plainValue)
 void Runtime.run(DatabaseLive, backend, plainResult)
 void Runtime.run(DatabaseLive, backend, scopeOnly)
 void Runtime.run(DatabaseLive, backend, acquireReleaseOnly)
 
-const erasedRuntime: Runtime = {} as Runtime
-const erasedBuiltLayer: RuntimeHandle = {} as RuntimeHandle
+declare const erasedRuntime: Runtime
+declare const erasedBuiltLayer: RuntimeHandle
+// SAFETY: This compile-time-only value deliberately erases the inferred Runtime environment.
 const erasedRuntimeFromInference: Runtime = {} as Awaited<typeof runtimePromise>
+// SAFETY: This compile-time-only value deliberately erases the inferred RuntimeHandle environment.
 const erasedBuiltLayerFromInference: RuntimeHandle = {} as Awaited<typeof builtPromise>
 
 void erasedRuntime.run(requiresDatabaseAndLogger)

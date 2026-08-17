@@ -64,7 +64,7 @@ const finalizer: ScopeFinalizer = (outcome) => {
 
 void finalizer
 
-const cleanupDiagnostic = null as unknown as CleanupFailureDiagnostic
+declare const cleanupDiagnostic: CleanupFailureDiagnostic
 
 expectTypeOf(cleanupDiagnostic.outcome).toEqualTypeOf<ScopeOutcome>()
 expectTypeOf(cleanupDiagnostic.error.causes).toEqualTypeOf<readonly unknown[]>()

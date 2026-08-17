@@ -15,6 +15,10 @@ type Unary<A, B> = (value: A) => B
  * )
  * ```
  */
+type PipeRuntimeValue = Parameters<Unary<any, any>>[0]
+
+type PipeRuntimeOperation = Unary<PipeRuntimeValue, PipeRuntimeValue>
+
 export function pipe<A>(value: A): A
 export function pipe<A, B>(value: A, ab: Unary<A, B>): B
 export function pipe<A, B, C>(value: A, ab: Unary<A, B>, bc: Unary<B, C>): C
@@ -90,8 +94,8 @@ export function pipe<A, B, C, D, E, F, G, H, I, J, K>(
   jk: Unary<J, K>
 ): K
 export function pipe(
-  value: unknown,
-  ...operations: ReadonlyArray<Unary<unknown, unknown>>
-): unknown {
+  value: PipeRuntimeValue,
+  ...operations: ReadonlyArray<PipeRuntimeOperation>
+): PipeRuntimeValue {
   return operations.reduce((current, operation) => operation(current), value)
 }

@@ -36,7 +36,7 @@ class UserRepository extends Service<UserRepository>()('UserRepository') {
   }
 }
 
-const backend = {} as LayerBackend
+declare const backend: LayerBackend
 const DatabaseLive = Layer.succeed(Database, new Database())
 const LoggerLive = Layer.succeed(Logger, new Logger())
 

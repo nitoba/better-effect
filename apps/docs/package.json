@@ -2,6 +2,7 @@
   "name": "@better-effect/docs",
   "version": "0.0.14",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "next build",
     "dev": "next dev",

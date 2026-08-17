@@ -49,6 +49,7 @@ export class SessionRepository extends Service<SessionRepository>()('SessionRepo
       const rows = yield* Result.await(
         database.run(
           'session.findValidByToken',
+          // SAFETY: The SQL projection matches every field declared by SessionRow.
           async (sql) =>
             (await sql`
                   SELECT

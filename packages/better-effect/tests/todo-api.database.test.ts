@@ -7,6 +7,7 @@ import type { SQL } from 'bun'
 import { Database } from '../examples/todo-api/database'
 import { DatabaseFailure } from '../examples/todo-api/errors'
 
+// SAFETY: The database tests never execute the SQL client; an empty object is sufficient for identity checks.
 const makeSql = (): SQL => ({}) as SQL
 
 describe('TODO API Database.run', () => {

@@ -16,7 +16,7 @@ if (Result.isError(seed)) {
 
 const server = createServer(runtime)
 
-console.log(`TODO API running at ${server.url}`)
+console.log(`TODO API running at ${server.url.toString()}`)
 
 console.log('Demo credentials: demo@example.com / demo1234')
 

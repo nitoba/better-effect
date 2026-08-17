@@ -125,6 +125,7 @@ export class Runtime<Provided extends AnyService = any> {
   }
 
   private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+    // SAFETY: One-shot Runtime.run performs the same complete-program validation at its public boundary before using this internal escape hatch.
     return this.handle.run(program as CompleteExecution<Provided, A>)
   }
 

@@ -23,13 +23,11 @@ export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
 type AnyResult = ResultType<any, any>
 
-type RuntimeGenerator =
-  | (() => Generator<Err<never, unknown>, AnyResult, unknown>)
-  | (() => AsyncGenerator<Err<never, unknown>, AnyResult, unknown>)
-
 type EffectGenerator =
   | (() => Generator<EffectYield, AnyResult, unknown>)
   | (() => AsyncGenerator<EffectYield, AnyResult, unknown>)
+
+type RuntimeResultGenerator = (body: EffectGenerator) => AnyResult | Promise<AnyResult>
 
 /**
  * Compose `better-result` operations while preserving Service requirements in
@@ -63,9 +61,10 @@ export function gen(body: EffectGenerator): AnyResult | Promise<AnyResult> {
    * instance without yielding a marker, so Result.gen still receives only
    * the Err values that exist at runtime.
    */
-  return (Result.gen as unknown as (body: RuntimeGenerator) => AnyResult | Promise<AnyResult>)(
-    body as RuntimeGenerator
-  )
+  // SAFETY: Service iterators yield no runtime markers, so the phantom Service yield channel is erased before delegating to better-result.
+  const runResultGenerator = Result.gen as RuntimeResultGenerator
+
+  return runResultGenerator(body)
 }
 
 /**

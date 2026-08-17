@@ -88,6 +88,7 @@ describe('Resource.acquireUseRelease', () => {
     expect(Result.isError(result)).toBe(true)
 
     if (Result.isError(result)) {
+      // SAFETY: A thrown acquisition is normalized by better-result as an error carrying the original cause.
       const error = result.error as {
         cause?: unknown
       }
@@ -148,6 +149,7 @@ describe('Resource.acquireUseRelease', () => {
     expect(Result.isError(result)).toBe(true)
 
     if (Result.isError(result)) {
+      // SAFETY: A thrown use callback is normalized by better-result as an error carrying the original cause.
       const error = result.error as {
         cause?: unknown
       }
@@ -181,6 +183,7 @@ describe('Resource.acquireUseRelease', () => {
     expect(Result.isError(result)).toBe(true)
 
     if (Result.isError(result)) {
+      // SAFETY: A rejected use callback is normalized by better-result as an error carrying the original cause.
       const error = result.error as {
         cause?: unknown
       }

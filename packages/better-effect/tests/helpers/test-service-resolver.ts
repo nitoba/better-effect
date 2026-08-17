@@ -18,6 +18,7 @@ export class TestServiceResolver implements ServiceResolver {
       throw new Error(`Missing service: ${token.name}`)
     }
 
+    // SAFETY: `provide` stores each instance under its exact Service token; the lookup preserves that token relationship.
     return this.services.get(token) as InstanceType<T>
   }
 }

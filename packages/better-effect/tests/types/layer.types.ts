@@ -11,6 +11,8 @@ import type { ScopeOutcome } from '../../src/scope'
 
 import { Service } from '../../src/service'
 
+declare const backend: never
+
 class Database extends Service<Database>()('Database') {
   query(): string {
     return 'query'
@@ -199,12 +201,12 @@ const Complete = Layer.merge(DatabaseLive, UsersLive, PasswordsLive, AuthLive)
 expectTypeOf<Layer.Required<typeof Complete>>().toBeNever()
 
 // @ts-expect-error Broken does not provide Database or PasswordHasher
-void Runtime.make(Broken, {} as never)
-void Runtime.make(Complete, {} as never)
+void Runtime.make(Broken, backend)
+void Runtime.make(Complete, backend)
 
 // @ts-expect-error createRuntimeHandle enforces the same complete-Layer contract as Runtime.make
-void createRuntimeHandle(Broken, {} as never)
-void createRuntimeHandle(Complete, {} as never)
+void createRuntimeHandle(Broken, backend)
+void createRuntimeHandle(Complete, backend)
 
 // @ts-expect-error UserRepository is not a Database
 Layer.make(Database, () => new UserRepository())
