@@ -180,7 +180,9 @@ const SameTagIncompatibleProvider = Layer.merge(
   IncompatibleDatabaseBLive
 )
 
-expectTypeOf<Layer.Required<typeof SameTagIncompatibleProvider>>().toEqualTypeOf<IncompatibleDatabaseA>()
+expectTypeOf<
+  Layer.Required<typeof SameTagIncompatibleProvider>
+>().toEqualTypeOf<IncompatibleDatabaseA>()
 
 const IncompatibleDatabaseALive = Layer.make(
   IncompatibleDatabaseA,

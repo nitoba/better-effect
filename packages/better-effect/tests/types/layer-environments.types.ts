@@ -196,10 +196,7 @@ class UnrelatedService extends Service<UnrelatedService>()('UnrelatedService') {
 }
 
 declare const erasedCompatibleBase: Layer<CompatibleOriginal | UnrelatedService, FactoryDependency>
-const compatibleReplacement = Layer.make(
-  CompatibleReplacement,
-  () => new CompatibleReplacement(1)
-)
+const compatibleReplacement = Layer.make(CompatibleReplacement, () => new CompatibleReplacement(1))
 const compatibleAfterErasure = Layer.override(erasedCompatibleBase, compatibleReplacement)
 
 expectTypeOf<Layer.Provided<typeof compatibleAfterErasure>>().toEqualTypeOf<

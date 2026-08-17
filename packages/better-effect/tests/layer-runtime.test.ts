@@ -247,7 +247,9 @@ describe('createRuntimeHandle', () => {
       expect(Object.getOwnPropertySymbols(Object(instances.database))).toEqual([])
       expect(Object.getOwnPropertySymbols(Object(instances.repository))).toEqual([])
       expect(Object.getOwnPropertyNames(instances.database)).not.toContain('LayerProvenanceTypeId')
-      expect(Object.getOwnPropertyNames(instances.repository)).not.toContain('LayerProvenanceTypeId')
+      expect(Object.getOwnPropertyNames(instances.repository)).not.toContain(
+        'LayerProvenanceTypeId'
+      )
     } finally {
       await runtime.dispose()
     }

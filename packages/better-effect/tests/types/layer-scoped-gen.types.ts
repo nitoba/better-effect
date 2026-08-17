@@ -3,10 +3,7 @@ import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../../src/effect'
-import {
-  Layer,
-  type LayerBackend,
-} from '../../src/layer'
+import { Layer, type LayerBackend } from '../../src/layer'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { createRuntimeHandle } from '../../src/layer/runtime'
 import { Runtime } from '../../src/runtime'
