@@ -204,10 +204,26 @@ export class Layer<
   }
 
   /** Replace providers in a base Layer, using tag identity and compatible contracts. */
-  static override<Base extends LayerInput, const Overrides extends readonly LayerInput[]>(
+  static override<Base extends LayerInput>(
+    base: Base & ValidateLayerInput<Base>
+  ): OverrideLayerResult<Base, readonly []>
+
+  static override<
+    Base extends LayerInput,
+    const Overrides extends readonly [LayerInput, ...LayerInput[]]
+  >(
     base: Base & ValidateLayerInput<Base>,
     ...overrides: Overrides & ValidateOverrides<Base, Overrides>
-  ): OverrideLayerResult<Base, Overrides> {
+  ): OverrideLayerResult<Base, Overrides>
+
+  static override<Base extends LayerInput, const Overrides extends readonly LayerInput[]>(
+    base: Base & ValidateLayerInput<Base>,
+    ...overrides: Overrides extends readonly [LayerInput, ...LayerInput[]]
+      ? never
+      : Overrides & ValidateOverrides<Base, Overrides>
+  ): OverrideLayerResult<Base, Overrides>
+
+  static override(base: LayerInput, ...overrides: readonly LayerInput[]): Layer<any, any> {
     const providers = new Map<string, LayerProvider>()
 
     for (const provider of base.providers) {
@@ -221,7 +237,7 @@ export class Layer<
     }
 
     // SAFETY: Runtime provider replacement preserves the computed override metadata.
-    return new Layer([...providers.values()]) as OverrideLayerResult<Base, Overrides>
+    return new Layer([...providers.values()]) as Layer<any, any>
   }
 }
 

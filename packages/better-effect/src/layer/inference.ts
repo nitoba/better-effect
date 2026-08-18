@@ -7,7 +7,7 @@ import type {
   ServiceToken,
   ServiceTokenOf
 } from '../service'
-import type { ServiceTagOf } from '../service/types'
+import type { ServiceIdentityTypeId, ServiceTagOf } from '../service/types'
 
 import type { Layer } from './layer'
 import type { ErasedProvenance, LayerProvenance, ProviderEntry } from './metadata'
@@ -255,22 +255,30 @@ export type ValidateLayerTuple<Layers extends readonly LayerInput[]> = {
   [Index in keyof Layers]: ValidateLayerInput<Layers[Index]>
 }
 
+type HasMatchingServiceTag<Left extends AnyService, Right extends AnyService> = [
+  Extract<ServiceTagOf<Left>, ServiceTagOf<Right>>
+] extends [never]
+  ? false
+  : true
+
 /** Remove compatible Services from a union while retaining all other identities. */
 type RemoveCompatibleServices<
   Provided extends AnyService,
   Replacements extends AnyService
 > = Provided extends AnyService
-  ? true extends (Replacements extends AnyService ? SameService<Provided, Replacements> : false)
-    ? never
+  ? HasMatchingServiceTag<Provided, Replacements> extends true
+    ? true extends (Replacements extends AnyService ? SameService<Provided, Replacements> : false)
+      ? never
+      : Provided
     : Provided
   : never
 
-type HasCompatibleService<
-  Provided extends AnyService,
-  Replacements extends AnyService
-> = true extends (Replacements extends AnyService ? SameService<Provided, Replacements> : false)
-  ? true
-  : false
+type HasCompatibleService<Provided extends AnyService, Replacements extends AnyService> =
+  HasMatchingServiceTag<Provided, Replacements> extends true
+    ? true extends (Replacements extends AnyService ? SameService<Provided, Replacements> : false)
+      ? true
+      : false
+    : false
 
 type RemoveCompatibleEntries<Entries extends AnyProviderEntry, Replacements extends AnyService> =
   Entries extends ProviderEntry<infer Provided, any>
@@ -362,11 +370,14 @@ type IncompatibleOverridePair<Current extends AnyService, Replacement extends An
 export type IncompatibleOverridePairs<
   CurrentProvided extends AnyService,
   ReplacementProvided extends AnyService
-> = CurrentProvided extends AnyService
-  ? ReplacementProvided extends AnyService
-    ? IncompatibleOverridePair<CurrentProvided, ReplacementProvided>
+> =
+  HasMatchingServiceTag<CurrentProvided, ReplacementProvided> extends true
+    ? CurrentProvided extends AnyService
+      ? ReplacementProvided extends AnyService
+        ? IncompatibleOverridePair<CurrentProvided, ReplacementProvided>
+        : never
+      : never
     : never
-  : never
 
 type IncompatibleLayerOverride<Tokens extends AnyServiceToken> = {
   readonly __betterEffectIncompatibleLayerOverride: Tokens
@@ -383,6 +394,115 @@ type ValidateOverrideLayerInput<L extends LayerInput> =
         (true extends HasWidenedTag<Extract<ProvidedEnvironment<L>, AnyService>>
           ? InvalidWidenedProvidedEnvironment
           : unknown)
+
+type ValidateOverrideTuple<Overrides extends readonly LayerInput[]> = {
+  [Index in keyof Overrides]: ValidateOverrideLayerInput<Overrides[Index]>
+}
+
+type ServiceAtTag<Services, Tag extends string> = Tag extends keyof Services
+  ? Extract<Services[Tag], AnyService>
+  : never
+
+type ServiceTagMap<Services extends AnyService> = {
+  [Tag in ServiceTagOf<Services>]: Extract<Services, { readonly [ServiceIdentityTypeId]: Tag }>
+}
+
+type ExactMapOverrideMatch<Current, Replacement extends AnyService> = [
+  MapServicesAtTag<Current, ServiceTagOf<Replacement>>
+] extends [never]
+  ? true
+  : [MapServicesAtTag<Current, ServiceTagOf<Replacement>>] extends [Replacement]
+    ? [Replacement] extends [MapServicesAtTag<Current, ServiceTagOf<Replacement>>]
+      ? true
+      : false
+    : false
+
+type CanSkipBaseOverride<Current, Replacement extends AnyService> = false extends (
+  Replacement extends AnyService
+    ? [MapServicesAtTag<Current, ServiceTagOf<Replacement>>] extends [never]
+      ? false
+      : ExactMapOverrideMatch<Current, Replacement>
+    : never
+)
+  ? false
+  : true
+
+type MapServicesAtTag<Maps, Tag extends string> = Maps extends unknown
+  ? ServiceAtTag<Maps, Tag>
+  : never
+
+type IncompatibleOverridePairsForValidation<
+  CurrentProvided extends AnyService,
+  Replacement extends AnyService
+> = CurrentProvided extends AnyService
+  ? Replacement extends AnyService
+    ? IncompatibleOverridePair<CurrentProvided, Replacement>
+    : never
+  : never
+
+type ApplyValidationOverride<
+  CurrentProvided extends AnyService,
+  ReplacementProvided extends AnyService
+> = RemoveCompatibleServices<CurrentProvided, ReplacementProvided> | ReplacementProvided
+
+type ValidateOverridePair<
+  CurrentProvided extends AnyService,
+  ReplacementProvided extends AnyService
+> =
+  IncompatibleOverridePairsForValidation<
+    CurrentProvided,
+    ReplacementProvided
+  > extends infer Incompatible
+    ? [Incompatible] extends [never]
+      ? unknown
+      : IncompatibleLayerOverride<Extract<Incompatible, AnyServiceToken>>
+    : never
+
+/**
+ * Validate overrides while carrying only the current provided union.
+ * Rebuilding the full Layer provenance for every step is quadratic and can
+ * exhaust TypeScript's instantiation depth on otherwise simple override lists.
+ */
+type ValidateOverridesFromState<
+  Overrides extends readonly LayerInput[],
+  BaseMap,
+  CurrentProvided extends AnyService,
+  CurrentChanged extends boolean,
+  CurrentUnchecked extends boolean
+> = Overrides extends readonly [
+  infer Head extends LayerInput,
+  ...infer Tail extends readonly LayerInput[]
+]
+  ? CurrentUnchecked extends true
+    ? ValidateOverridesFromState<Tail, BaseMap, AnyService, true, true>
+    : IsExactUncheckedLayer<Head> extends true
+      ? ValidateOverridesFromState<Tail, BaseMap, AnyService, true, true>
+      : CurrentChanged extends false
+        ? CanSkipBaseOverride<BaseMap, Extract<ProvidedEnvironment<Head>, AnyService>> extends true
+          ? ValidateOverridesFromState<Tail, BaseMap, CurrentProvided, false, false>
+          : ValidateOverridePair<CurrentProvided, Extract<ProvidedEnvironment<Head>, AnyService>> &
+              ValidateOverridesFromState<
+                Tail,
+                BaseMap,
+                ApplyValidationOverride<
+                  CurrentProvided,
+                  Extract<ProvidedEnvironment<Head>, AnyService>
+                >,
+                true,
+                false
+              >
+        : ValidateOverridePair<CurrentProvided, Extract<ProvidedEnvironment<Head>, AnyService>> &
+            ValidateOverridesFromState<
+              Tail,
+              BaseMap,
+              ApplyValidationOverride<
+                CurrentProvided,
+                Extract<ProvidedEnvironment<Head>, AnyService>
+              >,
+              true,
+              false
+            >
+  : unknown
 
 /** Validate one override against the currently accumulated Layer state. */
 export type ValidateOneOverride<
@@ -412,12 +532,17 @@ export type ValidateOneOverride<
 export type ValidateOverrides<
   Base extends LayerInput,
   Overrides extends readonly LayerInput[]
-> = Overrides extends readonly [
-  infer Head extends LayerInput,
-  ...infer Tail extends readonly LayerInput[]
-]
-  ? ValidateOneOverride<Base, Head> & ValidateOverrides<OverrideResult<Base, Head>, Tail>
-  : unknown
+> = Overrides extends readonly []
+  ? unknown
+  : ValidateOverrideLayerInput<Base> &
+      ValidateOverrideTuple<Overrides> &
+      ValidateOverridesFromState<
+        Overrides,
+        ServiceTagMap<Extract<ProvidedEnvironment<Base>, AnyService>>,
+        Extract<ProvidedEnvironment<Base>, AnyService>,
+        false,
+        IsExactUncheckedLayer<Base>
+      >
 
 /** A Layer accepted by Runtime boundaries after completeness validation. */
 export type CompleteInput<L extends LayerInput> = ValidateLayerInput<L> &

@@ -18,7 +18,8 @@
     "format": "turbo run format",
     "format:check": "turbo run format:check",
     "publint": "turbo run publint --filter=better-effect",
-    "check": "turbo run check"
+    "check": "turbo run check",
+    "perf:type-system": "bun scripts/type-system-performance.ts"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.78.0",
