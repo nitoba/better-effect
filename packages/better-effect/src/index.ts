@@ -84,7 +84,13 @@ export type {
   RuntimeContext,
   RuntimeContextStorage,
   RuntimeFor,
+  RuntimeExecutionEndEvent,
+  RuntimeExecutionStartEvent,
+  RuntimeObserver,
   RuntimeOptions,
+  RuntimeResourceReleaseEvent,
+  RuntimeServiceAcquireEvent,
+  RuntimeServiceResolveEvent,
   RuntimeRunOptions,
   RuntimeShutdownDiagnostic
 } from './runtime'

@@ -15,3 +15,12 @@ export type {
   RuntimeRunOptions,
   RuntimeShutdownDiagnostic
 } from './outcome'
+
+export type {
+  RuntimeExecutionEndEvent,
+  RuntimeExecutionStartEvent,
+  RuntimeObserver,
+  RuntimeResourceReleaseEvent,
+  RuntimeServiceAcquireEvent,
+  RuntimeServiceResolveEvent
+} from './observer'

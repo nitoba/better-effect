@@ -10,6 +10,8 @@ import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from '../sc
 
 import type { RuntimeContextStorage } from './context'
 
+import type { RuntimeObserver } from './observer'
+
 /** Aggregated cleanup information reported during Runtime shutdown. */
 export type RuntimeShutdownDiagnostic = {
   /** Final outcome supplied to the Runtime root Scope. */
@@ -27,6 +29,10 @@ export type CleanupFailureObserver = (
 export type RuntimeOptions = {
   /** Backend used to register and resolve the Layer. Defaults to MapLayerBackend. */
   readonly backend?: LayerBackend
+  /** Resolve every Layer provider before Runtime.make resolves. */
+  readonly warmup?: boolean
+  /** Best-effort lifecycle and Service resolution observers. */
+  readonly observers?: readonly RuntimeObserver[]
   /** Optional observer for best-effort cleanup diagnostics. */
   readonly onCleanupFailure?: CleanupFailureObserver
   /** Context storage used by Service, Scope and Layer resolution. */

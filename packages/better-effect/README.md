@@ -131,6 +131,32 @@ Or let `Runtime.use` own the lifetime:
 const result = await Runtime.use(AppLive, (runtime) => runtime.run(program))
 ```
 
+Layer providers remain lazy unless startup validation is requested. Warm them
+all before accepting work with either form:
+
+```ts
+const runtime = await Runtime.make(AppLive, { warmup: true })
+
+// or, after creating the Runtime
+await runtime.warmup()
+```
+
+Warmup failures include the Service and resolution path, release resources
+already acquired, dispose the backend and reject the Runtime. Optional
+observers expose Service resolution/acquisition, execution and Layer release
+events without coupling the core to an observability SDK:
+
+```ts
+const runtime = await Runtime.make(AppLive, {
+  observers: [
+    {
+      onServiceResolve: (event) => console.debug(event.service.serviceTag),
+      onExecutionEnd: (event) => console.debug(event.outcome.status)
+    }
+  ]
+})
+```
+
 Cancellation is cooperative and uses `AbortSignal`; no scheduler or fibers are
 created. Pass a signal to one execution and read it from the program when an
 I/O operation supports cancellation:
