@@ -20,10 +20,10 @@ class ContextService extends Service<ContextService>()('ContextService') {
 describe('Runtime context storage', () => {
   test('uses one context for Service, Scope and resolution paths', async () => {
     const storage = new ExplicitRuntimeContextStorage()
-    const signal = new AbortController().signal
+    const controller = new AbortController()
     const runtime = await Runtime.make(Layer.make(ContextService), {
       contextStorage: storage,
-      signal
+      signal: controller.signal
     })
 
     try {
@@ -35,7 +35,8 @@ describe('Runtime context storage', () => {
 
           expect(context.resolver).toBeDefined()
           expect(context.scope).toBe(scope)
-          expect(context.signal).toBe(signal)
+          expect(context.signal).toBeDefined()
+          expect(context.signal).not.toBe(controller.signal)
           expect(context.resolutionPath).toEqual([])
 
           return Result.ok(service.value())

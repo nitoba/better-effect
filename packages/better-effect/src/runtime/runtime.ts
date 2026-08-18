@@ -17,7 +17,9 @@ import type { AnyService } from '../service'
 
 import {
   classifyRuntimeOutcome,
+  type RuntimeDisposeOptions,
   type RuntimeOptions,
+  type RuntimeRunOptions,
   type RuntimeShutdownDiagnostic
 } from './outcome'
 
@@ -281,16 +283,20 @@ export class Runtime<Provided extends AnyService = any> {
   }
 
   /** Run one execution in this Runtime's child Scope. */
-  run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
-    return this.handle.run(program)
+  run<A>(
+    program: CompleteExecution<Provided, A>,
+    options?: RuntimeRunOptions
+  ): Promise<Awaited<A>> {
+    return this.handle.run(program, options)
   }
 
   /** Run one execution with a Layer owned by that execution's child Scope. */
   runWith<Request extends LayerInput, A>(
     layer: Request & CompleteExecutionLayer<Provided, Request>,
-    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>,
+    options?: RuntimeRunOptions
   ): Promise<Awaited<A>> {
-    return this.handle.runWith(layer, program)
+    return this.handle.runWith(layer, program, options)
   }
 
   private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
@@ -299,8 +305,13 @@ export class Runtime<Provided extends AnyService = any> {
   }
 
   /** Stop new executions and release the Runtime's Layer resources. */
-  dispose(): Promise<void> {
-    return this.handle.dispose()
+  dispose(options?: RuntimeDisposeOptions): Promise<void>
+
+  /** @deprecated Scope outcomes are kept for internal compatibility. */
+  dispose(outcome: ScopeOutcome): Promise<void>
+
+  dispose(optionsOrOutcome?: RuntimeDisposeOptions | ScopeOutcome): Promise<void> {
+    return this.handle.dispose(optionsOrOutcome)
   }
 
   /** Release Runtime-owned resources through JavaScript's async disposal protocol. */
@@ -320,6 +331,12 @@ export declare namespace Runtime {
 
   /** Optional Runtime shutdown configuration. */
   export type Options = RuntimeOptions
+
+  /** Optional signal supplied to one managed Runtime execution. */
+  export type RunOptions = RuntimeRunOptions
+
+  /** Cooperative shutdown policy for a managed Runtime. */
+  export type DisposeOptions = RuntimeDisposeOptions
 
   /** Diagnostic reported for aggregated Runtime shutdown cleanup failures. */
   export type ShutdownDiagnostic = RuntimeShutdownDiagnostic

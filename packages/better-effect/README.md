@@ -14,7 +14,7 @@ bun add better-effect better-result
 
 ```ts
 import { Result } from 'better-result'
-import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service } from 'better-effect'
 
 class Database extends Service<Database>()('Database') {
   findUser(id: string) {
@@ -154,6 +154,19 @@ const runtime = await Runtime.make(AppLive, {
       onExecutionEnd: (event) => console.debug(event.outcome.status)
     }
   ]
+})
+```
+
+Cancellation is cooperative and uses `AbortSignal`; no scheduler or fibers are
+created. Pass a signal to one execution and read it from the program when an
+I/O operation supports cancellation:
+
+```ts
+const result = await runtime.run(program, { signal: request.signal })
+
+const cancellableProgram = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+  return Result.ok(await fetchData({ signal }))
 })
 ```
 
