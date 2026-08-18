@@ -7,21 +7,18 @@ icon: TestTube
 Testing is one of the main reasons to keep Services and Layers separate. The
 Service contains behavior; the test Layer supplies controlled implementations.
 
-## Use the memory backend
+## Use the built-in backend
 
 ```ts
-import { MemoryLayerBackend } from 'better-effect/testing'
-
-const backend = new MemoryLayerBackend()
-const runtime = await Runtime.make(AppTest, backend)
+const runtime = await Runtime.make(AppTest)
 
 const result = await runtime.run(applicationProgram)
 
 await runtime.dispose()
 ```
 
-The backend is lazy, caches by Service tag, and clears its state during
-`disposeAll`.
+The default `MapLayerBackend` is lazy, caches by Service tag, and clears its
+state during `disposeAll`.
 
 ## Override one provider
 

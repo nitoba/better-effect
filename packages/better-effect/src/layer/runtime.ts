@@ -1,6 +1,6 @@
 import { ServiceRuntime } from '../service'
 
-import type { AnyService } from '../service'
+import type { AnyService, ServiceResolver } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
@@ -14,6 +14,8 @@ import {
 } from '../runtime/outcome'
 
 import { LayerDisposeError, LayerRegistrationError } from './errors'
+
+import { createResolutionResolver } from './resolution'
 
 import type { LayerBackend } from './backend'
 
@@ -100,6 +102,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   constructor(
     readonly backend: LayerBackend,
+    private readonly resolver: ServiceResolver,
     private readonly rootScope: CloseableScope,
     private readonly onCleanupFailure: CleanupFailureObserver | undefined
   ) {}
@@ -159,7 +162,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           classify: classifyRuntimeOutcome
         }
 
-    return runScoped(executionScope, () => ServiceRuntime.run(this.backend, program), options)
+    return runScoped(executionScope, () => ServiceRuntime.run(this.resolver, program), options)
   }
 
   dispose(outcome: ScopeOutcome = SCOPE_SUCCESS): Promise<void> {
@@ -185,7 +188,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     await Promise.allSettled(executions)
 
     try {
-      await ServiceRuntime.run(this.backend, () => this.rootScope.close(outcome))
+      await ServiceRuntime.run(this.resolver, () => this.rootScope.close(outcome))
     } catch (cause) {
       failures.push(cause)
     }
@@ -224,6 +227,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   options: RuntimeOptions = {}
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const rootScope = Scope.make()
+  const resolver = createResolutionResolver(backend)
   let current: LayerProvider | undefined
 
   try {
@@ -240,7 +244,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     const cleanupCauses: unknown[] = []
 
     try {
-      await ServiceRuntime.run(backend, () => rootScope.close(outcome))
+      await ServiceRuntime.run(resolver, () => rootScope.close(outcome))
     } catch (cause) {
       cleanupCauses.push(cause)
     }
@@ -270,5 +274,10 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new RuntimeHandleImpl<ProvidedEnvironment<L>>(backend, rootScope, options.onCleanupFailure)
+  return new RuntimeHandleImpl<ProvidedEnvironment<L>>(
+    backend,
+    resolver,
+    rootScope,
+    options.onCleanupFailure
+  )
 }

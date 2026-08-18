@@ -3,6 +3,7 @@ import { Result } from 'better-result'
 import {
   Effect,
   Layer,
+  MapLayerBackend,
   Runtime,
   Scope,
   Service,
@@ -70,6 +71,7 @@ const program = Effect.gen(async function* () {
 })
 
 const DatabaseLive = Layer.succeed(Database, new Database())
+const nativeBackend = new MapLayerBackend()
 const RepositoryLive = Layer.gen(Repository, async function* () {
   const database = yield* Database
   void database
@@ -167,3 +169,5 @@ export type ScopeCloseableAlias = Expect<Equal<Scope.Closeable, CloseableScope>>
 export type ScopeOutcomeAlias = Expect<Equal<Scope.Outcome, ScopeOutcome>>
 export type ScopeFinalizerAlias = Expect<Equal<Scope.Finalizer, ScopeFinalizer>>
 export type ScopeDisposableAlias = Expect<Equal<Scope.Disposable, DisposableResource>>
+
+void nativeBackend

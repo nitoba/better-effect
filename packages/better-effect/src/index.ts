@@ -1,5 +1,7 @@
 export {
+  CircularDependencyError,
   Service,
+  ServiceAcquisitionError,
   ServiceNotFoundError,
   ServiceRuntime,
   ServiceRuntimeNotConfiguredError
@@ -21,6 +23,7 @@ export type {
 
 export {
   Layer,
+  MapLayerBackend,
   DuplicateServiceError,
   LayerDisposeError,
   LayerGeneratorYieldError,

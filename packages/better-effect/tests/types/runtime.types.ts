@@ -8,7 +8,7 @@ import {
   type EffectRequirements,
   type EffectSuccess
 } from '../../src/effect'
-import { Layer, type LayerBackend } from '../../src/layer'
+import { Layer, MapLayerBackend, type LayerBackend } from '../../src/layer'
 import { createRuntimeHandle, type RuntimeHandle } from '../../src/layer/runtime'
 import type { LayerRegistration } from '../../src'
 import { Runtime, type RuntimeFor } from '../../src/runtime'
@@ -64,9 +64,13 @@ expectTypeOf<Layer.Provided<typeof AppWithTestDatabase>>().toEqualTypeOf<Databas
 
 const builtPromise = createRuntimeHandle(AppLive, backend)
 const runtimePromise = Runtime.make(AppLive, backend)
+const defaultRuntimePromise = Runtime.make(AppLive)
+const configuredRuntimePromise = Runtime.make(AppLive, { backend: new MapLayerBackend() })
 
 expectTypeOf<Awaited<typeof builtPromise>>().toEqualTypeOf<RuntimeHandle<Database | Logger>>()
 expectTypeOf<Awaited<typeof runtimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
+expectTypeOf<Awaited<typeof defaultRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
+expectTypeOf<Awaited<typeof configuredRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger>>()
 
 const requiresDatabaseAndLogger = () =>
@@ -103,6 +107,15 @@ declare const emptyHandle: RuntimeHandle<never>
 const managedResult = typedRuntime.run(requiresDatabaseAndLogger)
 const builtResult = typedBuiltLayer.run(requiresDatabaseAndLogger)
 const oneShotResult = Runtime.run(AppLive, backend, requiresDatabaseAndLogger)
+const defaultOneShotResult = Runtime.run(AppLive, requiresDatabaseAndLogger)
+const configuredOneShotResult = Runtime.run(
+  AppLive,
+  { backend: new MapLayerBackend() },
+  requiresDatabaseAndLogger
+)
+const trailingOptionsOneShotResult = Runtime.run(AppLive, requiresDatabaseAndLogger, {
+  backend: new MapLayerBackend()
+})
 const explicitlyTypedOneShot = Runtime.run<CompleteProgram, typeof AppLive>(
   AppLive,
   backend,
@@ -112,6 +125,9 @@ const explicitlyTypedOneShot = Runtime.run<CompleteProgram, typeof AppLive>(
 expectTypeOf(managedResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(builtResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(oneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(defaultOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(configuredOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(trailingOptionsOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(explicitlyTypedOneShot).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 
 // @ts-expect-error Logger is not supplied by this managed Runtime.

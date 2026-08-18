@@ -22,6 +22,7 @@ import type { LayerRegistration } from '../src/layer/types'
 
 import {
   Service,
+  ServiceAcquisitionError,
   ServiceRuntime,
   ServiceRuntimeNotConfiguredError,
   type AnyServiceToken
@@ -450,7 +451,13 @@ describe('createRuntimeHandle', () => {
 
     const error = await captureRejection(runtime.run(() => ServiceRuntime.resolve(ExampleService)))
 
-    expect(error).toBe(acquisitionFailure)
+    expect(error).toBeInstanceOf(ServiceAcquisitionError)
+
+    if (error instanceof ServiceAcquisitionError) {
+      expect(error.service).toBe(ExampleService)
+      expect(error.resolutionPath).toEqual([ExampleService])
+      expect(error.cause).toBe(acquisitionFailure)
+    }
     expect(releases).toBe(0)
 
     await runtime.dispose()
@@ -489,6 +496,48 @@ describe('createRuntimeHandle', () => {
         async function* () {
           return new ExampleService()
         },
+        (_service, outcome) => {
+          oneShotOutcome = outcome
+        }
+      ),
+      new MemoryLayerBackend(),
+      async () => {
+        await ServiceRuntime.resolve(ExampleService)
+
+        return expected
+      }
+    )
+
+    expectSameResult(result, expected)
+    expect(oneShotOutcome).toEqual({ status: 'failure', cause: programFailure })
+  })
+
+  test('passes root outcomes to Layer.scoped releases', async () => {
+    let longLivedOutcome: ScopeOutcome | undefined
+    const longLived = await createRuntimeHandle(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        (_service, outcome) => {
+          longLivedOutcome = outcome
+        }
+      ),
+      new MemoryLayerBackend()
+    )
+
+    await longLived.run(() => ServiceRuntime.resolve(ExampleService))
+    await longLived.dispose()
+
+    expect(longLivedOutcome).toEqual({ status: 'success' })
+
+    let oneShotOutcome: ScopeOutcome | undefined
+    const programFailure = new Error('program failed')
+    const expected = Result.err(programFailure)
+
+    const result = await Runtime.run(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
         (_service, outcome) => {
           oneShotOutcome = outcome
         }

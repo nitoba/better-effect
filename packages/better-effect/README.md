@@ -34,7 +34,7 @@ class UserRepository extends Service<UserRepository>()('UserRepository') {
 
 const UserRepositoryLive = Layer.make(UserRepository)
 
-await Runtime.make(UserRepositoryLive, backend)
+await Runtime.make(UserRepositoryLive)
 //                 ^^^^^^^^^^^^^^^^^^
 // Type error: Database is required but not provided
 ```
@@ -92,7 +92,7 @@ const DatabaseLive = Layer.make(Database)
 
 const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
 
-const runtime = await Runtime.make(AppLive, backend)
+const runtime = await Runtime.make(AppLive)
 ```
 
 And the contract does not disappear after startup.
@@ -112,6 +112,11 @@ await runtime.run(inspectDatabase)
 `Effect.gen` remains eager for code that already runs inside a resolver and
 Scope. `Effect.fn` captures the generator as a lazy `Program` for Runtime
 boundaries; the callback form remains supported for compatibility.
+
+`Runtime.make(AppLive)` and `Runtime.run(AppLive, program)` use the built-in
+`MapLayerBackend`. Pass `{ backend: new ItiLayerBackend() }` when an external
+container is needed; `MemoryLayerBackend` remains its compatibility alias from
+`better-effect/testing`.
 
 If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
 
@@ -236,7 +241,7 @@ Others own connections, sessions, files or other resources.
 const DatabaseLive = Layer.scoped(
   Database,
   () => Database.connect(),
-  (database) => database.close()
+  (database, outcome) => database.close(outcome)
 )
 ```
 

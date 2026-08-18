@@ -67,7 +67,7 @@ contains only dependencies that remain external.
   </Tab>
   <Tab>
     Read [Backends](/docs/backends). The core contracts are deliberately container-agnostic; ITI is
-    an optional adapter and `MemoryLayerBackend` is useful for tests and small programs.
+    the built-in `MapLayerBackend` by default; ITI remains an optional adapter.
   </Tab>
 </Tabs>
 
@@ -76,7 +76,7 @@ contains only dependencies that remain external.
 `better-effect` is not a reimplementation of Effect. It does not add fibers,
 schedulers, streams, queues, a full Context abstraction, or a lazy instruction
 tree. Its public `Effect<A, E, R>` is a type-only facade over a `better-result`
-Result (or Promise of one), with `R` carrying phantom tagged Service instance
+Result (or Promise of one), with `R` carrying declaration-only tagged Service instance
 requirements.
 
 That smaller boundary is a feature: use the pieces when they solve a concrete

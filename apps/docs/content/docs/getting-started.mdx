@@ -32,7 +32,6 @@ provides that Service.
 ```ts
 import { Result } from 'better-result'
 import { Effect, Layer, Runtime, Service } from 'better-effect'
-import { MemoryLayerBackend } from 'better-effect/testing'
 
 class GreetingService extends Service<GreetingService>()('GreetingService') {
   greet(name: string) {
@@ -48,7 +47,7 @@ const greet = Effect.fn(async function* () {
   return Result.ok(greeting.greet('Ada'))
 })
 
-const runtime = await Runtime.make(GreetingLive, new MemoryLayerBackend())
+const runtime = await Runtime.make(GreetingLive)
 const result = await runtime.run(greet)
 await runtime.dispose()
 
@@ -68,12 +67,19 @@ Service instance union it creates, and `Required` is the external dependency
 union left after composition. Prefer inferred Layers or `satisfies Layer<..., ...>`
 when naming a composition root.
 
-`MemoryLayerBackend` is exported from `better-effect/testing`; the root export
-does not include test-only backends. Import it explicitly in a real project:
+`MapLayerBackend` is the built-in backend and is used by default. Choose a
+custom backend through Runtime options when integrating a container:
 
 ```ts
-import { MemoryLayerBackend } from 'better-effect/testing'
+import { ItiLayerBackend } from 'better-effect/adapters/iti'
+
+const runtime = await Runtime.make(GreetingLive, {
+  backend: new ItiLayerBackend()
+})
 ```
+
+`MemoryLayerBackend` remains an alias of `MapLayerBackend` from
+`better-effect/testing` for compatibility.
 
 ## Project shape
 
@@ -93,8 +99,8 @@ import { MemoryLayerBackend } from 'better-effect/testing'
 </Files>
 
 Keep behavior in Services and keep construction in Layers. Your application
-entry point should be the place where a concrete backend and Runtime are
-selected.
+entry point should be the place where a custom backend, when needed, and the
+Runtime are selected.
 
 ## Next steps
 

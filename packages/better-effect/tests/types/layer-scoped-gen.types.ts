@@ -96,8 +96,9 @@ void Runtime.make(Incomplete, backend)
 Layer.scoped(
   UserRepository,
   () => new UserRepository(new Database()),
-  (repository) => {
+  (repository, outcome) => {
     expectTypeOf(repository).toEqualTypeOf<UserRepository>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
   }
 )
 

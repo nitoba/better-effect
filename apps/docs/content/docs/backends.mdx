@@ -16,7 +16,31 @@ interface LayerBackend {
 
 The backend translates Layer registrations into a container-specific graph,
 resolves providers, caches according to its policy and disposes its owned
-state. Core types never expose ITI keys or container types.
+state. Runtime also tracks the active Service resolution path, so provider
+cycles and lazy acquisition failures include useful Service diagnostics. Core
+types never expose ITI keys or container types.
+
+## Built-in Map backend
+
+`MapLayerBackend` is the native backend. It is lazy, caches instances by
+Service tag, deduplicates concurrent acquisitions, validates tagged identity
+and clears its state during disposal. `Runtime.make` and `Runtime.run` use a
+fresh instance automatically when no backend is supplied:
+
+```ts
+import { MapLayerBackend, Runtime } from 'better-effect'
+
+const runtime = await Runtime.make(AppLive)
+const result = await Runtime.run(AppLive, program)
+```
+
+For compatibility, `MemoryLayerBackend` remains available as an alias:
+
+```ts
+import { MemoryLayerBackend } from 'better-effect/testing'
+
+const backend = new MemoryLayerBackend()
+```
 
 ## ITI adapter
 
@@ -29,7 +53,9 @@ bun add iti
 ```ts
 import { ItiLayerBackend } from 'better-effect/adapters/iti'
 
-const runtime = await Runtime.make(AppLive, new ItiLayerBackend())
+const runtime = await Runtime.make(AppLive, {
+  backend: new ItiLayerBackend()
+})
 ```
 
 ITI registrations use an internal deterministic key derived from
@@ -38,21 +64,6 @@ application continues to yield the Service constructor.
 
 ITI providers are lazy and cached by the container. `disposeAll()` calls ITI's
 container disposal after the Runtime root Scope closes.
-
-## Memory backend
-
-For tests and small local programs:
-
-```ts
-import { MemoryLayerBackend } from 'better-effect/testing'
-
-const backend = new MemoryLayerBackend()
-const runtime = await Runtime.make(AppLive, backend)
-```
-
-It rejects duplicate/colliding tags, acquires providers lazily, caches resolved
-instances, waits for concurrent acquisition of the same tag and clears all
-state in `disposeAll()`.
 
 ## Write an adapter
 

@@ -1,5 +1,7 @@
 export { Layer } from './layer'
 
+export { MapLayerBackend } from './map-layer-backend'
+
 export {
   DuplicateServiceError,
   LayerDisposeError,

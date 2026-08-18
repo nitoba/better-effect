@@ -123,16 +123,16 @@ export class Layer<
   static scoped<S extends ServiceClass<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>,
-    release: (instance: InstanceType<S>) => MaybePromise<void>
+    release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
     // SAFETY: The public callbacks constrain acquisition and release to the requested Service.
     return new Layer([
       {
         service,
         acquire: normalizeAcquire<S>(acquire),
-        release: (instance) => {
+        release: (instance, outcome) => {
           // SAFETY: The backend invokes release with the instance acquired for this token.
-          return release(instance as InstanceType<S>)
+          return release(instance as InstanceType<S>, outcome)
         }
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>

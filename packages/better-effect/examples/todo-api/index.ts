@@ -5,7 +5,9 @@ import { AppLive } from './layers/app-live'
 import { seedDemoUser } from './seed'
 import { createServer } from './server'
 
-const runtime = await Runtime.make(AppLive, new ItiLayerBackend())
+const runtime = await Runtime.make(AppLive, {
+  backend: new ItiLayerBackend()
+})
 
 const seed = await runtime.run(seedDemoUser)
 

@@ -88,8 +88,9 @@ Layer.scoped(
 
   () => new Database(),
 
-  (database) => {
+  (database, outcome) => {
     expectTypeOf(database).toEqualTypeOf<Database>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
 
     database.query()
   }

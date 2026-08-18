@@ -2,7 +2,12 @@ export { Service } from './service'
 
 export { ServiceRuntime } from './runtime'
 
-export { ServiceNotFoundError, ServiceRuntimeNotConfiguredError } from './errors'
+export {
+  CircularDependencyError,
+  ServiceAcquisitionError,
+  ServiceNotFoundError,
+  ServiceRuntimeNotConfiguredError
+} from './errors'
 
 export type { ServiceResolver } from './runtime'
 

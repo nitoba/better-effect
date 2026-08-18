@@ -1,5 +1,7 @@
 import type { LayerBackend } from '../layer'
 
+import { MapLayerBackend } from '../layer/map-layer-backend'
+
 import { createRuntimeHandle, type RuntimeHandle } from '../layer/runtime'
 
 import type { LayerInput, CompleteInput, ProvidedEnvironment } from '../layer/inference'
@@ -18,6 +20,35 @@ import type { ScopeOutcome } from '../scope'
 
 import type { RuntimeFor } from './types'
 
+type RuntimeBackendInput = LayerBackend | RuntimeOptions | undefined
+
+type RuntimeConfig = {
+  readonly backend: LayerBackend
+  readonly options: RuntimeOptions
+}
+
+const isLayerBackend = (value: RuntimeBackendInput): value is LayerBackend =>
+  value !== undefined && 'register' in value && 'resolve' in value && 'disposeAll' in value
+
+const resolveRuntimeConfig = (
+  backendOrOptions: RuntimeBackendInput,
+  legacyOptions?: RuntimeOptions
+): RuntimeConfig => {
+  if (isLayerBackend(backendOrOptions)) {
+    return {
+      backend: backendOrOptions,
+      options: legacyOptions ?? {}
+    }
+  }
+
+  const options = backendOrOptions ?? {}
+
+  return {
+    backend: options.backend ?? new MapLayerBackend(),
+    options
+  }
+}
+
 /**
  * Long-lived execution environment backed by a complete Layer.
  *
@@ -26,7 +57,7 @@ import type { RuntimeFor } from './types'
  *
  * @example
  * ```ts
- * const runtime = await Runtime.make(AppLive, new MemoryLayerBackend())
+ * const runtime = await Runtime.make(AppLive)
  * const result = await runtime.run(loadUser('u1'))
  * await runtime.dispose()
  * ```
@@ -41,16 +72,28 @@ export class Runtime<Provided extends AnyService = any> {
    *
    * @example
    * ```ts
-   * const runtime = await Runtime.make(AppLive, backend)
+   * const runtime = await Runtime.make(AppLive)
    * const result = await runtime.run(program)
    * await runtime.dispose()
    * ```
    */
-  static async make<L extends LayerInput>(
+  static make<L extends LayerInput>(
     layer: L & CompleteInput<L>,
     backend: LayerBackend,
-    options: RuntimeOptions = {}
+    options?: RuntimeOptions
+  ): Promise<Runtime<ProvidedEnvironment<L>>>
+
+  static make<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    options?: RuntimeOptions
+  ): Promise<Runtime<ProvidedEnvironment<L>>>
+
+  static async make<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    backendOrOptions?: LayerBackend | RuntimeOptions,
+    legacyOptions?: RuntimeOptions
   ): Promise<Runtime<ProvidedEnvironment<L>>> {
+    const { backend, options } = resolveRuntimeConfig(backendOrOptions, legacyOptions)
     const handle = await createRuntimeHandle(layer, backend, options)
 
     return new Runtime<ProvidedEnvironment<L>>(handle)
@@ -62,13 +105,53 @@ export class Runtime<Provided extends AnyService = any> {
    * This is convenient for request-style or command-style execution where a
    * Runtime should not outlive the operation.
    */
-  static async run<A, L extends LayerInput>(
+  static run<A, L extends LayerInput>(
     layer: L & CompleteInput<L>,
     backend: LayerBackend,
     program: CompleteExecution<ProvidedEnvironment<L>, A>,
-    options: RuntimeOptions = {}
+    options?: RuntimeOptions
+  ): Promise<Awaited<A>>
+
+  static run<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    program: CompleteExecution<ProvidedEnvironment<L>, A>,
+    options?: RuntimeOptions
+  ): Promise<Awaited<A>>
+
+  static run<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    options: RuntimeOptions,
+    program: CompleteExecution<ProvidedEnvironment<L>, A>
+  ): Promise<Awaited<A>>
+
+  static async run<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    backendOrProgramOrOptions:
+      | LayerBackend
+      | RuntimeOptions
+      | CompleteExecution<ProvidedEnvironment<L>, A>,
+    programOrOptions?: CompleteExecution<ProvidedEnvironment<L>, A> | RuntimeOptions,
+    legacyOptions?: RuntimeOptions
   ): Promise<Awaited<A>> {
-    const runtime = await Runtime.make(layer, backend, options)
+    let program: CompleteExecution<ProvidedEnvironment<L>, A>
+    let backendOrOptions: RuntimeBackendInput
+    let options: RuntimeOptions | undefined
+
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch needs to distinguish a Program callback from configuration.
+    if (typeof backendOrProgramOrOptions === 'function') {
+      program = backendOrProgramOrOptions
+      // SAFETY: The function overload branch establishes that this argument is the optional RuntimeOptions value.
+      backendOrOptions = programOrOptions as RuntimeOptions | undefined
+      options = undefined
+    } else {
+      backendOrOptions = backendOrProgramOrOptions
+      // SAFETY: The non-function overload branch establishes that this argument is the complete execution callback.
+      program = programOrOptions as CompleteExecution<ProvidedEnvironment<L>, A>
+      options = legacyOptions
+    }
+
+    const config = resolveRuntimeConfig(backendOrOptions, options)
+    const runtime = await Runtime.make(layer, config.backend, config.options)
 
     let value!: Awaited<A>
     let executionFailed = false

@@ -4,6 +4,8 @@ import type { Result as ResultType } from 'better-result'
 
 import type { LayerDisposeError } from '../layer/errors'
 
+import type { LayerBackend } from '../layer/backend'
+
 import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from '../scope'
 
 /** Aggregated cleanup information reported during Runtime shutdown. */
@@ -21,6 +23,8 @@ export type CleanupFailureObserver = (
 
 /** Optional Runtime configuration for cleanup diagnostics. */
 export type RuntimeOptions = {
+  /** Backend used to register and resolve the Layer. Defaults to MapLayerBackend. */
+  readonly backend?: LayerBackend
   /** Optional observer for best-effort cleanup diagnostics. */
   readonly onCleanupFailure?: CleanupFailureObserver
 }

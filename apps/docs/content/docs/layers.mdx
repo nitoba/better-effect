@@ -52,20 +52,21 @@ Layer does not own it unless you wrap its lifetime separately.
 
 ## `Layer.scoped`
 
-`scoped` adds a Runtime-root release callback while retaining the simple,
-compatibility-friendly `(instance) => ...` shape:
+`scoped` adds a Runtime-root release callback. The callback receives the
+instance and final `ScopeOutcome`; callbacks that only accept the instance
+remain compatible:
 
 ```ts
 const DatabaseLive = Layer.scoped(
   Database,
   () => Database.connect(),
-  (database) => database.close()
+  (database, outcome) => database.close(outcome)
 )
 ```
 
 The resource is acquired lazily on first resolution, stays alive across
-`runtime.run` calls, and is released when the Runtime root closes. The callback
-does not receive a `ScopeOutcome`; use `scopedGen` when it needs one.
+`runtime.run` calls, and is released when the Runtime root closes. Use
+`scopedGen` when acquisition also needs contextual Services.
 
 ## `Layer.gen` and `Layer.scopedGen`
 
