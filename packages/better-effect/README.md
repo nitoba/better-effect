@@ -113,6 +113,11 @@ await runtime.run(inspectDatabase)
 Scope. `Effect.fn` captures the generator as a lazy `Program` for Runtime
 boundaries; the callback form remains supported for compatibility.
 
+`Program.all` keeps a collection lazy until the returned Program is run. Pass
+`{ concurrency: n }` for a positive bounded FIFO worker pool; values retain
+input order, and already-started Programs remain owned by the enclosing Runtime
+execution when one returns an error.
+
 `Runtime.make(AppLive)` and `Runtime.run(AppLive, program)` use the built-in
 `MapLayerBackend`. Pass `{ backend: new ItiLayerBackend() }` when an external
 container is needed; `MemoryLayerBackend` remains its compatibility alias from
@@ -145,6 +150,10 @@ Warmup failures include the Service and resolution path, release resources
 already acquired, dispose the backend and reject the Runtime. Optional
 observers expose Service resolution/acquisition, execution and Layer release
 events without coupling the core to an observability SDK:
+
+Missing, circular, and provider-construction failures use the logical Service
+tags in `ServiceNotFoundError`, `CircularDependencyError`, and
+`ServiceAcquisitionError`; the latter preserves the original provider cause.
 
 ```ts
 const runtime = await Runtime.make(AppLive, {
@@ -333,6 +342,25 @@ Dependency resolution stays behind a pluggable backend.
 
 Your application can keep using ordinary Promises and existing libraries.
 
+### Optional standard services
+
+Small host-backed services live behind `better-effect/standard-services` so the
+core package stays explicit:
+
+```ts
+import { Clock, ClockTest } from 'better-effect/standard-services'
+import { Runtime, ServiceRuntime } from 'better-effect'
+
+const ClockTestLive = ClockTest.layer(new Date('2025-01-01T00:00:00.000Z'))
+const runtime = await Runtime.make(ClockTestLive)
+const now = await runtime.run(async () => ServiceRuntime.resolve(Clock))
+await runtime.dispose()
+```
+
+The entrypoint also provides `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
+`CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. None is
+installed implicitly; compose a normal Layer or use the provided test helpers.
+
 ---
 
 ## How it compares
@@ -426,6 +454,25 @@ step after an `Ok`. Use `Effect.andThenAsync` when the next operation returns a
 `Promise<Result>`; it always returns a Promise, including when the source is synchronous
 or already an `Err`. The pipeline carries the requirements of every step, so Runtime
 still rejects it when its Layer does not provide every required Service.
+
+Observation helpers such as `Effect.tap`, `Effect.tapError`, and `Effect.tapBoth`
+run only the active branch and return the original Result, so logging or metrics
+do not change the pipeline's value or requirement channel.
+
+Use `Effect.recover` or `Effect.recoverAsync` for an explicit fallback Result;
+the fallback is evaluated only when the input is an `Err`, and its Service
+requirements are included in the resulting type.
+
+`Effect.flatten` removes one nested Result layer. `Effect.as` and `Effect.asVoid`
+replace successful values while leaving the error and requirement channels intact.
+
+`Effect.match` supports ordinary branch values as well as branch Effects. Only
+the selected handler runs; Effect-valued handlers contribute both possible
+error and Service requirement channels to the result type.
+
+`Effect.all` collects already-created Effects in input order, while `Effect.zip`
+is the two-value form; both union every input's error and Service requirements
+and retain `better-result` short-circuiting.
 
 Use `Effect.gen` for larger workflows with several intermediate values, branches or
 procedural logic that already has a resolver. Use `Effect.fn` when the workflow should

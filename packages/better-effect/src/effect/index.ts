@@ -1,6 +1,23 @@
-export { Effect } from './effect'
+export { Effect, Program } from './effect'
+export type { ProgramAllOptions } from './effect'
 
-export { andThen, andThenAsync, map, mapError } from './combinators'
+export {
+  all,
+  andThen,
+  andThenAsync,
+  as,
+  asVoid,
+  flatten,
+  map,
+  mapError,
+  match,
+  recover,
+  recoverAsync,
+  tap,
+  tapBoth,
+  tapError,
+  zip
+} from './combinators'
 
 export type {
   AnyEffect,
@@ -8,6 +25,5 @@ export type {
   EffectRequirements,
   EffectSuccess,
   EffectYield,
-  Program,
   ServiceRequirement
 } from './types'

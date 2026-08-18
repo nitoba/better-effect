@@ -46,6 +46,87 @@ type AndThenAsyncOperation<A, Next> = {
   <Input>(effect: Input & EffectInput<A, any>): AsyncChainedOutput<Input, Next>
 }
 
+type TappedResult<Input> = Effect<
+  EffectSuccess<Input>,
+  EffectError<Input>,
+  EffectRequirements<Input>
+>
+
+type RecoveredResult<Input, Next> = Effect<
+  EffectSuccess<Input> | EffectSuccess<Next>,
+  EffectError<Next>,
+  EffectRequirements<Input> | EffectRequirements<Next>
+>
+
+type FlattenedResult<Input> = Effect<
+  EffectSuccess<EffectSuccess<Input>>,
+  EffectError<Input> | EffectError<EffectSuccess<Input>>,
+  EffectRequirements<Input> | EffectRequirements<EffectSuccess<Input>>
+>
+
+type AsResult<Input, Value> = Effect<Value, EffectError<Input>, EffectRequirements<Input>>
+
+type MatchedResult<Input, OkResult, ErrResult> = Effect<
+  EffectSuccess<OkResult> | EffectSuccess<ErrResult>,
+  EffectError<OkResult> | EffectError<ErrResult>,
+  EffectRequirements<Input> | EffectRequirements<OkResult> | EffectRequirements<ErrResult>
+>
+
+type AllResult<Results extends readonly AnyEffectValue[]> = Effect<
+  { -readonly [Index in keyof Results]: EffectSuccess<Results[Index]> },
+  EffectError<Results[number]>,
+  EffectRequirements<Results[number]>
+>
+
+type ZipResult<Left, Right> = Effect<
+  [EffectSuccess<Left>, EffectSuccess<Right>],
+  EffectError<Left> | EffectError<Right>,
+  EffectRequirements<Left> | EffectRequirements<Right>
+>
+
+type TapOperation = {
+  <Input>(
+    effect: Input & AnyEffectInput,
+    fn: (value: EffectSuccess<Input>) => void
+  ): PreserveAsync<Input, TappedResult<Input>>
+}
+
+type TapErrorOperation = {
+  <Input>(
+    effect: Input & AnyEffectInput,
+    fn: (error: EffectError<Input>) => void
+  ): PreserveAsync<Input, TappedResult<Input>>
+}
+
+type TapBothOperation = {
+  <Input>(
+    effect: Input & AnyEffectInput,
+    handlers: {
+      ok: (value: EffectSuccess<Input>) => void
+      err: (error: EffectError<Input>) => void
+    }
+  ): PreserveAsync<Input, TappedResult<Input>>
+}
+
+type RecoverOperation<Next> = {
+  <Input>(
+    effect: Input & AnyEffectInput,
+    fn: (error: EffectError<Input>) => Next
+  ): PreserveAsync<Input, RecoveredResult<Input, Next>>
+}
+
+type RecoverAsyncOperation<Next> = {
+  <Input>(
+    effect: Input & AnyEffectInput,
+    fn: (error: EffectError<Input>) => Next
+  ): Promise<RecoveredResult<Input, Next>>
+}
+
+const asResult = <Value>(value: Value): ResultType<any, any> => {
+  // SAFETY: Effect is the declaration-only Result facade, so every runtime value is a Result.
+  return value as ResultType<any, any>
+}
+
 const mapResult = <A, B, E, Requirements extends AnyService>(
   result: ResultType<A, E>,
   fn: (value: A) => B
@@ -261,4 +342,270 @@ export function andThenAsync(first: CombinatorInput, second?: CombinatorCallback
 
   // SAFETY: The data-first overload supplies a Result-compatible Effect value.
   return andThenAsyncResult(first as ResultType<any, any>, next)
+}
+
+const tapResult = <A, E, Requirements extends AnyService>(
+  result: ResultType<A, E>,
+  fn: (value: A) => void
+): Effect<A, E, Requirements> =>
+  // SAFETY: Result.tap preserves the Result value; the declaration-only Effect marker is restored here.
+  Result.tap(result, fn) as Effect<A, E, Requirements>
+
+const tapErrorResult = <A, E, Requirements extends AnyService>(
+  result: ResultType<A, E>,
+  fn: (error: E) => void
+): Effect<A, E, Requirements> =>
+  // SAFETY: Result.tapError preserves the Result value; the declaration-only Effect marker is restored here.
+  Result.tapError(result, fn) as Effect<A, E, Requirements>
+
+const tapBothResult = <A, E, Requirements extends AnyService>(
+  result: ResultType<A, E>,
+  handlers: { ok: (value: A) => void; err: (error: E) => void }
+): Effect<A, E, Requirements> =>
+  // SAFETY: Result.tapBoth preserves the Result value; the declaration-only Effect marker is restored here.
+  Result.tapBoth(result, handlers) as Effect<A, E, Requirements>
+
+const recoverResult = <
+  A,
+  E,
+  B,
+  E2,
+  Requirements1 extends AnyService,
+  Requirements2 extends AnyService
+>(
+  result: ResultType<A, E>,
+  fn: (error: E) => ResultType<B, E2>
+): Effect<A | B, E2, Requirements1 | Requirements2> =>
+  // SAFETY: Result.tryRecover owns recovery and short-circuiting; only Effect metadata is restored here.
+  Result.tryRecover(result, fn) as Effect<A | B, E2, Requirements1 | Requirements2>
+
+const recoverAsyncResult = <
+  A,
+  E,
+  B,
+  E2,
+  Requirements1 extends AnyService,
+  Requirements2 extends AnyService
+>(
+  result: ResultType<A, E>,
+  fn: (error: E) => PromiseLike<ResultType<B, E2>>
+): Promise<Effect<A | B, E2, Requirements1 | Requirements2>> =>
+  // SAFETY: Result.tryRecoverAsync owns asynchronous recovery; only Effect metadata is restored here.
+  Result.tryRecoverAsync(result, (error) => Promise.resolve(fn(error))) as Promise<
+    Effect<A | B, E2, Requirements1 | Requirements2>
+  >
+
+const flattenResult = <
+  A,
+  E1,
+  E2,
+  Requirements1 extends AnyService,
+  Requirements2 extends AnyService
+>(
+  result: ResultType<ResultType<A, E2>, E1>
+): Effect<A, E1 | E2, Requirements1 | Requirements2> =>
+  // SAFETY: Result.flatten removes one Result layer; the outer and inner Effect markers are restored here.
+  Result.flatten(result) as Effect<A, E1 | E2, Requirements1 | Requirements2>
+
+const matchResult = <A, E, OkResult, ErrResult>(
+  result: ResultType<A, E>,
+  handlers: { ok: (value: A) => OkResult; err: (error: E) => ErrResult }
+): OkResult | ErrResult =>
+  // SAFETY: Result.match invokes only the selected branch; handler Results remain ordinary runtime values.
+  Result.match(result, handlers as never) as OkResult | ErrResult
+
+const allResult = <const Results extends readonly AnyEffectValue[]>(
+  results: Results
+): AllResult<Results> =>
+  // SAFETY: Result.all preserves tuple order and short-circuiting; the declaration-only channels are restored here.
+  Result.all(results as readonly ResultType<any, any>[]) as AllResult<Results>
+
+/** Observe a successful value without changing the Result. */
+export function tap(fn: (value: any) => void): TapOperation
+export function tap<Input>(
+  effect: Input & AnyEffectInput,
+  fn: (value: EffectSuccess<Input>) => void
+): PreserveAsync<Input, TappedResult<Input>>
+export function tap(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    const callback = first
+    return (effect: AnyEffectInput) => tap(effect, callback)
+  }
+
+  if (second === undefined) {
+    throw new TypeError('Effect.tap requires a callback')
+  }
+
+  const fn = second
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => tapResult(asResult(result), fn))
+  }
+
+  return tapResult(asResult(first), fn)
+}
+
+/** Observe an error value without changing the Result. */
+export function tapError(fn: (error: any) => void): TapErrorOperation
+export function tapError<Input>(
+  effect: Input & AnyEffectInput,
+  fn: (error: EffectError<Input>) => void
+): PreserveAsync<Input, TappedResult<Input>>
+export function tapError(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    const callback = first
+    return (effect: AnyEffectInput) => tapError(effect, callback)
+  }
+
+  if (second === undefined) {
+    throw new TypeError('Effect.tapError requires a callback')
+  }
+
+  const fn = second
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => tapErrorResult(asResult(result), fn))
+  }
+
+  return tapErrorResult(asResult(first), fn)
+}
+
+/** Observe whichever Result branch is active without changing the Result. */
+export function tapBoth(handlers: {
+  ok: (value: any) => void
+  err: (error: any) => void
+}): TapBothOperation
+export function tapBoth<Input>(
+  effect: Input & AnyEffectInput,
+  handlers: {
+    ok: (value: EffectSuccess<Input>) => void
+    err: (error: EffectError<Input>) => void
+  }
+): PreserveAsync<Input, TappedResult<Input>>
+export function tapBoth(first: any, second?: any): any {
+  if (second === undefined) {
+    return (effect: AnyEffectInput) => tapBoth(effect, first)
+  }
+
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => tapBothResult(result, second))
+  }
+
+  return tapBothResult(asResult(first), second)
+}
+
+/** Recover an Err with a synchronous Result-producing callback. */
+export function recover<Next extends AnyEffectValue>(
+  fn: (error: any) => Next
+): RecoverOperation<Next>
+export function recover<Input, Next extends AnyEffectValue>(
+  effect: Input & AnyEffectInput,
+  fn: (error: EffectError<Input>) => Next
+): PreserveAsync<Input, RecoveredResult<Input, Next>>
+export function recover(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    const callback = first
+    return (effect: AnyEffectInput) => recover(effect, callback)
+  }
+
+  if (second === undefined) {
+    throw new TypeError('Effect.recover requires a callback')
+  }
+
+  const fn = second
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => recoverResult(asResult(result), fn))
+  }
+
+  return recoverResult(asResult(first), fn)
+}
+
+/** Recover an Err with an asynchronous Result-producing callback. */
+export function recoverAsync<Next extends AnyAsyncEffectInput>(
+  fn: (error: any) => Next
+): RecoverAsyncOperation<Next>
+export function recoverAsync<Input, Next extends AnyAsyncEffectInput>(
+  effect: Input & AnyEffectInput,
+  fn: (error: EffectError<Input>) => Next
+): Promise<RecoveredResult<Input, Next>>
+export function recoverAsync(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    const callback = first
+    return (effect: AnyEffectInput) => recoverAsync(effect, callback)
+  }
+
+  if (second === undefined) {
+    throw new TypeError('Effect.recoverAsync requires a callback')
+  }
+
+  const fn = second
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => recoverAsyncResult(asResult(result), fn))
+  }
+
+  return recoverAsyncResult(asResult(first), fn)
+}
+
+/** Remove one nested Result/Effect layer. */
+export function flatten<Input>(effect: Input & AnyEffectValue): FlattenedResult<Input> {
+  // SAFETY: flattenResult restores the nested Effect channels after Result.flatten removes one runtime layer.
+  return flattenResult(asResult(effect)) as FlattenedResult<Input>
+}
+
+/** Replace a successful value while preserving errors and requirements. */
+export function as<Value>(
+  value: Value
+): <Input>(effect: Input & AnyEffectValue) => AsResult<Input, Value>
+export function as<Input, Value>(
+  effect: Input & AnyEffectValue,
+  value: Value
+): AsResult<Input, Value>
+export function as(first: any, second?: any): any {
+  if (arguments.length < 2) {
+    return (effect: AnyEffectValue) => as(effect, first)
+  }
+
+  return mapResult(asResult(first), () => second)
+}
+
+/** Replace a successful value with void. */
+export function asVoid<Input>(effect: Input & AnyEffectValue): AsResult<Input, void> {
+  return mapResult(asResult(effect), () => undefined)
+}
+
+/** Match an Effect and return branch Effects with their channels unioned. */
+export function match<Input, OkResult extends AnyEffectValue, ErrResult extends AnyEffectValue>(
+  effect: Input & AnyEffectValue,
+  handlers: {
+    ok: (value: EffectSuccess<Input>) => OkResult
+    err: (error: EffectError<Input>) => ErrResult
+  }
+): PreserveAsync<Input, MatchedResult<Input, OkResult, ErrResult>>
+export function match<Input, OkValue, ErrValue>(
+  effect: Input & AnyEffectValue,
+  handlers: {
+    ok: (value: EffectSuccess<Input>) => OkValue
+    err: (error: EffectError<Input>) => ErrValue
+  }
+): PreserveAsync<Input, OkValue | ErrValue>
+export function match(first: AnyEffectInput, second?: any): any {
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => match(asResult(result), second))
+  }
+
+  return matchResult(asResult(first), second)
+}
+
+/** Collect already-created Effects in input order. */
+export function all<const Results extends readonly AnyEffectValue[]>(
+  results: Results
+): AllResult<Results> {
+  return allResult(results)
+}
+
+/** Combine two already-created Effects in input order. */
+export function zip<Left, Right>(
+  left: Left & AnyEffectValue,
+  right: Right & AnyEffectValue
+): ZipResult<Left, Right> {
+  // SAFETY: Result.all returns the ordered pair; ZipResult restores only the declaration-only Effect channels.
+  return Result.all([left, right]) as ZipResult<Left, Right>
 }

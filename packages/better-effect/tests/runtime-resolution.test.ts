@@ -10,6 +10,7 @@ import {
   Runtime,
   Service,
   ServiceAcquisitionError,
+  ServiceNotFoundError,
   ServiceRuntime
 } from '../src'
 import { MemoryLayerBackend } from '../src/testing'
@@ -42,6 +43,35 @@ class RequestDatabase extends Service<RequestDatabase>()('Database') {
 }
 
 describe('Runtime Service resolution', () => {
+  test('reports missing providers with the logical Service tag', async () => {
+    let acquisitions = 0
+    const runtime = await Runtime.make(
+      Layer.make(Database, () => {
+        acquisitions++
+        return new Database()
+      })
+    )
+
+    try {
+      const error = await runtime
+        .run(() => ServiceRuntime.resolve(Config))
+        .then(
+          () => undefined,
+          (cause) => cause
+        )
+
+      expect(error).toBeInstanceOf(ServiceNotFoundError)
+
+      if (error instanceof ServiceNotFoundError) {
+        expect(error.service).toBe(Config)
+        expect(error.message).toBe('Service "Config" was not provided')
+      }
+      expect(acquisitions).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('detects circular dependencies with the complete Service path', async () => {
     const runtime = await Runtime.make(
       Layer.merge(

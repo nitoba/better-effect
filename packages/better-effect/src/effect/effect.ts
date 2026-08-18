@@ -19,7 +19,23 @@ import type {
   ProgramFromGenerator
 } from './types'
 
-import { andThen, andThenAsync, map, mapError } from './combinators'
+import {
+  all,
+  andThen,
+  andThenAsync,
+  as,
+  asVoid,
+  flatten,
+  map,
+  mapError,
+  match,
+  recover,
+  recoverAsync,
+  tap,
+  tapBoth,
+  tapError,
+  zip
+} from './combinators'
 
 export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
@@ -29,6 +45,28 @@ type LazyProgram<A, E, R extends AnyService = never> = ProgramType<A, E, R>
 export type Program<A, E, R extends AnyService = never> = LazyProgram<A, E, R>
 
 type AnyResult = ResultType<any, any>
+
+type AnyProgram = ProgramType<any, any, AnyService>
+
+type ProgramAllSuccess<Programs extends readonly AnyProgram[]> = {
+  -readonly [Index in keyof Programs]: EffectSuccess<Programs[Index]>
+}
+
+type ProgramAllError<Programs extends readonly AnyProgram[]> = EffectError<Programs[number]>
+
+type ProgramAllRequirements<Programs extends readonly AnyProgram[]> = EffectRequirements<
+  Programs[number]
+>
+
+type ProgramAllResult<Programs extends readonly AnyProgram[]> = ProgramType<
+  ProgramAllSuccess<Programs>,
+  ProgramAllError<Programs>,
+  ProgramAllRequirements<Programs>
+>
+
+export type ProgramAllOptions = {
+  readonly concurrency?: number
+}
 
 type EffectGenerator =
   | (() => Generator<EffectYield, AnyResult, unknown>)
@@ -86,6 +124,68 @@ export function fn(body: EffectGenerator): Program<any, any, AnyService> {
   return program as Program<any, any, AnyService>
 }
 
+const validateProgramConcurrency = (concurrency: number | undefined): void => {
+  if (
+    concurrency !== undefined &&
+    (!Number.isFinite(concurrency) || !Number.isInteger(concurrency) || concurrency <= 0)
+  ) {
+    throw new RangeError('Program.all concurrency must be a positive integer')
+  }
+}
+
+/** Build a lazy Program collection with optional bounded concurrency. */
+export function programAll<const Programs extends readonly AnyProgram[]>(
+  programs: Programs,
+  options: ProgramAllOptions = {}
+): ProgramAllResult<Programs> {
+  validateProgramConcurrency(options.concurrency)
+
+  const concurrency = options.concurrency
+  const program = async (): Promise<AnyResult> => {
+    const results: Array<AnyResult | undefined> = Array.from({ length: programs.length })
+    const failures: boolean[] = Array.from({ length: programs.length }, () => false)
+    const causes: unknown[] = Array.from({ length: programs.length })
+    let nextIndex = 0
+
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex++
+
+        if (index >= programs.length) {
+          return
+        }
+
+        try {
+          results[index] = await programs[index]!()
+        } catch (cause) {
+          failures[index] = true
+          causes[index] = cause
+        }
+      }
+    }
+
+    const workers = Math.min(concurrency ?? programs.length, programs.length)
+    await Promise.all(Array.from({ length: workers }, () => worker()))
+
+    const failureIndex = failures.findIndex(Boolean)
+
+    if (failureIndex >= 0) {
+      throw causes[failureIndex]
+    }
+
+    // SAFETY: Program's callable contract produces Result values; the array is erased only at this collection boundary.
+    return Result.all(results as AnyResult[])
+  }
+
+  // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
+  return program as ProgramAllResult<Programs>
+}
+
+/** Value-level namespace for lazy Program combinators. */
+export const Program = {
+  all: programAll
+} as const
+
 /**
  * Acquire a resource in the current Scope and register its release callback.
  *
@@ -136,7 +236,29 @@ export function add<R extends DisposableResource>(
  * Prefer these helpers when a program needs typed Service requirements or
  * Scope-aware acquisition and cleanup.
  */
-export const Effect = {
+type EffectNamespace = {
+  readonly gen: typeof gen
+  readonly fn: typeof fn
+  readonly acquireRelease: typeof acquireRelease
+  readonly add: typeof add
+  readonly map: typeof map
+  readonly mapError: typeof mapError
+  readonly andThen: typeof andThen
+  readonly andThenAsync: typeof andThenAsync
+  readonly tap: typeof tap
+  readonly tapError: typeof tapError
+  readonly tapBoth: typeof tapBoth
+  readonly recover: typeof recover
+  readonly recoverAsync: typeof recoverAsync
+  readonly flatten: typeof flatten
+  readonly as: typeof as
+  readonly asVoid: typeof asVoid
+  readonly match: typeof match
+  readonly all: typeof all
+  readonly zip: typeof zip
+}
+
+export const Effect: EffectNamespace = {
   /** Compose a generator-based Effect program. */
   gen,
   /** Build a lazy Program from a generator. */
@@ -152,7 +274,29 @@ export const Effect = {
   /** Chain a synchronous Effect result. */
   andThen,
   /** Chain an asynchronous Effect result. */
-  andThenAsync
+  andThenAsync,
+  /** Observe successful values without changing the Result. */
+  tap,
+  /** Observe error values without changing the Result. */
+  tapError,
+  /** Observe the active Result branch without changing the Result. */
+  tapBoth,
+  /** Recover an error with another Effect. */
+  recover,
+  /** Recover an error asynchronously with another Effect. */
+  recoverAsync,
+  /** Remove one nested Effect layer. */
+  flatten,
+  /** Replace a successful value. */
+  as,
+  /** Replace a successful value with void. */
+  asVoid,
+  /** Match either Result branch. */
+  match,
+  /** Collect Effects in input order. */
+  all,
+  /** Zip two Effects in input order. */
+  zip
 } as const
 
 /** Type-level aliases for inspecting Effect result channels and requirements. */

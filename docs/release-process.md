@@ -33,8 +33,8 @@ workspace entry in `bun.lock`.
 4. Create and push the matching tag:
 
    ```bash
-   git tag -a v0.8.0 -m "Release v0.8.0"
-   git push origin v0.8.0
+   git tag -a v0.9.0 -m "Release v0.9.0"
+   git push origin v0.9.0
    ```
 
 The `Release` workflow accepts only tags in the `v<package-version>` format.
