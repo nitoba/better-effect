@@ -118,6 +118,49 @@ const user = yield * Result.await(repository.findById(id))
 Thrown and rejected operations should be normalized by `better-result` helpers
 such as `Result.tryPromise` before they enter the workflow.
 
+## Compose and observe Effects
+
+The namespace helpers keep `better-result` semantics while retaining Service
+requirements in their declarations:
+
+```ts
+import { Effect, pipe, Program } from 'better-effect'
+import { Result } from 'better-result'
+
+const checked = pipe(
+  loadUser(userId),
+  Effect.tap((user) => logger.info(`loaded ${user.id}`)),
+  Effect.asVoid
+)
+
+const recovered = Effect.recover(fetchUser, (error) => Result.ok(cachedUser(error)))
+
+const dashboard = Effect.all([loadUser(userId), loadPermissions(userId)])
+const pair = Effect.zip(loadUser(userId), loadPermissions(userId))
+```
+
+`tap`, `tapError`, and `tapBoth` run only the active branch and return the
+original Result. `recover` and `recoverAsync` evaluate a fallback only for an
+error. `flatten` removes one nested Effect, while `as` and `asVoid` replace
+successful values without changing errors or requirements.
+
+`Effect.match` accepts either plain branch values or Effect-valued handlers.
+Only the selected handler runs; both possible handler channels are included in
+the static type. `Effect.all` and `Effect.zip` collect already-created Effects
+in input order. Use `Program.all` when the work itself must remain lazy:
+
+```ts
+const loadEverything = Program.all([loadUserProgram(userId), loadPermissionsProgram(userId)], {
+  concurrency: 2
+})
+
+const result = await runtime.run(loadEverything)
+```
+
+`Program.all` invokes no Program while it is being constructed, starts at most
+the configured number at a time, and leaves already-started work owned by the
+enclosing Runtime Scope when one Program fails.
+
 ## Acquire a resource inside an Effect
 
 `Effect.acquireRelease` acquires through the current Scope and registers an

@@ -2,7 +2,7 @@ import { expectTypeOf } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Effect, type EffectRequirements, type Program } from '../../src/effect'
+import { Effect, Program, type EffectRequirements } from '../../src/effect'
 import { Layer } from '../../src/layer'
 import { Runtime } from '../../src/runtime'
 import { Service } from '../../src/service'
@@ -59,6 +59,16 @@ const requestProgram = Effect.fn(async function* () {
 
   return Result.ok(request.requestId)
 })
+
+const collectedPrograms = Program.all([greet, requestProgram] as const, { concurrency: 2 })
+expectTypeOf(collectedPrograms).toEqualTypeOf<
+  Program<[string, string], never, GreetingService | RequestContext>
+>()
+
+declare const greetingRuntime: Runtime<GreetingService>
+// @ts-expect-error Program.all retains the complete union of child requirements.
+void greetingRuntime.run(collectedPrograms)
+
 declare const emptyRuntime: Runtime<never>
 const backend = new MemoryLayerBackend()
 const runtimePromise = Runtime.make(GreetingLive, backend)

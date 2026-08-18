@@ -31,8 +31,8 @@ if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <version>"
   echo
   echo "Examples:"
-  echo "  $0 0.8.0"
-  echo "  $0 v0.8.0"
+  echo "  $0 0.9.0"
+  echo "  $0 v0.9.0"
   exit 1
 fi
 

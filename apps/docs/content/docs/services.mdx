@@ -181,6 +181,28 @@ and isolated across concurrent Runtime executions. Calling
 `ServiceRuntime.current()` or `resolve()` outside a configured context throws
 `ServiceRuntimeNotConfiguredError`.
 
+## Optional standard services
+
+Host-backed cross-cutting services are available from the optional
+`better-effect/standard-services` entrypoint. They are ordinary Services, so
+applications must compose a Layer and can replace each implementation in a
+test:
+
+```ts
+import { Runtime, ServiceRuntime } from 'better-effect'
+import { Clock, ClockTest } from 'better-effect/standard-services'
+
+const clockLayer = ClockTest.layer(new Date('2025-01-01T00:00:00.000Z'))
+const runtime = await Runtime.make(clockLayer)
+
+const now = await runtime.run(() => ServiceRuntime.resolve(Clock))
+await runtime.dispose()
+```
+
+The entrypoint also includes `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
+`CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. Importing it
+never installs a hidden global provider.
+
 ## Service checklist
 
 - Give every Service a literal, non-empty tag.

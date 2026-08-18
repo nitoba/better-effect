@@ -33,7 +33,7 @@ export {
 
 export type { LayerBackend, LayerRegistration } from './layer'
 
-export { Effect } from './effect'
+export { Effect, Program } from './effect'
 
 export { pipe } from './function'
 
@@ -43,7 +43,7 @@ export type {
   EffectRequirements,
   EffectSuccess,
   EffectYield,
-  Program,
+  ProgramAllOptions,
   ServiceRequirement
 } from './effect'
 

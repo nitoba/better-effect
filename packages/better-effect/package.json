@@ -1,6 +1,6 @@
 {
   "name": "better-effect",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Effect-inspired application architecture for better-result with typechecked Services and environments, scoped resource lifetimes, and pluggable DI backends.",
   "keywords": [
     "better-result",
@@ -30,6 +30,7 @@
     "./adapters/iti": "./dist/adapters/iti.mjs",
     "./runtime/explicit": "./dist/runtime/explicit.mjs",
     "./runtime/node": "./dist/runtime/node.mjs",
+    "./standard-services": "./dist/standard-services.mjs",
     "./testing": "./dist/testing.mjs",
     "./package.json": "./package.json"
   },
@@ -46,6 +47,8 @@
     "test:coverage": "bun test --coverage",
     "test:package-types": "tsc --version && tsc -p tests/package/public-type-namespaces/tsconfig.json",
     "test:package-types:minimum": "bunx --bun --package typescript@5.7.2 tsc --version && bunx --bun --package typescript@5.7.2 tsc -p tests/package/public-type-namespaces/tsconfig.json",
+    "test:package-standard-services": "tsc -p tests/package/standard-services/tsconfig.json",
+    "test:package-standard-services:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/package/standard-services/tsconfig.json",
     "test:package-variance": "rm -rf tests/package/public-type-variance/out && tsc --version && tsc -p tests/package/public-type-variance/tsconfig.json && rm -rf tests/package/public-type-variance/out",
     "test:package-variance:minimum": "rm -rf tests/package/public-type-variance/out && bunx --bun --package typescript@5.7.2 tsc --version && bunx --bun --package typescript@5.7.2 tsc -p tests/package/public-type-variance/tsconfig.json && rm -rf tests/package/public-type-variance/out",
     "lint": "oxlint --type-aware .",
@@ -53,9 +56,10 @@
     "format": "oxfmt --write .",
     "publint": "publint",
     "check:public-type-namespaces": "bun run test:package-types && bun run test:package-types:minimum && bun tests/package/public-type-namespaces/check.ts",
+    "check:standard-services": "bun run test:package-standard-services && bun run test:package-standard-services:minimum",
     "check:public-type-variance": "bun run test:package-variance && bun run test:package-variance:minimum && bun tests/package/public-type-variance/check.ts",
     "check:instance-requirements": "bun tests/package/instance-requirements/check.ts",
-    "check": "bun run typecheck && bun test && bun run format && bun run build && bun run check:public-type-namespaces && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
+    "check": "bun run typecheck && bun test && bun run format && bun run build && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun publish --dry-run"
   },

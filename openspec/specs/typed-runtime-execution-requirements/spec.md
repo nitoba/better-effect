@@ -28,7 +28,7 @@ A Runtime or RuntimeHandle created from a complete Layer MUST retain the exact `
 
 ### Requirement: Typed executions validate Effect requirements
 
-Runtime and RuntimeHandle `run` methods MUST accept a program only when every concrete instance in its final `Effect.Requirements` is supplied by the provided environment under literal-tag and bidirectional-contract compatibility. The awaited program type MUST be preserved.
+Runtime and RuntimeHandle `run` methods MUST accept a program only when every concrete instance in its final `Effect.Requirements` is supplied by the provided environment under literal-tag and bidirectional-contract compatibility. The awaited program type MUST be preserved. The same validation MUST apply to the final requirement union produced by `Effect.all`, `Effect.zip`, and lazy `Program.all`.
 
 #### Scenario: One requirement is missing
 
@@ -49,6 +49,16 @@ Runtime and RuntimeHandle `run` methods MUST accept a program only when every co
 
 - **WHEN** a program directly requires Database and returns an Effect requiring Logger
 - **THEN** the Runtime MUST validate both instances
+
+#### Scenario: Program.all validates its complete requirement union
+
+- **WHEN** a Runtime with Database but without Cache runs `Program.all` over a Database Program and a Cache Program
+- **THEN** the call MUST be rejected with `MissingDependencies<Cache>` before execution begins
+
+#### Scenario: Effect collections validate all inputs
+
+- **WHEN** `Effect.zip` combines a Database Effect and a Cache Effect at a typed Runtime boundary
+- **THEN** the boundary MUST require both Services even if the first Effect would fail at runtime
 
 ### Requirement: Complete Layer boundaries are enforced by Runtime
 
@@ -106,6 +116,11 @@ Unparameterized Runtime, `Runtime<any>`, `Runtime<Service.Any>`, `Effect.Any`, a
 
 Programs with `Effect.Requirements` equal to `never` MUST run in every Runtime. This includes plain values, ordinary Results, Scope-only Effects, `Effect.acquireRelease`, and `Effect.add` programs that yield no Service constructor.
 
+#### Scenario: Requirement-free Effect runs in every Runtime
+
+- **WHEN** a program has no Service requirements
+- **THEN** it MUST compile and run in an otherwise empty Runtime
+
 ### Requirement: MissingDependencies is package-private and type-only
 
 The named `MissingDependencies<Missing>` helper MUST remain absent from package barrels while remaining nameable in built declaration diagnostics. It and all identity, requirement and provenance markers MUST emit no JavaScript.
@@ -116,6 +131,10 @@ The named `MissingDependencies<Missing>` helper MUST remain absent from package 
 - **THEN** compiler output MUST include the precise `MissingDependencies<...>` instance union
 
 ### Requirement: Runtime behavior remains constructor based
+
+Runtime registration MUST continue to use Service constructors, and generated JavaScript MUST contain no phantom metadata.
+
+#### Scenario: Runtime registration remains constructor based
 
 - **WHEN** a program evaluates `yield* Database`
 - **THEN** the backend MUST receive the Database constructor and generated JavaScript MUST contain no phantom metadata
