@@ -100,8 +100,13 @@ export class Runtime<Provided extends AnyService = any> {
   ): Promise<Runtime<ProvidedEnvironment<L>>> {
     const { backend, options } = resolveRuntimeConfig(backendOrOptions, legacyOptions)
     const handle = await createRuntimeHandle(layer, backend, options)
+    const runtime = new Runtime<ProvidedEnvironment<L>>(handle)
 
-    return new Runtime<ProvidedEnvironment<L>>(handle)
+    if (options.warmup) {
+      await runtime.warmup()
+    }
+
+    return runtime
   }
 
   /**
@@ -258,6 +263,21 @@ export class Runtime<Provided extends AnyService = any> {
     }
 
     return value
+  }
+
+  /** Resolve every Layer provider and dispose the Runtime if warmup fails. */
+  async warmup(): Promise<void> {
+    try {
+      await this.handle.warmup()
+    } catch (cause) {
+      try {
+        await this.handle.dispose({ status: 'failure', cause })
+      } catch {
+        // Warmup failure remains the primary error; cleanup is best effort.
+      }
+
+      throw cause
+    }
   }
 
   /** Run one execution in this Runtime's child Scope. */

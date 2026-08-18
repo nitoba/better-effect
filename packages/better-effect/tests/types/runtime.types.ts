@@ -11,8 +11,13 @@ import {
 import { Layer, MapLayerBackend, type LayerBackend } from '../../src/layer'
 import { createRuntimeHandle, type RuntimeHandle } from '../../src/layer/runtime'
 import type { LayerRegistration } from '../../src'
-import { Runtime, type RuntimeFor } from '../../src/runtime'
-import { Scope } from '../../src/scope'
+import {
+  Runtime,
+  type RuntimeFor,
+  type RuntimeObserver,
+  type RuntimeOptions
+} from '../../src/runtime'
+import { Scope, type ScopeOutcome } from '../../src/scope'
 import { Service, type AnyServiceToken } from '../../src/service'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import type { CompleteExecution, ExecutionMissing } from '../../src/layer/inference'
@@ -67,11 +72,36 @@ const runtimePromise = Runtime.make(AppLive, backend)
 const defaultRuntimePromise = Runtime.make(AppLive)
 const configuredRuntimePromise = Runtime.make(AppLive, { backend: new MapLayerBackend() })
 
+const runtimeObserver: RuntimeObserver = {
+  onServiceResolve: (event) => {
+    expectTypeOf(event.service).toEqualTypeOf<AnyServiceToken>()
+    expectTypeOf(event.resolutionPath).toEqualTypeOf<readonly AnyServiceToken[]>()
+  },
+  onServiceAcquire: (event) => {
+    expectTypeOf(event.outcome).toMatchTypeOf<ScopeOutcome>()
+  },
+  onExecutionStart: (event) => {
+    expectTypeOf(event.scope).toEqualTypeOf<Scope>()
+  },
+  onExecutionEnd: (event) => {
+    expectTypeOf(event.outcome).toMatchTypeOf<ScopeOutcome>()
+  },
+  onResourceRelease: (event) => {
+    expectTypeOf(event.service).toEqualTypeOf<AnyServiceToken>()
+  }
+}
+
+const warmupOptions: RuntimeOptions = {
+  warmup: true,
+  observers: [runtimeObserver]
+}
+
 expectTypeOf<Awaited<typeof builtPromise>>().toEqualTypeOf<RuntimeHandle<Database | Logger>>()
 expectTypeOf<Awaited<typeof runtimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<Awaited<typeof defaultRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<Awaited<typeof configuredRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger>>()
+expectTypeOf(warmupOptions).toEqualTypeOf<RuntimeOptions>()
 
 const requiresDatabaseAndLogger = () =>
   Effect.gen(async function* () {

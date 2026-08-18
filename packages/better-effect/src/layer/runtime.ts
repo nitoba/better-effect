@@ -24,6 +24,8 @@ import { LayerDisposeError, LayerRegistrationError } from './errors'
 
 import { createResolutionResolver } from './resolution'
 
+import { notifyRuntimeObservers, type RuntimeObserver } from '../runtime/observer'
+
 import type { LayerBackend } from './backend'
 
 import { MapLayerBackend } from './map-layer-backend'
@@ -54,6 +56,9 @@ interface RuntimeHandleCore<Provided extends AnyService> {
     layer: Request & CompleteExecutionLayer<Provided, Request>,
     program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
   ): Promise<Awaited<A>>
+
+  /** Resolve every registered provider before accepting normal executions. */
+  warmup(): Promise<void>
 
   /** Stop new executions and release Layer-owned resources. */
   dispose(outcome?: ScopeOutcome): Promise<void>
@@ -99,7 +104,8 @@ const bindProviderToScope = (
   provider: LayerProvider,
   scope: CloseableScope,
   contextStorage: RuntimeContextStorage,
-  resolver: ServiceResolver
+  resolver: ServiceResolver,
+  observers: readonly RuntimeObserver[]
 ): LayerRegistration => ({
   service: provider.service,
 
@@ -116,14 +122,49 @@ const bindProviderToScope = (
       ScopeRuntime.run(
         scope,
         async () => {
-          if (!provider.release) {
-            return await provider.acquire()
-          }
+          const resolutionPath = current?.resolutionPath ?? [provider.service]
 
-          return await scope.acquire(
-            () => provider.acquire(),
-            (resource, outcome) => provider.release!(resource, outcome)
-          )
+          try {
+            const instance = provider.release
+              ? await scope.acquire(
+                  () => provider.acquire(),
+                  async (resource, outcome) => {
+                    try {
+                      await provider.release!(resource, outcome)
+                      notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
+                        service: provider.service,
+                        outcome
+                      })
+                    } catch (cause) {
+                      notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
+                        service: provider.service,
+                        outcome,
+                        error: cause
+                      })
+                      throw cause
+                    }
+                  }
+                )
+              : await provider.acquire()
+
+            notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, {
+              service: provider.service,
+              resolutionPath,
+              outcome: SCOPE_SUCCESS
+            })
+
+            return instance
+          } catch (cause) {
+            notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, {
+              service: provider.service,
+              resolutionPath,
+              outcome: {
+                status: 'failure',
+                cause
+              }
+            })
+            throw cause
+          }
         },
         contextStorage
       )
@@ -162,6 +203,8 @@ class ExecutionLayerBackend implements LayerBackend {
 class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCore<Provided> {
   private disposePromise: Promise<void> | undefined
 
+  private warmupPromise: Promise<void> | undefined
+
   private readonly executions = new Set<Promise<unknown>>()
 
   private state: 'active' | 'disposing' | 'disposed' = 'active'
@@ -172,7 +215,9 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly rootScope: CloseableScope,
     private readonly onCleanupFailure: CleanupFailureObserver | undefined,
     private readonly contextStorage: RuntimeContextStorage,
-    private readonly signal: AbortSignal | undefined
+    private readonly signal: AbortSignal | undefined,
+    private readonly observers: readonly RuntimeObserver[],
+    private readonly services: readonly AnyServiceToken[]
   ) {}
 
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
@@ -194,7 +239,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     const executionScope = this.rootScope.fork()
     const localBackend = new MapLayerBackend()
     const backend = new ExecutionLayerBackend(localBackend, this.backend)
-    const resolver = createResolutionResolver(backend, this.contextStorage)
+    const resolver = createResolutionResolver(backend, this.contextStorage, this.observers)
 
     return this.startExecution<Awaited<A>>(executionScope, async (): Promise<Awaited<A>> => {
       try {
@@ -203,7 +248,13 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           async (): Promise<Awaited<A>> => {
             for (const provider of layer.providers) {
               backend.register(
-                bindProviderToScope(provider, executionScope, this.contextStorage, resolver)
+                bindProviderToScope(
+                  provider,
+                  executionScope,
+                  this.contextStorage,
+                  resolver,
+                  this.observers
+                )
               )
             }
 
@@ -215,6 +266,41 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
         await localBackend.disposeAll()
       }
     })
+  }
+
+  warmup(): Promise<void> {
+    this.assertActive()
+
+    if (this.warmupPromise) {
+      return this.warmupPromise
+    }
+
+    const warmup = runRuntimeContext(
+      this.contextStorage,
+      makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
+      async () => {
+        for (const service of this.services) {
+          await this.resolver.resolve(service)
+        }
+      }
+    )
+
+    this.warmupPromise = warmup
+
+    void warmup.then(
+      () => {
+        if (this.warmupPromise === warmup) {
+          this.warmupPromise = undefined
+        }
+      },
+      () => {
+        if (this.warmupPromise === warmup) {
+          this.warmupPromise = undefined
+        }
+      }
+    )
+
+    return warmup
   }
 
   private startExecution<A>(executionScope: CloseableScope, run: () => PromiseLike<A>): Promise<A> {
@@ -269,11 +355,35 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           classify: classifyRuntimeOutcome
         }
 
-    return runScoped(executionScope, program, {
+    notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionStart, {
+      scope: executionScope
+    })
+
+    const execution = runScoped(executionScope, program, {
       ...options,
       contextStorage: this.contextStorage,
       context: makeRuntimeContext(resolver, executionScope, [], this.signal)
     })
+
+    return execution.then(
+      (value) => {
+        notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, {
+          scope: executionScope,
+          outcome: classifyRuntimeOutcome(value)
+        })
+        return value
+      },
+      (cause) => {
+        notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, {
+          scope: executionScope,
+          outcome: {
+            status: 'failure',
+            cause
+          }
+        })
+        throw cause
+      }
+    )
   }
 
   dispose(outcome: ScopeOutcome = SCOPE_SUCCESS): Promise<void> {
@@ -296,7 +406,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
   ): Promise<void> {
     const failures: unknown[] = []
 
-    await Promise.allSettled(executions)
+    await Promise.allSettled([...(this.warmupPromise ? [this.warmupPromise] : []), ...executions])
 
     try {
       await runRuntimeContext(
@@ -343,7 +453,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const rootScope = Scope.make()
   const contextStorage = options.contextStorage ?? defaultRuntimeContextStorage
-  const resolver = createResolutionResolver(backend, contextStorage)
+  const observers = options.observers ?? []
+  const resolver = createResolutionResolver(backend, contextStorage, observers)
   ScopeRuntime.bind(rootScope, contextStorage)
   let current: LayerProvider | undefined
 
@@ -351,7 +462,9 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     for (const provider of layer.providers) {
       current = provider
 
-      await backend.register(bindProviderToScope(provider, rootScope, contextStorage, resolver))
+      await backend.register(
+        bindProviderToScope(provider, rootScope, contextStorage, resolver, observers)
+      )
     }
   } catch (registrationCause) {
     const outcome: ScopeOutcome = {
@@ -401,6 +514,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     rootScope,
     options.onCleanupFailure,
     contextStorage,
-    options.signal
+    options.signal,
+    observers,
+    layer.providers.map((provider) => provider.service)
   )
 }

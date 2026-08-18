@@ -9,6 +9,7 @@ test('exposes Runtime as the managed Layer entry point', () => {
   expect(BetterEffect.CircularDependencyError).toBeDefined()
   expect(BetterEffect.ServiceAcquisitionError).toBeDefined()
   expect(BetterEffect.Effect.fn).toBeDefined()
+  expect('warmup' in BetterEffect.Runtime.prototype).toBe(true)
   expect(BetterEffect.pipe).toBeDefined()
   expect('buildLayer' in BetterEffect).toBe(false)
   expect('BuiltLayerDisposedError' in BetterEffect).toBe(false)

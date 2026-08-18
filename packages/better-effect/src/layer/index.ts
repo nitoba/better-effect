@@ -16,6 +16,15 @@ export type {
   RuntimeShutdownDiagnostic
 } from '../runtime/outcome'
 
+export type {
+  RuntimeExecutionEndEvent,
+  RuntimeExecutionStartEvent,
+  RuntimeObserver,
+  RuntimeResourceReleaseEvent,
+  RuntimeServiceAcquireEvent,
+  RuntimeServiceResolveEvent
+} from '../runtime/observer'
+
 export type { LayerBackend } from './backend'
 
 export type { LayerGenerator, LayerGeneratorRequirements, LayerRegistration } from './types'
