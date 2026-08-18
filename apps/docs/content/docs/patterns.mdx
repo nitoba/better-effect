@@ -105,9 +105,19 @@ container registry.
 
 ## Multi-tenant or per-request environments
 
-Keep a long-lived base Runtime for shared infrastructure. For a truly
-different environment, build an explicit Layer override or a separate Runtime;
-do not mutate a shared backend while requests are in flight.
+Keep a long-lived base Runtime for shared infrastructure. For request context,
+transactions or tenant-specific providers, add a Layer to that execution:
+
+```ts
+const result = await runtime.runWith(
+  Layer.succeed(Tenant, Tenant.of({ id: tenantId })),
+  handleRequest
+)
+```
+
+The request Layer is isolated from concurrent executions and closes its scoped
+providers when the request finishes. Use an explicit Layer override or a
+separate Runtime only when the whole application environment must differ.
 
 ## Observability
 

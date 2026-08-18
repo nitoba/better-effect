@@ -71,6 +71,31 @@ execution and root Scopes with the final outcome, and always attempts backend
 cleanup. A successful program can therefore still expose a shutdown cleanup
 failure; a failed program preserves its exact primary failure.
 
+## Layers per execution
+
+Use `runWith` when a Layer belongs to one execution instead of to the shared
+Runtime root. The request Layer can depend on root Services, and its providers
+are resolved through an overlay that is discarded when the execution Scope
+closes:
+
+```ts
+const RequestLive = Layer.succeed(RequestContext, RequestContext.of({ requestId, userId }))
+
+const handleRequest = Effect.fn(async function* () {
+  const request = yield* RequestContext
+  return Result.ok(await application.handle(request))
+})
+
+const result = await runtime.runWith(RequestLive, handleRequest)
+```
+
+`runWith` checks the request Layer's external requirements against the root
+environment and checks the program against the union of root and request
+Services. `Layer.scoped` and `Layer.scopedGen` providers registered there are
+released at the end of that execution, while root Layer resources remain
+shared. A request provider with a compatible existing tag also acts as a
+request-local override without mutating the root backend.
+
 ## Typed execution boundaries
 
 Every typed Runtime boundary validates the program's final

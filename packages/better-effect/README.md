@@ -131,6 +131,15 @@ Or let `Runtime.use` own the lifetime:
 const result = await Runtime.use(AppLive, (runtime) => runtime.run(program))
 ```
 
+For request-local context or overrides, add a Layer only to that execution:
+
+```ts
+const result = await runtime.runWith(RequestLive, handleRequest)
+```
+
+The request Layer may use root Services, while its scoped providers are closed
+with the execution Scope and never change the shared Runtime environment.
+
 Service and Scope access share one `RuntimeContext`. Node/Bun uses
 `AsyncLocalStorage` by default; hosts without transparent async context can
 pass `contextStorage: new ExplicitRuntimeContextStorage()` from
