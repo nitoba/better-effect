@@ -28,8 +28,8 @@ export const createServer = (runtime: AppRuntime) =>
 
       '/auth/login': {
         POST: async (request) => {
-          const result = await runtime.run(() =>
-            Effect.gen(async function* () {
+          const result = await runtime.run(
+            Effect.fn(async function* () {
               const input = yield* Result.await(readJson(request, isLoginInput))
 
               const auth = yield* AuthService
@@ -46,8 +46,8 @@ export const createServer = (runtime: AppRuntime) =>
 
       '/todos': {
         GET: async (request) => {
-          const result = await runtime.run(() =>
-            Effect.gen(async function* () {
+          const result = await runtime.run(
+            Effect.fn(async function* () {
               const { userId } = yield* Result.await(requireUser(request))
 
               const todos = yield* TodoService
@@ -62,8 +62,8 @@ export const createServer = (runtime: AppRuntime) =>
         },
 
         POST: async (request) => {
-          const result = await runtime.run(() =>
-            Effect.gen(async function* () {
+          const result = await runtime.run(
+            Effect.fn(async function* () {
               const { userId } = yield* Result.await(requireUser(request))
 
               const input = yield* Result.await(readJson(request, isCreateTodoInput))
@@ -86,8 +86,8 @@ export const createServer = (runtime: AppRuntime) =>
 
       '/todos/:id': {
         GET: async (request) => {
-          const result = await runtime.run(() =>
-            Effect.gen(async function* () {
+          const result = await runtime.run(
+            Effect.fn(async function* () {
               const { userId } = yield* Result.await(requireUser(request))
 
               const todos = yield* TodoService
@@ -102,8 +102,8 @@ export const createServer = (runtime: AppRuntime) =>
         },
 
         PATCH: async (request) => {
-          const result = await runtime.run(() =>
-            Effect.gen(async function* () {
+          const result = await runtime.run(
+            Effect.fn(async function* () {
               const { userId } = yield* Result.await(requireUser(request))
 
               const input = yield* Result.await(readJson(request, isUpdateTodoInput))
@@ -125,8 +125,8 @@ export const createServer = (runtime: AppRuntime) =>
         },
 
         DELETE: async (request) => {
-          const result = await runtime.run(() =>
-            Effect.gen(async function* () {
+          const result = await runtime.run(
+            Effect.fn(async function* () {
               const { userId } = yield* Result.await(requireUser(request))
 
               const todos = yield* TodoService

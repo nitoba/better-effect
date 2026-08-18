@@ -5,6 +5,7 @@ import * as LayerApi from '../src/layer'
 
 test('exposes Runtime as the managed Layer entry point', () => {
   expect(BetterEffect.Runtime).toBeDefined()
+  expect(BetterEffect.Effect.fn).toBeDefined()
   expect(BetterEffect.pipe).toBeDefined()
   expect('buildLayer' in BetterEffect).toBe(false)
   expect('BuiltLayerDisposedError' in BetterEffect).toBe(false)

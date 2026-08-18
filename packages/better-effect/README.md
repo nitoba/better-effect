@@ -4,7 +4,7 @@
 
 Type your errors with `better-result`. Typecheck the rest of your application wiring with `better-effect`.
 
-Use Services directly inside `Effect.gen`, compose implementations into application environments, and let TypeScript catch missing dependencies before your application starts — while keeping Promises, `better-result`, and your DI backend.
+Use Services directly inside `Effect.fn` Programs (or eager `Effect.gen` workflows), compose implementations into application environments, and let TypeScript catch missing dependencies before your application starts — while keeping Promises, `better-result`, and your DI backend.
 
 ```bash
 bun add better-effect better-result
@@ -100,14 +100,18 @@ And the contract does not disappear after startup.
 A Runtime also knows which Services exist in its environment:
 
 ```ts
-await runtime.run(() =>
-  Effect.gen(async function* () {
-    const database = yield* Database
+const inspectDatabase = Effect.fn(async function* () {
+  const database = yield* Database
 
-    return Result.ok(database)
-  })
-)
+  return Result.ok(database)
+})
+
+await runtime.run(inspectDatabase)
 ```
+
+`Effect.gen` remains eager for code that already runs inside a resolver and
+Scope. `Effect.fn` captures the generator as a lazy `Program` for Runtime
+boundaries; the callback form remains supported for compatibility.
 
 If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
 
@@ -318,11 +322,11 @@ Application resources live with the Runtime. Execution resources live with the e
 
 ### better-result underneath
 
-**Result → Result.gen → Effect.gen → pipe**
+**Result → Result.gen → Effect.gen / Effect.fn → pipe**
 
 Keep `better-result` as the source of truth for typed successes, failures, short-circuiting
 and generator control flow. `Effect.gen` delegates to `Result.gen`; it adds only the
-phantom Service requirements that TypeScript needs to check the application environment.
+declaration-only Service requirements that TypeScript needs to check the application environment.
 At runtime, an `Effect<A, E, R>` is still a `better-result` Result; the requirements exist
 only in the type. `Effect.Requirements`, `Layer.Provided`, `Layer.Required` and
 `Runtime.For` expose tagged Service instance unions.
@@ -349,5 +353,6 @@ or already an `Err`. The pipeline carries the requirements of every step, so Run
 still rejects it when its Layer does not provide every required Service.
 
 Use `Effect.gen` for larger workflows with several intermediate values, branches or
-procedural logic. Use `pipe` for concise, linear composition; both are ways to compose
-`better-result` programs while keeping dependency checking in the `better-effect` layer.
+procedural logic that already has a resolver. Use `Effect.fn` when the workflow should
+start at a Runtime boundary. Use `pipe` for concise, linear composition; all three
+keep dependency checking in the `better-effect` layer.

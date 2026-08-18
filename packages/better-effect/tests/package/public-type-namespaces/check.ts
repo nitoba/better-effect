@@ -62,7 +62,7 @@ const readDeclarationGraph = async (entry: string): Promise<string> => {
 }
 
 const aliases = {
-  Effect: ['Success', 'Error', 'Requirements', 'Any'],
+  Effect: ['Program', 'Success', 'Error', 'Requirements', 'Any'],
   Service: [
     'Any',
     'Identity',

@@ -40,6 +40,7 @@ export type {
   EffectRequirements,
   EffectSuccess,
   EffectYield,
+  Program,
   ServiceRequirement
 } from './effect'
 

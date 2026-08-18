@@ -13,6 +13,7 @@ import {
   type EffectError,
   type EffectRequirements,
   type EffectSuccess,
+  type Program as LazyProgram,
   type RuntimeFor,
   type RuntimeOptions,
   type RuntimeShutdownDiagnostic,
@@ -98,6 +99,16 @@ const LeanLive = Layer.make(LeanDatabase)
 Layer.override(RichLive, LeanLive)
 
 type Program = typeof program
+
+export type ProgramAlias = Expect<
+  Equal<
+    LazyProgram<string, never, Database>,
+    import('better-effect').Program<string, never, Database>
+  >
+>
+export type EffectProgramAlias = Expect<
+  Equal<Effect.Program<string, never, Database>, LazyProgram<string, never, Database>>
+>
 
 export type EffectSuccessAlias = Expect<Equal<Effect.Success<Program>, EffectSuccess<Program>>>
 export type EffectErrorAlias = Expect<Equal<Effect.Error<Program>, EffectError<Program>>>

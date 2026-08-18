@@ -13,7 +13,7 @@ Services that the Layer provides.
 ```ts
 const runtime = await Runtime.make(AppLive, backend)
 
-const result = await runtime.run(() => loadDashboard)
+const result = await runtime.run(loadDashboard)
 
 await runtime.dispose()
 ```
@@ -27,12 +27,14 @@ between calls to `run`.
 For a command, migration or script, use `Runtime.run`:
 
 ```ts
-const result = await Runtime.run(AppLive, backend, () =>
-  Effect.gen(async function* () {
-    const database = yield* Database
-    return yield* Result.await(database.migrate())
-  })
-)
+const migrate = Effect.fn(async function* () {
+  const database = yield* Database
+  const migrated = yield* Result.await(database.migrate())
+
+  return Result.ok(migrated)
+})
+
+const result = await Runtime.run(AppLive, backend, migrate)
 ```
 
 The one-shot form creates the Runtime, runs exactly one program, closes its
@@ -48,14 +50,14 @@ Every typed Runtime boundary validates the program's final
 ```ts
 const AppLive = Layer.succeed(Database, database)
 
-const needsCache = Effect.gen(async function* () {
+const needsCache = Effect.fn(async function* () {
   const cache = yield* Cache
   return Result.ok(await cache.get('key'))
 })
 
 const runtime = await Runtime.make(AppLive, backend)
 
-await runtime.run(() => needsCache)
+await runtime.run(needsCache)
 // TypeScript error includes MissingDependencies<Cache>.
 ```
 

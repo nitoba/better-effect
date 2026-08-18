@@ -15,7 +15,7 @@ import { MemoryLayerBackend } from 'better-effect/testing'
 const backend = new MemoryLayerBackend()
 const runtime = await Runtime.make(AppTest, backend)
 
-const result = await runtime.run(() => applicationProgram)
+const result = await runtime.run(applicationProgram)
 
 await runtime.dispose()
 ```
@@ -47,12 +47,14 @@ invalid provider cross the Runtime boundary.
 `ServiceRuntime.run` or a Runtime boundary:
 
 ```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const repository = yield* UserRepository
-    return yield* Result.await(repository.findById('test-user'))
-  })
-)
+const applicationProgram = Effect.fn(async function* () {
+  const repository = yield* UserRepository
+  const user = yield* Result.await(repository.findById('test-user'))
+
+  return Result.ok(user)
+})
+
+const result = await runtime.run(applicationProgram)
 ```
 
 Concurrent Runtime executions remain isolated. Avoid global “reset the
@@ -63,12 +65,14 @@ container” helpers that create serial-test coupling.
 Type inference is part of the API. Use `expectTypeOf` in `tests/types`:
 
 ```ts
-const program = Effect.gen(function* () {
+const program = Effect.fn(async function* () {
   const service = yield* AuthService
   return Result.ok(service)
 })
 
-expectTypeOf<Awaited<typeof program>>().toEqualTypeOf<Effect<AuthService, never, AuthService>>()
+expectTypeOf<Awaited<ReturnType<typeof program>>>().toEqualTypeOf<
+  Effect<AuthService, never, AuthService>
+>()
 expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<AuthService>()
 ```
 

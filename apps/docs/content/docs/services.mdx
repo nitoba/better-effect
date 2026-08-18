@@ -43,7 +43,7 @@ backends. The constructor name is diagnostic only; identity comparisons use
 import { Effect } from 'better-effect'
 import { Result } from 'better-result'
 
-const readUser = Effect.gen(async function* () {
+const readUser = Effect.fn(async function* () {
   const database = yield* Database
 
   const value = await database.query('select * from users')

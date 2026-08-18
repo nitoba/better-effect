@@ -14,12 +14,19 @@ import type {
   EffectFromGenerator,
   EffectRequirements,
   EffectSuccess,
-  EffectYield
+  EffectYield,
+  Program as ProgramType,
+  ProgramFromGenerator
 } from './types'
 
 import { andThen, andThenAsync, map, mapError } from './combinators'
 
 export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
+
+type LazyProgram<A, E, R extends AnyService = never> = ProgramType<A, E, R>
+
+/** A nominal lazy computation that produces an Effect when invoked. */
+export type Program<A, E, R extends AnyService = never> = LazyProgram<A, E, R>
 
 type AnyResult = ResultType<any, any>
 
@@ -29,13 +36,17 @@ type EffectGenerator =
 
 type RuntimeResultGenerator = (body: EffectGenerator) => AnyResult | Promise<AnyResult>
 
+// SAFETY: Service iterators yield no runtime markers, so Result.gen receives only the Err values that exist at runtime.
+const runResultGenerator = Result.gen as RuntimeResultGenerator
+
 /**
  * Compose `better-result` operations while preserving Service requirements in
- * a phantom type channel.
+ * a declaration-only type channel.
  *
  * A generator may yield Service tokens and Result operations. It must return a
  * `Result` as its final value; Service yields are resolved by the active
  * Runtime and do not add runtime values to the Result stream.
+ * Use `fn` when generator execution should wait for a Runtime boundary.
  *
  * @example
  * ```ts
@@ -56,15 +67,23 @@ export function gen<Yield extends EffectYield, Returned extends AnyResult>(
 ): Promise<EffectFromGenerator<Yield, Returned>>
 
 export function gen(body: EffectGenerator): AnyResult | Promise<AnyResult> {
-  /*
-   * ServiceRequirement is phantom. The Service iterator returns its resolved
-   * instance without yielding a marker, so Result.gen still receives only
-   * the Err values that exist at runtime.
-   */
-  // SAFETY: Service iterators yield no runtime markers, so the phantom Service yield channel is erased before delegating to better-result.
-  const runResultGenerator = Result.gen as RuntimeResultGenerator
-
   return runResultGenerator(body)
+}
+
+/** Build a lazy Program without running its generator. */
+export function fn<Yield extends EffectYield, Returned extends AnyResult>(
+  body: () => Generator<Yield, Returned, unknown>
+): ProgramFromGenerator<Yield, Returned>
+
+export function fn<Yield extends EffectYield, Returned extends AnyResult>(
+  body: () => AsyncGenerator<Yield, Returned, unknown>
+): ProgramFromGenerator<Yield, Returned>
+
+export function fn(body: EffectGenerator): Program<any, any, AnyService> {
+  const program = () => runResultGenerator(body)
+
+  // SAFETY: The generator overloads derive the Program channels; this cast only adds the declaration-only nominal marker.
+  return program as Program<any, any, AnyService>
 }
 
 /**
@@ -120,6 +139,8 @@ export function add<R extends DisposableResource>(
 export const Effect = {
   /** Compose a generator-based Effect program. */
   gen,
+  /** Build a lazy Program from a generator. */
+  fn,
   /** Acquire and register a resource in the current Scope. */
   acquireRelease,
   /** Register an already-acquired disposable in the current Scope. */
@@ -136,6 +157,9 @@ export const Effect = {
 
 /** Type-level aliases for inspecting Effect result channels and requirements. */
 export declare namespace Effect {
+  /** A nominal lazy computation that produces an Effect when invoked. */
+  export type Program<A, E, R extends AnyService = never> = LazyProgram<A, E, R>
+
   /** Extract the success channel from an Effect result or Promise. */
   export type Success<T> = EffectSuccess<T>
 

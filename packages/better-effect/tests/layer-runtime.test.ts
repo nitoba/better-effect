@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { Result } from 'better-result'
+import { Result, type Result as ResultType } from 'better-result'
 
 import { Effect } from '../src/effect'
 import {
@@ -32,6 +32,12 @@ const captureRejection = async (promise: Promise<unknown>) =>
     () => undefined,
     (cause) => cause
   )
+
+const expectResult = (result: ResultType<any, any>, expected: ResultType<any, any>) =>
+  expect(result).toEqual(expected)
+
+const expectSameResult = (result: ResultType<any, any>, expected: ResultType<any, any>) =>
+  expect(result).toBe(expected)
 
 class ExampleService extends Service<ExampleService>()('ExampleService') {
   value(): number {
@@ -495,7 +501,7 @@ describe('createRuntimeHandle', () => {
       }
     )
 
-    expect(result).toBe(expected)
+    expectSameResult(result, expected)
     expect(oneShotOutcome).toEqual({ status: 'failure', cause: programFailure })
   })
 
@@ -1074,7 +1080,7 @@ describe('createRuntimeHandle', () => {
         return expected
       })
 
-      expect(result).toBe(expected)
+      expectSameResult(result, expected)
       expect(diagnostics).toHaveLength(1)
       expect(diagnostics[0]?.outcome).toEqual({
         status: 'failure',
@@ -1247,7 +1253,7 @@ describe('createRuntimeHandle', () => {
         })
       )
 
-      expect(result).toBe(expected)
+      expectSameResult(result, expected)
       expect(observed).toEqual({
         status: 'failure',
         cause: expected.error
@@ -1282,7 +1288,7 @@ describe('createRuntimeHandle', () => {
         })
       )
 
-      expect(result).toEqual(Result.ok('recovered'))
+      expectResult(result, Result.ok('recovered'))
       expect(observed).toEqual({ status: 'success' })
     } finally {
       await runtime.dispose()
@@ -1372,7 +1378,7 @@ describe('createRuntimeHandle', () => {
       }
     )
 
-    expect(result).toBe(expected)
+    expectSameResult(result, expected)
     expect(observed).toEqual({
       status: 'failure',
       cause: programFailure
@@ -1441,7 +1447,7 @@ describe('createRuntimeHandle', () => {
       }
     )
 
-    expect(result).toBe(expected)
+    expectSameResult(result, expected)
     expect(backend.disposed).toBe(true)
     expect(diagnostics).toHaveLength(1)
     expect(diagnostics[0]?.outcome).toEqual({

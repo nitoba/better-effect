@@ -45,7 +45,7 @@ declare const sourceResult: Awaited<typeof source>
 const directResultMap = Result.map(sourceResult, (user: { id: string }) => user.id)
 
 // better-result's Result combinator intentionally returns a plain Result, so the
-// Effect facade is the boundary that restores the phantom requirements.
+// Effect facade is the boundary that restores the declaration-only requirements.
 expectTypeOf<EffectRequirements<typeof directResultMap>>().toEqualTypeOf<never>()
 
 const mapped = pipe(

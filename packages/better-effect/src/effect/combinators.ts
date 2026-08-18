@@ -6,13 +6,11 @@ import type { AnyService } from '../service'
 import { isPromiseLike } from '../utils/runtime'
 import type { Effect, EffectError, EffectRequirements, EffectSuccess } from './types'
 
-type EffectInput<A, E, Requirements extends AnyService> =
-  | Effect<A, E, Requirements>
-  | PromiseLike<Effect<A, E, Requirements>>
+type EffectInput<A, E> = ResultType<A, E> | PromiseLike<ResultType<A, E>>
 
-type AnyEffectInput = EffectInput<any, any, any>
-type AnyEffectValue = Effect<any, any, any>
-type AnyAsyncEffectInput = PromiseLike<AnyEffectValue>
+type AnyEffectInput = EffectInput<any, any>
+type AnyEffectValue = ResultType<any, any>
+type AnyAsyncEffectInput = PromiseLike<ResultType<any, any>>
 type CombinatorCallback = (value: any) => any
 type CombinatorInput = AnyEffectInput | CombinatorCallback
 
@@ -33,36 +31,34 @@ type ChainedOutput<First, Next> = ChainedResult<First, Next>
 type AsyncChainedOutput<First, Next> = Promise<ChainedResult<First, Next>>
 
 type MapOperation<A, B> = {
-  <Input>(effect: Input & EffectInput<A, any, any>): PreserveAsync<Input, MappedResult<Input, B>>
+  <Input>(effect: Input & EffectInput<A, any>): PreserveAsync<Input, MappedResult<Input, B>>
 }
 
 type MapErrorOperation<E1, E2> = {
-  <Input>(
-    effect: Input & EffectInput<any, E1, any>
-  ): PreserveAsync<Input, ErrorMappedResult<Input, E2>>
+  <Input>(effect: Input & EffectInput<any, E1>): PreserveAsync<Input, ErrorMappedResult<Input, E2>>
 }
 
-type AndThenOperation<A, Next> = {
-  <Input>(effect: Input & Effect<A, any, any>): ChainedOutput<Input, Next>
+type AndThenOperation<Next> = {
+  <Input>(effect: Input & AnyEffectValue): ChainedOutput<Input, Next>
 }
 
 type AndThenAsyncOperation<A, Next> = {
-  <Input>(effect: Input & EffectInput<A, any, any>): AsyncChainedOutput<Input, Next>
+  <Input>(effect: Input & EffectInput<A, any>): AsyncChainedOutput<Input, Next>
 }
 
 const mapResult = <A, B, E, Requirements extends AnyService>(
-  result: Effect<A, E, Requirements>,
+  result: ResultType<A, E>,
   fn: (value: A) => B
 ): Effect<B, E, Requirements> => {
-  // SAFETY: Result.map changes only the success channel; Effect requirements are phantom metadata restored by this adapter.
+  // SAFETY: Result.map changes only the success channel; the declaration-only Effect marker is restored by this adapter.
   return Result.map(result, fn) as Effect<B, E, Requirements>
 }
 
 const mapErrorResult = <A, E1, E2, Requirements extends AnyService>(
-  result: Effect<A, E1, Requirements>,
+  result: ResultType<A, E1>,
   fn: (error: E1) => E2
 ): Effect<A, E2, Requirements> => {
-  // SAFETY: Result.mapError changes only the error channel; Effect requirements are phantom metadata restored by this adapter.
+  // SAFETY: Result.mapError changes only the error channel; the declaration-only Effect marker is restored by this adapter.
   return Result.mapError(result, fn) as Effect<A, E2, Requirements>
 }
 
@@ -74,13 +70,13 @@ const andThenResult = <
   Requirements1 extends AnyService,
   Requirements2 extends AnyService
 >(
-  result: Effect<A, E1, Requirements1>,
-  next: (value: A) => Effect<B, E2, Requirements2>
+  result: ResultType<A, E1>,
+  next: (value: A) => ResultType<B, E2>
 ): Effect<B, E1 | E2, Requirements1 | Requirements2> => {
   // SAFETY: The public callback returns an Effect, whose only runtime contract is the underlying Result.
   const resultNext = next as (value: A) => ResultType<B, E2>
 
-  // SAFETY: Result.andThen unions Result errors; Effect requirements are phantom metadata restored by this adapter.
+  // SAFETY: Result.andThen unions Result errors; the declaration-only Effect marker is restored by this adapter.
   return Result.andThen(result, resultNext) as Effect<B, E1 | E2, Requirements1 | Requirements2>
 }
 
@@ -92,16 +88,16 @@ const andThenAsyncResult = <
   Requirements1 extends AnyService,
   Requirements2 extends AnyService
 >(
-  result: Effect<A, E1, Requirements1>,
-  next: (value: A) => PromiseLike<Effect<B, E2, Requirements2>>
+  result: ResultType<A, E1>,
+  next: (value: A) => PromiseLike<ResultType<B, E2>>
 ): Promise<Effect<B, E1 | E2, Requirements1 | Requirements2>> => {
   // SAFETY: The public callback returns an Effect, whose only runtime contract is the underlying Result.
   const resultNext = (value: A) => {
-    // SAFETY: Promise resolution preserves the callback's Result value; only phantom Effect metadata is erased.
+    // SAFETY: Promise resolution preserves the callback's Result value; only declaration-only Effect metadata is erased.
     return Promise.resolve(next(value)) as Promise<ResultType<B, E2>>
   }
 
-  // SAFETY: Result.andThenAsync unions Result errors; Effect requirements are phantom metadata restored by this adapter.
+  // SAFETY: Result.andThenAsync unions Result errors; the declaration-only Effect marker is restored by this adapter.
   return Result.andThenAsync(result, resultNext) as Promise<
     Effect<B, E1 | E2, Requirements1 | Requirements2>
   >
@@ -111,7 +107,7 @@ const andThenAsyncResult = <
  * Map the successful value of a Result or Effect result.
  *
  * Supports both data-first and data-last forms and preserves asynchronous
- * results and phantom Service requirements.
+ * results and declaration-only Service requirements.
  *
  * @example
  * ```ts
@@ -141,17 +137,17 @@ export function map(first: CombinatorInput, second?: CombinatorCallback): any {
   if (isPromiseLike(first)) {
     return Promise.resolve(first).then((result) => {
       // SAFETY: Result is the runtime representation shared by Effect and better-result.
-      return mapResult(result as Effect<any, any, never>, fn)
+      return mapResult(result as ResultType<any, any>, fn)
     })
   }
 
   // SAFETY: The data-first overload supplies a Result-compatible Effect value.
-  return mapResult(first as Effect<any, any, never>, fn)
+  return mapResult(first as ResultType<any, any>, fn)
 }
 
 /**
  * Map the error value of a Result or Effect result while preserving its
- * successful value, asynchronous shape, and Service requirements.
+ * successful value, asynchronous shape, and declaration-only Service requirements.
  *
  * @example
  * ```ts
@@ -180,12 +176,12 @@ export function mapError(first: CombinatorInput, second?: CombinatorCallback): a
   if (isPromiseLike(first)) {
     return Promise.resolve(first).then((result) => {
       // SAFETY: Result is the runtime representation shared by Effect and better-result.
-      return mapErrorResult(result as Effect<any, any, never>, fn)
+      return mapErrorResult(result as ResultType<any, any>, fn)
     })
   }
 
   // SAFETY: The data-first overload supplies a Result-compatible Effect value.
-  return mapErrorResult(first as Effect<any, any, never>, fn)
+  return mapErrorResult(first as ResultType<any, any>, fn)
 }
 
 /**
@@ -201,7 +197,7 @@ export function mapError(first: CombinatorInput, second?: CombinatorCallback): a
  */
 export function andThen<A, Next extends AnyEffectValue>(
   next: (value: A) => Next
-): AndThenOperation<A, Next>
+): AndThenOperation<Next>
 export function andThen<Input, Next extends AnyEffectValue>(
   effect: Input & AnyEffectValue,
   next: (value: EffectSuccess<Input>) => Next
@@ -217,11 +213,11 @@ export function andThen(first: CombinatorInput, second?: CombinatorCallback): an
     }
   }
 
-  // SAFETY: The data-first overload requires the second argument to return an Effect.
+  // SAFETY: The data-first overload requires the second argument to return a Result.
   const next = second as CombinatorCallback
 
   // SAFETY: The data-first overload supplies a Result-compatible Effect value.
-  return andThenResult(first as Effect<any, any, never>, next)
+  return andThenResult(first as ResultType<any, any>, next)
 }
 
 /**
@@ -259,10 +255,10 @@ export function andThenAsync(first: CombinatorInput, second?: CombinatorCallback
   if (isPromiseLike(first)) {
     return Promise.resolve(first).then((result) => {
       // SAFETY: Result is the runtime representation shared by Effect and better-result.
-      return andThenAsyncResult(result as Effect<any, any, never>, next)
+      return andThenAsyncResult(result as ResultType<any, any>, next)
     })
   }
 
   // SAFETY: The data-first overload supplies a Result-compatible Effect value.
-  return andThenAsyncResult(first as Effect<any, any, never>, next)
+  return andThenAsyncResult(first as ResultType<any, any>, next)
 }

@@ -54,15 +54,15 @@ export const AppLive = Layer.merge(DatabaseLive, RepositoriesLive, ServicesLive)
 Each HTTP handler runs a program in the shared Runtime:
 
 ```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const { userId } = yield* Result.await(requireUser(request))
-    const todos = yield* TodoService
-    const items = yield* Result.await(todos.list(userId))
+const handleRequest = Effect.fn(async function* () {
+  const { userId } = yield* Result.await(requireUser(request))
+  const todos = yield* TodoService
+  const items = yield* Result.await(todos.list(userId))
 
-    return Result.ok(items)
-  })
-)
+  return Result.ok(items)
+})
+
+const result = await runtime.run(handleRequest)
 ```
 
 The request gets an execution child Scope. The SQLite client belongs to the

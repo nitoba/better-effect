@@ -1,9 +1,12 @@
 import { describe, expect, mock, test } from 'bun:test'
 
-import { Result, UnhandledException } from 'better-result'
+import { Result, UnhandledException, type Result as ResultType } from 'better-result'
 
 import { Effect } from '../src/effect'
+import { Layer } from '../src/layer'
+import { Runtime } from '../src/runtime'
 import { Service, ServiceRuntime } from '../src/service'
+import { MemoryLayerBackend } from '../src/testing'
 import {
   Scope,
   ScopeCloseError,
@@ -27,6 +30,9 @@ const captureRejection = async (promise: Promise<unknown>) =>
     (cause) => cause
   )
 
+const expectResult = (result: ResultType<any, any>, expected: ResultType<any, any>) =>
+  expect(result).toEqual(expected)
+
 describe('Effect.gen', () => {
   test('supports synchronous Result generators', () => {
     const result = Effect.gen(function* () {
@@ -35,7 +41,7 @@ describe('Effect.gen', () => {
       return Result.ok(value + 1)
     })
 
-    expect(result).toEqual(Result.ok(42))
+    expectResult(result, Result.ok(42))
   })
 
   test('delegates service resolution and Result control flow', async () => {
@@ -53,7 +59,7 @@ describe('Effect.gen', () => {
     )
 
     expect(resolver.calls).toEqual([GreetingService])
-    expect(result).toEqual(Result.ok('Hello, welcome!'))
+    expectResult(result, Result.ok('Hello, welcome!'))
   })
 
   test('preserves Result errors', async () => {
@@ -63,7 +69,7 @@ describe('Effect.gen', () => {
       return Result.ok('unreachable')
     })
 
-    expect(result).toEqual(Result.err('failed'))
+    expectResult(result, Result.err('failed'))
   })
 
   test('acquires and releases resources through the current Scope', async () => {
@@ -88,7 +94,7 @@ describe('Effect.gen', () => {
       return result
     })
 
-    expect(result).toEqual(Result.ok(42))
+    expectResult(result, Result.ok(42))
     expect(released).toBe(1)
   })
 
@@ -111,7 +117,7 @@ describe('Effect.gen', () => {
       })
     )
 
-    expect(result).toEqual(Result.ok(resource))
+    expectResult(result, Result.ok(resource))
     expect(disposed).toBe(1)
   })
 
@@ -132,7 +138,7 @@ describe('Effect.gen', () => {
       })
     )
 
-    expect(result).toEqual(Result.ok(resource))
+    expectResult(result, Result.ok(resource))
     expect(disposed).toBe(true)
   })
 
@@ -175,7 +181,7 @@ describe('Effect.gen', () => {
       })
     )
 
-    expect(result).toEqual(Result.err('failed'))
+    expectResult(result, Result.err('failed'))
     expect(disposed).toBe(1)
   })
 
@@ -289,7 +295,7 @@ describe('Effect.gen', () => {
       })
     )
 
-    expect(result).toEqual(Result.err('failed'))
+    expectResult(result, Result.err('failed'))
     expect(release).toHaveBeenCalledTimes(1)
   })
 
@@ -309,7 +315,7 @@ describe('Effect.gen', () => {
       })
     )
 
-    expect(result).toEqual(Result.err('failed'))
+    expectResult(result, Result.err('failed'))
     expect(observed).toEqual({ status: 'success' })
   })
 
@@ -588,5 +594,30 @@ describe('Effect.gen', () => {
     )
 
     expect(error).toBe(programFailure)
+  })
+})
+
+describe('Effect.fn', () => {
+  test('defers generator execution until a Runtime invokes the Program', async () => {
+    let executions = 0
+
+    const greet = Effect.fn(async function* () {
+      executions++
+
+      const greeting = yield* GreetingService
+
+      return Result.ok(greeting.greet('Ada'))
+    })
+
+    expect(executions).toBe(0)
+
+    const runtime = await Runtime.make(Layer.make(GreetingService), new MemoryLayerBackend())
+
+    const result = await runtime.run(greet)
+
+    expectResult(result, Result.ok('Hello, Ada!'))
+    expect(executions).toBe(1)
+
+    await runtime.dispose()
   })
 })

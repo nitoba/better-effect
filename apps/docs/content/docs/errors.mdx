@@ -47,7 +47,7 @@ const response = await Result.tryPromise({
 Then compose the normalized Result inside an Effect:
 
 ```ts
-const load = Effect.gen(async function* () {
+const load = Effect.fn(async function* () {
   const response = yield* Result.await(fetchResponse())
   const body = yield* Result.await(parseBody(response))
 

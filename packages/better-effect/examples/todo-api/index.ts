@@ -7,7 +7,7 @@ import { createServer } from './server'
 
 const runtime = await Runtime.make(AppLive, new ItiLayerBackend())
 
-const seed = await runtime.run(() => seedDemoUser())
+const seed = await runtime.run(seedDemoUser)
 
 if (Result.isError(seed)) {
   await runtime.dispose()

@@ -4,14 +4,15 @@ description: Understand the four boundaries that make better-effect predictable.
 icon: Brain
 ---
 
-## A program is a value plus requirements
+## An Effect is a value plus requirements
 
-An `Effect.gen` program is not a class instance or a task scheduler. At runtime
+An `Effect.gen` result is not a class instance or a task scheduler. At runtime
 it is a `Result` (or a Promise of a Result). At compile time it additionally
 records the Services yielded by the generator.
 
 ```text
-Effect.gen(...) ──► Result<A, E> & { phantom requirements: R }
+Effect.gen(...) ──► Result<A, E> & { requirements: R }
+Effect.fn(...)  ───► Program<A, E, R> ──invoke──► Effect
                               │
                               ▼
                      Runtime environment must provide R
@@ -19,6 +20,20 @@ Effect.gen(...) ──► Result<A, E> & { phantom requirements: R }
 
 The requirement channel is type-only. Service resolution still happens through
 the active resolver when the generator runs.
+
+When the generator must wait for a Runtime boundary, wrap it with
+`Effect.fn`. The factory is lazy and returns a nominal `Program` function;
+calling that function inside `runtime.run` creates the eager Effect in the
+correct resolver and Scope context:
+
+```ts
+const program = Effect.fn(async function* () {
+  const database = yield* Database
+  return Result.ok(await database.query())
+})
+
+const result = await runtime.run(program)
+```
 
 ## A Layer is a recipe, not an instance
 

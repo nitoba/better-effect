@@ -17,7 +17,7 @@ introducing a second error model, a fiber runtime, or a dependency container
 that your application has to learn.
 
 ```text
-Effect.gen        describes a Result workflow and its Service requirements
+Effect.gen / fn   describe a Result workflow and its Service requirements
 Layer             describes how Services are provided
 Runtime           owns the environment and executes workflows
 Scope             owns resources and finalizers
@@ -29,7 +29,7 @@ better-result     remains the source of truth for success and failure
 ```text
 define a Service
       ↓
-write an Effect.gen program
+write an Effect.fn Program (or an eager Effect.gen workflow)
       ↓
 provide implementations with Layer
       ↓

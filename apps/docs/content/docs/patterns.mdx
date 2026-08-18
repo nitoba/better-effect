@@ -73,7 +73,7 @@ const DatabaseLive = Layer.scopedGen(
 Acquire a per-request resource inside the program:
 
 ```ts
-const handleRequest = Effect.gen(async function* () {
+const handleRequest = Effect.fn(async function* () {
   const transaction = yield* Effect.acquireRelease(
     () => database.beginTransaction(),
     (tx, outcome) => tx.rollbackIfNeeded(outcome)

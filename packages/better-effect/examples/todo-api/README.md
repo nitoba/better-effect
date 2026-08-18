@@ -105,7 +105,8 @@ curl -i \
 
 Services and repositories extend `Service<Self>()('Name')`; the explicit tag is
 their stable logical identity while the self type preserves exact inference.
-Dependencies resolve inside `Effect.gen`:
+Dependencies resolve inside the Runtime-owned `Effect.fn` programs (and inside
+eager `Effect.gen` workflows created from an active Runtime):
 
 ```ts
 const database = yield * Database

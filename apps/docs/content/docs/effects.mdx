@@ -9,6 +9,42 @@ icon: WandSparkles
 it does not introduce a runtime value class or an Effect TS instruction tree.
 `R` is a union of tagged Service instance requirements.
 
+## Lazy `Program`s
+
+`Effect.gen` runs when it is called. Keep that eager form when the surrounding
+resolver and Scope are already active; use `Effect.fn` when the computation
+should start at a Runtime boundary:
+
+```ts
+const greet = Effect.fn(async function* () {
+  const greeting = yield* GreetingService
+
+  return Result.ok(greeting.greet('Ada'))
+})
+
+const result = await runtime.run(greet)
+```
+
+Parameterized programs keep their arguments outside the generator factory:
+
+```ts
+const findUser = (id: string) =>
+  Effect.fn(async function* () {
+    const repository = yield* UserRepository
+
+    const user = yield* Result.await(repository.findById(id))
+
+    return Result.ok(user)
+  })
+
+const result = await runtime.run(findUser(userId))
+```
+
+`Effect.fn` does not create a scheduler or instruction tree. It returns a
+nominal `Program<A, E, R>` function whose invocation produces an `Effect` (or a
+Promise of one), preserving the generator's success, error and Service
+requirements. Runtime callbacks remain supported for compatibility.
+
 ## `Effect.gen`
 
 Use a generator when a workflow has multiple steps or contextual dependencies:
@@ -17,7 +53,7 @@ Use a generator when a workflow has multiple steps or contextual dependencies:
 import { Effect } from 'better-effect'
 import { Result } from 'better-result'
 
-const loadDashboard = Effect.gen(async function* () {
+const loadDashboard = Effect.fn(async function* () {
   const users = yield* UserRepository
   const permissions = yield* PermissionService
 
@@ -35,8 +71,8 @@ const loadDashboard = Effect.gen(async function* () {
   return Result.ok({ user, access })
 })
 
-type LoadDashboard = Awaited<typeof loadDashboard>
-// Effect<{ user: User; access: Access }, Forbidden, UserRepository | PermissionService>
+type LoadDashboard = typeof loadDashboard
+// Program<{ user: User; access: Access }, Forbidden, UserRepository | PermissionService>
 ```
 
 The generator may yield:
@@ -88,13 +124,15 @@ such as `Result.tryPromise` before they enter the workflow.
 outcome-aware release callback:
 
 ```ts
-const readFile = Effect.gen(async function* () {
+const readFile = Effect.fn(async function* () {
   const file = yield* Effect.acquireRelease(
     () => openFile('notes.txt'),
     (file, outcome) => file.close(outcome)
   )
 
-  return yield* Result.await(file.read())
+  const contents = yield* Result.await(file.read())
+
+  return Result.ok(contents)
 })
 ```
 
@@ -108,11 +146,13 @@ report them without silently changing a primary program failure.
 the exact object in the current Scope and yields that same object:
 
 ```ts
-const program = Effect.gen(async function* () {
+const program = Effect.fn(async function* () {
   const socket = await connectSocket()
   const managedSocket = yield* Effect.add(socket)
 
-  return yield* Result.await(managedSocket.send('hello'))
+  const sent = yield* Result.await(managedSocket.send('hello'))
+
+  return Result.ok(sent)
 })
 ```
 

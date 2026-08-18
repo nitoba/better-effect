@@ -1,9 +1,15 @@
 import { expect, test } from 'bun:test'
 
-import { Result } from 'better-result'
+import { Result, type Result as ResultType } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { pipe } from '../src/function'
+
+const expectResult = (result: ResultType<any, any>, expected: ResultType<any, any>) =>
+  expect(result).toEqual(expected)
+
+const expectSameResult = (result: ResultType<any, any>, expected: ResultType<any, any>) =>
+  expect(result).toBe(expected)
 
 test('pipe composes ordinary synchronous functions', () => {
   const result = pipe(
@@ -21,7 +27,7 @@ test('Effect.map transforms Ok and leaves Err untouched', () => {
     Effect.map((value: number) => value * 2)
   )
 
-  expect(mapped).toEqual(Result.ok(4))
+  expectResult(mapped, Result.ok(4))
 
   const failure = Result.err<number, string>('failed')
   let called = false
@@ -31,7 +37,7 @@ test('Effect.map transforms Ok and leaves Err untouched', () => {
     return 0
   })
 
-  expect(unchanged).toBe(failure)
+  expectSameResult(unchanged, failure)
   expect(called).toBe(false)
 })
 
@@ -41,7 +47,7 @@ test('Effect.mapError transforms Err and leaves Ok untouched', () => {
     Effect.mapError((error: string) => error.toUpperCase())
   )
 
-  expect(mapped).toEqual(Result.err('FAILED'))
+  expectResult(mapped, Result.err('FAILED'))
 
   const success = Result.ok(2)
   let called = false
@@ -51,7 +57,7 @@ test('Effect.mapError transforms Err and leaves Ok untouched', () => {
     return 'unexpected'
   })
 
-  expect(unchanged).toBe(success)
+  expectSameResult(unchanged, success)
   expect(called).toBe(false)
 })
 
@@ -63,7 +69,7 @@ test('Effect.andThen runs only after Ok and short-circuits Err', () => {
     return Result.ok(value + 1)
   })
 
-  expect(chained).toEqual(Result.ok(3))
+  expectResult(chained, Result.ok(3))
   expect(calls).toBe(1)
 
   const failure = Result.err<number, string>('failed')
@@ -72,7 +78,7 @@ test('Effect.andThen runs only after Ok and short-circuits Err', () => {
     return Result.ok(3)
   })
 
-  expect(skipped).toBe(failure)
+  expectSameResult(skipped, failure)
   expect(calls).toBe(1)
 })
 
@@ -86,7 +92,7 @@ test('Effect.andThenAsync always returns a Promise and preserves Err short-circu
   })
 
   expect(chained).toBeInstanceOf(Promise)
-  expect(await chained).toBe(failure)
+  expectSameResult(await chained, failure)
   expect(calls).toBe(0)
 })
 
@@ -98,14 +104,14 @@ test('Effect combinators preserve asynchronous composition', async () => {
     Effect.map((value: number) => value * 2)
   )
 
-  expect(mapped).toEqual(Result.ok(4))
+  expectResult(mapped, Result.ok(4))
 
   const chained = await pipe(
     source,
     Effect.andThenAsync((value: number) => Promise.resolve(Result.ok(value + 1)))
   )
 
-  expect(chained).toEqual(Result.ok(3))
+  expectResult(chained, Result.ok(3))
 })
 
 test('Effect.andThenAsync composes async Effect.gen programs', async () => {
@@ -124,5 +130,5 @@ test('Effect.andThenAsync composes async Effect.gen programs', async () => {
     )
   )
 
-  expect(result).toEqual(Result.ok(3))
+  expectResult(result, Result.ok(3))
 })

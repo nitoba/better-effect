@@ -13,7 +13,7 @@ it.
 Inside a Runtime execution, `yield* Scope` exposes the non-owning capability:
 
 ```ts
-const program = Effect.gen(async function* () {
+const program = Effect.fn(async function* () {
   const scope = yield* Scope
 
   scope.addFinalizer(async (outcome) => {

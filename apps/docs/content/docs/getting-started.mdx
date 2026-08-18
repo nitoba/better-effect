@@ -42,20 +42,26 @@ class GreetingService extends Service<GreetingService>()('GreetingService') {
 
 const GreetingLive = Layer.make(GreetingService)
 
-const program = Effect.gen(function* () {
+const greet = Effect.fn(async function* () {
   const greeting = yield* GreetingService
 
   return Result.ok(greeting.greet('Ada'))
 })
 
 const runtime = await Runtime.make(GreetingLive, new MemoryLayerBackend())
-const result = await runtime.run(() => program)
+const result = await runtime.run(greet)
 await runtime.dispose()
 
 if (Result.isOk(result)) {
   console.log(result.value) // Hello, Ada!
 }
 ```
+
+`Effect.gen` evaluates immediately and remains useful when the resolver and
+Scope are already active. `Effect.fn` is the recommended Runtime boundary: it
+captures the generator without running it and returns a nominal `Program`, so
+Service resolution starts inside `runtime.run`. The callback form
+`runtime.run(() => effect)` remains supported for existing code.
 
 A Layer's public type is `Layer<Provided, Required>`: `Provided` is the tagged
 Service instance union it creates, and `Required` is the external dependency
