@@ -4,7 +4,12 @@ import { MapLayerBackend } from '../layer/map-layer-backend'
 
 import { createRuntimeHandle, type RuntimeHandle } from '../layer/runtime'
 
-import type { LayerInput, CompleteInput, ProvidedEnvironment } from '../layer/inference'
+import type {
+  CompleteExecutionLayer,
+  LayerInput,
+  CompleteInput,
+  ProvidedEnvironment
+} from '../layer/inference'
 
 import type { CompleteExecution } from '../layer/inference'
 
@@ -65,7 +70,7 @@ const resolveRuntimeConfig = (
  * @typeParam Provided The branded Service instances supplied by the Layer.
  */
 export class Runtime<Provided extends AnyService = any> {
-  private constructor(private readonly handle: RuntimeHandle<any>) {}
+  private constructor(private readonly handle: RuntimeHandle<Provided>) {}
 
   /**
    * Create a long-lived Runtime that owns its Layer resources.
@@ -258,6 +263,14 @@ export class Runtime<Provided extends AnyService = any> {
   /** Run one execution in this Runtime's child Scope. */
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
     return this.handle.run(program)
+  }
+
+  /** Run one execution with a Layer owned by that execution's child Scope. */
+  runWith<Request extends LayerInput, A>(
+    layer: Request & CompleteExecutionLayer<Provided, Request>,
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
+  ): Promise<Awaited<A>> {
+    return this.handle.runWith(layer, program)
   }
 
   private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {

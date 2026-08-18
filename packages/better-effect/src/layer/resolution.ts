@@ -31,7 +31,7 @@ export const createResolutionResolver = (
   const wrapped: ServiceResolver = {
     async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
       const context = getRuntimeContext(storage)
-      const path = context?.resolver === wrapped ? context.resolutionPath : []
+      const path = context?.resolutionPath ?? []
       const cycleStart = findCycleStart(path, token)
 
       if (cycleStart >= 0) {

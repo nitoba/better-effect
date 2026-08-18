@@ -429,6 +429,27 @@ export type CompleteInput<L extends LayerInput> = ValidateLayerInput<L> &
         : L & MissingDependencies<Extract<RequiredEnvironment<L>, AnyService>>
       : L)
 
+type ExecutionRequirementsMissing<
+  RootProvided extends AnyService,
+  Request extends LayerInput
+> = MissingServices<
+  Extract<RequiredEnvironment<Request>, AnyService>,
+  Extract<RootProvided, AnyService>
+>
+
+/** Validate a per-execution Layer against the Runtime root environment. */
+export type CompleteExecutionLayer<
+  RootProvided extends AnyService,
+  Request extends LayerInput
+> = ValidateLayerInput<Request> &
+  (LayerInputState<Request> extends 'unchecked'
+    ? Request
+    : LayerInputState<Request> extends 'typed'
+      ? [ExecutionRequirementsMissing<RootProvided, Request>] extends [never]
+        ? Request
+        : Request & MissingDependencies<ExecutionRequirementsMissing<RootProvided, Request>>
+      : Request)
+
 /** Services required by an execution result that are not in its environment. */
 export type ExecutionMissing<Provided extends AnyService, ProgramResult> = MissingServices<
   EffectRequirements<ProgramResult>,

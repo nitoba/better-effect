@@ -1,0 +1,88 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create release PR or release
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs['packages/better-effect--release_created'] }}
+      tag_name: ${{ steps.release.outputs['packages/better-effect--tag_name'] }}
+    steps:
+      - name: Create or update the release PR
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync Bun lockfile version in the release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_branch="$(gh pr list --state open --label 'autorelease: pending' --json headRefName --jq '.[0].headRefName')"
+
+          if [ -z "$release_branch" ]; then
+            exit 0
+          fi
+
+          git fetch origin "$release_branch"
+          git checkout -B "$release_branch" "origin/$release_branch"
+
+          package_version="$(node -p "require('./packages/better-effect/package.json').version")"
+          PACKAGE_VERSION="$package_version" node <<'NODE'
+          const fs = require('node:fs')
+
+          const version = process.env.PACKAGE_VERSION
+          const path = 'bun.lock'
+          const content = fs.readFileSync(path, 'utf8')
+          const pattern = /("packages\/better-effect":\s*\{\s*"name":\s*"better-effect",\s*"version":\s*")([^"]+)(")/
+          const match = content.match(pattern)
+
+          if (!match) throw new Error('packages/better-effect workspace is missing from bun.lock')
+          if (match[2] !== version) {
+            fs.writeFileSync(path, content.replace(pattern, `$1${version}$3`))
+          }
+          NODE
+
+          if git diff --quiet -- bun.lock; then
+            exit 0
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add bun.lock
+          git commit -m "chore: sync Bun lockfile for release"
+          git push origin "HEAD:$release_branch"
+
+  publish:
+    name: Publish the released tag
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag_name: ${{ needs.release.outputs.tag_name }}
+    secrets: inherit

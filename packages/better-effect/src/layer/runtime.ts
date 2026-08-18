@@ -1,10 +1,11 @@
-import type { AnyService, ServiceResolver } from '../service'
+import type { AnyService, AnyServiceToken, ServiceResolver } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
 import { ScopeRuntime } from '../scope/runtime'
 
 import {
+  getRuntimeContext,
   makeRuntimeContext,
   runRuntimeContext,
   type RuntimeContextStorage
@@ -25,7 +26,15 @@ import { createResolutionResolver } from './resolution'
 
 import type { LayerBackend } from './backend'
 
-import type { LayerInput, CompleteExecution, CompleteInput, ProvidedEnvironment } from './inference'
+import { MapLayerBackend } from './map-layer-backend'
+
+import type {
+  CompleteExecution,
+  CompleteExecutionLayer,
+  CompleteInput,
+  LayerInput,
+  ProvidedEnvironment
+} from './inference'
 
 import type { LayerRegistration } from './types'
 
@@ -39,6 +48,12 @@ interface RuntimeHandleCore<Provided extends AnyService> {
 
   /** Run a program in a child Scope of the Layer's root Scope. */
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>>
+
+  /** Run a program with providers owned by that execution's child Scope. */
+  runWith<Request extends LayerInput, A>(
+    layer: Request & CompleteExecutionLayer<Provided, Request>,
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
+  ): Promise<Awaited<A>>
 
   /** Stop new executions and release Layer-owned resources. */
   dispose(outcome?: ScopeOutcome): Promise<void>
@@ -82,27 +97,67 @@ const notifyShutdownFailure = async (
 
 const bindProviderToScope = (
   provider: LayerProvider,
-  rootScope: CloseableScope,
-  contextStorage: RuntimeContextStorage
+  scope: CloseableScope,
+  contextStorage: RuntimeContextStorage,
+  resolver: ServiceResolver
 ): LayerRegistration => ({
   service: provider.service,
 
-  acquire: () =>
-    ScopeRuntime.run(
-      rootScope,
-      async () => {
-        if (!provider.release) {
-          return await provider.acquire()
-        }
-
-        return await rootScope.acquire(
-          () => provider.acquire(),
-          (resource, outcome) => provider.release!(resource, outcome)
-        )
-      },
-      contextStorage
+  acquire: () => {
+    const current = getRuntimeContext(contextStorage)
+    const context = makeRuntimeContext(
+      resolver,
+      scope,
+      current?.resolutionPath ?? [],
+      current?.signal
     )
+
+    return runRuntimeContext(contextStorage, context, () =>
+      ScopeRuntime.run(
+        scope,
+        async () => {
+          if (!provider.release) {
+            return await provider.acquire()
+          }
+
+          return await scope.acquire(
+            () => provider.acquire(),
+            (resource, outcome) => provider.release!(resource, outcome)
+          )
+        },
+        contextStorage
+      )
+    )
+  }
 })
+
+/** Resolve request-local providers first, then fall back to the Runtime root. */
+class ExecutionLayerBackend implements LayerBackend {
+  private readonly localTags = new Set<string>()
+
+  constructor(
+    private readonly local: MapLayerBackend,
+    private readonly root: LayerBackend
+  ) {}
+
+  register(registration: LayerRegistration): void {
+    this.localTags.add(registration.service.serviceTag)
+    this.local.register(registration)
+  }
+
+  async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    if (this.localTags.has(token.serviceTag)) {
+      return await this.local.resolve(token)
+    }
+
+    return await this.root.resolve(token)
+  }
+
+  async disposeAll(): Promise<void> {
+    await this.local.disposeAll()
+    this.localTags.clear()
+  }
+}
 
 class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCore<Provided> {
   private disposePromise: Promise<void> | undefined
@@ -125,10 +180,48 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
     const executionScope = this.rootScope.fork()
 
-    let resolveExecution!: (value: Awaited<A> | PromiseLike<Awaited<A>>) => void
+    return this.startExecution<Awaited<A>>(executionScope, () =>
+      this.runExecution(executionScope, program)
+    )
+  }
+
+  runWith<Request extends LayerInput, A>(
+    layer: Request & CompleteExecutionLayer<Provided, Request>,
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
+  ): Promise<Awaited<A>> {
+    this.assertActive()
+
+    const executionScope = this.rootScope.fork()
+    const localBackend = new MapLayerBackend()
+    const backend = new ExecutionLayerBackend(localBackend, this.backend)
+    const resolver = createResolutionResolver(backend, this.contextStorage)
+
+    return this.startExecution<Awaited<A>>(executionScope, async (): Promise<Awaited<A>> => {
+      try {
+        return await this.runExecution<Awaited<A>>(
+          executionScope,
+          async (): Promise<Awaited<A>> => {
+            for (const provider of layer.providers) {
+              backend.register(
+                bindProviderToScope(provider, executionScope, this.contextStorage, resolver)
+              )
+            }
+
+            return await program()
+          },
+          resolver
+        )
+      } finally {
+        await localBackend.disposeAll()
+      }
+    })
+  }
+
+  private startExecution<A>(executionScope: CloseableScope, run: () => PromiseLike<A>): Promise<A> {
+    let resolveExecution!: (value: A | PromiseLike<A>) => void
     let rejectExecution!: (cause?: unknown) => void
 
-    const execution = new Promise<Awaited<A>>((resolve, reject) => {
+    const execution = new Promise<A>((resolve, reject) => {
       resolveExecution = resolve
       rejectExecution = reject
     })
@@ -145,7 +238,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     )
 
     try {
-      const running = this.runExecution(executionScope, program)
+      const running = run()
 
       void running.then(
         (value) => {
@@ -164,7 +257,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private runExecution<A>(
     executionScope: CloseableScope,
-    program: CompleteExecution<Provided, A>
+    program: () => A | PromiseLike<A>,
+    resolver: ServiceResolver = this.resolver
   ): Promise<Awaited<A>> {
     const options = this.onCleanupFailure
       ? {
@@ -178,7 +272,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     return runScoped(executionScope, program, {
       ...options,
       contextStorage: this.contextStorage,
-      context: makeRuntimeContext(this.resolver, executionScope, [], this.signal)
+      context: makeRuntimeContext(resolver, executionScope, [], this.signal)
     })
   }
 
@@ -257,7 +351,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     for (const provider of layer.providers) {
       current = provider
 
-      await backend.register(bindProviderToScope(provider, rootScope, contextStorage))
+      await backend.register(bindProviderToScope(provider, rootScope, contextStorage, resolver))
     }
   } catch (registrationCause) {
     const outcome: ScopeOutcome = {
