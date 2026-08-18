@@ -1,76 +1,69 @@
 # Release process
 
-This repository separates integration from publication:
+Merging a pull request into `main` runs CI only. A release starts only when a
+maintainer pushes a version tag:
 
 ```text
 Pull request merge
         ↓
-CI only on main
+CI on main
         ↓
-Release Please opens or updates a Release PR
-        ↓  (maintainer approval)
-Release PR merge
+Update package version and bun.lock
         ↓
-version + bun.lock + CHANGELOG update
+Push tag vX.Y.Z
         ↓
-tag vX.Y.Z + GitHub Release
+Validate tag and package version
         ↓
-publish workflow checks out that tag and publishes npm
+GitHub Release with generated notes
+        ↓
+Publish better-effect to npm with Trusted Publishing/OIDC
 ```
 
 ## Normal development
 
-Every pull request and every push to `main` runs CI. A normal merge does not
-publish a package.
+Pull requests and pushes to `main` never publish a package. Keep the package
+version in `packages/better-effect/package.json` synchronized with the matching
+workspace entry in `bun.lock`.
 
-Use Conventional Commits so Release Please can calculate the next version:
+## Publishing a release
 
-- `fix:` → patch
-- `feat:` → minor
-- `feat!:` or a `BREAKING CHANGE` footer → major
-- `chore:`, docs and formatting changes do not create a release by themselves
+1. Update `packages/better-effect/package.json` to the intended version.
+2. Run `bun install` to refresh `bun.lock`, then run `bun run check`.
+3. Commit the version and lockfile changes on `main`.
+4. Create and push the matching tag:
 
-Release Please keeps one release pull request up to date. Review its version,
-changelog and file changes before merging it.
+   ```bash
+   git tag -a v0.8.0 -m "Release v0.8.0"
+   git push origin v0.8.0
+   ```
 
-## Publishing
-
-After the Release PR is merged, Release Please creates the version tag and the
-GitHub Release. The `release-please.yml` workflow then invokes the reusable
-`publish.yml` workflow with the generated tag. Publishing checks out that exact
-tag, runs the complete package validation, and publishes `better-effect` to npm
-using Trusted Publishing/OIDC.
-
-The release workflow synchronizes the package workspace version in Bun's
-generated `bun.lock` on the Release Please branch and commits that one-line
-update before the release PR is merged. This keeps the lockfile free of
-updater-specific markers.
-
-## Explicit version overrides
-
-When Conventional Commits are not enough, use a `Release-As: X.Y.Z` footer in a
-commit included in the next Release PR. Keep the `v` prefix only on Git tags;
-the package version remains `X.Y.Z`.
+The `Release` workflow accepts only tags in the `v<package-version>` format.
+It creates the GitHub Release and invokes the reusable `publish.yml` workflow,
+which checks out the exact tag, runs package validation, and publishes
+`better-effect` to npm.
 
 ## Manual recovery
 
-If a publish needs to be retried, run the `Publish` workflow manually and enter
-the existing tag, for example `v0.7.0`. Never move or delete an already-published
-version tag. The workflow validates the tag before publishing.
+Run the `Release` workflow manually and enter the existing tag to retry the
+complete flow. The GitHub Release creation is idempotent. The reusable
+`Publish` workflow can also be run directly when only npm publication needs to
+be retried.
+
+Never move or delete an already-published version tag.
 
 ## Release administration
 
 - Protect `v*` tags from force-push and deletion.
-- Keep the `autorelease: pending` and `autorelease: tagged` labels available;
-  Release Please uses them to track the release PR lifecycle.
+- The workflow file keeps the `release-please.yml` name for npm Trusted
+  Publishing compatibility; it no longer runs Release Please.
 - Configure npm Trusted Publishing with workflow filename
-  `release-please.yml` (the caller of the reusable publish job), repository
-  `nitoba/better-effect` and environment `npm`.
+  `release-please.yml`, repository `nitoba/better-effect`, and environment
+  `npm`.
 - Keep `id-token: write` in both the caller and reusable publish workflows.
-- Do not run semantic-release alongside Release Please; only one tool should
-  own version calculation, tags and GitHub Releases.
+- Do not enable a second release tool for the same package; this workflow owns
+  version tags, GitHub Releases, and npm publication.
 
 ## Referências
 
-- [Release Please Action](https://github.com/googleapis/release-please-action)
+- [GitHub Actions tag triggers](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 - [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)
