@@ -39,6 +39,39 @@ const result = await Runtime.use(AppLive, (runtime) => runtime.run(loadDashboard
 
 Both forms dispose the Runtime after the work settles.
 
+## Cooperative cancellation
+
+Runtime cancellation is based on `AbortSignal`; it does not introduce fibers or
+a scheduler. Pass a signal to one execution:
+
+```ts
+const result = await runtime.run(handleRequest, {
+  signal: request.signal
+})
+```
+
+Programs can read the same linked signal through the standard yieldable:
+
+```ts
+const handleRequest = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+  return Result.ok(await fetchData({ signal }))
+})
+```
+
+The Runtime also exposes a graceful shutdown policy. It waits for active work
+for the grace period, then aborts their linked signals when requested:
+
+```ts
+await runtime.dispose({
+  gracePeriod: 5_000,
+  abortAfterGracePeriod: true
+})
+```
+
+Cancellation remains cooperative: an execution that ignores its signal can
+still keep disposal open until it settles.
+
 Service resolution, Scope access and acquisition paths share one
 `RuntimeContext`. Node/Bun uses `AsyncLocalStorage` by default. A host without
 transparent async context can supply an explicit storage:
@@ -173,8 +206,9 @@ deliberate:
 
 1. Transition to disposing and reject new `run` calls.
 2. Wait for the snapshot of active executions.
-3. Close the Runtime root Scope.
-4. Dispose the backend last.
+3. Optionally abort their signals after the configured grace period.
+4. Close the Runtime root Scope.
+5. Dispose the backend last.
 
 An execution failure never prevents root or backend cleanup. A long-lived
 Runtime closes its root with success regardless of earlier execution outcomes;

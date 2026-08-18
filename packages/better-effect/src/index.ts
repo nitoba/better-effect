@@ -74,13 +74,17 @@ export type {
 
 export { Runtime } from './runtime'
 
+export { CurrentAbortSignal } from './runtime'
+
 export { RuntimeContextNotConfiguredError } from './runtime'
 
 export type {
   CleanupFailureObserver,
+  RuntimeDisposeOptions,
   RuntimeContext,
   RuntimeContextStorage,
   RuntimeFor,
   RuntimeOptions,
+  RuntimeRunOptions,
   RuntimeShutdownDiagnostic
 } from './runtime'

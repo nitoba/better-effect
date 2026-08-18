@@ -16,9 +16,13 @@ import { defaultRuntimeContextStorage } from '../runtime/default'
 import {
   classifyRuntimeOutcome,
   type CleanupFailureObserver,
+  type RuntimeDisposeOptions,
   type RuntimeOptions,
+  type RuntimeRunOptions,
   type RuntimeShutdownDiagnostic
 } from '../runtime/outcome'
+
+import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
 
 import { LayerDisposeError, LayerRegistrationError } from './errors'
 
@@ -47,16 +51,17 @@ interface RuntimeHandleCore<Provided extends AnyService> {
   readonly backend: LayerBackend
 
   /** Run a program in a child Scope of the Layer's root Scope. */
-  run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>>
+  run<A>(program: CompleteExecution<Provided, A>, options?: RuntimeRunOptions): Promise<Awaited<A>>
 
   /** Run a program with providers owned by that execution's child Scope. */
   runWith<Request extends LayerInput, A>(
     layer: Request & CompleteExecutionLayer<Provided, Request>,
-    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>,
+    options?: RuntimeRunOptions
   ): Promise<Awaited<A>>
 
   /** Stop new executions and release Layer-owned resources. */
-  dispose(outcome?: ScopeOutcome): Promise<void>
+  dispose(input?: RuntimeDisposeOptions | ScopeOutcome): Promise<void>
 }
 
 /** Runtime-facing handle that owns a Layer's resources and execution scopes. */
@@ -78,6 +83,22 @@ const normalizeDisposeCauses = (cause: unknown): readonly unknown[] => {
   }
 
   return [cause]
+}
+
+const isScopeOutcome = (
+  input: RuntimeDisposeOptions | ScopeOutcome | undefined
+): input is ScopeOutcome => input !== undefined && 'status' in input
+
+const validateDisposeOptions = (options: RuntimeDisposeOptions): void => {
+  const { gracePeriod } = options
+
+  if (gracePeriod !== undefined && (!Number.isFinite(gracePeriod) || gracePeriod < 0)) {
+    throw new RangeError('Runtime dispose gracePeriod must be a finite non-negative number')
+  }
+}
+
+type ActiveExecution = {
+  readonly promise: Promise<unknown>
 }
 
 const notifyShutdownFailure = async (
@@ -162,7 +183,9 @@ class ExecutionLayerBackend implements LayerBackend {
 class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCore<Provided> {
   private disposePromise: Promise<void> | undefined
 
-  private readonly executions = new Set<Promise<unknown>>()
+  private readonly executions = new Set<ActiveExecution>()
+
+  private readonly shutdownController = new AbortController()
 
   private state: 'active' | 'disposing' | 'disposed' = 'active'
 
@@ -175,19 +198,28 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly signal: AbortSignal | undefined
   ) {}
 
-  run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
+  run<A>(
+    program: CompleteExecution<Provided, A>,
+    options?: RuntimeRunOptions
+  ): Promise<Awaited<A>> {
     this.assertActive()
 
     const executionScope = this.rootScope.fork()
+    const signalLink = linkAbortSignals(
+      this.signal,
+      options?.signal,
+      this.shutdownController.signal
+    )
 
-    return this.startExecution<Awaited<A>>(executionScope, () =>
-      this.runExecution(executionScope, program)
+    return this.startExecution<Awaited<A>>(signalLink, () =>
+      this.runExecution(executionScope, program, this.resolver, signalLink.signal)
     )
   }
 
   runWith<Request extends LayerInput, A>(
     layer: Request & CompleteExecutionLayer<Provided, Request>,
-    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>,
+    options?: RuntimeRunOptions
   ): Promise<Awaited<A>> {
     this.assertActive()
 
@@ -195,8 +227,13 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     const localBackend = new MapLayerBackend()
     const backend = new ExecutionLayerBackend(localBackend, this.backend)
     const resolver = createResolutionResolver(backend, this.contextStorage)
+    const signalLink = linkAbortSignals(
+      this.signal,
+      options?.signal,
+      this.shutdownController.signal
+    )
 
-    return this.startExecution<Awaited<A>>(executionScope, async (): Promise<Awaited<A>> => {
+    return this.startExecution<Awaited<A>>(signalLink, async (): Promise<Awaited<A>> => {
       try {
         return await this.runExecution<Awaited<A>>(
           executionScope,
@@ -209,7 +246,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
             return await program()
           },
-          resolver
+          resolver,
+          signalLink.signal
         )
       } finally {
         await localBackend.disposeAll()
@@ -217,7 +255,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     })
   }
 
-  private startExecution<A>(executionScope: CloseableScope, run: () => PromiseLike<A>): Promise<A> {
+  private startExecution<A>(signalLink: AbortSignalLink, run: () => PromiseLike<A>): Promise<A> {
     let resolveExecution!: (value: A | PromiseLike<A>) => void
     let rejectExecution!: (cause?: unknown) => void
 
@@ -226,14 +264,18 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       rejectExecution = reject
     })
 
-    this.executions.add(execution)
+    const activeExecution: ActiveExecution = { promise: execution }
+
+    this.executions.add(activeExecution)
 
     void execution.then(
       () => {
-        this.executions.delete(execution)
+        this.executions.delete(activeExecution)
+        signalLink.dispose()
       },
       () => {
-        this.executions.delete(execution)
+        this.executions.delete(activeExecution)
+        signalLink.dispose()
       }
     )
 
@@ -258,7 +300,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
   private runExecution<A>(
     executionScope: CloseableScope,
     program: () => A | PromiseLike<A>,
-    resolver: ServiceResolver = this.resolver
+    resolver: ServiceResolver = this.resolver,
+    signal: AbortSignal = this.shutdownController.signal
   ): Promise<Awaited<A>> {
     const options = this.onCleanupFailure
       ? {
@@ -272,38 +315,50 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     return runScoped(executionScope, program, {
       ...options,
       contextStorage: this.contextStorage,
-      context: makeRuntimeContext(resolver, executionScope, [], this.signal)
+      context: makeRuntimeContext(resolver, executionScope, [], signal)
     })
   }
 
-  dispose(outcome: ScopeOutcome = SCOPE_SUCCESS): Promise<void> {
+  dispose(input?: RuntimeDisposeOptions | ScopeOutcome): Promise<void> {
     if (this.disposePromise) {
       return this.disposePromise
     }
 
+    const outcome =
+      isScopeOutcome(input) || input === undefined ? (input ?? SCOPE_SUCCESS) : SCOPE_SUCCESS
+    const options = isScopeOutcome(input) || input === undefined ? {} : input
+
+    validateDisposeOptions(options)
     this.state = 'disposing'
 
     const executions = [...this.executions]
 
-    this.disposePromise = this.performDispose(executions, outcome)
+    this.disposePromise = this.performDispose(executions, outcome, options)
 
     return this.disposePromise
   }
 
   private async performDispose(
-    executions: readonly Promise<unknown>[],
-    outcome: ScopeOutcome
+    executions: readonly ActiveExecution[],
+    outcome: ScopeOutcome,
+    options: RuntimeDisposeOptions
   ): Promise<void> {
     const failures: unknown[] = []
 
-    await Promise.allSettled(executions)
+    await this.waitForExecutions(executions, options)
 
     try {
-      await runRuntimeContext(
-        this.contextStorage,
-        makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
-        () => this.rootScope.close(outcome)
-      )
+      const signalLink = linkAbortSignals(this.signal, this.shutdownController.signal)
+
+      try {
+        await runRuntimeContext(
+          this.contextStorage,
+          makeRuntimeContext(this.resolver, this.rootScope, [], signalLink.signal),
+          () => this.rootScope.close(outcome)
+        )
+      } finally {
+        signalLink.dispose()
+      }
     } catch (cause) {
       failures.push(cause)
     }
@@ -326,6 +381,38 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
       throw error
     }
+  }
+
+  private async waitForExecutions(
+    executions: readonly ActiveExecution[],
+    options: RuntimeDisposeOptions
+  ): Promise<void> {
+    const settled = Promise.allSettled(executions.map((execution) => execution.promise))
+
+    if (options.abortAfterGracePeriod !== true || executions.length === 0) {
+      await settled
+      return
+    }
+
+    const gracePeriod = options.gracePeriod ?? 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const timedOut = await Promise.race([
+      settled.then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), gracePeriod)
+      })
+    ])
+
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
+
+    if (timedOut && !this.shutdownController.signal.aborted) {
+      this.shutdownController.abort(new Error('Runtime shutdown grace period exceeded'))
+    }
+
+    await settled
   }
 
   private assertActive(): void {

@@ -35,6 +35,19 @@ export type RuntimeOptions = {
   readonly signal?: AbortSignal
 }
 
+/** Optional signal supplied to one managed Runtime execution. */
+export type RuntimeRunOptions = {
+  readonly signal?: AbortSignal
+}
+
+/** Cooperative shutdown policy for a managed Runtime. */
+export type RuntimeDisposeOptions = {
+  /** Time to let active executions settle before requesting cancellation. */
+  readonly gracePeriod?: number
+  /** Abort active execution signals after the grace period expires. */
+  readonly abortAfterGracePeriod?: boolean
+}
+
 type ResultLike = ResultType<any, any>
 
 const isResultLike = <A>(value: A): value is A & ResultLike => {
