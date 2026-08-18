@@ -118,6 +118,11 @@ boundaries; the callback form remains supported for compatibility.
 container is needed; `MemoryLayerBackend` remains its compatibility alias from
 `better-effect/testing`.
 
+Service and Scope access share one `RuntimeContext`. Node/Bun uses
+`AsyncLocalStorage` by default; hosts without transparent async context can
+pass `contextStorage: new ExplicitRuntimeContextStorage()` from
+`better-effect/runtime/explicit`.
+
 If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
 
 ```text

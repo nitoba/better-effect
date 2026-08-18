@@ -4,6 +4,8 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'adapters/iti': 'src/adapters/iti.ts',
+    'runtime/explicit': 'src/runtime/explicit.ts',
+    'runtime/node': 'src/runtime/node.ts',
     testing: 'src/testing/index.ts'
   },
   format: ['esm'],

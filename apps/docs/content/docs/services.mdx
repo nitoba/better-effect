@@ -175,8 +175,9 @@ const resolver = {
 const result = ServiceRuntime.run(resolver, () => ServiceRuntime.resolve(Database))
 ```
 
-The resolver is scoped with `AsyncLocalStorage`. It is restored after the
-callback and isolated across concurrent Runtime executions. Calling
+The resolver is scoped through the shared `RuntimeContext`. The default
+Node/Bun storage uses `AsyncLocalStorage`; it is restored after the callback
+and isolated across concurrent Runtime executions. Calling
 `ServiceRuntime.current()` or `resolve()` outside a configured context throws
 `ServiceRuntimeNotConfiguredError`.
 

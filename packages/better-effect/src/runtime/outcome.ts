@@ -8,6 +8,8 @@ import type { LayerBackend } from '../layer/backend'
 
 import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from '../scope'
 
+import type { RuntimeContextStorage } from './context'
+
 /** Aggregated cleanup information reported during Runtime shutdown. */
 export type RuntimeShutdownDiagnostic = {
   /** Final outcome supplied to the Runtime root Scope. */
@@ -27,6 +29,10 @@ export type RuntimeOptions = {
   readonly backend?: LayerBackend
   /** Optional observer for best-effort cleanup diagnostics. */
   readonly onCleanupFailure?: CleanupFailureObserver
+  /** Context storage used by Service, Scope and Layer resolution. */
+  readonly contextStorage?: RuntimeContextStorage
+  /** Optional signal exposed through the RuntimeContext. */
+  readonly signal?: AbortSignal
 }
 
 type ResultLike = ResultType<any, any>

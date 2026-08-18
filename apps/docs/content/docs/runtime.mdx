@@ -23,6 +23,18 @@ The Runtime is designed for servers, workers and applications that execute
 many programs against one environment. Layer-scoped resources remain alive
 between calls to `run`.
 
+Service resolution, Scope access and acquisition paths share one
+`RuntimeContext`. Node/Bun uses `AsyncLocalStorage` by default. A host without
+transparent async context can supply an explicit storage:
+
+```ts
+import { ExplicitRuntimeContextStorage } from 'better-effect/runtime/explicit'
+
+const runtime = await Runtime.make(AppLive, {
+  contextStorage: new ExplicitRuntimeContextStorage()
+})
+```
+
 ## One-shot Runtime
 
 For a command, migration or script, use `Runtime.run`:

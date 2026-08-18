@@ -74,8 +74,12 @@ export type {
 
 export { Runtime } from './runtime'
 
+export { RuntimeContextNotConfiguredError } from './runtime'
+
 export type {
   CleanupFailureObserver,
+  RuntimeContext,
+  RuntimeContextStorage,
   RuntimeFor,
   RuntimeOptions,
   RuntimeShutdownDiagnostic

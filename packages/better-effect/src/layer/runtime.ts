@@ -1,10 +1,16 @@
-import { ServiceRuntime } from '../service'
-
 import type { AnyService, ServiceResolver } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
 import { runScoped } from '../scope/internal'
 import { ScopeRuntime } from '../scope/runtime'
+
+import {
+  makeRuntimeContext,
+  runRuntimeContext,
+  type RuntimeContextStorage
+} from '../runtime/context'
+
+import { defaultRuntimeContextStorage } from '../runtime/default'
 
 import {
   classifyRuntimeOutcome,
@@ -76,21 +82,26 @@ const notifyShutdownFailure = async (
 
 const bindProviderToScope = (
   provider: LayerProvider,
-  rootScope: CloseableScope
+  rootScope: CloseableScope,
+  contextStorage: RuntimeContextStorage
 ): LayerRegistration => ({
   service: provider.service,
 
   acquire: () =>
-    ScopeRuntime.run(rootScope, async () => {
-      if (!provider.release) {
-        return await provider.acquire()
-      }
+    ScopeRuntime.run(
+      rootScope,
+      async () => {
+        if (!provider.release) {
+          return await provider.acquire()
+        }
 
-      return await rootScope.acquire(
-        () => provider.acquire(),
-        (resource, outcome) => provider.release!(resource, outcome)
-      )
-    })
+        return await rootScope.acquire(
+          () => provider.acquire(),
+          (resource, outcome) => provider.release!(resource, outcome)
+        )
+      },
+      contextStorage
+    )
 })
 
 class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCore<Provided> {
@@ -104,7 +115,9 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     readonly backend: LayerBackend,
     private readonly resolver: ServiceResolver,
     private readonly rootScope: CloseableScope,
-    private readonly onCleanupFailure: CleanupFailureObserver | undefined
+    private readonly onCleanupFailure: CleanupFailureObserver | undefined,
+    private readonly contextStorage: RuntimeContextStorage,
+    private readonly signal: AbortSignal | undefined
   ) {}
 
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
@@ -162,7 +175,11 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           classify: classifyRuntimeOutcome
         }
 
-    return runScoped(executionScope, () => ServiceRuntime.run(this.resolver, program), options)
+    return runScoped(executionScope, program, {
+      ...options,
+      contextStorage: this.contextStorage,
+      context: makeRuntimeContext(this.resolver, executionScope, [], this.signal)
+    })
   }
 
   dispose(outcome: ScopeOutcome = SCOPE_SUCCESS): Promise<void> {
@@ -188,7 +205,11 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     await Promise.allSettled(executions)
 
     try {
-      await ServiceRuntime.run(this.resolver, () => this.rootScope.close(outcome))
+      await runRuntimeContext(
+        this.contextStorage,
+        makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
+        () => this.rootScope.close(outcome)
+      )
     } catch (cause) {
       failures.push(cause)
     }
@@ -227,14 +248,16 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   options: RuntimeOptions = {}
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const rootScope = Scope.make()
-  const resolver = createResolutionResolver(backend)
+  const contextStorage = options.contextStorage ?? defaultRuntimeContextStorage
+  const resolver = createResolutionResolver(backend, contextStorage)
+  ScopeRuntime.bind(rootScope, contextStorage)
   let current: LayerProvider | undefined
 
   try {
     for (const provider of layer.providers) {
       current = provider
 
-      await backend.register(bindProviderToScope(provider, rootScope))
+      await backend.register(bindProviderToScope(provider, rootScope, contextStorage))
     }
   } catch (registrationCause) {
     const outcome: ScopeOutcome = {
@@ -244,7 +267,11 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     const cleanupCauses: unknown[] = []
 
     try {
-      await ServiceRuntime.run(resolver, () => rootScope.close(outcome))
+      await runRuntimeContext(
+        contextStorage,
+        makeRuntimeContext(resolver, rootScope, [], options.signal),
+        () => rootScope.close(outcome)
+      )
     } catch (cause) {
       cleanupCauses.push(cause)
     }
@@ -278,6 +305,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     backend,
     resolver,
     rootScope,
-    options.onCleanupFailure
+    options.onCleanupFailure,
+    contextStorage,
+    options.signal
   )
 }

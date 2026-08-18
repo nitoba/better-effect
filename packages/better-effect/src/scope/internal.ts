@@ -4,6 +4,12 @@ import { ScopeRuntime } from './runtime'
 
 import type { CloseableScope } from './scope'
 
+import {
+  runRuntimeContext,
+  type RuntimeContext,
+  type RuntimeContextStorage
+} from '../runtime/context'
+
 import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from './types'
 
 export type OutcomeClassifier<A> = (value: A) => ScopeOutcome
@@ -11,6 +17,8 @@ export type OutcomeClassifier<A> = (value: A) => ScopeOutcome
 export type RunScopedOptions<A> = {
   readonly classify: OutcomeClassifier<A>
   readonly onCleanupFailure?: (diagnostic: CleanupFailureDiagnostic) => MaybePromise<void>
+  readonly contextStorage?: RuntimeContextStorage
+  readonly context?: RuntimeContext
 }
 
 const notifyCleanupFailure = async (
@@ -39,7 +47,11 @@ export const runScoped = async <A>(
   let programFailure: unknown
 
   try {
-    value = await ScopeRuntime.run(scope, program)
+    const run = () => ScopeRuntime.run(scope, program, options.contextStorage)
+
+    value = await (options.context && options.contextStorage
+      ? runRuntimeContext(options.contextStorage, options.context, run)
+      : run())
   } catch (cause) {
     programFailed = true
     programFailure = cause

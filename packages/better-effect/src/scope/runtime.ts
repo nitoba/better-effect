@@ -1,26 +1,59 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
-
 import { ScopeRuntimeNotConfiguredError } from './errors'
 
 import type { Scope } from './scope'
 
-const storage = new AsyncLocalStorage<Scope>()
+import {
+  activeRuntimeContextStorage,
+  currentRuntimeContext,
+  getRuntimeContext,
+  makeRuntimeContext,
+  runRuntimeContext
+} from '../runtime/context'
+
+import type { RuntimeContextStorage } from '../runtime/context'
+
+const scopeStorages = new WeakMap<object, RuntimeContextStorage>()
 
 /** Bridges the current Scope through async execution context. */
 export class ScopeRuntime {
   /** Supply a Scope while invoking a callback. */
-  static run<A>(scope: Scope, program: () => A): A {
-    return storage.run(scope, program)
+  static run<A>(
+    scope: Scope,
+    program: () => A,
+    storage: RuntimeContextStorage = scopeStorages.get(scope) ?? activeRuntimeContextStorage()
+  ): A {
+    scopeStorages.set(scope, storage)
+
+    const current = getRuntimeContext(storage)
+    const context = makeRuntimeContext(
+      current?.resolver,
+      scope,
+      current?.resolutionPath ?? [],
+      current?.signal
+    )
+
+    return runRuntimeContext(storage, context, program)
   }
 
   /** Return the Scope active in the current execution context. */
   static current(): Scope {
-    const scope = storage.getStore()
+    let context
 
-    if (!scope) {
+    try {
+      context = currentRuntimeContext()
+    } catch {
       throw new ScopeRuntimeNotConfiguredError()
     }
 
-    return scope
+    if (!context.scope) {
+      throw new ScopeRuntimeNotConfiguredError()
+    }
+
+    return context.scope
+  }
+
+  /** Associate a Runtime-owned Scope with its context storage. */
+  static bind(scope: Scope, storage: RuntimeContextStorage): void {
+    scopeStorages.set(scope, storage)
   }
 }

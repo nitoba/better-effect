@@ -28,6 +28,8 @@
   "exports": {
     ".": "./dist/index.mjs",
     "./adapters/iti": "./dist/adapters/iti.mjs",
+    "./runtime/explicit": "./dist/runtime/explicit.mjs",
+    "./runtime/node": "./dist/runtime/node.mjs",
     "./testing": "./dist/testing.mjs",
     "./package.json": "./package.json"
   },

@@ -1,16 +1,23 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
-
 import { ServiceRuntimeNotConfiguredError } from './errors'
 
+import {
+  currentRuntimeContext,
+  getRuntimeContext,
+  makeRuntimeContext,
+  runRuntimeContext
+} from '../runtime/context'
+
+import { defaultRuntimeContextStorage } from '../runtime/default'
+
 import type { AnyServiceToken } from './types'
+
+import type { RuntimeContextStorage } from '../runtime/context'
 
 /** Resolves class-backed Service tokens for a runtime execution. */
 export interface ServiceResolver {
   /** Resolve a token to its corresponding Service instance. */
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>>
 }
-
-const storage = new AsyncLocalStorage<ServiceResolver>()
 
 /** Provides the resolver context used by Service tokens during execution. */
 export class ServiceRuntime {
@@ -26,19 +33,37 @@ export class ServiceRuntime {
    * })
    * ```
    */
-  static run<A>(resolver: ServiceResolver, program: () => A): A {
-    return storage.run(resolver, program)
+  static run<A>(
+    resolver: ServiceResolver,
+    program: () => A,
+    storage: RuntimeContextStorage = defaultRuntimeContextStorage
+  ): A {
+    const current = getRuntimeContext(storage)
+    const context = makeRuntimeContext(
+      resolver,
+      current?.scope,
+      current?.resolver === resolver ? current.resolutionPath : [],
+      current?.signal
+    )
+
+    return runRuntimeContext(storage, context, program)
   }
 
   /** Return the resolver active in the current execution context. */
   static current(): ServiceResolver {
-    const resolver = storage.getStore()
+    let context
 
-    if (!resolver) {
+    try {
+      context = currentRuntimeContext()
+    } catch {
       throw new ServiceRuntimeNotConfiguredError()
     }
 
-    return resolver
+    if (!context.resolver) {
+      throw new ServiceRuntimeNotConfiguredError()
+    }
+
+    return context.resolver
   }
 
   /** Resolve a Service token using the active resolver. */
