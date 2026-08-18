@@ -6,6 +6,7 @@ import * as LayerApi from '../src/layer'
 test('exposes Runtime as the managed Layer entry point', () => {
   expect(BetterEffect.Runtime).toBeDefined()
   expect(BetterEffect.MapLayerBackend).toBeDefined()
+  expect(BetterEffect.CurrentAbortSignal).toBeDefined()
   expect(BetterEffect.CircularDependencyError).toBeDefined()
   expect(BetterEffect.ServiceAcquisitionError).toBeDefined()
   expect(BetterEffect.Effect.fn).toBeDefined()

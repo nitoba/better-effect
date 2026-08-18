@@ -11,7 +11,13 @@ import {
 import { Layer, MapLayerBackend, type LayerBackend } from '../../src/layer'
 import { createRuntimeHandle, type RuntimeHandle } from '../../src/layer/runtime'
 import type { LayerRegistration } from '../../src'
-import { Runtime, type RuntimeFor } from '../../src/runtime'
+import {
+  CurrentAbortSignal,
+  Runtime,
+  type RuntimeDisposeOptions,
+  type RuntimeFor,
+  type RuntimeRunOptions
+} from '../../src/runtime'
 import { Scope } from '../../src/scope'
 import { Service, type AnyServiceToken } from '../../src/service'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
@@ -83,6 +89,16 @@ const requiresDatabaseAndLogger = () =>
 
 type CompleteProgram = ReturnType<typeof requiresDatabaseAndLogger>
 
+const readsAbortSignal = () =>
+  Effect.gen(async function* () {
+    const signal = yield* CurrentAbortSignal
+
+    return Result.ok(signal.aborted)
+  })
+
+expectTypeOf<EffectSuccess<ReturnType<typeof readsAbortSignal>>>().toEqualTypeOf<boolean>()
+expectTypeOf<EffectRequirements<ReturnType<typeof readsAbortSignal>>>().toEqualTypeOf<never>()
+
 expectTypeOf<EffectSuccess<CompleteProgram>>().toEqualTypeOf<{
   database: Database
   logger: Logger
@@ -105,9 +121,15 @@ declare const emptyRuntime: Runtime<never>
 declare const emptyHandle: RuntimeHandle<never>
 
 const managedResult = typedRuntime.run(requiresDatabaseAndLogger)
+const managedCancellationResult = typedRuntime.run(readsAbortSignal, {
+  signal: new AbortController().signal
+})
 const builtResult = typedBuiltLayer.run(requiresDatabaseAndLogger)
 const oneShotResult = Runtime.run(AppLive, backend, requiresDatabaseAndLogger)
 const defaultOneShotResult = Runtime.run(AppLive, requiresDatabaseAndLogger)
+const oneShotCancellationResult = Runtime.run(AppLive, readsAbortSignal, {
+  signal: new AbortController().signal
+})
 const configuredOneShotResult = Runtime.run(
   AppLive,
   { backend: new MapLayerBackend() },
@@ -129,15 +151,30 @@ const explicitlyTypedOneShot = Runtime.run<CompleteProgram, typeof AppLive>(
 )
 
 expectTypeOf(managedResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(managedCancellationResult).toEqualTypeOf<
+  Promise<Awaited<ReturnType<typeof readsAbortSignal>>>
+>()
 expectTypeOf(builtResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(oneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(defaultOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(oneShotCancellationResult).toEqualTypeOf<
+  Promise<Awaited<ReturnType<typeof readsAbortSignal>>>
+>()
 expectTypeOf(configuredOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(trailingOptionsOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(managedByUse).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(configuredManagedByUse).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(explicitlyTypedOneShot).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf<Awaited<typeof runtimePromise>>().toMatchTypeOf<AsyncDisposable>()
+
+const runOptions: RuntimeRunOptions = { signal: new AbortController().signal }
+const disposeOptions: RuntimeDisposeOptions = {
+  gracePeriod: 5_000,
+  abortAfterGracePeriod: true
+}
+
+void typedRuntime.run(readsAbortSignal, runOptions)
+void typedRuntime.dispose(disposeOptions)
 
 // @ts-expect-error Logger is not supplied by this managed Runtime.
 void databaseRuntime.run(requiresDatabaseAndLogger)
