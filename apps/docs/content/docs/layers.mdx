@@ -167,8 +167,20 @@ type Provided = Layer.Provided<typeof ApplicationLive>
 // Database | UserRepository
 type Required = Layer.Required<typeof ApplicationLive>
 // never
+type Missing = Layer.Missing<typeof ApplicationLive>
+// never
 type Complete = Layer.Complete<typeof ApplicationLive>
 ```
+
+Mark the composition root explicitly when you want missing requirements to be
+reported at that boundary:
+
+```ts
+const AppLive = Layer.complete(Layer.merge(DatabaseLive, RepositoryLive))
+```
+
+`Layer.complete` is a runtime identity function. Its type checks the full
+composition and exposes missing Services through `Layer.Missing<typeof AppLive>`.
 
 `Required` is the external environment left after composition, not a raw union
 of every provider's dependencies. Inferred Layers retain private provenance so

@@ -47,9 +47,8 @@ const greet = Effect.fn(async function* () {
   return Result.ok(greeting.greet('Ada'))
 })
 
-const runtime = await Runtime.make(GreetingLive)
+await using runtime = await Runtime.make(GreetingLive)
 const result = await runtime.run(greet)
-await runtime.dispose()
 
 if (Result.isOk(result)) {
   console.log(result.value) // Hello, Ada!

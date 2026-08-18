@@ -129,7 +129,6 @@ try {
       /MissingDependencies\s*<\s*Logger\s*\|\s*Cache\s*>/.test(runtimeOutput),
       `${compiler.name} Runtime diagnostic lost MissingDependencies<Logger | Cache>:\n${runtimeOutput}`
     )
-
     const layerOutput = requireFailure(
       compiler,
       'tests/package/instance-requirements/tsconfig.invalid-layer.json'
@@ -137,6 +136,10 @@ try {
     assertCondition(
       /MissingDependencies\s*<\s*Database\s*>/.test(layerOutput),
       `${compiler.name} Layer diagnostic lost MissingDependencies<Database>:\n${layerOutput}`
+    )
+    assertCondition(
+      /missingServices/.test(layerOutput),
+      `${compiler.name} Layer diagnostic lost the readable missingServices property:\n${layerOutput}`
     )
 
     const outputDirectory = join(outRoot, compiler.name)

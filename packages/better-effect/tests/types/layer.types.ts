@@ -200,6 +200,11 @@ expectTypeOf<Layer.Required<typeof UsersGeneratedLive>>().toEqualTypeOf<Database
 const Complete = Layer.merge(DatabaseLive, UsersLive, PasswordsLive, AuthLive)
 
 expectTypeOf<Layer.Required<typeof Complete>>().toBeNever()
+expectTypeOf<Layer.Missing<typeof Broken>>().toEqualTypeOf<Database | PasswordHasher>()
+expectTypeOf(Layer.complete(Complete)).toEqualTypeOf<typeof Complete>()
+
+// @ts-expect-error Layer.complete rejects composition roots with missing Services.
+Layer.complete(Broken)
 
 // @ts-expect-error Broken does not provide Database or PasswordHasher
 void Runtime.make(Broken, backend)

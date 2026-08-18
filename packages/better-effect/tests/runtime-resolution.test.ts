@@ -112,6 +112,12 @@ describe('Runtime Service resolution', () => {
     expect(resolved).toBeInstanceOf(Database)
   })
 
+  test('Layer.complete keeps the original Layer at runtime', () => {
+    const layer = Layer.make(Database)
+
+    expect(Layer.complete(layer)).toBe(layer)
+  })
+
   test('accepts a backend through Runtime options', async () => {
     const backend = new MapLayerBackend()
 
@@ -120,5 +126,44 @@ describe('Runtime Service resolution', () => {
     )
 
     expect(resolved).toBeInstanceOf(Database)
+  })
+
+  test('Runtime.use disposes the Runtime after the callback settles', async () => {
+    let released = 0
+
+    const result = await Runtime.use(
+      Layer.scoped(
+        Database,
+        () => new Database(),
+        () => {
+          released++
+        }
+      ),
+      async (runtime) => runtime.run(() => ServiceRuntime.resolve(Database))
+    )
+
+    expect(result).toBeInstanceOf(Database)
+    expect(released).toBe(1)
+  })
+
+  test('Runtime is async disposable', async () => {
+    let released = 0
+
+    {
+      await using runtime = await Runtime.make(
+        Layer.scoped(
+          Database,
+          () => new Database(),
+          () => {
+            released++
+          }
+        )
+      )
+
+      await runtime.run(() => ServiceRuntime.resolve(Database))
+      expect(released).toBe(0)
+    }
+
+    expect(released).toBe(1)
   })
 })

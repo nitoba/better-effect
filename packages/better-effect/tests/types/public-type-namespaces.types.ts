@@ -88,6 +88,7 @@ expectTypeOf<Service.Class>().toEqualTypeOf<ServiceClass>()
 expectTypeOf<Layer.Any>().toEqualTypeOf<Layer<any, any> | Layer<never, any>>()
 expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<Database | Repository>()
 expectTypeOf<Layer.Required<typeof AppLive>>().toBeNever()
+expectTypeOf<Layer.Missing<typeof AppLive>>().toBeNever()
 expectTypeOf<Layer.Complete<typeof AppLive>>().toEqualTypeOf<typeof AppLive>()
 
 expectTypeOf<Runtime.For<typeof AppLive>>().toEqualTypeOf<RuntimeFor<typeof AppLive>>()

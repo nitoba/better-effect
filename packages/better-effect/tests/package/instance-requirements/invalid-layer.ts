@@ -17,4 +17,5 @@ class Repository extends Service<Repository>()('Repository') {
 const RepositoryLive = Layer.make(Repository)
 declare const backend: LayerBackend
 
+void Layer.complete(RepositoryLive)
 void Runtime.make(RepositoryLive, backend)

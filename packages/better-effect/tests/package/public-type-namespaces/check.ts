@@ -75,7 +75,7 @@ const aliases = {
     'FactoryOf',
     'Requirements'
   ],
-  Layer: ['Any', 'Provided', 'Required', 'Complete'],
+  Layer: ['Any', 'Provided', 'Required', 'Missing', 'Complete'],
   Runtime: ['For', 'Options', 'ShutdownDiagnostic'],
   Scope: ['Closeable', 'Outcome', 'Finalizer', 'Disposable']
 } satisfies Record<string, readonly string[]>
@@ -123,7 +123,7 @@ for (const [namespaceName, members] of Object.entries(aliases)) {
 
   if (namespaceName === 'Layer') {
     assertCondition(
-      !/\btype\s+(?:Specs|Missing)(?:\s*<|\s*=)/.test(namespaceBody),
+      !/\btype\s+Specs(?:\s*<|\s*=)/.test(namespaceBody),
       'Removed Layer namespace members remain'
     )
   }

@@ -198,6 +198,11 @@ export class Layer<
     return new Layer([...providers.values()]) as MergeResult<Layers>
   }
 
+  /** Mark a Layer composition root as complete without changing its runtime value. */
+  static complete<L extends LayerInput>(layer: L & CompleteInput<L>): L {
+    return layer
+  }
+
   /** Replace providers in a base Layer, using tag identity and compatible contracts. */
   static override<Base extends LayerInput, const Overrides extends readonly LayerInput[]>(
     base: Base & ValidateLayerInput<Base>,
@@ -239,6 +244,9 @@ export declare namespace Layer {
 
   /** Extract the external Service requirements of a Layer. */
   export type Required<L extends LayerInput> = RequiredEnvironment<L>
+
+  /** Extract the Services still missing from a Layer composition. */
+  export type Missing<L extends LayerInput> = RequiredEnvironment<L>
 
   /** Validate a Layer's requirements and input shape. */
   export type Complete<L extends LayerInput> = CompleteInput<L>

@@ -154,6 +154,7 @@ export type LayerProvidedAlias = Expect<
   Equal<Layer.Provided<typeof AppLive>, Database | Repository>
 >
 export type LayerRequiredAlias = Expect<Equal<Layer.Required<typeof AppLive>, never>>
+export type LayerMissingAlias = Expect<Equal<Layer.Missing<typeof AppLive>, never>>
 export type LayerCompleteAlias = Expect<Equal<Layer.Complete<typeof AppLive>, typeof AppLive>>
 
 export type RuntimeForAlias = Expect<Equal<Runtime.For<typeof AppLive>, RuntimeFor<typeof AppLive>>>

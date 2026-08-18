@@ -202,6 +202,59 @@ export class Runtime<Provided extends AnyService = any> {
     return value
   }
 
+  /** Run a callback with a managed Runtime and always dispose it afterward. */
+  static use<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    use: (runtime: Runtime<ProvidedEnvironment<L>>) => A | PromiseLike<A>,
+    options?: RuntimeOptions
+  ): Promise<Awaited<A>>
+
+  static async use<A, L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    use: (runtime: Runtime<ProvidedEnvironment<L>>) => A | PromiseLike<A>,
+    options?: RuntimeOptions
+  ): Promise<Awaited<A>> {
+    const runtime = await Runtime.make(layer, options)
+
+    let value!: Awaited<A>
+    let executionFailed = false
+    let executionFailure: unknown
+    let programOutcome: ScopeOutcome | undefined
+
+    try {
+      value = await use(runtime)
+      programOutcome = classifyRuntimeOutcome(value)
+    } catch (cause) {
+      executionFailed = true
+      executionFailure = cause
+      programOutcome = {
+        status: 'failure',
+        cause
+      }
+    }
+
+    const outcome: ScopeOutcome =
+      programOutcome ??
+      ({
+        status: 'failure',
+        cause: executionFailure
+      } as const)
+
+    try {
+      await runtime.disposeWithOutcome(outcome)
+    } catch (shutdownFailure) {
+      if (!executionFailed && outcome.status === 'success') {
+        throw shutdownFailure
+      }
+    }
+
+    if (executionFailed) {
+      throw executionFailure
+    }
+
+    return value
+  }
+
   /** Run one execution in this Runtime's child Scope. */
   run<A>(program: CompleteExecution<Provided, A>): Promise<Awaited<A>> {
     return this.handle.run(program)
@@ -215,6 +268,11 @@ export class Runtime<Provided extends AnyService = any> {
   /** Stop new executions and release the Runtime's Layer resources. */
   dispose(): Promise<void> {
     return this.handle.dispose()
+  }
+
+  /** Release Runtime-owned resources through JavaScript's async disposal protocol. */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.dispose()
   }
 
   private disposeWithOutcome(outcome: ScopeOutcome): Promise<void> {

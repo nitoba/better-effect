@@ -20,6 +20,12 @@ await runtime.dispose()
 The default `MapLayerBackend` is lazy, caches by Service tag, and clears its
 state during `disposeAll`.
 
+For a single test, avoid keeping a Runtime around:
+
+```ts
+const result = await Runtime.run(AppTest, applicationProgram)
+```
+
 ## Override one provider
 
 ```ts

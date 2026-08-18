@@ -118,6 +118,19 @@ boundaries; the callback form remains supported for compatibility.
 container is needed; `MemoryLayerBackend` remains its compatibility alias from
 `better-effect/testing`.
 
+Runtimes are async disposables, so request-scoped code can use:
+
+```ts
+await using runtime = await Runtime.make(AppLive)
+const result = await runtime.run(program)
+```
+
+Or let `Runtime.use` own the lifetime:
+
+```ts
+const result = await Runtime.use(AppLive, (runtime) => runtime.run(program))
+```
+
 Service and Scope access share one `RuntimeContext`. Node/Bun uses
 `AsyncLocalStorage` by default; hosts without transparent async context can
 pass `contextStorage: new ExplicitRuntimeContextStorage()` from
@@ -168,6 +181,7 @@ type Success = Effect.Success<Program>
 type Failure = Effect.Error<Program>
 type Dependencies = Effect.Requirements<Program>
 type Services = Layer.Provided<typeof AppLive>
+type Missing = Layer.Missing<typeof AppLive>
 type AppRuntime = Runtime.For<typeof AppLive>
 type DatabaseTag = Service.Tag<Database> // 'Database'
 type DatabaseToken = Service.TokenOf<Database> // Service.Token<'Database', Database>
@@ -176,8 +190,11 @@ type Outcome = Scope.Outcome
 
 These are declaration-only aliases and add nothing to the JavaScript bundle.
 The associated `Layer` helpers are intentionally namespaced; use
-`Layer.Provided`, `Layer.Required`, `Layer.Complete` and `Layer.Any` rather than
+`Layer.Provided`, `Layer.Required`, `Layer.Missing`, `Layer.Complete` and `Layer.Any` rather than
 low-level provider metadata names.
+
+`Layer.complete(layer)` is a runtime identity that checks a composition root
+immediately, so missing Services are reported where the Layer is assembled.
 
 ---
 

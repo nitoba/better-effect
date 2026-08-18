@@ -116,6 +116,12 @@ const configuredOneShotResult = Runtime.run(
 const trailingOptionsOneShotResult = Runtime.run(AppLive, requiresDatabaseAndLogger, {
   backend: new MapLayerBackend()
 })
+const managedByUse = Runtime.use(AppLive, (runtime) => runtime.run(requiresDatabaseAndLogger))
+const configuredManagedByUse = Runtime.use(
+  AppLive,
+  (runtime) => runtime.run(requiresDatabaseAndLogger),
+  { backend: new MapLayerBackend() }
+)
 const explicitlyTypedOneShot = Runtime.run<CompleteProgram, typeof AppLive>(
   AppLive,
   backend,
@@ -128,7 +134,10 @@ expectTypeOf(oneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(defaultOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(configuredOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(trailingOptionsOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(managedByUse).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(configuredManagedByUse).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(explicitlyTypedOneShot).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf<Awaited<typeof runtimePromise>>().toMatchTypeOf<AsyncDisposable>()
 
 // @ts-expect-error Logger is not supplied by this managed Runtime.
 void databaseRuntime.run(requiresDatabaseAndLogger)
