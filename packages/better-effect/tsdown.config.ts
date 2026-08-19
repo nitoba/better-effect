@@ -7,6 +7,7 @@ export default defineConfig({
     'runtime/explicit': 'src/runtime/explicit.ts',
     'runtime/node': 'src/runtime/node.ts',
     'standard-services': 'src/standard-services/index.ts',
+    hono: 'src/hono/index.ts',
     testing: 'src/testing/index.ts'
   },
   format: ['esm'],

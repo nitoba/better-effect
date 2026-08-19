@@ -28,6 +28,7 @@
   "exports": {
     ".": "./dist/index.mjs",
     "./adapters/iti": "./dist/adapters/iti.mjs",
+    "./hono": "./dist/hono.mjs",
     "./runtime/explicit": "./dist/runtime/explicit.mjs",
     "./runtime/node": "./dist/runtime/node.mjs",
     "./standard-services": "./dist/standard-services.mjs",
@@ -65,6 +66,7 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "hono": "^4.9.0",
     "iti": "^0.8.0",
     "lefthook": "^2.1.10",
     "oxfmt": "^0.63.0",
@@ -75,10 +77,14 @@
   },
   "peerDependencies": {
     "better-result": "^3.0.0",
+    "hono": ">=4.0.0",
     "iti": "^0.8.0",
     "typescript": ">=5.7.0"
   },
   "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    },
     "iti": {
       "optional": true
     }
