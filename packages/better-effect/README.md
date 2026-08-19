@@ -358,8 +358,29 @@ await runtime.dispose()
 ```
 
 The entrypoint also provides `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
-`CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. None is
-installed implicitly; compose a normal Layer or use the provided test helpers.
+`Config`, `CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. None
+is installed implicitly; compose a normal Layer or use the provided test
+helpers.
+
+For typed environment configuration, bind a Standard Schema directly to a
+reusable descriptor:
+
+```ts
+import { Result } from 'better-result'
+import { Effect } from 'better-effect'
+import { Config } from 'better-effect/standard-services'
+
+const AppConfig = Config.fromEnv({ schema: EnvSchema, dotEnvPath: '.env' })
+
+const program = Effect.fn(async function* () {
+  const config = yield* AppConfig
+  return Result.ok(config)
+})
+```
+
+Use `Config.schema(schema)` with `Config.layer(source)` or
+`Config.layerFromEnv(options)` when several descriptors should share an
+explicitly replaceable provider.
 
 ---
 

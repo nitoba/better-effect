@@ -4,6 +4,20 @@ import { Service } from '../service'
 
 export { CurrentAbortSignal }
 
+export { Config, ConfigLive, ConfigSourceError, ConfigValidationError } from './config'
+
+export type {
+  ConfigError,
+  ConfigFromEnvOptions,
+  ConfigInput,
+  ConfigIssue,
+  ConfigOutput,
+  ConfigSource,
+  ConfigSourceOptions,
+  ConfigValue,
+  StandardSchemaV1
+} from './config'
+
 const assertDelay = (milliseconds: number): void => {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) {
     throw new RangeError('Delay must be a finite non-negative number')
