@@ -8,6 +8,7 @@
     "effects",
     "layers",
     "runtime",
+    "hono",
     "scope",
     "resource",
     "pipelines",

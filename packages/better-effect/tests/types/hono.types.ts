@@ -1,4 +1,5 @@
 import { Result } from 'better-result'
+import { Hono } from 'hono'
 import { validator } from 'hono/validator'
 
 import { Effect, Layer, Runtime, Service } from '../../src'
@@ -89,3 +90,49 @@ const validatedHandler = http.handler(validateJson, (c) => {
 })
 
 void validatedHandler
+
+const validateParam = validator('param', (value: { id?: string }) => {
+  if (value.id === undefined) {
+    return new Response('invalid')
+  }
+
+  return { id: value.id }
+})
+
+const validateHeader = validator('header', (value: Record<string, string>) => {
+  const key = value['x-idempotency-key']
+
+  if (key === undefined) {
+    return new Response('invalid')
+  }
+
+  return { 'X-Idempotency-Key': key }
+})
+
+const combinedApp = new Hono()
+combinedApp.post(
+  '/api/v1/inspections/:id/check-ins',
+  http.gen(validateParam, validateHeader, validateJson, async function* (c) {
+    const rawId: string = c.req.param('id')
+    const rawKey: string = c.req.header('X-Idempotency-Key')
+    const id: string = c.req.valid('param').id
+    const key: string = c.req.valid('header')['X-Idempotency-Key']
+    const body = c.req.valid('json')
+    const available = yield* Available
+
+    void available
+    return Result.ok({ rawId, rawKey, id, key, body })
+  })
+)
+
+const combinedHandler = http.handler(validateParam, validateHeader, (c) => {
+  const id: string = c.req.valid('param').id
+  const key: string = c.req.valid('header')['X-Idempotency-Key']
+
+  return Effect.fn(async function* () {
+    yield* Available
+    return Result.ok(`${id}:${key}`)
+  })
+})
+
+void combinedHandler

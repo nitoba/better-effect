@@ -1,5 +1,5 @@
 import type { Result as ResultType } from 'better-result'
-import type { Context, Env, Input, MiddlewareHandler } from 'hono'
+import type { Context, Env, HonoRequest, Input, MiddlewareHandler } from 'hono'
 
 import type { EffectYield, Program as ProgramType, ProgramFromGenerator } from '../effect/types'
 import type { CurrentRequest } from '../standard-services'
@@ -17,6 +17,52 @@ export type AnyRouteOptions = HonoEffectRouteOptions<any, any>
 
 export type MiddlewareInput<Middleware extends AnyHonoMiddleware> =
   Middleware extends MiddlewareHandler<any, any, infer InputType, any> ? InputType : Input
+
+export type MiddlewareInputs<Middlewares extends readonly AnyHonoMiddleware[]> =
+  Middlewares extends readonly [
+    infer Head extends AnyHonoMiddleware,
+    ...infer Tail extends AnyHonoMiddleware[]
+  ]
+    ? MiddlewareInput<Head> & MiddlewareInputs<Tail>
+    : Input
+
+type ValidatedTarget<InputType extends Input, Target extends 'param' | 'header'> =
+  NonNullable<InputType['out']> extends Record<Target, infer Value>
+    ? Value extends object
+      ? Value
+      : never
+    : never
+
+type ValidatedRequest<P extends string, InputType extends Input> = Omit<
+  HonoRequest<P, NonNullable<InputType['out']>>,
+  'param' | 'header'
+> & {
+  param: [ValidatedTarget<InputType, 'param'>] extends [never]
+    ? HonoRequest<P, NonNullable<InputType['out']>>['param']
+    : {
+        <Key extends keyof ValidatedTarget<InputType, 'param'> & string>(
+          key: Key
+        ): ValidatedTarget<InputType, 'param'>[Key]
+        (key: string): string | undefined
+        (): ValidatedTarget<InputType, 'param'>
+      }
+  header: [ValidatedTarget<InputType, 'header'>] extends [never]
+    ? HonoRequest<P, NonNullable<InputType['out']>>['header']
+    : {
+        <Key extends keyof ValidatedTarget<InputType, 'header'> & string>(
+          name: Key
+        ): ValidatedTarget<InputType, 'header'>[Key]
+        (name: string): string | undefined
+        (): ValidatedTarget<InputType, 'header'>
+      }
+}
+
+export type HonoEffectContext<E extends Env, P extends string, InputType extends Input> = Omit<
+  Context<E, P, InputType>,
+  'req'
+> & {
+  readonly req: ValidatedRequest<P, InputType>
+}
 
 export type MiddlewareEnvironment<Middleware extends AnyHonoMiddleware> =
   Middleware extends MiddlewareHandler<infer Environment, any, any, any> ? Environment : Env
@@ -51,7 +97,7 @@ export type CompleteProgram<Provided extends AnyService, Program extends AnyProg
   : Program & MissingDependencies<ProgramMissing<Provided, Program>>
 
 export type GeneratorBody<
-  ContextType extends HonoContext,
+  ContextType extends object,
   Yield extends EffectYield,
   Returned extends AnyResult
 > = (

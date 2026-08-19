@@ -1,0 +1,247 @@
+---
+title: Hono
+description: Execute better-effect Programs inside one Hono request boundary.
+icon: Globe
+---
+
+The optional `better-effect/hono` entry point connects Hono to a long-lived
+`Runtime`. Install Hono alongside the two core packages:
+
+```bash
+bun add better-effect better-result hono
+```
+
+The adapter does not resolve Services into the Hono Context and does not wrap
+individual methods with a Proxy. It opens one Runtime execution and one child
+Scope around the whole request instead.
+
+## Configure the request boundary
+
+Create the Runtime once during application startup and install the middleware
+before any `http.gen`, `http.handler` or `http.guard` handler:
+
+```ts
+import { Hono } from 'hono'
+import { Result } from 'better-result'
+import { Layer, Runtime, Service } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
+
+class WorkOrderService extends Service<WorkOrderService>()('WorkOrderService') {
+  list() {
+    return Promise.resolve(Result.ok([{ id: 'wo-1' }]))
+  }
+}
+
+const AppLive = Layer.make(WorkOrderService)
+const runtime = await Runtime.make(AppLive)
+
+const http = HonoEffect.make(runtime, {
+  onFailure: (error, c) => {
+    const message = error instanceof Error ? error.message : 'Request failed'
+    return c.json({ error: message }, 500)
+  }
+})
+
+const app = new Hono()
+
+app.use('/api/*', http.middleware())
+
+app.get(
+  '/api/work-orders',
+  http.gen(async function* () {
+    const workOrders = yield* WorkOrderService
+    const items = yield* Result.await(workOrders.list())
+
+    return Result.ok(items)
+  })
+)
+
+await runtime.dispose()
+```
+
+The request boundary supplies `CurrentRequest` and links the request's
+`AbortSignal` to the Runtime execution. Services are resolved lazily through
+`yield* Service`, and resources acquired with `Effect.acquireRelease` belong to
+that request's Scope.
+
+Registering the same boundary more than once for a request does not create a
+second execution. Middleware registered before `http.middleware()` runs outside
+the boundary; place the boundary before any middleware that needs better-effect
+Services or request-local resources.
+
+## Programs and generators
+
+Use `http.gen` for a generator written at the route boundary:
+
+```ts
+app.get(
+  '/api/work-orders/:id',
+  http.gen(async function* (c) {
+    const workOrders = yield* WorkOrderService
+    const workOrder = yield* Result.await(workOrders.get(c.req.param('id')))
+
+    return Result.ok(workOrder)
+  })
+)
+```
+
+Use `http.handler` when the Program is defined outside the HTTP layer:
+
+```ts
+import { Result } from 'better-result'
+import { Effect } from 'better-effect'
+
+const getWorkOrder = (id: string) =>
+  Effect.fn(async function* () {
+    const workOrders = yield* WorkOrderService
+    const workOrder = yield* Result.await(workOrders.get(id))
+
+    return Result.ok(workOrder)
+  })
+
+app.get(
+  '/api/work-orders/:id',
+  http.handler((c) => getWorkOrder(c.req.param('id')))
+)
+```
+
+Both APIs validate the Program's Service requirements against the Runtime's
+Layer. A route that yields a Service absent from `AppLive` fails at compile
+time; no manual Service catalog is needed.
+
+## Hono validation and Standard Schema
+
+`http.gen` and `http.handler` accept a Hono input middleware as their first
+argument. The middleware runs before the Program, and the inferred value from
+`c.req.valid(...)` is preserved in the route Context. There is no `JsonInput<T>`
+helper to pass manually.
+
+For a Standard Schema-compatible validator, use Hono's Standard Schema adapter:
+
+```bash
+bun add @hono/standard-validator
+```
+
+```ts
+import { sValidator } from '@hono/standard-validator'
+
+const validateCreateWorkOrder = sValidator('json', createWorkOrderSchema)
+
+app.post(
+  '/api/work-orders',
+  http.gen(
+    validateCreateWorkOrder,
+    async function* (c) {
+      const input = c.req.valid('json')
+      const workOrders = yield* WorkOrderService
+      const workOrder = yield* Result.await(workOrders.create(input))
+
+      return Result.ok(workOrder)
+    },
+    { status: 201 }
+  )
+)
+```
+
+The same overload works with `http.handler`:
+
+```ts
+app.post(
+  '/api/work-orders',
+  http.handler(validateCreateWorkOrder, (c) => {
+    const input = c.req.valid('json')
+
+    return createWorkOrder(input)
+  })
+)
+```
+
+Validation failures are handled by the validator middleware and return its
+`Response` before the Program runs. The adapter only connects the validated
+Hono input to the typed Program.
+
+## Responses and serialization
+
+The default success policy returns `{ data: value }` as JSON. Use route options
+to set a status or serialize a domain value before it is returned:
+
+```ts
+app.get(
+  '/api/work-orders/:id',
+  http.gen(
+    async function* (c) {
+      const workOrders = yield* WorkOrderService
+      return Result.ok(yield* Result.await(workOrders.get(c.req.param('id'))))
+    },
+    {
+      serialize: (workOrder) => ({
+        id: workOrder.id,
+        createdAt: workOrder.createdAt.toISOString()
+      })
+    }
+  )
+)
+```
+
+The serialized value is returned as `{ data: serializedValue }`. A successful
+`Response` bypasses the default policy. For complete control, use `respond` on
+the route or provide a global `onSuccess` policy:
+
+```ts
+app.get(
+  '/download',
+  http.gen(async function* () {
+    return Result.ok(new Response('file contents'))
+  })
+)
+
+app.get(
+  '/api/summary',
+  http.handler(() => summaryProgram, {
+    respond: (summary, c) => c.json(summary, 200)
+  })
+)
+```
+
+`Result.err(error)` is passed to `onFailure` and converted to the configured
+HTTP response. The original error is also retained as the request Scope's
+`failure` outcome, so finalizers and Runtime observers see the typed cause.
+Thrown defects continue through Hono's `app.onError()`.
+
+## Guards and request-local Services
+
+Use `http.guard` for authentication or other Result-based middleware:
+
+```ts
+app.use(
+  '/api/private/*',
+  http.guard(async function* (c) {
+    const token = c.req.header('Authorization')
+
+    if (token === undefined) {
+      return Result.err(new Error('Authentication required'))
+    }
+
+    const auth = yield* AuthService
+    c.set('user', yield* Result.await(auth.verify(token)))
+
+    return Result.ok()
+  })
+)
+```
+
+An `http.guard` that returns `Result.ok()` calls the next middleware. A
+`Result.err` uses the central failure policy and stops the chain.
+
+Request-local providers can be added without changing the application Runtime:
+
+```ts
+const http = HonoEffect.make(runtime, {
+  requestLayer: (c) =>
+    Layer.succeed(RequestId, new RequestId(c.req.header('X-Request-Id') ?? crypto.randomUUID()))
+})
+```
+
+Those providers are closed with the request Scope. Shared infrastructure stays
+in the Runtime's root Layer and is released by `runtime.dispose()` during
+shutdown.
