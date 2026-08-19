@@ -9,7 +9,7 @@ cross-cutting concerns without placing product-specific infrastructure in core.
 
 ### Requirement: Standard Services are optional normal Services
 
-Clock, Random, Logger, CurrentRequest, and CurrentAbortSignal MUST be exposed as optional modules that use the existing Service/Layer and Runtime context contracts. Importing the core package MUST NOT install any of them automatically, and applications MUST be able to replace each with a test or application layer.
+Clock, Random, Logger, Config, CurrentRequest, and CurrentAbortSignal MUST be exposed as optional modules that use the existing Service/Layer and Runtime context contracts. Importing the core package MUST NOT install any of them automatically, and applications MUST be able to replace each with a test or application layer.
 
 #### Scenario: No standard provider is implicit
 
@@ -18,7 +18,7 @@ Clock, Random, Logger, CurrentRequest, and CurrentAbortSignal MUST be exposed as
 
 #### Scenario: A standard Service can be overridden
 
-- **WHEN** an application composes a test implementation for Clock, Random, or Logger
+- **WHEN** an application composes a test implementation for Clock, Random, Logger, or Config
 - **THEN** the Runtime MUST resolve the replacement through the normal Layer override rules
 
 ### Requirement: Clock has deterministic test behavior
