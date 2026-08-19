@@ -216,9 +216,9 @@ app.get(
 )
 ```
 
-Hono validators can be passed as the first argument to `gen` or `handler`.
-Their validated `c.req.valid(...)` input is then inferred without a manual
-`Input` helper:
+Hono validators can precede the generator or handler callback. Their validated
+`c.req.valid(...)` inputs are combined and inferred without a manual `Input`
+helper:
 
 ```ts
 import { sValidator } from '@hono/standard-validator'
@@ -239,9 +239,23 @@ app.post(
 )
 ```
 
+For multiple validators, pass them in order before the callback:
+
+```ts
+app.post(
+  '/work-orders/:id',
+  http.gen(validateParam, validateHeader, validateCreateWorkOrder, async function* (c) {
+    const id = c.req.valid('param').id
+    const key = c.req.valid('header')['X-Idempotency-Key']
+    const input = c.req.valid('json')
+    return Result.ok({ id, key, input })
+  })
+)
+```
+
 The validator middleware runs before the Program and short-circuits with its
-own `Response` when validation fails. `http.handler` accepts the same
-`(validator, programFactory, options?)` form.
+own `Response` when validation fails. `http.handler` accepts the same ordered
+validator arguments followed by the program factory and options.
 
 Install `hono` only when this subpath is used. The main entrypoint does not
 load the framework.

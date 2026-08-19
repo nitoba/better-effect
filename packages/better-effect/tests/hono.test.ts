@@ -251,6 +251,22 @@ test('HonoEffect infers and composes a Hono input validator', async () => {
 
     return { name: value.name }
   })
+  const validateParam = validator('param', (value: { id?: string }) => {
+    if (value.id === undefined) {
+      return new Response('invalid param', { status: 422 })
+    }
+
+    return { id: value.id }
+  })
+  const validateHeader = validator('header', (value: Record<string, string>) => {
+    const key = value['x-idempotency-key']
+
+    if (key === undefined) {
+      return new Response('invalid header', { status: 422 })
+    }
+
+    return { 'X-Idempotency-Key': key }
+  })
   const http = HonoEffect.make(runtime)
   const app = new Hono()
 
@@ -276,6 +292,17 @@ test('HonoEffect infers and composes a Hono input validator', async () => {
       })
     })
   )
+  app.post(
+    '/validated/:id',
+    http.gen(validateParam, validateHeader, validateJson, async function* (c) {
+      const id = c.req.param('id').trim()
+      const key = c.req.header('X-Idempotency-Key').trim()
+      const input = c.req.valid('json')
+      const service = yield* HttpService
+
+      return Result.ok(`${id}:${key}:${input.name}:${service.value()}`)
+    })
+  )
 
   try {
     const validResponse = await app.request('/validated', {
@@ -296,6 +323,20 @@ test('HonoEffect infers and composes a Hono input validator', async () => {
 
     expect(handlerResponse.status).toBe(200)
     expect(await handlerResponse.json()).toEqual({ data: 'Grace:ok' })
+
+    const combinedResponse = await app.request('/validated/inspection-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Idempotency-Key': 'request-1'
+      },
+      body: JSON.stringify({ name: 'Lin' })
+    })
+
+    expect(combinedResponse.status).toBe(200)
+    expect(await combinedResponse.json()).toEqual({
+      data: 'inspection-1:request-1:Lin:ok'
+    })
 
     handlerCalled = false
     const invalidResponse = await app.request('/validated', {

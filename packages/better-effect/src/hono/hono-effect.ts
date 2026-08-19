@@ -21,11 +21,13 @@ import type {
   GeneratorBody,
   GeneratorChecks,
   HonoContext,
+  HonoEffectContext,
   HonoEffectOptions,
   HonoEffectRouteOptions,
   HonoEffectSuccess,
   MiddlewareEnvironment,
   MiddlewareInput,
+  MiddlewareInputs,
   MiddlewarePath
 } from './types'
 
@@ -86,6 +88,51 @@ export class HonoEffect<
     options?: HonoEffectRouteOptions<EffectSuccess<Program>, Context<E, Path, InputType>>
   ): Handler<E, Path, InputType, Promise<Response>>
   handler<
+    const FirstMiddleware extends AnyHonoMiddleware,
+    const SecondMiddleware extends AnyHonoMiddleware,
+    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
+    Path extends string = MiddlewarePath<FirstMiddleware>,
+    Program extends AnyProgram = AnyProgram
+  >(
+    firstMiddleware: FirstMiddleware,
+    secondMiddleware: SecondMiddleware,
+    makeProgram: (
+      context: HonoEffectContext<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
+    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
+    options?: HonoEffectRouteOptions<
+      EffectSuccess<Program>,
+      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
+    >
+  ): Handler<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>, Promise<Response>>
+  handler<
+    const FirstMiddleware extends AnyHonoMiddleware,
+    const SecondMiddleware extends AnyHonoMiddleware,
+    const ThirdMiddleware extends AnyHonoMiddleware,
+    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
+    Path extends string = MiddlewarePath<FirstMiddleware>,
+    Program extends AnyProgram = AnyProgram
+  >(
+    firstMiddleware: FirstMiddleware,
+    secondMiddleware: SecondMiddleware,
+    thirdMiddleware: ThirdMiddleware,
+    makeProgram: (
+      context: HonoEffectContext<
+        E,
+        Path,
+        MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>
+      >
+    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
+    options?: HonoEffectRouteOptions<
+      EffectSuccess<Program>,
+      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>>
+    >
+  ): Handler<
+    E,
+    Path,
+    MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>,
+    Promise<Response>
+  >
+  handler<
     const InputMiddleware extends AnyHonoMiddleware,
     E extends Env = MiddlewareEnvironment<InputMiddleware>,
     Path extends string = MiddlewarePath<InputMiddleware>,
@@ -93,37 +140,30 @@ export class HonoEffect<
   >(
     inputMiddleware: InputMiddleware,
     makeProgram: (
-      context: Context<E, Path, MiddlewareInput<InputMiddleware>>
+      context: HonoEffectContext<E, Path, MiddlewareInput<InputMiddleware>>
     ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<Program>,
       Context<E, Path, MiddlewareInput<InputMiddleware>>
     >
   ): Handler<E, Path, MiddlewareInput<InputMiddleware>, Promise<Response>>
-  handler(
-    first: AnyHonoMiddleware | AnyProgramFactory,
-    second?: AnyProgramFactory | AnyRouteOptions,
-    third?: AnyRouteOptions
-  ): Handler<any, any, any, Promise<Response>> {
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch distinguishes middleware from the program factory.
-    if (typeof second === 'function') {
-      // SAFETY: the function-valued second argument identifies the first argument as the input middleware overload.
-      const inputMiddleware = first as AnyHonoMiddleware
-      // SAFETY: the function-valued second argument is the program factory overload.
-      const makeProgram = second as AnyProgramFactory
+  handler(...args: unknown[]): Handler<any, any, any, Promise<Response>> {
+    const last = args.at(-1)
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
+    const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
+    // SAFETY: the overloads restrict the optional trailing argument to route options.
+    const options = (hasOptions ? last : {}) as AnyRouteOptions
+    const bodyIndex = hasOptions ? args.length - 2 : args.length - 1
+    // SAFETY: the overloads place the program factory immediately before route options.
+    const makeProgram = args[bodyIndex] as AnyProgramFactory
+    let handler = this.makeHandler(makeProgram, options)
 
-      return this.composeInputMiddleware(
-        inputMiddleware,
-        this.makeHandler(makeProgram, third ?? {})
-      )
+    for (let index = bodyIndex - 1; index >= 0; index -= 1) {
+      // SAFETY: every argument before the program factory is an input middleware by the overloads.
+      handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
     }
 
-    // SAFETY: without a function-valued second argument, the first argument is the program factory overload.
-    const makeProgram = first as AnyProgramFactory
-    // SAFETY: without a function-valued second argument, the second argument is route options.
-    const options = second as AnyRouteOptions | undefined
-
-    return this.makeHandler(makeProgram, options ?? {})
+    return handler
   }
 
   gen<
@@ -141,6 +181,59 @@ export class HonoEffect<
     >
   ): Handler<E, Path, InputType, Promise<Response>>
   gen<
+    const FirstMiddleware extends AnyHonoMiddleware,
+    const SecondMiddleware extends AnyHonoMiddleware,
+    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
+    Path extends string = MiddlewarePath<FirstMiddleware>,
+    const Yield extends EffectYield = EffectYield,
+    const Returned extends AnyResult = AnyResult
+  >(
+    firstMiddleware: FirstMiddleware,
+    secondMiddleware: SecondMiddleware,
+    body: GeneratorBody<
+      HonoEffectContext<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>,
+      Yield,
+      Returned
+    > &
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
+    options?: HonoEffectRouteOptions<
+      EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
+      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
+    >
+  ): Handler<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>, Promise<Response>>
+  gen<
+    const FirstMiddleware extends AnyHonoMiddleware,
+    const SecondMiddleware extends AnyHonoMiddleware,
+    const ThirdMiddleware extends AnyHonoMiddleware,
+    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
+    Path extends string = MiddlewarePath<FirstMiddleware>,
+    const Yield extends EffectYield = EffectYield,
+    const Returned extends AnyResult = AnyResult
+  >(
+    firstMiddleware: FirstMiddleware,
+    secondMiddleware: SecondMiddleware,
+    thirdMiddleware: ThirdMiddleware,
+    body: GeneratorBody<
+      HonoEffectContext<
+        E,
+        Path,
+        MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>
+      >,
+      Yield,
+      Returned
+    > &
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
+    options?: HonoEffectRouteOptions<
+      EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
+      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>>
+    >
+  ): Handler<
+    E,
+    Path,
+    MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>,
+    Promise<Response>
+  >
+  gen<
     const InputMiddleware extends AnyHonoMiddleware,
     E extends Env = MiddlewareEnvironment<InputMiddleware>,
     Path extends string = MiddlewarePath<InputMiddleware>,
@@ -148,38 +241,29 @@ export class HonoEffect<
     const Returned extends AnyResult = AnyResult
   >(
     inputMiddleware: InputMiddleware,
-    body: GeneratorBody<Context<E, Path, MiddlewareInput<InputMiddleware>>, Yield, Returned> &
+    body: GeneratorBody<
+      HonoEffectContext<E, Path, MiddlewareInput<InputMiddleware>>,
+      Yield,
+      Returned
+    > &
       GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
       Context<E, Path, MiddlewareInput<InputMiddleware>>
     >
   ): Handler<E, Path, MiddlewareInput<InputMiddleware>, Promise<Response>>
-  gen(
-    first: AnyHonoMiddleware | AnyGeneratorBody,
-    second?: AnyGeneratorBody | AnyRouteOptions,
-    third?: AnyRouteOptions
-  ): Handler<any, any, any, Promise<Response>> {
+  gen(...args: unknown[]): Handler<any, any, any, Promise<Response>> {
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch distinguishes middleware from the generator body.
-    const hasInputMiddleware = typeof second === 'function'
-    let inputMiddleware: AnyHonoMiddleware | undefined
-    let body: AnyGeneratorBody
-    let options: AnyRouteOptions | undefined
+    const last = args.at(-1)
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
+    const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
+    // SAFETY: the overloads restrict the optional trailing argument to route options.
+    const options = (hasOptions ? last : {}) as AnyRouteOptions
+    const bodyIndex = hasOptions ? args.length - 2 : args.length - 1
+    // SAFETY: the overloads place the generator body immediately before route options.
+    const body = args[bodyIndex] as AnyGeneratorBody
 
-    if (hasInputMiddleware) {
-      // SAFETY: a function-valued second argument identifies the first argument as input middleware.
-      inputMiddleware = first as AnyHonoMiddleware
-      // SAFETY: a function-valued second argument is the generator body overload.
-      body = second as AnyGeneratorBody
-      options = third
-    } else {
-      // SAFETY: without a function-valued second argument, the first argument is the generator body overload.
-      body = first as AnyGeneratorBody
-      // SAFETY: without a function-valued second argument, the second argument is route options.
-      options = second as AnyRouteOptions | undefined
-    }
-
-    const handler = this.makeHandler((context) => {
+    let handler = this.makeHandler((context) => {
       // SAFETY: Effect.fn's runtime generator accepts both sync and async generators; the cast only joins its overloads.
       const program = Effect.fn(
         () => body(context) as AsyncGenerator<EffectYield, AnyResult, unknown>
@@ -187,11 +271,14 @@ export class HonoEffect<
 
       // SAFETY: the public GeneratorChecks overload validates requirements before this erased boundary.
       return program as AnyProgram
-    }, options ?? {})
+    }, options)
 
-    return inputMiddleware === undefined
-      ? handler
-      : this.composeInputMiddleware(inputMiddleware, handler)
+    for (let index = bodyIndex - 1; index >= 0; index -= 1) {
+      // SAFETY: every argument before the generator body is an input middleware by the overloads.
+      handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
+    }
+
+    return handler
   }
 
   guard<
