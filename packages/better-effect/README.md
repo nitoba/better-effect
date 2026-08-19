@@ -188,6 +188,64 @@ const result = await runtime.runWith(RequestLive, handleRequest)
 The request Layer may use root Services, while its scoped providers are closed
 with the execution Scope and never change the shared Runtime environment.
 
+### Hono request boundaries
+
+The optional `better-effect/hono` entrypoint runs one Runtime execution and
+Scope around each request. Handlers can yield Services directly; the adapter
+provides `CurrentRequest`, forwards `Request.signal`, and converts Results to
+Responses in one policy:
+
+```ts
+import { Hono } from 'hono'
+import { Result } from 'better-result'
+import { HonoEffect } from 'better-effect/hono'
+
+const http = HonoEffect.make(runtime, {
+  onFailure: (error, c) => c.json({ error: String(error) }, 400)
+})
+const app = new Hono()
+
+app.use('*', http.middleware())
+app.get(
+  '/work-orders',
+  http.gen(async function* () {
+    const workOrders = yield* WorkOrderService
+    const items = yield* Result.await(workOrders.list())
+    return Result.ok(items)
+  })
+)
+```
+
+Hono validators can be passed as the first argument to `gen` or `handler`.
+Their validated `c.req.valid(...)` input is then inferred without a manual
+`Input` helper:
+
+```ts
+import { sValidator } from '@hono/standard-validator'
+
+app.post(
+  '/work-orders',
+  http.gen(
+    sValidator('json', createWorkOrderSchema),
+    async function* (c) {
+      const input = c.req.valid('json')
+      const workOrders = yield* WorkOrderService
+      const workOrder = yield* Result.await(workOrders.create(input))
+
+      return Result.ok(workOrder)
+    },
+    { status: 201 }
+  )
+)
+```
+
+The validator middleware runs before the Program and short-circuits with its
+own `Response` when validation fails. `http.handler` accepts the same
+`(validator, programFactory, options?)` form.
+
+Install `hono` only when this subpath is used. The main entrypoint does not
+load the framework.
+
 Service and Scope access share one `RuntimeContext`. Node/Bun uses
 `AsyncLocalStorage` by default; hosts without transparent async context can
 pass `contextStorage: new ExplicitRuntimeContextStorage()` from
