@@ -2,6 +2,8 @@ import {
   Clock,
   ClockLive,
   ClockTest,
+  Config,
+  ConfigLive,
   CurrentRequest,
   Logger,
   LoggerTest,
@@ -20,7 +22,9 @@ export type ClockTag = Expect<Equal<typeof Clock.serviceTag, 'Clock'>>
 export type RandomTag = Expect<Equal<typeof Random.serviceTag, 'Random'>>
 export type LoggerTag = Expect<Equal<typeof Logger.serviceTag, 'Logger'>>
 export type RequestTag = Expect<Equal<typeof CurrentRequest.serviceTag, 'CurrentRequest'>>
+export type ConfigTag = Expect<Equal<typeof Config.serviceTag, 'Config'>>
 export type ClockProvider = Expect<Equal<typeof ClockLive extends object ? true : false, true>>
+export type ConfigProvider = Expect<Equal<typeof ConfigLive extends object ? true : false, true>>
 export type ClockContract = Expect<
   Equal<Pick<ClockTest, 'now' | 'sleep'> extends Pick<Clock, 'now' | 'sleep'> ? true : false, true>
 >

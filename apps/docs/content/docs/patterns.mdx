@@ -9,9 +9,8 @@ icon: ChefHat
 Keep one `AppLive` per process boundary:
 
 ```ts
-const ConfigLive = Layer.succeed(Config, config)
 const DatabaseLive = Layer.scoped(Database, connect, close)
-const AppLive = Layer.merge(ConfigLive, DatabaseLive, ServicesLive)
+const AppLive = Layer.merge(DatabaseLive, ServicesLive)
 ```
 
 The entry point chooses the backend and owns Runtime disposal. Business modules
@@ -41,19 +40,74 @@ class AuthService extends Service<AuthService>()('AuthService') {
 No manual `requires: [UserRepository, PasswordHasher]` list can drift from the
 implementation.
 
-## Configuration as a Service
+## Typed environment configuration
 
-Make configuration explicit and testable:
+Use the one-call descriptor when a program owns its source. Any Zod, Valibot,
+or other Standard Schema-compatible schema can be supplied without adding a
+validator dependency to `better-effect`:
 
 ```ts
-class Config extends Service<Config>()('Config') {
-  constructor(readonly databaseUrl: string) {
-    super()
+import { Result } from 'better-result'
+import { Effect } from 'better-effect'
+import { Config } from 'better-effect/standard-services'
+
+const EnvSchema = {
+  '~standard': {
+    version: 1,
+    vendor: 'application',
+    types: {} as {
+      input: Record<string, string | undefined>
+      output: { databaseUrl: string; poolSize: number }
+    },
+    validate: (raw: unknown) => {
+      const env = raw as Record<string, string | undefined>
+      const poolSize = Number(env.POOL_SIZE)
+
+      return env.DATABASE_URL && Number.isInteger(poolSize) && poolSize > 0
+        ? { value: { databaseUrl: env.DATABASE_URL, poolSize } }
+        : { issues: [{ message: 'DATABASE_URL and POOL_SIZE are required' }] }
+    }
   }
 }
 
-const ConfigLive = Layer.succeed(Config, new Config(process.env.DATABASE_URL!))
+const AppConfig = Config.fromEnv({
+  schema: EnvSchema,
+  dotEnvPath: '.env',
+  envSource: process.env
+})
+
+const start = Effect.fn(async function* () {
+  const config = yield* AppConfig
+  return Result.ok(config)
+})
 ```
+
+`AppConfig` creates a fresh source read and validation on every execution.
+Validation issues and dotenv read failures stay in the Result error channel;
+raw environment values are not attached to those errors.
+
+When several descriptors should share one replaceable source, use the advanced
+provider form:
+
+```ts
+import { Effect, Layer, pipe } from 'better-effect'
+import { Config } from 'better-effect/standard-services'
+
+const ConfigLive = Config.layerFromEnv({ dotEnvPath: '.env' })
+const AppConfig = Config.schema(EnvSchema)
+const TestConfig = Layer.override(
+  ConfigLive,
+  Config.layer({
+    DATABASE_URL: 'memory://test',
+    POOL_SIZE: '1'
+  })
+)
+
+const ComposedConfig = pipe(AppConfig, Config.withEnv({ envSource: { POOL_SIZE: '2' } }))
+```
+
+No Config provider is installed by importing the module. Use `Config.layer`
+for in-memory sources and `Layer.override` for an explicit test replacement.
 
 Then use `Layer.scopedGen` to construct a dependent resource:
 
