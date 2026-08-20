@@ -1,0 +1,287 @@
+---
+title: Observability
+description: Connect Runtime execution, dependency and resource events to logs, metrics and tracing.
+icon: Activity
+---
+
+# Observe Runtime activity
+
+`RuntimeObserver` lets an application observe Effect execution without making a
+logging, tracing or error-reporting SDK part of `better_effect`.
+
+Use it to:
+
+- add structured execution logs;
+- measure operation and resource duration;
+- correlate service-resolution failures;
+- connect request IDs and trace IDs to Runtime events;
+- translate cleanup failures into alerts;
+- build adapters for OpenTelemetry, Sentry or another telemetry system.
+
+> This API follows the current main branch and is planned for the next minor
+> release after `0.2.x`.
+
+## Register an observer
+
+```dart
+final class LoggingObserver extends RuntimeObserver {
+  const LoggingObserver(this.logger);
+
+  final Logger logger;
+
+  @override
+  void onExecutionEnd(ExecutionEndEvent event) {
+    logger.info('effect.completed', {
+      'executionId': event.context.executionId,
+      'label': event.context.executionLabel,
+      'durationMs': event.duration.inMilliseconds,
+      'outcome': event.outcome.runtimeType.toString(),
+      ...event.context.localMetadata,
+    });
+  }
+}
+
+final runtime = await appModule.start(
+  observers: [
+    LoggingObserver(logger),
+  ],
+);
+```
+
+`Module.run` and `Module.runExit` accept the same observer options for one-shot
+programs.
+
+Multiple observers run in registration order:
+
+```dart
+final runtime = await appModule.start(
+  observers: [
+    LoggingObserver(logger),
+    MetricsObserver(metrics),
+    TracingObserver(tracer),
+  ],
+);
+```
+
+## Available events
+
+| Callback            | Typical use                                                              |
+| ------------------- | ------------------------------------------------------------------------ |
+| `onExecutionStart`  | Start a log entry, metric timer or trace span.                           |
+| `onExecutionEnd`    | Record the final logical outcome and physical duration.                  |
+| `onServiceResolve`  | Diagnose dependency lookups and resolution failures.                     |
+| `onServiceAcquire`  | Measure Module or Effect resource startup.                               |
+| `onResourceRelease` | Record cleanup duration and release failures.                            |
+| `onInterruption`    | Record owner cancellation or Runtime-shutdown cancellation.              |
+| `onCleanupFailure`  | Alert on aggregated cleanup problems without replacing the main outcome. |
+
+A typical execution produces events in this order:
+
+```text
+execution start
+  ↓
+service resolution and resource acquisition
+  ↓
+optional interruption
+  ↓
+resource release
+  ↓
+optional cleanup failure
+  ↓
+execution end
+```
+
+The end event waits for physical work and Scope cleanup. A timeout or owner
+interruption may already be visible to the caller, but telemetry does not report
+the execution as physically complete until its resources are safe to release.
+
+## Name important operations
+
+Labels make logs and traces stable without depending on function names:
+
+```dart
+final exit = await runtime.runExit(
+  loadUser(userId),
+  executionLabel: 'users.load',
+);
+```
+
+For a managed handle:
+
+```dart
+final execution = runtime.execute(
+  synchronizeAccount(),
+  label: 'accounts.synchronize',
+);
+```
+
+`runWith`, `runExitWith` and `executeWith` use the same labels. In Flutter, an
+`EffectCommand` automatically forwards its `debugLabel` to the Runtime:
+
+```dart
+loadUsers = command(
+  loadUsersEffect,
+  debugLabel: 'users.load',
+);
+```
+
+## Read the event context
+
+Every event carries a `RuntimeEventContext` with correlation-friendly values:
+
+```dart
+final context = event.context;
+
+context.executionId;
+context.executionLabel;
+context.scopeId;
+context.localMetadata;
+```
+
+The execution ID is stable for the lifetime of one managed execution. The Scope
+ID is opaque and useful only for correlation. Observers receive immutable event
+objects rather than mutable Runtime, resolver or resource instances.
+
+## Add execution metadata
+
+Normal `EffectLocal` values remain private. Use `EffectLocal.metadata` for
+small, diagnostic-safe values that should appear in observer events:
+
+```dart
+const requestId = EffectLocal<String>.metadata(
+  'unknown-request',
+  name: 'request.id',
+);
+
+const traceId = EffectLocal<String>.metadata(
+  'unknown-trace',
+  name: 'trace.id',
+);
+```
+
+Apply several typed values in one batch:
+
+```dart
+final observedProgram = program.withLocals([
+  requestId.bind('req-123'),
+  traceId.bind('trace-456'),
+]);
+```
+
+Bindings remain type-safe:
+
+```dart
+requestId.bind('req-123'); // valid
+// requestId.bind(123);    // compile-time error
+```
+
+Nested overrides are reflected where they are active:
+
+```dart
+final nested = operation.withLocal(traceId, 'child-trace');
+```
+
+Service and resource events inside `nested` receive `child-trace`; surrounding
+operations continue to use the outer value.
+
+Use metadata locals for immutable values such as IDs, booleans, dates or short
+labels. Do not put credentials, access tokens, personal data or mutable domain
+objects in telemetry metadata.
+
+## Diagnose dependency resolution
+
+```dart
+final class DependencyObserver extends RuntimeObserver {
+  @override
+  void onServiceResolve(ServiceResolveEvent event) {
+    if (!event.succeeded) {
+      logger.error('service.resolve.failed', {
+        'service': event.serviceType.toString(),
+        'key': event.serviceKey,
+        'path': event.resolutionPath.join(' -> '),
+        'error': event.error.toString(),
+      });
+    }
+  }
+}
+```
+
+The path identifies the requested service and, when available, the constructor
+chain that led to the missing dependency. Key names are reported as logical
+`ServiceKey` names rather than container-specific encodings.
+
+## Observe resource lifetimes
+
+```dart
+final class ResourceMetrics extends RuntimeObserver {
+  @override
+  void onServiceAcquire(ServiceAcquireEvent event) {
+    metrics.timing(
+      'resource.acquire',
+      event.duration,
+      tags: {
+        'service': event.serviceType.toString(),
+        'source': event.source.name,
+      },
+    );
+  }
+
+  @override
+  void onResourceRelease(ResourceReleaseEvent event) {
+    metrics.timing(
+      'resource.release',
+      event.duration,
+      tags: {
+        'service': event.serviceType.toString(),
+        'success': event.succeeded.toString(),
+      },
+    );
+  }
+}
+```
+
+The source tells whether the resource came from a Module or from
+`EffectContext.acquire`. Release events also include the `Exit` that closed the
+resource Scope.
+
+## Keep exporters out of the execution path
+
+Observer callbacks are synchronous so ordering remains predictable. Do not
+await a network exporter inside a callback. Enqueue the event and return:
+
+```dart
+final class QueueingObserver extends RuntimeObserver {
+  QueueingObserver(this.queue);
+
+  final TelemetryQueue queue;
+
+  @override
+  void onExecutionEnd(ExecutionEndEvent event) {
+    queue.add(event);
+  }
+}
+```
+
+The queue can batch and export events independently from Effect execution.
+
+## Handle observer failures
+
+Observer failures never replace an Effect outcome and do not prevent later
+observers from running. An optional error handler can record instrumentation
+problems:
+
+```dart
+final runtime = await appModule.start(
+  observers: [observer],
+  observerErrorHandler: (failure) {
+    fallbackLogger.error(
+      'runtime.observer.failed',
+      error: failure.error,
+      stackTrace: failure.stackTrace,
+    );
+  },
+);
+```
+
+The error handler is best-effort as well. Observability must never become a new
+failure channel for application code.

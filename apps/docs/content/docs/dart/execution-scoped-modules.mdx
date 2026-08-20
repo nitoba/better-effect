@@ -1,0 +1,193 @@
+---
+title: Execution-scoped Modules
+description: Add request context, transactions and temporary providers to one Runtime execution.
+icon: Layers
+---
+
+# Execution-scoped Modules
+
+A long-lived Runtime usually owns application-wide services: configuration,
+database pools, HTTP clients, storage and repositories. Individual operations
+may also need temporary context whose lifetime should end with that execution.
+
+Common examples include:
+
+- an HTTP request and authenticated user;
+- a database transaction;
+- job metadata and correlation IDs;
+- a feature-specific resource;
+- a temporary implementation used by one test or preview.
+
+Execution-scoped Modules provide that environment without modifying the root
+Runtime.
+
+> This API follows the current main branch and is planned for the next minor
+> release after `0.2.x`.
+
+## Run with a temporary Module
+
+```dart
+final requestModule = Module([
+  .instance<RequestContext>(requestContext),
+  .resource<Transaction>(
+    acquire: (services) {
+      final database = services<Database>();
+      return database.beginTransaction();
+    },
+    release: (transaction, exit) {
+      return switch (exit) {
+        ExitSuccess() => transaction.commit(),
+        _ => transaction.rollback(),
+      };
+    },
+  ),
+]);
+
+final exit = await runtime.runExitWith(
+  requestModule,
+  handleRequest,
+  executionLabel: 'http.request',
+);
+```
+
+Use `runWith` when a `ResultDart` is enough:
+
+```dart
+final result = await runtime.runWith(
+  requestModule,
+  handleRequest,
+);
+```
+
+Use `executeWith` when the caller needs a managed handle:
+
+```dart
+final execution = runtime.executeWith(
+  requestModule,
+  handleRequest,
+  label: 'http.request',
+);
+
+execution.interrupt(reason: 'client-disconnected');
+final exit = await execution.exit;
+```
+
+## How services are selected
+
+The temporary Module is local-first:
+
+1. a local binding with the same type and `ServiceKey` shadows the root value;
+2. local services can depend on other local services;
+3. dependencies not provided locally fall back to the root Runtime;
+4. the root environment remains unchanged after the execution.
+
+```dart
+final requestModule = Module([
+  .instance<RequestContext>(requestContext),
+  .provide<RequestRepository>(RequestRepository.new),
+]);
+
+final class RequestRepository {
+  RequestRepository(this.database, this.context);
+
+  final Database database; // root Runtime
+  final RequestContext context; // current execution
+}
+```
+
+The same rule applies to keyed services:
+
+```dart
+const endpoint = ServiceKey<ApiEndpoint>('endpoint');
+
+final previewModule = Module([
+  .instance<ApiEndpoint>(previewEndpoint, key: endpoint),
+]);
+```
+
+Inside that execution, `use(endpoint)` returns `previewEndpoint`. Other Runtime
+executions continue to see the root endpoint.
+
+## Keep transactions close to the operation
+
+Execution-scoped resources are useful when commit or rollback depends on the
+final outcome:
+
+```dart
+final transactionModule = Module([
+  .resource<Transaction>(
+    acquire: (services) {
+      return services<Database>().beginTransaction();
+    },
+    release: (transaction, exit) async {
+      switch (exit) {
+        case ExitSuccess():
+          await transaction.commit();
+        case ExitFailure() || ExitDefect() || ExitInterrupted():
+          await transaction.rollback();
+      }
+    },
+  ),
+]);
+```
+
+The transaction belongs to the physical execution. A timeout or interruption
+may become visible to the caller earlier, but the resource is not released while
+underlying work still uses it.
+
+## Resource cleanup order
+
+For one execution, cleanup follows ownership:
+
+```text
+Effect-acquired resources
+        ↓
+execution Module resources
+        ↓
+execution-local services
+        ↓
+root Runtime resources, only when the Runtime closes
+```
+
+If a later resource fails during Module startup, resources already acquired for
+that execution are released before the defect is returned.
+
+## Reuse one description safely
+
+A Module is immutable and may be reused:
+
+```dart
+final first = runtime.executeWith(requestModule, firstRequest);
+final second = runtime.executeWith(requestModule, secondRequest);
+```
+
+Each call gets its own local service instances, resources and Scope. Concurrent
+requests do not share temporary state.
+
+## Use execution Modules in tests
+
+Keep the application Runtime realistic and replace only the context that belongs
+to the test:
+
+```dart
+final testRequest = Module([
+  .instance<AuthenticatedUser>(testUser),
+  .instance<RequestContext>(const RequestContext('test-request')),
+]);
+
+final exit = await runtime.runExitWith(
+  testRequest,
+  authorizeAction(),
+);
+```
+
+For application-wide replacements, prefer `Module.overrideWith` before starting
+the Runtime. Use execution-scoped Modules when the replacement should belong to
+one operation.
+
+## Analyzer support
+
+The graph checker recognizes Modules passed directly to `runWith`,
+`runExitWith` and `executeWith`. Root dependencies may remain external, while
+local duplicate providers, dependency cycles and invalid resource order are
+still reported. See [Analyzer](/docs/dart/analyzer) for setup and CI usage.

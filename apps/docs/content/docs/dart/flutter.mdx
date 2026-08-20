@@ -1,0 +1,295 @@
+---
+title: Flutter integration
+description: Execute typed Effects through Commands, ViewModels and lifecycle-aware Runtime providers.
+icon: Smartphone
+---
+
+# Flutter integration
+
+`better_effect_flutter` connects a long-lived Dart Runtime to Flutter without
+becoming a state-management framework. It turns an `Effect<A, E>` into an
+observable Command while keeping expected failures, defects and interruption
+separate.
+
+```bash
+flutter pub add better_effect_flutter
+```
+
+The package re-exports `better_effect`, so most applications need one import:
+
+```dart
+import 'package:better_effect_flutter/better_effect_flutter.dart';
+```
+
+## Start the application Runtime
+
+Use `runBetterEffectApp` when the package owns the application root:
+
+```dart
+Future<void> main() {
+  return runBetterEffectApp(
+    module: appModule,
+    app: const App(),
+  );
+}
+```
+
+For add-to-app, previews, tests or feature roots that need asynchronous startup,
+use `BetterEffectBootstrap`:
+
+```dart
+BetterEffectBootstrap(
+  module: appModule,
+  loadingBuilder: (_) => const SplashScreen(),
+  errorBuilder: (context, error, stackTrace, retry) {
+    return StartupError(
+      error: error,
+      onRetry: retry,
+    );
+  },
+  builder: (_) => const App(),
+)
+```
+
+Both forms place a `Runtime` and `EffectCommands` factory in the widget tree.
+
+## Create a ViewModel-owned Command
+
+```dart
+final class LoginViewModel extends EffectViewModel {
+  LoginViewModel(super.commands) {
+    login = commandWithInput<LoginInput, Session, AuthFailure>(
+      authenticate,
+      concurrency: EffectCommandConcurrency.drop,
+      debugLabel: 'auth.login',
+    );
+  }
+
+  late final EffectCommand<LoginInput, Session, AuthFailure> login;
+}
+```
+
+Commands created through `EffectViewModel` are disposed with the ViewModel.
+The ViewModel receives the scoped `EffectCommands` factory rather than the
+Runtime, Module or infrastructure services.
+
+Create the ViewModel at a Flutter composition boundary:
+
+```dart
+EffectViewModelBuilder<LoginViewModel>(
+  create: (_, commands) => LoginViewModel(commands),
+  builder: (_, viewModel, _) {
+    return LoginView(viewModel: viewModel);
+  },
+)
+```
+
+Existing Provider, Riverpod, BLoC, Signals or other adapters can use
+`context.effectCommands` when constructing the ViewModel.
+
+## Render Command state
+
+Every Command exposes a sealed `EffectCommandState<A, E>`:
+
+| State                      | Meaning                                                               |
+| -------------------------- | --------------------------------------------------------------------- |
+| `EffectCommandIdle`        | No authoritative execution is active.                                 |
+| `EffectCommandRunning`     | The Effect is running.                                                |
+| `EffectCommandSuccess`     | The Effect returned a value.                                          |
+| `EffectCommandFailure`     | The Effect returned an expected failure.                              |
+| `EffectCommandDefect`      | An unexpected exception, missing service or cleanup problem occurred. |
+| `EffectCommandInterrupted` | The Command stopped owning the current result.                        |
+
+Use `EffectCommandBuilder` for state-driven UI:
+
+```dart
+EffectCommandBuilder<Session, AuthFailure>(
+  command: viewModel.login,
+  builder: (context, state, child) {
+    return switch (state) {
+      EffectCommandIdle() => const LoginForm(),
+      EffectCommandRunning() => const LoginLoading(),
+      EffectCommandSuccess(:final value) => Home(session: value),
+      EffectCommandFailure(:final error) => LoginError(error),
+      EffectCommandDefect(:final defect) => UnexpectedError(defect),
+      EffectCommandInterrupted() => const LoginForm(),
+    };
+  },
+)
+```
+
+Use `EffectCommandListener` for one-shot presentation effects such as SnackBars,
+dialogs and navigation:
+
+```dart
+EffectCommandListener<Session, AuthFailure>(
+  command: viewModel.login,
+  onSuccess: (context, session) {
+    Navigator.of(context).pushReplacementNamed('/home');
+  },
+  onFailure: (context, failure, previous) {
+    showLoginFailure(context, failure);
+  },
+  child: LoginButton(viewModel: viewModel),
+)
+```
+
+Each visible state revision is delivered once, so listeners do not require a
+manual “clear event” flag.
+
+## Choose a repeated-execution policy
+
+```dart
+EffectCommandConcurrency.drop
+EffectCommandConcurrency.latest
+EffectCommandConcurrency.queue
+```
+
+- `drop` returns the active Future and does not start duplicate work. Use it for
+  submit buttons and destructive operations.
+- `latest` starts every call but only the newest execution may update visible
+  state. Use it for search and changing filters.
+- `queue` runs calls serially in request order. Use it for ordered writes and
+  uploads where every intent matters.
+
+```dart
+search = commandWithInput<Query, List<User>, SearchFailure>(
+  searchUsers,
+  concurrency: EffectCommandConcurrency.latest,
+);
+```
+
+## Cancel cooperatively
+
+```dart
+viewModel.upload.cancel();
+```
+
+Cancellation immediately publishes `EffectCommandInterrupted` and completes the
+caller with `ExitInterrupted`. The core Runtime also receives the interruption
+signal. Underlying work continues to belong to the Runtime until it finishes.
+
+Inside the Effect, observe cancellation at a supported boundary:
+
+```dart
+Effect<Upload, UploadFailure> upload(File file) {
+  return Effect.result((use) async {
+    final result = await uploader.send(
+      file,
+      cancellation: use.cancellation,
+    );
+
+    use.cancellation.throwIfCancelled();
+    return result;
+  });
+}
+```
+
+`onCancel` remains useful as an adapter for APIs with their own token, isolate or
+download handle.
+
+For queued Commands, `cancel(clearQueued: false)` interrupts the active
+execution and allows the next queued operation to begin.
+
+## Configure Runtime ownership
+
+A Runtime should have exactly one owner.
+
+```dart
+BetterEffectProvider(
+  runtime: runtime,
+  ownership: BetterEffectRuntimeOwnership.application,
+  lifecyclePolicy: const BetterEffectLifecyclePolicy.application(
+    gracePeriod: Duration(seconds: 2),
+    interruptExecutionsBeforeClose: true,
+  ),
+  child: const App(),
+)
+```
+
+Available ownership modes are:
+
+| Ownership     | Use it when                                          |
+| ------------- | ---------------------------------------------------- |
+| `application` | The Runtime belongs to the Flutter application root. |
+| `widget`      | The Runtime belongs to one feature subtree.          |
+| `external`    | Another boundary creates and closes the Runtime.     |
+
+For an externally owned Runtime, use the non-owning constructor:
+
+```dart
+BetterEffectProvider.value(
+  runtime: runtime,
+  child: const FeatureRoot(),
+)
+```
+
+Do not use an owning provider when another object also calls `runtime.close()`.
+
+## Access the current scope
+
+Flutter integration boundaries can use:
+
+```dart
+final commands = context.effectCommands;
+final runtime = context.effectRuntime;
+
+final result = await context.runEffect(program);
+final exit = await context.runEffectExit(program);
+final service = context.readEffectService<ApiClient>();
+```
+
+Business operations should still request services inside Effects. Direct
+service access from `BuildContext` is intended for factories, routes and
+integration adapters.
+
+## Connect Commands to Runtime observability
+
+A Command forwards its `debugLabel` to the managed Runtime execution:
+
+```dart
+load = command(
+  loadDashboard,
+  debugLabel: 'dashboard.load',
+);
+```
+
+A [Runtime observer](/docs/dart/observability) can then correlate Flutter state
+transitions with service resolution, resource lifetime and execution duration.
+
+Command transition observers remain available for presentation-level analytics:
+
+```dart
+final commands = EffectCommands(
+  runtime,
+  observer: (transition) {
+    analytics.recordCommandTransition(transition);
+  },
+);
+```
+
+Use Runtime observers for execution and resource telemetry. Use Command
+observers for UI-state transitions.
+
+## Test the real flow
+
+Replace only the services that differ and execute the real Command:
+
+```dart
+final runtime = await appModule.overrideWith([
+  .instance<AuthRepository>(FakeAuthRepository()),
+]).start();
+
+final viewModel = LoginViewModel(EffectCommands(runtime));
+
+try {
+  final exit = await viewModel.login.execute(input);
+  expect(exit, isA<ExitSuccess<Session, AuthFailure>>());
+} finally {
+  viewModel.dispose();
+  await runtime.close();
+}
+```
+
+For widget tests, `BetterEffectProvider.value` lets the test retain ownership of
+the Runtime and close it explicitly during teardown.

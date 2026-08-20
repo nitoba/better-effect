@@ -1,10 +1,24 @@
 ---
 title: Introduction
-description: A small, typed architecture for Result-based TypeScript applications.
+description: A small, typed architecture for Result-based TypeScript, Dart and Flutter applications.
 icon: BookOpen
 ---
 
 # Build applications around explicit dependencies
+
+The better-effect family has two related implementations:
+
+- [`better-effect`](https://github.com/nitoba/better-effect) for TypeScript and
+  `better-result` applications;
+- [`better_effect`](https://github.com/nitoba/better-effect-dart) for Dart, plus
+  `better_effect_flutter` and `better_effect_analyzer` for Flutter and tooling.
+
+Both keep the same practical boundary: describe operations with typed failures,
+provide dependencies at an application boundary, execute through a managed
+Runtime and release resources through explicit Scopes.
+
+This page continues with the TypeScript package. Dart and Flutter users can
+start from the dedicated [Dart & Flutter guide](/docs/dart).
 
 Most application code has two independent questions:
 
@@ -24,7 +38,7 @@ Scope             owns resources and finalizers
 better-result     remains the source of truth for success and failure
 ```
 
-## The complete path
+## The TypeScript path
 
 ```text
 define a Service
@@ -52,7 +66,8 @@ contains only dependencies that remain external.
   items={[
     'I am new to better-effect',
     'I already use better-result',
-    'I am integrating a container'
+    'I am integrating a container',
+    'I use Dart or Flutter'
   ]}
 >
   <Tab>
@@ -68,6 +83,10 @@ contains only dependencies that remain external.
   <Tab>
     Read [Backends](/docs/backends). The core contracts are deliberately container-agnostic; ITI is
     the built-in `MapLayerBackend` by default; ITI remains an optional adapter.
+  </Tab>
+  <Tab>
+    Open the [Dart & Flutter guide](/docs/dart). It covers `Effect<A, E>`, Modules, managed Runtime
+    execution, Flutter Commands, observability and the project analyzer.
   </Tab>
 </Tabs>
 

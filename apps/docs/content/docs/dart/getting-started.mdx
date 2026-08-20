@@ -1,0 +1,188 @@
+---
+title: Getting Started
+description: Install better_effect, define one typed operation and run it through a Module.
+icon: Rocket
+---
+
+# Run your first Effect
+
+A complete application path has three pieces:
+
+1. an `Effect<A, E>` that describes the operation;
+2. a `Module` that provides the services it needs;
+3. a `Runtime` boundary that executes the Effect.
+
+## Install the core package
+
+```bash
+dart pub add better_effect
+```
+
+Or add the current stable line manually:
+
+```yaml
+dependencies:
+  better_effect: ^0.2.0
+```
+
+For Flutter, install the integration package instead. It re-exports the core
+API:
+
+```bash
+flutter pub add better_effect_flutter
+```
+
+```yaml
+dependencies:
+  better_effect_flutter: ^0.2.0
+```
+
+Pages that use `RuntimeObserver` or execution-scoped Modules follow the current
+main branch. Until the next minor version is published, they can be evaluated
+with a Git dependency:
+
+```yaml
+dependencies:
+  better_effect:
+    git:
+      url: https://github.com/nitoba/better-effect-dart.git
+      path: packages/better_effect
+```
+
+## Define a typed failure
+
+Expected application failures belong in the second type parameter of an Effect:
+
+```dart
+sealed class AppFailure implements Exception {
+  const AppFailure();
+}
+
+final class GreetingUnavailable extends AppFailure {
+  const GreetingUnavailable(this.reason);
+
+  final String reason;
+}
+```
+
+A type alias keeps application signatures short:
+
+```dart
+typedef AppEffect<A extends Object> = Effect<A, AppFailure>;
+```
+
+## Define a service
+
+```dart
+abstract interface class GreetingService {
+  AppEffect<String> greet(String name);
+}
+
+final class GreetingServiceLive implements GreetingService {
+  @override
+  AppEffect<String> greet(String name) {
+    return Effect.tryAsync(
+      () async => 'Hello, $name!',
+      onError: (error, stackTrace) {
+        return GreetingUnavailable(error.toString());
+      },
+    );
+  }
+}
+```
+
+`Effect.tryAsync` maps thrown `Exception` values into the expected failure
+channel. Programming errors and other unexpected thrown objects remain defects.
+
+## Request the service inside an Effect
+
+```dart
+AppEffect<String> greeting(String name) {
+  return Effect.result((use) async {
+    final service = use<GreetingService>();
+    return use.unwrap(service.greet(name));
+  });
+}
+```
+
+`use<GreetingService>()` resolves from the Runtime executing this Effect. It is
+not a global service locator. The same operation can run with a production
+Module, a test Module or a local override.
+
+`use.unwrap` executes another Effect in the same environment. If the nested
+Effect returns an expected failure, the current body stops and propagates it.
+
+## Provide the implementation
+
+```dart
+final appModule = Module([
+  .provide<GreetingService>(GreetingServiceLive.new),
+]);
+```
+
+Modules are descriptions. The service is created only when a Runtime starts and
+needs it.
+
+## Execute the operation
+
+For a script or command, `Module.run` creates a Runtime, executes the Effect and
+closes the environment:
+
+```dart
+Future<void> main() async {
+  final result = await appModule.run(greeting('Dart'));
+
+  result.fold(
+    print,
+    (failure) => print('Could not greet: $failure'),
+  );
+}
+```
+
+`run` returns `ResultDart<A, E>`. Use `runExit` when the boundary also needs to
+inspect defects or interruption:
+
+```dart
+final exit = await appModule.runExit(greeting('Dart'));
+
+switch (exit) {
+  case ExitSuccess(:final value):
+    print(value);
+  case ExitFailure(:final error):
+    print('Expected failure: $error');
+  case ExitDefect(:final defect, :final stackTrace):
+    reportUnexpected(defect, stackTrace);
+  case ExitInterrupted():
+    print('The operation was interrupted.');
+}
+```
+
+## Keep a Runtime alive
+
+Applications that execute many operations should start one Runtime and close it
+at the ownership boundary:
+
+```dart
+final runtime = await appModule.start();
+
+try {
+  final first = await runtime.run(greeting('Dart'));
+  final second = await runtime.run(greeting('Flutter'));
+} finally {
+  await runtime.close();
+}
+```
+
+Services and Module resources remain available between executions. Resources
+acquired by one Effect are released when that execution finishes.
+
+## Where to go next
+
+- [Effects and failures](/docs/dart/effects) explains composition, Results,
+  defects and scoped resources.
+- [Runtime and lifecycle](/docs/dart/runtime) covers managed execution,
+  cancellation and shutdown.
+- [Flutter integration](/docs/dart/flutter) turns Effects into observable
+  Commands owned by ViewModels.
+- [Analyzer](/docs/dart/analyzer) catches discarded Effects and invalid Module
+  graphs before runtime.

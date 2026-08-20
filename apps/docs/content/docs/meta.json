@@ -2,6 +2,7 @@
   "title": "Guides",
   "pages": [
     "index",
+    "dart",
     "getting-started",
     "mental-model",
     "services",

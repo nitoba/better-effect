@@ -1,0 +1,85 @@
+---
+title: Dart & Flutter
+description: Typed Effects, contextual dependencies and scoped resources for Dart and Flutter applications.
+icon: Code
+---
+
+# Typed Effects for Dart and Flutter
+
+The Dart packages bring the same small-library philosophy to ordinary
+`async`/`await` code: expected failures stay typed, dependencies come from the
+Runtime executing the operation, and resources belong to explicit lifetimes.
+
+The family has three packages:
+
+| Package                  | Use it for                                                          |
+| ------------------------ | ------------------------------------------------------------------- |
+| `better_effect`          | Dart-only Effects, Modules, Runtime execution and scoped resources. |
+| `better_effect_flutter`  | Commands, ViewModels, widgets and Flutter Runtime lifecycle.        |
+| `better_effect_analyzer` | IDE diagnostics and whole-project Module graph validation.          |
+
+> These pages follow the current `better-effect-dart` main branch. The stable
+> `0.2.x` packages already include managed execution, graceful shutdown and the
+> Flutter lifecycle APIs. Execution-scoped Modules and Runtime observers are
+> planned for the next minor release; use a Git dependency when evaluating them
+> before that release is published.
+
+## The mental model
+
+```text
+Module       describes services, lifetimes and resources
+    │
+    ▼
+Runtime      owns the live environment and executes Effects
+    │
+    ▼
+Effect<A, E> describes a lazy operation with typed failures
+    │
+    ├── success: A
+    ├── expected failure: E
+    ├── defect: unexpected exception or infrastructure failure
+    └── interruption: the owner stopped waiting for this result
+```
+
+Flutter adds one presentation boundary:
+
+```text
+Widget
+  ↓ user action
+ViewModel
+  ↓ owns
+EffectCommand
+  ↓ executes through
+Runtime
+  ↓ runs
+Effect<A, E>
+```
+
+The packages do not replace your HTTP client, database, state-management
+library or routing solution. They define how application operations are
+executed, how their dependencies are supplied, and who owns their resources.
+
+## Choose your starting point
+
+- Start with [Getting Started](/docs/dart/getting-started) to run a complete
+  Dart Effect through a Module.
+- Read [Effects and failures](/docs/dart/effects) when designing repositories,
+  use cases and typed domain errors.
+- Read [Runtime and lifecycle](/docs/dart/runtime) for long-lived applications,
+  cancellation and graceful shutdown.
+- Read [Execution-scoped Modules](/docs/dart/execution-scoped-modules) for
+  request context, transactions and temporary overrides.
+- Read [Observability](/docs/dart/observability) to connect execution events to
+  logs, metrics or tracing.
+- Read [Flutter integration](/docs/dart/flutter) for Commands, ViewModels and
+  Runtime ownership in the widget tree.
+- Read [Analyzer](/docs/dart/analyzer) to catch lazy-Effect mistakes and validate
+  the complete dependency graph.
+
+## What the library deliberately does not add
+
+The Runtime does not introduce fibers, a scheduler, preemptive cancellation or
+a second state-management system. Dart Futures remain Dart Futures, and
+cancellation remains cooperative. This smaller boundary keeps the API useful in
+server applications, command-line tools and Flutter apps without asking the
+rest of the codebase to adopt a new execution model.

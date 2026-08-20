@@ -1,0 +1,14 @@
+{
+  "title": "Dart & Flutter",
+  "pages": [
+    "index",
+    "getting-started",
+    "effects",
+    "runtime",
+    "execution-scoped-modules",
+    "observability",
+    "flutter",
+    "analyzer"
+  ],
+  "defaultOpen": true
+}

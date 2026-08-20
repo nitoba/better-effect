@@ -1,0 +1,207 @@
+---
+title: Analyzer
+description: Catch lazy-Effect mistakes in the IDE and validate the complete Module dependency graph.
+icon: Search
+---
+
+# Static analysis and graph validation
+
+`better_effect_analyzer` provides two complementary forms of feedback:
+
+- an Analysis Server plugin for local diagnostics in the IDE, `dart analyze`
+  and `flutter analyze`;
+- a whole-project graph checker for complete Module composition roots.
+
+The package is development tooling. It is not a runtime dependency and should
+not be imported by application code.
+
+## Install the tooling package
+
+```bash
+dart pub add --dev better_effect_analyzer
+```
+
+Or add the stable version manually:
+
+```yaml
+dev_dependencies:
+  better_effect_analyzer: ^0.2.0
+```
+
+## Enable IDE diagnostics
+
+Configure the plugin in the top-level `analysis_options.yaml`:
+
+```yaml
+include: package:flutter_lints/flutter.yaml
+
+plugins:
+  better_effect_analyzer:
+    version: ^0.2.0
+    diagnostics:
+      repository_requests_repository: true
+      viewmodel_requests_service: true
+      widget_requests_business_dependency: true
+      singleton_viewmodel: true
+```
+
+Restart the Dart Analysis Server after changing the `plugins` section.
+
+The correctness rules are enabled with the plugin. The architecture rules are
+optional because teams draw repository, ViewModel and service boundaries
+differently.
+
+## Catch lazy Effect mistakes
+
+Effects do not run when they are constructed. The analyzer warns when an Effect
+is discarded:
+
+```dart
+repository.save(user);
+// The Effect was created but not composed or executed.
+```
+
+Compose or execute it explicitly:
+
+```dart
+await use.unwrap(repository.save(user));
+return repository.save(user);
+await runtime.run(repository.save(user));
+```
+
+It also warns when asynchronous `EffectContext` operations are ignored:
+
+```dart
+use.unwrap(repository.save(user));
+// Await or return this Future.
+```
+
+## Validate Module bindings
+
+Constructor-backed bindings should declare the service contract:
+
+```dart
+final appModule = Module([
+  .provide<Database>(DatabaseLive.new),
+]);
+```
+
+The plugin checks:
+
+- missing or uninformative service type arguments;
+- provider implementations that do not satisfy the registered contract;
+- duplicate service identities inside one Module;
+- keyed bindings as separate typed identities.
+
+These checks catch common composition mistakes at the declaration site rather
+than after the Runtime starts.
+
+## Opt into Flutter architecture rules
+
+The optional rules support this dependency direction:
+
+```text
+Widget → ViewModel → Repository or use case → Service
+```
+
+They can report when:
+
+- a repository coordinates another repository directly;
+- a ViewModel requests a low-level API client, database or storage service;
+- a Widget resolves a business dependency directly;
+- a ViewModel is registered as an application-lifetime singleton.
+
+Treat these as architecture policies, not universal Dart rules. Enable the ones
+that match the application structure.
+
+## Check the whole dependency graph
+
+Run the graph checker from the application root:
+
+```bash
+dart run better_effect_analyzer
+```
+
+For Flutter projects:
+
+```bash
+flutter pub get
+dart run better_effect_analyzer
+```
+
+The checker follows Module composition across libraries and can report:
+
+- a service required by the application but missing from the root Module;
+- dependency cycles between providers;
+- recursive Module composition;
+- duplicate or incompatible providers after Modules are merged;
+- resources that depend on another resource acquired later;
+- explicitly selected Module roots that do not exist.
+
+A graph-level error answers the composition question that a local lint cannot:
+
+```text
+Does the application Module provide every service requested by the program?
+```
+
+## Select a composition root
+
+Large projects may contain several Modules for applications, tests, workers or
+previews. Select the root that should be validated:
+
+```bash
+dart run better_effect_analyzer --module appModule
+```
+
+Use the CLI help for the output and selection options available in the installed
+version:
+
+```bash
+dart run better_effect_analyzer --help
+```
+
+## Execution-scoped Modules
+
+The current main branch recognizes Modules passed directly to:
+
+```dart
+runtime.runWith(requestModule, operation);
+runtime.runExitWith(requestModule, operation);
+runtime.executeWith(requestModule, operation);
+```
+
+Those Modules may rely on services supplied by the root Runtime. Local
+structural mistakes are still checked, including duplicate providers, cycles
+and resources declared in an invalid startup order.
+
+See [Execution-scoped Modules](/docs/dart/execution-scoped-modules) for the
+runtime model.
+
+## Add graph validation to CI
+
+A minimal workflow step is:
+
+```yaml
+- name: Install dependencies
+  run: dart pub get
+
+- name: Analyze Dart code
+  run: dart analyze --fatal-infos
+
+- name: Validate better_effect Module graph
+  run: dart run better_effect_analyzer --module appModule
+```
+
+For Flutter, use `flutter pub get` and `flutter analyze --fatal-infos` before the
+graph command.
+
+Keep both layers in CI:
+
+- the Analysis Server plugin catches local code and binding errors;
+- the graph checker validates the application composition root.
+
+## Keep tooling out of production
+
+Add `better_effect_analyzer` to `dev_dependencies`, not `dependencies`. The
+Runtime does not require the analyzer package, and production Flutter code
+should never import it.

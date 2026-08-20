@@ -1,0 +1,218 @@
+---
+title: Runtime and lifecycle
+description: Configure Modules, manage executions and close Dart application resources safely.
+icon: Play
+---
+
+# Runtime and lifecycle
+
+A `Module` describes the application environment. A `Runtime` turns that
+description into live services and owns every Effect and resource executed
+through it.
+
+## Configure a Module
+
+```dart
+final appModule = Module([
+  .instance<AppConfig>(config),
+  .provide<HttpClient>(HttpClientLive.new),
+  .provide<UserRepository>(UserRepositoryLive.new),
+  .resource<Database>(
+    acquire: (_) => Database.open(config.databaseUrl),
+    release: (database, exit) => database.close(),
+  ),
+]);
+```
+
+Available binding styles include:
+
+| Binding                          | Lifetime                                                             |
+| -------------------------------- | -------------------------------------------------------------------- |
+| `.factory<T>(constructor)`       | A new value on every resolution.                                     |
+| `.singleton<T>(constructor)`     | Created when the Runtime starts.                                     |
+| `.lazySingleton<T>(constructor)` | Created on first use and then reused.                                |
+| `.provide<T>(constructor)`       | Lazy singleton by default, with an explicit contract.                |
+| `.instance<T>(value)`            | Uses an already-created value.                                       |
+| `.resource<T>(...)`              | Acquired when the Runtime starts and released when its Scope closes. |
+
+Constructor injection and contextual lookup can coexist. A service can receive
+stable dependencies through its constructor while an Effect requests the
+service only at the point where it is needed.
+
+## One-shot execution
+
+Use `Module.run` for scripts, migrations and commands:
+
+```dart
+final result = await appModule.run(importData());
+```
+
+Use `runExit` when the caller needs to inspect defects and interruption:
+
+```dart
+final exit = await appModule.runExit(importData());
+```
+
+Both forms always close the Runtime after the operation finishes.
+
+## Long-lived Runtime
+
+Servers, workers and Flutter applications normally start one Runtime:
+
+```dart
+final runtime = await appModule.start();
+
+try {
+  await runtime.run(loadDashboard());
+  await runtime.run(refreshSession());
+} finally {
+  await runtime.close();
+}
+```
+
+Module services and resources stay alive between calls. Each call receives its
+own child Scope for execution-owned resources.
+
+## Managed execution
+
+`Runtime.execute` returns an `EffectExecution<A, E>` handle:
+
+```dart
+final execution = runtime.execute(
+  loadUser(userId),
+  label: 'users.load',
+);
+
+final exit = await execution.exit;
+```
+
+The handle exposes:
+
+- an execution ID;
+- an optional diagnostic label;
+- the logical `exit` visible to the caller;
+- whether physical work is still running;
+- cooperative interruption.
+
+This is useful when a UI, request, job or other owner needs to control one
+execution explicitly.
+
+## Cooperative interruption
+
+Dart Futures cannot be stopped preemptively. Interruption therefore has two
+parts:
+
+1. the owner publishes `ExitInterrupted` for the logical execution;
+2. the Effect receives a cancellation signal and can stop at a cooperative
+   boundary.
+
+```dart
+final execution = runtime.execute(download(), label: 'download');
+
+execution.interrupt(reason: 'screen-disposed');
+
+final exit = await execution.exit;
+```
+
+Inside the Effect:
+
+```dart
+Effect<File, DownloadFailure> download() {
+  return Effect.result((use) async {
+    final response = await client.download(
+      cancellation: use.cancellation,
+    );
+
+    use.cancellation.throwIfCancelled();
+    return response.file;
+  });
+}
+```
+
+An Effect may also await `use.cancellation.whenCancelled` or inspect
+`isCancelled` and `reason`.
+
+A logical interruption does not release resources still used by the underlying
+Future. The Runtime keeps ownership until physical work and Scope cleanup
+finish.
+
+## Timeouts
+
+```dart
+final timed = loadRemoteData().timeout(
+  const Duration(seconds: 5),
+  onTimeout: () => const RequestTimedOut(),
+);
+```
+
+The caller receives the typed timeout failure when the duration expires. The
+source Future is not forcefully cancelled; its Scope remains alive until the
+physical work ends. APIs that support cancellation should also observe the
+execution's cancellation signal.
+
+## Graceful shutdown
+
+```dart
+await runtime.close(
+  gracePeriod: const Duration(seconds: 2),
+  interruptAfterGracePeriod: true,
+);
+```
+
+Shutdown follows a predictable policy:
+
+- new executions are rejected after closing begins;
+- active physical work receives time to finish;
+- after the grace period, cancellation can be requested cooperatively;
+- execution resources close before Runtime resources;
+- concurrent `close()` callers share the same shutdown;
+- the backend is released last.
+
+An Effect that ignores cancellation can keep shutdown open until its Future
+settles. This is intentional: releasing a database or client while active code
+still uses it would be unsafe.
+
+## Resource cleanup and outcomes
+
+Resource release callbacks receive the outcome that closed their Scope:
+
+```dart
+.resource<Transaction>(
+  acquire: (services) {
+    final database = services<Database>();
+    return database.beginTransaction();
+  },
+  release: (transaction, exit) {
+    return switch (exit) {
+      ExitSuccess() => transaction.commit(),
+      _ => transaction.rollback(),
+    };
+  },
+)
+```
+
+If cleanup fails after an expected domain failure, the typed failure remains the
+primary outcome. Cleanup diagnostics can be observed separately through
+[Runtime observability](/docs/dart/observability).
+
+## Replace services for tests
+
+`overrideWith` replaces matching service identities without changing the
+original Module:
+
+```dart
+final testModule = appModule.overrideWith([
+  .instance<UserRepository>(FakeUserRepository()),
+]);
+
+final exit = await testModule.runExit(loadUser(userId));
+```
+
+The replacement keeps the declaration position of an existing binding, so
+resource startup and reverse cleanup order remain predictable.
+
+## Temporary environments
+
+A request, transaction or feature may need providers that should not live for
+the whole application. Use [execution-scoped Modules](/docs/dart/execution-scoped-modules)
+to attach those services to one managed execution.

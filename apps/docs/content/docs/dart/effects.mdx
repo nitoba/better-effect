@@ -1,0 +1,218 @@
+---
+title: Effects and failures
+description: Describe lazy operations, compose typed failures and acquire resources with ordinary async/await.
+icon: Workflow
+---
+
+# Effects and failures
+
+An `Effect<A, E>` is a lazy operation that can succeed with `A` or return an
+expected failure of type `E`.
+
+```dart
+Effect<User, AppFailure> loadUser(UserId id)
+```
+
+Creating the value does not execute it. Execution begins only when a Module or
+Runtime runs the Effect, or when another Effect composes it with `use.unwrap`.
+
+## Write application code with `Effect.result`
+
+```dart
+Effect<User, AppFailure> loadUser(UserId id) {
+  return Effect.result((use) async {
+    final users = use<UserRepository>();
+    final audit = use<AuditLog>();
+
+    final user = await use.unwrap(users.findById(id));
+    await use.unwrap(audit.userLoaded(user.id));
+
+    return user;
+  });
+}
+```
+
+The `use` context is scoped to the current execution. It can:
+
+- resolve services;
+- compose Effects and `ResultDart` values;
+- stop with a typed failure;
+- observe cooperative cancellation;
+- read execution-local values;
+- acquire resources owned by the current Scope.
+
+## Propagate expected failures
+
+Use `use.unwrap` for another Effect:
+
+```dart
+final user = await use.unwrap(repository.findById(id));
+```
+
+Use `use.result` for a synchronous or asynchronous `ResultDart`:
+
+```dart
+final cached = await use.result(cache.read(id));
+```
+
+Use `use.fail` when a branch represents a domain failure:
+
+```dart
+Effect<User, AppFailure> requireActive(User user) {
+  return Effect.result((use) async {
+    if (!user.isActive) {
+      use.fail(UserInactive(user.id));
+    }
+
+    return user;
+  });
+}
+```
+
+All three operations stop the current body when they encounter a compatible
+failure. Dart's type system still checks that the nested failure belongs to the
+outer Effect's failure type.
+
+## Choose exception boundaries deliberately
+
+Use `Effect.tryAsync` when a thrown `Exception` should become an expected
+failure:
+
+```dart
+Effect<Response, NetworkFailure> requestUsers() {
+  return Effect.tryAsync(
+    () => client.get('/users'),
+    onError: (error, stackTrace) {
+      return NetworkFailure.from(error, stackTrace);
+    },
+  );
+}
+```
+
+Use `Effect.sync` for lazy synchronous work whose exceptions should remain
+unexpected defects:
+
+```dart
+final decode = Effect<User, AppFailure>.sync(
+  () => User.fromJson(payload),
+);
+```
+
+`Effect.tryAll` also maps Dart `Error` values and arbitrary thrown objects. Use
+it only when that broader boundary is intentional.
+
+## Understand the four outcomes
+
+At a Runtime boundary, an Effect produces an `Exit<A, E>`:
+
+| Exit                    | Meaning                                                                  |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `ExitSuccess<A, E>`     | The operation produced a value.                                          |
+| `ExitFailure<A, E>`     | The operation returned an expected, typed failure.                       |
+| `ExitDefect<A, E>`      | An unexpected exception, missing dependency or cleanup problem occurred. |
+| `ExitInterrupted<A, E>` | The owner interrupted the logical execution.                             |
+
+`runtime.run` converts success and expected failure back into a `ResultDart` and
+throws defects. `runtime.runExit` keeps every outcome as a value.
+
+```dart
+final exit = await runtime.runExit(loadUser(id));
+
+switch (exit) {
+  case ExitSuccess(:final value):
+    render(value);
+  case ExitFailure(:final error):
+    renderFailure(error);
+  case ExitDefect(:final defect, :final stackTrace):
+    report(defect, stackTrace);
+  case ExitInterrupted():
+    renderInterrupted();
+}
+```
+
+## Transform and compose
+
+The core operators preserve laziness and the current Runtime environment:
+
+```dart
+final displayName = loadUser(id)
+    .map((user) => user.displayName)
+    .tap((name) => logger.debug('Loaded $name'));
+```
+
+Use `flatMap` when the next Effect depends on the previous value:
+
+```dart
+final session = authenticate(credentials).flatMap(createSession);
+```
+
+Use `mapError` to translate an expected failure and `catchAll` to recover with
+another Effect:
+
+```dart
+final recovered = remoteUser(id).catchAll(
+  (_) => cachedUser(id),
+);
+```
+
+`Effect.zip` runs sequentially. `Effect.parZip` starts both Futures together and
+awaits both because Dart Futures do not provide fiber-style cancellation.
+
+## Resolve services by type or key
+
+```dart
+final database = use<Database>();
+```
+
+When the application has more than one implementation of the same contract,
+use a typed `ServiceKey`:
+
+```dart
+const primaryDatabase = ServiceKey<Database>('primary');
+const analyticsDatabase = ServiceKey<Database>('analytics');
+
+final database = use(primaryDatabase);
+```
+
+The key remains typed, so a key for one contract cannot be used to request an
+unrelated service.
+
+## Acquire execution-owned resources
+
+Use `use.acquire` when a resource belongs to one Effect execution:
+
+```dart
+final file = await use.acquire(
+  Effect<TempFile, AppFailure>.tryAsync(
+    TempFile.create,
+    onError: TempFileFailure.from,
+  ),
+  release: (file, exit) => file.delete(),
+);
+```
+
+The release callback receives the `Exit` that closed the Scope. It runs when the
+physical execution finishes, not merely when a timeout or interruption becomes
+visible to the caller.
+
+Use a `Module.resource` instead when a resource should live for the whole
+Runtime, such as a shared database pool or HTTP client.
+
+## Carry execution-local context
+
+`EffectLocal<T>` provides values that vary per execution without global state:
+
+```dart
+const currentUserId = EffectLocal<UserId?>(null, name: 'current-user');
+
+final secured = operation.withLocal(currentUserId, userId);
+```
+
+The value is inherited by nested Effects and can be read with:
+
+```dart
+final userId = use.local(currentUserId);
+```
+
+For request IDs and tracing metadata that should appear in Runtime events, use
+[observable metadata locals](/docs/dart/observability#add-execution-metadata).
