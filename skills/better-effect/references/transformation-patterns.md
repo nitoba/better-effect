@@ -41,7 +41,7 @@ class UserService extends Service<UserService>()('UserService') {
 
 Use this when the dependencies are contextual capabilities needed by the operation. Keep constructor parameters that are true object invariants or ordinary domain values.
 
-The provider can often become simply:
+The provider can often become:
 
 ```ts
 const UserServiceLive = Layer.make(UserService)
@@ -81,11 +81,13 @@ Parameterized Program factories remain ordinary functions:
 const loadUser = (id: string) =>
   Effect.fn(async function* () {
     const users = yield* UserRepository
-    return yield* Result.await(users.findById(id))
+    const user = yield* Result.await(users.findById(id))
+
+    return Result.ok(user)
   })
 ```
 
-Remember that a generator must return a Result. If the yielded operation already returns the final Result, return that Result explicitly rather than returning a raw value.
+Every `Effect.gen`/`Effect.fn` generator finishes with a Result. The value produced by `Result.await` is the successful value, not the final Result to return.
 
 ## 3. Throwing domain decisions -> typed Result errors
 
@@ -165,7 +167,7 @@ function fetchAccount(id: string) {
 }
 ```
 
-Now downstream Programs use `Result.await` and preserve typed short-circuiting.
+Downstream Programs can now use `Result.await` and preserve typed short-circuiting.
 
 ## 5. Manual service locator -> Service + Layer + Runtime
 
@@ -194,7 +196,9 @@ const DatabaseLive = Layer.make(Database, () => createDatabase())
 
 const handle = Effect.fn(async function* () {
   const database = yield* Database
-  return Result.ok(await database.query())
+  const value = await database.query()
+
+  return Result.ok(value)
 })
 
 await using runtime = await Runtime.make(DatabaseLive)
@@ -215,21 +219,19 @@ process.on('SIGTERM', async () => {
 })
 ```
 
-Ownership is now split across global state and shutdown code.
-
 ### After
 
 ```ts
 const DatabaseLive = Layer.scoped(
   Database,
   async () => new Database(await createPool()),
-  (database) => database.close()
+  (database, outcome) => database.close(outcome)
 )
 
 await using runtime = await Runtime.make(DatabaseLive)
 ```
 
-Use `Layer.scopedGen` when acquisition needs another Service and/or the release callback needs the final Scope outcome:
+Use `Layer.scopedGen` when acquisition needs another Service:
 
 ```ts
 const DatabaseLive = Layer.scopedGen(
@@ -274,7 +276,7 @@ const program = Effect.fn(async function* () {
 
 The transaction now belongs to the execution child Scope and closes with the final Runtime-classified outcome.
 
-## 8. Already acquired disposable + manual cleanup -> `Effect.add`
+## 8. Already-acquired disposable + manual cleanup -> `Effect.add`
 
 ### Before
 
@@ -300,7 +302,7 @@ const program = Effect.fn(async function* () {
 })
 ```
 
-Use only when `socket` is already acquired and exposes a callable disposal protocol. If acquisition itself belongs in the workflow, prefer `Effect.acquireRelease`.
+Use this only when `socket` is already acquired and exposes a callable disposal protocol. If acquisition itself belongs in the workflow, prefer `Effect.acquireRelease`.
 
 ## 9. One local resource transaction -> `Resource.acquireUseRelease`
 
@@ -329,7 +331,7 @@ const result = await Resource.acquireUseRelease({
 })
 ```
 
-Use this compatibility facade when one acquire/use/release Result transaction is the whole ownership story. Use Scope-based APIs when the resource belongs to a Runtime execution or a hierarchy.
+Use this when one local acquire/use/release Result transaction is the whole ownership story. Use Scope-based APIs when the resource belongs to a Runtime execution or hierarchy.
 
 ## 10. Rebuilding an application graph for tests -> explicit Layer override
 
@@ -339,8 +341,7 @@ Use this compatibility facade when one acquire/use/release Result transaction is
 const app = makeApplication({
   database: fakeDatabase,
   mailer: realMailer,
-  clock: realClock,
-  // every dependency repeated
+  clock: realClock
 })
 ```
 
@@ -387,7 +388,7 @@ const MailerTest = Layer.succeed(
 )
 ```
 
-Prefer a real subclass/instance when prototype behavior, private fields, or invariants are part of the behavior under test.
+Prefer a real subclass/instance when prototype behavior, private fields, or constructor invariants are relevant.
 
 ## 12. Accidental merge replacement -> `Layer.override`
 
@@ -396,8 +397,6 @@ Prefer a real subclass/instance when prototype behavior, private fields, or inva
 ```ts
 const TestLive = Layer.merge(AppLive, DatabaseTest)
 ```
-
-This is semantically ambiguous and duplicate tags are intentionally rejected.
 
 ### After
 
@@ -411,7 +410,7 @@ For multiple replacements:
 const TestLive = Layer.override(AppLive, DatabaseTest, ClockTest)
 ```
 
-Overrides are explicit and applied left-to-right.
+`Layer.merge` intentionally rejects duplicate tags. Override intent should be explicit.
 
 ## 13. Broad Layer annotation -> inference or `satisfies`
 
@@ -425,7 +424,7 @@ const AppLive: Layer<AppServices, never> = Layer.merge(
 )
 ```
 
-This can erase provider provenance needed for precise later overrides.
+This is safe but can erase provider provenance needed for precise later overrides.
 
 ### After
 
@@ -463,7 +462,7 @@ function createServer(runtime: Runtime) {
 type AppRuntime = Runtime.For<typeof AppLive>
 
 function createServer(runtime: AppRuntime) {
-  // runtime.run keeps the AppLive environment contract
+  // runtime.run keeps AppLive's environment contract
 }
 ```
 
@@ -475,7 +474,7 @@ Use an unparameterized Runtime only as a deliberate unchecked boundary.
 
 ```ts
 async function handleRequest(request: Request) {
-  const RequestLive = Layer.succeed(CurrentRequest, new CurrentRequest(request))
+  const RequestLive = CurrentRequest.layer(request)
   const runtime = await Runtime.make(Layer.merge(AppLive, RequestLive))
 
   try {
@@ -492,8 +491,7 @@ async function handleRequest(request: Request) {
 const runtime = await Runtime.make(AppLive)
 
 async function handleRequest(request: Request) {
-  const RequestLive = CurrentRequest.layer(request)
-  return runtime.runWith(RequestLive, handle)
+  return runtime.runWith(CurrentRequest.layer(request), handle)
 }
 ```
 
@@ -507,12 +505,11 @@ Root infrastructure remains shared; request providers live only for that executi
 await application.handle({
   requestId,
   tenantId,
-  userId,
-  // repeated through several intermediate calls
+  userId
 })
 ```
 
-When these values are truly cross-cutting execution context used by independent Services, model a request/tenant Service:
+When values are genuinely cross-cutting execution context used by independent Services, model a contextual Service:
 
 ```ts
 class RequestContext extends Service<RequestContext>()('RequestContext') {
@@ -528,18 +525,11 @@ const RequestLive = Layer.succeed(
 const result = await runtime.runWith(RequestLive, program)
 ```
 
-Do not use a Service for normal function input simply to avoid parameters. Contextualize only values whose lifetime and cross-cutting access justify it.
+Do not turn normal function input into a Service just to avoid parameters.
 
-## 17. Eager Promise collection -> lazy bounded `Program.all`
+## 17. Eager work collection -> lazy bounded `Program.all`
 
-### Before
-
-```ts
-const effects = ids.map((id) => loadUser(id)) // work may already be created eagerly
-const result = Effect.all(effects)
-```
-
-When each item should start only inside Runtime and concurrency should be bounded:
+When each operation must begin only inside the Runtime boundary and concurrency should be bounded:
 
 ```ts
 const programs = ids.map((id) => loadUserProgram(id))
@@ -548,7 +538,7 @@ const allUsers = Program.all(programs, { concurrency: 8 })
 const result = await runtime.run(allUsers)
 ```
 
-Use `Effect.all` when the Effects are already intentionally created within the active context.
+Use `Effect.all` when the Effects are already intentionally created in the active context. Use `Program.all` when the work itself must remain lazy.
 
 ## 18. Ambient time/random/logging -> replaceable standard Services
 
@@ -563,7 +553,7 @@ console.info('created', id)
 ### After
 
 ```ts
-const createToken = Effect.gen(function* () {
+const createToken = Effect.fn(function* () {
   const clock = yield* Clock
   const random = yield* Random
   const logger = yield* Logger
@@ -576,11 +566,11 @@ const createToken = Effect.gen(function* () {
 })
 ```
 
-Then tests can use deterministic Layers such as `ClockTest.layer(...)`, `RandomSeeded.layer(seed)`, and `LoggerTest`.
+Tests can use deterministic Layers such as `ClockTest.layer(...)`, `RandomSeeded.layer(seed)`, and `LoggerTest`.
 
-Only introduce these Services when determinism/replacement is useful. Do not abstract every host API for purity.
+Introduce these Services only when deterministic replacement/contextual access has concrete value.
 
-## 19. Scattered `process.env` reads -> typed Config boundary
+## 19. Scattered environment reads -> typed Config boundary
 
 ### Before
 
@@ -591,25 +581,9 @@ const url = process.env.DATABASE_URL!
 
 ### After
 
-Use a Standard Schema-compatible descriptor and `Config` helpers from `better-effect/standard-services`, then construct dependent providers from validated configuration.
+Use a Standard Schema-compatible descriptor and Config helpers from `better-effect/standard-services`. Keep source reading/validation at a configuration boundary and construct dependent providers from the validated config.
 
-A provider-oriented shape can be:
-
-```ts
-const ConfigLive = Config.layerFromEnv({ dotEnvPath: '.env' })
-const AppConfig = Config.schema(AppSchema)
-
-const DatabaseLive = Layer.scopedGen(
-  Database,
-  async function* () {
-    const config = yield* Config
-    return Database.connect(config.databaseUrl)
-  },
-  (database) => database.close()
-)
-```
-
-Follow the installed-version docs for the exact Config API. Keep secrets/raw environment payloads out of validation errors and logs.
+Follow the installed-version documentation for the exact Config API. Do not leak raw environment access throughout application Services, and do not attach secrets/raw environment payloads to validation errors or logs.
 
 ## 20. Hono handler with manual Service resolution -> request boundary adapter
 
@@ -618,13 +592,8 @@ Follow the installed-version docs for the exact Config API. Keep secrets/raw env
 ```ts
 app.get('/users/:id', async (c) => {
   const users = container.resolve(UserService)
-
-  try {
-    const user = await users.find(c.req.param('id'))
-    return c.json(user)
-  } catch (error) {
-    return c.json({ error: String(error) }, 500)
-  }
+  const user = await users.find(c.req.param('id'))
+  return c.json(user)
 })
 ```
 
@@ -632,7 +601,7 @@ app.get('/users/:id', async (c) => {
 
 ```ts
 const http = HonoEffect.make(runtime, {
-  onFailure: (error, c) => c.json(toErrorBody(error), toStatus(error))
+  onFailure: (error, c) => c.json(toErrorBody(error), 400)
 })
 
 app.use('/api/*', http.middleware())
@@ -654,26 +623,9 @@ Use `http.handler` when the Program is defined outside HTTP:
 app.get('/api/users/:id', http.handler((c) => getUser(c.req.param('id'))))
 ```
 
-Expected Result failures go to the configured failure policy. Thrown defects remain in Hono's error path.
+Expected Result failures go through the configured failure policy. Thrown defects remain in Hono's error path.
 
-## 21. Auth middleware with duplicated error plumbing -> `http.guard`
-
-### Before
-
-```ts
-app.use('/private/*', async (c, next) => {
-  const result = await verify(c.req.header('Authorization'))
-
-  if (Result.isError(result)) {
-    return c.json({ error: result.error.message }, 401)
-  }
-
-  c.set('user', result.value)
-  await next()
-})
-```
-
-### After
+## 21. Auth middleware with duplicated Result plumbing -> `http.guard`
 
 ```ts
 app.use(
@@ -683,7 +635,9 @@ app.use(
     const token = c.req.header('Authorization')
 
     if (!token) {
-      return Result.err(new AuthenticationRequired({ message: 'Authentication required' }))
+      return Result.err(
+        new AuthenticationRequired({ message: 'Authentication required' })
+      )
     }
 
     const user = yield* Result.await(auth.verify(token))
@@ -694,35 +648,29 @@ app.use(
 )
 ```
 
-Keep central failure-to-HTTP mapping in one policy.
+Keep failure-to-HTTP mapping centralized instead of repeating it in each middleware/route.
 
 ## 22. Manual DI adapter with unrelated generics -> token-derived resolver
 
 ### Before
 
 ```ts
-class Backend {
-  resolve<A>(token: AnyServiceToken): A {
-    return this.container.get(token.serviceTag) as A
-  }
+resolve<A>(token: AnyServiceToken): A {
+  return this.container.get(token.serviceTag) as A
 }
 ```
 
 ### After
 
 ```ts
-class Backend implements LayerBackend {
-  resolve<T extends AnyServiceToken>(
-    token: T
-  ): InstanceType<T> | PromiseLike<InstanceType<T>> {
-    return this.container.get(token.serviceTag) as InstanceType<T>
-  }
-
-  // register / disposeAll ...
+resolve<T extends AnyServiceToken>(
+  token: T
+): InstanceType<T> | PromiseLike<InstanceType<T>> {
+  return this.container.get(token.serviceTag) as InstanceType<T>
 }
 ```
 
-Keep any unavoidable cast at the adapter lookup boundary. Do not weaken the public Service token -> instance relationship.
+Keep unavoidable casts at the adapter lookup boundary. Do not weaken the public Service token -> instance relationship.
 
 ## 23. Global mutable resolver in tests -> per-Runtime test environment
 
@@ -743,23 +691,11 @@ const [first, second] = await Promise.all([
 ])
 ```
 
-Runtime context is isolated. Tests should not require serial execution merely because dependency resolution is global.
+Runtime context is intended to be isolated. Tests should not require serial execution merely because dependency resolution is global.
 
-## 24. Cleanup that masks the primary failure -> observer/secondary diagnostic
+## 24. Cleanup that masks the primary failure -> owned cleanup + diagnostics
 
-### Before
-
-```ts
-try {
-  return await work()
-} finally {
-  await cleanup() // this rejection can replace work's failure
-}
-```
-
-### After
-
-Place cleanup under Scope/Resource ownership and report secondary failures through the supported diagnostic observer:
+Place cleanup under Layer/Scope/Resource ownership and report secondary failures through the supported observer:
 
 ```ts
 const runtime = await Runtime.make(AppLive, {
@@ -767,38 +703,20 @@ const runtime = await Runtime.make(AppLive, {
 })
 ```
 
-Do not catch and replace a typed Result error with a generic cleanup error.
+Do not catch and replace a typed program failure with a generic cleanup failure.
 
-## 25. Manual startup resolution -> Runtime warmup
+## 25. Manual startup probes -> Runtime warmup
 
-### Before
-
-```ts
-const runtime = await Runtime.make(AppLive)
-await runtime.run(checkDatabase)
-await runtime.run(checkCache)
-startServer()
-```
-
-If the real goal is to force all Layer providers to acquire before accepting traffic:
+If the real requirement is "all providers must acquire successfully before traffic starts":
 
 ```ts
 const runtime = await Runtime.make(AppLive, { warmup: true })
 startServer()
 ```
 
-Use this only when eager startup validation is desired. Lazy provider acquisition remains the default design.
+Use warmup only when eager startup validation is desired. Lazy provider acquisition remains the default.
 
-## 26. Manual cancellation token -> Runtime `AbortSignal`
-
-### Before
-
-```ts
-const cancellation = new CancellationState()
-await operation(cancellation)
-```
-
-### After
+## 26. Manual cancellation plumbing -> Runtime `AbortSignal`
 
 At the boundary:
 
@@ -806,31 +724,33 @@ At the boundary:
 await runtime.run(program, { signal: request.signal })
 ```
 
-Inside contextual code:
+Inside the Program:
 
 ```ts
 const program = Effect.fn(async function* () {
   const signal = yield* CurrentAbortSignal
-  return yield* Result.await(fetchResult({ signal }))
+  const value = yield* Result.await(fetchResult({ signal }))
+
+  return Result.ok(value)
 })
 ```
 
-Cancellation is cooperative. Do not model this as a fiber interruption system or assume arbitrary Promises can be preempted.
+Cancellation is cooperative. Do not model this as fibers or assume arbitrary Promises can be preempted.
 
 ## 27. Mixed ownership after refactoring -> one owner per resource
 
-A common incomplete refactor leaves both old and new cleanup:
+An incomplete refactor often leaves both old and new cleanup:
 
 ```ts
 const DatabaseLive = Layer.scoped(Database, connect, close)
 
 process.on('SIGTERM', async () => {
-  await database.close() // duplicate owner
+  await database.close()
   await runtime.dispose()
 })
 ```
 
-After moving ownership to the Layer/Runtime, shutdown should dispose the Runtime only:
+Once the Runtime/Layer owns the database, shutdown should dispose the Runtime only:
 
 ```ts
 process.on('SIGTERM', async () => {
@@ -838,11 +758,11 @@ process.on('SIGTERM', async () => {
 })
 ```
 
-Apply this rule to Runtime, Scope children, Layer-scoped resources, and execution resources: ownership must not be duplicated.
+Apply the same rule to Runtime, child Scopes, Layer-scoped resources, and execution resources: ownership must not be duplicated.
 
 ## Final refactoring check
 
-After transformations, verify that the code tells a coherent story:
+After transformations, the code should tell a coherent story:
 
 ```text
 input/domain data
