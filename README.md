@@ -1,12 +1,26 @@
 # better-effect
 
 This repository is a Bun + Turborepo monorepo containing the `better-effect`
-library and its Fumadocs documentation site.
+library, its Fumadocs documentation site, and the official agent skill for
+working with the library.
 
 ## Workspaces
 
 - [`packages/better-effect`](./packages/better-effect) — the published TypeScript library
 - [`apps/docs`](./apps/docs) — the Next.js documentation application powered by Fumadocs
+- [`skills/better-effect`](./skills/better-effect) — the official Agent Skill for implementing, reviewing, debugging, and refactoring `better-effect` applications
+
+## Agent Skill
+
+Install the official skill with the Vercel Labs Agent Skills CLI:
+
+```bash
+npx skills add nitoba/better-effect --skill better-effect
+```
+
+The skill combines architecture/refactoring guidance with the live documentation
+published at <https://better-effect.nitodev.com.br/docs>, including its
+LLM-friendly `llms.txt`, per-page Markdown content, and `llms-full.txt` fallback.
 
 ## Getting started
 
