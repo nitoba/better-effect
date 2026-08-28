@@ -270,9 +270,11 @@ own `Response` when validation fails. `http.handler` accepts the same ordered
 validator arguments followed by the program factory and options.
 
 Install `hono` only when this subpath is used. The main entrypoint does not
-load the framework. The default Hono failure response redacts details from both
-`Error` and non-`Error` failure values; a custom `onFailure` policy should
-serialize only safe, intentional domain details.
+load the framework. The default Hono failure policy redacts every non-`Response`
+failure value to `{ error: 'Internal Server Error' }` with status 500. An
+explicitly returned `Response` failure is intentionally passed through
+unchanged. A custom `onFailure` policy should serialize only safe, intentional
+domain details.
 
 Service and Scope access share one `RuntimeContext`. Node/Bun uses
 `AsyncLocalStorage` by default. `ExplicitRuntimeContextStorage` is available

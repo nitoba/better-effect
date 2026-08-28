@@ -1,7 +1,7 @@
 # Release process
 
-Merging a pull request into `main` runs CI only. A release starts only when a
-maintainer pushes a version tag:
+Merging a pull request into `main` runs CI only. A normal release starts when
+a maintainer pushes a version tag:
 
 ```text
 Pull request merge
@@ -60,11 +60,11 @@ If the atomic push fails, keep the local release commit and tag, resolve the
 remote problem, and retry the same atomic push. Do not rerun the versioning
 step or move/delete an already-published tag.
 
-Run the `Release` workflow manually and enter the existing tag to retry the
+Dispatch `release-please.yml` manually and enter the existing tag to retry the
 complete flow. The publish job reruns its quality gates and treats an already
 published version as successful; GitHub Release creation also checks for an
-existing release before creating one. The reusable `Publish` workflow can be
-run directly when only npm publication needs to be retried.
+existing release before creating one. `publish.yml` is reusable only and is
+invoked by `release-please.yml`; it has no direct manual dispatch.
 
 ## Release administration
 

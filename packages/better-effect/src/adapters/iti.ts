@@ -105,7 +105,7 @@ export class ItiLayerBackend implements LayerBackend {
     return validate(resolved)
   }
 
-  /** Dispose all ITI-managed provider instances and reset the adapter state. */
+  /** Reset container-owned ITI state; Scope owns Layer provider releases. */
   async disposeAll(): Promise<void> {
     const container = this.container
 

@@ -59,9 +59,11 @@ await runtime.dispose()
 The request boundary supplies `CurrentRequest` and links the request's
 `AbortSignal` to the Runtime execution. Services are resolved lazily through
 `yield* Service`, and resources acquired with `Effect.acquireRelease` belong to
-that request's Scope. The default failure policy redacts details from every
-failure value, including non-`Error` values; a custom `onFailure` should expose
-only safe, intentional domain details.
+that request's Scope. The default failure policy redacts every non-`Response`
+failure value to `{ error: 'Internal Server Error' }` with status 500, including
+non-`Error` values. An explicitly returned `Response` failure is intentionally
+passed through unchanged. A custom `onFailure` should expose only safe,
+intentional domain details.
 
 Registering the same boundary more than once for a request does not create a
 second execution. Middleware registered before `http.middleware()` runs outside
@@ -209,10 +211,11 @@ app.get(
 `Result.err(error)` is passed to `onFailure` and converted to the configured
 HTTP response. The original error is also retained as the request Scope's
 `failure` outcome, so finalizers and Runtime observers see the typed cause.
-The default response is a redacted generic failure for both `Error` and
-non-`Error` failures; custom policies are responsible for deliberately choosing
-any safe domain details to expose. Thrown defects continue through Hono's
-`app.onError()`.
+Under the default policy, every non-`Response` failure value is redacted to
+`{ error: 'Internal Server Error' }` with status 500. An explicitly returned
+`Response` failure is intentionally passed through unchanged. Custom policies
+are responsible for deliberately choosing any safe domain details to expose.
+Thrown defects continue through Hono's `app.onError()`.
 
 ## Guards and request-local Services
 
