@@ -6,10 +6,20 @@ import { Effect } from '../src/effect'
 import { Layer } from '../src/layer'
 import { Runtime } from '../src/runtime'
 import { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from '../src/runtime'
+import { setDefaultRuntimeContextStorage } from '../src/runtime/context'
+import { defaultRuntimeContextStorage } from '../src/runtime/default'
 import { ExplicitRuntimeContextStorage } from '../src/runtime/explicit'
 import { NodeRuntimeContextStorage } from '../src/runtime/node'
-import { Scope } from '../src/scope'
-import { Service, ServiceRuntime, type AnyServiceToken, type ServiceResolver } from '../src/service'
+import { Scope, ScopeRuntimeNotConfiguredError } from '../src/scope'
+import {
+  Service,
+  ServiceRuntime,
+  ServiceRuntimeNotConfiguredError,
+  type AnyServiceToken,
+  type ServiceResolver
+} from '../src/service'
+
+import type { RuntimeContextStorage } from '../src/runtime/context'
 
 class ContextService extends Service<ContextService>()('ContextService') {
   value(): number {
@@ -67,6 +77,42 @@ describe('Runtime context storage', () => {
     } finally {
       await runtime.dispose()
     }
+  })
+
+  test('preserves custom storage failures in both compatibility bridges', () => {
+    const storageError = new Error('storage corrupted')
+    const storage: RuntimeContextStorage = {
+      run: (_context, program) => program(),
+      current: () => {
+        throw storageError
+      }
+    }
+
+    setDefaultRuntimeContextStorage(storage)
+
+    try {
+      let serviceError: unknown
+      try {
+        ServiceRuntime.current()
+      } catch (cause) {
+        serviceError = cause
+      }
+
+      let scopeError: unknown
+      try {
+        Scope.current()
+      } catch (cause) {
+        scopeError = cause
+      }
+
+      expect(serviceError).toBe(storageError)
+      expect(scopeError).toBe(storageError)
+    } finally {
+      setDefaultRuntimeContextStorage(defaultRuntimeContextStorage)
+    }
+
+    expect(() => ServiceRuntime.current()).toThrow(ServiceRuntimeNotConfiguredError)
+    expect(() => Scope.current()).toThrow(ScopeRuntimeNotConfiguredError)
   })
 
   test('explicit storage restores context after async settlement', async () => {

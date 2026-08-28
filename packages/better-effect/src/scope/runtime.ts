@@ -1,5 +1,7 @@
 import { ScopeRuntimeNotConfiguredError } from './errors'
 
+import { RuntimeContextNotConfiguredError } from '../runtime/errors'
+
 import type { Scope } from './scope'
 
 import {
@@ -42,8 +44,12 @@ export class ScopeRuntime {
 
     try {
       context = currentRuntimeContext()
-    } catch {
-      throw new ScopeRuntimeNotConfiguredError()
+    } catch (cause) {
+      if (cause instanceof RuntimeContextNotConfiguredError) {
+        throw new ScopeRuntimeNotConfiguredError()
+      }
+
+      throw cause
     }
 
     if (!context.scope) {
