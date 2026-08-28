@@ -64,8 +64,9 @@ const result = await runtime.run(applicationProgram)
 Concurrent Runtime executions remain isolated. Avoid global “reset the
 container” helpers that create serial-test coupling.
 
-Hosts without transparent async context propagation can provide an explicit
-storage:
+Hosts or tests that cannot use transparent async context propagation can
+provide an explicit storage, but one storage instance supports only one
+non-overlapping async flow and rejects concurrent overlap:
 
 ```ts
 import { ExplicitRuntimeContextStorage } from 'better-effect/runtime/explicit'
@@ -75,8 +76,9 @@ const runtime = await Runtime.make(AppTest, {
 })
 ```
 
-Use the Node storage for overlapping asynchronous executions; explicit storage
-is intended for hosts that propagate the context at their own boundaries.
+Use the default Node/Bun storage for overlapping asynchronous executions, or
+create a separate explicit storage per independent flow. Do not share one
+`ExplicitRuntimeContextStorage` instance across concurrent Runtime executions.
 
 ## Type-contract tests
 

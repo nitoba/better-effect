@@ -12,14 +12,9 @@ icon: Rocket
 bun add better-effect better-result
 ```
 
-<Tabs items={['Bun', 'npm', 'pnpm']} groupId="package-manager" persist>
-  <Tab>```bash bun add better-effect better-result ```</Tab>
-  <Tab>```bash npm install better-effect better-result ```</Tab>
-  <Tab>```bash pnpm add better-effect better-result ```</Tab>
-</Tabs>
-
-The public TypeScript peer range starts at 5.7. `better-effect` also uses the
-standard `Symbol.dispose` and `Symbol.asyncDispose` declarations for disposable
+The public TypeScript peer range starts at 5.7. The tested runtime matrix is
+Node.js 24 and Bun 1.3.14. `better-effect` also uses the standard
+`Symbol.dispose` and `Symbol.asyncDispose` declarations for disposable
 resources, so your `tsconfig` should include a modern JavaScript library such as
 `ESNext.Disposable`.
 

@@ -83,10 +83,13 @@ if (!user.active) {
 
 ## Runtime failure classification
 
-At a Runtime boundary, `Result.err` is classified as a failed execution so
-Scope finalizers receive `{ status: 'failure', cause: result.error }`. This
-classification happens only at the boundary. Intermediate Result errors do
-not close an execution Scope while a generator is still running.
+At a Runtime boundary, only nominal `better-result` values are classified:
+`Result.err` is a failed execution, so Scope finalizers receive
+`{ status: 'failure', cause: result.error }`; `Result.ok` is success. An
+ordinary domain object such as `{ status: 'error', message: '...' }` remains a
+successful value. This classification happens only at the boundary.
+Intermediate Result errors do not close an execution Scope while a generator
+is still running.
 
 `Scope.run` differs intentionally: it is Result-agnostic and treats returned
 values, including `Result.err`, as a successful Scope outcome.

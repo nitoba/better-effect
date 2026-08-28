@@ -62,8 +62,11 @@ ITI registrations use an internal deterministic key derived from
 `better-effect:${serviceTag}`. That translation stays inside the adapter. The
 application continues to yield the Service constructor.
 
-ITI providers are lazy and cached by the container. `disposeAll()` calls ITI's
-container disposal after the Runtime root Scope closes.
+ITI providers are lazy and cached by the container. `disposeAll()` releases
+ITI-owned instances, disposes the container, and clears registrations, keys and
+caches so the backend can be reused without resolving stale instances. Layer
+release callbacks remain owned by the Runtime root Scope and are not registered
+with ITI's disposer.
 
 ## Write an adapter
 

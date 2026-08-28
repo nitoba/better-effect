@@ -32,6 +32,15 @@ icon: CircleQuestionMark
     them. A successful program can surface a cleanup failure because there is no more specific
     primary failure.
   </Accordion>
+  <Accordion title="Explicit context storage rejects overlap" id="explicit-context-overlap">
+    `ExplicitRuntimeContextStorage` is for hosts that cannot propagate async context. One instance
+    supports one non-overlapping async flow; use the default Node/Bun storage for concurrent work,
+    or create a separate explicit storage per flow.
+  </Accordion>
+  <Accordion title="The default Hono error is generic" id="hono-error-redaction">
+    Default Hono failure responses redact `Error.message`. Configure `onFailure` only when you need
+    a deliberate, safe domain representation; do not serialize arbitrary exceptions to clients.
+  </Accordion>
   <Accordion title="Layer.gen yielded an unsupported value" id="bad-layer-yield">
     Layer generators may yield Service constructors only; their public requirement metadata uses
     the corresponding instance types. Use `Result.await` and `Effect.gen` for Result operations in

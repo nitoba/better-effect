@@ -50,6 +50,8 @@ Before editing an application:
 
 This skill was authored against the `better-effect` 0.9.x line, including `Effect.fn`, `Program.all`, two-channel `Layer<Provided, Required>`, hierarchical `Scope`, `Runtime.runWith`, standard services, and the Hono adapter. Treat that as embedded baseline knowledge, not permission to ignore the project's pinned version.
 
+This repository's release gates test Node.js 24 and Bun 1.3.14. Do not infer support for other runtimes from TypeScript declarations or from an adapter's use of web platform values.
+
 When web access is available and the task depends on library behavior or API details, follow `references/official-documentation.md`: discover the relevant page through `llms.txt`, prefer the page-specific Markdown representation, and use `llms-full.txt` only as a fallback or for genuinely cross-cutting research.
 
 ## Mental model
@@ -187,8 +189,11 @@ At minimum, run the available equivalents of:
 - typecheck;
 - tests affected by the change;
 - lint;
-- format check or formatter;
+- non-mutating format check (`bun run format:check` in this repository);
 - build when public exports, framework integrations, or package boundaries changed.
+
+Use a write-format command only when intentionally applying formatting. The
+repository's `check`, CI and publish gates must not rewrite tracked files.
 
 When type inference is part of the behavior, add or run compile-time type tests rather than relying only on runtime tests.
 
@@ -206,6 +211,7 @@ Do not declare success with regressions introduced by the change.
 - Return `Result.err(...)` for expected business decisions instead of throwing.
 - Do not recreate Either/Result, generator short-circuiting, or `UnhandledException` handling locally.
 - Keep cleanup failures secondary to an existing program/use failure.
+- Runtime boundary classification inspects only nominal `better-result` values; an ordinary domain object with a `status` field remains a successful value.
 
 Do not write:
 
@@ -265,7 +271,11 @@ const program = Program.all([loadUser(id), loadPermissions(id)], {
 const result = await runtime.run(program)
 ```
 
-Use `Program.all` when starting work during collection construction would violate the desired Runtime/Scope boundary.
+If a child returns an error or throws, scheduling stops, already-started child
+Programs are allowed to settle, and a deterministic primary failure is
+retained. There is no cancellation or Fiber scheduler. Use `Program.all`
+when starting work during collection construction would violate the desired
+Runtime/Scope boundary.
 
 ## Service rules
 
@@ -361,7 +371,7 @@ Treat `Layer.Any` as an explicit unchecked escape hatch, not a default convenien
 
 ### Prefer one long-lived Runtime per process/application boundary
 
-Servers, workers, and long-lived applications should normally create one Runtime from the application Layer and dispose it during shutdown:
+Node.js/Bun servers and long-lived applications should normally create one Runtime from the application Layer and dispose it during shutdown:
 
 ```ts
 await using runtime = await Runtime.make(AppLive)
@@ -387,6 +397,14 @@ Providers are lazy by default. Use `{ warmup: true }` or `runtime.warmup()` when
 Runtime cancellation uses `AbortSignal`. Pass execution signals through `runtime.run(..., { signal })` and consume `CurrentAbortSignal` when work can cooperate.
 
 Do not assume `better-effect` provides fibers, forced cancellation, or preemptive termination of arbitrary Promises.
+
+### Choose context storage deliberately
+
+The default Node/Bun storage isolates overlapping asynchronous executions. An
+`ExplicitRuntimeContextStorage` instance is for hosts that provide their own
+context propagation and supports only one non-overlapping async flow; concurrent
+overlap is rejected. Do not share one explicit storage instance across
+concurrent Runtime executions.
 
 ### Dispose gracefully
 
@@ -484,7 +502,7 @@ Prefer:
 
 The adapter supplies request context and links the request `AbortSignal`. Do not resolve Services into Hono's Context manually merely to pass them around again.
 
-Expected `Result.err` values should go through the configured failure policy. Thrown defects remain defects and continue through Hono error handling.
+Expected `Result.err` values should go through the configured failure policy. Thrown defects remain defects and continue through Hono error handling. The default failure response is redacted; custom `onFailure` policies must serialize only intentional, safe domain details. The adapter's `Failure` and request-Layer requirement channels are part of the public type boundary.
 
 Use Hono/Standard Schema validation middleware before the Program rather than inventing a second validation contract inside the adapter.
 
