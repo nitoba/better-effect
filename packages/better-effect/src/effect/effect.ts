@@ -1,6 +1,6 @@
-import { Result } from 'better-result'
+import { Err, Result } from 'better-result'
 
-import type { Err, Result as ResultType, UnhandledException } from 'better-result'
+import type { Result as ResultType, UnhandledException } from 'better-result'
 
 import { Scope } from '../scope'
 
@@ -146,9 +146,10 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
     const failures: boolean[] = Array.from({ length: programs.length }, () => false)
     const causes: unknown[] = Array.from({ length: programs.length })
     let nextIndex = 0
+    let stopScheduling = false
 
     const worker = async (): Promise<void> => {
-      while (true) {
+      while (!stopScheduling) {
         const index = nextIndex++
 
         if (index >= programs.length) {
@@ -156,10 +157,16 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
         }
 
         try {
-          results[index] = await programs[index]!()
+          const result = await programs[index]!()
+          results[index] = result
+
+          if (result instanceof Err) {
+            stopScheduling = true
+          }
         } catch (cause) {
           failures[index] = true
           causes[index] = cause
+          stopScheduling = true
         }
       }
     }
