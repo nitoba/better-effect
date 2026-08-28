@@ -1,10 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.0] - 2026-08-28
 
-The intended release line for this Runtime and integration hardening is
-**0.10.0**. This section remains unreleased; version and tag updates belong to
-the release process.
+This release contains Runtime and integration hardening for the 0.10.0 line.
 
 ### Changed
 

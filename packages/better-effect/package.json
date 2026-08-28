@@ -1,6 +1,6 @@
 {
   "name": "better-effect",
-  "version": "0.9.31",
+  "version": "0.10.0",
   "description": "Effect-inspired application architecture for better-result with typechecked Services and environments, scoped resource lifetimes, and pluggable DI backends.",
   "keywords": [
     "better-result",
