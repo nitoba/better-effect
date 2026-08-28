@@ -109,12 +109,17 @@ export class ItiLayerBackend implements LayerBackend {
   /** Reset container-owned ITI state; Scope owns Layer provider releases. */
   async disposeAll(options?: LayerBackendDisposeOptions): Promise<void> {
     const container = this.container
-    const pending = [...this.pending.entries()]
+    const acquisitions = [...this.pending.keys()]
 
     try {
-      if (pending.length > 0) {
-        options?.onPendingAcquisitions?.(pending.map(([, service]) => service))
-        await Promise.allSettled(pending.map(([acquisition]) => acquisition))
+      if (acquisitions.length > 0) {
+        const observePending = options?.onPendingAcquisitions
+
+        if (observePending) {
+          await observePending(acquisitions)
+        }
+
+        await Promise.allSettled(acquisitions)
       }
       await container.disposeAll()
     } finally {

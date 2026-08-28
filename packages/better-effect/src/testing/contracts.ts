@@ -13,6 +13,7 @@ import {
 } from '../runtime'
 import { Scope, ScopeCloseError, ScopeClosedError, type CloseableScope } from '../scope'
 import { ScopeRuntime } from '../scope/runtime'
+import { isPromiseLike } from '../utils/runtime'
 import {
   Service,
   ServiceNotFoundError,
@@ -475,14 +476,20 @@ export const layerBackendContract = (
   layerScenario('LayerBackend disposal waits for in-flight acquisition', async () => {
     await withBackend(options, async (backend) => {
       let releaseAcquisition!: () => void
+      let releaseCallbackGate!: () => void
       let markStarted!: () => void
       let disposing: Promise<void> | undefined
-      let observedPendingAcquisition = false
+      let callbackInvoked = false
+      let acquisitionCompleted = false
+      let disposalSettled = false
       const acquired = new Promise<void>((resolve) => {
         markStarted = resolve
       })
       const release = new Promise<void>((resolve) => {
         releaseAcquisition = resolve
+      })
+      const callbackGate = new Promise<void>((resolve) => {
+        releaseCallbackGate = resolve
       })
 
       await backend.register({
@@ -490,36 +497,65 @@ export const layerBackendContract = (
         acquire: async () => {
           markStarted()
           await release
+          acquisitionCompleted = true
           return new ContractService()
         }
       })
 
       const resolving = Promise.resolve(backend.resolve(ContractService))
+      const releaseAfterCallbackGate = callbackGate.then(() => {
+        releaseAcquisition()
+      })
 
       try {
         await acquired
-        disposing = Promise.resolve(
-          backend.disposeAll({
-            onPendingAcquisitions: (services) => {
-              assert(
-                services.includes(ContractService),
-                'LayerBackend disposal waits for in-flight acquisition',
-                `disposeAll did not report the pending tag "${ContractService.serviceTag}"`
-              )
-              observedPendingAcquisition = true
-              releaseAcquisition()
-            }
-          })
+        const disposalResult = backend.disposeAll({
+          onPendingAcquisitions: async (acquisitions) => {
+            assert(
+              acquisitions.length > 0,
+              'LayerBackend disposal waits for in-flight acquisition',
+              `disposeAll did not report a pending acquisition for tag "${ContractService.serviceTag}"`
+            )
+            callbackInvoked = true
+            await Promise.allSettled(acquisitions)
+            assert(
+              acquisitionCompleted,
+              'LayerBackend disposal waits for in-flight acquisition',
+              `disposeAll reported an acquisition that settled before tag "${ContractService.serviceTag}" completed`
+            )
+            await callbackGate
+          }
+        })
+
+        assert(
+          disposalResult !== undefined && isPromiseLike(disposalResult),
+          'LayerBackend disposal waits for in-flight acquisition',
+          `disposeAll did not await the pending-acquisition callback for tag "${ContractService.serviceTag}"`
+        )
+        disposing = Promise.resolve(disposalResult)
+        void disposing.then(
+          () => {
+            disposalSettled = true
+          },
+          () => undefined
         )
 
         assert(
-          observedPendingAcquisition,
+          callbackInvoked,
           'LayerBackend disposal waits for in-flight acquisition',
-          `disposeAll did not synchronously observe the pending tag "${ContractService.serviceTag}"`
+          `disposeAll did not synchronously invoke the pending-acquisition callback for tag "${ContractService.serviceTag}"`
         )
 
-        await Promise.all([resolving, disposing])
+        releaseCallbackGate()
+        assert(
+          !disposalSettled,
+          'LayerBackend disposal waits for in-flight acquisition',
+          `disposeAll settled before the pending acquisition for tag "${ContractService.serviceTag}" completed`
+        )
+
+        await Promise.all([releaseAfterCallbackGate, resolving, disposing])
       } finally {
+        releaseCallbackGate()
         releaseAcquisition()
         await Promise.allSettled(disposing === undefined ? [resolving] : [resolving, disposing])
       }

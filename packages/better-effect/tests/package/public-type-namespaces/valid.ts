@@ -89,8 +89,8 @@ const backendContractOptions = {
   acquisitionFailure: 'retry'
 } satisfies LayerBackendContractOptions
 const backendDisposeOptions = {
-  onPendingAcquisitions: (services) => {
-    void services
+  onPendingAcquisitions: async (acquisitions) => {
+    await Promise.allSettled(acquisitions)
   }
 } satisfies LayerBackendDisposeOptions
 const contextContractOptions = {

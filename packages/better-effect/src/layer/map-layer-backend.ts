@@ -80,16 +80,16 @@ export class MapLayerBackend implements LayerBackend {
 
   /** Clear pending acquisitions, cached instances, and provider registrations. */
   async disposeAll(options?: LayerBackendDisposeOptions): Promise<void> {
-    const pending = [...this.pending.entries()]
+    const acquisitions = [...this.pending.values()]
 
-    if (pending.length > 0) {
-      const services = pending.flatMap(([tag]) => {
-        const service = this.providers.get(tag)?.service
-        return service === undefined ? [] : [service]
-      })
+    if (acquisitions.length > 0) {
+      const observePending = options?.onPendingAcquisitions
 
-      options?.onPendingAcquisitions?.(services)
-      await Promise.allSettled(pending.map(([, acquisition]) => acquisition))
+      if (observePending) {
+        await observePending(acquisitions)
+      }
+
+      await Promise.allSettled(acquisitions)
     }
 
     this.instances.clear()

@@ -139,9 +139,10 @@ container is needed; `MemoryLayerBackend` remains its compatibility alias from
 third-party `LayerBackend` and `RuntimeContextStorage` implementations. Each
 scenario has a stable `name` and `run` callback, creates a fresh adapter, and
 runs the optional adapter cleanup after every assertion outcome. Backends must
-synchronously report pending Service tokens through `disposeAll`'s
-`onPendingAcquisitions` hook before awaiting them and clearing state. Declare
-the backend's acquisition-failure policy explicitly: `MapLayerBackend` retries,
+synchronously pass the actual readonly pending acquisition Promise collection to
+`disposeAll`'s `onPendingAcquisitions` hook, await the callback, then await the
+acquisitions before clearing state. Declare the backend's acquisition-failure
+policy explicitly: `MapLayerBackend` retries,
 while ITI keeps an asynchronous failure cached until disposal.
 
 Register the scenarios with Bun:

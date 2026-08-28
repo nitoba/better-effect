@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 
 import { ItiLayerBackend } from '../src/adapters/iti'
-import { MapLayerBackend } from '../src/layer'
+import {
+  MapLayerBackend,
+  type LayerBackend,
+  type LayerBackendDisposeOptions,
+  type LayerRegistration
+} from '../src/layer'
+import { type AnyServiceToken } from '../src/service'
 import { ExplicitRuntimeContextStorage } from '../src/runtime/explicit'
 import { NodeRuntimeContextStorage } from '../src/runtime/node'
 import {
@@ -29,6 +35,40 @@ class ThreeTimerDelayedDisposalBackend extends MapLayerBackend {
   }
 }
 
+abstract class DelegatingMutationBackend implements LayerBackend {
+  protected readonly delegate = new MapLayerBackend()
+
+  register(registration: LayerRegistration): void {
+    this.delegate.register(registration)
+  }
+
+  resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    return this.delegate.resolve(token)
+  }
+
+  abstract disposeAll(options?: LayerBackendDisposeOptions): void | PromiseLike<void>
+}
+
+class NonWaitingCallbackIgnoringBackend extends DelegatingMutationBackend {
+  override disposeAll(options?: LayerBackendDisposeOptions): void | Promise<void> {
+    if (options === undefined) {
+      return this.delegate.disposeAll()
+    }
+
+    options.onPendingAcquisitions?.([Promise.resolve()])
+  }
+}
+
+class FakePendingAcquisitionBackend extends DelegatingMutationBackend {
+  override disposeAll(options?: LayerBackendDisposeOptions): void | PromiseLike<void> {
+    if (options === undefined) {
+      return this.delegate.disposeAll()
+    }
+
+    return options.onPendingAcquisitions?.([Promise.resolve()])
+  }
+}
+
 register(
   'MapLayerBackend conformance',
   layerBackendContract({
@@ -45,9 +85,9 @@ register(
   })
 )
 
-test('LayerBackend contract rejects three-timer disposal without acquisition tracking', async () => {
+const pendingAcquisitionScenario = (makeBackend: () => LayerBackend): ContractScenario => {
   const scenario = layerBackendContract({
-    makeBackend: () => new ThreeTimerDelayedDisposalBackend(),
+    makeBackend,
     acquisitionFailure: 'retry'
   }).find((candidate) => candidate.name === 'LayerBackend disposal waits for in-flight acquisition')
 
@@ -55,16 +95,36 @@ test('LayerBackend contract rejects three-timer disposal without acquisition tra
     throw new Error('LayerBackend disposal scenario is not registered')
   }
 
-  const outcome = await scenario.run().then(
-    () => ({ rejected: false as const }),
-    (cause) => ({ rejected: true as const, cause })
-  )
+  return scenario
+}
+
+const expectPendingAcquisitionScenarioToReject = async (
+  makeBackend: () => LayerBackend
+): Promise<void> => {
+  const outcome = await pendingAcquisitionScenario(makeBackend)
+    .run()
+    .then(
+      () => ({ rejected: false as const }),
+      (cause) => ({ rejected: true as const, cause })
+    )
 
   expect(outcome.rejected).toBe(true)
 
   if (outcome.rejected) {
     expect(outcome.cause).toBeInstanceOf(ConformanceError)
   }
+}
+
+test('LayerBackend contract rejects three-timer disposal without acquisition tracking', async () => {
+  await expectPendingAcquisitionScenarioToReject(() => new ThreeTimerDelayedDisposalBackend())
+})
+
+test('LayerBackend contract rejects a callback-ignoring non-waiting disposal', async () => {
+  await expectPendingAcquisitionScenarioToReject(() => new NonWaitingCallbackIgnoringBackend())
+})
+
+test('LayerBackend contract rejects a settled fake pending acquisition', async () => {
+  await expectPendingAcquisitionScenarioToReject(() => new FakePendingAcquisitionBackend())
 })
 
 register(

@@ -14,7 +14,7 @@ interface LayerBackend {
 }
 
 type LayerBackendDisposeOptions = {
-  onPendingAcquisitions?: (services: readonly AnyServiceToken[]) => void
+  onPendingAcquisitions?: (acquisitions: readonly Promise<unknown>[]) => void | PromiseLike<void>
 }
 ```
 
@@ -88,7 +88,8 @@ class MyBackend implements LayerBackend {
   }
 
   async disposeAll(options?: LayerBackendDisposeOptions) {
-    // synchronously report pending Service tokens, await them, then clear state
+    // synchronously pass pending acquisition Promises to the hook,
+    // await the hook and acquisitions, then clear state
   }
 }
 ```
@@ -104,8 +105,8 @@ a stable name and `run` callback, creates a fresh adapter, and calls optional
 adapter cleanup even when an assertion fails. The published entrypoint does not
 import Bun, Vitest, or another test runner. When a disposal begins with pending
 provider acquisitions, an adapter must synchronously invoke
-`onPendingAcquisitions` with their registered Service tokens, then await those
-acquisitions before clearing its state.
+`onPendingAcquisitions` with the actual readonly acquisition Promise collection,
+await the callback, then await those acquisitions before clearing its state.
 
 Register a backend with Bun. Declare whether failed acquisitions retry or stay
 cached until `disposeAll()`:
