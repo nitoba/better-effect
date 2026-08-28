@@ -342,6 +342,41 @@ test('HonoEffect handler preserves the Program success type', async () => {
   await runtime.dispose()
 })
 
+test('HonoEffect accepts explicitly undefined route options', async () => {
+  const runtime = await makeRuntime()
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+  const program = Effect.fn(async function* () {
+    const service = yield* HttpService
+    return Result.ok(service.value())
+  })
+
+  app.use('*', http.middleware())
+  app.get(
+    '/handler',
+    http.handler(() => program, undefined)
+  )
+  app.get(
+    '/generator',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok('generator')
+    }, undefined)
+  )
+
+  try {
+    const handlerResponse = await app.request('/handler')
+    const generatorResponse = await app.request('/generator')
+
+    expect(handlerResponse.status).toBe(200)
+    expect(await handlerResponse.json()).toEqual({ data: 'ok' })
+    expect(generatorResponse.status).toBe(200)
+    expect(await generatorResponse.json()).toEqual({ data: 'generator' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('HonoEffect infers and composes a Hono input validator', async () => {
   const runtime = await makeRuntime()
   let handlerCalled = false

@@ -155,7 +155,7 @@ export class HonoEffect<
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
     const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
     // SAFETY: the overloads restrict the optional trailing argument to route options.
-    const options = (hasOptions ? last : {}) as AnyRouteOptions
+    const options = ((hasOptions ? last : {}) ?? {}) as AnyRouteOptions
     const bodyIndex = hasOptions ? args.length - 2 : args.length - 1
     // SAFETY: the overloads place the program factory immediately before route options.
     const makeProgram = args[bodyIndex] as AnyProgramFactory
@@ -261,7 +261,7 @@ export class HonoEffect<
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
     const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
     // SAFETY: the overloads restrict the optional trailing argument to route options.
-    const options = (hasOptions ? last : {}) as AnyRouteOptions
+    const options = ((hasOptions ? last : {}) ?? {}) as AnyRouteOptions
     const bodyIndex = hasOptions ? args.length - 2 : args.length - 1
     // SAFETY: the overloads place the generator body immediately before route options.
     const body = args[bodyIndex] as AnyGeneratorBody
