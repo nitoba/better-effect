@@ -170,6 +170,16 @@ const rejected = async <Value>(
   fail(scenario, `expected ${expectation} to reject`)
 }
 
+const nextMacrotask = (): Promise<'still-acquiring'> =>
+  new Promise((resolve) => {
+    setTimeout(() => resolve('still-acquiring'), 0)
+  })
+
+const afterTwoMacrotasks = async (): Promise<'still-acquiring'> => {
+  await nextMacrotask()
+  return nextMacrotask()
+}
+
 const withBackend = async <Value>(
   options: LayerBackendContractOptions,
   run: (backend: LayerBackend) => Value | PromiseLike<Value>
@@ -475,7 +485,7 @@ export const layerBackendContract = (
     await withBackend(options, async (backend) => {
       let releaseAcquisition!: () => void
       let markStarted!: () => void
-      let disposed = false
+      let disposing: Promise<void> | undefined
       const acquired = new Promise<void>((resolve) => {
         markStarted = resolve
       })
@@ -496,28 +506,23 @@ export const layerBackendContract = (
 
       try {
         await acquired
-        const disposing = Promise.resolve(backend.disposeAll()).then(() => {
-          disposed = true
-        })
+        disposing = Promise.resolve(backend.disposeAll())
+        const stateBeforeRelease = await Promise.race([disposing, afterTwoMacrotasks()]).then(
+          (state) => state ?? 'settled',
+          () => 'settled' as const
+        )
 
-        await Promise.resolve()
         assert(
-          !disposed,
+          stateBeforeRelease === 'still-acquiring',
           'LayerBackend disposal waits for in-flight acquisition',
-          `disposeAll resolved before tag "${ContractService.serviceTag}" finished acquiring`
+          `disposeAll settled before tag "${ContractService.serviceTag}" finished acquiring`
         )
 
         releaseAcquisition()
         await Promise.all([resolving, disposing])
-
-        assert(
-          disposed,
-          'LayerBackend disposal waits for in-flight acquisition',
-          `disposeAll did not settle after tag "${ContractService.serviceTag}" finished acquiring`
-        )
       } finally {
         releaseAcquisition()
-        await Promise.allSettled([resolving])
+        await Promise.allSettled(disposing === undefined ? [resolving] : [resolving, disposing])
       }
     })
   }),
@@ -667,7 +672,23 @@ const expectOverlap = (
 }
 
 const closeScopes = async (...scopes: readonly CloseableScope[]): Promise<void> => {
-  await Promise.all(scopes.map((scope) => scope.close()))
+  const failures: unknown[] = []
+
+  for (const scope of scopes) {
+    try {
+      await scope.close()
+    } catch (cause) {
+      failures.push(cause)
+    }
+  }
+
+  if (failures.length === 1) {
+    throw failures[0]
+  }
+
+  if (failures.length > 1) {
+    throw new AggregateError(failures, 'Contract Scope cleanup failed')
+  }
 }
 
 /**
@@ -888,22 +909,26 @@ export const runtimeContextStorageContract = (
           const secondStartedPromise = new Promise<void>((resolve) => {
             secondStarted = resolve
           })
-          const firstRun = Promise.resolve(
-            storage.run(first, async () => {
-              firstStarted()
-              await firstMayFinish
-              return storage.current()
-            })
-          )
-          const secondRun = Promise.resolve(
-            storage.run(second, async () => {
-              secondStarted()
-              await secondMayFinish
-              return storage.current()
-            })
-          )
+          const runs: Promise<RuntimeContext>[] = []
 
           try {
+            const firstRun = Promise.resolve(
+              storage.run(first, async () => {
+                firstStarted()
+                await firstMayFinish
+                return storage.current()
+              })
+            )
+            runs.push(firstRun)
+            const secondRun = Promise.resolve(
+              storage.run(second, async () => {
+                secondStarted()
+                await secondMayFinish
+                return storage.current()
+              })
+            )
+            runs.push(secondRun)
+
             await Promise.all([firstStartedPromise, secondStartedPromise])
             releaseFirst()
             releaseSecond()
@@ -917,7 +942,7 @@ export const runtimeContextStorageContract = (
           } finally {
             releaseFirst()
             releaseSecond()
-            await Promise.allSettled([firstRun, secondRun])
+            await Promise.allSettled(runs)
             await closeScopes(firstScope, secondScope)
           }
         })
@@ -945,24 +970,28 @@ export const runtimeContextStorageContract = (
             secondStarted = resolve
           })
 
+          const runs: Promise<RuntimeContext>[] = []
+
           try {
             await storage.run(root, async () => {
-              const firstRun = Promise.resolve(
-                Scope.provide(firstScope, async () => {
-                  firstStarted()
-                  await firstMayFinish
-                  return storage.current()
-                })
-              )
-              const secondRun = Promise.resolve(
-                Scope.provide(secondScope, async () => {
-                  secondStarted()
-                  await secondMayFinish
-                  return storage.current()
-                })
-              )
-
               try {
+                const firstRun = Promise.resolve(
+                  Scope.provide(firstScope, async () => {
+                    firstStarted()
+                    await firstMayFinish
+                    return storage.current()
+                  })
+                )
+                runs.push(firstRun)
+                const secondRun = Promise.resolve(
+                  Scope.provide(secondScope, async () => {
+                    secondStarted()
+                    await secondMayFinish
+                    return storage.current()
+                  })
+                )
+                runs.push(secondRun)
+
                 await Promise.all([firstStartedPromise, secondStartedPromise])
                 releaseFirst()
                 releaseSecond()
@@ -981,12 +1010,13 @@ export const runtimeContextStorageContract = (
               } finally {
                 releaseFirst()
                 releaseSecond()
-                await Promise.allSettled([firstRun, secondRun])
+                await Promise.allSettled(runs)
               }
             })
           } finally {
             releaseFirst()
             releaseSecond()
+            await Promise.allSettled(runs)
             await closeScopes(firstScope, secondScope, rootScope)
           }
         })
@@ -1008,15 +1038,18 @@ export const runtimeContextStorageContract = (
           const firstStartedPromise = new Promise<void>((resolve) => {
             firstStarted = resolve
           })
-          const firstRun = Promise.resolve(
-            storage.run(first, async () => {
-              firstStarted()
-              await firstMayFinish
-              return storage.current()
-            })
-          )
+          const runs: Promise<RuntimeContext>[] = []
 
           try {
+            const firstRun = Promise.resolve(
+              storage.run(first, async () => {
+                firstStarted()
+                await firstMayFinish
+                return storage.current()
+              })
+            )
+            runs.push(firstRun)
+
             await firstStartedPromise
             const overlapCause = await rejected(
               Promise.resolve().then(() => storage.run(second, () => storage.current())),
@@ -1043,11 +1076,98 @@ export const runtimeContextStorageContract = (
             )
           } finally {
             releaseFirst()
-            await Promise.allSettled([firstRun])
+            await Promise.allSettled(runs)
             await closeScopes(firstScope, secondScope)
           }
         })
-      })
+      }),
+      layerScenario(
+        'RuntimeContextStorage rejects overlapping derived siblings and remains reusable',
+        async () => {
+          await withStorage(options, async (storage) => {
+            const rootScope = Scope.make()
+            const firstScope = rootScope.fork()
+            const secondScope = rootScope.fork()
+            const root = makeContext(rootScope, makeResolver())
+            let releaseFirst!: () => void
+            let firstStarted!: () => void
+            const firstMayFinish = new Promise<void>((resolve) => {
+              releaseFirst = resolve
+            })
+            const firstStartedPromise = new Promise<void>((resolve) => {
+              firstStarted = resolve
+            })
+            const runs: Promise<RuntimeContext>[] = []
+
+            try {
+              await storage.run(root, async () => {
+                try {
+                  const firstRun = Promise.resolve(
+                    Scope.provide(firstScope, async () => {
+                      firstStarted()
+                      await firstMayFinish
+                      return storage.current()
+                    })
+                  )
+                  runs.push(firstRun)
+
+                  await firstStartedPromise
+                  let secondRan = false
+                  const overlapCause = await rejected(
+                    Promise.resolve().then(() =>
+                      Scope.provide(secondScope, () => {
+                        secondRan = true
+                        return storage.current()
+                      })
+                    ),
+                    'RuntimeContextStorage rejects overlapping derived siblings and remains reusable',
+                    'an overlapping derived sibling run'
+                  )
+
+                  expectOverlap(
+                    overlapCause,
+                    options,
+                    'RuntimeContextStorage rejects overlapping derived siblings and remains reusable'
+                  )
+                  assert(
+                    !secondRan,
+                    'RuntimeContextStorage rejects overlapping derived siblings and remains reusable',
+                    'the rejected derived sibling callback ran'
+                  )
+
+                  releaseFirst()
+                  const firstContext = await firstRun
+
+                  assert(
+                    firstContext.scope === firstScope,
+                    'RuntimeContextStorage rejects overlapping derived siblings and remains reusable',
+                    'the first derived sibling context changed after rejected overlap'
+                  )
+                  assert(
+                    storage.current() === root,
+                    'RuntimeContextStorage rejects overlapping derived siblings and remains reusable',
+                    'root context was not restored after the first derived sibling settled'
+                  )
+                } finally {
+                  releaseFirst()
+                  await Promise.allSettled(runs)
+                }
+              })
+
+              const reusable = makeContext(secondScope, makeResolver())
+              assert(
+                storage.run(reusable, () => storage.current()) === reusable,
+                'RuntimeContextStorage rejects overlapping derived siblings and remains reusable',
+                'storage was not reusable after rejected derived sibling overlap'
+              )
+            } finally {
+              releaseFirst()
+              await Promise.allSettled(runs)
+              await closeScopes(firstScope, secondScope, rootScope)
+            }
+          })
+        }
+      )
     )
   }
 

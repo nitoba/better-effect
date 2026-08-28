@@ -1,10 +1,11 @@
-import { describe, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 
 import { ItiLayerBackend } from '../src/adapters/iti'
 import { MapLayerBackend } from '../src/layer'
 import { ExplicitRuntimeContextStorage } from '../src/runtime/explicit'
 import { NodeRuntimeContextStorage } from '../src/runtime/node'
 import {
+  ConformanceError,
   layerBackendContract,
   runtimeContextStorageContract,
   type ContractScenario
@@ -16,6 +17,14 @@ const register = (name: string, scenarios: readonly ContractScenario[]): void =>
       test(scenario.name, scenario.run)
     }
   })
+}
+
+class TimerDelayedDisposalBackend extends MapLayerBackend {
+  override async disposeAll(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0)
+    })
+  }
 }
 
 register(
@@ -33,6 +42,28 @@ register(
     acquisitionFailure: 'sticky'
   })
 )
+
+test('LayerBackend contract rejects timer-delayed disposal', async () => {
+  const scenario = layerBackendContract({
+    makeBackend: () => new TimerDelayedDisposalBackend(),
+    acquisitionFailure: 'retry'
+  }).find((candidate) => candidate.name === 'LayerBackend disposal waits for in-flight acquisition')
+
+  if (!scenario) {
+    throw new Error('LayerBackend disposal scenario is not registered')
+  }
+
+  const outcome = await scenario.run().then(
+    () => ({ rejected: false as const }),
+    (cause) => ({ rejected: true as const, cause })
+  )
+
+  expect(outcome.rejected).toBe(true)
+
+  if (outcome.rejected) {
+    expect(outcome.cause).toBeInstanceOf(ConformanceError)
+  }
+})
 
 register(
   'NodeRuntimeContextStorage conformance',
