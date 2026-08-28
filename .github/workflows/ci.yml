@@ -65,13 +65,13 @@ jobs:
           done
 
           cat > "$temp_dir/consumer/smoke.mjs" <<'EOF'
-          import { Effect, Layer, Runtime, Service } from 'better-effect'
+          import { Effect, Layer, MapLayerBackend, Runtime, Service } from 'better-effect'
           import 'better-effect/adapters/iti'
           import 'better-effect/hono'
           import 'better-effect/runtime/explicit'
           import 'better-effect/runtime/node'
           import 'better-effect/standard-services'
-          import 'better-effect/testing'
+          import { layerBackendContract } from 'better-effect/testing'
           import { Result } from 'better-result'
 
           class Greeting extends Service()('Greeting') {}
@@ -88,6 +88,16 @@ jobs:
             throw new Error('packed consumer smoke test failed')
           }
 
+          const scenario = layerBackendContract({
+            makeBackend: () => new MapLayerBackend(),
+            acquisitionFailure: 'retry'
+          })[0]
+
+          if (!scenario) {
+            throw new Error('packed conformance scenario was not exported')
+          }
+
+          await scenario.run()
           await runtime.dispose()
           EOF
 
