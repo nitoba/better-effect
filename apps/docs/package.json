@@ -11,7 +11,8 @@
     "types:check": "bun run typecheck",
     "lint": "oxlint",
     "format": "oxfmt --write .",
-    "check": "bun run typecheck && bun run lint && bun run format && bun run build"
+    "format:check": "oxfmt --check .",
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

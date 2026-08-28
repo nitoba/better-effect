@@ -28,39 +28,75 @@ jobs:
         with:
           bun-version-file: package.json
 
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Typecheck
-        run: bun run typecheck
+      - name: Run quality gates
+        run: bun run check
 
-      - name: Check formatting
-        run: bun run format
-
-      - name: Test
-        run: bun test
-
-      - name: Build
-        run: bun run build
-
-      - name: Validate public type namespaces
+      - name: Inspect packed package and run consumer smoke test
         working-directory: packages/better-effect
-        run: bun run check:public-type-namespaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_root="$PWD"
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
 
-      - name: Validate public type variance
-        working-directory: packages/better-effect
-        run: bun run check:public-type-variance
+          bun pm pack --destination "$temp_dir" --ignore-scripts
+          archive="$(find "$temp_dir" -maxdepth 1 -type f -name 'better-effect-*.tgz' -print -quit)"
+          test -n "$archive"
 
-      - name: Validate instance requirements
-        working-directory: packages/better-effect
-        run: bun run check:instance-requirements
+          tar -tzf "$archive" | grep -Fx 'package/LICENSE'
+          tar -tzf "$archive" | grep -Fx 'package/README.md'
+          tar -tzf "$archive" | grep -Fx 'package/dist/index.mjs'
 
-      - name: Validate package
-        run: bun run publint
+          mkdir -p "$temp_dir/consumer/node_modules"
+          tar -xzf "$archive" -C "$temp_dir/consumer/node_modules"
+          mv "$temp_dir/consumer/node_modules/package" "$temp_dir/consumer/node_modules/better-effect"
+          for dependency in better-result hono iti; do
+            ln -s "$package_root/node_modules/$dependency" "$temp_dir/consumer/node_modules/$dependency"
+          done
 
-      - name: Inspect package contents
-        working-directory: packages/better-effect
-        run: bun pm pack --dry-run
+          cat > "$temp_dir/consumer/smoke.mjs" <<'EOF'
+          import { Effect, Layer, Runtime, Service } from 'better-effect'
+          import 'better-effect/adapters/iti'
+          import 'better-effect/hono'
+          import 'better-effect/runtime/explicit'
+          import 'better-effect/runtime/node'
+          import 'better-effect/standard-services'
+          import 'better-effect/testing'
+          import { Result } from 'better-result'
 
-      - name: Lint
-        run: bun run lint
+          class Greeting extends Service()('Greeting') {}
+
+          const runtime = await Runtime.make(Layer.make(Greeting))
+          const result = await runtime.run(
+            Effect.fn(async function* () {
+              const greeting = yield* Greeting
+              return Result.ok(greeting)
+            })
+          )
+
+          if (!Result.isOk(result) || !(result.value instanceof Greeting)) {
+            throw new Error('packed consumer smoke test failed')
+          }
+
+          await runtime.dispose()
+          EOF
+
+          (cd "$temp_dir/consumer" && bun smoke.mjs && node smoke.mjs)
+
+      - name: Verify quality gates did not modify the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"

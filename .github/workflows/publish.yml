@@ -58,41 +58,93 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag_name }}
         run: |
-          PACKAGE_VERSION="$(node -p "require('./packages/better-effect/package.json').version")"
-          if [[ "$RELEASE_TAG" != v* ]]; then
+          set -euo pipefail
+          PACKAGE_VERSION="$(bun -e "const pkg = await Bun.file('packages/better-effect/package.json').json(); process.stdout.write(String(pkg.version))")"
+
+          if [[ "$RELEASE_TAG" != v* || "$RELEASE_TAG" == vv* ]]; then
             echo "::error::release tag must use the v<version> format"
             exit 1
           fi
 
-          RELEASE_VERSION="$RELEASE_TAG"
-          RELEASE_VERSION="${RELEASE_VERSION#v}"
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          if ! VERSION_TO_VALIDATE="$RELEASE_VERSION" bun -e '
+            const version = process.env.VERSION_TO_VALIDATE
+            const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+
+            if (!semver.test(version)) process.exit(1)
+          '; then
+            echo "::error::release tag must contain a valid SemVer version"
+            exit 1
+          fi
 
           if [ "$PACKAGE_VERSION" != "$RELEASE_VERSION" ]; then
             echo "::error::package.json version ($PACKAGE_VERSION) does not match release tag ($RELEASE_VERSION)"
             exit 1
           fi
 
-      - name: Typecheck
-        run: bun run typecheck
+      - name: Run quality gates
+        run: bun run check
 
-      - name: Build
-        run: bun run build
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Check formatting
-        run: bun run format
-
-      - name: Test
-        run: bun test
-
-      - name: Validate package
-        run: bun run publint
-
-      - name: Inspect package contents
+      - name: Inspect packed package and run consumer smoke test
         working-directory: packages/better-effect
-        run: bun pm pack --dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_root="$PWD"
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          bun pm pack --destination "$temp_dir" --ignore-scripts
+          archive="$(find "$temp_dir" -maxdepth 1 -type f -name 'better-effect-*.tgz' -print -quit)"
+          test -n "$archive"
+
+          tar -tzf "$archive" | grep -Fx 'package/LICENSE'
+          tar -tzf "$archive" | grep -Fx 'package/README.md'
+          tar -tzf "$archive" | grep -Fx 'package/dist/index.mjs'
+
+          mkdir -p "$temp_dir/consumer/node_modules"
+          tar -xzf "$archive" -C "$temp_dir/consumer/node_modules"
+          mv "$temp_dir/consumer/node_modules/package" "$temp_dir/consumer/node_modules/better-effect"
+          for dependency in better-result hono iti; do
+            ln -s "$package_root/node_modules/$dependency" "$temp_dir/consumer/node_modules/$dependency"
+          done
+
+          cat > "$temp_dir/consumer/smoke.mjs" <<'EOF'
+          import { Effect, Layer, Runtime, Service } from 'better-effect'
+          import 'better-effect/adapters/iti'
+          import 'better-effect/hono'
+          import 'better-effect/runtime/explicit'
+          import 'better-effect/runtime/node'
+          import 'better-effect/standard-services'
+          import 'better-effect/testing'
+          import { Result } from 'better-result'
+
+          class Greeting extends Service()('Greeting') {}
+
+          const runtime = await Runtime.make(Layer.make(Greeting))
+          const result = await runtime.run(
+            Effect.fn(async function* () {
+              const greeting = yield* Greeting
+              return Result.ok(greeting)
+            })
+          )
+
+          if (!Result.isOk(result) || !(result.value instanceof Greeting)) {
+            throw new Error('packed consumer smoke test failed')
+          }
+
+          await runtime.dispose()
+          EOF
+
+          (cd "$temp_dir/consumer" && bun smoke.mjs && node smoke.mjs)
+
+      - name: Verify quality gates did not modify the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
 
       - name: Publish
         working-directory: packages/better-effect
