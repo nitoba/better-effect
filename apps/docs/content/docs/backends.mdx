@@ -62,11 +62,11 @@ ITI registrations use an internal deterministic key derived from
 `better-effect:${serviceTag}`. That translation stays inside the adapter. The
 application continues to yield the Service constructor.
 
-ITI providers are lazy and cached by the container. `disposeAll()` releases
-ITI-owned instances, disposes the container, and clears registrations, keys and
-caches so the backend can be reused without resolving stale instances. Layer
-release callbacks remain owned by the Runtime root Scope and are not registered
-with ITI's disposer.
+ITI providers are lazy and cached by the container. `disposeAll()` disposes the
+ITI container and resets the adapter state (registrations, keys and caches) so
+the backend can be reused without resolving stale instances. This is not Scope
+cleanup: `Layer.scoped` and `Layer.scopedGen` release callbacks belong to the
+Runtime root `Scope` and are not registered with or released by ITI's disposer.
 
 ## Write an adapter
 
@@ -101,8 +101,9 @@ unrelated generic result such as `resolve<A>(token): A`.
     identifier must not leak into Service, Layer or Runtime APIs.
   </Accordion>
   <Accordion title="The adapter owns container cleanup" id="adapter-cleanup">
-    `disposeAll` releases backend-owned instances. A Layer provider's release callback belongs to
-    the better-effect root Scope and must not be registered directly with a DI container disposer.
+    `disposeAll` disposes backend-owned container state and resets the adapter. It does not release
+    scoped Layer resources; a Layer provider's release callback belongs to the better-effect root
+    Scope and must not be registered directly with a DI container disposer.
   </Accordion>
   <Accordion title="The adapter does not own Service semantics" id="adapter-semantics">
     Service identity, Scope outcomes, Layer collisions and Runtime shutdown ordering are core

@@ -20,14 +20,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  publish:
+    name: Publish the tagged package
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag_name: ${{ inputs.tag_name || github.ref_name }}
+    secrets: inherit
+
   release:
     name: Validate tag and create GitHub Release
+    needs: publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tag
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag_name || github.ref_name }}
+          ref: refs/tags/${{ inputs.tag_name || github.ref_name }}
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -78,11 +87,3 @@ jobs:
               --generate-notes \
               --title "$RELEASE_TAG"
           fi
-
-  publish:
-    name: Publish the tagged package
-    needs: release
-    uses: ./.github/workflows/publish.yml
-    with:
-      tag_name: ${{ inputs.tag_name || github.ref_name }}
-    secrets: inherit

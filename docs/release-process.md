@@ -14,9 +14,9 @@ Push tag vX.Y.Z
         ↓
 Validate tag and package version
         ↓
-GitHub Release with generated notes
-        ↓
 Publish better-effect to npm with Trusted Publishing/OIDC
+        ↓
+GitHub Release with generated notes
 ```
 
 ## Normal development
@@ -48,10 +48,11 @@ package version is selected.
    run it from an agent worktree.
 
 The release script requires a matching changelog heading before creating a
-release commit. The `Release` workflow accepts a valid `v<package-version>` tag,
-creates the GitHub Release with generated notes, and invokes the reusable
-`publish.yml` workflow, which checks out the exact tag, runs the same quality
-gates and packed-consumer smoke test, and publishes `better-effect` to npm.
+release commit. The `Release` workflow accepts a valid `v<package-version>` tag
+and invokes the reusable `publish.yml` workflow first. That workflow checks out
+the exact tag, runs the quality gates and packed-consumer smoke test, and
+publishes `better-effect` to npm. Only after that succeeds does the workflow
+create the GitHub Release with generated notes.
 
 ## Manual recovery
 
@@ -60,8 +61,10 @@ remote problem, and retry the same atomic push. Do not rerun the versioning
 step or move/delete an already-published tag.
 
 Run the `Release` workflow manually and enter the existing tag to retry the
-complete flow. GitHub Release creation is idempotent. The reusable `Publish`
-workflow can also be run directly when only npm publication needs to be retried.
+complete flow. The publish job reruns its quality gates and treats an already
+published version as successful; GitHub Release creation also checks for an
+existing release before creating one. The reusable `Publish` workflow can be
+run directly when only npm publication needs to be retried.
 
 ## Release administration
 
