@@ -81,7 +81,6 @@ export class ExplicitRuntimeContextStorage implements RuntimeContextStorage {
 
     if (parent === undefined) {
       if (
-        parentFrame?.storage === this ||
         this.rootState !== undefined ||
         (!isRuntimeContextFrameCarrierInstalled() && fallbackRootLease)
       ) {

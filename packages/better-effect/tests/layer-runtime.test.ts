@@ -12,6 +12,7 @@ import {
 } from '../src/layer'
 import { createRuntimeHandle } from '../src/layer/runtime'
 import { Runtime } from '../src/runtime'
+import { ExplicitRuntimeContextStorage } from '../src/runtime/explicit'
 import { Scope, ScopeCloseError } from '../src/scope'
 
 import type { CleanupFailureDiagnostic, ScopeOutcome } from '../src/scope'
@@ -1050,6 +1051,43 @@ describe('createRuntimeHandle', () => {
     } finally {
       releaseGate()
       await runtime.dispose()
+    }
+  })
+
+  test('closes root resources after re-entrant disposal with explicit context', async () => {
+    const storage = new ExplicitRuntimeContextStorage()
+    let released = 0
+    let disposal: Promise<void> | undefined
+    const runtime = await createRuntimeHandle(
+      Layer.scoped(
+        ExampleService,
+        () => new ExampleService(),
+        () => {
+          released++
+        }
+      ),
+      new MemoryLayerBackend(),
+      { contextStorage: storage }
+    )
+
+    try {
+      const execution = runtime.run(async () => {
+        await ServiceRuntime.resolve(ExampleService)
+        disposal = runtime.dispose()
+        return Result.ok(true)
+      })
+
+      await execution
+      expect(disposal).toBeDefined()
+
+      if (disposal === undefined) {
+        throw new Error('Runtime disposal was not requested')
+      }
+
+      await disposal
+      expect(released).toBe(1)
+    } finally {
+      await (disposal ?? runtime.dispose()).catch(() => {})
     }
   })
 

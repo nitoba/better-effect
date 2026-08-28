@@ -27,6 +27,8 @@ import type { ScopeOutcome } from '../scope'
 
 import type { RuntimeFor } from './types'
 
+import type { RuntimeObserver } from './observer'
+
 type RuntimeBackendInput = LayerBackend | RuntimeOptions | undefined
 
 type RuntimeConfig = {
@@ -163,30 +165,24 @@ export class Runtime<Provided extends AnyService = any> {
     }
 
     const config = resolveRuntimeConfig(backendOrOptions, options)
-    const runtime = await Runtime.make(layer, config.backend, config.options)
+    let programOutcome: ScopeOutcome | undefined
+    const outcomeObserver: RuntimeObserver = {
+      onExecutionEnd: ({ outcome }) => {
+        programOutcome = outcome
+      }
+    }
+    const runtimeOptions: RuntimeOptions = {
+      ...config.options,
+      observers: [outcomeObserver, ...(config.options.observers ?? [])]
+    }
+    const runtime = await Runtime.make(layer, config.backend, runtimeOptions)
 
     let value!: Awaited<A>
     let executionFailed = false
     let executionFailure: unknown
-    let programOutcome: ScopeOutcome | undefined
 
     try {
-      value = await runtime.runUnchecked(async () => {
-        try {
-          const programValue = await program()
-
-          programOutcome = classifyRuntimeOutcome(programValue)
-
-          return programValue
-        } catch (cause) {
-          programOutcome = {
-            status: 'failure',
-            cause
-          }
-
-          throw cause
-        }
-      })
+      value = await runtime.runUnchecked(program)
     } catch (cause) {
       executionFailed = true
       executionFailure = cause

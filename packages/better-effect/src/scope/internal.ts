@@ -16,6 +16,7 @@ export type OutcomeClassifier<A> = (value: A) => ScopeOutcome
 
 export type RunScopedOptions<A> = {
   readonly classify: OutcomeClassifier<A>
+  readonly onOutcome?: (outcome: ScopeOutcome) => void
   readonly onCleanupFailure?: (diagnostic: CleanupFailureDiagnostic) => MaybePromise<void>
   readonly contextStorage?: RuntimeContextStorage
   readonly context?: CompleteRuntimeContext
@@ -81,6 +82,8 @@ export const runScoped = async <A>(
       outcomeStatus = 'failure'
     }
   }
+
+  options.onOutcome?.(outcome)
 
   let cleanupFailed = false
   let cleanupFailure: unknown
