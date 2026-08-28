@@ -1,5 +1,7 @@
 export { Runtime } from './runtime'
 
+export { RuntimeObserver } from './observer'
+
 export { CurrentAbortSignal } from './signal'
 
 export { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from './errors'
@@ -19,7 +21,6 @@ export type {
 export type {
   RuntimeExecutionEndEvent,
   RuntimeExecutionStartEvent,
-  RuntimeObserver,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
   RuntimeServiceResolveEvent

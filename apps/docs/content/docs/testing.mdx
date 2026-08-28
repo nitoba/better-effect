@@ -85,6 +85,46 @@ Deno, Cloudflare Workers, or other non-Node hosts. Separate explicit instances
 do not provide general concurrent isolation; do not share one
 `ExplicitRuntimeContextStorage` instance across concurrent Runtime executions.
 
+## Record Runtime lifecycle
+
+`better-effect/testing` provides a recorder for assertions over every Runtime
+observer event. Compose it with an application observer when a test needs both:
+
+```ts
+import { RecordedRuntimeObserver, RuntimeObserver } from 'better-effect/testing'
+
+const testLog: string[] = []
+const recorded = RecordedRuntimeObserver.make()
+const runtime = await Runtime.make(AppTest, {
+  observers: [
+    RuntimeObserver.compose(recorded, {
+      onExecutionEnd: ({ outcome }) => testLog.push(outcome.status)
+    })
+  ]
+})
+
+try {
+  const result = await runtime.run(applicationProgram)
+
+  expect(Result.isOk(result)).toBe(true)
+  expect(recorded.executionStarts).toHaveLength(1)
+  expect(recorded.executionEnds).toHaveLength(1)
+  expect(recorded.serviceAcquisitions).toHaveLength(1)
+} finally {
+  await runtime.dispose()
+}
+
+const snapshot = recorded.snapshot()
+expect(snapshot.timeline).toContain(snapshot.executionEnds[0])
+recorded.clear()
+```
+
+Category views and `snapshot()` are immutable copies that retain the original
+Runtime event objects. `timeline` preserves their cross-category invocation
+order. `clear()` resets the recorder so one instance can be reused in a test.
+Observers run in declaration order, and a throwing or rejecting observer never
+prevents later observers from seeing an event or changes the Runtime result.
+
 ## Type-contract tests
 
 Type inference is part of the API. Use `expectTypeOf` in `tests/types`:

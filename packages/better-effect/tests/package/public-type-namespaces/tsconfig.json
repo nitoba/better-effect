@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": []
   },
-  "files": ["valid.ts"]
+  "files": ["valid.ts", "testing.ts"]
 }

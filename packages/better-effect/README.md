@@ -238,6 +238,34 @@ const runtime = await Runtime.make(AppLive, {
 })
 ```
 
+For lifecycle assertions, `better-effect/testing` provides a recorder and a
+best-effort composition utility:
+
+```ts
+import { RecordedRuntimeObserver, RuntimeObserver } from 'better-effect/testing'
+
+const recorded = RecordedRuntimeObserver.make()
+const runtime = await Runtime.make(AppTest, {
+  observers: [
+    RuntimeObserver.compose(recorded, {
+      onExecutionEnd: ({ outcome }) => console.debug(outcome.status)
+    })
+  ]
+})
+
+await runtime.run(program)
+const snapshot = recorded.snapshot()
+expect(snapshot.executionEnds).toHaveLength(1)
+expect(snapshot.timeline).toContain(snapshot.executionEnds[0])
+
+await runtime.dispose()
+```
+
+`RecordedRuntimeObserver` preserves event identity in immutable category views
+and its ordered `timeline`; call `clear()` to reuse it. Composition invokes
+observers in declaration order and isolates thrown or rejected observer
+failures from the Runtime result.
+
 Cancellation is cooperative and uses `AbortSignal`; no scheduler or fibers are
 created. Pass a signal to one execution and read it from the program when an
 I/O operation supports cancellation. Runtime disposal waits for active work;

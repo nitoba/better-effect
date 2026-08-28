@@ -44,6 +44,27 @@ export type RuntimeObserver = {
   readonly onResourceRelease?: (event: RuntimeResourceReleaseEvent) => MaybePromise<void>
 }
 
+/** Compose best-effort Runtime observers into one observer. */
+export const RuntimeObserver = {
+  compose: (...observers: readonly RuntimeObserver[]): RuntimeObserver => ({
+    onServiceResolve: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onServiceResolve, event)
+    },
+    onServiceAcquire: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, event)
+    },
+    onExecutionStart: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onExecutionStart, event)
+    },
+    onExecutionEnd: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onExecutionEnd, event)
+    },
+    onResourceRelease: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, event)
+    }
+  })
+}
+
 export const notifyRuntimeObservers = <Event>(
   observers: readonly RuntimeObserver[],
   select: (observer: RuntimeObserver) => ((event: Event) => MaybePromise<void>) | undefined,
