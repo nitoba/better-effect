@@ -2,13 +2,20 @@ import { RuntimeContextNotConfiguredError } from './errors'
 
 import type { Scope } from '../scope/scope'
 import type { AnyServiceToken, ServiceResolver } from '../service'
+import { isPromiseLike } from '../utils/runtime'
 
-/** The complete contextual state shared by Service, Scope and Layer resolution. */
+/** Contextual state shared by Service, Scope and Layer resolution. */
 export interface RuntimeContext {
-  readonly resolver: ServiceResolver
-  readonly scope: Scope
+  readonly resolver?: ServiceResolver
+  readonly scope?: Scope
   readonly signal?: AbortSignal
   readonly resolutionPath: readonly AnyServiceToken[]
+}
+
+/** A context with both channels required by a Runtime execution. */
+export type CompleteRuntimeContext = RuntimeContext & {
+  readonly resolver: ServiceResolver
+  readonly scope: Scope
 }
 
 /** Host-specific storage for the current RuntimeContext. */
@@ -24,43 +31,155 @@ const unconfiguredRuntimeContextStorage: RuntimeContextStorage = {
   }
 }
 
-/** Build a context while keeping compatibility-only missing channels internal. */
-export const makeRuntimeContext = (
+const contextLineages = new WeakMap<object, RuntimeContext>()
+
+/** Associate a derived context with the root context of its execution lineage. */
+export const inheritRuntimeContextLineage = (
+  context: RuntimeContext,
+  parent: RuntimeContext
+): RuntimeContext => {
+  const lineage = contextLineages.get(parent) ?? parent
+  contextLineages.set(context, lineage)
+  return context
+}
+
+/** Return the root context associated with a contextual value, when known. */
+export const getRuntimeContextLineage = (context: RuntimeContext): RuntimeContext | undefined =>
+  contextLineages.get(context)
+
+/** Associate a newly-entered root context with itself. */
+export const setRuntimeContextLineage = (context: RuntimeContext): RuntimeContext => {
+  contextLineages.set(context, context)
+  return context
+}
+
+const hasPathPrefix = (
+  parent: readonly AnyServiceToken[],
+  child: readonly AnyServiceToken[]
+): boolean =>
+  child.length >= parent.length && parent.every((token, index) => child[index] === token)
+
+/** Recognize contexts created by a nested Service, Scope, or Layer operation. */
+export const isDerivedRuntimeContext = (parent: RuntimeContext, child: RuntimeContext): boolean =>
+  parent.resolver !== undefined &&
+  child.resolver === parent.resolver &&
+  parent.resolutionPath.length > 0 &&
+  hasPathPrefix(parent.resolutionPath, child.resolutionPath) &&
+  (child.resolutionPath.length > parent.resolutionPath.length || child.scope !== parent.scope)
+
+/** Build a context while retaining only channels that are actually available. */
+export function makeRuntimeContext(
+  resolver: ServiceResolver,
+  scope: Scope,
+  resolutionPath: readonly AnyServiceToken[],
+  signal: AbortSignal | undefined,
+  parent?: RuntimeContext
+): CompleteRuntimeContext
+export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
   scope: Scope | undefined,
   resolutionPath: readonly AnyServiceToken[],
-  signal: AbortSignal | undefined
-): RuntimeContext => {
-  // SAFETY: ServiceRuntime and ScopeRuntime can be entered independently; the missing channel is rejected by the corresponding bridge before use.
-  const context: RuntimeContext = {
-    resolver: resolver as ServiceResolver,
-    scope: scope as Scope,
-    resolutionPath
+  signal: AbortSignal | undefined,
+  parent?: RuntimeContext
+): RuntimeContext
+export function makeRuntimeContext(
+  resolver: ServiceResolver | undefined,
+  scope: Scope | undefined,
+  resolutionPath: readonly AnyServiceToken[],
+  signal: AbortSignal | undefined,
+  parent?: RuntimeContext
+): RuntimeContext {
+  const context: RuntimeContext = { resolutionPath }
+
+  if (resolver !== undefined) {
+    Object.assign(context, { resolver })
   }
 
-  if (signal === undefined) {
-    return context
+  if (scope !== undefined) {
+    Object.assign(context, { scope })
   }
 
-  return { ...context, signal }
+  if (signal !== undefined) {
+    Object.assign(context, { signal })
+  }
+
+  if (parent !== undefined) {
+    inheritRuntimeContextLineage(context, parent)
+  }
+
+  return context
 }
 
-let activeStorage = unconfiguredRuntimeContextStorage
+type ActiveStorageFrame = {
+  readonly storage: RuntimeContextStorage
+  readonly previous: ActiveStorageFrame | undefined
+  active: boolean
+}
+
+let defaultStorage = unconfiguredRuntimeContextStorage
+let activeFrame: ActiveStorageFrame | undefined
+
+const restoreActiveStorageFrame = (frame: ActiveStorageFrame): void => {
+  frame.active = false
+
+  if (activeFrame !== frame) {
+    return
+  }
+
+  let previous = frame.previous
+
+  while (previous !== undefined && !previous.active) {
+    previous = previous.previous
+  }
+
+  activeFrame = previous
+}
+
+const settleWithRuntimeStorage = <A>(value: A, restore: () => void): A => {
+  let promiseLike: boolean
+
+  try {
+    promiseLike = isPromiseLike(value)
+  } catch (cause) {
+    restore()
+    throw cause
+  }
+
+  if (!promiseLike) {
+    restore()
+    return value
+  }
+
+  try {
+    // SAFETY: PromiseLike values are normalized only to restore the storage after settlement; the public generic retains the callback's awaited shape.
+    return Promise.resolve(value).then(
+      (resolved) => {
+        restore()
+        return resolved
+      },
+      (cause) => {
+        restore()
+        throw cause
+      }
+    ) as A
+  } catch (cause) {
+    restore()
+    throw cause
+  }
+}
 
 /** Install the host default used by the main Runtime entrypoint. */
 export const setDefaultRuntimeContextStorage = (storage: RuntimeContextStorage): void => {
-  activeStorage = storage
+  defaultStorage = storage
 }
 
-const isPromiseLike = <A>(value: A): value is A & PromiseLike<unknown> =>
-  Object(value) === value && 'then' in Object(value)
-
 /** Return the storage currently associated with the executing callback. */
-export const activeRuntimeContextStorage = (): RuntimeContextStorage => activeStorage
+export const activeRuntimeContextStorage = (): RuntimeContextStorage =>
+  activeFrame?.storage ?? defaultStorage
 
 /** Return the active context, or undefined when the storage has not been entered. */
 export const getRuntimeContext = (
-  storage: RuntimeContextStorage = activeStorage
+  storage: RuntimeContextStorage = activeRuntimeContextStorage()
 ): RuntimeContext | undefined => {
   try {
     return storage.current()
@@ -74,47 +193,28 @@ export const getRuntimeContext = (
 }
 
 /** Return the active context or throw the storage's standard missing-context error. */
-export const currentRuntimeContext = (): RuntimeContext => activeStorage.current()
+export const currentRuntimeContext = (): RuntimeContext => activeRuntimeContextStorage().current()
 
 /** Keep a storage discoverable to Service and Scope compatibility bridges. */
 export const withActiveRuntimeContextStorage = <A>(
   storage: RuntimeContextStorage,
   program: () => A
 ): A => {
-  const previous = activeStorage
-  activeStorage = storage
-
-  const restore = (): void => {
-    if (activeStorage === storage) {
-      activeStorage = previous
-    }
+  const frame: ActiveStorageFrame = {
+    storage,
+    previous: activeFrame,
+    active: true
   }
+  activeFrame = frame
 
-  let value: A
+  const restore = (): void => restoreActiveStorageFrame(frame)
 
   try {
-    value = program()
+    return settleWithRuntimeStorage(program(), restore)
   } catch (cause) {
     restore()
     throw cause
   }
-
-  if (!isPromiseLike(value)) {
-    restore()
-    return value
-  }
-
-  // SAFETY: PromiseLike values are normalized only to restore the storage after settlement; the public generic retains the callback's awaited shape.
-  return Promise.resolve(value).then(
-    (resolved) => {
-      restore()
-      return resolved
-    },
-    (cause) => {
-      restore()
-      throw cause
-    }
-  ) as A
 }
 
 /** Run a callback in a context while keeping the selected storage discoverable to bridges. */
@@ -122,4 +222,12 @@ export const runRuntimeContext = <A>(
   storage: RuntimeContextStorage,
   context: RuntimeContext,
   program: () => A
-): A => withActiveRuntimeContextStorage(storage, () => storage.run(context, program))
+): A => {
+  const current = getRuntimeContext(storage)
+  const contextual =
+    current !== undefined && isDerivedRuntimeContext(current, context)
+      ? inheritRuntimeContextLineage(context, current)
+      : context
+
+  return withActiveRuntimeContextStorage(storage, () => storage.run(contextual, program))
+}

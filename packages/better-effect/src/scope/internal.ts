@@ -6,7 +6,7 @@ import type { CloseableScope } from './scope'
 
 import {
   runRuntimeContext,
-  type RuntimeContext,
+  type CompleteRuntimeContext,
   type RuntimeContextStorage
 } from '../runtime/context'
 
@@ -18,7 +18,7 @@ export type RunScopedOptions<A> = {
   readonly classify: OutcomeClassifier<A>
   readonly onCleanupFailure?: (diagnostic: CleanupFailureDiagnostic) => MaybePromise<void>
   readonly contextStorage?: RuntimeContextStorage
-  readonly context?: RuntimeContext
+  readonly context?: CompleteRuntimeContext
 }
 
 const notifyCleanupFailure = async (
@@ -57,12 +57,30 @@ export const runScoped = async <A>(
     programFailure = cause
   }
 
-  const outcome: ScopeOutcome = programFailed
-    ? {
+  let outcome: ScopeOutcome
+  let outcomeStatus: ScopeOutcome['status']
+
+  if (programFailed) {
+    outcome = {
+      status: 'failure',
+      cause: programFailure
+    }
+    outcomeStatus = 'failure'
+  } else {
+    try {
+      outcome = options.classify(value)
+      // Read the discriminant before cleanup so a throwing classifier or proxy is a program failure.
+      outcomeStatus = outcome.status
+    } catch (cause) {
+      programFailed = true
+      programFailure = cause
+      outcome = {
         status: 'failure',
-        cause: programFailure
+        cause
       }
-    : options.classify(value)
+      outcomeStatus = 'failure'
+    }
+  }
 
   let cleanupFailed = false
   let cleanupFailure: unknown
@@ -92,7 +110,7 @@ export const runScoped = async <A>(
     throw programFailure
   }
 
-  if (outcome.status === 'failure') {
+  if (outcomeStatus === 'failure') {
     return value
   }
 

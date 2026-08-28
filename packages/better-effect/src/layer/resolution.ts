@@ -58,7 +58,8 @@ export const createResolutionResolver = (
         wrapped,
         context?.scope,
         resolutionPath,
-        context?.signal
+        context?.signal,
+        context
       )
 
       return await runRuntimeContext(storage, nextContext, async () => {

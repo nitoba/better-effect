@@ -29,7 +29,8 @@ export class ScopeRuntime {
       current?.resolver,
       scope,
       current?.resolutionPath ?? [],
-      current?.signal
+      current?.signal,
+      current
     )
 
     return runRuntimeContext(storage, context, program)

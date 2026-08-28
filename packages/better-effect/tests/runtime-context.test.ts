@@ -5,7 +5,7 @@ import { Result } from 'better-result'
 import { Effect } from '../src/effect'
 import { Layer } from '../src/layer'
 import { Runtime } from '../src/runtime'
-import { RuntimeContextNotConfiguredError } from '../src/runtime'
+import { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from '../src/runtime'
 import { ExplicitRuntimeContextStorage } from '../src/runtime/explicit'
 import { NodeRuntimeContextStorage } from '../src/runtime/node'
 import { Scope } from '../src/scope'
@@ -73,6 +73,69 @@ describe('Runtime context storage', () => {
 
     expect(() => storage.current()).toThrow(RuntimeContextNotConfiguredError)
     await scope.close()
+  })
+
+  test('explicit storage rejects overlapping root contexts and remains reusable', async () => {
+    const storage = new ExplicitRuntimeContextStorage()
+    const firstScope = Scope.make()
+    const secondScope = Scope.make()
+    const resolver: ServiceResolver = {
+      resolve: async <T extends AnyServiceToken>(_token: T): Promise<InstanceType<T>> => {
+        throw new Error('unused test resolver')
+      }
+    }
+    const first = { resolver, scope: firstScope, resolutionPath: [] }
+    const second = { resolver, scope: secondScope, resolutionPath: [] }
+    let releaseFirst!: () => void
+    let firstStarted!: () => void
+
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      firstStarted = resolve
+    })
+
+    const firstRun = storage.run(first, async () => {
+      firstStarted()
+      await firstMayFinish
+      return storage.current()
+    })
+
+    await started
+
+    expect(() => storage.run(second, async () => storage.current())).toThrow(
+      RuntimeContextOverlapError
+    )
+
+    releaseFirst()
+    expect(await firstRun).toBe(first)
+
+    const secondRun = await storage.run(second, async () => storage.current())
+    expect(secondRun).toBe(second)
+
+    await Promise.all([firstScope.close(), secondScope.close()])
+  })
+
+  test('explicit storage allows nested derived Scope contexts', async () => {
+    const storage = new ExplicitRuntimeContextStorage()
+    const parent = Scope.make()
+    const child = Scope.make()
+    const context = { scope: parent, resolutionPath: [] }
+
+    await storage.run(context, async () => {
+      expect(Scope.current()).toBe(parent)
+
+      await Scope.provide(child, async () => {
+        expect(Scope.current()).toBe(child)
+        await Promise.resolve()
+        expect(Scope.current()).toBe(child)
+      })
+
+      expect(Scope.current()).toBe(parent)
+    })
+
+    await Promise.all([parent.close(), child.close()])
   })
 
   test('Node storage isolates concurrent async branches', async () => {

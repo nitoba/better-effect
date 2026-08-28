@@ -14,6 +14,7 @@ import type { LayerRegistration } from '../../src'
 import {
   CurrentAbortSignal,
   Runtime,
+  type RuntimeContext,
   type RuntimeDisposeOptions,
   type RuntimeFor,
   type RuntimeObserver,
@@ -21,7 +22,7 @@ import {
   type RuntimeRunOptions
 } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
-import { Service, type AnyServiceToken } from '../../src/service'
+import { Service, type AnyServiceToken, type ServiceResolver } from '../../src/service'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import type { CompleteExecution, ExecutionMissing } from '../../src/layer/inference'
 
@@ -44,6 +45,11 @@ class Cache extends Service<Cache>()('Cache') {
 }
 
 declare const backend: LayerBackend
+
+const partialContext: RuntimeContext = { resolutionPath: [] }
+expectTypeOf<RuntimeContext['resolver']>().toEqualTypeOf<ServiceResolver | undefined>()
+expectTypeOf<RuntimeContext['scope']>().toEqualTypeOf<Scope | undefined>()
+void partialContext
 
 const registration: LayerRegistration = {
   service: Database,
