@@ -29,20 +29,35 @@ jobs:
         with:
           ref: ${{ inputs.tag_name || github.ref_name }}
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
       - name: Validate release version
         env:
           RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          PACKAGE_VERSION="$(node -p "require('./packages/better-effect/package.json').version")"
+          PACKAGE_VERSION="$(bun -e "const pkg = await Bun.file('packages/better-effect/package.json').json(); process.stdout.write(String(pkg.version))")"
 
-          if [[ "$RELEASE_TAG" != v* ]]; then
+          if [[ "$RELEASE_TAG" != v* || "$RELEASE_TAG" == vv* ]]; then
             echo "::error::release tag must use the v<version> format"
             exit 1
           fi
 
           RELEASE_VERSION="${RELEASE_TAG#v}"
+          if ! VERSION_TO_VALIDATE="$RELEASE_VERSION" bun -e '
+            const version = process.env.VERSION_TO_VALIDATE
+            const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+
+            if (!semver.test(version)) process.exit(1)
+          '; then
+            echo "::error::release tag must contain a valid SemVer version"
+            exit 1
+          fi
+
           if [ "$PACKAGE_VERSION" != "$RELEASE_VERSION" ]; then
             echo "::error::package.json version ($PACKAGE_VERSION) does not match release tag ($RELEASE_VERSION)"
             exit 1

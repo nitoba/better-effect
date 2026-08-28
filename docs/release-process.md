@@ -21,35 +21,47 @@ Publish better-effect to npm with Trusted Publishing/OIDC
 
 ## Normal development
 
-Pull requests and pushes to `main` never publish a package. Keep the package
-version in `packages/better-effect/package.json` synchronized with the matching
-workspace entry in `bun.lock`.
+Pull requests and pushes to `main` never publish a package. Do not edit
+`bun.lock` by hand; the release script refreshes it with `bun install` after the
+package version is selected.
 
 ## Publishing a release
 
-1. Update `packages/better-effect/package.json` to the intended version.
-2. Run `bun install` to refresh `bun.lock`, then run `bun run check`.
-3. Commit the version and lockfile changes on `main`.
-4. Create and push the matching tag:
+1. Start from `main` with a clean tree, or with only the intended
+   `CHANGELOG.md` edit present. Add a dated heading such as
+   `## [0.9.32] - 2026-08-28`.
+2. Run the release script with either a bare version or its tag:
 
    ```bash
-   git tag -a v0.9.0 -m "Release v0.9.0"
-   git push origin v0.9.0
+   ./scripts/release.sh 0.9.32
+   # or: ./scripts/release.sh v0.9.32
    ```
 
-The `Release` workflow accepts only tags in the `v<package-version>` format.
-It creates the GitHub Release and invokes the reusable `publish.yml` workflow,
-which checks out the exact tag, runs package validation, and publishes
-`better-effect` to npm.
+   The script validates strict SemVer, checks the changelog entry, updates the
+   package version, runs `bun install` and the non-mutating `bun run check`,
+   verifies that only release files changed, and creates the release commit and
+   annotated tag locally.
+
+3. The final push is one atomic update of `main` and `v<version>` (for example,
+   `git push --atomic origin main v0.9.32`). Review the local commit and tag
+   before running the script from the maintainer's local `main` checkout. Never
+   run it from an agent worktree.
+
+The release script requires a matching changelog heading before creating a
+release commit. The `Release` workflow accepts a valid `v<package-version>` tag,
+creates the GitHub Release with generated notes, and invokes the reusable
+`publish.yml` workflow, which checks out the exact tag, runs the same quality
+gates and packed-consumer smoke test, and publishes `better-effect` to npm.
 
 ## Manual recovery
 
-Run the `Release` workflow manually and enter the existing tag to retry the
-complete flow. The GitHub Release creation is idempotent. The reusable
-`Publish` workflow can also be run directly when only npm publication needs to
-be retried.
+If the atomic push fails, keep the local release commit and tag, resolve the
+remote problem, and retry the same atomic push. Do not rerun the versioning
+step or move/delete an already-published tag.
 
-Never move or delete an already-published version tag.
+Run the `Release` workflow manually and enter the existing tag to retry the
+complete flow. GitHub Release creation is idempotent. The reusable `Publish`
+workflow can also be run directly when only npm publication needs to be retried.
 
 ## Release administration
 
@@ -63,7 +75,7 @@ Never move or delete an already-published version tag.
 - Do not enable a second release tool for the same package; this workflow owns
   version tags, GitHub Releases, and npm publication.
 
-## Referências
+## References
 
 - [GitHub Actions tag triggers](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 - [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)
