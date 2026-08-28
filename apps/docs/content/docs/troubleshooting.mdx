@@ -34,8 +34,9 @@ icon: CircleQuestionMark
   </Accordion>
   <Accordion title="Explicit context storage rejects overlap" id="explicit-context-overlap">
     `ExplicitRuntimeContextStorage` is for hosts that cannot propagate async context. One instance
-    supports one non-overlapping async flow; use the default Node/Bun storage for concurrent work,
-    or create a separate explicit storage per flow.
+    supports one non-overlapping async flow; use the default Node/Bun storage for concurrent work.
+    Separate explicit storage instances do not provide concurrent isolation on hosts without async
+    context propagation.
   </Accordion>
   <Accordion title="The default Hono error is generic" id="hono-error-redaction">
     Default Hono failure responses redact `Error.message`. Configure `onFailure` only when you need

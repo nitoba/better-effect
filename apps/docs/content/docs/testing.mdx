@@ -76,9 +76,11 @@ const runtime = await Runtime.make(AppTest, {
 })
 ```
 
-Use the default Node/Bun storage for overlapping asynchronous executions, or
-create a separate explicit storage per independent flow. Do not share one
-`ExplicitRuntimeContextStorage` instance across concurrent Runtime executions.
+Use the default Node/Bun storage for overlapping asynchronous executions. On
+hosts without async-context propagation, separate explicit storage instances
+are still only safe for non-overlapping flows; they do not provide concurrent
+isolation. Do not share one `ExplicitRuntimeContextStorage` instance across
+concurrent Runtime executions.
 
 ## Type-contract tests
 
