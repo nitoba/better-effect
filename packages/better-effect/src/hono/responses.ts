@@ -31,7 +31,5 @@ export const defaultFailure = (error: unknown, context: HonoContext): Response =
     return error
   }
 
-  const message = error instanceof Error ? DEFAULT_FAILURE_MESSAGE : String(error)
-
-  return context.json({ error: message }, 500)
+  return context.json({ error: DEFAULT_FAILURE_MESSAGE }, 500)
 }

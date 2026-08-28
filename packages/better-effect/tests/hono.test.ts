@@ -239,6 +239,41 @@ test('HonoEffect redacts Error and TaggedError messages by default', async () =>
   }
 })
 
+test('HonoEffect redacts string and domain failures by default', async () => {
+  const runtime = await Runtime.make(Layer.merge())
+  const domainFailure = { reason: 'private account details' }
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.get(
+    '/string',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err('database password')
+    })
+  )
+  app.get(
+    '/domain',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err(domainFailure)
+    })
+  )
+
+  try {
+    const stringResponse = await app.request('/string')
+    const domainResponse = await app.request('/domain')
+
+    expect(stringResponse.status).toBe(500)
+    expect(await stringResponse.json()).toEqual({ error: 'Internal Server Error' })
+    expect(domainResponse.status).toBe(500)
+    expect(await domainResponse.json()).toEqual({ error: 'Internal Server Error' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('HonoEffect passes Response failures through the default policy', async () => {
   const runtime = await Runtime.make(Layer.merge())
   const responseFailure = new Response('not here', { status: 404 })
