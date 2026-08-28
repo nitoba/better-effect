@@ -4,11 +4,18 @@ import { validator } from 'hono/validator'
 
 import { Effect, Layer, Runtime, Service } from '../../src'
 import { HonoEffect } from '../../src/hono'
+import { CurrentRequest } from '../../src/standard-services'
 
 class Available extends Service<Available>()('HonoAvailable') {}
 class Missing extends Service<Missing>()('HonoMissing') {}
-class RouteFailure extends Error {}
+class RouteFailure extends Error {
+  readonly _tag = 'RouteFailure' as const
+}
+class OtherFailure extends Error {
+  readonly _tag = 'OtherFailure' as const
+}
 class RequestId extends Service<RequestId>()('HonoRequestId') {}
+class AnotherRequestId extends Service<AnotherRequestId>()('HonoAnotherRequestId') {}
 
 // SAFETY: This declaration-only fixture never executes the Runtime.
 const runtime = {} as Runtime<Available>
@@ -22,6 +29,43 @@ const valid = http.gen(async function* () {
 })
 
 void valid
+
+const permissive = HonoEffect.make<Available>(runtime).gen(async function* () {
+  yield* Result.await(Promise.resolve(Result.ok(undefined)))
+  return Result.err(new OtherFailure())
+})
+
+void permissive
+
+const invalidFailure = http.gen(
+  // @ts-expect-error Hono routes reject an error outside the configured Failure union.
+  async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.err(new OtherFailure())
+  }
+)
+
+void invalidFailure
+
+const invalidFailureHandler = http.handler(() =>
+  // @ts-expect-error The private diagnostic is attached at the Program boundary.
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.err(new OtherFailure())
+  })
+)
+
+void invalidFailureHandler
+
+const invalidFailureGuard = http.guard(
+  // @ts-expect-error Hono guards reject an error outside the configured Failure union.
+  async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.err(new OtherFailure())
+  }
+)
+
+void invalidFailureGuard
 
 // @ts-expect-error Hono routes cannot require a Service absent from the Runtime Layer.
 const invalidService = http.gen(async function* () {
@@ -51,6 +95,75 @@ const requestLocal = requestHttp.gen(async function* () {
 })
 
 void requestLocal
+
+const requestNeedsCurrentRequest = Layer.gen(RequestId, async function* () {
+  const currentRequest = yield* CurrentRequest
+
+  void currentRequest
+  return new RequestId()
+})
+
+void requestNeedsCurrentRequest
+
+const currentRequestLayerHttp = HonoEffect.make(runtime, {
+  requestLayer: () => requestNeedsCurrentRequest
+})
+
+void currentRequestLayerHttp
+
+const requestWithMissing = Layer.gen(RequestId, async function* () {
+  yield* Missing
+  return new RequestId()
+})
+
+// @ts-expect-error Request Layer requirements must be supplied by the Runtime Layer.
+const invalidRequestLayer = HonoEffect.make(runtime, {
+  requestLayer: () => requestWithMissing
+})
+
+void invalidRequestLayer
+
+class IncompatibleCurrentRequest extends Service<IncompatibleCurrentRequest>()('CurrentRequest') {}
+
+const incompatibleCurrentRequest = Layer.succeed(
+  IncompatibleCurrentRequest,
+  new IncompatibleCurrentRequest()
+)
+
+// @ts-expect-error Same-tag request overrides must remain contract-compatible.
+const invalidRequestOverride = HonoEffect.make(runtime, {
+  requestLayer: () => incompatibleCurrentRequest
+})
+
+void invalidRequestOverride
+
+const erasedRequestLayer: Layer.Any = Layer.succeed(RequestId, new RequestId())
+const uncheckedRequestLayer = HonoEffect.make(runtime, {
+  requestLayer: () => erasedRequestLayer
+})
+
+void uncheckedRequestLayer
+
+declare const partialRequestLayer: Layer<any, never>
+
+// @ts-expect-error A partially erased request Layer is not an unchecked escape hatch.
+const invalidPartialRequestLayer = HonoEffect.make(runtime, {
+  requestLayer: () => partialRequestLayer
+})
+
+void invalidPartialRequestLayer
+
+const requestLayerUnion =
+  Math.random() > 0.5
+    ? Layer.succeed(RequestId, new RequestId())
+    : Layer.succeed(AnotherRequestId, new AnotherRequestId())
+
+// @ts-expect-error Concrete request Layer unions must be resolved before the boundary.
+const invalidRequestLayerUnion = HonoEffect.make(runtime, {
+  requestLayer: () => requestLayerUnion
+})
+
+void invalidRequestLayerUnion
 
 const validateJson = validator('json', (value: { name?: string } | null) => {
   if (value?.name === undefined) {

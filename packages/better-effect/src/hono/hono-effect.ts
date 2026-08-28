@@ -24,8 +24,10 @@ import type {
   HonoEffectContext,
   HonoEffectOptions,
   HonoEffectRouteOptions,
+  HonoRequestLayerChecks,
   HonoEffectSuccess,
   MiddlewareEnvironment,
+  ResponseLike,
   MiddlewareInput,
   MiddlewareInputs,
   MiddlewarePath
@@ -63,9 +65,10 @@ export class HonoEffect<
     RequestLayer extends LayerInput = DefaultRequestLayer
   >(
     runtime: Runtime<Provided>,
-    options: HonoEffectOptions<Failure, RequestLayer> = {}
+    options?: HonoEffectOptions<Failure, RequestLayer> &
+      HonoRequestLayerChecks<Provided, RequestLayer>
   ): HonoEffect<Provided, Failure, RequestLayer> {
-    return new HonoEffect(runtime, options)
+    return new HonoEffect(runtime, options ?? {})
   }
 
   middleware<E extends Env = Env, Path extends string = string>(): MiddlewareHandler<E, Path> {
@@ -84,7 +87,7 @@ export class HonoEffect<
   >(
     makeProgram: (
       context: Context<E, Path, InputType>
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
+    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
     options?: HonoEffectRouteOptions<EffectSuccess<Program>, Context<E, Path, InputType>>
   ): Handler<E, Path, InputType, Promise<Response>>
   handler<
@@ -98,7 +101,7 @@ export class HonoEffect<
     secondMiddleware: SecondMiddleware,
     makeProgram: (
       context: HonoEffectContext<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
+    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<Program>,
       Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
@@ -121,7 +124,7 @@ export class HonoEffect<
         Path,
         MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>
       >
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
+    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<Program>,
       Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>>
@@ -141,7 +144,7 @@ export class HonoEffect<
     inputMiddleware: InputMiddleware,
     makeProgram: (
       context: HonoEffectContext<E, Path, MiddlewareInput<InputMiddleware>>
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program>,
+    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<Program>,
       Context<E, Path, MiddlewareInput<InputMiddleware>>
@@ -174,7 +177,7 @@ export class HonoEffect<
     const Returned extends AnyResult = AnyResult
   >(
     body: GeneratorBody<Context<E, Path, InputType>, Yield, Returned> &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
       Context<E, Path, InputType>
@@ -195,7 +198,7 @@ export class HonoEffect<
       Yield,
       Returned
     > &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
       Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
@@ -222,7 +225,7 @@ export class HonoEffect<
       Yield,
       Returned
     > &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
       Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>>
@@ -246,7 +249,7 @@ export class HonoEffect<
       Yield,
       Returned
     > &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>,
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
     options?: HonoEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
       Context<E, Path, MiddlewareInput<InputMiddleware>>
@@ -289,7 +292,7 @@ export class HonoEffect<
     const Returned extends AnyResult = AnyResult
   >(
     body: GeneratorBody<Context<E, Path, InputType>, Yield, Returned> &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned>
+      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>
   ): MiddlewareHandler<E, Path> {
     return async (context, next) => {
       const state = this.getState(context)
@@ -298,13 +301,22 @@ export class HonoEffect<
       const result = await program()
 
       if (Result.isError(result)) {
-        state.failure ??= { cause: result.error }
-        // SAFETY: the configured failure policy is the boundary for this guard's Result error channel.
-        return await this.onFailure(result.error as Failure, context)
+        return await this.handleFailure(state, result.error, context)
       }
 
       await next()
     }
+  }
+
+  private handleFailure(
+    state: RequestState,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result errors are intentionally opaque at this HTTP boundary.
+    error: unknown,
+    context: HonoContext
+  ): ResponseLike {
+    state.failure ??= { cause: error }
+    // SAFETY: the public handler, gen, and guard constraints validate this error against Failure.
+    return this.onFailure(error as Failure, context)
   }
 
   private makeHandler(
@@ -317,9 +329,7 @@ export class HonoEffect<
       const result = await program()
 
       if (Result.isError(result)) {
-        state.failure ??= { cause: result.error }
-        // SAFETY: the configured failure policy is the boundary for this Program's Result error channel.
-        return await this.onFailure(result.error as Failure, context)
+        return await this.handleFailure(state, result.error, context)
       }
 
       const value = result.value
