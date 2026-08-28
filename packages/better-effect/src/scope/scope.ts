@@ -123,9 +123,36 @@ class ScopeImpl implements CloseableScope {
     }
 
     this.closeOutcome = outcome
-    this.closePromise = ScopeRuntime.run(this, () => this.closeInternal(outcome))
+    this.closePromise = Promise.resolve().then(() => this.closeWithRuntime(outcome))
 
     return this.closePromise
+  }
+
+  private async closeWithRuntime(outcome: ScopeOutcome): Promise<void> {
+    let started = false
+
+    try {
+      await ScopeRuntime.run(this, () => {
+        started = true
+        return this.closeInternal(outcome)
+      })
+    } catch (storageFailure) {
+      if (started) {
+        throw storageFailure
+      }
+
+      // Context propagation cannot prevent direct Scope cleanup.
+      try {
+        await this.closeInternal(outcome)
+      } catch (cleanupFailure) {
+        const cleanupCauses =
+          cleanupFailure instanceof ScopeCloseError ? cleanupFailure.causes : [cleanupFailure]
+
+        throw new ScopeCloseError([storageFailure, ...cleanupCauses])
+      }
+
+      throw storageFailure
+    }
   }
 
   private async closeInternal(outcome: ScopeOutcome): Promise<void> {

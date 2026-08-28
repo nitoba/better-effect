@@ -19,11 +19,13 @@ const register = (name: string, scenarios: readonly ContractScenario[]): void =>
   })
 }
 
-class TimerDelayedDisposalBackend extends MapLayerBackend {
+class ThreeTimerDelayedDisposalBackend extends MapLayerBackend {
   override async disposeAll(): Promise<void> {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0)
-    })
+    for (let turn = 0; turn < 3; turn++) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    }
   }
 }
 
@@ -43,9 +45,9 @@ register(
   })
 )
 
-test('LayerBackend contract rejects timer-delayed disposal', async () => {
+test('LayerBackend contract rejects three-timer disposal without acquisition tracking', async () => {
   const scenario = layerBackendContract({
-    makeBackend: () => new TimerDelayedDisposalBackend(),
+    makeBackend: () => new ThreeTimerDelayedDisposalBackend(),
     acquisitionFailure: 'retry'
   }).find((candidate) => candidate.name === 'LayerBackend disposal waits for in-flight acquisition')
 

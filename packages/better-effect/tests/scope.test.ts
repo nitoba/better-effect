@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
+import { RuntimeContextNotConfiguredError } from '../src/runtime'
 import {
   ResourceNotDisposableError,
   Scope,
@@ -11,8 +12,10 @@ import {
   ScopeRuntimeNotConfiguredError
 } from '../src/scope'
 
-import type { ScopeOutcome } from '../src/scope'
-import type { DisposableResource } from '../src/scope'
+import type { RuntimeContextStorage } from '../src/runtime'
+import type { DisposableResource, ScopeOutcome } from '../src/scope'
+
+import { ScopeRuntime } from '../src/scope/runtime'
 
 const captureRejection = async (promise: Promise<unknown>) =>
   promise.then(
@@ -80,6 +83,50 @@ describe('Scope', () => {
     await Promise.all([scope.close(), scope.close()])
 
     expect(releases).toBe(1)
+  })
+
+  test('closes children and finalizers after synchronous context storage failure', async () => {
+    const parent = Scope.make()
+    const child = parent.fork()
+    const storageFailure = new Error('storage failed')
+    const finalizerFailure = new Error('finalizer failed')
+    const events: string[] = []
+    const storage: RuntimeContextStorage = {
+      run: () => {
+        throw storageFailure
+      },
+      current: () => {
+        throw new RuntimeContextNotConfiguredError()
+      }
+    }
+
+    child.addFinalizer(() => {
+      events.push('child')
+    })
+    parent.addFinalizer(() => {
+      events.push('first')
+      throw finalizerFailure
+    })
+    parent.addFinalizer(() => {
+      events.push('second')
+    })
+    ScopeRuntime.bind(parent, storage)
+
+    const firstClose = parent.close()
+    const secondClose = parent.close({ status: 'failure', cause: finalizerFailure })
+
+    expect(secondClose).toBe(firstClose)
+
+    const error = await captureRejection(firstClose)
+
+    expect(error).toBeInstanceOf(ScopeCloseError)
+
+    if (error instanceof ScopeCloseError) {
+      expect(error.causes).toEqual([storageFailure, finalizerFailure])
+    }
+
+    expect(events).toEqual(['child', 'second', 'first'])
+    expect(() => parent.addFinalizer(() => undefined)).toThrow(ScopeClosedError)
   })
 
   test('rejects additions after close', async () => {

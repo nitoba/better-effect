@@ -10,7 +10,11 @@ The core depends on one small contract:
 interface LayerBackend {
   register(registration: LayerRegistration): MaybePromise<void>
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>>
-  disposeAll(): MaybePromise<void>
+  disposeAll(options?: LayerBackendDisposeOptions): MaybePromise<void>
+}
+
+type LayerBackendDisposeOptions = {
+  onPendingAcquisitions?: (services: readonly AnyServiceToken[]) => void
 }
 ```
 
@@ -83,8 +87,8 @@ class MyBackend implements LayerBackend {
     return value as InstanceType<T>
   }
 
-  async disposeAll() {
-    // release container-owned instances and clear registrations
+  async disposeAll(options?: LayerBackendDisposeOptions) {
+    // synchronously report pending Service tokens, await them, then clear state
   }
 }
 ```
@@ -98,7 +102,10 @@ unrelated generic result such as `resolve<A>(token): A`.
 `better-effect/testing` exports runner-neutral conformance scenarios. Each has
 a stable name and `run` callback, creates a fresh adapter, and calls optional
 adapter cleanup even when an assertion fails. The published entrypoint does not
-import Bun, Vitest, or another test runner.
+import Bun, Vitest, or another test runner. When a disposal begins with pending
+provider acquisitions, an adapter must synchronously invoke
+`onPendingAcquisitions` with their registered Service tokens, then await those
+acquisitions before clearing its state.
 
 Register a backend with Bun. Declare whether failed acquisitions retry or stay
 cached until `disposeAll()`:

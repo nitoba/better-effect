@@ -14,6 +14,7 @@ import {
   type EffectError,
   type EffectRequirements,
   type EffectSuccess,
+  type LayerBackendDisposeOptions,
   type Program as LazyProgram,
   type RuntimeContextStorage,
   type RuntimeFor,
@@ -87,6 +88,11 @@ const backendContractOptions = {
   makeBackend: () => nativeBackend,
   acquisitionFailure: 'retry'
 } satisfies LayerBackendContractOptions
+const backendDisposeOptions = {
+  onPendingAcquisitions: (services) => {
+    void services
+  }
+} satisfies LayerBackendDisposeOptions
 const contextContractOptions = {
   makeStorage: () => contextStorage,
   concurrency: 'sequential'
@@ -188,6 +194,9 @@ export type RuntimeDiagnosticAlias = Expect<
 export type LayerBackendContractFailureAlias = Expect<
   Equal<LayerBackendAcquisitionFailure, 'retry' | 'sticky'>
 >
+export type LayerBackendDisposeOptionsAlias = Expect<
+  Equal<Parameters<MapLayerBackend['disposeAll']>[0], LayerBackendDisposeOptions | undefined>
+>
 export type ContextConcurrencyAlias = Expect<Equal<ContextConcurrency, 'concurrent' | 'sequential'>>
 
 const backendScenarios = layerBackendContract(backendContractOptions)
@@ -205,4 +214,4 @@ export type ScopeOutcomeAlias = Expect<Equal<Scope.Outcome, ScopeOutcome>>
 export type ScopeFinalizerAlias = Expect<Equal<Scope.Finalizer, ScopeFinalizer>>
 export type ScopeDisposableAlias = Expect<Equal<Scope.Disposable, DisposableResource>>
 
-void nativeBackend
+void nativeBackend.disposeAll(backendDisposeOptions)

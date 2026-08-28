@@ -4,6 +4,7 @@ import {
   DuplicateServiceError,
   ServiceTagCollisionError,
   type LayerBackend,
+  type LayerBackendDisposeOptions,
   type LayerRegistration
 } from '../layer'
 
@@ -32,7 +33,7 @@ export class ItiLayerBackend implements LayerBackend {
    * ITI caches rejected acquisitions; replacing the container is the explicit
    * retry boundary for that sticky failure behavior.
    */
-  private readonly pending = new Set<Promise<unknown>>()
+  private readonly pending = new Map<Promise<unknown>, AnyServiceToken>()
 
   private keyFor(token: AnyServiceToken): string {
     const tag = token.serviceTag
@@ -93,7 +94,7 @@ export class ItiLayerBackend implements LayerBackend {
     if (isPromiseLike(resolved)) {
       const pending = Promise.resolve(resolved).then(validate)
 
-      this.pending.add(pending)
+      this.pending.set(pending, registered)
       void pending.then(
         () => this.pending.delete(pending),
         () => this.pending.delete(pending)
@@ -106,11 +107,15 @@ export class ItiLayerBackend implements LayerBackend {
   }
 
   /** Reset container-owned ITI state; Scope owns Layer provider releases. */
-  async disposeAll(): Promise<void> {
+  async disposeAll(options?: LayerBackendDisposeOptions): Promise<void> {
     const container = this.container
+    const pending = [...this.pending.entries()]
 
     try {
-      await Promise.allSettled(this.pending)
+      if (pending.length > 0) {
+        options?.onPendingAcquisitions?.(pending.map(([, service]) => service))
+        await Promise.allSettled(pending.map(([acquisition]) => acquisition))
+      }
       await container.disposeAll()
     } finally {
       this.container = createContainer()

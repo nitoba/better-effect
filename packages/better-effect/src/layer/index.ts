@@ -25,6 +25,6 @@ export type {
   RuntimeServiceResolveEvent
 } from '../runtime/observer'
 
-export type { LayerBackend } from './backend'
+export type { LayerBackend, LayerBackendDisposeOptions } from './backend'
 
 export type { LayerGenerator, LayerGeneratorRequirements, LayerRegistration } from './types'

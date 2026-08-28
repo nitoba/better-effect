@@ -138,8 +138,10 @@ container is needed; `MemoryLayerBackend` remains its compatibility alias from
 `better-effect/testing` provides runner-neutral conformance scenarios for
 third-party `LayerBackend` and `RuntimeContextStorage` implementations. Each
 scenario has a stable `name` and `run` callback, creates a fresh adapter, and
-runs the optional adapter cleanup after every assertion outcome. Declare the
-backend's acquisition-failure policy explicitly: `MapLayerBackend` retries,
+runs the optional adapter cleanup after every assertion outcome. Backends must
+synchronously report pending Service tokens through `disposeAll`'s
+`onPendingAcquisitions` hook before awaiting them and clearing state. Declare
+the backend's acquisition-failure policy explicitly: `MapLayerBackend` retries,
 while ITI keeps an asynchronous failure cached until disposal.
 
 Register the scenarios with Bun:

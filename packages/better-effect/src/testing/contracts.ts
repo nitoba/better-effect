@@ -11,7 +11,8 @@ import {
   type RuntimeContext,
   type RuntimeContextStorage
 } from '../runtime'
-import { Scope, type CloseableScope } from '../scope'
+import { Scope, ScopeCloseError, ScopeClosedError, type CloseableScope } from '../scope'
+import { ScopeRuntime } from '../scope/runtime'
 import {
   Service,
   ServiceNotFoundError,
@@ -168,16 +169,6 @@ const rejected = async <Value>(
   }
 
   fail(scenario, `expected ${expectation} to reject`)
-}
-
-const nextMacrotask = (): Promise<'still-acquiring'> =>
-  new Promise((resolve) => {
-    setTimeout(() => resolve('still-acquiring'), 0)
-  })
-
-const afterTwoMacrotasks = async (): Promise<'still-acquiring'> => {
-  await nextMacrotask()
-  return nextMacrotask()
 }
 
 const withBackend = async <Value>(
@@ -486,6 +477,7 @@ export const layerBackendContract = (
       let releaseAcquisition!: () => void
       let markStarted!: () => void
       let disposing: Promise<void> | undefined
+      let observedPendingAcquisition = false
       const acquired = new Promise<void>((resolve) => {
         markStarted = resolve
       })
@@ -506,19 +498,26 @@ export const layerBackendContract = (
 
       try {
         await acquired
-        disposing = Promise.resolve(backend.disposeAll())
-        const stateBeforeRelease = await Promise.race([disposing, afterTwoMacrotasks()]).then(
-          (state) => state ?? 'settled',
-          () => 'settled' as const
+        disposing = Promise.resolve(
+          backend.disposeAll({
+            onPendingAcquisitions: (services) => {
+              assert(
+                services.includes(ContractService),
+                'LayerBackend disposal waits for in-flight acquisition',
+                `disposeAll did not report the pending tag "${ContractService.serviceTag}"`
+              )
+              observedPendingAcquisition = true
+              releaseAcquisition()
+            }
+          })
         )
 
         assert(
-          stateBeforeRelease === 'still-acquiring',
+          observedPendingAcquisition,
           'LayerBackend disposal waits for in-flight acquisition',
-          `disposeAll settled before tag "${ContractService.serviceTag}" finished acquiring`
+          `disposeAll did not synchronously observe the pending tag "${ContractService.serviceTag}"`
         )
 
-        releaseAcquisition()
         await Promise.all([resolving, disposing])
       } finally {
         releaseAcquisition()
@@ -880,6 +879,75 @@ export const runtimeContextStorageContract = (
           cause === failure,
           'RuntimeContextStorage preserves custom internal failures',
           `expected the original custom failure, received ${describeCause(cause)}`
+        )
+      })
+    }),
+    layerScenario('Scope closes when RuntimeContextStorage.run throws synchronously', async () => {
+      await withStorage(options, async (storage) => {
+        const parent = Scope.make()
+        const child = parent.fork()
+        const storageFailure = new Error('contract close storage failure')
+        const closeFailure = new Error('contract close finalizer failure')
+        const outcome = { status: 'failure' as const, cause: closeFailure }
+        const events: string[] = []
+        const faultyStorage: RuntimeContextStorage = {
+          run: () => {
+            throw storageFailure
+          },
+          current: () => storage.current()
+        }
+
+        child.addFinalizer((childOutcome) => {
+          events.push(`child:${childOutcome.status}`)
+        })
+        parent.addFinalizer((parentOutcome) => {
+          events.push(`first:${parentOutcome.status}`)
+          throw closeFailure
+        })
+        parent.addFinalizer((parentOutcome) => {
+          events.push(`second:${parentOutcome.status}`)
+        })
+        ScopeRuntime.bind(parent, faultyStorage)
+
+        const firstClose = parent.close(outcome)
+        const secondClose = parent.close()
+
+        assert(
+          secondClose === firstClose,
+          'Scope closes when RuntimeContextStorage.run throws synchronously',
+          'later close did not share the original close Promise'
+        )
+
+        const cause = await rejected(
+          firstClose,
+          'Scope closes when RuntimeContextStorage.run throws synchronously',
+          'the storage-safe close'
+        )
+
+        assert(
+          cause instanceof ScopeCloseError &&
+            cause.causes.length === 2 &&
+            cause.causes[0] === storageFailure &&
+            cause.causes[1] === closeFailure,
+          'Scope closes when RuntimeContextStorage.run throws synchronously',
+          `expected storage then finalizer cleanup failures, received ${describeCause(cause)}`
+        )
+        assert(
+          events.join(',') === 'child:failure,second:failure,first:failure',
+          'Scope closes when RuntimeContextStorage.run throws synchronously',
+          `expected child-first LIFO finalizers with the original outcome, received ${events.join(',')}`
+        )
+
+        const closedCause = await rejected(
+          Promise.resolve().then(() => parent.addFinalizer(() => undefined)),
+          'Scope closes when RuntimeContextStorage.run throws synchronously',
+          'registration after close'
+        )
+
+        assert(
+          closedCause instanceof ScopeClosedError,
+          'Scope closes when RuntimeContextStorage.run throws synchronously',
+          `Scope remained open after storage failure (${describeCause(closedCause)})`
         )
       })
     })

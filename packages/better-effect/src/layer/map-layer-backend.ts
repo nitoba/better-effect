@@ -2,7 +2,7 @@ import { assertServiceCompatibility } from './internal-identity'
 
 import { DuplicateServiceError, ServiceTagCollisionError } from './errors'
 
-import type { LayerBackend } from './backend'
+import type { LayerBackend, LayerBackendDisposeOptions } from './backend'
 import type { LayerRegistration } from './types'
 
 import { ServiceNotFoundError, type AnyServiceToken } from '../service'
@@ -79,9 +79,17 @@ export class MapLayerBackend implements LayerBackend {
   }
 
   /** Clear pending acquisitions, cached instances, and provider registrations. */
-  async disposeAll(): Promise<void> {
-    if (this.pending.size > 0) {
-      await Promise.allSettled(this.pending.values())
+  async disposeAll(options?: LayerBackendDisposeOptions): Promise<void> {
+    const pending = [...this.pending.entries()]
+
+    if (pending.length > 0) {
+      const services = pending.flatMap(([tag]) => {
+        const service = this.providers.get(tag)?.service
+        return service === undefined ? [] : [service]
+      })
+
+      options?.onPendingAcquisitions?.(services)
+      await Promise.allSettled(pending.map(([, acquisition]) => acquisition))
     }
 
     this.instances.clear()
