@@ -1,0 +1,49 @@
+name: Bootstrap Workspace Artifact
+
+on:
+  push:
+    branches:
+      - feat/v0.11-testing-program-dx
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Export installed workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare portable workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .bootstrap/bin
+          cp "$(command -v bun)" .bootstrap/bin/bun
+          chmod +x .bootstrap/bin/bun
+          tar \
+            --exclude=.git \
+            --exclude=.turbo \
+            --exclude=apps/docs/.next \
+            -czf /tmp/better-effect-workspace.tgz \
+            .
+
+      - name: Upload workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: better-effect-workspace
+          path: /tmp/better-effect-workspace.tgz
+          retention-days: 1
+          compression-level: 0
