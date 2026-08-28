@@ -38,12 +38,30 @@ class ThreeTimerDelayedDisposalBackend extends MapLayerBackend {
 abstract class DelegatingMutationBackend implements LayerBackend {
   protected readonly delegate = new MapLayerBackend()
 
+  protected pendingAcquisition: Promise<unknown> | undefined
+
   register(registration: LayerRegistration): void {
     this.delegate.register(registration)
   }
 
   resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
-    return this.delegate.resolve(token)
+    const acquisition = this.delegate.resolve(token)
+
+    this.pendingAcquisition = acquisition
+    void acquisition.then(
+      () => {
+        if (this.pendingAcquisition === acquisition) {
+          this.pendingAcquisition = undefined
+        }
+      },
+      () => {
+        if (this.pendingAcquisition === acquisition) {
+          this.pendingAcquisition = undefined
+        }
+      }
+    )
+
+    return acquisition
   }
 
   abstract disposeAll(options?: LayerBackendDisposeOptions): void | PromiseLike<void>
@@ -66,6 +84,20 @@ class FakePendingAcquisitionBackend extends DelegatingMutationBackend {
     }
 
     return options.onPendingAcquisitions?.([Promise.resolve()])
+  }
+}
+
+class NonAwaitingPendingCallbackBackend extends DelegatingMutationBackend {
+  override disposeAll(options?: LayerBackendDisposeOptions): void | Promise<void> {
+    if (options === undefined) {
+      return this.delegate.disposeAll()
+    }
+
+    if (this.pendingAcquisition !== undefined) {
+      options.onPendingAcquisitions?.([this.pendingAcquisition])
+    }
+
+    return Promise.resolve()
   }
 }
 
@@ -125,6 +157,10 @@ test('LayerBackend contract rejects a callback-ignoring non-waiting disposal', a
 
 test('LayerBackend contract rejects a settled fake pending acquisition', async () => {
   await expectPendingAcquisitionScenarioToReject(() => new FakePendingAcquisitionBackend())
+})
+
+test('LayerBackend contract rejects a non-awaited callback with a real pending acquisition', async () => {
+  await expectPendingAcquisitionScenarioToReject(() => new NonAwaitingPendingCallbackBackend())
 })
 
 register(
