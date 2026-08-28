@@ -1,12 +1,10 @@
-import { Result } from 'better-result'
+import { Err } from 'better-result'
 
-import type { Result as ResultType } from 'better-result'
+import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from '../scope'
 
 import type { LayerDisposeError } from '../layer/errors'
 
 import type { LayerBackend } from '../layer/backend'
-
-import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from '../scope'
 
 import type { RuntimeContextStorage } from './context'
 
@@ -54,21 +52,9 @@ export type RuntimeDisposeOptions = {
   readonly abortAfterGracePeriod?: boolean
 }
 
-type ResultLike = ResultType<any, any>
-
-const isResultLike = <A>(value: A): value is A & ResultLike => {
-  const candidate = Object(value)
-  const tag = Object.prototype.toString.call(value)
-
-  return (
-    tag !== '[object Function]' &&
-    'status' in candidate &&
-    (candidate.status === 'ok' || candidate.status === 'error')
-  )
-}
-
+/** Classify only a nominal better-result Err as a failed Runtime outcome. */
 export const classifyRuntimeOutcome = <A>(value: A): ScopeOutcome => {
-  if (isResultLike(value) && Result.isError(value)) {
+  if (value instanceof Err) {
     return {
       status: 'failure',
       cause: value.error

@@ -334,7 +334,7 @@ Use Layer-scoped providers for shared resources such as:
 - DB pools;
 - shared HTTP clients with explicit close;
 - process-level caches;
-- workers owned by the application lifecycle.
+- other process-owned resources with application-lifetime cleanup.
 
 ### Execution lifetime
 
@@ -358,7 +358,7 @@ Do not choose lifetime based on where code is easiest to write. Choose it based 
 
 ## 11. Preserve cleanup precedence
 
-When the operation fails and cleanup also fails, the operation failure remains primary.
+When the operation fails and cleanup also fails, the operation failure remains primary. Runtime boundary classification inspects only nominal `better-result` values; an ordinary domain object with a `status` field remains a successful value.
 
 Refactors must not accidentally change:
 
@@ -426,6 +426,10 @@ A Hono application should normally:
 8. use `requestLayer` for contextual providers;
 9. dispose the Runtime during application shutdown.
 
+The default failure response must redact exception messages. A custom failure
+policy should expose only safe, intentional domain details, and its `Failure`
+and request-Layer requirement types must remain checked at the adapter boundary.
+
 Do not resolve all Services and attach them to `c.set(...)` merely to reconstruct constructor DI in the HTTP layer.
 
 ## 16. Standard-service refactoring rules
@@ -452,7 +456,8 @@ After refactoring, test more than the happy path.
 - thrown/rejected defects remain defects;
 - missing Service requirements are rejected at type boundaries;
 - disposal waits for active work;
-- request-local providers do not leak to concurrent executions.
+- request-local providers do not leak to concurrent executions;
+- explicit context storage rejects unsupported concurrent overlap.
 
 ### Resource behavior
 

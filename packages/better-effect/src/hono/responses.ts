@@ -1,5 +1,7 @@
 import type { HonoContext, HonoEffectSuccess } from './types'
 
+const DEFAULT_FAILURE_MESSAGE = 'Internal Server Error'
+
 export const defaultSuccess = (
   { value, status, serialize }: HonoEffectSuccess,
   context: HonoContext
@@ -29,7 +31,5 @@ export const defaultFailure = (error: unknown, context: HonoContext): Response =
     return error
   }
 
-  const message = error instanceof Error ? error.message : String(error)
-
-  return context.json({ error: message }, 500)
+  return context.json({ error: DEFAULT_FAILURE_MESSAGE }, 500)
 }

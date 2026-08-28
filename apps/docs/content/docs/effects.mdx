@@ -157,9 +157,12 @@ const loadEverything = Program.all([loadUserProgram(userId), loadPermissionsProg
 const result = await runtime.run(loadEverything)
 ```
 
-`Program.all` invokes no Program while it is being constructed, starts at most
-the configured number at a time, and leaves already-started work owned by the
-enclosing Runtime Scope when one Program fails.
+`Program.all` invokes no Program while it is being constructed and starts at
+most the configured number at a time. When a Program returns an error or throws,
+it stops scheduling new work, lets already-started Programs settle, and keeps
+a deterministic primary failure. No cancellation or
+Fiber scheduler is involved; all started work remains owned by the enclosing
+Runtime Scope.
 
 ## Acquire a resource inside an Effect
 
@@ -230,5 +233,6 @@ remain compatible top-level aliases.
 
 The Service requirement metadata is erased. `Effect.gen` delegates Result
 control flow to `better-result`, while Service iterators resolve their instance
-from the active `ServiceRuntime`. There is no fiber, scheduler, cancellation
-token or hidden task registry.
+from the active `ServiceRuntime`. There is no fiber, scheduler, or hidden task
+registry. Cooperative cancellation is available only when an explicit
+`AbortSignal` is supplied at the Runtime boundary.

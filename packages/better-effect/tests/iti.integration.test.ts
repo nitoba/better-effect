@@ -4,9 +4,9 @@ import { Result } from 'better-result'
 
 import { Effect } from '../src/effect'
 import { ItiLayerBackend } from '../src/adapters/iti'
-import { Layer, ServiceTagCollisionError } from '../src/layer'
+import { DuplicateServiceError, Layer, ServiceTagCollisionError } from '../src/layer'
 import { createRuntimeHandle } from '../src/layer/runtime'
-import { Service, ServiceRuntime } from '../src/service'
+import { Service, ServiceAcquisitionError, ServiceRuntime } from '../src/service'
 
 class Database extends Service<Database>()('Database') {
   readonly id = crypto.randomUUID()
@@ -198,6 +198,169 @@ describe('ItiLayerBackend', () => {
 
     await backend.resolve(Database)
     await backend.disposeAll()
+  })
+
+  test('rejects exact duplicate registrations', () => {
+    const backend = new ItiLayerBackend()
+    const registration = {
+      service: Database,
+      acquire: () => new Database()
+    }
+
+    backend.register(registration)
+
+    expect(() => backend.register(registration)).toThrow(DuplicateServiceError)
+  })
+
+  test('resets registrations and singleton caches for reuse', async () => {
+    const backend = new ItiLayerBackend()
+    const first = new Database()
+
+    backend.register({
+      service: Database,
+      acquire: () => first
+    })
+
+    expect(await backend.resolve(Database)).toBe(first)
+
+    await backend.disposeAll()
+
+    const second = new Database()
+
+    backend.register({
+      service: Database,
+      acquire: () => second
+    })
+
+    expect(await backend.resolve(Database)).toBe(second)
+
+    await backend.disposeAll()
+  })
+
+  test('waits for pending acquisitions before resetting the container', async () => {
+    const backend = new ItiLayerBackend()
+    let resolveAcquisition!: (database: Database) => void
+    let acquisitionStarted = false
+    const acquisition = new Promise<Database>((resolve) => {
+      resolveAcquisition = resolve
+    })
+
+    backend.register({
+      service: Database,
+      acquire: () => {
+        acquisitionStarted = true
+        return acquisition
+      }
+    })
+
+    const resolving = backend.resolve(Database)
+
+    expect(acquisitionStarted).toBe(true)
+
+    let disposalFinished = false
+    const disposing = backend.disposeAll().then(() => {
+      disposalFinished = true
+    })
+
+    await Promise.resolve()
+    expect(disposalFinished).toBe(false)
+
+    const first = new Database()
+    resolveAcquisition(first)
+
+    expect(await resolving).toBe(first)
+    await disposing
+
+    const second = new Database()
+
+    backend.register({
+      service: Database,
+      acquire: () => second
+    })
+
+    expect(await backend.resolve(Database)).toBe(second)
+    await backend.disposeAll()
+  })
+
+  test('resets sticky failed acquisitions after disposal', async () => {
+    const backend = new ItiLayerBackend()
+    const failure = new Error('acquisition failed')
+    let attempts = 0
+
+    backend.register({
+      service: Database,
+      acquire: async () => {
+        attempts++
+        throw failure
+      }
+    })
+
+    const resolveFailure = () => Promise.resolve().then(() => backend.resolve(Database))
+
+    const firstCause = await resolveFailure().then(
+      () => undefined,
+      (error) => error
+    )
+    const secondCause = await resolveFailure().then(
+      () => undefined,
+      (error) => error
+    )
+
+    expect(firstCause).toBe(failure)
+    expect(secondCause).toBe(failure)
+    expect(attempts).toBe(1)
+
+    await backend.disposeAll()
+
+    const recovered = new Database()
+
+    backend.register({
+      service: Database,
+      acquire: () => {
+        attempts++
+        return recovered
+      }
+    })
+
+    expect(await backend.resolve(Database)).toBe(recovered)
+    expect(attempts).toBe(2)
+    await backend.disposeAll()
+  })
+
+  test('does not release a scoped service when acquisition fails', async () => {
+    const acquisitionFailure = new Error('acquisition failed')
+    let releases = 0
+    const runtime = await createRuntimeHandle(
+      Layer.scoped(
+        Database,
+        async () => {
+          throw acquisitionFailure
+        },
+        () => {
+          releases++
+        }
+      ),
+      new ItiLayerBackend()
+    )
+
+    try {
+      const cause = await runtime
+        .run(() => ServiceRuntime.resolve(Database))
+        .then(
+          () => undefined,
+          (error) => error
+        )
+
+      expect(cause).toBeInstanceOf(ServiceAcquisitionError)
+
+      if (cause instanceof ServiceAcquisitionError) {
+        expect(cause.cause).toBe(acquisitionFailure)
+      }
+
+      expect(releases).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
   })
 
   test('does not expose services outside the runtime context', async () => {

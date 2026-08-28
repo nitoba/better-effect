@@ -2,26 +2,42 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 
 import { RuntimeContextNotConfiguredError } from './errors'
 
-import { withActiveRuntimeContextStorage } from './context'
+import {
+  currentRuntimeContextFrame,
+  setRuntimeContextFrameCarrier,
+  withActiveRuntimeContextStorage
+} from './context'
 
-import type { RuntimeContext, RuntimeContextStorage } from './context'
+import type {
+  ActiveRuntimeContextFrame,
+  RuntimeContext,
+  RuntimeContextFrameCarrier,
+  RuntimeContextStorage
+} from './context'
 
-const storage = new AsyncLocalStorage<RuntimeContext>()
+const asyncLocalStorage = new AsyncLocalStorage<ActiveRuntimeContextFrame>()
+
+const frameCarrier: RuntimeContextFrameCarrier = {
+  run: (frame, program) => asyncLocalStorage.run(frame, program),
+  current: () => asyncLocalStorage.getStore()
+}
+
+setRuntimeContextFrameCarrier(frameCarrier)
 
 /** RuntimeContextStorage backed by Node/Bun async context propagation. */
 export class NodeRuntimeContextStorage implements RuntimeContextStorage {
   run<A>(context: RuntimeContext, program: () => A): A {
-    return withActiveRuntimeContextStorage(this, () => storage.run(context, program))
+    return withActiveRuntimeContextStorage(this, context, program)
   }
 
   current(): RuntimeContext {
-    const context = storage.getStore()
+    const frame = currentRuntimeContextFrame()
 
-    if (!context) {
+    if (!frame || frame.storage !== this) {
       throw new RuntimeContextNotConfiguredError()
     }
 
-    return context
+    return frame.context
   }
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { Result } from 'better-result'
+import { Result, TaggedError } from 'better-result'
 import { Hono } from 'hono'
 import { validator } from 'hono/validator'
 
@@ -58,8 +58,12 @@ test('HonoEffect keeps Result.err as the request Scope failure after responding'
   const runtime = await makeRuntime()
   const failure = new HttpFailure('missing')
   let observed: ScopeOutcome | undefined
+  let onFailureCause: unknown
   const http = HonoEffect.make(runtime, {
-    onFailure: (error: HttpFailure, context) => context.json({ error: error.message }, 404)
+    onFailure: (error: HttpFailure, context) => {
+      onFailureCause = error
+      return context.json({ error: error.message }, 404)
+    }
   })
   const app = new Hono()
 
@@ -85,6 +89,7 @@ test('HonoEffect keeps Result.err as the request Scope failure after responding'
 
     expect(response.status).toBe(404)
     expect(await response.json()).toEqual({ error: 'missing' })
+    expect(onFailureCause).toBe(failure)
     expect(observed).toEqual({ status: 'failure', cause: failure })
   } finally {
     await runtime.dispose()
@@ -199,6 +204,102 @@ test('HonoEffect does not open a second execution when installed twice', async (
   }
 })
 
+test('HonoEffect redacts Error and TaggedError messages by default', async () => {
+  const runtime = await Runtime.make(Layer.merge())
+  const TaggedFailure = TaggedError('HonoTaggedFailure')
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.get(
+    '/error',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err(new Error('database password'))
+    })
+  )
+  app.get(
+    '/tagged',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err(new TaggedFailure({ message: 'private account details' }))
+    })
+  )
+
+  try {
+    const errorResponse = await app.request('/error')
+    const taggedResponse = await app.request('/tagged')
+
+    expect(errorResponse.status).toBe(500)
+    expect(await errorResponse.json()).toEqual({ error: 'Internal Server Error' })
+    expect(taggedResponse.status).toBe(500)
+    expect(await taggedResponse.json()).toEqual({ error: 'Internal Server Error' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect redacts string and domain failures by default', async () => {
+  const runtime = await Runtime.make(Layer.merge())
+  const domainFailure = { reason: 'private account details' }
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.get(
+    '/string',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err('database password')
+    })
+  )
+  app.get(
+    '/domain',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err(domainFailure)
+    })
+  )
+
+  try {
+    const stringResponse = await app.request('/string')
+    const domainResponse = await app.request('/domain')
+
+    expect(stringResponse.status).toBe(500)
+    expect(await stringResponse.json()).toEqual({ error: 'Internal Server Error' })
+    expect(domainResponse.status).toBe(500)
+    expect(await domainResponse.json()).toEqual({ error: 'Internal Server Error' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect passes Response failures through the default policy', async () => {
+  const runtime = await Runtime.make(Layer.merge())
+  const responseFailure = new Response('not here', { status: 404 })
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.get(
+    '/response',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err(responseFailure)
+    })
+  )
+
+  try {
+    const response = await app.request('/response')
+
+    expect(response).toBe(responseFailure)
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('not here')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('HonoEffect keeps Hono onError for defects', async () => {
   const runtime = await makeRuntime()
   const defect = new Error('boom')
@@ -239,6 +340,41 @@ test('HonoEffect handler preserves the Program success type', async () => {
   expect(handler).toBeFunction()
 
   await runtime.dispose()
+})
+
+test('HonoEffect accepts explicitly undefined route options', async () => {
+  const runtime = await makeRuntime()
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+  const program = Effect.fn(async function* () {
+    const service = yield* HttpService
+    return Result.ok(service.value())
+  })
+
+  app.use('*', http.middleware())
+  app.get(
+    '/handler',
+    http.handler(() => program, undefined)
+  )
+  app.get(
+    '/generator',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok('generator')
+    }, undefined)
+  )
+
+  try {
+    const handlerResponse = await app.request('/handler')
+    const generatorResponse = await app.request('/generator')
+
+    expect(handlerResponse.status).toBe(200)
+    expect(await handlerResponse.json()).toEqual({ data: 'ok' })
+    expect(generatorResponse.status).toBe(200)
+    expect(await generatorResponse.json()).toEqual({ data: 'generator' })
+  } finally {
+    await runtime.dispose()
+  }
 })
 
 test('HonoEffect infers and composes a Hono input validator', async () => {

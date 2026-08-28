@@ -10,6 +10,10 @@ Use Services directly inside `Effect.fn` Programs (or eager `Effect.gen` workflo
 bun add better-effect better-result
 ```
 
+The published Runtime entrypoint is officially supported on Node.js and Bun.
+The tested runtime matrix is Node.js 24 and Bun 1.3.14, and the default runtime
+context uses Node/Bun async context propagation.
+
 ## TypeScript knows what your application needs
 
 ```ts
@@ -109,14 +113,20 @@ const inspectDatabase = Effect.fn(async function* () {
 await runtime.run(inspectDatabase)
 ```
 
+Runtime boundaries inspect only nominal `better-result` values: `Result.err`
+becomes a failed execution, while a plain object with `status: 'error'` is
+still a successful value. Intermediate Results do not close the execution
+Scope.
+
 `Effect.gen` remains eager for code that already runs inside a resolver and
 Scope. `Effect.fn` captures the generator as a lazy `Program` for Runtime
 boundaries; the callback form remains supported for compatibility.
 
 `Program.all` keeps a collection lazy until the returned Program is run. Pass
 `{ concurrency: n }` for a positive bounded FIFO worker pool; values retain
-input order, and already-started Programs remain owned by the enclosing Runtime
-execution when one returns an error.
+input order. If a Program returns an error or throws, scheduling stops, already-
+started Programs are allowed to settle, and the deterministic primary failure remains selected;
+there is no cancellation or Fiber scheduler.
 
 `Runtime.make(AppLive)` and `Runtime.run(AppLive, program)` use the built-in
 `MapLayerBackend`. Pass `{ backend: new ItiLayerBackend() }` when an external
@@ -168,7 +178,8 @@ const runtime = await Runtime.make(AppLive, {
 
 Cancellation is cooperative and uses `AbortSignal`; no scheduler or fibers are
 created. Pass a signal to one execution and read it from the program when an
-I/O operation supports cancellation:
+I/O operation supports cancellation. Runtime disposal waits for active work;
+it does not forcibly terminate arbitrary Promises:
 
 ```ts
 const result = await runtime.run(program, { signal: request.signal })
@@ -186,7 +197,9 @@ const result = await runtime.runWith(RequestLive, handleRequest)
 ```
 
 The request Layer may use root Services, while its scoped providers are closed
-with the execution Scope and never change the shared Runtime environment.
+with the execution Scope and never change the shared Runtime environment. Its
+external requirements must be provided by the Runtime, and the Hono failure
+handler/request-Layer types are checked at the adapter boundary.
 
 ### Hono request boundaries
 
@@ -201,7 +214,7 @@ import { Result } from 'better-result'
 import { HonoEffect } from 'better-effect/hono'
 
 const http = HonoEffect.make(runtime, {
-  onFailure: (error, c) => c.json({ error: String(error) }, 400)
+  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 400)
 })
 const app = new Hono()
 
@@ -258,12 +271,21 @@ own `Response` when validation fails. `http.handler` accepts the same ordered
 validator arguments followed by the program factory and options.
 
 Install `hono` only when this subpath is used. The main entrypoint does not
-load the framework.
+load the framework. The default Hono failure policy redacts every non-`Response`
+failure value to `{ error: 'Internal Server Error' }` with status 500. An
+explicitly returned `Response` failure is intentionally passed through
+unchanged. A custom `onFailure` policy should serialize only safe, intentional
+domain details.
 
-Service and Scope access share one `RuntimeContext`. Node/Bun uses
-`AsyncLocalStorage` by default; hosts without transparent async context can
-pass `contextStorage: new ExplicitRuntimeContextStorage()` from
-`better-effect/runtime/explicit`.
+Service and Scope access share one `RuntimeContext`. The published Runtime
+entrypoint is officially supported on Node.js and Bun, where `AsyncLocalStorage`
+is the default context storage. The `better-effect/runtime/explicit` subpath
+provides `ExplicitRuntimeContextStorage` as a manually managed, sequential
+strategy only when the package entrypoint and host can load it. One instance
+supports one non-overlapping async flow and rejects concurrent overlap. Using
+it does not make the package generally usable in browsers, Deno, Cloudflare
+Workers, or other non-Node hosts; separate explicit instances are not a general
+concurrent-isolation strategy.
 
 If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
 

@@ -136,7 +136,8 @@ const bindProviderToScope = (
       resolver,
       scope,
       current?.resolutionPath ?? [],
-      current?.signal
+      current?.signal,
+      current
     )
 
     return runRuntimeContext(contextStorage, context, () =>
@@ -389,13 +390,19 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     resolver: ServiceResolver = this.resolver,
     signal: AbortSignal = this.shutdownController.signal
   ): Promise<Awaited<A>> {
-    const options = this.onCleanupFailure
+    let outcome!: ScopeOutcome
+    const onOutcome = (determinedOutcome: ScopeOutcome): void => {
+      outcome = determinedOutcome
+    }
+    const runOptions = this.onCleanupFailure
       ? {
           classify: classifyRuntimeOutcome,
+          onOutcome,
           onCleanupFailure: this.onCleanupFailure
         }
       : {
-          classify: classifyRuntimeOutcome
+          classify: classifyRuntimeOutcome,
+          onOutcome
         }
 
     notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionStart, {
@@ -403,7 +410,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     })
 
     const execution = runScoped(executionScope, program, {
-      ...options,
+      ...runOptions,
       contextStorage: this.contextStorage,
       context: makeRuntimeContext(resolver, executionScope, [], signal)
     })
@@ -412,17 +419,14 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       (value) => {
         notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, {
           scope: executionScope,
-          outcome: classifyRuntimeOutcome(value)
+          outcome
         })
         return value
       },
       (cause) => {
         notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, {
           scope: executionScope,
-          outcome: {
-            status: 'failure',
-            cause
-          }
+          outcome
         })
         throw cause
       }

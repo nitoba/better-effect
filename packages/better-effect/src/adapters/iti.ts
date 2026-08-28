@@ -27,6 +27,13 @@ export class ItiLayerBackend implements LayerBackend {
 
   private readonly registered = new Map<string, AnyServiceToken>()
 
+  /**
+   * Track async gets so disposal cannot reset ITI while a provider is acquiring.
+   * ITI caches rejected acquisitions; replacing the container is the explicit
+   * retry boundary for that sticky failure behavior.
+   */
+  private readonly pending = new Set<Promise<unknown>>()
+
   private keyFor(token: AnyServiceToken): string {
     const tag = token.serviceTag
     const existing = this.keys.get(tag)
@@ -84,14 +91,32 @@ export class ItiLayerBackend implements LayerBackend {
     }
 
     if (isPromiseLike(resolved)) {
-      return Promise.resolve(resolved).then(validate)
+      const pending = Promise.resolve(resolved).then(validate)
+
+      this.pending.add(pending)
+      void pending.then(
+        () => this.pending.delete(pending),
+        () => this.pending.delete(pending)
+      )
+
+      return pending
     }
 
     return validate(resolved)
   }
 
-  /** Dispose all ITI-managed provider instances. */
+  /** Reset container-owned ITI state; Scope owns Layer provider releases. */
   async disposeAll(): Promise<void> {
-    await this.container.disposeAll()
+    const container = this.container
+
+    try {
+      await Promise.allSettled(this.pending)
+      await container.disposeAll()
+    } finally {
+      this.container = createContainer()
+      this.registered.clear()
+      this.keys.clear()
+      this.pending.clear()
+    }
   }
 }

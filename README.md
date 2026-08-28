@@ -2,7 +2,8 @@
 
 This repository is a Bun + Turborepo monorepo containing the `better-effect`
 library, its Fumadocs documentation site, and the official agent skill for
-working with the library.
+working with the library. The tested runtime matrix is Node.js 24 and Bun
+1.3.14.
 
 ## Workspaces
 
@@ -15,7 +16,7 @@ working with the library.
 Install the official skill with the Vercel Labs Agent Skills CLI:
 
 ```bash
-npx skills add nitoba/better-effect --skill better-effect
+bunx skills add nitoba/better-effect --skill better-effect
 ```
 
 The skill combines architecture/refactoring guidance with the live documentation

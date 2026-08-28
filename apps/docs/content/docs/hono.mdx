@@ -5,7 +5,9 @@ icon: Globe
 ---
 
 The optional `better-effect/hono` entry point connects Hono to a long-lived
-`Runtime`. Install Hono alongside the two core packages:
+`Runtime`. Hono's web `Request` and `Response` values do not extend the
+published Runtime entrypoint's official support beyond Node.js and Bun. Install
+Hono alongside the two core packages:
 
 ```bash
 bun add better-effect better-result hono
@@ -36,10 +38,7 @@ const AppLive = Layer.make(WorkOrderService)
 const runtime = await Runtime.make(AppLive)
 
 const http = HonoEffect.make(runtime, {
-  onFailure: (error, c) => {
-    const message = error instanceof Error ? error.message : 'Request failed'
-    return c.json({ error: message }, 500)
-  }
+  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)
 })
 
 const app = new Hono()
@@ -62,7 +61,11 @@ await runtime.dispose()
 The request boundary supplies `CurrentRequest` and links the request's
 `AbortSignal` to the Runtime execution. Services are resolved lazily through
 `yield* Service`, and resources acquired with `Effect.acquireRelease` belong to
-that request's Scope.
+that request's Scope. The default failure policy redacts every non-`Response`
+failure value to `{ error: 'Internal Server Error' }` with status 500, including
+non-`Error` values. An explicitly returned `Response` failure is intentionally
+passed through unchanged. A custom `onFailure` should expose only safe,
+intentional domain details.
 
 Registering the same boundary more than once for a request does not create a
 second execution. Middleware registered before `http.middleware()` runs outside
@@ -107,7 +110,11 @@ app.get(
 
 Both APIs validate the Program's Service requirements against the Runtime's
 Layer. A route that yields a Service absent from `AppLive` fails at compile
-time; no manual Service catalog is needed.
+time; no manual Service catalog is needed. The `Failure` type passed to
+`onFailure` and the `RequestLayer` returned by `requestLayer` are part of the
+`HonoEffect` contract, so incompatible failure handlers or request Layers are
+rejected at the public boundary. Request-Layer external requirements must be
+provided by the Runtime.
 
 ## Hono validation and Standard Schema
 
@@ -206,6 +213,10 @@ app.get(
 `Result.err(error)` is passed to `onFailure` and converted to the configured
 HTTP response. The original error is also retained as the request Scope's
 `failure` outcome, so finalizers and Runtime observers see the typed cause.
+Under the default policy, every non-`Response` failure value is redacted to
+`{ error: 'Internal Server Error' }` with status 500. An explicitly returned
+`Response` failure is intentionally passed through unchanged. Custom policies
+are responsible for deliberately choosing any safe domain details to expose.
 Thrown defects continue through Hono's `app.onError()`.
 
 ## Guards and request-local Services

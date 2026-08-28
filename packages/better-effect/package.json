@@ -21,7 +21,9 @@
     "url": "git+https://github.com/nitoba/better-effect.git"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
   "type": "module",
   "sideEffects": false,
@@ -55,12 +57,13 @@
     "lint": "oxlint --type-aware .",
     "lint:fix": "oxlint --type-aware --fix .",
     "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
     "publint": "publint",
     "check:public-type-namespaces": "bun run test:package-types && bun run test:package-types:minimum && bun tests/package/public-type-namespaces/check.ts",
     "check:standard-services": "bun run test:package-standard-services && bun run test:package-standard-services:minimum",
     "check:public-type-variance": "bun run test:package-variance && bun run test:package-variance:minimum && bun tests/package/public-type-variance/check.ts",
     "check:instance-requirements": "bun tests/package/instance-requirements/check.ts",
-    "check": "bun run typecheck && bun test && bun run format && bun run build && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun publish --dry-run"
   },

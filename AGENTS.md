@@ -19,7 +19,8 @@ This project must remain substantially smaller and simpler than Effect.
 
 ## Commands
 
-Use Bun for package management and tests.
+Use Bun for package management and tests. The repository's release gates test
+Node.js 24 and Bun 1.3.14 only.
 
 ```bash
 bun install --frozen-lockfile
@@ -308,8 +309,10 @@ Never register `LayerProvider.release` directly into a DI container disposer.
 An execution MUST be registered as active before its program callback can run. Its child
 Scope MUST remain open until the program settles, including when disposal is initiated
 re-entrantly before the program yields. The final outcome is classified only at the
-execution boundary: plain values and `Result.ok` are success, `Result.err` is failure,
-and thrown/rejected causes are failure. Intermediate Results MUST NOT change Scope state.
+execution boundary: plain values and nominal `better-result` `Result.ok` are success,
+nominal `Result.err` is failure, and thrown/rejected causes are failure. Ordinary domain
+objects with status-shaped fields remain successful values. Intermediate Results MUST NOT
+change Scope state.
 If both the program and child cleanup fail, the exact program failure remains primary;
 cleanup is preserved in one best-effort diagnostic when an observer is configured.
 
@@ -456,10 +459,12 @@ Use `expectTypeOf(...).toEqualTypeOf<T>()` when exact equality is the behavior b
 
 Use `toMatchTypeOf<T>()` only when testing that one type satisfies a broader contract.
 
-`ServiceRuntime` uses `AsyncLocalStorage`. Tests should enter resolver context through
-`ServiceRuntime.run()` or a Runtime execution boundary and verify that the context is
-restored afterward. Concurrent runtimes are expected to remain isolated; no global reset
-or serial-test discipline is required for resolver context.
+The default Node/Bun `ServiceRuntime` storage uses `AsyncLocalStorage`. Tests
+should enter resolver context through `ServiceRuntime.run()` or a Runtime
+execution boundary and verify that the context is restored afterward.
+Concurrent runtimes are expected to remain isolated; no global reset or
+serial-test discipline is required for resolver context. An explicit storage
+instance supports one non-overlapping async flow and rejects concurrent overlap.
 
 ### Resolver test doubles
 
@@ -575,7 +580,11 @@ package.json: 0.1.3
 GitHub Release tag: v0.1.3
 ```
 
-The publish workflow must reject mismatched package and tag versions.
+The publish workflow must reject mismatched package and tag versions. The
+local release script requires a matching changelog entry. Quality and publish
+gates use non-mutating format checks and fail if tracked files become dirty. The
+release script creates the version commit and tag, then uses one atomic push;
+it must not be run from an agent worktree or used to push during review.
 
 ## Change discipline
 

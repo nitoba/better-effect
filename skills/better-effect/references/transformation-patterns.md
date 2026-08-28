@@ -538,7 +538,7 @@ const allUsers = Program.all(programs, { concurrency: 8 })
 const result = await runtime.run(allUsers)
 ```
 
-Use `Effect.all` when the Effects are already intentionally created in the active context. Use `Program.all` when the work itself must remain lazy.
+`Program.all` stops scheduling after a child error or throw, lets already-started Programs settle, and preserves a deterministic primary failure. It does not cancel in-flight work or introduce Fibers. Use `Effect.all` when the Effects are already intentionally created in the active context. Use `Program.all` when the work itself must remain lazy.
 
 ## 18. Ambient time/random/logging -> replaceable standard Services
 
@@ -601,7 +601,7 @@ app.get('/users/:id', async (c) => {
 
 ```ts
 const http = HonoEffect.make(runtime, {
-  onFailure: (error, c) => c.json(toErrorBody(error), 400)
+  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 400)
 })
 
 app.use('/api/*', http.middleware())
@@ -623,7 +623,7 @@ Use `http.handler` when the Program is defined outside HTTP:
 app.get('/api/users/:id', http.handler((c) => getUser(c.req.param('id'))))
 ```
 
-Expected Result failures go through the configured failure policy. Thrown defects remain in Hono's error path.
+Expected Result failures go through the configured failure policy. The default policy redacts exception messages; custom policies should expose only safe, intentional domain details. Thrown defects remain in Hono's error path.
 
 ## 21. Auth middleware with duplicated Result plumbing -> `http.guard`
 

@@ -21,6 +21,11 @@ export type RequestBoundaryOptions<Provided extends AnyService, RequestLayer ext
   readonly requestLayer?: ((context: HonoContext) => RequestLayer) | undefined
 }
 
+const overrideRequestLayer = (base: LayerInput, replacement: LayerInput): Layer<any, any> => {
+  // SAFETY: HonoEffect.make validates the concrete replacement before this erased dispatch boundary.
+  return Layer.override(base, replacement as never)
+}
+
 export const makeRequestBoundary = <
   Provided extends AnyService,
   RequestLayer extends LayerInput,
@@ -45,15 +50,11 @@ export const makeRequestBoundary = <
     try {
       const requestLayer = CurrentRequest.layer(context.req.raw)
       const customLayer = options.requestLayer?.(context)
-      // SAFETY: a custom request Layer extends or intentionally overrides the built-in CurrentRequest provider.
-      const layer =
-        customLayer === undefined
-          ? requestLayer
-          : Layer.override(requestLayer, customLayer as never)
+      const layer: Layer<any, any> =
+        customLayer === undefined ? requestLayer : overrideRequestLayer(requestLayer, customLayer)
 
-      // SAFETY: request Layers are supplied by this adapter and execute inside the Runtime's typed boundary.
       await options.runtime.runWith(
-        layer as never,
+        layer,
         async () => {
           try {
             await next()

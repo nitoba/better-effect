@@ -2,24 +2,29 @@
 
 Official skill for the [`nitoba/better-effect`](https://github.com/nitoba/better-effect) TypeScript library. It teaches coding agents how to implement, review, debug, and refactor applications using `better-effect` together with `better-result`.
 
+The published Runtime entrypoint is officially supported on Node.js and Bun;
+the repository validates Node.js 24 and Bun 1.3.14. The explicit runtime
+subpath is a manually managed, sequential strategy only when the package
+entrypoint and host can load it; it is not a general portability layer.
+
 ## Install
 
 With the Vercel Labs Agent Skills CLI:
 
 ```bash
-npx skills add nitoba/better-effect --skill better-effect
+bunx skills add nitoba/better-effect --skill better-effect
 ```
 
 Install globally for a specific agent:
 
 ```bash
-npx skills add nitoba/better-effect --skill better-effect -g -a codex
+bunx skills add nitoba/better-effect --skill better-effect -g -a codex
 ```
 
 Or use it without a permanent installation:
 
 ```bash
-npx skills use nitoba/better-effect@better-effect
+bunx skills use nitoba/better-effect@better-effect
 ```
 
 ## What it covers

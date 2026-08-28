@@ -1,5 +1,7 @@
 import { ServiceRuntimeNotConfiguredError } from './errors'
 
+import { RuntimeContextNotConfiguredError } from '../runtime/errors'
+
 import {
   currentRuntimeContext,
   getRuntimeContext,
@@ -43,7 +45,8 @@ export class ServiceRuntime {
       resolver,
       current?.scope,
       current?.resolver === resolver ? current.resolutionPath : [],
-      current?.signal
+      current?.signal,
+      current?.resolver === resolver ? current : undefined
     )
 
     return runRuntimeContext(storage, context, program)
@@ -55,8 +58,12 @@ export class ServiceRuntime {
 
     try {
       context = currentRuntimeContext()
-    } catch {
-      throw new ServiceRuntimeNotConfiguredError()
+    } catch (cause) {
+      if (cause instanceof RuntimeContextNotConfiguredError) {
+        throw new ServiceRuntimeNotConfiguredError()
+      }
+
+      throw cause
     }
 
     if (!context.resolver) {

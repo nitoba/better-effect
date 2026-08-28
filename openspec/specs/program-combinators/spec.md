@@ -49,6 +49,11 @@ The collected Program MUST expose a tuple of successful values in input order. I
 - **WHEN** one collected Program returns an `Err`
 - **THEN** the collection MUST return an error compatible with the underlying Result semantics and MUST not report a successful tuple
 
+#### Scenario: Bounded scheduling stops after an observed failure
+
+- **WHEN** a bounded collection observes an `Err` or a thrown failure
+- **THEN** it MUST stop claiming new indexes, wait for already-claimed Programs to settle, and preserve the existing deterministic failure precedence
+
 ### Requirement: Program collection does not add cancellation semantics
 
 `Program.all` MUST NOT cancel, dispose, or replace the Runtime's Scope or AbortSignal. Programs already started by the bounded scheduler MAY finish normally, and their existing cleanup MUST remain owned by the enclosing execution.

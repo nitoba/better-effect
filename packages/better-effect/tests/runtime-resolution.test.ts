@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
+import { ExplicitRuntimeContextStorage } from '../src/runtime/explicit'
+
 import {
   CircularDependencyError,
   Effect,
@@ -178,6 +180,58 @@ describe('Runtime Service resolution', () => {
     )
 
     expect(resolved).toBeInstanceOf(Database)
+  })
+
+  test('supports explicit Runtime warmup with provider dependencies', async () => {
+    const storage = new ExplicitRuntimeContextStorage()
+    let acquisitions = 0
+    const runtime = await Runtime.make(
+      Layer.merge(
+        Layer.make(Database, () => new Database()),
+        Layer.gen(RequestContext, async function* () {
+          const database = yield* Database
+          acquisitions++
+          return new RequestContext('warmup', database)
+        })
+      ),
+      { contextStorage: storage, warmup: true }
+    )
+
+    try {
+      const request = await runtime.run(() => ServiceRuntime.resolve(RequestContext))
+
+      expect(request.requestId).toBe('warmup')
+      expect(request.database.query()).toBe('database')
+      expect(acquisitions).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('resolves Layer.gen provider dependencies in an explicit Runtime', async () => {
+    const storage = new ExplicitRuntimeContextStorage()
+    let acquisitions = 0
+    const runtime = await Runtime.make(
+      Layer.merge(
+        Layer.make(Database, () => new Database()),
+        Layer.gen(RequestContext, async function* () {
+          const database = yield* Database
+          acquisitions++
+          return new RequestContext('explicit', database)
+        })
+      ),
+      { contextStorage: storage }
+    )
+
+    try {
+      const request = await runtime.run(() => ServiceRuntime.resolve(RequestContext))
+
+      expect(request.requestId).toBe('explicit')
+      expect(request.database.query()).toBe('database')
+      expect(acquisitions).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
   })
 
   test('Runtime.use disposes the Runtime after the callback settles', async () => {
