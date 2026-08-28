@@ -224,6 +224,101 @@ test('Program map and mapError are lazy, branch-selective, and run their source 
   expect(mappedErrors).toBe(1)
 })
 
+test('Program.map does not invoke its mapper on Err synchronously or asynchronously', async () => {
+  const synchronousFailure = Result.err<number, 'sync failure'>('sync failure')
+  const asynchronousFailure = Result.err<number, 'async failure'>('async failure')
+  let synchronousInvocations = 0
+  let asynchronousInvocations = 0
+
+  const skippedSynchronousMapper = Program.map(
+    Effect.fn(function* () {
+      yield* []
+      return synchronousFailure
+    }),
+    () => {
+      synchronousInvocations++
+      return 0
+    }
+  )
+  const skippedAsynchronousMapper = Program.map(
+    Effect.fn(async function* () {
+      yield* []
+      return asynchronousFailure
+    }),
+    () => {
+      asynchronousInvocations++
+      return 0
+    }
+  )
+
+  expectResult(await skippedSynchronousMapper(), synchronousFailure)
+  expectResult(await skippedAsynchronousMapper(), asynchronousFailure)
+  expect(synchronousInvocations).toBe(0)
+  expect(asynchronousInvocations).toBe(0)
+})
+
+test('Program.tap does not invoke its callback on Err synchronously or asynchronously', async () => {
+  const synchronousFailure = Result.err<number, 'sync failure'>('sync failure')
+  const asynchronousFailure = Result.err<number, 'async failure'>('async failure')
+  let synchronousInvocations = 0
+  let asynchronousInvocations = 0
+
+  const skippedSynchronousTap = Program.tap(
+    Effect.fn(function* () {
+      yield* []
+      return synchronousFailure
+    }),
+    () => {
+      synchronousInvocations++
+    }
+  )
+  const skippedAsynchronousTap = Program.tap(
+    Effect.fn(async function* () {
+      yield* []
+      return asynchronousFailure
+    }),
+    () => {
+      asynchronousInvocations++
+    }
+  )
+
+  expectResult(await skippedSynchronousTap(), synchronousFailure)
+  expectResult(await skippedAsynchronousTap(), asynchronousFailure)
+  expect(synchronousInvocations).toBe(0)
+  expect(asynchronousInvocations).toBe(0)
+})
+
+test('Program.tapError does not invoke its callback on Ok synchronously or asynchronously', async () => {
+  const synchronousSuccess = Result.ok(1)
+  const asynchronousSuccess = Result.ok(2)
+  let synchronousInvocations = 0
+  let asynchronousInvocations = 0
+
+  const skippedSynchronousTapError = Program.tapError(
+    Effect.fn(function* () {
+      yield* []
+      return synchronousSuccess
+    }),
+    () => {
+      synchronousInvocations++
+    }
+  )
+  const skippedAsynchronousTapError = Program.tapError(
+    Effect.fn(async function* () {
+      yield* []
+      return asynchronousSuccess
+    }),
+    () => {
+      asynchronousInvocations++
+    }
+  )
+
+  expectResult(await skippedSynchronousTapError(), synchronousSuccess)
+  expectResult(await skippedAsynchronousTapError(), asynchronousSuccess)
+  expect(synchronousInvocations).toBe(0)
+  expect(asynchronousInvocations).toBe(0)
+})
+
 test('Program combinators support data-last pipe composition', async () => {
   const source = Effect.fn(function* () {
     yield* []

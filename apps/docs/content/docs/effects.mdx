@@ -196,10 +196,11 @@ const profileOrCached = Program.recover(loadProfile, (error) => loadCachedProfil
 ```
 
 A continuation or recovery Program is also invoked only after its matching
-branch is selected. The resulting Program includes the errors and Service
-requirements from both sides, so Runtime environment checking remains intact.
-These helpers do not create a Scope, install a resolver, or add cancellation
-behavior during composition.
+branch is selected. `Program.andThen` unions its source and continuation error
+channels and Service requirements. `Program.recover` handles and removes the
+source `Err` channel, exposes the recovery error channel, and still unions the
+source and recovery Service requirements. These helpers do not create a Scope,
+install a resolver, or add cancellation behavior during composition.
 
 ## Acquire a resource inside an Effect
 

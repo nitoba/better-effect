@@ -132,8 +132,11 @@ Use `Effect.*` to transform an already-created Result, and `Program.*` to compos
 an `Effect.fn` Program without starting it. `Program.map`, `mapError`, `tap`, and
 `tapError` preserve that laziness; `andThen` and `recover` accept an Effect, a
 Promise of an Effect, or another Program only after their matching Result branch
-is selected. All Program combinators retain the combined error and Service
-requirement channels, and taps preserve the original Result object on success.
+is selected. `Program.andThen` unions its source and continuation error and
+Service requirement channels. `Program.recover` handles and removes the source
+`Err` channel, exposes the recovery error channel, and unions the source and
+recovery Service requirements. Taps preserve the original Result object on
+success.
 
 `Runtime.make(AppLive)` and `Runtime.run(AppLive, program)` use the built-in
 `MapLayerBackend`. Pass `{ backend: new ItiLayerBackend() }` when an external
