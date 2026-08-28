@@ -22,7 +22,8 @@ Each fixture measures:
 - `Runtime.make` environment inference;
 - `Runtime.run` requirement validation;
 - transitively required Services (`ServiceN` requires `ServiceN-1`);
-- Services exposing five Effect-returning methods each.
+- Services exposing five Effect-returning methods each;
+- lazy Program transformation, observation, continuation, and recovery chains.
 
 The report includes files, types, instantiations, memory, check time, and total
 time. `--check-budget` enforces the current ceilings:

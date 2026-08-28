@@ -164,6 +164,43 @@ a deterministic primary failure. No cancellation or
 Fiber scheduler is involved; all started work remains owned by the enclosing
 Runtime Scope.
 
+## Compose lazy Programs
+
+Use `Effect.*` when you already have an Effect (a `Result` or a Promise of a
+`Result`) and want to transform that value now. Use `Program.*` when you have an
+`Effect.fn` Program and need to preserve its Runtime-boundary laziness:
+
+```ts
+const loadUserName = pipe(
+  findUser(userId),
+  Program.map((user: User) => user.name),
+  Program.tap((name: string) => audit.debug('user.loaded', { name }))
+)
+
+const result = await runtime.run(loadUserName)
+```
+
+`Program.map`, `mapError`, `tap`, and `tapError` mirror their `Effect.*`
+counterparts. They return a new Program without invoking the source or either
+callback; every invocation runs the source exactly once. Taps select only their
+matching Result branch and preserve the exact original Result object when the
+observer succeeds.
+
+`Program.andThen` continues an `Ok`, while `Program.recover` handles an `Err`.
+Their callbacks may return an Effect, a Promise of an Effect, or another Program:
+
+```ts
+const loadProfile = Program.andThen(findUser(userId), (user) => fetchProfile(user.id))
+
+const profileOrCached = Program.recover(loadProfile, (error) => loadCachedProfile(error))
+```
+
+A continuation or recovery Program is also invoked only after its matching
+branch is selected. The resulting Program includes the errors and Service
+requirements from both sides, so Runtime environment checking remains intact.
+These helpers do not create a Scope, install a resolver, or add cancellation
+behavior during composition.
+
 ## Acquire a resource inside an Effect
 
 `Effect.acquireRelease` acquires through the current Scope and registers an

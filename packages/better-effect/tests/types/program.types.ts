@@ -2,7 +2,13 @@ import { expectTypeOf } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Effect, Program, type EffectRequirements } from '../../src/effect'
+import {
+  Effect,
+  Program,
+  type Effect as EffectType,
+  type EffectRequirements
+} from '../../src/effect'
+import { pipe } from '../../src/function'
 import { Layer } from '../../src/layer'
 import { Runtime } from '../../src/runtime'
 import { Service } from '../../src/service'
@@ -101,3 +107,67 @@ type ProgramResult = Awaited<ReturnType<typeof greet>>
 type RequestProgramResult = Awaited<ReturnType<typeof requestProgram>>
 
 void checkRuntime
+
+declare const sourceProgram: Program<string, 'source', GreetingService>
+declare const nextEffect: EffectType<number, 'next', UserRepository>
+declare const nextProgram: Program<boolean, 'program', RequestContext>
+declare const recoveryEffect: EffectType<Date, 'recovered', UserRepository>
+declare const recoveryProgram: Program<URL, 'program-recovered', RequestContext>
+
+const mappedProgram = Program.map(sourceProgram, (value) => value.length)
+expectTypeOf(mappedProgram).toEqualTypeOf<Program<number, 'source', GreetingService>>()
+
+const errorMappedProgram = Program.mapError(sourceProgram, (error) => ({ error }))
+expectTypeOf(errorMappedProgram).toEqualTypeOf<
+  Program<string, { error: 'source' }, GreetingService>
+>()
+
+const pipedProgram = pipe(
+  sourceProgram,
+  Program.map((value: string) => value.length),
+  Program.map((value: number) => value > 0)
+)
+expectTypeOf(pipedProgram).toEqualTypeOf<Program<boolean, 'source', GreetingService>>()
+
+const chainedEffect = Program.andThen(sourceProgram, () => nextEffect)
+expectTypeOf(chainedEffect).toEqualTypeOf<
+  Program<number, 'source' | 'next', GreetingService | UserRepository>
+>()
+
+const chainedProgram = pipe(
+  sourceProgram,
+  Program.andThen((value: string) => {
+    void value
+    return nextProgram
+  })
+)
+expectTypeOf(chainedProgram).toEqualTypeOf<
+  Program<boolean, 'source' | 'program', GreetingService | RequestContext>
+>()
+
+const tappedProgram = Program.tap(sourceProgram, () => undefined)
+const errorTappedProgram = Program.tapError(sourceProgram, () => undefined)
+expectTypeOf(tappedProgram).toEqualTypeOf<Program<string, 'source', GreetingService>>()
+expectTypeOf(errorTappedProgram).toEqualTypeOf<Program<string, 'source', GreetingService>>()
+
+const recoveredEffect = Program.recover(sourceProgram, () => recoveryEffect)
+expectTypeOf(recoveredEffect).toEqualTypeOf<
+  Program<string | Date, 'recovered', GreetingService | UserRepository>
+>()
+
+const recoveredProgram = pipe(
+  sourceProgram,
+  Program.recover((error: 'source') => {
+    void error
+    return recoveryProgram
+  })
+)
+expectTypeOf(recoveredProgram).toEqualTypeOf<
+  Program<string | URL, 'program-recovered', GreetingService | RequestContext>
+>()
+
+// @ts-expect-error Program continuations must return an Effect, PromiseLike<Effect>, or Program.
+Program.andThen(sourceProgram, () => 'not an Effect')
+
+// @ts-expect-error Program recoveries must return an Effect, PromiseLike<Effect>, or Program.
+Program.recover(sourceProgram, () => 'not an Effect')

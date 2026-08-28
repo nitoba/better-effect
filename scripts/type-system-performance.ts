@@ -14,7 +14,8 @@ const scenarios = [
   'runtime-make',
   'runtime-run',
   'transitive',
-  'methods'
+  'methods',
+  'program-chain'
 ] as const
 type Scenario = (typeof scenarios)[number]
 
@@ -185,6 +186,51 @@ void providedFromLayer
 void layerFromProvided`
 }
 
+const programCombinatorChain = (names: readonly string[]): string => {
+  const sourceBody = names
+    .map(
+      (name) => `  const service${name} = yield* ${name}
+  void service${name}`
+    )
+    .join('\n')
+  const combinators = Array.from({ length: names.length }, (_, index) => {
+    const current = `program${index}`
+    const next = `program${index + 1}`
+
+    switch (index % 6) {
+      case 0:
+        return `const ${next} = Program.map(${current}, (value) => value + 1)`
+      case 1:
+        return `const ${next} = Program.mapError(${current}, (error) => error)`
+      case 2:
+        return `const ${next} = Program.andThen(${current}, (value) =>
+  Effect.gen(function* () {
+    return Result.ok(value)
+  })
+)`
+      case 3:
+        return `const ${next} = Program.tap(${current}, (value) => {
+  void value
+})`
+      case 4:
+        return `const ${next} = Program.tapError(${current}, (error) => {
+  void error
+})`
+      default:
+        return `const ${next} = Program.recover(${current}, (error) => Result.err(error))`
+    }
+  }).join('\n\n')
+
+  return `const program0 = Effect.fn(async function* () {
+${sourceBody}
+  return Result.ok(0)
+})
+
+${combinators}
+
+void Runtime.run(AppLive, program${names.length})`
+}
+
 const runtimeRunProgram = (names: readonly string[], callMethods: boolean): string => {
   const body = names
     .map((name) => {
@@ -212,7 +258,7 @@ const fixtureSource = (scenario: Scenario, size: Size): string => {
   const names = serviceNames(size)
   const withMethods = scenario === 'methods'
   const declarations = serviceDeclarations(names, withMethods)
-  const header = `import { Effect, Layer, Runtime, Service } from '../../../packages/better-effect/src/index.ts'
+  const header = `import { Effect, Layer, Program, Runtime, Service } from '../../../packages/better-effect/src/index.ts'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
 
 `
@@ -235,6 +281,10 @@ import { Result } from '../../../packages/better-effect/node_modules/better-resu
 
   if (scenario === 'runtime-make') {
     return `${header}${declarations}\n\n${layers}\n\n${expectedProvidedChecks(names)}\nconst runtime = Runtime.make(AppLive)\ntype RuntimeProvided = Awaited<typeof runtime> extends Runtime<infer Provided> ? Provided : never\nconst providedFromRuntime: ExpectedProvided = null as unknown as RuntimeProvided\nvoid providedFromRuntime\nvoid runtime\n`
+  }
+
+  if (scenario === 'program-chain') {
+    return `${header}${declarations}\n\n${layers}\n\n${programCombinatorChain(names)}\n`
   }
 
   return `${header}${declarations}\n\n${layers}\n\n${runtimeRunProgram(names, withMethods)}\n`

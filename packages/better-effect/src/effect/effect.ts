@@ -36,6 +36,14 @@ import {
   tapError,
   zip
 } from './combinators'
+import {
+  andThen as programAndThen,
+  map as programMap,
+  mapError as programMapError,
+  recover as programRecover,
+  tap as programTap,
+  tapError as programTapError
+} from './program-combinators'
 
 export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
@@ -190,7 +198,13 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
 
 /** Value-level namespace for lazy Program combinators. */
 export const Program = {
-  all: programAll
+  all: programAll,
+  map: programMap,
+  mapError: programMapError,
+  andThen: programAndThen,
+  tap: programTap,
+  tapError: programTapError,
+  recover: programRecover
 } as const
 
 /**
