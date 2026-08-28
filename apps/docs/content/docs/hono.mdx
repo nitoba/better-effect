@@ -5,7 +5,9 @@ icon: Globe
 ---
 
 The optional `better-effect/hono` entry point connects Hono to a long-lived
-`Runtime`. Install Hono alongside the two core packages:
+`Runtime`. Hono's web `Request` and `Response` values do not extend the
+published Runtime entrypoint's official support beyond Node.js and Bun. Install
+Hono alongside the two core packages:
 
 ```bash
 bun add better-effect better-result hono

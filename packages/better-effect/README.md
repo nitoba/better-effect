@@ -10,8 +10,9 @@ Use Services directly inside `Effect.fn` Programs (or eager `Effect.gen` workflo
 bun add better-effect better-result
 ```
 
-The tested runtime matrix is Node.js 24 and Bun 1.3.14. The package's default
-runtime context uses Node/Bun async context propagation.
+The published Runtime entrypoint is officially supported on Node.js and Bun.
+The tested runtime matrix is Node.js 24 and Bun 1.3.14, and the default runtime
+context uses Node/Bun async context propagation.
 
 ## TypeScript knows what your application needs
 
@@ -276,10 +277,15 @@ explicitly returned `Response` failure is intentionally passed through
 unchanged. A custom `onFailure` policy should serialize only safe, intentional
 domain details.
 
-Service and Scope access share one `RuntimeContext`. Node/Bun uses
-`AsyncLocalStorage` by default. `ExplicitRuntimeContextStorage` is available
-for hosts without transparent propagation, but one instance supports only one
-non-overlapping async flow and rejects concurrent overlap.
+Service and Scope access share one `RuntimeContext`. The published Runtime
+entrypoint is officially supported on Node.js and Bun, where `AsyncLocalStorage`
+is the default context storage. The `better-effect/runtime/explicit` subpath
+provides `ExplicitRuntimeContextStorage` as a manually managed, sequential
+strategy only when the package entrypoint and host can load it. One instance
+supports one non-overlapping async flow and rejects concurrent overlap. Using
+it does not make the package generally usable in browsers, Deno, Cloudflare
+Workers, or other non-Node hosts; separate explicit instances are not a general
+concurrent-isolation strategy.
 
 If a program asks that Runtime for a Service its environment does not provide, TypeScript rejects the call.
 

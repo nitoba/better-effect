@@ -28,13 +28,13 @@ package version is selected.
 ## Publishing a release
 
 1. Start from `main` with a clean tree, or with only the intended
-   `CHANGELOG.md` edit present. Add a dated heading such as
-   `## [0.9.32] - 2026-08-28`.
+   `CHANGELOG.md` edit present. Promote the `Unreleased` notes to a dated
+   heading such as `## [0.10.0] - YYYY-MM-DD` when the release is approved.
 2. Run the release script with either a bare version or its tag:
 
    ```bash
-   ./scripts/release.sh 0.9.32
-   # or: ./scripts/release.sh v0.9.32
+   ./scripts/release.sh 0.10.0
+   # or: ./scripts/release.sh v0.10.0
    ```
 
    The script validates strict SemVer, checks the changelog entry, updates the
@@ -43,7 +43,7 @@ package version is selected.
    annotated tag locally.
 
 3. The final push is one atomic update of `main` and `v<version>` (for example,
-   `git push --atomic origin main v0.9.32`). Review the local commit and tag
+   `git push --atomic origin main v0.10.0`). Review the local commit and tag
    before running the script from the maintainer's local `main` checkout. Never
    run it from an agent worktree.
 

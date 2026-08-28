@@ -46,7 +46,8 @@ invalid provider cross the Runtime boundary.
 
 ## Resolver context isolation
 
-`ServiceRuntime` and `Scope` share one `RuntimeContext`. The default Node/Bun
+`ServiceRuntime` and `Scope` share one `RuntimeContext`. The published Runtime
+entrypoint is officially supported on Node.js and Bun. Its default context
 storage uses `AsyncLocalStorage`, so tests should enter context through
 `ServiceRuntime.run` or a Runtime boundary:
 
@@ -61,12 +62,14 @@ const applicationProgram = Effect.fn(async function* () {
 const result = await runtime.run(applicationProgram)
 ```
 
-Concurrent Runtime executions remain isolated. Avoid global “reset the
-container” helpers that create serial-test coupling.
+On the default Node/Bun storage, concurrent Runtime executions remain
+isolated. Avoid global “reset the container” helpers that create serial-test
+coupling.
 
-Hosts or tests that cannot use transparent async context propagation can
-provide an explicit storage, but one storage instance supports only one
-non-overlapping async flow and rejects concurrent overlap:
+The `better-effect/runtime/explicit` subpath provides
+`ExplicitRuntimeContextStorage` as a manually managed, sequential strategy only
+when the package entrypoint and host can load it. One storage instance supports
+only one non-overlapping async flow and rejects concurrent overlap:
 
 ```ts
 import { ExplicitRuntimeContextStorage } from 'better-effect/runtime/explicit'
@@ -76,11 +79,11 @@ const runtime = await Runtime.make(AppTest, {
 })
 ```
 
-Use the default Node/Bun storage for overlapping asynchronous executions. On
-hosts without async-context propagation, separate explicit storage instances
-are still only safe for non-overlapping flows; they do not provide concurrent
-isolation. Do not share one `ExplicitRuntimeContextStorage` instance across
-concurrent Runtime executions.
+Use the default Node/Bun storage for overlapping asynchronous executions.
+Using explicit storage does not make the package generally usable in browsers,
+Deno, Cloudflare Workers, or other non-Node hosts. Separate explicit instances
+do not provide general concurrent isolation; do not share one
+`ExplicitRuntimeContextStorage` instance across concurrent Runtime executions.
 
 ## Type-contract tests
 

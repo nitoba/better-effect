@@ -50,7 +50,11 @@ Before editing an application:
 
 This skill was authored against the `better-effect` 0.9.x line, including `Effect.fn`, `Program.all`, two-channel `Layer<Provided, Required>`, hierarchical `Scope`, `Runtime.runWith`, standard services, and the Hono adapter. Treat that as embedded baseline knowledge, not permission to ignore the project's pinned version.
 
-This repository's release gates test Node.js 24 and Bun 1.3.14. Do not infer support for other runtimes from TypeScript declarations or from an adapter's use of web platform values.
+The published Runtime entrypoint is officially supported on Node.js and Bun;
+the repository's release gates test Node.js 24 and Bun 1.3.14. Do not infer
+support for browser, Deno, Cloudflare Workers, or other non-Node runtimes from
+TypeScript declarations, an adapter's use of web platform values, or the
+availability of `ExplicitRuntimeContextStorage`.
 
 When web access is available and the task depends on library behavior or API details, follow `references/official-documentation.md`: discover the relevant page through `llms.txt`, prefer the page-specific Markdown representation, and use `llms-full.txt` only as a fallback or for genuinely cross-cutting research.
 
@@ -400,11 +404,16 @@ Do not assume `better-effect` provides fibers, forced cancellation, or preemptiv
 
 ### Choose context storage deliberately
 
-The default Node/Bun storage isolates overlapping asynchronous executions. An
-`ExplicitRuntimeContextStorage` instance is for hosts that provide their own
-context propagation and supports only one non-overlapping async flow; concurrent
-overlap is rejected. Do not share one explicit storage instance across
-concurrent Runtime executions.
+The published Runtime entrypoint is officially supported on Node.js and Bun.
+Its default context storage uses Node/Bun async context propagation and
+isolates overlapping asynchronous executions. The
+`better-effect/runtime/explicit` subpath provides
+`ExplicitRuntimeContextStorage` as a manually managed, sequential strategy only
+when the package entrypoint and host can load it. One instance supports one
+non-overlapping async flow; concurrent overlap is rejected. Use it only for
+sequential work. It does not make the package generally usable in browsers,
+Deno, Cloudflare Workers, or other non-Node hosts, and separate explicit
+instances are not a general concurrent-isolation strategy.
 
 ### Dispose gracefully
 
@@ -502,7 +511,7 @@ Prefer:
 
 The adapter supplies request context and links the request `AbortSignal`. Do not resolve Services into Hono's Context manually merely to pass them around again.
 
-Expected `Result.err` values should go through the configured failure policy. Thrown defects remain defects and continue through Hono error handling. The default failure response is redacted; custom `onFailure` policies must serialize only intentional, safe domain details. The adapter's `Failure` and request-Layer requirement channels are part of the public type boundary.
+Expected `Result.err` values should go through the configured failure policy. Thrown defects remain defects and continue through Hono error handling. The default policy redacts every non-`Response` failure; an explicitly returned `Response` failure is intentionally passed through unchanged. Custom `onFailure` policies must serialize only intentional, safe domain details. The adapter's `Failure` and request-Layer requirement channels are part of the public type boundary.
 
 Use Hono/Standard Schema validation middleware before the Program rather than inventing a second validation contract inside the adapter.
 
@@ -554,7 +563,8 @@ const AppTest = Layer.override(AppLive, DatabaseTest)
 
 Use one-shot `Runtime.run` when the test needs only one execution. Use a managed Runtime when multiple calls or lifecycle behavior are under test.
 
-Do not reset a global resolver between tests. Runtime context is designed to be isolated across concurrent executions.
+Do not reset a global resolver between tests. With the default Node/Bun
+context storage, Runtime context is isolated across concurrent executions.
 
 When the public contract depends on inference, write compile-time tests for exact types, including:
 

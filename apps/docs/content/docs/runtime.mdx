@@ -7,8 +7,8 @@ icon: Play
 `Runtime` is the managed execution boundary. It connects a complete Layer to a
 backend, owns the Layer's root Scope, and checks each program against the
 Services that the Layer provides. Without configuration it creates a fresh
-`MapLayerBackend`. The repository's release gates test Node.js 24 and Bun
-1.3.14.
+`MapLayerBackend`. The published Runtime entrypoint is officially supported on
+Node.js and Bun; the repository's release gates test Node.js 24 and Bun 1.3.14.
 
 ## Long-lived Runtime
 
@@ -20,7 +20,7 @@ const result = await runtime.run(loadDashboard)
 await runtime.dispose()
 ```
 
-The Runtime is designed for Node.js/Bun applications that execute many
+The Runtime is designed for Node.js and Bun applications that execute many
 programs against one environment. Layer-scoped resources remain alive
 between calls to `run`.
 
@@ -108,9 +108,13 @@ Cancellation remains cooperative: an execution that ignores its signal can
 still keep disposal open until it settles.
 
 Service resolution, Scope access and acquisition paths share one
-`RuntimeContext`. Node/Bun uses `AsyncLocalStorage` by default. An explicit
-storage instance supports one non-overlapping async flow at a time and rejects
-concurrent overlap; use the default Node/Bun storage for concurrent executions:
+`RuntimeContext`. The published Runtime entrypoint is officially supported on
+Node.js and Bun, where `AsyncLocalStorage` is the default context storage. The
+`better-effect/runtime/explicit` subpath provides
+`ExplicitRuntimeContextStorage` as a manually managed, sequential strategy only
+when the package entrypoint and host can load it. One instance supports one
+non-overlapping async flow at a time and rejects concurrent overlap. Use the
+default Node/Bun storage for concurrent executions:
 
 ```ts
 import { ExplicitRuntimeContextStorage } from 'better-effect/runtime/explicit'
@@ -119,6 +123,10 @@ const runtime = await Runtime.make(AppLive, {
   contextStorage: new ExplicitRuntimeContextStorage()
 })
 ```
+
+Using the explicit strategy does not make the package generally usable in
+browsers, Deno, Cloudflare Workers, or other non-Node hosts; separate explicit
+instances are not a general concurrent-isolation strategy.
 
 ## One-shot Runtime
 

@@ -33,14 +33,19 @@ icon: CircleQuestionMark
     primary failure.
   </Accordion>
   <Accordion title="Explicit context storage rejects overlap" id="explicit-context-overlap">
-    `ExplicitRuntimeContextStorage` is for hosts that cannot propagate async context. One instance
-    supports one non-overlapping async flow; use the default Node/Bun storage for concurrent work.
-    Separate explicit storage instances do not provide concurrent isolation on hosts without async
-    context propagation.
+    `ExplicitRuntimeContextStorage` is a manually managed, sequential strategy from the
+    `better-effect/runtime/explicit` subpath. Use it only when the package entrypoint and host can
+    load it; one instance supports one non-overlapping async flow and rejects concurrent overlap.
+    The published Runtime entrypoint is officially supported on Node.js and Bun; use its default
+    storage for concurrent work. This explicit strategy does not make the package generally usable
+    in browsers, Deno, Cloudflare Workers, or other non-Node hosts, and separate explicit instances
+    are not a general concurrent-isolation strategy.
   </Accordion>
   <Accordion title="The default Hono error is generic" id="hono-error-redaction">
-    Default Hono failure responses redact `Error.message`. Configure `onFailure` only when you need
-    a deliberate, safe domain representation; do not serialize arbitrary exceptions to clients.
+    The default Hono failure policy redacts every non-`Response` failure value to
+    `{ error: 'Internal Server Error' }` with status 500. An explicitly returned `Response` failure
+    is intentionally passed through unchanged. Configure `onFailure` only when you need a deliberate,
+    safe domain representation; do not serialize arbitrary exceptions to clients.
   </Accordion>
   <Accordion title="Layer.gen yielded an unsupported value" id="bad-layer-yield">
     Layer generators may yield Service constructors only; their public requirement metadata uses
