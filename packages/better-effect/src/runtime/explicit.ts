@@ -1,16 +1,30 @@
 import { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from './errors'
 
 import {
+  currentRuntimeContextFrame,
   getRuntimeContextLineage,
   inheritRuntimeContextLineage,
   isDerivedRuntimeContext,
+  isRuntimeContextFrameCarrierInstalled,
   setRuntimeContextLineage,
   withActiveRuntimeContextStorage
 } from './context'
 
 import { isPromiseLike } from '../utils/runtime'
 
-import type { RuntimeContext, RuntimeContextStorage } from './context'
+import type { ActiveRuntimeContextFrame, RuntimeContext, RuntimeContextStorage } from './context'
+
+type ExplicitRunState = {
+  readonly frame: ActiveRuntimeContextFrame
+  readonly context: RuntimeContext
+  readonly parent: ExplicitRunState | undefined
+  activeChild: ExplicitRunState | undefined
+  invoking: boolean
+}
+
+// Without async-local propagation, separate explicit storages share one mutable
+// frame and must not hold root leases concurrently.
+let fallbackRootLease = false
 
 /**
  * RuntimeContextStorage for hosts without transparent async context support.
@@ -20,51 +34,132 @@ import type { RuntimeContext, RuntimeContextStorage } from './context'
  * NodeRuntimeContextStorage when concurrent async branches need isolation.
  */
 export class ExplicitRuntimeContextStorage implements RuntimeContextStorage {
-  private context: RuntimeContext | undefined
+  private readonly states = new WeakMap<ActiveRuntimeContextFrame, ExplicitRunState>()
 
-  private lineage: RuntimeContext | undefined
+  private rootState: ExplicitRunState | undefined
 
   run<A>(context: RuntimeContext, program: () => A): A {
-    return withActiveRuntimeContextStorage(this, () => {
-      const restore = this.enter(context)
+    return withActiveRuntimeContextStorage(this, context, () => {
+      const frame = currentRuntimeContextFrame()
+
+      if (!frame || frame.storage !== this) {
+        throw new RuntimeContextOverlapError()
+      }
+
+      const existing = this.states.get(frame)
+
+      if (existing?.context === context) {
+        if (
+          existing.activeChild !== undefined ||
+          (!isRuntimeContextFrameCarrierInstalled() && !existing.invoking)
+        ) {
+          throw new RuntimeContextOverlapError()
+        }
+
+        return program()
+      }
+
+      const state = this.enter(frame, context)
+      state.invoking = true
+      const restore = (): void => this.exit(state)
 
       try {
-        return this.settle(program(), restore)
+        const value = program()
+        state.invoking = false
+        return this.settle(value, restore)
       } catch (cause) {
+        state.invoking = false
         restore()
         throw cause
       }
     })
   }
 
-  private enter(context: RuntimeContext): () => void {
-    const previous = this.context
-    const previousLineage = this.lineage
-    let currentLineage: RuntimeContext
+  private enter(frame: ActiveRuntimeContextFrame, context: RuntimeContext): ExplicitRunState {
+    const parentFrame = frame.parent
+    const parent = parentFrame ? this.states.get(parentFrame) : undefined
 
-    if (previous === undefined) {
-      currentLineage = setRuntimeContextLineage(context)
-    } else {
-      const contextLineage = getRuntimeContextLineage(context)
-      const nested =
-        context !== previous &&
-        ((contextLineage !== undefined && contextLineage === previousLineage) ||
-          (contextLineage === undefined && isDerivedRuntimeContext(previous, context)))
-
-      if (!nested) {
+    if (parent === undefined) {
+      if (
+        parentFrame?.storage === this ||
+        this.rootState !== undefined ||
+        (!isRuntimeContextFrameCarrierInstalled() && fallbackRootLease)
+      ) {
         throw new RuntimeContextOverlapError()
       }
 
-      currentLineage = previousLineage ?? previous
-      inheritRuntimeContextLineage(context, previous)
+      setRuntimeContextLineage(context)
+
+      const state: ExplicitRunState = {
+        frame,
+        context,
+        parent: undefined,
+        activeChild: undefined,
+        invoking: false
+      }
+      this.states.set(frame, state)
+      this.rootState = state
+
+      if (!isRuntimeContextFrameCarrierInstalled()) {
+        fallbackRootLease = true
+      }
+
+      return state
     }
 
-    this.context = context
-    this.lineage = currentLineage
+    if (parent.activeChild !== undefined) {
+      throw new RuntimeContextOverlapError()
+    }
 
-    return () => {
-      this.context = previous
-      this.lineage = previousLineage
+    const contextLineage = getRuntimeContextLineage(context)
+    const parentLineage = getRuntimeContextLineage(parent.context) ?? parent.context
+    const nested =
+      context !== parent.context &&
+      ((contextLineage !== undefined && contextLineage === parentLineage) ||
+        (contextLineage === undefined && isDerivedRuntimeContext(parent.context, context)))
+
+    if (
+      !nested ||
+      (!isRuntimeContextFrameCarrierInstalled() && parent.parent !== undefined && !parent.invoking)
+    ) {
+      throw new RuntimeContextOverlapError()
+    }
+
+    inheritRuntimeContextLineage(context, parent.context)
+
+    const state: ExplicitRunState = {
+      frame,
+      context,
+      parent,
+      activeChild: undefined,
+      invoking: false
+    }
+    this.states.set(frame, state)
+    parent.activeChild = state
+
+    return state
+  }
+
+  private exit(state: ExplicitRunState): void {
+    if (this.states.get(state.frame) !== state) {
+      return
+    }
+
+    this.states.delete(state.frame)
+
+    if (state.parent !== undefined) {
+      if (state.parent.activeChild === state) {
+        state.parent.activeChild = undefined
+      }
+      return
+    }
+
+    if (this.rootState === state) {
+      this.rootState = undefined
+
+      if (fallbackRootLease) {
+        fallbackRootLease = false
+      }
     }
   }
 
@@ -102,13 +197,14 @@ export class ExplicitRuntimeContextStorage implements RuntimeContextStorage {
   }
 
   current(): RuntimeContext {
-    const context = this.context
+    const frame = currentRuntimeContextFrame()
+    const state = frame && frame.storage === this ? this.states.get(frame) : undefined
 
-    if (!context) {
+    if (!state) {
       throw new RuntimeContextNotConfiguredError()
     }
 
-    return context
+    return state.context
   }
 }
 

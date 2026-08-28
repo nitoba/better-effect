@@ -110,30 +110,22 @@ export function makeRuntimeContext(
   return context
 }
 
-type ActiveStorageFrame = {
+/** A context frame selected for one logical Runtime execution branch. */
+export type ActiveRuntimeContextFrame = {
   readonly storage: RuntimeContextStorage
-  readonly previous: ActiveStorageFrame | undefined
-  active: boolean
+  readonly context: RuntimeContext
+  readonly parent?: ActiveRuntimeContextFrame
+}
+
+/** Host-provided propagation for Runtime context frames. */
+export interface RuntimeContextFrameCarrier {
+  run<A>(frame: ActiveRuntimeContextFrame, program: () => A): A
+  current(): ActiveRuntimeContextFrame | undefined
 }
 
 let defaultStorage = unconfiguredRuntimeContextStorage
-let activeFrame: ActiveStorageFrame | undefined
-
-const restoreActiveStorageFrame = (frame: ActiveStorageFrame): void => {
-  frame.active = false
-
-  if (activeFrame !== frame) {
-    return
-  }
-
-  let previous = frame.previous
-
-  while (previous !== undefined && !previous.active) {
-    previous = previous.previous
-  }
-
-  activeFrame = previous
-}
+let fallbackFrame: ActiveRuntimeContextFrame | undefined
+const fallbackFrames = new Set<ActiveRuntimeContextFrame>()
 
 const settleWithRuntimeStorage = <A>(value: A, restore: () => void): A => {
   let promiseLike: boolean
@@ -168,6 +160,54 @@ const settleWithRuntimeStorage = <A>(value: A, restore: () => void): A => {
   }
 }
 
+const restoreFallbackFrame = (frame: ActiveRuntimeContextFrame): void => {
+  fallbackFrames.delete(frame)
+
+  if (fallbackFrame !== frame) {
+    return
+  }
+
+  let parent = frame.parent
+
+  while (parent !== undefined && !fallbackFrames.has(parent)) {
+    parent = parent.parent
+  }
+
+  fallbackFrame = parent
+}
+
+const fallbackRuntimeContextFrameCarrier: RuntimeContextFrameCarrier = {
+  run<A>(frame: ActiveRuntimeContextFrame, program: () => A): A {
+    fallbackFrames.add(frame)
+    fallbackFrame = frame
+    const restore = (): void => restoreFallbackFrame(frame)
+
+    try {
+      return settleWithRuntimeStorage(program(), restore)
+    } catch (cause) {
+      restore()
+      throw cause
+    }
+  },
+
+  current: () => fallbackFrame
+}
+
+let runtimeContextFrameCarrier: RuntimeContextFrameCarrier = fallbackRuntimeContextFrameCarrier
+
+/** Install host async-context propagation for Runtime context frames. */
+export const setRuntimeContextFrameCarrier = (carrier: RuntimeContextFrameCarrier): void => {
+  runtimeContextFrameCarrier = carrier
+}
+
+/** Return whether a host async-context carrier has been installed. */
+export const isRuntimeContextFrameCarrierInstalled = (): boolean =>
+  runtimeContextFrameCarrier !== fallbackRuntimeContextFrameCarrier
+
+/** Return the frame associated with the executing callback. */
+export const currentRuntimeContextFrame = (): ActiveRuntimeContextFrame | undefined =>
+  runtimeContextFrameCarrier.current()
+
 /** Install the host default used by the main Runtime entrypoint. */
 export const setDefaultRuntimeContextStorage = (storage: RuntimeContextStorage): void => {
   defaultStorage = storage
@@ -175,12 +215,18 @@ export const setDefaultRuntimeContextStorage = (storage: RuntimeContextStorage):
 
 /** Return the storage currently associated with the executing callback. */
 export const activeRuntimeContextStorage = (): RuntimeContextStorage =>
-  activeFrame?.storage ?? defaultStorage
+  currentRuntimeContextFrame()?.storage ?? defaultStorage
 
 /** Return the active context, or undefined when the storage has not been entered. */
 export const getRuntimeContext = (
   storage: RuntimeContextStorage = activeRuntimeContextStorage()
 ): RuntimeContext | undefined => {
+  const frame = currentRuntimeContextFrame()
+
+  if (frame?.storage === storage) {
+    return frame.context
+  }
+
   try {
     return storage.current()
   } catch (cause) {
@@ -193,28 +239,28 @@ export const getRuntimeContext = (
 }
 
 /** Return the active context or throw the storage's standard missing-context error. */
-export const currentRuntimeContext = (): RuntimeContext => activeRuntimeContextStorage().current()
+export const currentRuntimeContext = (): RuntimeContext => {
+  const frame = currentRuntimeContextFrame()
+
+  return frame?.context ?? defaultStorage.current()
+}
 
 /** Keep a storage discoverable to Service and Scope compatibility bridges. */
 export const withActiveRuntimeContextStorage = <A>(
   storage: RuntimeContextStorage,
+  context: RuntimeContext,
   program: () => A
 ): A => {
-  const frame: ActiveStorageFrame = {
-    storage,
-    previous: activeFrame,
-    active: true
-  }
-  activeFrame = frame
+  const current = currentRuntimeContextFrame()
 
-  const restore = (): void => restoreActiveStorageFrame(frame)
-
-  try {
-    return settleWithRuntimeStorage(program(), restore)
-  } catch (cause) {
-    restore()
-    throw cause
+  if (current?.storage === storage && current.context === context) {
+    return program()
   }
+
+  const frame: ActiveRuntimeContextFrame =
+    current === undefined ? { storage, context } : { storage, context, parent: current }
+
+  return runtimeContextFrameCarrier.run(frame, program)
 }
 
 /** Run a callback in a context while keeping the selected storage discoverable to bridges. */
@@ -229,5 +275,7 @@ export const runRuntimeContext = <A>(
       ? inheritRuntimeContextLineage(context, current)
       : context
 
-  return withActiveRuntimeContextStorage(storage, () => storage.run(contextual, program))
+  return storage.run(contextual, () =>
+    withActiveRuntimeContextStorage(storage, contextual, program)
+  )
 }
