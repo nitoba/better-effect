@@ -203,6 +203,72 @@ The entrypoint also includes `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
 `CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. Importing it
 never installs a hidden global provider.
 
+### Cancellable sleeps and deterministic time
+
+`Clock.sleep` accepts an optional `AbortSignal` while preserving the original
+`clock.sleep(milliseconds)` form. Invalid delays still throw synchronously. An
+already-aborted signal does not install a timer; an active signal cancels the
+sleep, removes its listener and clears its timer. The signal's `reason` is
+rejected unchanged. When no reason is available, the rejection is an
+`AbortError`-named `DOMException`.
+
+Pass the signal through polling, retry delays and expiration checks:
+
+```ts
+const poll = async (clock: Clock, signal: AbortSignal) => {
+  while (true) {
+    const status = await readStatus()
+    if (status.ready) return status
+
+    await clock.sleep(1_000, { signal })
+  }
+}
+
+const retry = async <A>(operation: () => Promise<A>, clock: Clock, signal: AbortSignal) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (attempt === 2) throw error
+      await clock.sleep(100 * 2 ** attempt, { signal })
+    }
+  }
+}
+
+const waitUntilExpired = async (clock: Clock, expiresAt: number, signal: AbortSignal) => {
+  while (true) {
+    const remaining = expiresAt - clock.now().getTime()
+    if (remaining <= 0) return
+
+    await clock.sleep(Math.min(remaining, 1_000), { signal })
+  }
+}
+```
+
+`ClockTest` keeps sleeps ordered by ascending absolute deadline and resolves
+same-deadline sleeps FIFO. `pendingSleeps` is a readonly count,
+`advanceToNext()` moves synchronously to the next deadline and returns `false`
+when there is nothing to advance, and `runAll({ maxSteps })` advances repeatedly
+while awaiting one microtask checkpoint between steps. This lets resumed code
+schedule its next wait without virtualizing the event loop:
+
+```ts
+const clock = new ClockTest(0)
+const task = (async () => {
+  await clock.sleep(100)
+  await clock.sleep(50)
+})()
+
+await clock.runAll({ maxSteps: 10 })
+await task
+// clock.now().getTime() === 150
+```
+
+`setTime` accepts backward moves. Existing sleeps retain their absolute
+deadlines and only resolve when the clock reaches them; forward moves resolve
+all sleeps due at the new time. `ClockTest` does not replace `Date`, global
+`setTimeout`, or the JavaScript microtask queue.
+
 ## Service checklist
 
 - Give every Service a literal, non-empty tag.

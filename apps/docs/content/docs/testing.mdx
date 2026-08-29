@@ -84,6 +84,33 @@ For a single test, avoid keeping a Runtime around:
 const result = await Runtime.run(AppTest, applicationProgram)
 ```
 
+## Drive time without fake timers
+
+Use `ClockTest` for polling, retry and expiration code without replacing global
+`Date` or `setTimeout`:
+
+```ts
+const clock = new ClockTest(0)
+const task = (async () => {
+  await clock.sleep(100)
+  await clock.sleep(50)
+})()
+
+expect(clock.pendingSleeps).toBe(1)
+expect(clock.advanceToNext()).toBe(true)
+await clock.runAll({ maxSteps: 10 })
+await task
+```
+
+Sleeps are queued by ascending absolute deadline, with FIFO order for equal
+deadlines. `advanceToNext()` is synchronous and returns `false` when the queue
+is empty; `runAll()` returns the number of deadline steps and awaits one
+microtask checkpoint between steps so resumed code can enqueue another sleep.
+Its `maxSteps` option guards against endlessly rescheduled waits. `setTime()`
+may move backward, while pending sleeps retain their absolute deadlines.
+Production and test sleeps accept `{ signal }`; cancellation removes the timer,
+listener or pending waiter and rejects with the signal reason.
+
 ## Override one provider
 
 ```ts

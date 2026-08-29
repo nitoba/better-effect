@@ -1,7 +1,11 @@
+import type { ServiceContract } from 'better-effect'
+
 import {
   Clock,
   ClockLive,
   ClockTest,
+  type ClockSleepOptions,
+  type ClockTestRunAllOptions,
   Config,
   ConfigLive,
   CurrentRequest,
@@ -36,6 +40,29 @@ export type IdGeneratorProvider = Expect<
 export type ClockContract = Expect<
   Equal<Pick<ClockTest, 'now' | 'sleep'> extends Pick<Clock, 'now' | 'sleep'> ? true : false, true>
 >
+export type ClockSleepContract = Expect<
+  Equal<Parameters<Clock['sleep']>[1], ClockSleepOptions | undefined>
+>
+export type ClockAdvanceToNextResult = Expect<
+  Equal<ReturnType<ClockTest['advanceToNext']>, boolean>
+>
+export type ClockRunAllResult = Expect<Equal<ReturnType<ClockTest['runAll']>, Promise<number>>>
+
+const legacyClock = {
+  now: () => new Date(),
+  sleep: async (_milliseconds: number) => {}
+} satisfies ServiceContract<Clock>
+
+const runAllOptions: ClockTestRunAllOptions = { maxSteps: 10 }
+declare const clockTest: ClockTest
+void clockTest.runAll()
+void clockTest.runAll(runAllOptions)
+// @ts-expect-error ClockTest.runAll accepts object options, not a numeric shorthand.
+void clockTest.runAll(10)
+// @ts-expect-error pendingSleeps is a readonly count.
+clockTest.pendingSleeps = 0
+void legacyClock
+void runAllOptions
 export type RandomContract = Expect<
   Equal<
     Pick<RandomSeeded, 'next' | 'nextInt'> extends Pick<Random, 'next' | 'nextInt'> ? true : false,
