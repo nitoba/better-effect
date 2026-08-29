@@ -1,11 +1,45 @@
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 const runtimeEntry = process.env.BETTER_EFFECT_RUNTIME_ENTRY
 const coreEntry = process.env.BETTER_EFFECT_CORE_ENTRY
+const resultEntry = process.env.BETTER_EFFECT_RESULT_ENTRY ?? 'better-result'
+const artifact = process.env.BETTER_EFFECT_EXPECTED_ARTIFACT ?? 'source'
+const packedPackageDirectory = process.env.BETTER_EFFECT_PACKED_PACKAGE_DIRECTORY
 
 if (!runtimeEntry || !coreEntry) {
   throw new Error('NodeRuntime child entries are required')
 }
 
-const resultEntry = process.env.BETTER_EFFECT_RESULT_ENTRY ?? 'better-result'
+const assertEntry = (entry, expectedPath, label) => {
+  let actualPath
+
+  try {
+    actualPath = fileURLToPath(new URL(entry))
+  } catch {
+    throw new Error(`${label} is not a file URL: ${entry}`)
+  }
+
+  if (resolve(actualPath) !== resolve(expectedPath)) {
+    throw new Error(`${label} did not load the fresh packed artifact: ${entry}`)
+  }
+}
+
+if (artifact === 'fresh-packed') {
+  if (!packedPackageDirectory) {
+    throw new Error('Fresh packed NodeRuntime tests require a package directory')
+  }
+
+  assertEntry(runtimeEntry, resolve(packedPackageDirectory, 'dist/node.mjs'), 'NodeRuntime entry')
+  assertEntry(coreEntry, resolve(packedPackageDirectory, 'dist/index.mjs'), 'core entry')
+  assertEntry(
+    resultEntry,
+    resolve(packedPackageDirectory, '../better-result/dist/index.mjs'),
+    'Result entry'
+  )
+} else if (packedPackageDirectory) {
+  throw new Error('Source NodeRuntime tests cannot provide a packed package directory')
+}
 
 const [{ NodeRuntime }, core, { Result }] = await Promise.all([
   import(runtimeEntry),
@@ -28,7 +62,7 @@ process.exit = (...args) => {
 }
 
 const print = (value) => {
-  process.stdout.write(`${JSON.stringify({ ...value, processExitCalled })}\n`)
+  process.stdout.write(`${JSON.stringify({ ...value, artifact, processExitCalled })}\n`)
 }
 
 class ChildService extends Service()(`ChildService:${scenario}`) {}
@@ -154,6 +188,66 @@ try {
       caught,
       cleanupObserved,
       defectObserved,
+      sigintListeners: process.listenerCount('SIGINT'),
+      sigtermListeners: process.listenerCount('SIGTERM'),
+      exitCode: process.exitCode ?? null
+    })
+  } else if (scenario === 'execution-cleanup') {
+    const cleanupFailure = new Error('execution cleanup')
+    let observedCleanupError
+    let cleanupObserved = false
+    let cleanupCauseIdentity = false
+    let caughtCleanupIdentity = false
+    let caughtCleanupClass
+    let defectObserved = false
+    let successPolicyCalls = 0
+    let caught = false
+
+    try {
+      await NodeRuntime.runMain(
+        Layer.empty,
+        Effect.fn(async function* () {
+          yield* Effect.acquireRelease(
+            () => ({ value: true }),
+            () => {
+              throw cleanupFailure
+            }
+          )
+          return Result.ok('success-before-execution-cleanup')
+        }),
+        {
+          signals: [],
+          onSuccess: () => {
+            successPolicyCalls += 1
+            return 0
+          },
+          onCleanupFailure: (diagnostic) => {
+            observedCleanupError = diagnostic.error
+            cleanupObserved = diagnostic.outcome.status === 'success'
+            cleanupCauseIdentity = diagnostic.error.causes[0] === cleanupFailure
+          },
+          onDefect: () => {
+            defectObserved = true
+            return 9
+          }
+        }
+      )
+    } catch (cause) {
+      caught = true
+      caughtCleanupIdentity = cause === observedCleanupError
+      caughtCleanupClass = cause?.name
+      cleanupCauseIdentity = cleanupCauseIdentity && cause?.causes?.[0] === cleanupFailure
+    }
+
+    print({
+      kind: 'execution-cleanup',
+      caught,
+      cleanupObserved,
+      cleanupCauseIdentity,
+      caughtCleanupIdentity,
+      caughtCleanupClass,
+      defectObserved,
+      successPolicyCalls,
       sigintListeners: process.listenerCount('SIGINT'),
       sigtermListeners: process.listenerCount('SIGTERM'),
       exitCode: process.exitCode ?? null

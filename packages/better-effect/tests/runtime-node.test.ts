@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, test } from 'bun:test'
 
 type ChildData = {
+  readonly artifact?: string
   readonly kind?: string
   readonly status?: string
   readonly reason?: string
@@ -16,7 +17,11 @@ type ChildData = {
   readonly caught?: boolean
   readonly sameDefect?: boolean
   readonly cleanupObserved?: boolean
+  readonly cleanupCauseIdentity?: boolean
+  readonly caughtCleanupIdentity?: boolean
+  readonly caughtCleanupClass?: string
   readonly defectObserved?: boolean
+  readonly successPolicyCalls?: number
   readonly calls?: number
   readonly sigintListeners?: number
   readonly sigtermListeners?: number
@@ -34,49 +39,66 @@ type ChildResult = {
 type ChildTarget = {
   readonly name: string
   readonly command: string
+  readonly artifact: 'source' | 'fresh-packed'
   readonly runtimeEntry: string
   readonly coreEntry: string
   readonly resultEntry?: string
+  readonly packageDirectory?: string
 }
 
 const packageRoot = resolve(fileURLToPath(new URL('../', import.meta.url)))
 const childScript = resolve(packageRoot, 'tests/helpers/node-runtime-child.mjs')
 const sourceRuntimeEntry = pathToFileURL(resolve(packageRoot, 'src/node.ts')).href
 const sourceCoreEntry = pathToFileURL(resolve(packageRoot, 'src/index.ts')).href
-const packedRuntimeEntry = process.env.BETTER_EFFECT_NODE_RUNTIME_ENTRY
-const packedCoreEntry = process.env.BETTER_EFFECT_NODE_CORE_ENTRY
-const packedResultEntry = process.env.BETTER_EFFECT_RESULT_ENTRY
+const packedRuntimeEntry = process.env.BETTER_EFFECT_PACKED_RUNTIME_ENTRY
+const packedCoreEntry = process.env.BETTER_EFFECT_PACKED_CORE_ENTRY
+const packedResultEntry = process.env.BETTER_EFFECT_PACKED_RESULT_ENTRY
+const packedPackageDirectory = process.env.BETTER_EFFECT_PACKED_PACKAGE_DIRECTORY
+const packedEntries = [
+  packedRuntimeEntry,
+  packedCoreEntry,
+  packedResultEntry,
+  packedPackageDirectory
+]
 
-if (
-  new Set(
-    [packedRuntimeEntry, packedCoreEntry, packedResultEntry].map((entry) => entry !== undefined)
-  ).size > 1
-) {
+if (new Set(packedEntries.map((entry) => entry !== undefined)).size > 1) {
   throw new Error('Packed NodeRuntime test entries must be provided together')
 }
 
-const packedNodeTarget: ChildTarget | undefined =
+const packedTarget: ChildTarget | undefined =
   packedRuntimeEntry !== undefined &&
   packedCoreEntry !== undefined &&
-  packedResultEntry !== undefined
+  packedResultEntry !== undefined &&
+  packedPackageDirectory !== undefined
     ? {
-        name: 'Node (fresh packed package)',
-        command: 'node',
+        name: 'Bun (fresh packed package)',
+        command: process.execPath,
+        artifact: 'fresh-packed',
         runtimeEntry: packedRuntimeEntry,
         coreEntry: packedCoreEntry,
-        resultEntry: packedResultEntry
+        resultEntry: packedResultEntry,
+        packageDirectory: packedPackageDirectory
       }
     : undefined
 
-const targets: readonly ChildTarget[] = [
-  {
-    name: 'Bun (source)',
-    command: process.execPath,
-    runtimeEntry: sourceRuntimeEntry,
-    coreEntry: sourceCoreEntry
-  },
-  ...(packedNodeTarget === undefined ? [] : [packedNodeTarget])
-]
+const targets: readonly ChildTarget[] = packedTarget
+  ? [
+      packedTarget,
+      {
+        ...packedTarget,
+        name: 'Node (fresh packed package)',
+        command: 'node'
+      }
+    ]
+  : [
+      {
+        name: 'Bun (source)',
+        command: process.execPath,
+        artifact: 'source',
+        runtimeEntry: sourceRuntimeEntry,
+        coreEntry: sourceCoreEntry
+      }
+    ]
 
 const readChildResult = (output: string): ChildData => {
   const line = output
@@ -106,13 +128,20 @@ const runChild = async (
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     BETTER_EFFECT_RUNTIME_ENTRY: target.runtimeEntry,
-    BETTER_EFFECT_CORE_ENTRY: target.coreEntry
+    BETTER_EFFECT_CORE_ENTRY: target.coreEntry,
+    BETTER_EFFECT_EXPECTED_ARTIFACT: target.artifact
   }
 
   if (target.resultEntry === undefined) {
     delete environment.BETTER_EFFECT_RESULT_ENTRY
   } else {
     environment.BETTER_EFFECT_RESULT_ENTRY = target.resultEntry
+  }
+
+  if (target.packageDirectory === undefined) {
+    delete environment.BETTER_EFFECT_PACKED_PACKAGE_DIRECTORY
+  } else {
+    environment.BETTER_EFFECT_PACKED_PACKAGE_DIRECTORY = target.packageDirectory
   }
 
   const child = spawn(target.command, [childScript, scenario], {
@@ -208,9 +237,17 @@ const runChild = async (
     }
   )
 
+  const data = readChildResult(output)
+
+  if (data.artifact !== target.artifact) {
+    throw new Error(
+      `NodeRuntime child loaded ${String(data.artifact)} instead of ${target.artifact}:\n${output}`
+    )
+  }
+
   return {
     ...result,
-    data: readChildResult(output),
+    data,
     output: `${output}${errorOutput}`
   }
 }
@@ -274,6 +311,25 @@ for (const target of targets) {
         caught: true,
         cleanupObserved: true,
         defectObserved: false,
+        exitCode: 1
+      })
+      expectNoProcessExit(result)
+    })
+
+    test('preserves execution cleanup failures as cleanup, not defects', async () => {
+      const result = await runChild(target, 'execution-cleanup')
+
+      expect(result.code).toBe(1)
+      expect(result.signal).toBeNull()
+      expect(result.data).toMatchObject({
+        kind: 'execution-cleanup',
+        caught: true,
+        cleanupObserved: true,
+        cleanupCauseIdentity: true,
+        caughtCleanupIdentity: true,
+        caughtCleanupClass: 'ScopeCloseError',
+        defectObserved: false,
+        successPolicyCalls: 0,
         exitCode: 1
       })
       expectNoProcessExit(result)

@@ -434,15 +434,15 @@ export class NodeRuntime {
       throw programFailure
     }
 
+    if (executionCleanupFailed) {
+      setExitCode(1)
+      throw programFailure
+    }
+
     if (!programSettled) {
       const failure = new Error('NodeRuntime main program did not settle')
       reportDefect(failure, onDefect)
       throw failure
-    }
-
-    if (executionCleanupFailed) {
-      setExitCode(1)
-      throw programFailure
     }
 
     if (programValue instanceof Err) {

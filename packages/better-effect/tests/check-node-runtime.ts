@@ -51,7 +51,7 @@ const unpackPackage = async (archive: string, directory: string): Promise<string
   return packageDirectory
 }
 
-const runFreshPackedNodeTests = async (): Promise<void> => {
+const runFreshPackedNodeRuntimeTests = async (): Promise<void> => {
   await rm(join(packageRoot, 'dist'), { force: true, recursive: true })
   await run([process.execPath, 'run', 'build'])
 
@@ -70,11 +70,13 @@ const runFreshPackedNodeTests = async (): Promise<void> => {
     const packageDirectory = await unpackPackage(archive, temporaryDirectory)
     const environment = {
       ...process.env,
-      BETTER_EFFECT_NODE_RUNTIME_ENTRY: pathToFileURL(join(packageDirectory, 'dist/node.mjs')).href,
-      BETTER_EFFECT_NODE_CORE_ENTRY: pathToFileURL(join(packageDirectory, 'dist/index.mjs')).href,
-      BETTER_EFFECT_RESULT_ENTRY: pathToFileURL(
+      BETTER_EFFECT_PACKED_RUNTIME_ENTRY: pathToFileURL(join(packageDirectory, 'dist/node.mjs'))
+        .href,
+      BETTER_EFFECT_PACKED_CORE_ENTRY: pathToFileURL(join(packageDirectory, 'dist/index.mjs')).href,
+      BETTER_EFFECT_PACKED_RESULT_ENTRY: pathToFileURL(
         resolve(packageDirectory, '../better-result/dist/index.mjs')
-      ).href
+      ).href,
+      BETTER_EFFECT_PACKED_PACKAGE_DIRECTORY: packageDirectory
     }
 
     await run([process.execPath, 'test', 'tests/runtime-node.test.ts'], environment)
@@ -83,5 +85,5 @@ const runFreshPackedNodeTests = async (): Promise<void> => {
   }
 }
 
-await runFreshPackedNodeTests()
+await runFreshPackedNodeRuntimeTests()
 console.log('Fresh packed Node/Bun NodeRuntime child tests passed')
