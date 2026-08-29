@@ -30,13 +30,13 @@ type EffectMethods<A, E, R extends AnyService> = {
   ): Promise<Effect<EffectSuccess<Next>, E | EffectError<Next>, R | EffectRequirements<Next>>>
 
   tap(fn: (value: A) => void): Effect<A, E, R>
-  tapAsync(fn: (value: A) => Promise<void>): Promise<Effect<A, E, R>>
+  tapAsync(fn: (value: A) => PromiseLike<void>): Promise<Effect<A, E, R>>
   tapError(fn: (error: E) => void): Effect<A, E, R>
-  tapErrorAsync(fn: (error: E) => Promise<void>): Promise<Effect<A, E, R>>
+  tapErrorAsync(fn: (error: E) => PromiseLike<void>): Promise<Effect<A, E, R>>
   tapBoth(handlers: { ok: (value: A) => void; err: (error: E) => void }): Effect<A, E, R>
   tapBothAsync(handlers: {
-    ok: (value: A) => Promise<void>
-    err: (error: E) => Promise<void>
+    ok: (value: A) => PromiseLike<void>
+    err: (error: E) => PromiseLike<void>
   }): Promise<Effect<A, E, R>>
 }
 
