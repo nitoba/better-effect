@@ -441,7 +441,7 @@ describe('RuntimeGraphObserver', () => {
       expect(mermaid).toBe(secondGraph.toMermaid())
       expect(mermaid).toContain('flowchart TD')
       expect(mermaid).toContain('@acme/Database')
-      expect(mermaid).toContain('@acme/Cache:primary, v1')
+      expect(mermaid).toContain('@acme/Cache#58;primary, v1')
       expect(mermaid).toContain('#34;')
       expect(mermaid).toContain('#91;')
       expect(mermaid).toContain('#93;')
@@ -456,9 +456,9 @@ describe('RuntimeGraphObserver', () => {
 
   test('parses and renders adversarial labels as literal text', async () => {
     const serviceTag =
-      '<img src=x onerror=alert(1)> **bold** `code` &lt;entity&gt; &amp; #60; "quotes" \'single\' [brackets] | pipes'
+      '<img src=x onerror=alert(1)> **bold** `code` &lt;entity&gt; &amp; #60; "quotes" \'single\' [brackets] | pipes fa:fa-twitter fab:fa-github fas:fa-skull'
     const rootLabel =
-      'Runtime <img src=x onerror=alert(2)> **root** `markdown` &amp; &lt;root-entity&gt; [link](javascript:alert(3)) "root"'
+      'Runtime <img src=x onerror=alert(2)> **root** `markdown` &amp; &lt;root-entity&gt; [link](javascript:alert(3)) "root" fa:fa-twitter fab:fa-github fas:fa-skull'
     class LiteralLabelService extends Service<LiteralLabelService>()(serviceTag) {}
     const graph = RuntimeGraphObserver.make({ rootLabel })
 
@@ -488,7 +488,7 @@ describe('RuntimeGraphObserver', () => {
       for (const label of labels) {
         expect(
           label.querySelector(
-            'a,area,embed,form,iframe,img,input,link,object,script,style,textarea,video,strong,em,code'
+            'a,area,embed,form,iframe,img,input,link,object,script,style,textarea,video,strong,em,code,i'
           )
         ).toBeNull()
         expect(label.querySelector('[onerror],[onclick],[href],[src]')).toBeNull()

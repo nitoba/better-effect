@@ -80,6 +80,8 @@ const mermaidLabelPunctuation = new Set([
   '|',
   '#',
   ';',
+  // Mermaid rewrites fa:fa-* label text into icon elements after decoding entities.
+  ':',
   '<',
   '>',
   '=',
