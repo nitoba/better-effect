@@ -412,6 +412,29 @@ and its ordered `timeline`; call `clear()` to reuse it. Composition invokes
 observers in declaration order and isolates thrown or rejected observer
 failures from the Runtime result.
 
+For a startup view of the graph actually observed by a Runtime, compose the
+small graph observer and warm the Layer before accepting work:
+
+```ts
+import { Runtime } from 'better-effect'
+import { RuntimeGraphObserver } from 'better-effect/testing'
+
+const graph = RuntimeGraphObserver.make({ rootLabel: 'Runtime' })
+const runtime = await Runtime.make(AppLive, {
+  warmup: true,
+  observers: [graph]
+})
+
+console.log(graph.toJSON())
+console.log(graph.toMermaid())
+await runtime.dispose()
+```
+
+`RuntimeGraphObserver` uses only public resolution and acquisition events. Its
+snapshot is sorted, detached and immutable; it records Service tags and counts,
+not instances, scopes, causes or execution attributes. Providers that are never
+resolved remain absent, and `clear()` starts a new diagnostic session.
+
 Cancellation is cooperative and uses `AbortSignal`; no scheduler or fibers are
 created. Pass a signal to one execution and read it from the program when an
 I/O operation supports cancellation. Runtime disposal waits for active work;

@@ -10,6 +10,7 @@ import { NodeRuntimeContextStorage } from '../../src/runtime/node'
 import {
   layerBackendContract,
   RecordedRuntimeObserver,
+  RuntimeGraphObserver,
   RuntimeObserver,
   runtimeContextStorageContract,
   type ContextConcurrency,
@@ -18,6 +19,10 @@ import {
   type LayerBackendContractOptions,
   type RecordedRuntimeObserverSnapshot,
   type RuntimeContextStorageContractOptions,
+  type RuntimeGraphEdge,
+  type RuntimeGraphNode,
+  type RuntimeGraphObserverOptions,
+  type RuntimeGraphSnapshot,
   type RuntimeObserverEvent
 } from '../../src/testing'
 
@@ -58,16 +63,26 @@ runtimeContextStorageContract({
 const recorder = RecordedRuntimeObserver.make()
 const composed = RuntimeObserver.compose(recorder)
 const snapshot = recorder.snapshot()
+const graph = RuntimeGraphObserver.make({ includeFailures: true, rootLabel: 'Runtime' })
+const graphSnapshot = graph.toJSON()
+const graphOptions: RuntimeGraphObserverOptions = { rootLabel: 'Runtime' }
 
 expectTypeOf(recorder).toMatchTypeOf<RuntimeObserverContract>()
 expectTypeOf(composed).toEqualTypeOf<RuntimeObserverContract>()
+expectTypeOf(graph).toMatchTypeOf<RuntimeObserverContract>()
+expectTypeOf(graphOptions).toMatchTypeOf<RuntimeGraphObserverOptions>()
 expectTypeOf<RecordedRuntimeObserverSnapshot['executionStarts']>().toEqualTypeOf<
   readonly RuntimeExecutionStartEvent[]
 >()
 expectTypeOf<RecordedRuntimeObserverSnapshot['timeline']>().toEqualTypeOf<
   readonly RuntimeObserverEvent[]
 >()
+expectTypeOf(graphSnapshot).toEqualTypeOf<RuntimeGraphSnapshot>()
+expectTypeOf<RuntimeGraphSnapshot['nodes']>().toEqualTypeOf<readonly RuntimeGraphNode[]>()
+expectTypeOf<RuntimeGraphSnapshot['edges']>().toEqualTypeOf<readonly RuntimeGraphEdge[]>()
 expectTypeOf(snapshot).toEqualTypeOf<RecordedRuntimeObserverSnapshot>()
 
 // @ts-expect-error recorded views are immutable
 snapshot.timeline.push({})
+// @ts-expect-error graph views are immutable
+graphSnapshot.nodes.push({ tag: 'x', resolutions: 0, acquisitions: 0, failures: 0 })

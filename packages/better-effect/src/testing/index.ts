@@ -20,4 +20,12 @@ export {
   type RuntimeObserverEvent
 } from './recorded-runtime-observer'
 
+export {
+  RuntimeGraphObserver,
+  type RuntimeGraphEdge,
+  type RuntimeGraphNode,
+  type RuntimeGraphObserverOptions,
+  type RuntimeGraphSnapshot
+} from './runtime-graph-observer'
+
 export { TestRuntime, TestRuntimeObserverError, type TestRuntimeOptions } from './test-runtime'
