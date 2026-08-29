@@ -567,6 +567,71 @@ describe('RecordedRuntimeObserver', () => {
     }
   })
 
+  test('snapshots collection names once before attaching metadata', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const child = Effect.fn(function* () {
+      yield* []
+      return Result.ok(true)
+    })
+    const makeOptions = (name: string) => {
+      let reads = 0
+      const options = Object.defineProperty({}, 'name', {
+        enumerable: true,
+        get: () => {
+          reads++
+          return reads === 1 ? name : 42
+        }
+      })
+
+      return { options, getReads: () => reads }
+    }
+    const allOptions = makeOptions('users.all')
+    const forEachOptions = makeOptions('users.each')
+    const allResultsOptions = makeOptions('users.results')
+    const all = Program.all([child], allOptions.options)
+    const forEach = Program.forEach([true], () => child, forEachOptions.options)
+    const allResults = Program.allResults([child], allResultsOptions.options)
+
+    try {
+      await runtime.run(all)
+      await runtime.run(forEach)
+      await runtime.run(allResults)
+
+      expect(allOptions.getReads()).toBe(1)
+      expect(forEachOptions.getReads()).toBe(1)
+      expect(allResultsOptions.getReads()).toBe(1)
+      expect(recorder.executionStarts.map((event) => event.name)).toEqual([
+        'users.all',
+        'users.each',
+        'users.results'
+      ])
+      expect(recorder.executionEnds.map((event) => event.name)).toEqual([
+        'users.all',
+        'users.each',
+        'users.results'
+      ])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('rejects non-string collection name accessors before attaching metadata', () => {
+    const child = Effect.fn(function* () {
+      yield* []
+      return Result.ok(true)
+    })
+    const makeOptions = () =>
+      Object.defineProperty({}, 'name', {
+        enumerable: true,
+        get: () => 42
+      })
+
+    expect(() => Program.all([child], makeOptions())).toThrow(TypeError)
+    expect(() => Program.forEach([true], () => child, makeOptions())).toThrow(TypeError)
+    expect(() => Program.allResults([child], makeOptions())).toThrow(TypeError)
+  })
+
   test('carries metadata through execution-local runWith Layers', async () => {
     const recorder = RecordedRuntimeObserver.make()
     const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })

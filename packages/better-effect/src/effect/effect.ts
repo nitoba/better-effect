@@ -240,13 +240,14 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
   options: ProgramAllOptions = {}
 ): ProgramAllResult<Programs> {
   const concurrency = options.concurrency
+  const name = options?.name
   validateProgramConcurrency(concurrency)
   const program = () =>
     runShortCircuitingCollection(programs.length, (index) => programs[index]!(), concurrency)
 
-  if (options.name !== undefined) {
-    validateProgramName(options.name)
-    setProgramName(program, options.name)
+  if (name !== undefined) {
+    validateProgramName(name)
+    setProgramName(program, name)
   }
 
   // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
@@ -260,6 +261,7 @@ export function programForEach<const Items extends readonly unknown[], Child ext
   options: ProgramAllOptions = {}
 ): ProgramForEachResult<Child> {
   const concurrency = options.concurrency
+  const name = options?.name
   validateProgramConcurrency(concurrency)
   const program = () =>
     runShortCircuitingCollection(
@@ -268,9 +270,9 @@ export function programForEach<const Items extends readonly unknown[], Child ext
       concurrency
     )
 
-  if (options.name !== undefined) {
-    validateProgramName(options.name)
-    setProgramName(program, options.name)
+  if (name !== undefined) {
+    validateProgramName(name)
+    setProgramName(program, name)
   }
 
   // SAFETY: Program channels are declaration-only and are restored from the factory's result type.
@@ -283,13 +285,14 @@ export function programAllResults<const Programs extends readonly AnyProgram[]>(
   options: ProgramAllOptions = {}
 ): ProgramAllResultsResult<Programs> {
   const concurrency = options.concurrency
+  const name = options?.name
   validateProgramConcurrency(concurrency)
   const program = () =>
     runAllResultsCollection(programs.length, (index) => programs[index]!(), concurrency)
 
-  if (options.name !== undefined) {
-    validateProgramName(options.name)
-    setProgramName(program, options.name)
+  if (name !== undefined) {
+    validateProgramName(name)
+    setProgramName(program, name)
   }
 
   // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
