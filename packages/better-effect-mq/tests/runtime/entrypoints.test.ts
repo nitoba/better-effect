@@ -5,9 +5,8 @@ import * as testing from '../../src/testing/index'
 
 const expectedCoreRuntimeExports = [
   'InvalidJobTransitionError',
-  'JobDecodeFailure',
+  'JobCodecFailure',
   'JobDefinitionError',
-  'JobEncodeFailure',
   'JobId',
   'JobName',
   'JobNotCancellableError',

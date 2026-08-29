@@ -160,7 +160,6 @@ export interface RecoverStalledCommand {
   readonly type: 'recover-stalled'
   readonly jobId: JobId
   readonly now: number
-  readonly maxStalledCount?: number
 }
 
 export type JobTransitionCommand =

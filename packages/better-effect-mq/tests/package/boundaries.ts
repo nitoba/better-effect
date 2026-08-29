@@ -22,9 +22,8 @@ type Entrypoint = 'core' | 'testing'
 
 const expectedCoreRuntimeExports = [
   'InvalidJobTransitionError',
-  'JobDecodeFailure',
+  'JobCodecFailure',
   'JobDefinitionError',
-  'JobEncodeFailure',
   'JobId',
   'JobName',
   'JobNotCancellableError',

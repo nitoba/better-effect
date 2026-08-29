@@ -1,6 +1,11 @@
 import { Result, type Result as ResultType } from 'better-result'
 
-import { cloneJsonValue, isJsonValue } from '../internal/json'
+import {
+  cloneJsonValue,
+  parseJsonValue,
+  readObjectFields,
+  type ParsedObjectFields
+} from '../internal/json'
 import {
   validateCounterValue,
   validateOptionalDurationValue,
@@ -16,7 +21,72 @@ import type { JobId, JobName, LeaseToken, QueueName, WorkerId } from './brands'
 import { validatePersistedBackoff } from './backoff'
 import { JobDefinitionError } from './errors'
 import { validateSerializedJobFailure } from './failures'
-import type { AttemptRecord, JobRecord, SerializedJobFailure } from './types'
+import type {
+  AttemptRecord,
+  JobRecord,
+  JsonObject,
+  JsonValue,
+  PersistedBackoff,
+  SerializedJobFailure
+} from './types'
+
+const jobRecordFields = [
+  'id',
+  'name',
+  'version',
+  'queue',
+  'state',
+  'payload',
+  'metadata',
+  'priority',
+  'runAt',
+  'orderingSequence',
+  'attemptsMax',
+  'attemptsMade',
+  'deliveryCount',
+  'stalledCount',
+  'backoff',
+  'timeoutMs',
+  'idempotencyKey',
+  'createdAt',
+  'updatedAt',
+  'processedAt',
+  'finishedAt',
+  'leaseOwner',
+  'leaseToken',
+  'leaseExpiresAt',
+  'cancellationRequestedAt',
+  'result',
+  'failure'
+] as const
+
+const attemptRecordFields = [
+  'attempt',
+  'delivery',
+  'startedAt',
+  'finishedAt',
+  'outcome',
+  'result',
+  'failure'
+] as const
+
+type MutableBackoffCopy = {
+  type: PersistedBackoff['type']
+  delayMs: number
+  maxDelayMs?: number
+}
+
+type MutableFailureCopy = {
+  kind: SerializedJobFailure['kind']
+  message: string
+  retryable: boolean
+  recordedAt: number
+  code?: string
+  data?: JsonValue
+}
+
+const isJsonObject = (value: JsonValue): value is JsonObject =>
+  value !== null && !Array.isArray(value)
 
 const invalidRecord = (field: string, message: string): ResultType<JobRecord, JobDefinitionError> =>
   Result.err(new JobDefinitionError({ field, message }))
@@ -28,7 +98,8 @@ const invalidAttempt = (
   Result.err(new JobDefinitionError({ field, message }))
 
 const validateFailure = (
-  failure: SerializedJobFailure | undefined
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- failure values are parsed immediately at this DTO boundary.
+  failure: unknown
 ): ResultType<SerializedJobFailure | undefined, JobDefinitionError> =>
   failure === undefined ? Result.ok(undefined) : validateSerializedJobFailure(failure)
 
@@ -36,7 +107,13 @@ const validateMetadata = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- metadata is decoded from untrusted persistence data.
   metadata: unknown
 ): ResultType<Readonly<Record<string, string>>, JobDefinitionError> => {
-  if (!isJsonValue(metadata) || metadata === null || Array.isArray(metadata)) {
+  const parsed = parseJsonValue(metadata, 'metadata')
+
+  if (Result.isError(parsed)) {
+    return Result.err(parsed.error)
+  }
+
+  if (!isJsonObject(parsed.value)) {
     return Result.err(
       new JobDefinitionError({ field: 'metadata', message: 'must be a JSON object' })
     )
@@ -44,7 +121,7 @@ const validateMetadata = (
 
   const safeMetadata: Record<string, string> = {}
 
-  for (const [key, value] of Object.entries(metadata)) {
+  for (const [key, value] of Object.entries(parsed.value)) {
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- metadata values must remain strings.
     if (typeof value !== 'string') {
       return Result.err(
@@ -63,48 +140,109 @@ const validateMetadata = (
   return Result.ok(Object.freeze(safeMetadata))
 }
 
-const isObjectRecord = (
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- records arrive from an untyped persistence boundary.
-  value: unknown
-): value is object => {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- reject non-object records before field validation.
-  return typeof value === 'object' && value !== null
+const cloneMetadata = (
+  metadata: Readonly<Record<string, string>>
+): Readonly<Record<string, string>> => {
+  const copy: Record<string, string> = {}
+
+  for (const [key, value] of Object.entries(metadata)) {
+    Object.defineProperty(copy, key, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true
+    })
+  }
+
+  return Object.freeze(copy)
 }
 
-const validateState = (
-  state: JobRecord['state']
-): ResultType<JobRecord['state'], JobDefinitionError> => {
-  switch (state) {
-    case 'waiting':
-    case 'delayed':
-    case 'active':
-    case 'completed':
-    case 'failed':
-    case 'cancelled':
-      return Result.ok(state)
-    default:
-      return Result.err(
-        new JobDefinitionError({ field: 'state', message: 'unsupported job state' })
-      )
+const cloneBackoff = (backoff: PersistedBackoff | undefined): PersistedBackoff | undefined => {
+  if (backoff === undefined) {
+    return undefined
   }
+
+  const copy: MutableBackoffCopy = {
+    type: backoff.type,
+    delayMs: backoff.delayMs
+  }
+
+  if (backoff.maxDelayMs !== undefined) {
+    copy.maxDelayMs = backoff.maxDelayMs
+  }
+
+  return Object.freeze(copy)
+}
+
+const cloneFailure = (
+  failure: SerializedJobFailure | undefined
+): SerializedJobFailure | undefined => {
+  if (failure === undefined) {
+    return undefined
+  }
+
+  const copy: MutableFailureCopy = {
+    kind: failure.kind,
+    message: failure.message,
+    retryable: failure.retryable,
+    recordedAt: failure.recordedAt
+  }
+
+  if (failure.code !== undefined) {
+    copy.code = failure.code
+  }
+
+  if (failure.data !== undefined) {
+    copy.data = cloneJsonValue(failure.data)
+  }
+
+  return Object.freeze(copy)
 }
 
 const freezeRecord = (record: JobRecord): JobRecord =>
   Object.freeze({
-    ...record,
-    metadata: Object.freeze({ ...record.metadata }),
+    id: record.id,
+    name: record.name,
+    version: record.version,
+    queue: record.queue,
+    state: record.state,
     payload: cloneJsonValue(record.payload),
-    backoff: record.backoff === undefined ? undefined : Object.freeze({ ...record.backoff }),
+    metadata: cloneMetadata(record.metadata),
+    priority: record.priority,
+    runAt: record.runAt,
+    orderingSequence: record.orderingSequence,
+    attemptsMax: record.attemptsMax,
+    attemptsMade: record.attemptsMade,
+    deliveryCount: record.deliveryCount,
+    stalledCount: record.stalledCount,
+    backoff: cloneBackoff(record.backoff),
+    timeoutMs: record.timeoutMs,
+    idempotencyKey: record.idempotencyKey,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    processedAt: record.processedAt,
+    finishedAt: record.finishedAt,
+    leaseOwner: record.leaseOwner,
+    leaseToken: record.leaseToken,
+    leaseExpiresAt: record.leaseExpiresAt,
+    cancellationRequestedAt: record.cancellationRequestedAt,
     result: record.result === undefined ? undefined : cloneJsonValue(record.result),
-    failure: record.failure === undefined ? undefined : Object.freeze({ ...record.failure })
+    failure: cloneFailure(record.failure)
   })
 
-const hasLease = (record: JobRecord): boolean =>
+const hasLease = (
+  record: Pick<JobRecord, 'leaseOwner' | 'leaseToken' | 'leaseExpiresAt'>
+): boolean =>
   record.leaseOwner !== undefined ||
   record.leaseToken !== undefined ||
   record.leaseExpiresAt !== undefined
 
-const validateLeaseConsistency = (record: JobRecord): ResultType<void, JobDefinitionError> => {
+const validateLeaseConsistency = (
+  record: Pick<
+    JobRecord,
+    'state' | 'leaseOwner' | 'leaseToken' | 'leaseExpiresAt' | 'cancellationRequestedAt'
+  >
+): ResultType<void, JobDefinitionError> => {
   const complete =
     record.leaseOwner !== undefined &&
     record.leaseToken !== undefined &&
@@ -140,8 +278,28 @@ const validateLeaseConsistency = (record: JobRecord): ResultType<void, JobDefini
   return Result.ok()
 }
 
+const validateState = (
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- state is decoded from untrusted persistence data.
+  state: unknown
+): ResultType<JobRecord['state'], JobDefinitionError> => {
+  switch (state) {
+    case 'waiting':
+    case 'delayed':
+    case 'active':
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return Result.ok(state)
+    default:
+      return Result.err(
+        new JobDefinitionError({ field: 'state', message: 'unsupported job state' })
+      )
+  }
+}
+
 const validateAttemptOutcome = (
-  outcome: AttemptRecord['outcome']
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- outcome is decoded from untrusted persistence data.
+  outcome: unknown
 ): ResultType<AttemptRecord['outcome'], JobDefinitionError> => {
   switch (outcome) {
     case 'completed':
@@ -158,15 +316,14 @@ const validateAttemptOutcome = (
   }
 }
 
-/** Validate a complete storage-neutral job snapshot and return an immutable copy. */
 const validateJobRecordInternal = (
-  record: JobRecord
+  fields: ParsedObjectFields
 ): ResultType<JobRecord, JobDefinitionError> => {
-  const id = makeJobId(record.id)
-  const name = makeJobName(record.name)
-  const queue = makeQueueName(record.queue)
-  const state = validateState(record.state)
-  const metadata = validateMetadata(record.metadata)
+  const id = makeJobId(fields.id)
+  const name = makeJobName(fields.name)
+  const queue = makeQueueName(fields.queue)
+  const state = validateState(fields.state)
+  const metadata = validateMetadata(fields.metadata)
 
   if (Result.isError(id)) return invalidRecord('id', id.error.message)
   if (Result.isError(name)) return invalidRecord('name', name.error.message)
@@ -175,107 +332,132 @@ const validateJobRecordInternal = (
   if (Result.isError(metadata)) return invalidRecord('metadata', metadata.error.message)
 
   const leaseOwner =
-    record.leaseOwner === undefined
+    fields.leaseOwner === undefined
       ? Result.ok<WorkerId | undefined>(undefined)
-      : makeWorkerId(record.leaseOwner)
+      : makeWorkerId(fields.leaseOwner)
   const leaseToken =
-    record.leaseToken === undefined
+    fields.leaseToken === undefined
       ? Result.ok<LeaseToken | undefined>(undefined)
-      : makeLeaseToken(record.leaseToken)
+      : makeLeaseToken(fields.leaseToken)
 
   if (Result.isError(leaseOwner)) return invalidRecord('leaseOwner', leaseOwner.error.message)
   if (Result.isError(leaseToken)) return invalidRecord('leaseToken', leaseToken.error.message)
 
-  const version = validateCounterValue(record.version, 'version')
-  const priority = validatePriorityValue(record.priority, 'priority')
-  const runAt = validateTimestampValue(record.runAt, 'runAt')
-  const orderingSequence = validateCounterValue(record.orderingSequence, 'orderingSequence')
-  const attemptsMax = validatePositiveIntegerValue(record.attemptsMax, 'attemptsMax')
-  const attemptsMade = validateCounterValue(record.attemptsMade, 'attemptsMade')
-  const deliveryCount = validateCounterValue(record.deliveryCount, 'deliveryCount')
-  const stalledCount = validateCounterValue(record.stalledCount, 'stalledCount')
-  const createdAt = validateTimestampValue(record.createdAt, 'createdAt')
-  const updatedAt = validateTimestampValue(record.updatedAt, 'updatedAt')
-
-  const numericChecks = [
-    version,
-    priority,
-    runAt,
-    orderingSequence,
-    attemptsMax,
-    attemptsMade,
-    deliveryCount,
-    stalledCount,
-    createdAt,
-    updatedAt
-  ]
-
-  for (const check of numericChecks) {
-    if (Result.isError(check)) {
-      return invalidRecord(check.error.field, check.error.message)
-    }
+  const version = validateCounterValue(fields.version, 'version')
+  const priority = validatePriorityValue(fields.priority, 'priority')
+  const runAt = validateTimestampValue(fields.runAt, 'runAt')
+  const orderingSequence = validateCounterValue(fields.orderingSequence, 'orderingSequence')
+  const attemptsMax = validatePositiveIntegerValue(fields.attemptsMax, 'attemptsMax')
+  const attemptsMade = validateCounterValue(fields.attemptsMade, 'attemptsMade')
+  const deliveryCount = validateCounterValue(fields.deliveryCount, 'deliveryCount')
+  const stalledCount = validateCounterValue(fields.stalledCount, 'stalledCount')
+  const createdAt = validateTimestampValue(fields.createdAt, 'createdAt')
+  const updatedAt = validateTimestampValue(fields.updatedAt, 'updatedAt')
+  if (Result.isError(version)) return invalidRecord(version.error.field, version.error.message)
+  if (Result.isError(priority)) return invalidRecord(priority.error.field, priority.error.message)
+  if (Result.isError(runAt)) return invalidRecord(runAt.error.field, runAt.error.message)
+  if (Result.isError(orderingSequence)) {
+    return invalidRecord(orderingSequence.error.field, orderingSequence.error.message)
   }
-
-  if (record.attemptsMade > record.attemptsMax) {
-    return invalidRecord('attemptsMade', 'must not exceed attemptsMax')
+  if (Result.isError(attemptsMax)) {
+    return invalidRecord(attemptsMax.error.field, attemptsMax.error.message)
   }
+  if (Result.isError(attemptsMade)) {
+    return invalidRecord(attemptsMade.error.field, attemptsMade.error.message)
+  }
+  if (Result.isError(deliveryCount)) {
+    return invalidRecord(deliveryCount.error.field, deliveryCount.error.message)
+  }
+  if (Result.isError(stalledCount)) {
+    return invalidRecord(stalledCount.error.field, stalledCount.error.message)
+  }
+  if (Result.isError(createdAt))
+    return invalidRecord(createdAt.error.field, createdAt.error.message)
+  if (Result.isError(updatedAt))
+    return invalidRecord(updatedAt.error.field, updatedAt.error.message)
 
-  if (record.updatedAt < record.createdAt) {
+  if (updatedAt.value < createdAt.value) {
     return invalidRecord('updatedAt', 'must not be earlier than createdAt')
   }
 
   const idempotencyKey =
-    record.idempotencyKey === undefined
+    fields.idempotencyKey === undefined
       ? Result.ok<string | undefined>(undefined)
-      : validateTextValue(record.idempotencyKey, 'idempotencyKey')
-  const timeout = validateOptionalDurationValue(record.timeoutMs, 'timeoutMs')
-  const processedAt = validateOptionalTimestampValue(record.processedAt, 'processedAt')
-  const finishedAt = validateOptionalTimestampValue(record.finishedAt, 'finishedAt')
+      : validateTextValue(fields.idempotencyKey, 'idempotencyKey')
+  const timeout = validateOptionalDurationValue(fields.timeoutMs, 'timeoutMs')
+  const processedAt = validateOptionalTimestampValue(fields.processedAt, 'processedAt')
+  const finishedAt = validateOptionalTimestampValue(fields.finishedAt, 'finishedAt')
   const cancellationRequestedAt = validateOptionalTimestampValue(
-    record.cancellationRequestedAt,
+    fields.cancellationRequestedAt,
     'cancellationRequestedAt'
   )
-  const leaseExpiresAt = validateOptionalTimestampValue(record.leaseExpiresAt, 'leaseExpiresAt')
+  const leaseExpiresAt = validateOptionalTimestampValue(fields.leaseExpiresAt, 'leaseExpiresAt')
 
   if (Result.isError(idempotencyKey)) {
     return invalidRecord('idempotencyKey', idempotencyKey.error.message)
   }
 
-  for (const check of [timeout, processedAt, finishedAt, cancellationRequestedAt, leaseExpiresAt]) {
-    if (Result.isError(check)) {
-      return invalidRecord(check.error.field, check.error.message)
-    }
+  if (Result.isError(timeout)) return invalidRecord(timeout.error.field, timeout.error.message)
+  if (Result.isError(processedAt)) {
+    return invalidRecord(processedAt.error.field, processedAt.error.message)
+  }
+  if (Result.isError(finishedAt)) {
+    return invalidRecord(finishedAt.error.field, finishedAt.error.message)
+  }
+  if (Result.isError(cancellationRequestedAt)) {
+    return invalidRecord(cancellationRequestedAt.error.field, cancellationRequestedAt.error.message)
+  }
+  if (Result.isError(leaseExpiresAt)) {
+    return invalidRecord(leaseExpiresAt.error.field, leaseExpiresAt.error.message)
   }
 
   if (
-    record.cancellationRequestedAt !== undefined &&
-    record.cancellationRequestedAt > record.updatedAt
+    cancellationRequestedAt.value !== undefined &&
+    cancellationRequestedAt.value > updatedAt.value
   ) {
     return invalidRecord('cancellationRequestedAt', 'must not be later than updatedAt')
   }
 
-  const leaseConsistency = validateLeaseConsistency(record)
+  const leaseConsistency = validateLeaseConsistency({
+    state: state.value,
+    leaseOwner: leaseOwner.value,
+    leaseToken: leaseToken.value,
+    leaseExpiresAt: leaseExpiresAt.value,
+    cancellationRequestedAt: cancellationRequestedAt.value
+  })
 
   if (Result.isError(leaseConsistency)) {
     return invalidRecord(leaseConsistency.error.field, leaseConsistency.error.message)
   }
 
-  if (!isJsonValue(record.payload)) {
-    return invalidRecord('payload', 'must be JSON-safe')
-  }
+  const payload = parseJsonValue(fields.payload, 'payload')
+  const result =
+    fields.result === undefined
+      ? Result.ok<JsonValue | undefined>(undefined)
+      : parseJsonValue(fields.result, 'result')
 
-  if (record.result !== undefined && !isJsonValue(record.result)) {
-    return invalidRecord('result', 'must be JSON-safe')
-  }
+  if (Result.isError(payload)) return invalidRecord(payload.error.field, payload.error.message)
+  if (Result.isError(result)) return invalidRecord(result.error.field, result.error.message)
 
-  const failure = validateFailure(record.failure)
+  const failure = validateFailure(fields.failure)
 
   if (Result.isError(failure)) {
     return invalidRecord(failure.error.field, failure.error.message)
   }
 
+  const cancellationOverflow =
+    state.value === 'cancelled' &&
+    attemptsMax.value < Number.MAX_SAFE_INTEGER &&
+    attemptsMade.value === attemptsMax.value + 1
+
+  if (attemptsMade.value > attemptsMax.value && !cancellationOverflow) {
+    return invalidRecord('attemptsMade', 'must not exceed attemptsMax')
+  }
+
   const backoff =
-    record.backoff === undefined ? Result.ok(undefined) : validatePersistedBackoff(record.backoff)
+    fields.backoff === undefined
+      ? Result.ok<PersistedBackoff | undefined>(undefined)
+      : validatePersistedBackoff(fields.backoff)
 
   if (Result.isError(backoff)) {
     return invalidRecord(backoff.error.field, backoff.error.message)
@@ -283,70 +465,103 @@ const validateJobRecordInternal = (
 
   return Result.ok(
     freezeRecord({
-      ...record,
       id: id.value,
       name: name.value,
+      version: version.value,
       queue: queue.value,
+      state: state.value,
+      payload: payload.value,
       metadata: metadata.value,
+      priority: priority.value,
+      runAt: runAt.value,
+      orderingSequence: orderingSequence.value,
+      attemptsMax: attemptsMax.value,
+      attemptsMade: attemptsMade.value,
+      deliveryCount: deliveryCount.value,
+      stalledCount: stalledCount.value,
+      backoff: backoff.value,
+      timeoutMs: timeout.value,
       idempotencyKey: idempotencyKey.value,
+      createdAt: createdAt.value,
+      updatedAt: updatedAt.value,
+      processedAt: processedAt.value,
+      finishedAt: finishedAt.value,
       leaseOwner: leaseOwner.value,
       leaseToken: leaseToken.value,
-      backoff: backoff.value,
+      leaseExpiresAt: leaseExpiresAt.value,
+      cancellationRequestedAt: cancellationRequestedAt.value,
+      result: result.value,
       failure: failure.value
     })
   )
 }
 
+/** Validate a complete storage-neutral job snapshot and return an immutable copy. */
 export const validateJobRecord = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- records arrive from an untyped persistence boundary.
   record: unknown
 ): ResultType<JobRecord, JobDefinitionError> => {
-  if (!isObjectRecord(record)) {
-    return invalidRecord('record', 'must be an object')
+  const fields = readObjectFields(record, jobRecordFields, 'record')
+
+  if (Result.isError(fields)) {
+    return Result.err(fields.error)
   }
 
-  // SAFETY: the internal validator checks every required field before returning a JobRecord.
-  return validateJobRecordInternal(record as JobRecord)
+  return validateJobRecordInternal(fields.value)
 }
 
 export const makeJobRecord = validateJobRecord
 
 const freezeAttempt = (attempt: AttemptRecord): AttemptRecord =>
   Object.freeze({
-    ...attempt,
+    attempt: attempt.attempt,
+    delivery: attempt.delivery,
+    startedAt: attempt.startedAt,
+    finishedAt: attempt.finishedAt,
+    outcome: attempt.outcome,
     result: attempt.result === undefined ? undefined : cloneJsonValue(attempt.result),
-    failure: attempt.failure === undefined ? undefined : Object.freeze({ ...attempt.failure })
+    failure: cloneFailure(attempt.failure)
   })
 
-/** Validate an attempt ledger entry without changing its storage representation. */
+/** Validate an attempt ledger entry and return an immutable canonical copy. */
 const validateAttemptRecordInternal = (
-  attempt: AttemptRecord
+  fields: ParsedObjectFields
 ): ResultType<AttemptRecord, JobDefinitionError> => {
-  const attemptNumber = validateCounterValue(attempt.attempt, 'attempt')
-  const delivery = validatePositiveIntegerValue(attempt.delivery, 'delivery')
-  const finishedAt = validateTimestampValue(attempt.finishedAt, 'finishedAt')
-  const startedAt = validateOptionalTimestampValue(attempt.startedAt, 'startedAt')
-  const outcome = validateAttemptOutcome(attempt.outcome)
+  const attemptNumber = validateCounterValue(fields.attempt, 'attempt')
+  const delivery = validatePositiveIntegerValue(fields.delivery, 'delivery')
+  const finishedAt = validateTimestampValue(fields.finishedAt, 'finishedAt')
+  const startedAt = validateOptionalTimestampValue(fields.startedAt, 'startedAt')
+  const outcome = validateAttemptOutcome(fields.outcome)
 
-  for (const check of [attemptNumber, delivery, finishedAt, startedAt]) {
-    if (Result.isError(check)) {
-      return invalidAttempt(check.error.field, check.error.message)
-    }
+  if (Result.isError(attemptNumber)) {
+    return invalidAttempt(attemptNumber.error.field, attemptNumber.error.message)
+  }
+  if (Result.isError(delivery)) return invalidAttempt(delivery.error.field, delivery.error.message)
+  if (Result.isError(finishedAt)) {
+    return invalidAttempt(finishedAt.error.field, finishedAt.error.message)
+  }
+  if (Result.isError(startedAt)) {
+    return invalidAttempt(startedAt.error.field, startedAt.error.message)
   }
 
   if (Result.isError(outcome)) {
     return invalidAttempt(outcome.error.field, outcome.error.message)
   }
 
-  if (attempt.startedAt !== undefined && attempt.startedAt > attempt.finishedAt) {
+  if (startedAt.value !== undefined && startedAt.value > finishedAt.value) {
     return invalidAttempt('startedAt', 'must not be later than finishedAt')
   }
 
-  if (attempt.result !== undefined && !isJsonValue(attempt.result)) {
-    return invalidAttempt('result', 'must be JSON-safe')
+  const result =
+    fields.result === undefined
+      ? Result.ok<JsonValue | undefined>(undefined)
+      : parseJsonValue(fields.result, 'result')
+
+  if (Result.isError(result)) {
+    return invalidAttempt(result.error.field, result.error.message)
   }
 
-  const failure = validateFailure(attempt.failure)
+  const failure = validateFailure(fields.failure)
 
   if (Result.isError(failure)) {
     return invalidAttempt(failure.error.field, failure.error.message)
@@ -354,8 +569,12 @@ const validateAttemptRecordInternal = (
 
   return Result.ok(
     freezeAttempt({
-      ...attempt,
+      attempt: attemptNumber.value,
+      delivery: delivery.value,
+      startedAt: startedAt.value,
+      finishedAt: finishedAt.value,
       outcome: outcome.value,
+      result: result.value,
       failure: failure.value
     })
   )
@@ -365,12 +584,13 @@ export const validateAttemptRecord = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- attempts arrive from an untyped persistence boundary.
   attempt: unknown
 ): ResultType<AttemptRecord, JobDefinitionError> => {
-  if (!isObjectRecord(attempt)) {
-    return invalidAttempt('attempt', 'must be an object')
+  const fields = readObjectFields(attempt, attemptRecordFields, 'attempt')
+
+  if (Result.isError(fields)) {
+    return Result.err(fields.error)
   }
 
-  // SAFETY: the internal validator checks every required field before returning an AttemptRecord.
-  return validateAttemptRecordInternal(attempt as AttemptRecord)
+  return validateAttemptRecordInternal(fields.value)
 }
 
 export type JobIdentityRecord = {

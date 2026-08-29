@@ -147,23 +147,15 @@ const failureIsExhaustive = (kind: JobFailureKind): string => {
   }
 }
 
-const codecIsExhaustive = (failure: JobCodecFailure): string => {
-  switch (failure._tag) {
-    case 'JobEncodeFailure':
-      return failure.message
-    case 'JobDecodeFailure':
-      return failure.message
-    default: {
-      const exhaustive: never = failure
-      return exhaustive
-    }
-  }
+const codecFailureIsTagged = (failure: JobCodecFailure): string => {
+  expectTypeOf(failure._tag).toEqualTypeOf<'JobCodecFailure'>()
+  return failure.message
 }
 
 expectTypeOf(stateIsExhaustive).returns.toEqualTypeOf<string>()
 expectTypeOf(attemptIsExhaustive).returns.toEqualTypeOf<string>()
 expectTypeOf(failureIsExhaustive).returns.toEqualTypeOf<string>()
-expectTypeOf(codecIsExhaustive).returns.toEqualTypeOf<string>()
+expectTypeOf(codecFailureIsTagged).returns.toEqualTypeOf<string>()
 
 void invalidJobId
 void invalidQueue

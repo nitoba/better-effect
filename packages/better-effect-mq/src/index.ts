@@ -14,9 +14,8 @@ export const WorkerId = WorkerIdFactory
 
 export {
   InvalidJobTransitionError,
-  JobDecodeFailure,
+  JobCodecFailure,
   JobDefinitionError,
-  JobEncodeFailure,
   JobNotCancellableError,
   JobNotFoundError,
   JobNotPromotableError,
@@ -68,8 +67,6 @@ export type {
   ClaimCommand,
   CompleteOutcome,
   FailOutcome,
-  JobCodecFailure,
-  JobCodecIssue,
   JobFailureKind,
   JobIdentityRecord,
   JobRecord,

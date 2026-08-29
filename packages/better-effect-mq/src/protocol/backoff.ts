@@ -1,8 +1,12 @@
 import { Result, type Result as ResultType } from 'better-result'
 
+import { readObjectFields } from '../internal/json'
+
 import { JobDefinitionError } from './errors'
 import type { BackoffKind, PersistedBackoff } from './types'
 import { validateDuration, validateOptionalDuration } from './time'
+
+const backoffFields = ['type', 'delayMs', 'maxDelayMs'] as const
 
 const invalidBackoff = (message: string): ResultType<PersistedBackoff, JobDefinitionError> =>
   Result.err(new JobDefinitionError({ field: 'backoff', message }))
@@ -18,33 +22,28 @@ const isBackoffKind = (
   value: unknown
 ): value is BackoffKind => value === 'constant' || value === 'linear' || value === 'exponential'
 
-/** Validate the storage representation of a retry backoff without calculating delays. */
+/** Validate and snapshot the storage representation of a retry backoff. */
 export const makePersistedBackoff = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- backoffs are decoded from untrusted persistence data.
   backoff: unknown
 ): ResultType<PersistedBackoff, JobDefinitionError> => {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- reject primitive and null backoff values before reading fields.
-  if (typeof backoff !== 'object' || backoff === null || !('type' in backoff)) {
-    return invalidBackoff('must be an object')
+  const fields = readObjectFields(backoff, backoffFields, 'backoff')
+
+  if (Result.isError(fields)) {
+    return Result.err(fields.error)
   }
 
-  if (!isBackoffKind(backoff.type)) {
+  if (!isBackoffKind(fields.value.type)) {
     return invalidBackoff('type is not a supported backoff kind')
   }
 
-  const delay = validateDuration(
-    'delayMs' in backoff ? backoff.delayMs : undefined,
-    'backoff.delayMs'
-  )
+  const delay = validateDuration(fields.value.delayMs, 'backoff.delayMs')
 
   if (Result.isError(delay)) {
     return Result.err(delay.error)
   }
 
-  const maximum = validateOptionalDuration(
-    'maxDelayMs' in backoff ? backoff.maxDelayMs : undefined,
-    'backoff.maxDelayMs'
-  )
+  const maximum = validateOptionalDuration(fields.value.maxDelayMs, 'backoff.maxDelayMs')
 
   if (Result.isError(maximum)) {
     return Result.err(maximum.error)
@@ -55,7 +54,7 @@ export const makePersistedBackoff = (
   }
 
   const safeBackoff: MutablePersistedBackoff = {
-    type: backoff.type,
+    type: fields.value.type,
     delayMs: delay.value
   }
 

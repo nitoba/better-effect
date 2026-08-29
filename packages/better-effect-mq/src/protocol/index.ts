@@ -3,9 +3,8 @@ export { makeJobId, makeJobName, makeLeaseToken, makeQueueName, makeWorkerId } f
 
 export {
   InvalidJobTransitionError,
-  JobDecodeFailure,
+  JobCodecFailure,
   JobDefinitionError,
-  JobEncodeFailure,
   JobNotCancellableError,
   JobNotFoundError,
   JobNotPromotableError,
@@ -14,7 +13,7 @@ export {
   LeaseLostError,
   UnsupportedJobStoreOperationError
 } from './errors'
-export type { JobCodecFailure, JobCodecIssue, LeaseLossReason } from './errors'
+export type { LeaseLossReason } from './errors'
 
 export {
   makePersistedJobFailure,

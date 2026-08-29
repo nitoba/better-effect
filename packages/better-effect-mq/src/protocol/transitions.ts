@@ -1,11 +1,7 @@
 import { Result, type Result as ResultType } from 'better-result'
 
-import { cloneJsonValue, isJsonValue } from '../internal/json'
-import {
-  validateCounterValue,
-  validateOptionalTimestampValue,
-  validateTimestampValue
-} from '../internal/validation'
+import { cloneJsonValue, parseJsonValue } from '../internal/json'
+import { validateOptionalTimestampValue, validateTimestampValue } from '../internal/validation'
 
 import { makeJobId, makeLeaseToken, makeWorkerId } from './brands'
 import type { JobId, LeaseToken } from './brands'
@@ -27,6 +23,7 @@ import type {
   JobRecord,
   JobTransition,
   JobTransitionCommand,
+  JsonValue,
   PromoteCommand,
   RecoverStalledCommand,
   RedriveCommand,
@@ -115,23 +112,20 @@ const prepareNow = (
   return prepared
 }
 
-const freezeRecord = (record: JobRecord): JobRecord =>
-  Object.freeze({
-    ...record,
-    metadata: Object.freeze({ ...record.metadata }),
-    payload: cloneJsonValue(record.payload),
-    backoff: record.backoff === undefined ? undefined : Object.freeze({ ...record.backoff }),
-    result: record.result === undefined ? undefined : cloneJsonValue(record.result),
-    failure: record.failure === undefined ? undefined : Object.freeze({ ...record.failure })
-  })
+const transition = (record: JobRecord, attempt?: AttemptRecord): TransitionResult => {
+  const checked = validateJobRecord(record)
 
-const transition = (record: JobRecord, attempt?: AttemptRecord): TransitionResult =>
-  Result.ok(
+  if (Result.isError(checked)) {
+    return Result.err(checked.error)
+  }
+
+  return Result.ok(
     Object.freeze({
-      record: freezeRecord(record),
+      record: checked.value,
       attempt
     })
   )
+}
 
 const recordOnly = (result: TransitionResult): RecordResult => result.map((value) => value.record)
 
@@ -223,7 +217,8 @@ const validateOutcomeFailure = (
 }
 
 const nextAttemptNumber = (
-  record: JobRecord
+  record: JobRecord,
+  allowCancellationOverflow = false
 ): ResultType<number, JobNotRetryableError | JobDefinitionError> => {
   const next = record.attemptsMade + 1
 
@@ -233,7 +228,7 @@ const nextAttemptNumber = (
     )
   }
 
-  if (next > record.attemptsMax) {
+  if (!allowCancellationOverflow && next > record.attemptsMax) {
     return Result.err(
       new JobNotRetryableError({
         jobId: record.id,
@@ -245,6 +240,16 @@ const nextAttemptNumber = (
 
   return Result.ok(next)
 }
+
+const makeCancellationFailure = (
+  now: number
+): ResultType<SerializedJobFailure, JobTransitionFailure> =>
+  makeSerializedJobFailure({
+    kind: 'cancelled',
+    message: 'Cancellation was requested before the active job was settled',
+    retryable: false,
+    recordedAt: now
+  })
 
 const makeAttempt = (
   record: JobRecord,
@@ -275,8 +280,13 @@ const settleComplete = (
     return Result.err(invalidFor(record, 'settle', 'Expected a complete outcome'))
   }
 
-  if (command.outcome.result !== undefined && !isJsonValue(command.outcome.result)) {
-    return Result.err(new JobDefinitionError({ field: 'result', message: 'must be JSON-safe' }))
+  const result =
+    command.outcome.result === undefined
+      ? Result.ok<JsonValue | undefined>(undefined)
+      : parseJsonValue(command.outcome.result, 'result')
+
+  if (Result.isError(result)) {
+    return Result.err(result.error)
   }
 
   const next: JobRecord = {
@@ -288,13 +298,13 @@ const settleComplete = (
     finishedAt: command.now,
     ...clearLease(),
     cancellationRequestedAt: undefined,
-    result: command.outcome.result,
+    result: result.value,
     failure: undefined
   }
 
   return transition(
     next,
-    makeAttempt(record, command, 'completed', attempt, undefined, command.outcome.result, startedAt)
+    makeAttempt(record, command, 'completed', attempt, undefined, result.value, startedAt)
   )
 }
 
@@ -388,13 +398,35 @@ const settleFail = (
 const settleCancelled = (
   record: JobRecord,
   command: SettleCommand,
+  attempt: number,
+  failure: SerializedJobFailure | undefined,
   startedAt: number | undefined
 ): TransitionResult => {
-  if (command.outcome.type !== 'cancelled') {
-    return Result.err(invalidFor(record, 'settle', 'Expected a cancelled outcome'))
+  const next: JobRecord = {
+    ...record,
+    state: 'cancelled',
+    attemptsMade: attempt,
+    updatedAt: command.now,
+    processedAt: command.now,
+    finishedAt: command.now,
+    ...clearLease(),
+    cancellationRequestedAt: undefined,
+    result: undefined,
+    failure
   }
 
-  const failure = validateOutcomeFailure(command.outcome.failure)
+  return transition(
+    next,
+    makeAttempt(record, command, 'cancelled', attempt, failure, undefined, startedAt)
+  )
+}
+
+const terminalCancelWithoutHandler = (
+  record: JobRecord,
+  now: number,
+  stalledCount = record.stalledCount
+): TransitionResult => {
+  const failure = makeCancellationFailure(now)
 
   if (Result.isError(failure)) {
     return Result.err(failure.error)
@@ -403,27 +435,26 @@ const settleCancelled = (
   const next: JobRecord = {
     ...record,
     state: 'cancelled',
-    updatedAt: command.now,
-    processedAt: command.now,
-    finishedAt: command.now,
+    stalledCount,
+    updatedAt: now,
+    processedAt: now,
+    finishedAt: now,
     ...clearLease(),
     cancellationRequestedAt: undefined,
     result: undefined,
     failure: failure.value
   }
+  const attempt: AttemptRecord = Object.freeze({
+    attempt: record.attemptsMade,
+    delivery: record.deliveryCount,
+    startedAt: undefined,
+    finishedAt: now,
+    outcome: 'cancelled',
+    result: undefined,
+    failure: failure.value
+  })
 
-  return transition(
-    next,
-    makeAttempt(
-      record,
-      command,
-      'cancelled',
-      record.attemptsMade,
-      failure.value,
-      undefined,
-      startedAt
-    )
-  )
+  return transition(next, attempt)
 }
 
 const settle = (record: JobRecord, command: SettleCommand): TransitionResult => {
@@ -457,14 +488,45 @@ const settle = (record: JobRecord, command: SettleCommand): TransitionResult => 
       )
   }
 
-  if (command.outcome.type === 'cancelled') {
-    return settleCancelled(prepared.value, command, startedAt.value)
-  }
-
-  const attempt = nextAttemptNumber(prepared.value)
+  const cancellationRequested = prepared.value.cancellationRequestedAt !== undefined
+  const isCancellationSettlement = cancellationRequested || command.outcome.type === 'cancelled'
+  const attempt = nextAttemptNumber(prepared.value, isCancellationSettlement)
 
   if (Result.isError(attempt)) {
     return Result.err(attempt.error)
+  }
+
+  if (cancellationRequested && command.outcome.type !== 'cancelled') {
+    const failure = makeCancellationFailure(command.now)
+
+    if (Result.isError(failure)) {
+      return Result.err(failure.error)
+    }
+
+    return settleCancelled(prepared.value, command, attempt.value, failure.value, startedAt.value)
+  }
+
+  if (command.outcome.type === 'cancelled') {
+    const failure = validateOutcomeFailure(command.outcome.failure)
+
+    if (Result.isError(failure)) {
+      return Result.err(failure.error)
+    }
+
+    const cancellationFailure =
+      failure.value === undefined ? makeCancellationFailure(command.now) : Result.ok(failure.value)
+
+    if (Result.isError(cancellationFailure)) {
+      return Result.err(cancellationFailure.error)
+    }
+
+    return settleCancelled(
+      prepared.value,
+      command,
+      attempt.value,
+      cancellationFailure.value,
+      startedAt.value
+    )
   }
 
   switch (command.outcome.type) {
@@ -568,6 +630,10 @@ const release = (record: JobRecord, command: ReleaseCommand): TransitionResult =
 
   if (Result.isError(fenced)) {
     return Result.err(fenced.error)
+  }
+
+  if (prepared.value.cancellationRequestedAt !== undefined) {
+    return terminalCancelWithoutHandler(prepared.value, command.now)
   }
 
   const next: JobRecord = {
@@ -745,31 +811,16 @@ const recoverStalled = (record: JobRecord, command: RecoverStalledCommand): Tran
     )
   }
 
-  const maximum =
-    command.maxStalledCount === undefined
-      ? Result.ok<number | undefined>(undefined)
-      : validateCounterValue(command.maxStalledCount, 'maxStalledCount')
-
-  if (Result.isError(maximum)) {
-    return Result.err(maximum.error)
-  }
-
-  if (maximum.value !== undefined && prepared.value.stalledCount >= maximum.value) {
-    return Result.err(
-      new JobNotRetryableError({
-        jobId: prepared.value.id,
-        state: prepared.value.state,
-        message: 'stalled recovery budget is exhausted'
-      })
-    )
-  }
-
   const stalledCount = prepared.value.stalledCount + 1
 
   if (!Number.isSafeInteger(stalledCount)) {
     return Result.err(
       new JobDefinitionError({ field: 'stalledCount', message: 'cannot exceed safe integer range' })
     )
+  }
+
+  if (prepared.value.cancellationRequestedAt !== undefined) {
+    return terminalCancelWithoutHandler(prepared.value, command.now, stalledCount)
   }
 
   const failure = makeSerializedJobFailure({
@@ -812,28 +863,34 @@ const recoverStalled = (record: JobRecord, command: RecoverStalledCommand): Tran
 
 /** Apply a validated command immutably and optionally return its ledger entry. */
 export const reduceJob = (record: JobRecord, command: JobTransitionCommand): TransitionResult => {
-  switch (command.type) {
-    case 'claim':
-      return claim(record, command)
-    case 'settle':
-      return settle(record, command)
-    case 'release':
-      return release(record, command)
-    case 'request-cancellation':
-      return requestCancellation(record, command)
-    case 'cancel':
-      return cancel(record, command)
-    case 'promote':
-      return promote(record, command)
-    case 'redrive':
-      return redrive(record, command)
-    case 'recover-stalled':
-      return recoverStalled(record, command)
+  try {
+    switch (command.type) {
+      case 'claim':
+        return claim(record, command)
+      case 'settle':
+        return settle(record, command)
+      case 'release':
+        return release(record, command)
+      case 'request-cancellation':
+        return requestCancellation(record, command)
+      case 'cancel':
+        return cancel(record, command)
+      case 'promote':
+        return promote(record, command)
+      case 'redrive':
+        return redrive(record, command)
+      case 'recover-stalled':
+        return recoverStalled(record, command)
+      default:
+        return Result.err(
+          new JobDefinitionError({ field: 'command', message: 'unsupported transition command' })
+        )
+    }
+  } catch {
+    return Result.err(
+      new JobDefinitionError({ field: 'command', message: 'could not read transition command' })
+    )
   }
-
-  return Result.err(
-    new JobDefinitionError({ field: 'command', message: 'unsupported transition command' })
-  )
 }
 
 /** Apply a command when only the new job snapshot is needed. */
@@ -841,29 +898,29 @@ export const transitionJob = (record: JobRecord, command: JobTransitionCommand):
   recordOnly(reduceJob(record, command))
 
 export const claimJob = (record: JobRecord, command: ClaimCommand): RecordResult =>
-  recordOnly(claim(record, command))
+  recordOnly(reduceJob(record, command))
 
 export const settleJob = (record: JobRecord, command: SettleCommand): RecordResult =>
-  recordOnly(settle(record, command))
+  recordOnly(reduceJob(record, command))
 
 export const releaseJob = (record: JobRecord, command: ReleaseCommand): RecordResult =>
-  recordOnly(release(record, command))
+  recordOnly(reduceJob(record, command))
 
 export const requestJobCancellation = (
   record: JobRecord,
   command: RequestCancellationCommand
-): RecordResult => recordOnly(requestCancellation(record, command))
+): RecordResult => recordOnly(reduceJob(record, command))
 
 export const cancelJob = (record: JobRecord, command: CancelCommand): RecordResult =>
-  recordOnly(cancel(record, command))
+  recordOnly(reduceJob(record, command))
 
 export const promoteJob = (record: JobRecord, command: PromoteCommand): RecordResult =>
-  recordOnly(promote(record, command))
+  recordOnly(reduceJob(record, command))
 
 export const redriveJob = (record: JobRecord, command: RedriveCommand): RecordResult =>
-  recordOnly(redrive(record, command))
+  recordOnly(reduceJob(record, command))
 
 export const recoverStalledJob = (
   record: JobRecord,
   command: RecoverStalledCommand
-): RecordResult => recordOnly(recoverStalled(record, command))
+): RecordResult => recordOnly(reduceJob(record, command))

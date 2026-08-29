@@ -140,50 +140,14 @@ export class InvalidJobTransitionError extends TaggedError('InvalidJobTransition
   }
 }
 
-export interface JobCodecIssue {
+/** The single codec error placeholder exposed by the v0.1 protocol. */
+export class JobCodecFailure extends TaggedError('JobCodecFailure')<{
   readonly message: string
-  readonly path?: readonly string[]
-  readonly code?: string
-}
-
-export class JobEncodeFailure extends TaggedError('JobEncodeFailure')<{
-  readonly message: string
-  readonly path: readonly string[] | undefined
-  readonly issues: readonly JobCodecIssue[] | undefined
 }> {
-  constructor(args: {
-    readonly message?: string
-    readonly path?: readonly string[]
-    readonly issues?: readonly JobCodecIssue[]
-  }) {
-    super({
-      message: messageOr(args.message, 'Job value could not be encoded'),
-      path: args.path,
-      issues: args.issues
-    })
+  constructor(args: { readonly message?: string } = {}) {
+    super({ message: messageOr(args.message, 'Job codec operation failed') })
   }
 }
-
-export class JobDecodeFailure extends TaggedError('JobDecodeFailure')<{
-  readonly message: string
-  readonly path: readonly string[] | undefined
-  readonly issues: readonly JobCodecIssue[] | undefined
-}> {
-  constructor(args: {
-    readonly message?: string
-    readonly path?: readonly string[]
-    readonly issues?: readonly JobCodecIssue[]
-  }) {
-    super({
-      message: messageOr(args.message, 'Persisted job value could not be decoded'),
-      path: args.path,
-      issues: args.issues
-    })
-  }
-}
-
-/** The codec-related error union reserved for the later Codec API. */
-export type JobCodecFailure = JobEncodeFailure | JobDecodeFailure
 
 export class JobDefinitionError extends TaggedError('JobDefinitionError')<{
   readonly field: string

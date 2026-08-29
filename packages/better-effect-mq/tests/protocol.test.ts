@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { Result, TaggedError } from 'better-result'
 
 import {
+  JobCodecFailure,
   JobDefinitionError,
   JobId,
   JobName,
@@ -23,6 +24,7 @@ import {
   settleJob,
   validateAttemptRecord,
   validateDuration,
+  validateJobRecord,
   validateTimestamp
 } from '../src'
 import type { JobRecord, LeaseToken as LeaseTokenValue, SerializedJobFailure } from '../src'
@@ -145,6 +147,136 @@ test('record and attempt validators reject unsafe DTOs', () => {
   ).toBe(true)
 })
 
+test('public DTO boundaries reject extra fields and hostile access', () => {
+  const secret = Symbol('secret')
+  const extraRecord = {
+    ...waitingJob(),
+    extraFunction: () => 'not persistent',
+    cause: new Error('do-not-persist'),
+    [secret]: 'symbol secret'
+  }
+  const extraFailure = {
+    kind: 'defect',
+    message: 'safe',
+    retryable: false,
+    recordedAt: 100,
+    stack: 'secret stack',
+    cause: new Error('secret cause'),
+    headers: { authorization: 'secret' },
+    extraFunction: () => undefined,
+    [secret]: 'symbol secret'
+  }
+  const extraBackoff = {
+    type: 'constant',
+    delayMs: 1,
+    extraFunction: () => undefined,
+    [secret]: 'symbol secret'
+  }
+  const extraAttempt = {
+    attempt: 1,
+    delivery: 1,
+    startedAt: undefined,
+    finishedAt: 1,
+    outcome: 'completed',
+    result: undefined,
+    failure: undefined,
+    extraFunction: () => undefined,
+    [secret]: 'symbol secret'
+  }
+
+  expect(Result.isError(makeJobRecord(extraRecord))).toBe(true)
+  expect(Result.isError(makeSerializedJobFailure(extraFailure))).toBe(true)
+  expect(Result.isError(makePersistedBackoff(extraBackoff))).toBe(true)
+  expect(Result.isError(validateAttemptRecord(extraAttempt))).toBe(true)
+
+  const getterRecord = { ...waitingJob() }
+  Object.defineProperty(getterRecord, 'payload', {
+    enumerable: true,
+    get: () => {
+      throw new Error('secret getter')
+    }
+  })
+  const getterFailure = { ...extraFailure }
+  Object.defineProperty(getterFailure, 'message', {
+    enumerable: true,
+    get: () => {
+      throw new Error('secret getter')
+    }
+  })
+  const getterBackoff = { type: 'constant', delayMs: 1 }
+  Object.defineProperty(getterBackoff, 'delayMs', {
+    enumerable: true,
+    get: () => {
+      throw new Error('secret getter')
+    }
+  })
+
+  expect(() => makeJobRecord(getterRecord)).not.toThrow()
+  expect(() => makeSerializedJobFailure(getterFailure)).not.toThrow()
+  expect(() => makePersistedBackoff(getterBackoff)).not.toThrow()
+  expect(Result.isError(makeJobRecord(getterRecord))).toBe(true)
+  expect(Result.isError(makeSerializedJobFailure(getterFailure))).toBe(true)
+  expect(Result.isError(makePersistedBackoff(getterBackoff))).toBe(true)
+
+  const revoked = Proxy.revocable(waitingJob(), {})
+  revoked.revoke()
+  expect(() => makeJobRecord(revoked.proxy)).not.toThrow()
+  expect(Result.isError(makeJobRecord(revoked.proxy))).toBe(true)
+
+  const nestedGetter = { nested: {} }
+  Object.defineProperty(nestedGetter.nested, 'secret', {
+    enumerable: true,
+    get: () => {
+      throw new Error('secret nested getter')
+    }
+  })
+  const nestedProxy = new Proxy(
+    {},
+    {
+      ownKeys: () => {
+        throw new Error('secret nested proxy')
+      }
+    }
+  )
+
+  expect(() => makeJobRecord({ ...waitingJob(), payload: nestedGetter })).not.toThrow()
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), payload: nestedGetter }))).toBe(true)
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), payload: nestedProxy }))).toBe(true)
+
+  const nested = { profile: { roles: ['reader'] }, attempts: [{ count: 1 }] }
+  const input = waitingJob({ payload: nested })
+  const inputSnapshot = structuredClone(input)
+  const checked = unwrap(makeJobRecord(input))
+
+  expect(input).toEqual(inputSnapshot)
+  expect(checked.payload).not.toBe(nested)
+  expect(Object.isFrozen(checked.payload)).toBe(true)
+  // SAFETY: the payload above is a validated object with the asserted fields.
+  expect(Object.isFrozen((checked.payload as { profile: object }).profile)).toBe(true)
+  // SAFETY: the payload above is a validated object with the asserted fields.
+  expect(Object.isFrozen((checked.payload as { attempts: readonly object[] }).attempts)).toBe(true)
+
+  nested.profile.roles.push('admin')
+  nested.attempts[0]!.count = 2
+  expect(checked.payload).toEqual({ profile: { roles: ['reader'] }, attempts: [{ count: 1 }] })
+
+  const data = { nested: { safe: true } }
+  const failure = unwrap(
+    makeSerializedJobFailure({
+      kind: 'typed',
+      message: 'safe',
+      retryable: true,
+      recordedAt: 100,
+      data
+    })
+  )
+  data.nested.safe = false
+  expect(failure.data).toEqual({ nested: { safe: true } })
+  expect(Object.isFrozen(failure.data)).toBe(true)
+  // SAFETY: the failure data above is a validated object with the asserted field.
+  expect(Object.isFrozen((failure.data as { nested: object }).nested)).toBe(true)
+})
+
 test('time and persisted backoff validators reject unsafe values', () => {
   for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
     expect(Result.isError(validateTimestamp(value))).toBe(true)
@@ -181,6 +313,19 @@ test('claim ordering is priority, due time, durable sequence, then id', () => {
 
   expect(ordered.map((job) => job.id)).toEqual([jobId, otherJobId, otherJobId, jobId])
   expect(compareJobOrder(sequenceTieOther, sequenceTie)).toBeGreaterThan(0)
+})
+
+test('the final JobId tie-breaker compares UTF-8 bytes rather than UTF-16 code units', () => {
+  const privateUse = unwrap(JobId.make('\uE000'))
+  const astral = unwrap(JobId.make('\u{10000}'))
+  const left = waitingJob({ priority: 1, runAt: 100, orderingSequence: 3, id: privateUse })
+  const right = waitingJob({ priority: 1, runAt: 100, orderingSequence: 3, id: astral })
+
+  // JavaScript UTF-16 ordering puts the astral surrogate pair first; bytewise
+  // UTF-8 ordering puts E0 before F0 and therefore the private-use ID first.
+  expect(privateUse < astral).toBe(false)
+  expect(compareJobOrder(left, right)).toBeLessThan(0)
+  expect(unwrap(orderJobs([right, left])).map((job) => job.id)).toEqual([privateUse, astral])
 })
 
 test('due delayed jobs become active atomically during claim', () => {
@@ -387,14 +532,129 @@ test('cancellation requests do not steal an active lease', () => {
   expect(cancelled.cancellationRequestedAt).toBeUndefined()
 })
 
+test('a requested cancellation wins over every active settlement outcome', () => {
+  const outcomes = [
+    { type: 'complete' as const, result: { ok: true } },
+    { type: 'retry' as const, runAt: 300 },
+    {
+      type: 'fail' as const,
+      failure: {
+        kind: 'typed' as const,
+        message: 'handler failure',
+        retryable: false,
+        recordedAt: 150
+      }
+    }
+  ] as const
+
+  for (const outcome of outcomes) {
+    const requested = unwrap(
+      requestJobCancellation(activeJob(), {
+        type: 'request-cancellation',
+        jobId,
+        now: 150
+      })
+    )
+    const settled = unwrap(
+      settleJob(requested, {
+        type: 'settle',
+        jobId,
+        leaseToken,
+        now: 160,
+        outcome
+      })
+    )
+
+    expect(settled.state).toBe('cancelled')
+    expect(settled.attemptsMade).toBe(1)
+    expect(settled.deliveryCount).toBe(1)
+    expect(settled.failure?.kind).toBe('cancelled')
+  }
+})
+
+test('requested cancellation cannot be dropped by release or stalled recovery', () => {
+  const requested = unwrap(
+    requestJobCancellation(activeJob(), {
+      type: 'request-cancellation',
+      jobId,
+      now: 150
+    })
+  )
+  const released = unwrap(
+    reduceJob(requested, {
+      type: 'release',
+      jobId,
+      leaseToken,
+      now: 160
+    })
+  )
+
+  expect(released.record.state).toBe('cancelled')
+  expect(released.record.attemptsMade).toBe(0)
+  expect(released.record.deliveryCount).toBe(1)
+  expect(released.record.stalledCount).toBe(0)
+  expect(released.attempt?.outcome).toBe('cancelled')
+  expect(released.attempt?.attempt).toBe(0)
+
+  const requestedAgain = unwrap(
+    requestJobCancellation(activeJob(), {
+      type: 'request-cancellation',
+      jobId,
+      now: 150
+    })
+  )
+  const recovered = unwrap(
+    reduceJob(requestedAgain, {
+      type: 'recover-stalled',
+      jobId,
+      now: 200
+    })
+  )
+
+  expect(recovered.record.state).toBe('cancelled')
+  expect(recovered.record.attemptsMade).toBe(0)
+  expect(recovered.record.deliveryCount).toBe(1)
+  expect(recovered.record.stalledCount).toBe(1)
+  expect(recovered.attempt?.outcome).toBe('cancelled')
+  expect(recovered.attempt?.attempt).toBe(0)
+})
+
+test('cancelled settlement consumes exactly one attempt, including at budget edges', () => {
+  const settled = unwrap(
+    reduceJob(activeJob({ attemptsMade: 2, attemptsMax: 3 }), {
+      type: 'settle',
+      jobId,
+      leaseToken,
+      now: 160,
+      outcome: { type: 'cancelled' }
+    })
+  )
+
+  expect(settled.record.state).toBe('cancelled')
+  expect(settled.record.attemptsMade).toBe(3)
+  expect(settled.attempt?.attempt).toBe(3)
+
+  const atBudget = unwrap(
+    settleJob(activeJob({ attemptsMade: 3, attemptsMax: 3 }), {
+      type: 'settle',
+      jobId,
+      leaseToken,
+      now: 160,
+      outcome: { type: 'cancelled' }
+    })
+  )
+
+  expect(atBudget.attemptsMade).toBe(4)
+  expect(Result.isOk(validateJobRecord(atBudget))).toBe(true)
+})
+
 test('stalled recovery is visible without consuming an attempt', () => {
   const active = activeJob({ attemptsMade: 1, deliveryCount: 2, stalledCount: 0 })
   const recovered = unwrap(
     reduceJob(active, {
       type: 'recover-stalled',
       jobId,
-      now: 200,
-      maxStalledCount: 2
+      now: 200
     })
   )
 
@@ -405,16 +665,24 @@ test('stalled recovery is visible without consuming an attempt', () => {
   expect(recovered.record.failure?.kind).toBe('stalled')
   expect(recovered.attempt?.outcome).toBe('stalled')
   expect(recovered.attempt?.attempt).toBe(1)
-  expect(
-    Result.isError(
-      recoverStalledJob(recovered.record, {
-        type: 'recover-stalled',
-        jobId,
-        now: 201,
-        maxStalledCount: 2
-      })
-    )
-  ).toBe(true)
+  const highStallCount = unwrap(
+    recoverStalledJob(activeJob({ stalledCount: 10 }), {
+      type: 'recover-stalled',
+      jobId,
+      now: 200
+    })
+  )
+
+  expect(highStallCount.state).toBe('waiting')
+  expect(highStallCount.stalledCount).toBe(11)
+})
+
+test('the v0.1 codec contract exposes one tagged runtime error', () => {
+  const failure = new JobCodecFailure({ message: 'codec unavailable' })
+
+  expect(JobCodecFailure.is(failure)).toBe(true)
+  expect(failure._tag).toBe('JobCodecFailure')
+  expect(failure.message).toBe('codec unavailable')
 })
 
 test('persisted failure construction never copies a TaggedError cause or stack', () => {
