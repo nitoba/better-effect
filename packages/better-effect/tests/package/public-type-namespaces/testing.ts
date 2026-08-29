@@ -26,6 +26,12 @@ type Equal<Left, Right> =
 
 type Expect<Value extends true> = Value
 
+const expectExactType = <Actual, Expected>(
+  value: Equal<Actual, Expected> extends true ? true : never
+): void => {
+  void value
+}
+
 const recorder = RecordedRuntimeObserver.make()
 const composed: RuntimeObserverContract = RuntimeObserver.compose(recorder)
 const snapshot = recorder.snapshot()
@@ -80,6 +86,18 @@ const packageTestingProgram = Effect.fn(async function* () {
 
   logger.info('package smoke', { sample: random.nextInt(10) })
   return Result.ok({ service, now: clock.now() })
+})
+const packageStandardProgram = Effect.fn(async function* () {
+  const clock = yield* Clock
+  const logger = yield* Logger
+  const random = yield* Random
+
+  logger.info('package standard smoke', { sample: random.nextInt(10) })
+  return Result.ok({ clock, logger, random })
+})
+const packageClockProgram = Effect.fn(async function* () {
+  const clock = yield* Clock
+  return Result.ok(clock.now())
 })
 
 const packageTestRuntime = TestRuntime.make(packageTestingLayer, {
@@ -147,23 +165,89 @@ const packageClockOptions: TestRuntime.Options<typeof packageClockCollisionLayer
 }
 void packageClockOptions
 
-const packageUnionClockOptions: {} | { readonly clock: ClockTest } = { clock: new ClockTest() }
-const packageUnionLoggerOptions: {} | { readonly logger: LoggerTest } = { logger: new LoggerTest() }
-const packageUnionRandomOptions: {} | { readonly random: RandomSeeded } = {
-  random: new RandomSeeded(42)
-}
+type PackageDisjointStandardOptions =
+  | { readonly clock: ClockTest }
+  | { readonly logger: LoggerTest }
+  | { readonly random: RandomSeeded }
+type PackageEmptyStandardOptions =
+  | {}
+  | { readonly clock: ClockTest }
+  | { readonly logger: LoggerTest }
+  | { readonly random: RandomSeeded }
+type PackageGuaranteedClockOptions =
+  | { readonly clock: ClockTest; readonly logger: LoggerTest }
+  | { readonly clock: ClockTest; readonly random: RandomSeeded }
+
+declare const packageUnionClockOptions: {} | { readonly clock: ClockTest }
+declare const packageUnionLoggerOptions: {} | { readonly logger: LoggerTest }
+declare const packageUnionRandomOptions: {} | { readonly random: RandomSeeded }
+declare const packageDisjointOptions: PackageDisjointStandardOptions
+declare const packageEmptyOptions: {}
+declare const packageEmptyUnionOptions: PackageEmptyStandardOptions
+declare const packageNeverOptions: never
+declare const packageGuaranteedClockOptions: PackageGuaranteedClockOptions
+
 const packageUnionClockRuntime = TestRuntime.make(Layer.merge(), packageUnionClockOptions)
 const packageUnionLoggerRuntime = TestRuntime.make(Layer.merge(), packageUnionLoggerOptions)
 const packageUnionRandomRuntime = TestRuntime.make(Layer.merge(), packageUnionRandomOptions)
+const packageDisjointRuntime = TestRuntime.make(Layer.merge(), packageDisjointOptions)
+const packageEmptyRuntime = TestRuntime.make(Layer.merge(), packageEmptyOptions)
+const packageEmptyUnionRuntime = TestRuntime.make(Layer.merge(), packageEmptyUnionOptions)
+const packageNeverRuntime = TestRuntime.make(Layer.merge(), packageNeverOptions)
+const packageGuaranteedClockRuntime = TestRuntime.make(Layer.merge(), packageGuaranteedClockOptions)
 export type PackageUnionClockRuntime = Expect<
-  Equal<Awaited<typeof packageUnionClockRuntime>['runtime'], Runtime<Clock>>
+  Equal<Awaited<typeof packageUnionClockRuntime>['runtime'], Runtime<never>>
 >
 export type PackageUnionLoggerRuntime = Expect<
-  Equal<Awaited<typeof packageUnionLoggerRuntime>['runtime'], Runtime<Logger>>
+  Equal<Awaited<typeof packageUnionLoggerRuntime>['runtime'], Runtime<never>>
 >
 export type PackageUnionRandomRuntime = Expect<
-  Equal<Awaited<typeof packageUnionRandomRuntime>['runtime'], Runtime<Random>>
+  Equal<Awaited<typeof packageUnionRandomRuntime>['runtime'], Runtime<never>>
 >
+export type PackageDisjointRuntime = Expect<
+  Equal<Awaited<typeof packageDisjointRuntime>['runtime'], Runtime<never>>
+>
+export type PackageEmptyRuntime = Expect<
+  Equal<Awaited<typeof packageEmptyRuntime>['runtime'], Runtime<never>>
+>
+export type PackageEmptyUnionRuntime = Expect<
+  Equal<Awaited<typeof packageEmptyUnionRuntime>['runtime'], Runtime<never>>
+>
+export type PackageNeverRuntime = Expect<
+  Equal<Awaited<typeof packageNeverRuntime>['runtime'], Runtime<never>>
+>
+export type PackageGuaranteedClockRuntime = Expect<
+  Equal<Awaited<typeof packageGuaranteedClockRuntime>['runtime'], Runtime<Clock>>
+>
+
+const packageDisjointUse = TestRuntime.use(Layer.merge(), packageDisjointOptions, (test) => {
+  expectExactType<typeof test.runtime, Runtime<never>>(true)
+  // @ts-expect-error A disjoint options union does not guarantee standard services.
+  return test.run(packageStandardProgram)
+})
+const packageEmptyUse = TestRuntime.use(Layer.merge(), packageEmptyOptions, (test) => {
+  expectExactType<typeof test.runtime, Runtime<never>>(true)
+  // @ts-expect-error Empty options do not provide standard services.
+  return test.run(packageStandardProgram)
+})
+const packageEmptyUnionUse = TestRuntime.use(Layer.merge(), packageEmptyUnionOptions, (test) => {
+  expectExactType<typeof test.runtime, Runtime<never>>(true)
+  // @ts-expect-error An empty options arm does not guarantee standard services.
+  return test.run(packageStandardProgram)
+})
+const packageNeverUse = TestRuntime.use(Layer.merge(), packageNeverOptions, (test) => {
+  expectExactType<typeof test.runtime, Runtime<never>>(true)
+  // @ts-expect-error A never options union cannot provide standard services.
+  return test.run(packageStandardProgram)
+})
+const packageGuaranteedClockUse = TestRuntime.use(
+  Layer.merge(),
+  packageGuaranteedClockOptions,
+  (test) => {
+    expectExactType<typeof test.runtime, Runtime<Clock>>(true)
+    return test.run(packageClockProgram)
+  }
+)
 
 // @ts-expect-error standard Clock options must remain compatible with a same-tag base provider
 void TestRuntime.make(packageClockCollisionLayer, { clock: new ClockTest() })
@@ -193,3 +277,13 @@ void packageTestResult
 void packageUnionClockRuntime
 void packageUnionLoggerRuntime
 void packageUnionRandomRuntime
+void packageDisjointRuntime
+void packageEmptyRuntime
+void packageEmptyUnionRuntime
+void packageNeverRuntime
+void packageGuaranteedClockRuntime
+void packageDisjointUse
+void packageEmptyUse
+void packageEmptyUnionUse
+void packageNeverUse
+void packageGuaranteedClockUse

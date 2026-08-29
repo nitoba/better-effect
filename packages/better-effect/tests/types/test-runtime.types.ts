@@ -116,12 +116,40 @@ const controlledRandom = new RandomSeeded(42)
 const unionClockOptions: {} | { readonly clock: ClockTest } = { clock: controlledClock }
 const unionLoggerOptions: {} | { readonly logger: LoggerTest } = { logger: controlledLogger }
 const unionRandomOptions: {} | { readonly random: RandomSeeded } = { random: controlledRandom }
+type DisjointStandardOptions =
+  | { readonly clock: ClockTest }
+  | { readonly logger: LoggerTest }
+  | { readonly random: RandomSeeded }
+type EmptyStandardOptions =
+  | {}
+  | { readonly clock: ClockTest }
+  | { readonly logger: LoggerTest }
+  | { readonly random: RandomSeeded }
+type GuaranteedClockOptions =
+  | { readonly clock: ClockTest; readonly logger: LoggerTest }
+  | { readonly clock: ClockTest; readonly random: RandomSeeded }
+
+declare const disjointOptions: DisjointStandardOptions
+declare const emptyOptions: {}
+declare const emptyUnionOptions: EmptyStandardOptions
+declare const neverOptions: never
+declare const guaranteedClockOptions: GuaranteedClockOptions
 const unionClockRuntime = TestRuntime.make(Layer.merge(), unionClockOptions)
 const unionLoggerRuntime = TestRuntime.make(Layer.merge(), unionLoggerOptions)
 const unionRandomRuntime = TestRuntime.make(Layer.merge(), unionRandomOptions)
-expectTypeOf<Awaited<typeof unionClockRuntime>['runtime']>().toEqualTypeOf<Runtime<Clock>>()
-expectTypeOf<Awaited<typeof unionLoggerRuntime>['runtime']>().toEqualTypeOf<Runtime<Logger>>()
-expectTypeOf<Awaited<typeof unionRandomRuntime>['runtime']>().toEqualTypeOf<Runtime<Random>>()
+const disjointRuntime = TestRuntime.make(Layer.merge(), disjointOptions)
+const emptyRuntime = TestRuntime.make(Layer.merge(), emptyOptions)
+const emptyUnionRuntime = TestRuntime.make(Layer.merge(), emptyUnionOptions)
+const neverRuntime = TestRuntime.make(Layer.merge(), neverOptions)
+const guaranteedClockRuntime = TestRuntime.make(Layer.merge(), guaranteedClockOptions)
+expectTypeOf<Awaited<typeof unionClockRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof unionLoggerRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof unionRandomRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof disjointRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof emptyRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof emptyUnionRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof neverRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof guaranteedClockRuntime>['runtime']>().toEqualTypeOf<Runtime<Clock>>()
 
 const uncheckedClockOverride: Layer.Any = incompatibleClockLayer
 const uncheckedStandardRuntime = TestRuntime.make(incompatibleClockLayer, {
@@ -158,6 +186,60 @@ const completeProgram = Effect.fn(async function* () {
 expectTypeOf<EffectRequirements<typeof completeProgram>>().toEqualTypeOf<
   Repository | Clock | Logger | Random
 >()
+
+const standardProgram = Effect.fn(async function* () {
+  const clock = yield* Clock
+  const logger = yield* Logger
+  const random = yield* Random
+  return Result.ok({ clock, logger, random })
+})
+
+const requiresClockProgram = Effect.fn(async function* () {
+  const clock = yield* Clock
+  return Result.ok(clock.now())
+})
+
+const disjointMakeRun = disjointRuntime.then((test) => {
+  // @ts-expect-error A disjoint options union does not guarantee standard services.
+  return test.run(standardProgram)
+})
+const emptyMakeRun = emptyRuntime.then((test) => {
+  // @ts-expect-error Empty options do not provide standard services.
+  return test.run(standardProgram)
+})
+const emptyUnionMakeRun = emptyUnionRuntime.then((test) => {
+  // @ts-expect-error An empty options arm does not guarantee standard services.
+  return test.run(standardProgram)
+})
+const neverMakeRun = neverRuntime.then((test) => {
+  // @ts-expect-error A never options union cannot provide standard services.
+  return test.run(standardProgram)
+})
+
+const disjointUseResult = TestRuntime.use(Layer.merge(), disjointOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
+  // @ts-expect-error A disjoint options union does not guarantee standard services.
+  return test.run(standardProgram)
+})
+const emptyUseResult = TestRuntime.use(Layer.merge(), emptyOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
+  // @ts-expect-error Empty options do not provide standard services.
+  return test.run(standardProgram)
+})
+const emptyUnionUseResult = TestRuntime.use(Layer.merge(), emptyUnionOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
+  // @ts-expect-error An empty options arm does not guarantee standard services.
+  return test.run(standardProgram)
+})
+const neverUseResult = TestRuntime.use(Layer.merge(), neverOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
+  // @ts-expect-error A never options union cannot provide standard services.
+  return test.run(standardProgram)
+})
+const guaranteedClockUseResult = TestRuntime.use(Layer.merge(), guaranteedClockOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<Clock>>()
+  return test.run(requiresClockProgram)
+})
 
 const configuredResult = TestRuntime.use(
   Layer.make(Repository),
@@ -237,3 +319,12 @@ void callbackResult
 void unionClockRuntime
 void unionLoggerRuntime
 void unionRandomRuntime
+void disjointMakeRun
+void emptyMakeRun
+void emptyUnionMakeRun
+void neverMakeRun
+void disjointUseResult
+void emptyUseResult
+void emptyUnionUseResult
+void neverUseResult
+void guaranteedClockUseResult

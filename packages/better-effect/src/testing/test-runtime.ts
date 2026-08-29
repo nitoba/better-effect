@@ -111,11 +111,17 @@ type HasPotentialOption<Options, Key extends PropertyKey> = true extends (
   ? true
   : false
 
+type HasGuaranteedOption<Options, Key extends PropertyKey> = [Options] extends [never]
+  ? false
+  : false extends (Options extends unknown ? HasDefinedOption<Options, Key> : never)
+    ? false
+    : true
+
 type TestRuntimeOptionLayers<Options extends TestRuntimeOptionsInput> = [
   ...ExplicitOverrides<Options>,
-  ...(HasDefinedOption<Options, 'clock'> extends true ? [ClockTestLayer] : []),
-  ...(HasDefinedOption<Options, 'logger'> extends true ? [LoggerTestLayer] : []),
-  ...(HasDefinedOption<Options, 'random'> extends true ? [RandomSeededLayer] : [])
+  ...(HasGuaranteedOption<Options, 'clock'> extends true ? [ClockTestLayer] : []),
+  ...(HasGuaranteedOption<Options, 'logger'> extends true ? [LoggerTestLayer] : []),
+  ...(HasGuaranteedOption<Options, 'random'> extends true ? [RandomSeededLayer] : [])
 ]
 
 type TestRuntimeValidationLayers<Options extends TestRuntimeOptionsInput> = [

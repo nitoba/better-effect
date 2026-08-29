@@ -2,7 +2,15 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Effect, Layer, LayerDisposeError, Runtime, Service, ServiceRuntime } from '../src'
+import {
+  Effect,
+  Layer,
+  LayerDisposeError,
+  Runtime,
+  Service,
+  ServiceNotFoundError,
+  ServiceRuntime
+} from '../src'
 import { Clock, Logger, Random } from '../src/standard-services'
 import {
   ClockTest,
@@ -18,6 +26,76 @@ const captureRejection = async (promise: Promise<unknown>) =>
     () => undefined,
     (cause) => cause
   )
+
+type CapturedServiceResolution =
+  | Clock
+  | Logger
+  | Random
+  | ClockTest
+  | LoggerTest
+  | RandomSeeded
+  | ServiceNotFoundError
+type ConfiguredStandardService = ClockTest | LoggerTest | RandomSeeded
+type StandardOptions =
+  | {}
+  | { readonly clock: ClockTest }
+  | { readonly logger: LoggerTest }
+  | { readonly random: RandomSeeded }
+type ExpectedStandardServices = {
+  readonly clock: ClockTest | undefined
+  readonly logger: LoggerTest | undefined
+  readonly random: RandomSeeded | undefined
+}
+
+const captureResolution = async (
+  service: typeof Clock | typeof Logger | typeof Random
+): Promise<CapturedServiceResolution> => {
+  try {
+    return await ServiceRuntime.resolve(service)
+  } catch (cause) {
+    if (cause instanceof ServiceNotFoundError) {
+      return cause
+    }
+
+    throw cause
+  }
+}
+
+const expectCapturedService = (
+  actual: CapturedServiceResolution,
+  expected: ConfiguredStandardService | undefined
+): void => {
+  if (expected === undefined) {
+    expect(actual).toBeInstanceOf(ServiceNotFoundError)
+  } else {
+    expect(actual).toBe(expected)
+  }
+}
+
+const assertStandardBranch = async (
+  options: StandardOptions,
+  expected: ExpectedStandardServices
+): Promise<void> => {
+  const testRuntime = await TestRuntime.make(Layer.merge(), options)
+
+  try {
+    expect(testRuntime.clock).toBe(expected.clock)
+    expect(testRuntime.logger).toBe(expected.logger)
+    expect(testRuntime.random).toBe(expected.random)
+
+    const resolved = await testRuntime.run(async () => ({
+      clock: await captureResolution(Clock),
+      logger: await captureResolution(Logger),
+      random: await captureResolution(Random)
+    }))
+
+    expectCapturedService(resolved.clock, expected.clock)
+    expectCapturedService(resolved.logger, expected.logger)
+    expectCapturedService(resolved.random, expected.random)
+  } finally {
+    await testRuntime.dispose()
+  }
+}
 
 class TestDatabase extends Service<TestDatabase>()('TestRuntimeDatabase') {
   query(): string {
@@ -128,6 +206,17 @@ describe('TestRuntime', () => {
     } finally {
       await testRuntime.dispose()
     }
+  })
+
+  test('only installs services selected by a union-shaped options branch', async () => {
+    const clock = new ClockTest(new Date('2026-02-02T00:00:00.000Z'))
+    const logger = new LoggerTest()
+    const random = new RandomSeeded(42)
+
+    await assertStandardBranch({}, { clock: undefined, logger: undefined, random: undefined })
+    await assertStandardBranch({ clock }, { clock, logger: undefined, random: undefined })
+    await assertStandardBranch({ logger }, { clock: undefined, logger, random: undefined })
+    await assertStandardBranch({ random }, { clock: undefined, logger: undefined, random })
   })
 
   test('run preserves a direct Result.err value and reports failure outcome', async () => {
