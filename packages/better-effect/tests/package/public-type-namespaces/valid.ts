@@ -1,4 +1,4 @@
-import { Result, TaggedError } from 'better-result'
+import { Result, TaggedError, type Result as ResultType } from 'better-result'
 
 import {
   Effect,
@@ -186,6 +186,53 @@ const mappedProgram = Program.map(lazyProgram, (value) => value.length)
 const chainedProgram = Program.andThen(mappedProgram, (value) => Result.ok(value > 0))
 const observedProgram = Program.tap(chainedProgram, () => undefined)
 const recoveredProgram = Program.recover(observedProgram, () => Result.ok(false))
+
+const firstCollectionProgram = Effect.fn(async function* () {
+  const database = yield* Database
+
+  return Result.ok(database.query())
+})
+const secondCollectionProgram = Effect.fn(async function* () {
+  const repository = yield* Repository
+
+  void repository
+  return Result.err<number, 'invalid'>('invalid')
+})
+const allResultsTuple = Program.allResults([
+  firstCollectionProgram,
+  secondCollectionProgram
+] as const)
+export type ProgramAllResultsTuple = Expect<
+  Equal<
+    typeof allResultsTuple,
+    Program<
+      readonly [ResultType<string, never>, ResultType<never, 'invalid'>],
+      never,
+      Database | Repository
+    >
+  >
+>
+const collectionArray: Array<typeof firstCollectionProgram | typeof secondCollectionProgram> = [
+  firstCollectionProgram,
+  secondCollectionProgram
+]
+const allResultsArray = Program.allResults(collectionArray)
+export type ProgramAllResultsArray = Expect<
+  Equal<
+    typeof allResultsArray,
+    Program<readonly ResultType<string, 'invalid'>[], never, Database | Repository>
+  >
+>
+const forEachProgram = Program.forEach(['first', 'second'] as const, (value, index) =>
+  Effect.fn(async function* () {
+    const database = yield* Database
+
+    return Result.ok(`${database.query()}:${value}:${index}`)
+  })
+)
+export type ProgramForEachAlias = Expect<
+  Equal<typeof forEachProgram, Program<readonly string[], never, Database>>
+>
 
 void recoveredProgram
 

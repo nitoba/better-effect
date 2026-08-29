@@ -196,9 +196,36 @@ const result = await runtime.run(loadEverything)
 `Program.all` invokes no Program while it is being constructed and starts at
 most the configured number at a time. When a Program returns an error or throws,
 it stops scheduling new work, lets already-started Programs settle, and keeps
-a deterministic primary failure. No cancellation or
-Fiber scheduler is involved; all started work remains owned by the enclosing
-Runtime Scope.
+a deterministic primary failure. No cancellation or Fiber scheduler is
+involved; all started work remains owned by the enclosing Runtime Scope.
+
+Use `Program.forEach` for a dynamic or readonly collection whose Programs are
+created from each item. Its callback receives the item and input index, and the
+successful values remain in input order:
+
+```ts
+const synchronized = Program.forEach(userIds, (userId, index) => synchronizeUser(userId, index), {
+  concurrency: 8
+})
+
+const result = await runtime.run(synchronized)
+```
+
+Use `Program.allResults` for accumulated validation. Typed `Err` values become
+successful elements containing the original `Result`; a thrown or rejected
+Program remains a defect, stops new work, and rejects the outer Program:
+
+```ts
+const validations = Program.allResults(
+  [validateIdentity, validateAddress, validateDocuments] as const,
+  { concurrency: 3 }
+)
+
+const results = await runtime.run(validations)
+```
+
+Both helpers share `Program.all`'s lazy FIFO scheduling, stable output order,
+and wait-for-started-work behavior.
 
 ## Compose lazy Programs
 
