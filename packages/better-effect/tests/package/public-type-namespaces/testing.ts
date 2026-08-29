@@ -7,9 +7,10 @@ import {
   Service,
   type RuntimeObserver as RuntimeObserverContract
 } from 'better-effect'
-import { Clock, Logger, Random } from 'better-effect/standard-services'
+import { Clock, IdGenerator, Logger, Random } from 'better-effect/standard-services'
 import {
   ClockTest,
+  IdGeneratorTest,
   LoggerTest,
   RandomSeeded,
   RecordedRuntimeObserver,
@@ -107,6 +108,20 @@ const packageRandomProgram = Effect.fn(async function* () {
   const random = yield* Random
   return Result.ok(random)
 })
+const packageIdGeneratorProgram = Effect.fn(async function* () {
+  const ids = yield* IdGenerator
+  return Result.ok(ids.next())
+})
+const packageIdGenerator = new IdGeneratorTest(['package-id'])
+const packageIdGeneratorRuntime = TestRuntime.make(Layer.merge(), {
+  idGenerator: packageIdGenerator
+})
+export type PackageIdGeneratorSuccess = Expect<
+  Equal<Effect.Success<typeof packageIdGeneratorProgram>, string>
+>
+export type PackageIdGeneratorRuntime = Expect<
+  Equal<Awaited<typeof packageIdGeneratorRuntime>['runtime'], Runtime<IdGenerator>>
+>
 
 const packageTestRuntime = TestRuntime.make(packageTestingLayer, {
   clock: new ClockTest(),
@@ -419,6 +434,8 @@ void composed
 void snapshot
 void packageTestRuntime
 void packageTestResult
+void packageIdGeneratorRuntime
+void packageIdGeneratorProgram
 void packageUnionClockRuntime
 void packageUnionLoggerRuntime
 void packageUnionRandomRuntime

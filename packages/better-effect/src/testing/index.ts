@@ -1,6 +1,6 @@
 export { MapLayerBackend as MemoryLayerBackend } from '../layer/map-layer-backend'
 
-export { ClockTest, LoggerTest, RandomSeeded } from '../standard-services'
+export { ClockTest, IdGeneratorTest, LoggerTest, RandomSeeded } from '../standard-services'
 
 export { RuntimeObserver } from '../runtime/observer'
 

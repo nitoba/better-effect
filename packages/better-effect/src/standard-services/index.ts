@@ -18,6 +18,15 @@ export type {
   StandardSchemaV1
 } from './config'
 
+export {
+  IdGenerator,
+  IdGeneratorExhaustedError,
+  IdGeneratorLive,
+  IdGeneratorTest,
+  IdGeneratorTestLayer,
+  IdGeneratorUnavailableError
+} from './id-generator'
+
 const assertDelay = (milliseconds: number): void => {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) {
     throw new RangeError('Delay must be a finite non-negative number')
