@@ -8,7 +8,7 @@ import type { LayerBackend } from '../layer/backend'
 
 import type { RuntimeContextStorage } from './context'
 
-import type { RuntimeObserver } from './observer'
+import type { RuntimeExecutionAttributes, RuntimeObserver } from './observer'
 
 /** Aggregated cleanup information reported during Runtime shutdown. */
 export type RuntimeShutdownDiagnostic = {
@@ -39,9 +39,11 @@ export type RuntimeOptions = {
   readonly signal?: AbortSignal
 }
 
-/** Optional signal supplied to one managed Runtime execution. */
+/** Optional signal and diagnostic attributes supplied to one Runtime execution. */
 export type RuntimeRunOptions = {
   readonly signal?: AbortSignal
+  /** Copied once and exposed as a readonly event view. */
+  readonly attributes?: RuntimeExecutionAttributes
 }
 
 /** Cooperative shutdown policy for a managed Runtime. */

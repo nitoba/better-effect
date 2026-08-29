@@ -11,6 +11,7 @@ import {
   Effect,
   Program,
   Layer,
+  pipe,
   MapLayerBackend,
   Runtime,
   Scope,
@@ -25,8 +26,11 @@ import {
   type LayerBackendDisposeOptions,
   type Program as LazyProgram,
   type RuntimeContextStorage,
+  type RuntimeExecutionAttributes,
+  type RuntimeExecutionMetadata,
   type RuntimeFor,
   type RuntimeOptions,
+  type RuntimeRunOptions,
   type RuntimeShutdownDiagnostic,
   type ScopeFinalizer,
   type ScopeOutcome,
@@ -297,10 +301,30 @@ const lazyProgram = Effect.fn(function* () {
   yield* []
   return Result.ok('lazy')
 })
-const mappedProgram = Program.map(lazyProgram, (value) => value.length)
+const namedProgram = Program.named('package.lazy', lazyProgram)
+const pipedNamedProgram = pipe(lazyProgram, Program.named('package.lazy.piped'))
+export type NamedProgramAlias = Expect<Equal<typeof namedProgram, typeof lazyProgram>>
+export type PipedNamedProgramAlias = Expect<Equal<typeof pipedNamedProgram, typeof lazyProgram>>
+const mappedProgram = Program.map(namedProgram, (value) => value.length)
 const chainedProgram = Program.andThen(mappedProgram, (value) => Result.ok(value > 0))
 const observedProgram = Program.tap(chainedProgram, () => undefined)
 const recoveredProgram = Program.recover(observedProgram, () => Result.ok(false))
+const namedCollection = Program.all([namedProgram], { name: 'package.collection' })
+const packageExecutionOptions = {
+  attributes: { requestId: 'package-request' }
+} satisfies RuntimeRunOptions
+const packageMetadataRun = Runtime.run(Layer.merge(), namedProgram, packageExecutionOptions)
+export type NamedCollectionProgram = Expect<
+  Equal<typeof namedCollection, import('better-effect').Program<[string], never>>
+>
+// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- assert the public metadata contract exactly.
+export type RuntimeExecutionAttributesAlias = Expect<
+  // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- assert the public metadata contract exactly.
+  Equal<RuntimeExecutionAttributes, Readonly<Record<string, unknown>>>
+>
+export type RuntimeExecutionMetadataAlias = Expect<
+  Equal<RuntimeExecutionMetadata['startedAt'], number>
+>
 
 const firstCollectionProgram = Effect.fn(async function* () {
   const database = yield* Database
@@ -350,6 +374,8 @@ export type ProgramForEachAlias = Expect<
 >
 
 void recoveredProgram
+void packageExecutionOptions
+void packageMetadataRun
 
 export type ProgramAlias = Expect<
   Equal<

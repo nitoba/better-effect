@@ -19,7 +19,9 @@ export type {
 } from './outcome'
 
 export type {
+  RuntimeExecutionAttributes,
   RuntimeExecutionEndEvent,
+  RuntimeExecutionMetadata,
   RuntimeExecutionStartEvent,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,

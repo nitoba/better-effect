@@ -264,14 +264,18 @@ const programCombinatorChain = (names: readonly string[]): string => {
     }
   }).join('\n\n')
 
-  return `const program0 = Effect.fn(async function* () {
+  return `const program0 = Program.named(
+  'benchmark.program-chain',
+  Effect.fn(async function* () {
 ${sourceBody}
-  return Result.ok(0)
-})
+    return Result.ok(0)
+  })
+)
 
 ${combinators}
 
-void Runtime.run(AppLive, program${names.length})`
+const namedFinal = Program.named('benchmark.program-chain.final', program${names.length})
+void Runtime.run(AppLive, namedFinal)`
 }
 
 const programCollections = (names: readonly string[]): string => {
@@ -292,8 +296,14 @@ const programCollections = (names: readonly string[]): string => {
 ${programs}
 ] as const
 
-const collected = Program.all(collectionPrograms, { concurrency: 4 })
-const retained = Program.allResults(collectionPrograms, { concurrency: 4 })
+const collected = Program.all(collectionPrograms, {
+  concurrency: 4,
+  name: 'benchmark.collection'
+})
+const retained = Program.allResults(collectionPrograms, {
+  concurrency: 4,
+  name: 'benchmark.results'
+})
 const mapped = Program.forEach(
   [${values}] as const,
   (name, index) =>
@@ -301,7 +311,8 @@ const mapped = Program.forEach(
       const service = yield* ${firstService}
       void service
       return Result.ok(\`\${index}:\${name}\`)
-    })
+    }),
+  { name: 'benchmark.each' }
 )
 
 void Runtime.run(AppLive, collected)

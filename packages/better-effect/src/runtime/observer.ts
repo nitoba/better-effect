@@ -17,15 +17,31 @@ export type RuntimeServiceAcquireEvent = {
   readonly outcome: ScopeOutcome
 }
 
+/** Values supplied to one Runtime execution for diagnostic correlation. */
+// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- attributes intentionally accept caller-defined values.
+export type RuntimeExecutionAttributes = Readonly<Record<string, unknown>>
+
+/** Metadata shared by the start and end events for one execution. */
+export type RuntimeExecutionMetadata = {
+  readonly executionId: string
+  readonly name?: string
+  // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- preserve the caller-defined attribute contract.
+  readonly attributes?: RuntimeExecutionAttributes
+  /** Monotonic host timestamp captured immediately before the Program starts. */
+  readonly startedAt: number
+}
+
 /** Event emitted immediately before a program starts in an execution Scope. */
-export type RuntimeExecutionStartEvent = {
+export type RuntimeExecutionStartEvent = RuntimeExecutionMetadata & {
   readonly scope: Scope
 }
 
 /** Event emitted after a program and its execution Scope settle. */
-export type RuntimeExecutionEndEvent = {
+export type RuntimeExecutionEndEvent = RuntimeExecutionMetadata & {
   readonly scope: Scope
   readonly outcome: ScopeOutcome
+  /** Monotonic elapsed time for the Program and its execution cleanup. */
+  readonly durationMs: number
 }
 
 /** Event emitted after a Layer provider release callback settles. */

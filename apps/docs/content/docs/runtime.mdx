@@ -55,7 +55,9 @@ were already acquired, disposes the backend and rejects the Runtime. No
 partially warmed Runtime is returned by `Runtime.make`.
 
 Runtime observers are optional and dependency-free. Hooks are best effort;
-observer failures never change execution or cleanup results:
+observer failures never change execution or cleanup results. Start and end
+execution events share a collision-resistant `executionId` and include the
+optional Program name and readonly attributes:
 
 ```ts
 const runtime = await Runtime.make(AppLive, {
@@ -63,13 +65,27 @@ const runtime = await Runtime.make(AppLive, {
     {
       onServiceResolve: (event) => trace('resolve', event.service.serviceTag),
       onServiceAcquire: (event) => trace('acquire', event.service.serviceTag),
-      onExecutionStart: () => trace('execution.start'),
-      onExecutionEnd: (event) => trace('execution.end', event.outcome.status),
+      onExecutionStart: ({ executionId, name }) => trace('execution.start', { executionId, name }),
+      onExecutionEnd: ({ executionId, name, outcome, durationMs }) =>
+        metrics.observe('program.duration_ms', durationMs, {
+          executionId,
+          name,
+          outcome: outcome.status
+        }),
       onResourceRelease: (event) => trace('release', event.service.serviceTag)
     }
   ]
 })
+
+const result = await runtime.run(loadDashboard, {
+  attributes: { requestId, userId }
+})
 ```
+
+`durationMs` uses the host monotonic clock and includes Program plus execution
+Scope cleanup. Attributes are shallow-copied per run and the Runtime never
+serializes or inspects their values. Do not attach secrets, large mutable
+objects, or sensitive data that an observer might log or use as metric labels.
 
 An integration package can translate these events to OpenTelemetry or another
 telemetry system without adding that dependency to better-effect.
