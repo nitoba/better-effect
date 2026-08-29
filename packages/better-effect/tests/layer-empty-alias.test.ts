@@ -46,21 +46,37 @@ class CircularAliasB extends Service<CircularAliasB>()('CircularAliasB') {
 }
 
 describe('Layer.empty', () => {
-  test('is stable, provider-free, and neutral to composition', () => {
+  test('is a stable immutable singleton and neutral to composition', () => {
+    const empty = Layer.empty
     const serviceLayer = Layer.make(SqlUserRepository)
-    const merged = Layer.merge(Layer.empty, serviceLayer)
+    // SAFETY: This test intentionally widens the class to exercise JavaScript assignment against the locked descriptor.
+    const mutableLayer = Layer as { empty: Layer.Any }
+    const descriptor = Object.getOwnPropertyDescriptor(Layer, 'empty')
+    const merged = Layer.merge(empty, serviceLayer)
 
-    expect(Layer.empty).toBe(Layer.empty)
-    expect(Object.isFrozen(Layer.empty)).toBe(true)
-    expect(Layer.empty.providers).toEqual([])
-    expect(Object.isFrozen(Layer.empty.providers)).toBe(true)
+    expect(descriptor?.value).toBe(empty)
+    expect(descriptor?.writable).toBe(false)
+    expect(descriptor?.enumerable).toBe(true)
+    expect(descriptor?.configurable).toBe(false)
 
-    const providersDescriptor = Object.getOwnPropertyDescriptor(Layer.empty, 'providers')
+    expect(() => {
+      mutableLayer.empty = serviceLayer
+    }).toThrow(TypeError)
+    expect(() => {
+      Object.defineProperty(Layer, 'empty', { value: serviceLayer })
+    }).toThrow(TypeError)
+
+    expect(Layer.empty).toBe(empty)
+    expect(Object.isFrozen(empty)).toBe(true)
+    expect(empty.providers).toEqual([])
+    expect(Object.isFrozen(empty.providers)).toBe(true)
+
+    const providersDescriptor = Object.getOwnPropertyDescriptor(empty, 'providers')
     expect(providersDescriptor?.writable).toBe(false)
     expect(providersDescriptor?.configurable).toBe(false)
 
     expect(merged.providers).toEqual(serviceLayer.providers)
-    expect(merged.providers).not.toBe(Layer.empty.providers)
+    expect(merged.providers).not.toBe(empty.providers)
   })
 
   test('provides a complete environment for requirement-free programs', async () => {

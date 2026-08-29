@@ -289,6 +289,15 @@ export class Layer<
   }
 }
 
+// TypeScript's `readonly` does not affect the runtime property descriptor. Keep
+// the class field's enumerable behavior while locking the singleton binding.
+Object.defineProperty(Layer, 'empty', {
+  value: Layer.empty,
+  writable: false,
+  enumerable: true,
+  configurable: false
+})
+
 const normalizeAcquire =
   <S extends ServiceClass<any, any>>(
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>
