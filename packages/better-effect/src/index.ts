@@ -31,7 +31,7 @@ export {
   ServiceTagCollisionError
 } from './layer'
 
-export type { LayerBackend, LayerRegistration } from './layer'
+export type { LayerBackend, LayerBackendDisposeOptions, LayerRegistration } from './layer'
 
 export { Effect, Program } from './effect'
 

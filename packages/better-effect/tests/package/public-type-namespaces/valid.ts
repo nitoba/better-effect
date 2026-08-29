@@ -15,7 +15,9 @@ import {
   type EffectError,
   type EffectRequirements,
   type EffectSuccess,
+  type LayerBackendDisposeOptions,
   type Program as LazyProgram,
+  type RuntimeContextStorage,
   type RuntimeFor,
   type RuntimeOptions,
   type RuntimeShutdownDiagnostic,
@@ -30,6 +32,15 @@ import {
   type ServiceToken,
   type ServiceTokenOf
 } from 'better-effect'
+import {
+  layerBackendContract,
+  runtimeContextStorageContract,
+  type ContextConcurrency,
+  type ContractScenario,
+  type LayerBackendAcquisitionFailure,
+  type LayerBackendContractOptions,
+  type RuntimeContextStorageContractOptions
+} from 'better-effect/testing'
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
@@ -73,6 +84,20 @@ const program = Effect.gen(async function* () {
 
 const DatabaseLive = Layer.succeed(Database, new Database())
 const nativeBackend = new MapLayerBackend()
+declare const contextStorage: RuntimeContextStorage
+const backendContractOptions = {
+  makeBackend: () => nativeBackend,
+  acquisitionFailure: 'retry'
+} satisfies LayerBackendContractOptions
+const backendDisposeOptions = {
+  onPendingAcquisitions: async (acquisitions) => {
+    await Promise.allSettled(acquisitions)
+  }
+} satisfies LayerBackendDisposeOptions
+const contextContractOptions = {
+  makeStorage: () => contextStorage,
+  concurrency: 'sequential'
+} satisfies RuntimeContextStorageContractOptions
 const RepositoryLive = Layer.gen(Repository, async function* () {
   const database = yield* Database
   void database
@@ -163,6 +188,7 @@ export type ServiceRequirementsAlias = Expect<
   Equal<Service.Requirements<Repository>, ServiceRequirements<Repository>>
 >
 
+// oxlint-disable-next-line typescript/no-redundant-type-constituents -- Layer.Any intentionally includes the unchecked escape-hatch branches.
 export type LayerAnyAlias = Expect<Equal<Layer.Any, Layer<any, any> | Layer<never, any>>>
 export type LayerProvidedAlias = Expect<
   Equal<Layer.Provided<typeof AppLive>, Database | Repository>
@@ -179,10 +205,27 @@ export type RuntimeOptionsAlias = Expect<Equal<Runtime.Options, RuntimeOptions>>
 export type RuntimeDiagnosticAlias = Expect<
   Equal<Runtime.ShutdownDiagnostic, RuntimeShutdownDiagnostic>
 >
+export type LayerBackendContractFailureAlias = Expect<
+  Equal<LayerBackendAcquisitionFailure, 'retry' | 'sticky'>
+>
+export type LayerBackendDisposeOptionsAlias = Expect<
+  Equal<Parameters<MapLayerBackend['disposeAll']>[0], LayerBackendDisposeOptions | undefined>
+>
+export type ContextConcurrencyAlias = Expect<Equal<ContextConcurrency, 'concurrent' | 'sequential'>>
+
+const backendScenarios = layerBackendContract(backendContractOptions)
+const contextScenarios = runtimeContextStorageContract(contextContractOptions)
+
+export type LayerBackendScenarioAlias = Expect<
+  Equal<typeof backendScenarios, readonly ContractScenario[]>
+>
+export type RuntimeContextStorageScenarioAlias = Expect<
+  Equal<typeof contextScenarios, readonly ContractScenario[]>
+>
 
 export type ScopeCloseableAlias = Expect<Equal<Scope.Closeable, CloseableScope>>
 export type ScopeOutcomeAlias = Expect<Equal<Scope.Outcome, ScopeOutcome>>
 export type ScopeFinalizerAlias = Expect<Equal<Scope.Finalizer, ScopeFinalizer>>
 export type ScopeDisposableAlias = Expect<Equal<Scope.Disposable, DisposableResource>>
 
-void nativeBackend
+void nativeBackend.disposeAll(backendDisposeOptions)

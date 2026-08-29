@@ -10,7 +10,11 @@ The core depends on one small contract:
 interface LayerBackend {
   register(registration: LayerRegistration): MaybePromise<void>
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>>
-  disposeAll(): MaybePromise<void>
+  disposeAll(options?: LayerBackendDisposeOptions): MaybePromise<void>
+}
+
+type LayerBackendDisposeOptions = {
+  onPendingAcquisitions?: (acquisitions: readonly Promise<unknown>[]) => void | PromiseLike<void>
 }
 ```
 
@@ -83,8 +87,9 @@ class MyBackend implements LayerBackend {
     return value as InstanceType<T>
   }
 
-  async disposeAll() {
-    // release container-owned instances and clear registrations
+  async disposeAll(options?: LayerBackendDisposeOptions) {
+    // synchronously pass pending acquisition Promises to the hook,
+    // await the hook and acquisitions, then clear state
   }
 }
 ```
@@ -92,6 +97,56 @@ class MyBackend implements LayerBackend {
 Use a Map keyed by `AnyServiceToken` or by the literal tag internally, then
 cast only at the lookup boundary. Do not weaken the public resolver to an
 unrelated generic result such as `resolve<A>(token): A`.
+
+## Verify an adapter
+
+`better-effect/testing` exports runner-neutral conformance scenarios. Each has
+a stable name and `run` callback, creates a fresh adapter, and calls optional
+adapter cleanup even when an assertion fails. The published entrypoint does not
+import Bun, Vitest, or another test runner. When a disposal begins with pending
+provider acquisitions, an adapter must synchronously invoke
+`onPendingAcquisitions` with the actual readonly acquisition Promise collection,
+await the callback, then await those acquisitions before clearing its state.
+
+Register a backend with Bun. Declare whether failed acquisitions retry or stay
+cached until `disposeAll()`:
+
+```ts
+import { describe, test } from 'bun:test'
+import { layerBackendContract } from 'better-effect/testing'
+
+describe('MyBackend', () => {
+  for (const scenario of layerBackendContract({
+    makeBackend: () => new MyBackend(),
+    acquisitionFailure: 'retry',
+    cleanup: () => closeAdapterTestResources()
+  })) {
+    test(scenario.name, scenario.run)
+  }
+})
+```
+
+Register context storage scenarios with Vitest in exactly the same way. Use
+`'concurrent'` only when overlapping roots and siblings remain isolated; use
+`'sequential'` when overlap must reject with `RuntimeContextOverlapError`:
+
+```ts
+import { describe, it } from 'vitest'
+import { runtimeContextStorageContract } from 'better-effect/testing'
+
+describe('MyStorage', () => {
+  for (const scenario of runtimeContextStorageContract({
+    makeStorage: () => new MyStorage(),
+    concurrency: 'sequential'
+  })) {
+    it(scenario.name, scenario.run)
+  }
+})
+```
+
+Pass `makeCompanionStorage` to verify that the storage does not leak context
+frames into the Node or explicit strategy. The in-repository suites apply these
+contracts to Map, ITI, Node, and explicit implementations.
 
 ## Adapter responsibilities
 

@@ -143,6 +143,58 @@ success.
 container is needed; `MemoryLayerBackend` remains its compatibility alias from
 `better-effect/testing`.
 
+### Verify custom adapters
+
+`better-effect/testing` provides runner-neutral conformance scenarios for
+third-party `LayerBackend` and `RuntimeContextStorage` implementations. Each
+scenario has a stable `name` and `run` callback, creates a fresh adapter, and
+runs the optional adapter cleanup after every assertion outcome. Backends must
+synchronously pass the actual readonly pending acquisition Promise collection to
+`disposeAll`'s `onPendingAcquisitions` hook, await the callback, then await the
+acquisitions before clearing state. Declare the backend's acquisition-failure
+policy explicitly: `MapLayerBackend` retries,
+while ITI keeps an asynchronous failure cached until disposal.
+
+Register the scenarios with Bun:
+
+```ts
+import { describe, test } from 'bun:test'
+import { MapLayerBackend } from 'better-effect'
+import { layerBackendContract } from 'better-effect/testing'
+
+describe('My backend', () => {
+  for (const scenario of layerBackendContract({
+    makeBackend: () => new MapLayerBackend(),
+    acquisitionFailure: 'retry'
+  })) {
+    test(scenario.name, scenario.run)
+  }
+})
+```
+
+The same scenarios work with Vitest without adding a runner dependency to the
+published entrypoint:
+
+```ts
+import { describe, it } from 'vitest'
+import { NodeRuntimeContextStorage } from 'better-effect/runtime/node'
+import { runtimeContextStorageContract } from 'better-effect/testing'
+
+describe('My context storage', () => {
+  for (const scenario of runtimeContextStorageContract({
+    makeStorage: () => new NodeRuntimeContextStorage(),
+    concurrency: 'concurrent'
+  })) {
+    it(scenario.name, scenario.run)
+  }
+})
+```
+
+Use `concurrency: 'sequential'` for a storage that rejects overlapping roots
+with `RuntimeContextOverlapError`; pass `makeCompanionStorage` to also verify
+that it does not leak frames into a Node or explicit storage. See the adapter
+guide for the complete `LayerBackend` contract.
+
 Runtimes are async disposables, so request-scoped code can use:
 
 ```ts
