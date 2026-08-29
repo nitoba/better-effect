@@ -11,7 +11,9 @@ import {
   Runtime,
   Service,
   ServiceAcquisitionError,
-  ServiceRuntime
+  ServiceRuntime,
+  type RuntimeExecutionEndEvent,
+  type RuntimeExecutionStartEvent
 } from '../src'
 import { createRuntimeHandle } from '../src/layer/runtime'
 import { RecordedRuntimeObserver, RuntimeObserver, type RuntimeObserverEvent } from '../src/testing'
@@ -23,6 +25,12 @@ class BrokenService extends Service<BrokenService>()('RecordedBrokenService') {}
 class FailingReleaseService extends Service<FailingReleaseService>()(
   'RecordedFailingReleaseService'
 ) {}
+
+const captureRejection = async (promise: Promise<unknown>) =>
+  promise.then(
+    () => undefined,
+    (cause) => cause
+  )
 
 describe('RecordedRuntimeObserver', () => {
   test('records lifecycle events in immutable ordered snapshots', async () => {
@@ -361,6 +369,82 @@ describe('RecordedRuntimeObserver', () => {
     }
   })
 
+  test('freezes execution event envelopes before observer dispatch', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const mutate = (event: RuntimeExecutionStartEvent | RuntimeExecutionEndEvent): void => {
+      Reflect.set(event, 'executionId', 'mutated-id')
+      Reflect.set(event, 'name', 'mutated-name')
+      Reflect.set(event, 'attributes', { requestId: 'mutated-request' })
+    }
+    const runtime = await Runtime.make(Layer.merge(), {
+      observers: [
+        {
+          onExecutionStart: mutate,
+          onExecutionEnd: mutate
+        },
+        recorder
+      ]
+    })
+    const program = Program.named(
+      'events.stable',
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok('stable')
+      })
+    )
+
+    try {
+      await runtime.run(program, { attributes: { requestId: 'original-request' } })
+    } finally {
+      await runtime.dispose()
+    }
+
+    const start = recorder.executionStarts[0]
+    const end = recorder.executionEnds[0]
+
+    if (!start || !end) {
+      throw new Error('Expected frozen execution events')
+    }
+
+    expect(Object.isFrozen(start)).toBe(true)
+    expect(Object.isFrozen(end)).toBe(true)
+    expect(start.executionId).toBe(end.executionId)
+    expect(start.name).toBe('events.stable')
+    expect(end.name).toBe('events.stable')
+    expect(start.attributes).toEqual({ requestId: 'original-request' })
+    expect(end.attributes).toEqual({ requestId: 'original-request' })
+  })
+
+  test('preflights metadata before forking run and runWith executions', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const getterFailure = new Error('execution attribute getter failed')
+    const attributes = Object.defineProperty({}, 'requestId', {
+      enumerable: true,
+      get: () => {
+        throw getterFailure
+      }
+    })
+    const program = () => Result.ok('not-started')
+
+    try {
+      const runFailure = await captureRejection(runtime.run(program, { attributes }))
+      const runWithFailure = await captureRejection(
+        runtime.runWith(Layer.merge(), program, { attributes })
+      )
+
+      expect(runFailure).toBe(getterFailure)
+      expect(runWithFailure).toBe(getterFailure)
+      expect(recorder.executionStarts).toHaveLength(0)
+      expect(recorder.executionEnds).toHaveLength(0)
+
+      const recovered = await runtime.run(() => Result.ok('recovered'))
+      expect(Result.isOk(recovered) && recovered.value).toBe('recovered')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('keeps Program names lazy, private, and explicit for collections', async () => {
     const recorder = RecordedRuntimeObserver.make()
     const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
@@ -528,6 +612,52 @@ describe('RecordedRuntimeObserver', () => {
       )
     } finally {
       await runtime.dispose()
+    }
+  })
+
+  test('rejects ID and timestamp failures before forking either execution form', async () => {
+    const idFailure = new Error('execution ID failed')
+    const timestampFailure = new Error('execution timestamp failed')
+    const failures = [
+      {
+        cause: idFailure,
+        overrides: {
+          createExecutionId: () => {
+            throw idFailure
+          }
+        }
+      },
+      {
+        cause: timestampFailure,
+        overrides: {
+          now: () => {
+            throw timestampFailure
+          }
+        }
+      }
+    ]
+
+    for (const { cause, overrides } of failures) {
+      const recorder = RecordedRuntimeObserver.make()
+      const handle = await createRuntimeHandle(
+        Layer.merge(),
+        new MapLayerBackend(),
+        { observers: [recorder] },
+        overrides
+      )
+      const program = () => Result.ok('not-started')
+
+      try {
+        const runFailure = await captureRejection(handle.run(program))
+        const runWithFailure = await captureRejection(handle.runWith(Layer.merge(), program))
+
+        expect(runFailure).toBe(cause)
+        expect(runWithFailure).toBe(cause)
+        expect(recorder.executionStarts).toHaveLength(0)
+        expect(recorder.executionEnds).toHaveLength(0)
+      } finally {
+        await handle.dispose()
+      }
     }
   })
 
