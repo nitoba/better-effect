@@ -81,4 +81,8 @@ export class Database extends Service<Database>()('Database') {
   async close(): Promise<void> {
     await this.sql.close()
   }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close()
+  }
 }

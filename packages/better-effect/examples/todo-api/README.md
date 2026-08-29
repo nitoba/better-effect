@@ -131,8 +131,9 @@ constructor or runtime invariants are part of the implementation.
 
 ### Layer
 
-`layers/app-live.ts` describes the live environment. `Database` is scoped so its
-SQL client is closed when the runtime is disposed.
+`layers/app-live.ts` describes the live environment. `Database` is a disposable
+client, so `Layer.scopedDisposable()` keeps it alive across executions and closes it
+when the runtime is disposed.
 
 ### Resource
 
@@ -142,8 +143,8 @@ automatic disposal support; it is not deprecated.
 
 ### Scope
 
-The SQLite client is a real root-scoped resource: `Layer.scoped()` acquires it once and
-closes it when the Runtime is disposed. Bun's SQLite adapter does not expose a pooled
+The SQLite client is a real root-scoped resource: `Layer.scopedDisposable()` acquires
+it once and closes it when the Runtime is disposed. Bun's SQLite adapter does not expose a pooled
 connection lease, so this example does not register a fake execution resource with a
 no-op release.
 

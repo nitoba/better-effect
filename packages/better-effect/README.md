@@ -563,7 +563,9 @@ Some dependencies are values.
 
 Others own connections, sessions, files or other resources.
 
-`Layer.scoped`, `Layer.scopedGen`, `Effect.acquireRelease`, `Effect.add` and `Scope` make their lifetime explicit.
+`Layer.scoped`, `Layer.scopedGen`, `Layer.scopedDisposable`, `Effect.acquireRelease`,
+`Effect.acquireReleaseResult`, `Effect.acquireDisposable`, `Effect.add` and `Scope` make their
+lifetime explicit.
 
 ```ts
 const DatabaseLive = Layer.scoped(
@@ -576,6 +578,35 @@ const DatabaseLive = Layer.scoped(
 Runtime owns the application lifetime and safely releases scoped resources when that lifetime ends.
 
 Resources acquired during an individual execution belong to that execution instead.
+
+When an existing API already returns a `Result`, keep its typed failure channel while
+registering only successful acquisitions:
+
+```ts
+const connection =
+  yield *
+  Effect.acquireReleaseResult(
+    () => pool.connect(),
+    (connection, outcome) => connection.close(outcome)
+  )
+```
+
+An `Err` is returned unchanged and is never released. Thrown or rejected acquisition
+defects use the normal `UnhandledException` channel; release failures remain Scope
+cleanup failures rather than widening the acquisition error type.
+
+For values that implement JavaScript disposal, use the disposable helpers instead of
+repeating a release callback. Async disposal is preferred when both protocols exist:
+
+```ts
+const file = yield * Effect.acquireDisposable(() => openFile(path))
+
+const DatabaseLive = Layer.scopedDisposable(Database, () => Database.connect())
+```
+
+`Effect.acquireDisposable` belongs to the current execution Scope. `Layer.scopedDisposable`
+keeps the client alive across executions and disposes it with the Runtime root; the DI
+backend never owns that release.
 
 ### Keep your runtime choices
 

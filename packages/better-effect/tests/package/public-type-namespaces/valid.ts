@@ -1,4 +1,9 @@
-import { Result, TaggedError, type Result as ResultType } from 'better-result'
+import {
+  Result,
+  TaggedError,
+  type Result as ResultType,
+  type UnhandledException
+} from 'better-result'
 import type { Context, MiddlewareHandler } from 'hono'
 import { validator } from 'hono/validator'
 
@@ -59,6 +64,70 @@ class Database extends Service<Database>()('Database') {
 }
 
 class Repository extends Service<Repository>()('Repository') {}
+
+class DisposablePackageService extends Service<DisposablePackageService>()('DisposablePackage') {
+  request(): string {
+    return 'request'
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {}
+}
+
+type PackageConnection = {
+  readonly id: string
+}
+
+type PackageAcquireFailure = {
+  readonly _tag: 'PackageAcquireFailure'
+}
+
+const packageResourceProgram = Effect.gen(async function* () {
+  const connection = yield* Effect.acquireReleaseResult(
+    () => Result.ok<PackageConnection, PackageAcquireFailure>({ id: 'package' }),
+    (_connection, outcome) => {
+      void outcome
+    }
+  )
+
+  return Result.ok(connection)
+})
+
+const packageDisposableValue = {
+  request: () => 'request',
+  [Symbol.dispose]() {}
+}
+
+const packageDisposable = Effect.gen(async function* () {
+  const resource = yield* Effect.acquireDisposable(() => packageDisposableValue)
+
+  return Result.ok(resource)
+})
+
+const DisposablePackageLive = Layer.scopedDisposable(
+  DisposablePackageService,
+  () => new DisposablePackageService()
+)
+
+// @ts-expect-error acquireDisposable requires a disposable resource
+Effect.acquireDisposable(() => ({ request: () => 'plain' }))
+// @ts-expect-error scopedDisposable requires a disposable provider result
+Layer.scopedDisposable(Database, () => new Database())
+
+export type PackageResourceSuccess = Expect<
+  Equal<EffectSuccess<typeof packageResourceProgram>, PackageConnection>
+>
+export type PackageResourceError = Expect<
+  Equal<EffectError<typeof packageResourceProgram>, PackageAcquireFailure | UnhandledException>
+>
+export type PackageResourceRequirements = Expect<
+  Equal<EffectRequirements<typeof packageResourceProgram>, never>
+>
+export type PackageDisposableSuccess = Expect<
+  Equal<EffectSuccess<typeof packageDisposable>, typeof packageDisposableValue>
+>
+export type PackageDisposableLayer = Expect<
+  Equal<Layer.Provided<typeof DisposablePackageLive>, DisposablePackageService>
+>
 
 class Config extends Service<Config>()('Config') {}
 
@@ -373,5 +442,8 @@ export type ScopeDisposableAlias = Expect<Equal<Scope.Disposable, DisposableReso
 
 void nativeBackend.disposeAll(backendDisposeOptions)
 void asyncTapped
+void packageResourceProgram
+void packageDisposable
+void DisposablePackageLive
 void exhaustivelyMatched
 void partiallyMatched

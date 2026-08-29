@@ -1,6 +1,9 @@
 import type { ServiceRequirement } from '../effect/types'
 import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } from '../service'
-import type { ScopeOutcome } from '../scope'
+import { ResourceNotDisposableError } from '../scope'
+import { getDisposeFinalizer } from '../scope/disposable'
+
+import type { DisposableResource, ScopeOutcome } from '../scope'
 import type { Covariant, Invariant } from '../internal/variance'
 import type { MaybePromise } from '../utils/types'
 
@@ -136,6 +139,34 @@ export class Layer<
         }
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
+  }
+
+  /** Define a provider with Runtime-root cleanup through its disposal protocol. */
+  static scopedDisposable<S extends ServiceClass<any, any>>(
+    service: S,
+    acquire: () => MaybePromise<ServiceContract<InstanceType<S>> & DisposableResource>
+  ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
+    return Layer.scoped<S>(
+      service,
+      async () => {
+        const instance = await acquire()
+
+        if (!getDisposeFinalizer(instance)) {
+          throw new ResourceNotDisposableError()
+        }
+
+        return instance
+      },
+      (instance, outcome) => {
+        const finalizer = getDisposeFinalizer(instance)
+
+        if (!finalizer) {
+          throw new ResourceNotDisposableError()
+        }
+
+        return finalizer(outcome)
+      }
+    )
   }
 
   /** Define a provider whose acquisition can yield contextual Services. */
