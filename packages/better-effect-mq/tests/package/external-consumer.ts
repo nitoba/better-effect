@@ -110,11 +110,16 @@ const assertArchiveContents = (entries: string[]): void => {
   )
 }
 
+const installPeerDependencies = (fixture: string): void => {
+  const result = run(['bun', 'install', '--ignore-scripts', '--no-save'], fixture)
+  assertSuccess(result, 'Installing the better-result peer dependency')
+}
+
 const installArchive = async (archive: string, fixture: string): Promise<string> => {
   const nodeModules = join(fixture, 'node_modules')
   const installedPackage = join(nodeModules, 'better-effect-mq')
 
-  await mkdir(nodeModules)
+  await mkdir(nodeModules, { recursive: true })
   const result = run(['tar', '-xzf', archive, '-C', nodeModules], fixture)
   assertSuccess(result, 'Extracting the package archive')
   await rename(join(nodeModules, 'package'), installedPackage)
@@ -170,6 +175,7 @@ const main = async (): Promise<void> => {
     const archive = await pack(root)
     assertArchiveContents(archiveEntries(archive))
     const fixture = join(root, 'consumer')
+    installPeerDependencies(fixture)
     const installedPackage = await installArchive(archive, fixture)
 
     await assertPackedManifest(installedPackage)

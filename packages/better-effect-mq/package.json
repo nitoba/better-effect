@@ -38,6 +38,8 @@
     "build": "tsdown",
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
+    "test:types": "tsc -p tests/types/tsconfig.json --pretty false",
+    "test:types:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/types/tsconfig.json --pretty false",
     "test": "bun test",
     "test:package-boundaries": "bun tests/package/boundaries.ts",
     "test:package-consumer": "bun tests/package/external-consumer.ts",
@@ -46,7 +48,7 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "publint": "publint",
-    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run test:package-boundaries && bun run test:package-consumer && bun run publint && bun run lint",
+    "check": "bun run typecheck && bun run test:types && bun run test:types:minimum && bun test && bun run format:check && bun run build && bun run test:package-boundaries && bun run test:package-consumer && bun run publint && bun run lint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun publish --dry-run"
   },
