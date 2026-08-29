@@ -1,16 +1,24 @@
 import { expectTypeOf } from 'bun:test'
 
+import type {
+  RuntimeExecutionStartEvent,
+  RuntimeObserver as RuntimeObserverContract
+} from '../../src'
 import { MapLayerBackend, type LayerBackend } from '../../src/layer'
 import { ExplicitRuntimeContextStorage } from '../../src/runtime/explicit'
 import { NodeRuntimeContextStorage } from '../../src/runtime/node'
 import {
   layerBackendContract,
+  RecordedRuntimeObserver,
+  RuntimeObserver,
   runtimeContextStorageContract,
   type ContextConcurrency,
   type ContractScenario,
   type LayerBackendAcquisitionFailure,
   type LayerBackendContractOptions,
-  type RuntimeContextStorageContractOptions
+  type RecordedRuntimeObserverSnapshot,
+  type RuntimeContextStorageContractOptions,
+  type RuntimeObserverEvent
 } from '../../src/testing'
 
 const mapOptions = {
@@ -46,3 +54,20 @@ runtimeContextStorageContract({
   // @ts-expect-error RuntimeContextStorage capability must declare a supported mode.
   concurrency: 'parallel'
 })
+
+const recorder = RecordedRuntimeObserver.make()
+const composed = RuntimeObserver.compose(recorder)
+const snapshot = recorder.snapshot()
+
+expectTypeOf(recorder).toMatchTypeOf<RuntimeObserverContract>()
+expectTypeOf(composed).toEqualTypeOf<RuntimeObserverContract>()
+expectTypeOf<RecordedRuntimeObserverSnapshot['executionStarts']>().toEqualTypeOf<
+  readonly RuntimeExecutionStartEvent[]
+>()
+expectTypeOf<RecordedRuntimeObserverSnapshot['timeline']>().toEqualTypeOf<
+  readonly RuntimeObserverEvent[]
+>()
+expectTypeOf(snapshot).toEqualTypeOf<RecordedRuntimeObserverSnapshot>()
+
+// @ts-expect-error recorded views are immutable
+snapshot.timeline.push({})

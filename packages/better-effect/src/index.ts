@@ -74,6 +74,8 @@ export type {
 
 export { Runtime } from './runtime'
 
+export { RuntimeObserver } from './runtime'
+
 export { CurrentAbortSignal } from './runtime'
 
 export { RuntimeContextNotConfiguredError } from './runtime'
@@ -86,7 +88,6 @@ export type {
   RuntimeFor,
   RuntimeExecutionEndEvent,
   RuntimeExecutionStartEvent,
-  RuntimeObserver,
   RuntimeOptions,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,

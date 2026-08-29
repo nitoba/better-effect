@@ -71,12 +71,19 @@ jobs:
           import 'better-effect/runtime/explicit'
           import 'better-effect/runtime/node'
           import 'better-effect/standard-services'
-          import { layerBackendContract } from 'better-effect/testing'
+          import {
+            layerBackendContract,
+            RecordedRuntimeObserver,
+            RuntimeObserver
+          } from 'better-effect/testing'
           import { Result } from 'better-result'
 
           class Greeting extends Service()('Greeting') {}
 
-          const runtime = await Runtime.make(Layer.make(Greeting))
+          const recorded = RecordedRuntimeObserver.make()
+          const runtime = await Runtime.make(Layer.make(Greeting), {
+            observers: [RuntimeObserver.compose(recorded)]
+          })
           const result = await runtime.run(
             Effect.fn(async function* () {
               const greeting = yield* Greeting
@@ -84,7 +91,12 @@ jobs:
             })
           )
 
-          if (!Result.isOk(result) || !(result.value instanceof Greeting)) {
+          if (
+            !Result.isOk(result) ||
+            !(result.value instanceof Greeting) ||
+            recorded.executionStarts.length !== 1 ||
+            recorded.executionEnds.length !== 1
+          ) {
             throw new Error('packed consumer smoke test failed')
           }
 
