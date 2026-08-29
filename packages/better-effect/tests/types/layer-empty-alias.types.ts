@@ -44,6 +44,15 @@ const alias = Layer.alias({ from: SqlUserRepository, to: UserRepository })
 const aliasContract: Layer<UserRepository, SqlUserRepository> = alias
 const complete = Layer.merge(empty, sourceLive, alias)
 
+declare const unionAliasTarget: typeof UserRepository | typeof IncompatibleRepository
+declare const unionAliasSource: typeof SqlUserRepository | typeof UserRepository
+
+// @ts-expect-error An alias target must identify exactly one runtime Service token.
+Layer.alias({ from: SqlUserRepository, to: unionAliasTarget })
+
+// @ts-expect-error An alias source must identify exactly one runtime Service token.
+Layer.alias({ from: unionAliasSource, to: UserRepository })
+
 declare const backend: never
 
 expectTypeOf(empty).toEqualTypeOf<Layer<never, never>>()

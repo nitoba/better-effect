@@ -42,14 +42,28 @@ type DefaultConstructibleServiceClass<
   Instance extends AnyService = AnyService
 > = ServiceClass<Tag, Instance> & (new () => Instance)
 
+type IsUnion<Type, Candidate = Type> = Type extends unknown
+  ? [Candidate] extends [Type]
+    ? false
+    : true
+  : never
+
+type InvalidUnionAliasToken = {
+  readonly __betterEffectUnionLayerAliasToken: unique symbol
+}
+
+type RejectUnionAliasToken<Token> = IsUnion<Token> extends true ? InvalidUnionAliasToken : unknown
+
 type LayerAliasOptions<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>> = {
   readonly from: From
   readonly to: To
-} & ([ServiceContract<InstanceType<From>>] extends [ServiceContract<InstanceType<To>>]
-  ? unknown
-  : {
-      readonly __betterEffectIncompatibleLayerAlias: unique symbol
-    })
+} & RejectUnionAliasToken<From> &
+  RejectUnionAliasToken<To> &
+  ([ServiceContract<InstanceType<From>>] extends [ServiceContract<InstanceType<To>>]
+    ? unknown
+    : {
+        readonly __betterEffectIncompatibleLayerAlias: unique symbol
+      })
 
 /**
  * Declarative collection of Service providers.
@@ -82,7 +96,7 @@ export class Layer<
   }
 
   /** A stable provider-free Layer for composition roots with no Services. */
-  static readonly empty: Layer<never, never> = new Layer<never, never>([])
+  static readonly empty: Layer<never, never> = Object.freeze(new Layer<never, never>([]))
 
   /** Create a Layer that lazily acquires a Service instance. */
   static make<S extends DefaultConstructibleServiceClass<any, any>>(

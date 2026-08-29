@@ -82,6 +82,15 @@ export class AliasTarget extends Service<AliasTarget>()('AliasTarget') {
 const DatabaseLive = Layer.make(Database)
 const AliasLive = Layer.alias({ from: AliasSource, to: AliasTarget })
 const AliasComplete = Layer.merge(Layer.empty, Layer.make(AliasSource), AliasLive)
+declare const UnionAliasTarget: typeof AliasTarget | typeof Logger
+
+declare const UnionAliasSource: typeof AliasSource | typeof AliasTarget
+
+// @ts-expect-error Alias targets must identify exactly one runtime Service token.
+Layer.alias({ from: AliasSource, to: UnionAliasTarget })
+
+// @ts-expect-error Alias sources must identify exactly one runtime Service token.
+Layer.alias({ from: UnionAliasSource, to: AliasTarget })
 
 export type AliasProvided = Expect<Equal<Layer.Provided<typeof AliasLive>, AliasTarget>>
 export type AliasRequired = Expect<Equal<Layer.Required<typeof AliasLive>, AliasSource>>

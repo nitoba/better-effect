@@ -51,8 +51,14 @@ describe('Layer.empty', () => {
     const merged = Layer.merge(Layer.empty, serviceLayer)
 
     expect(Layer.empty).toBe(Layer.empty)
+    expect(Object.isFrozen(Layer.empty)).toBe(true)
     expect(Layer.empty.providers).toEqual([])
     expect(Object.isFrozen(Layer.empty.providers)).toBe(true)
+
+    const providersDescriptor = Object.getOwnPropertyDescriptor(Layer.empty, 'providers')
+    expect(providersDescriptor?.writable).toBe(false)
+    expect(providersDescriptor?.configurable).toBe(false)
+
     expect(merged.providers).toEqual(serviceLayer.providers)
     expect(merged.providers).not.toBe(Layer.empty.providers)
   })
