@@ -1,4 +1,8 @@
-import { Result } from 'better-result'
+import {
+  matchError as resultMatchError,
+  matchErrorPartial as resultMatchErrorPartial,
+  Result
+} from 'better-result'
 
 import type { Result as ResultType } from 'better-result'
 
@@ -107,6 +111,52 @@ type TapBothOperation = {
     }
   ): PreserveAsync<Input, TappedResult<Input>>
 }
+
+type TapAsyncOperation = {
+  <Input>(effect: Input & AnyEffectInput): Promise<TappedResult<Input>>
+}
+
+type TapErrorAsyncOperation = {
+  <Input>(effect: Input & AnyEffectInput): Promise<TappedResult<Input>>
+}
+
+type TapBothAsyncOperation = {
+  <Input>(effect: Input & AnyEffectInput): Promise<TappedResult<Input>>
+}
+
+type TaggedErrorLike = Error & { readonly _tag: string }
+
+type TaggedErrorHandlers<ErrorValue extends TaggedErrorLike> = {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- better-result matchers allow arbitrary handler results.
+  [Tag in ErrorValue['_tag']]: (error: Extract<ErrorValue, { readonly _tag: Tag }>) => unknown
+}
+
+type TaggedErrorOf<Input> = Extract<EffectError<Input>, TaggedErrorLike>
+
+type TaggedErrorHandlersFor<Input> = [EffectError<Input>] extends [TaggedErrorLike]
+  ? TaggedErrorHandlers<TaggedErrorOf<Input>>
+  : never
+
+type HandlerReturn<Handlers> = {
+  [Key in keyof Handlers]: Handlers[Key] extends (error: never) => infer Return ? Return : never
+}[keyof Handlers]
+
+type UnhandledTaggedErrors<ErrorValue extends TaggedErrorLike, Handlers> = Exclude<
+  ErrorValue,
+  { readonly _tag: Extract<keyof Handlers, ErrorValue['_tag']> }
+>
+
+type MatchErrorResult<Input, Handlers> = Effect<
+  EffectSuccess<Input>,
+  HandlerReturn<Handlers>,
+  EffectRequirements<Input>
+>
+
+type MatchErrorPartialResult<Input, Handlers> = Effect<
+  EffectSuccess<Input>,
+  HandlerReturn<Handlers> | UnhandledTaggedErrors<TaggedErrorOf<Input>, Handlers>,
+  EffectRequirements<Input>
+>
 
 type RecoverOperation<Next> = {
   <Input>(
@@ -365,6 +415,75 @@ const tapBothResult = <A, E, Requirements extends AnyService>(
   // SAFETY: Result.tapBoth preserves the Result value; the declaration-only Effect marker is restored here.
   Result.tapBoth(result, handlers) as Effect<A, E, Requirements>
 
+const tapAsyncResult = <A, E, Requirements extends AnyService>(
+  result: ResultType<A, E>,
+  fn: (value: A) => PromiseLike<void>
+): Promise<Effect<A, E, Requirements>> =>
+  // SAFETY: Result.tapAsync preserves the Result value and owns observer defect behavior; only the Effect marker is restored here.
+  Result.tapAsync(result, (value) => Promise.resolve(fn(value))) as Promise<
+    Effect<A, E, Requirements>
+  >
+
+const tapErrorAsyncResult = <A, E, Requirements extends AnyService>(
+  result: ResultType<A, E>,
+  fn: (error: E) => PromiseLike<void>
+): Promise<Effect<A, E, Requirements>> =>
+  // SAFETY: Result.tapErrorAsync preserves the Result value and owns observer defect behavior; only the Effect marker is restored here.
+  Result.tapErrorAsync(result, (error) => Promise.resolve(fn(error))) as Promise<
+    Effect<A, E, Requirements>
+  >
+
+const tapBothAsyncResult = <A, E, Requirements extends AnyService>(
+  result: ResultType<A, E>,
+  handlers: { ok: (value: A) => PromiseLike<void>; err: (error: E) => PromiseLike<void> }
+): Promise<Effect<A, E, Requirements>> =>
+  // SAFETY: Result.tapBothAsync selects one branch and preserves the Result; only the Effect marker is restored here.
+  Result.tapBothAsync(result, {
+    ok: (value) => Promise.resolve(handlers.ok(value)),
+    err: (error) => Promise.resolve(handlers.err(error))
+  }) as Promise<Effect<A, E, Requirements>>
+
+const asTaggedResult = (
+  result: ResultType<unknown, unknown>
+): ResultType<unknown, TaggedErrorLike> => {
+  // SAFETY: The public matcher overload restricts error values to TaggedErrorLike before reaching this runtime boundary.
+  return result as ResultType<unknown, TaggedErrorLike>
+}
+
+const matchErrorResult = <
+  A,
+  E extends TaggedErrorLike,
+  Requirements extends AnyService,
+  Handlers extends TaggedErrorHandlers<E>
+>(
+  result: ResultType<A, E>,
+  handlers: Handlers
+): Effect<A, HandlerReturn<Handlers>, Requirements> => {
+  // SAFETY: Result.mapError selects Err and preserves Ok; the declaration-only Effect marker is restored here.
+  return Result.mapError(result, (error) => resultMatchError(error, handlers)) as Effect<
+    A,
+    HandlerReturn<Handlers>,
+    Requirements
+  >
+}
+
+const matchErrorPartialResult = <
+  A,
+  E extends TaggedErrorLike,
+  Requirements extends AnyService,
+  Handlers extends Partial<TaggedErrorHandlers<E>>
+>(
+  result: ResultType<A, E>,
+  handlers: Handlers
+): Effect<A, HandlerReturn<Handlers> | E, Requirements> => {
+  // SAFETY: Result.mapError selects Err and preserves Ok; the declaration-only Effect marker is restored here.
+  return Result.mapError(result, (error) => resultMatchErrorPartial(error, handlers)) as Effect<
+    A,
+    HandlerReturn<Handlers> | E,
+    Requirements
+  >
+}
+
 const recoverResult = <
   A,
   E,
@@ -490,6 +609,122 @@ export function tapBoth(first: any, second?: any): any {
   }
 
   return tapBothResult(asResult(first), second)
+}
+
+/** Observe a successful value asynchronously without changing the Result. */
+export function tapAsync(fn: (value: any) => PromiseLike<void>): TapAsyncOperation
+export function tapAsync<Input>(
+  effect: Input & AnyEffectInput,
+  fn: (value: EffectSuccess<Input>) => PromiseLike<void>
+): Promise<TappedResult<Input>>
+export function tapAsync(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    const callback = first
+    return (effect: AnyEffectInput) => tapAsync(effect, callback)
+  }
+
+  if (second === undefined) {
+    throw new TypeError('Effect.tapAsync requires a callback')
+  }
+
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => tapAsyncResult(asResult(result), second))
+  }
+
+  return tapAsyncResult(asResult(first), second)
+}
+
+/** Observe an error value asynchronously without changing the Result. */
+export function tapErrorAsync(fn: (error: any) => PromiseLike<void>): TapErrorAsyncOperation
+export function tapErrorAsync<Input>(
+  effect: Input & AnyEffectInput,
+  fn: (error: EffectError<Input>) => PromiseLike<void>
+): Promise<TappedResult<Input>>
+export function tapErrorAsync(first: CombinatorInput, second?: CombinatorCallback): any {
+  if (first instanceof Function && second === undefined) {
+    const callback = first
+    return (effect: AnyEffectInput) => tapErrorAsync(effect, callback)
+  }
+
+  if (second === undefined) {
+    throw new TypeError('Effect.tapErrorAsync requires a callback')
+  }
+
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => tapErrorAsyncResult(asResult(result), second))
+  }
+
+  return tapErrorAsyncResult(asResult(first), second)
+}
+
+/** Observe the active Result branch asynchronously without changing the Result. */
+export function tapBothAsync(handlers: {
+  ok: (value: any) => PromiseLike<void>
+  err: (error: any) => PromiseLike<void>
+}): TapBothAsyncOperation
+export function tapBothAsync<Input>(
+  effect: Input & AnyEffectInput,
+  handlers: {
+    ok: (value: EffectSuccess<Input>) => PromiseLike<void>
+    err: (error: EffectError<Input>) => PromiseLike<void>
+  }
+): Promise<TappedResult<Input>>
+export function tapBothAsync(first: any, second?: any): any {
+  if (second === undefined) {
+    return (effect: AnyEffectInput) => tapBothAsync(effect, first)
+  }
+
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) => tapBothAsyncResult(result, second))
+  }
+
+  return tapBothAsyncResult(asResult(first), second)
+}
+
+/** Match every tagged error variant and map it to a new error value. */
+export function matchError<Input, Handlers extends TaggedErrorHandlersFor<Input>>(
+  effect: Input & AnyEffectInput,
+  handlers: Handlers
+): PreserveAsync<Input, MatchErrorResult<Input, Handlers>>
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- overload implementation is narrowed by the typed public signature.
+export function matchError(first: AnyEffectInput, second?: unknown): any {
+  if (second === undefined) {
+    throw new TypeError('Effect.matchError requires handlers')
+  }
+
+  // SAFETY: The public matcher overload checks the handler map against the source tagged-error union.
+  const handlers = second as TaggedErrorHandlers<TaggedErrorLike>
+
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) =>
+      matchErrorResult(asTaggedResult(asResult(result)), handlers)
+    )
+  }
+
+  return matchErrorResult(asTaggedResult(asResult(first)), handlers)
+}
+
+/** Match selected tagged errors and retain unhandled variants unchanged. */
+export function matchErrorPartial<Input, Handlers extends Partial<TaggedErrorHandlersFor<Input>>>(
+  effect: Input & AnyEffectInput,
+  handlers: Handlers
+): PreserveAsync<Input, MatchErrorPartialResult<Input, Handlers>>
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- overload implementation is narrowed by the typed public signature.
+export function matchErrorPartial(first: AnyEffectInput, second?: unknown): any {
+  if (second === undefined) {
+    throw new TypeError('Effect.matchErrorPartial requires handlers')
+  }
+
+  // SAFETY: The public matcher overload checks the handler map against the source tagged-error union.
+  const handlers = second as Partial<TaggedErrorHandlers<TaggedErrorLike>>
+
+  if (isPromiseLike(first)) {
+    return Promise.resolve(first).then((result) =>
+      matchErrorPartialResult(asTaggedResult(asResult(result)), handlers)
+    )
+  }
+
+  return matchErrorPartialResult(asTaggedResult(asResult(first)), handlers)
 }
 
 /** Recover an Err with a synchronous Result-producing callback. */

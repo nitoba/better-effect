@@ -26,7 +26,25 @@ class DatabaseFailure extends TaggedError('DatabaseFailure')<{
 ```
 
 Tagged errors make a union discriminated and support exhaustive matching in
-your application boundary.
+your application boundary. `Effect.matchError` delegates to
+`better-result`'s matcher while preserving the Effect's success and Service
+requirement channels:
+
+```ts
+const httpError = Effect.matchError(loadUser(userId), {
+  UserNotFound: (error) => new NotFoundResponse({ message: error.message }),
+  DatabaseFailure: (error) => new ServiceUnavailableResponse({ cause: error.cause })
+})
+```
+
+Every known `_tag` must be handled. Use `Effect.matchErrorPartial` when a policy
+only transforms selected variants; unhandled variants pass through and remain
+in the resulting `Err` union. These helpers use the tagged-error shapes and
+matching behavior exported by `better-result`; they do not add another error
+protocol. `Effect.tapAsync`, `Effect.tapErrorAsync`, and `Effect.tapBothAsync`
+are separate observers: they accept `PromiseLike<void>`, run only the active
+branch, preserve the original Result on success, and expose observer defects
+according to `better-result`.
 
 ## Normalize exceptions at the edge
 

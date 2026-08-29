@@ -49,6 +49,42 @@ inspect Result values by itself.
 the other channel, the synchronous/asynchronous shape and the phantom Service
 requirements.
 
+## Observe without changing a Result
+
+Use the asynchronous tap wrappers for logging, metrics, or tracing in a
+pipeline:
+
+```ts
+const audited = pipe(
+  loadUser(id),
+  Effect.tapAsync((user) => metrics.recordLoaded(user.id)),
+  Effect.tapErrorAsync((error) => metrics.recordFailed(error))
+)
+```
+
+`tapAsync`, `tapErrorAsync`, and `tapBothAsync` always return a Promise. Their
+observers return `PromiseLike<void>`, so they preserve the source Effect's
+requirements rather than accepting an Effect callback with hidden Service
+resolution. `better-result` selects the active branch, retains the exact
+original Result when observation succeeds, and turns observer throws or
+rejections into its defect behavior.
+
+## Match tagged errors
+
+Map tagged errors without dropping to raw `Result.mapError`:
+
+```ts
+const policy = Effect.matchError(loadUser(id), {
+  UserNotFound: (error) => new HttpNotFound({ message: error.message }),
+  DatabaseFailure: (error) => new HttpUnavailable({ message: error.message })
+})
+```
+
+`matchError` is exhaustive for the known `_tag` union. For incremental policy,
+`matchErrorPartial` maps selected tags and carries unhandled variants forward in
+the `Err` type. Both wrappers delegate matching to `better-result` and retain
+source Service requirements.
+
 ## Chain operations
 
 Use `Effect.andThen` when the next function returns a synchronous Result:

@@ -11,11 +11,16 @@ export {
   map,
   mapError,
   match,
+  matchError,
+  matchErrorPartial,
   recover,
   recoverAsync,
   tap,
+  tapAsync,
   tapBoth,
+  tapBothAsync,
   tapError,
+  tapErrorAsync,
   zip
 } from './combinators'
 

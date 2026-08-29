@@ -140,9 +140,45 @@ const pair = Effect.zip(loadUser(userId), loadPermissions(userId))
 ```
 
 `tap`, `tapError`, and `tapBoth` run only the active branch and return the
-original Result. `recover` and `recoverAsync` evaluate a fallback only for an
-error. `flatten` removes one nested Effect, while `as` and `asVoid` replace
-successful values without changing errors or requirements.
+original Result. Their asynchronous counterparts, `tapAsync`, `tapErrorAsync`,
+and `tapBothAsync`, always return a Promise and accept observers returning
+`PromiseLike<void>`. They use the corresponding `better-result` combinators:
+only the selected observer runs, a successful observation preserves the exact
+original Result object, and a throwing or rejected observer follows
+`better-result`'s defect (`Panic`) behavior. Observers do not create a Scope or
+resolve Services; use `Program.tap`/`Effect.andThen` when an observation needs a
+contextual Service or can produce a typed Result.
+
+```ts
+const observed = pipe(
+  loadUser(userId),
+  Effect.tapAsync((user) => metrics.recordUserLoaded(user.id)),
+  Effect.tapErrorAsync((error) => metrics.recordUserFailure(error))
+)
+```
+
+`Effect.matchError` and `Effect.matchErrorPartial` map the `Err` channel using
+`better-result`'s tagged-error matchers. `matchError` requires a handler for
+every `_tag` in the known error union. `matchErrorPartial` transforms selected
+tags and keeps every unhandled tagged error in the resulting error union. Both
+leave `Ok` values and Service requirements intact; they do not define a second
+tagged-error protocol.
+
+```ts
+const httpError = Effect.matchError(loadUser(userId), {
+  UserNotFound: (error) => new NotFoundResponse({ message: error.message }),
+  AccessDenied: (error) => new ForbiddenResponse({ message: error.message })
+})
+
+const withFallbackPolicy = Effect.matchErrorPartial(loadUser(userId), {
+  UserNotFound: (error) => new NotFoundResponse({ message: error.message })
+})
+// AccessDenied remains in the error type of withFallbackPolicy.
+```
+
+`recover` and `recoverAsync` evaluate a fallback only for an error.
+`flatten` removes one nested Effect, while `as` and `asVoid` replace successful
+values without changing errors or requirements.
 
 `Effect.match` accepts either plain branch values or Effect-valued handlers.
 Only the selected handler runs; both possible handler channels are included in

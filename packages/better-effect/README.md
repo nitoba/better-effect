@@ -662,7 +662,26 @@ still rejects it when its Layer does not provide every required Service.
 
 Observation helpers such as `Effect.tap`, `Effect.tapError`, and `Effect.tapBoth`
 run only the active branch and return the original Result, so logging or metrics
-do not change the pipeline's value or requirement channel.
+do not change the pipeline's value or requirement channel. The async variants
+`Effect.tapAsync`, `Effect.tapErrorAsync`, and `Effect.tapBothAsync` accept
+`PromiseLike<void>` observers, always return a Promise, and preserve the source
+requirements. They delegate branch selection and defect handling to
+`better-result`; only the active observer runs, and a successful observation
+returns the exact original Result. They do not create a Scope or resolve
+Services inside the callback.
+
+```ts
+const audited = pipe(
+  loadUser(userId),
+  Effect.tapAsync((user) => metrics.recordUserLoaded(user.id)),
+  Effect.tapErrorAsync((error) => metrics.recordUserFailure(error))
+)
+```
+
+`Effect.matchError` exhaustively maps a tagged `Err` union, while
+`Effect.matchErrorPartial` maps selected tags and retains unhandled variants in
+the resulting error union. Both delegate to `better-result`'s tagged-error
+matchers and preserve the source success and requirement channels.
 
 Use `Effect.recover` or `Effect.recoverAsync` for an explicit fallback Result;
 the fallback is evaluated only when the input is an `Err`, and its Service

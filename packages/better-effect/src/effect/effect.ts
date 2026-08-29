@@ -29,11 +29,16 @@ import {
   map,
   mapError,
   match,
+  matchError,
+  matchErrorPartial,
   recover,
   recoverAsync,
   tap,
+  tapAsync,
   tapBoth,
+  tapBothAsync,
   tapError,
+  tapErrorAsync,
   zip
 } from './combinators'
 import {
@@ -267,8 +272,13 @@ type EffectNamespace = {
   readonly andThen: typeof andThen
   readonly andThenAsync: typeof andThenAsync
   readonly tap: typeof tap
+  readonly tapAsync: typeof tapAsync
   readonly tapError: typeof tapError
+  readonly tapErrorAsync: typeof tapErrorAsync
   readonly tapBoth: typeof tapBoth
+  readonly tapBothAsync: typeof tapBothAsync
+  readonly matchError: typeof matchError
+  readonly matchErrorPartial: typeof matchErrorPartial
   readonly recover: typeof recover
   readonly recoverAsync: typeof recoverAsync
   readonly flatten: typeof flatten
@@ -298,10 +308,20 @@ export const Effect: EffectNamespace = {
   andThenAsync,
   /** Observe successful values without changing the Result. */
   tap,
+  /** Observe successful values asynchronously without changing the Result. */
+  tapAsync,
   /** Observe error values without changing the Result. */
   tapError,
+  /** Observe error values asynchronously without changing the Result. */
+  tapErrorAsync,
   /** Observe the active Result branch without changing the Result. */
   tapBoth,
+  /** Observe the active Result branch asynchronously without changing the Result. */
+  tapBothAsync,
+  /** Match every tagged error variant and map it to a new error value. */
+  matchError,
+  /** Match selected tagged errors and retain unhandled variants. */
+  matchErrorPartial,
   /** Recover an error with another Effect. */
   recover,
   /** Recover an error asynchronously with another Effect. */

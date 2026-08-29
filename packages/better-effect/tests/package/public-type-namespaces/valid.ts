@@ -1,4 +1,4 @@
-import { Result } from 'better-result'
+import { Result, TaggedError } from 'better-result'
 
 import {
   Effect,
@@ -75,6 +75,18 @@ class LeanDatabase extends Service<LeanDatabase>()('DeclarationDatabase') {
   }
 }
 
+class PackageNotFound extends TaggedError('PackageNotFound')<{
+  readonly message: string
+}> {}
+
+class PackageDenied extends TaggedError('PackageDenied')<{
+  readonly message: string
+}> {}
+
+class PackageHttpError extends TaggedError('PackageHttpError')<{
+  readonly message: string
+}> {}
+
 const program = Effect.gen(async function* () {
   const database = yield* Database
   const repository = yield* Repository
@@ -110,6 +122,33 @@ const MailerLive = Layer.gen(Mailer, async function* () {
 })
 const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
 const MixedLive = Layer.merge(RepositoryLive, MailerLive)
+
+declare const taggedEffect: Effect<number, PackageNotFound | PackageDenied>
+const asyncTapped = Effect.tapBothAsync(taggedEffect, {
+  ok: async () => {},
+  err: async () => {}
+})
+const exhaustivelyMatched = Effect.matchError(taggedEffect, {
+  PackageNotFound: (error) => new PackageHttpError({ message: error.message }),
+  PackageDenied: (error) => new PackageHttpError({ message: error.message })
+})
+const partiallyMatched = Effect.matchErrorPartial(taggedEffect, {
+  PackageNotFound: (error) => new PackageHttpError({ message: error.message })
+})
+
+export type AsyncTapAlias = Expect<
+  Equal<Awaited<typeof asyncTapped>, Effect<number, PackageNotFound | PackageDenied>>
+>
+export type ExhaustiveMatchAlias = Expect<
+  Equal<typeof exhaustivelyMatched, Effect<number, PackageHttpError>>
+>
+export type PartialMatchAlias = Expect<
+  Equal<typeof partiallyMatched, Effect<number, PackageHttpError | PackageDenied>>
+>
+// @ts-expect-error every tagged error variant must be handled
+Effect.matchError(taggedEffect, {
+  PackageNotFound: (error) => new PackageHttpError({ message: error.message })
+})
 const RepositoryFake = Layer.succeed(Repository, new Repository())
 const PreciseOverride = Layer.override(MixedLive, RepositoryFake)
 const ErasedMailer: Layer<Mailer, Config> = MailerLive
@@ -229,3 +268,6 @@ export type ScopeFinalizerAlias = Expect<Equal<Scope.Finalizer, ScopeFinalizer>>
 export type ScopeDisposableAlias = Expect<Equal<Scope.Disposable, DisposableResource>>
 
 void nativeBackend.disposeAll(backendDisposeOptions)
+void asyncTapped
+void exhaustivelyMatched
+void partiallyMatched
