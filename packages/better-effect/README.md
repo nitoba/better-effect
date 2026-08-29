@@ -676,6 +676,62 @@ The entrypoint also provides `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
 is installed implicitly; compose a normal Layer or use the provided test
 helpers.
 
+`Clock.sleep` keeps the original `clock.sleep(milliseconds)` form and accepts
+an optional `AbortSignal`. Invalid delays still throw synchronously. Aborted
+sleeps clear their timer and listener; a supplied `signal.reason` is rejected
+unchanged, otherwise the rejection is an `AbortError`-named `DOMException`.
+
+Use the same signal in polling, retry delays and expiration checks:
+
+```ts
+const poll = async (clock: Clock, signal: AbortSignal) => {
+  while (true) {
+    const status = await readStatus()
+    if (status.ready) return status
+    await clock.sleep(1_000, { signal })
+  }
+}
+
+const retry = async <A>(operation: () => Promise<A>, clock: Clock, signal: AbortSignal) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (attempt === 2) throw error
+      await clock.sleep(100 * 2 ** attempt, { signal })
+    }
+  }
+}
+
+const waitUntilExpired = async (clock: Clock, expiresAt: number, signal: AbortSignal) => {
+  while (clock.now().getTime() < expiresAt) {
+    await clock.sleep(Math.min(expiresAt - clock.now().getTime(), 1_000), { signal })
+  }
+}
+```
+
+`ClockTest` orders sleeps by absolute deadline and FIFO for equal deadlines.
+`pendingSleeps` is a readonly count. `advanceToNext()` returns `false` when
+there is no pending sleep; `runAll({ maxSteps })` advances repeatedly and
+awaits one microtask checkpoint between deadlines so resumed code can schedule
+its next wait:
+
+```ts
+const clock = new ClockTest(0)
+const task = (async () => {
+  await clock.sleep(100)
+  await clock.sleep(50)
+})()
+
+await clock.runAll({ maxSteps: 10 })
+await task
+// clock.now().getTime() === 150
+```
+
+`setTime` may move backward. Pending sleeps keep their absolute deadlines and
+resolve only when reached. `ClockTest` does not virtualize `Date`, global
+`setTimeout` or the JavaScript microtask queue.
+
 For typed environment configuration, bind a Standard Schema directly to a
 reusable descriptor:
 

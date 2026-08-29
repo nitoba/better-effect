@@ -24,15 +24,79 @@ const assertDelay = (milliseconds: number): void => {
   }
 }
 
+const abortError = (): DOMException => new DOMException('The operation was aborted', 'AbortError')
+
+const abortReason = (signal: AbortSignal): AbortSignal['reason'] =>
+  signal.reason === undefined ? abortError() : signal.reason
+
+/** Optional cooperative cancellation for a host or test Clock sleep. */
+export type ClockSleepOptions = {
+  readonly signal?: AbortSignal
+}
+
 /** Host-backed time and waiting service. */
 export class Clock extends Service<Clock>()('Clock') {
   now(): Date {
     return new Date()
   }
 
-  sleep(milliseconds: number): Promise<void> {
+  /** Rejects with the signal reason, or an AbortError-compatible fallback. */
+  sleep(milliseconds: number, options?: ClockSleepOptions): Promise<void> {
     assertDelay(milliseconds)
-    return new Promise((resolve) => setTimeout(resolve, milliseconds))
+    const signal = options?.signal
+
+    if (signal?.aborted) {
+      return Promise.reject(abortReason(signal))
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let settled = false
+
+      function cleanup(): void {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+
+        signal?.removeEventListener('abort', onAbort)
+      }
+
+      function settle(callback: () => void): void {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        callback()
+      }
+
+      function onAbort(): void {
+        if (signal !== undefined) {
+          settle(() => reject(abortReason(signal)))
+        }
+      }
+
+      try {
+        signal?.addEventListener('abort', onAbort, { once: true })
+
+        if (signal?.aborted) {
+          onAbort()
+          return
+        }
+
+        const handle = setTimeout(() => settle(resolve), milliseconds)
+
+        if (settled) {
+          clearTimeout(handle)
+        } else {
+          timer = handle
+        }
+      } catch (cause) {
+        settle(() => reject(cause))
+      }
+    })
   }
 }
 
@@ -42,7 +106,18 @@ export const ClockLive = Layer.make(Clock)
 type ClockWaiter = {
   readonly at: number
   readonly resolve: () => void
+  readonly reject: (cause?: unknown) => void
+  readonly signal: AbortSignal | undefined
+  readonly onAbort: () => void
+  settled: boolean
 }
+
+/** Limits deadline advances performed by `ClockTest.runAll`. */
+export type ClockTestRunAllOptions = {
+  readonly maxSteps?: number
+}
+
+const defaultClockTestMaxSteps = 1_000
 
 /** Deterministic Clock implementation for tests. */
 export class ClockTest implements Service.Contract<Clock> {
@@ -58,10 +133,16 @@ export class ClockTest implements Service.Contract<Clock> {
     }
   }
 
+  /** Number of sleeps that have not been settled or cancelled. */
+  get pendingSleeps(): number {
+    return this.waiters.length
+  }
+
   now(): Date {
     return new Date(this.currentTime)
   }
 
+  /** Set an absolute time; moving backward leaves existing absolute deadlines unchanged. */
   setTime(value: Date | number): void {
     const next = value instanceof Date ? value.getTime() : value
 
@@ -79,29 +160,137 @@ export class ClockTest implements Service.Contract<Clock> {
     this.flushWaiters()
   }
 
-  sleep(milliseconds: number): Promise<void> {
+  sleep(milliseconds: number, options?: ClockSleepOptions): Promise<void> {
     assertDelay(milliseconds)
+    const signal = options?.signal
 
-    return new Promise((resolve) => {
-      this.waiters.push({ at: this.currentTime + milliseconds, resolve })
+    if (signal?.aborted) {
+      return Promise.reject(abortReason(signal))
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let waiter!: ClockWaiter
+      const onAbort = (): void => {
+        if (signal !== undefined) {
+          this.cancelWaiter(waiter, abortReason(signal))
+        }
+      }
+
+      waiter = {
+        at: this.currentTime + milliseconds,
+        resolve,
+        reject,
+        signal,
+        onAbort,
+        settled: false
+      }
+      this.enqueueWaiter(waiter)
+
+      try {
+        signal?.addEventListener('abort', onAbort, { once: true })
+
+        if (signal?.aborted) {
+          this.cancelWaiter(waiter, abortReason(signal))
+          return
+        }
+      } catch (cause) {
+        this.cancelWaiter(waiter, cause)
+        return
+      }
+
       this.flushWaiters()
     })
+  }
+
+  /** Advance synchronously; due Promise continuations run after this method returns. */
+  advanceToNext(): boolean {
+    const next = this.waiters[0]
+
+    if (next === undefined) {
+      return false
+    }
+
+    this.currentTime = next.at
+    this.flushWaiters()
+    return true
+  }
+
+  /** Advance all pending deadlines, guarding at 1,000 steps by default. */
+  async runAll(options?: ClockTestRunAllOptions | number): Promise<number> {
+    const maxSteps = getMaxSteps(options)
+    let steps = 0
+
+    while (this.pendingSleeps > 0) {
+      if (steps >= maxSteps) {
+        throw new RangeError(`ClockTest.runAll exceeded maxSteps (${maxSteps})`)
+      }
+
+      this.advanceToNext()
+      steps += 1
+      await Promise.resolve()
+    }
+
+    return steps
   }
 
   static layer(initial: Date | number = 0) {
     return Layer.succeed(Clock, new ClockTest(initial))
   }
 
-  private flushWaiters(): void {
-    for (let index = this.waiters.length - 1; index >= 0; index--) {
-      const waiter = this.waiters[index]!
+  private enqueueWaiter(waiter: ClockWaiter): void {
+    const index = this.waiters.findIndex((pending) => pending.at > waiter.at)
 
-      if (waiter.at <= this.currentTime) {
-        this.waiters.splice(index, 1)
-        waiter.resolve()
-      }
+    if (index === -1) {
+      this.waiters.push(waiter)
+    } else {
+      this.waiters.splice(index, 0, waiter)
     }
   }
+
+  private cancelWaiter(waiter: ClockWaiter, cause: unknown): void {
+    const index = this.waiters.indexOf(waiter)
+
+    if (index !== -1) {
+      this.waiters.splice(index, 1)
+    }
+
+    this.finishWaiter(waiter, () => waiter.reject(cause))
+  }
+
+  private flushWaiters(): void {
+    while (true) {
+      const waiter = this.waiters[0]
+
+      if (waiter === undefined || waiter.at > this.currentTime) {
+        return
+      }
+
+      this.waiters.shift()
+      this.finishWaiter(waiter, waiter.resolve)
+    }
+  }
+
+  private finishWaiter(waiter: ClockWaiter, finish: () => void): void {
+    if (waiter.settled) {
+      return
+    }
+
+    waiter.settled = true
+    waiter.signal?.removeEventListener('abort', waiter.onAbort)
+    finish()
+  }
+}
+
+const getMaxSteps = (options?: ClockTestRunAllOptions | number): number => {
+  const maxSteps =
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- support a numeric max-step shorthand.
+    typeof options === 'number' ? options : (options?.maxSteps ?? defaultClockTestMaxSteps)
+
+  if (!Number.isInteger(maxSteps) || maxSteps < 0) {
+    throw new RangeError('ClockTest.runAll maxSteps must be a finite non-negative integer')
+  }
+
+  return maxSteps
 }
 
 export const ClockTestLayer = (initial: Date | number = 0) => ClockTest.layer(initial)
