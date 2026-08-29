@@ -369,6 +369,32 @@ shallow-copied and exposed as a readonly event view; do not attach secrets,
 large objects, or mutable application state. Keep sensitive values out of
 observer logs and metrics labels.
 
+For coarse, synchronous diagnostics, use `runtime.inspect()`:
+
+```ts
+const inspection = runtime.inspect()
+// {
+//   state: 'active',
+//   warmup: 'idle',
+//   activeExecutions: 0,
+//   executions: [],
+//   services: ['Database', 'UserRepository'],
+//   shutdownSignalAborted: false
+// }
+```
+
+The returned snapshot and its arrays are detached and immutable. It contains
+only public Service tags and execution IDs, names and start timestamps; it never
+resolves Services, warms the Runtime, creates Scopes, invokes observers or
+exposes providers, instances, signals, attributes or backend state. Execution
+entries remain present until their execution Scope cleanup settles. Warmup is
+reported as `idle`, `running`, `completed` or `failed`, and `state` reports
+`active`, `disposing` or `disposed`.
+
+`inspect()` is diagnostic information, not a lock, synchronization primitive or
+readiness guarantee. It cannot cancel or force shutdown of any execution; use
+`dispose()` and cooperative `AbortSignal` handling for lifecycle coordination.
+
 Missing, circular, and provider-construction failures use the logical Service
 tags in `ServiceNotFoundError`, `CircularDependencyError`, and
 `ServiceAcquisitionError`; the latter preserves the original provider cause.

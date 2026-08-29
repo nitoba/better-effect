@@ -8,7 +8,7 @@ export { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from './
 
 export type { RuntimeContext, RuntimeContextStorage } from './context'
 
-export type { RuntimeFor } from './types'
+export type { RuntimeExecutionInspection, RuntimeFor, RuntimeInspection } from './types'
 
 export type {
   CleanupFailureObserver,

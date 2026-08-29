@@ -27,8 +27,10 @@ import {
   type Program as LazyProgram,
   type RuntimeContextStorage,
   type RuntimeExecutionAttributes,
+  type RuntimeExecutionInspection,
   type RuntimeExecutionMetadata,
   type RuntimeFor,
+  type RuntimeInspection,
   type RuntimeOptions,
   type RuntimeRunOptions,
   type RuntimeShutdownDiagnostic,
@@ -350,6 +352,17 @@ const packageExecutionOptions = {
   attributes: { requestId: 'package-request' }
 } satisfies RuntimeRunOptions
 const packageMetadataRun = Runtime.run(Layer.merge(), namedProgram, packageExecutionOptions)
+declare const packageRuntime: Runtime<Database | Repository>
+const packageInspection = packageRuntime.inspect()
+export type RuntimeInspectionMethod = Expect<Equal<typeof packageInspection, RuntimeInspection>>
+export type RuntimeInspectionNamespace = Expect<Equal<Runtime.Inspection, RuntimeInspection>>
+export type RuntimeExecutionInspectionNamespace = Expect<
+  Equal<Runtime.ExecutionInspection, RuntimeExecutionInspection>
+>
+// @ts-expect-error Runtime inspection snapshots expose immutable arrays.
+packageInspection.executions.push({ executionId: 'mutated', startedAt: 0 })
+// @ts-expect-error Runtime inspection snapshots expose immutable service tags.
+packageInspection.services.push('mutated')
 export type NamedCollectionProgram = Expect<
   Equal<typeof namedCollection, import('better-effect').Program<[string], never>>
 >
@@ -472,6 +485,10 @@ export type LayerMissingAlias = Expect<Equal<Layer.Missing<typeof AppLive>, neve
 export type LayerCompleteAlias = Expect<Equal<Layer.Complete<typeof AppLive>, typeof AppLive>>
 
 export type RuntimeForAlias = Expect<Equal<Runtime.For<typeof AppLive>, RuntimeFor<typeof AppLive>>>
+export type RuntimeInspectionAlias = Expect<Equal<Runtime.Inspection, RuntimeInspection>>
+export type RuntimeExecutionInspectionAlias = Expect<
+  Equal<Runtime.ExecutionInspection, RuntimeExecutionInspection>
+>
 export type RuntimeEnvironmentAlias = Expect<
   Equal<Runtime.For<typeof AppLive>, Runtime<Layer.Provided<typeof AppLive>>>
 >

@@ -45,6 +45,8 @@ import type {
   RuntimeObserver
 } from '../runtime/observer'
 
+import type { RuntimeInspection } from '../runtime/types'
+
 import type { LayerBackend } from './backend'
 
 import { MapLayerBackend } from './map-layer-backend'
@@ -79,6 +81,9 @@ interface RuntimeHandleCore<Provided extends AnyService> {
 
   /** Resolve every registered provider before accepting normal executions. */
   warmup(): Promise<void>
+
+  /** Return a detached diagnostic snapshot without changing Runtime state. */
+  inspect(): RuntimeInspection
 
   /** Stop new executions and release Layer-owned resources. */
   dispose(input?: RuntimeDisposeOptions | ScopeOutcome): Promise<void>
@@ -119,6 +124,13 @@ const validateDisposeOptions = (options: RuntimeDisposeOptions): void => {
 
 type ActiveExecution = {
   readonly promise: Promise<unknown>
+  readonly metadata: RuntimeExecutionMetadata
+}
+
+type MutableRuntimeExecutionInspection = {
+  executionId: string
+  startedAt: number
+  name?: string
 }
 
 const copyExecutionAttributes = (
@@ -338,9 +350,13 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private readonly executions = new Set<ActiveExecution>()
 
+  private readonly serviceTags: readonly string[]
+
   private readonly shutdownController = new AbortController()
 
   private state: 'active' | 'disposing' | 'disposed' = 'active'
+
+  private warmupState: RuntimeInspection['warmup'] = 'idle'
 
   constructor(
     readonly backend: LayerBackend,
@@ -352,7 +368,35 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly observers: readonly RuntimeObserver[],
     private readonly services: readonly AnyServiceToken[],
     private readonly executionDependencies: RuntimeExecutionDependencies
-  ) {}
+  ) {
+    this.serviceTags = Object.freeze(services.map((service) => service.serviceTag))
+  }
+
+  inspect(): RuntimeInspection {
+    const executions = Object.freeze(
+      [...this.executions].map(({ metadata }) => {
+        const inspection: MutableRuntimeExecutionInspection = {
+          executionId: metadata.executionId,
+          startedAt: metadata.startedAt
+        }
+
+        if (metadata.name !== undefined) {
+          inspection.name = metadata.name
+        }
+
+        return Object.freeze(inspection)
+      })
+    )
+
+    return Object.freeze({
+      state: this.state,
+      warmup: this.warmupState,
+      activeExecutions: executions.length,
+      executions,
+      services: Object.freeze([...this.serviceTags]),
+      shutdownSignalAborted: this.shutdownController.signal.aborted
+    })
+  }
 
   run<A>(
     program: CompleteExecution<Provided, A>,
@@ -481,26 +525,37 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       return this.warmupPromise
     }
 
-    const warmup = runRuntimeContext(
-      this.contextStorage,
-      makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
-      async () => {
-        for (const service of this.services) {
-          await this.resolver.resolve(service)
+    this.warmupState = 'running'
+
+    let warmup: Promise<void>
+
+    try {
+      warmup = runRuntimeContext(
+        this.contextStorage,
+        makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
+        async () => {
+          for (const service of this.services) {
+            await this.resolver.resolve(service)
+          }
         }
-      }
-    )
+      )
+    } catch (cause) {
+      this.warmupState = 'failed'
+      return Promise.reject(cause)
+    }
 
     this.warmupPromise = warmup
 
     void warmup.then(
       () => {
         if (this.warmupPromise === warmup) {
+          this.warmupState = 'completed'
           this.warmupPromise = undefined
         }
       },
       () => {
         if (this.warmupPromise === warmup) {
+          this.warmupState = 'failed'
           this.warmupPromise = undefined
         }
       }
@@ -522,7 +577,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       rejectExecution = reject
     })
 
-    const activeExecution: ActiveExecution = { promise: execution }
+    const activeExecution: ActiveExecution = { promise: execution, metadata }
 
     this.executions.add(activeExecution)
 

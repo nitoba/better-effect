@@ -114,6 +114,35 @@ only literal Service tags and counters; instances, scopes, causes and execution
 attributes are not serialized. Call `graph.clear()` before a later diagnostic
 session.
 
+## Runtime inspection
+
+For coarse, synchronous diagnostics, call `runtime.inspect()`:
+
+```ts
+const inspection = runtime.inspect()
+// {
+//   state: 'active',
+//   warmup: 'idle',
+//   activeExecutions: 0,
+//   executions: [],
+//   services: ['Database', 'UserRepository'],
+//   shutdownSignalAborted: false
+// }
+```
+
+The snapshot and its arrays are detached and immutable. It contains only public
+Service tags and execution IDs, optional names and start timestamps. Execution
+entries remain present until execution Scope cleanup settles. The warmup field
+is `idle`, `running`, `completed` or `failed`; the lifecycle state is `active`,
+`disposing` or `disposed`. `shutdownSignalAborted` reports the Runtime's
+cooperative shutdown signal, when disposal has requested cancellation.
+
+Inspection is diagnostic information, not a lock, synchronization primitive or
+readiness guarantee. It does not resolve Services, warm the Runtime, fork a
+Scope, invoke observers, expose providers or instances, or cancel/force-stop
+executions. Use `dispose()` and cooperative `AbortSignal` handling for lifecycle
+coordination.
+
 ## Cooperative cancellation
 
 Runtime cancellation is based on `AbortSignal`; it does not introduce fibers or

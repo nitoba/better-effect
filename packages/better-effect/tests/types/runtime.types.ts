@@ -17,7 +17,9 @@ import {
   type RuntimeContext,
   type RuntimeDisposeOptions,
   type RuntimeExecutionAttributes,
+  type RuntimeExecutionInspection,
   type RuntimeExecutionMetadata,
+  type RuntimeInspection,
   type RuntimeFor,
   type RuntimeObserver,
   type RuntimeOptions,
@@ -119,6 +121,9 @@ expectTypeOf<Awaited<typeof runtimePromise>>().toEqualTypeOf<Runtime<Database | 
 expectTypeOf<Awaited<typeof defaultRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<Awaited<typeof configuredRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger>>()
+expectTypeOf<Runtime.Inspection>().toEqualTypeOf<RuntimeInspection>()
+expectTypeOf<Runtime.ExecutionInspection>().toEqualTypeOf<RuntimeExecutionInspection>()
+expectTypeOf<ReturnType<Runtime<Database>['inspect']>>().toEqualTypeOf<RuntimeInspection>()
 expectTypeOf(warmupOptions).toEqualTypeOf<RuntimeOptions>()
 expectTypeOf<RuntimeExecutionMetadata['attributes']>().toEqualTypeOf<
   RuntimeExecutionAttributes | undefined
@@ -159,6 +164,15 @@ expectTypeOf<IncompleteProgram>().toMatchTypeOf<MissingDependencies<Logger>>()
 
 declare const typedRuntime: Runtime<Database | Logger>
 declare const typedBuiltLayer: RuntimeHandle<Database | Logger>
+
+const runtimeInspection = typedRuntime.inspect()
+expectTypeOf(runtimeInspection).toEqualTypeOf<RuntimeInspection>()
+expectTypeOf(runtimeInspection.executions).toEqualTypeOf<readonly RuntimeExecutionInspection[]>()
+
+// @ts-expect-error Runtime inspection snapshots expose immutable execution views.
+runtimeInspection.executions.push({ executionId: 'mutated', startedAt: 0 })
+// @ts-expect-error Runtime inspection snapshots expose immutable service tags.
+runtimeInspection.services.push('mutated')
 
 declare const databaseRuntime: Runtime<Database>
 declare const databaseHandle: RuntimeHandle<Database>
