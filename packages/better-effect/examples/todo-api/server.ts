@@ -16,8 +16,12 @@ import type { AppLive } from './layers/app-live'
 
 type AppRuntime = Runtime.For<typeof AppLive>
 
-export const createServer = (runtime: AppRuntime) =>
-  Bun.serve({
+export const createServer = (runtimeInput: AppRuntime, signal?: AbortSignal) => {
+  const runWithSignal: AppRuntime['run'] = (program) =>
+    signal === undefined ? runtimeInput.run(program) : runtimeInput.run(program, { signal })
+  const runtime: Pick<AppRuntime, 'run'> = { run: runWithSignal }
+
+  return Bun.serve({
     port: Number(process.env.PORT ?? 3333),
 
     routes: {
@@ -170,3 +174,4 @@ export const createServer = (runtime: AppRuntime) =>
       )
     }
   })
+}

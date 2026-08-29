@@ -80,7 +80,8 @@ The server listens on `http://localhost:3333` and seeds
 `demo@example.com` / `demo1234` in the reference implementation. In a new
 application, use your own entry point and configuration. The important part is
 that the entry point creates one Runtime, passes it to request handlers, and
-calls `runtime.dispose()` during shutdown.
+uses `NodeRuntime.runMain` to link shutdown to an AbortSignal. Stop the server
+and dispose the application Runtime in a `finally` block.
 
 ## Why this shape scales
 

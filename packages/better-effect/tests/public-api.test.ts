@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 
 import * as BetterEffect from '../src'
 import * as LayerApi from '../src/layer'
+import * as NodeApi from '../src/node'
 
 test('exposes Runtime as the managed Layer entry point', () => {
   expect(BetterEffect.Runtime).toBeDefined()
@@ -34,6 +35,11 @@ test('exposes Runtime as the managed Layer entry point', () => {
   expect(BetterEffect.pipe).toBeDefined()
   expect('buildLayer' in BetterEffect).toBe(false)
   expect('BuiltLayerDisposedError' in BetterEffect).toBe(false)
+})
+
+test('exposes NodeRuntime from the Node/Bun entry point', () => {
+  expect(NodeApi.NodeRuntime).toBeDefined()
+  expect('runMain' in NodeApi.NodeRuntime).toBe(true)
 })
 
 test('does not expose deprecated low-level Layer APIs', () => {

@@ -154,3 +154,12 @@ requests to finish, and then closes the root scope that owns the database layer.
 Real request-local resources can use `Effect.acquireRelease()` and are closed with that
 request's execution scope. For a nested batch lifetime, use `scope.fork()` with
 `Scope.provide()` and close the child explicitly when the batch ends.
+
+### NodeRuntime
+
+`index.ts` uses `NodeRuntime.runMain()` for the process boundary. The helper
+installs `SIGINT`/`SIGTERM` handlers only while the main program is running,
+propagates the first signal through `CurrentAbortSignal`, waits for cleanup, and
+removes its listeners. It sets `process.exitCode` without calling
+`process.exit()`. The example's server Runtime is passed the same signal for
+request cancellation and is disposed after the server stops.

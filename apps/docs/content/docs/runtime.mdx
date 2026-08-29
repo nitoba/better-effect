@@ -164,6 +164,107 @@ execution and root Scopes with the final outcome, and always attempts backend
 cleanup. A successful program can therefore still expose a shutdown cleanup
 failure; a failed program preserves its exact primary failure.
 
+## Node.js and Bun CLI entrypoint
+
+Use the Node/Bun-only `better-effect/node` subpath when a process owns the
+application Runtime. `NodeRuntime.runMain` installs no listeners at import time,
+links one execution signal, and removes every configured listener in `finally`:
+
+```ts
+import { Result } from 'better-result'
+import { NodeRuntime } from 'better-effect/node'
+
+const main = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+  const value = yield* Result.await(runMigration({ signal }))
+
+  return Result.ok(value)
+})
+
+await NodeRuntime.runMain(AppLive, main, {
+  signals: ['SIGINT', 'SIGTERM'],
+  gracePeriod: 5_000,
+  abortAfterGracePeriod: true,
+  onFailure: (error) => {
+    console.error(error)
+    return 1
+  },
+  onSuccess: () => 0,
+  onDefect: (cause) => {
+    console.error(cause)
+    return 1
+  }
+})
+```
+
+The first configured signal aborts `CurrentAbortSignal` and begins graceful
+Runtime disposal. Repeated signals are ignored. `Result.err` is passed to
+`onFailure` (or exit code `1` by default), while thrown or rejected defects remain rejected and are passed to
+`onDefect`; cleanup-only failures go to `onCleanupFailure` and a cleanup failure
+after success is still non-zero. The helper sets `process.exitCode` and never
+calls `process.exit()`. Its overloads retain the Layer completeness and Program
+Service-requirement checks of `Runtime.run`.
+
+### Migrating manual signal handlers
+
+Replace a hand-written `process.once`/`runtime.dispose` pair:
+
+```ts
+process.once('SIGTERM', () => void shutdown())
+process.once('SIGINT', () => void shutdown())
+```
+
+with a main Program that waits for `CurrentAbortSignal` and one boundary call:
+
+```ts
+const main = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+  const server = startServer({ signal })
+
+  await new Promise<void>((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true })
+  })
+  await server.stop()
+
+  return Result.ok(undefined)
+})
+
+await NodeRuntime.runMain(AppLive, main)
+```
+
+Do not install a second signal handler or call `process.exit`; pass the linked
+signal to request I/O and let the Runtime wait for active executions.
+
+### Worker entrypoints
+
+Workers do not need process signal listeners. Use `signals: []` and bridge a
+parent message to an `AbortController` instead:
+
+```ts
+import { parentPort } from 'node:worker_threads'
+import { NodeRuntime } from 'better-effect/node'
+
+const controller = new AbortController()
+const onMessage = (message: unknown) => {
+  if (message === 'shutdown') controller.abort('parent shutdown')
+}
+parentPort?.on('message', onMessage)
+
+try {
+  const result = await NodeRuntime.runMain(Layer.empty, workerMain, {
+    signals: [],
+    signal: controller.signal
+  })
+  parentPort?.postMessage(result)
+} finally {
+  parentPort?.off('message', onMessage)
+}
+```
+
+The worker owns its own Runtime and cleanup; the parent remains responsible for
+sending the shutdown message and terminating the worker after its result is
+reported.
+
 ## Layers per execution
 
 Use `runWith` when a Layer belongs to one execution instead of to the shared

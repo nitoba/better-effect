@@ -424,6 +424,36 @@ const cancellableProgram = Effect.fn(async function* () {
 })
 ```
 
+For a Node.js or Bun CLI, use the host-specific `better-effect/node` entrypoint.
+`NodeRuntime.runMain` validates the lifecycle options before installing
+`SIGINT`/`SIGTERM` listeners, links the first signal to `CurrentAbortSignal`,
+and disposes the Runtime exactly once:
+
+```ts
+import { NodeRuntime } from 'better-effect/node'
+
+const main = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+  return Result.ok(await runCommand({ signal }))
+})
+
+await NodeRuntime.runMain(AppLive, main, {
+  gracePeriod: 5_000,
+  abortAfterGracePeriod: true,
+  onFailure: (error) => {
+    console.error(error)
+    return 1
+  },
+  onSuccess: () => 0
+})
+```
+
+`Result.err` uses `onFailure` (or exit code `1` by default), while thrown defects
+remain rejected and may be reported with `onDefect`. Cleanup-only failures use
+`onCleanupFailure`, remain observable, and still set a non-zero
+`process.exitCode` after successful work. Listeners are removed in `finally`,
+repeated signals are ignored, and the helper never calls `process.exit()`.
+
 For request-local context or overrides, add a Layer only to that execution:
 
 ```ts

@@ -56,6 +56,7 @@ jobs:
           tar -tzf "$archive" | grep -Fx 'package/LICENSE'
           tar -tzf "$archive" | grep -Fx 'package/README.md'
           tar -tzf "$archive" | grep -Fx 'package/dist/index.mjs'
+          tar -tzf "$archive" | grep -Fx 'package/dist/node.mjs'
 
           mkdir -p "$temp_dir/consumer/node_modules"
           tar -xzf "$archive" -C "$temp_dir/consumer/node_modules"
@@ -66,6 +67,7 @@ jobs:
 
           cat > "$temp_dir/consumer/smoke.mjs" <<'EOF'
           import { Effect, Layer, MapLayerBackend, Runtime, Service } from 'better-effect'
+          import { NodeRuntime } from 'better-effect/node'
           import 'better-effect/adapters/iti'
           import 'better-effect/hono'
           import 'better-effect/runtime/explicit'
@@ -106,6 +108,16 @@ jobs:
             recorded.executionEnds.length !== 1
           ) {
             throw new Error('packed consumer smoke test failed')
+          }
+
+          const mainResult = await NodeRuntime.runMain(
+            Layer.empty,
+            () => Result.ok('packed-main'),
+            { signals: [], onSuccess: (value) => (value === 'packed-main' ? 0 : 1) }
+          )
+
+          if (!Result.isOk(mainResult) || mainResult.value !== 'packed-main') {
+            throw new Error('packed NodeRuntime smoke test failed')
           }
 
           const logger = new LoggerTest()

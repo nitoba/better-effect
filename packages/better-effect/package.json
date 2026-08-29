@@ -31,6 +31,7 @@
     ".": "./dist/index.mjs",
     "./adapters/iti": "./dist/adapters/iti.mjs",
     "./hono": "./dist/hono.mjs",
+    "./node": "./dist/node.mjs",
     "./runtime/explicit": "./dist/runtime/explicit.mjs",
     "./runtime/node": "./dist/runtime/node.mjs",
     "./standard-services": "./dist/standard-services.mjs",

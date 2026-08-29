@@ -44,6 +44,7 @@ import {
   type ServiceTokenOf
 } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
+import { NodeRuntime, type NodeRuntimeOptions } from 'better-effect/node'
 import {
   layerBackendContract,
   runtimeContextStorageContract,
@@ -212,6 +213,22 @@ type HandlerPath =
   HandlerContext extends Context<infer _Environment, infer _Path, infer _Input> ? _Path : never
 export type ValidatorFirstEnvironment = Expect<Equal<HandlerEnvironment, RouteEnv>>
 export type ValidatorFirstPath = Expect<Equal<HandlerPath, RoutePath>>
+
+const nodeRuntimeOptions: NodeRuntimeOptions<string, never> = {
+  signals: ['SIGINT', 'SIGTERM'],
+  onSuccess: (value) => {
+    const exact: string = value
+    return exact.length > 0 ? 0 : 1
+  },
+  onFailure: () => 1
+}
+
+const nodeRuntimeResult = NodeRuntime.runMain(
+  Layer.empty,
+  () => Result.ok('node-main'),
+  nodeRuntimeOptions
+)
+void nodeRuntimeResult
 
 const DatabaseLive = Layer.succeed(Database, new Database())
 const nativeBackend = new MapLayerBackend()
