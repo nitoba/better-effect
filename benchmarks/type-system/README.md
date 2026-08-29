@@ -32,7 +32,7 @@ Each fixture measures:
 - lazy, metadata-aware `Program.named` transformation, observation,
   continuation, and recovery chains;
 - lazy `Program.all`, `Program.forEach`, and `Program.allResults` collections,
-  including collection names and execution attributes.
+  including collection names.
 
 The report includes files, types, instantiations, memory, check time, and total
 time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or

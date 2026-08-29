@@ -354,6 +354,26 @@ test('Program collection APIs share concurrency validation', () => {
   }
 })
 
+test('Program collection names reject non-string runtime values', () => {
+  const program = Effect.fn(function* () {
+    yield* []
+    return Result.ok(true)
+  })
+  const invalidNames: readonly (number | { readonly value: string })[] = [
+    42,
+    { value: 'not-a-name' }
+  ]
+
+  for (const name of invalidNames) {
+    const options = { name: 'placeholder' }
+    Reflect.set(options, 'name', name)
+
+    expect(() => Program.all([program], options)).toThrow(TypeError)
+    expect(() => Program.forEach([true], () => program, options)).toThrow(TypeError)
+    expect(() => Program.allResults([program], options)).toThrow(TypeError)
+  }
+})
+
 test('Program collections use unbounded concurrency by default', async () => {
   let active = 0
   let maximum = 0

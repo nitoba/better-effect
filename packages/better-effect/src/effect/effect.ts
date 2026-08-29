@@ -245,6 +245,7 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
     runShortCircuitingCollection(programs.length, (index) => programs[index]!(), concurrency)
 
   if (options.name !== undefined) {
+    validateProgramName(options.name)
     setProgramName(program, options.name)
   }
 
@@ -268,6 +269,7 @@ export function programForEach<const Items extends readonly unknown[], Child ext
     )
 
   if (options.name !== undefined) {
+    validateProgramName(options.name)
     setProgramName(program, options.name)
   }
 
@@ -286,6 +288,7 @@ export function programAllResults<const Programs extends readonly AnyProgram[]>(
     runAllResultsCollection(programs.length, (index) => programs[index]!(), concurrency)
 
   if (options.name !== undefined) {
+    validateProgramName(options.name)
     setProgramName(program, options.name)
   }
 
