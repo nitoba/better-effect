@@ -374,6 +374,13 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       return Promise.reject(cause)
     }
 
+    try {
+      this.assertActive()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+
     let executionScope: CloseableScope
 
     try {
@@ -413,6 +420,13 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       )
     } catch (cause) {
       return Promise.reject(cause)
+    }
+
+    try {
+      this.assertActive()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
     }
 
     const localBackend = new MapLayerBackend()

@@ -445,6 +445,85 @@ describe('RecordedRuntimeObserver', () => {
     }
   })
 
+  test('rejects runs disposed during metadata preparation before starting them', async () => {
+    for (const form of ['run', 'runWith'] as const) {
+      const recorder = RecordedRuntimeObserver.make()
+      const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+      let releaseExecution!: () => void
+      let markExecutionStarted!: () => void
+      let disposal: Promise<void> | undefined
+      let lateRuns = 0
+
+      const executionStarted = new Promise<void>((resolve) => {
+        markExecutionStarted = resolve
+      })
+      const executionMayFinish = new Promise<void>((resolve) => {
+        releaseExecution = resolve
+      })
+      const ongoing = runtime.run(async () => {
+        markExecutionStarted()
+        await executionMayFinish
+        return Result.ok('ongoing')
+      })
+      await executionStarted
+
+      const program = () => {
+        lateRuns++
+        return Result.ok('late')
+      }
+      const attributes = {
+        get requestId(): string {
+          disposal = runtime.dispose()
+          return 'reentrant'
+        }
+      }
+      const controller = new AbortController()
+      const signalOptions = {
+        get signal(): AbortSignal {
+          disposal = runtime.dispose()
+          return controller.signal
+        }
+      }
+
+      try {
+        if (form === 'run') {
+          expect(() => runtime.run(program, { attributes })).toThrow(
+            'Cannot run a program using a disposed Layer'
+          )
+        } else {
+          expect(() => runtime.runWith(Layer.merge(), program, signalOptions)).toThrow(
+            'Cannot run a program using a disposed Layer'
+          )
+        }
+
+        if (!disposal) {
+          throw new Error('Expected metadata preparation to start Runtime disposal')
+        }
+
+        let disposalFinished = false
+        void disposal.then(() => {
+          disposalFinished = true
+        })
+
+        await Promise.resolve()
+        expect(disposalFinished).toBe(false)
+        expect(lateRuns).toBe(0)
+
+        releaseExecution()
+        await ongoing
+        await disposal
+
+        expect(disposalFinished).toBe(true)
+        expect(recorder.executionStarts).toHaveLength(1)
+        expect(recorder.executionEnds).toHaveLength(1)
+      } finally {
+        releaseExecution()
+        await ongoing.catch(() => {})
+        await disposal?.catch(() => {})
+      }
+    }
+  })
+
   test('keeps Program names lazy, private, and explicit for collections', async () => {
     const recorder = RecordedRuntimeObserver.make()
     const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
