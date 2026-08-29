@@ -138,12 +138,22 @@ type TaggedErrorHandlersFor<Input> = [EffectError<Input>] extends [TaggedErrorLi
   : never
 
 type HandlerReturn<Handlers> = {
-  [Key in keyof Handlers]: Handlers[Key] extends (error: never) => infer Return ? Return : never
+  [Key in keyof Handlers]-?: NonNullable<Handlers[Key]> extends (error: never) => infer Return
+    ? Return
+    : never
+}[keyof Handlers]
+
+type RequiredHandlerKeys<Handlers> = {
+  [Key in keyof Handlers]-?: {} extends Pick<Handlers, Key>
+    ? never
+    : undefined extends Handlers[Key]
+      ? never
+      : Key
 }[keyof Handlers]
 
 type UnhandledTaggedErrors<ErrorValue extends TaggedErrorLike, Handlers> = Exclude<
   ErrorValue,
-  { readonly _tag: Extract<keyof Handlers, ErrorValue['_tag']> }
+  { readonly _tag: Extract<RequiredHandlerKeys<Handlers>, ErrorValue['_tag']> }
 >
 
 type MatchErrorResult<Input, Handlers> = Effect<
@@ -475,11 +485,11 @@ const matchErrorPartialResult = <
 >(
   result: ResultType<A, E>,
   handlers: Handlers
-): Effect<A, HandlerReturn<Handlers> | E, Requirements> => {
+): Effect<A, HandlerReturn<Handlers> | UnhandledTaggedErrors<E, Handlers>, Requirements> => {
   // SAFETY: Result.mapError selects Err and preserves Ok; the declaration-only Effect marker is restored here.
   return Result.mapError(result, (error) => resultMatchErrorPartial(error, handlers)) as Effect<
     A,
-    HandlerReturn<Handlers> | E,
+    HandlerReturn<Handlers> | UnhandledTaggedErrors<E, Handlers>,
     Requirements
   >
 }

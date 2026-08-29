@@ -135,6 +135,11 @@ const exhaustivelyMatched = Effect.matchError(taggedEffect, {
 const partiallyMatched = Effect.matchErrorPartial(taggedEffect, {
   PackageNotFound: (error) => new PackageHttpError({ message: error.message })
 })
+type OptionalHandlers = {
+  PackageNotFound?: (error: PackageNotFound) => PackageHttpError
+}
+declare const optionalHandlers: OptionalHandlers
+const optionallyMatched = Effect.matchErrorPartial(taggedEffect, optionalHandlers)
 
 export type AsyncTapAlias = Expect<
   Equal<Awaited<typeof asyncTapped>, Effect<number, PackageNotFound | PackageDenied>>
@@ -144,6 +149,12 @@ export type ExhaustiveMatchAlias = Expect<
 >
 export type PartialMatchAlias = Expect<
   Equal<typeof partiallyMatched, Effect<number, PackageHttpError | PackageDenied>>
+>
+export type OptionalPartialMatchAlias = Expect<
+  Equal<
+    typeof optionallyMatched,
+    Effect<number, PackageNotFound | PackageDenied | PackageHttpError>
+  >
 >
 // @ts-expect-error every tagged error variant must be handled
 Effect.matchError(taggedEffect, {

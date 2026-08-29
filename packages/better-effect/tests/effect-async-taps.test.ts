@@ -105,6 +105,10 @@ class HttpNotFound extends TaggedError('HttpNotFound')<{
   readonly message: string
 }> {}
 
+type OptionalUserNotFoundHandlers = {
+  UserNotFound?: (error: UserNotFound) => HttpNotFound
+}
+
 test('tagged error matching maps exhaustive and partial error branches', async () => {
   const notFound = new UserNotFound({ id: 'u1', message: 'missing' })
   const denied = new AccessDenied({ message: 'denied' })
@@ -139,5 +143,27 @@ test('tagged error matching maps exhaustive and partial error branches', async (
   if (Result.isError(partialHandled)) {
     expect(partialHandled.error).toBeInstanceOf(HttpNotFound)
     expect(partialHandled.error.message).toBe('missing')
+  }
+
+  const optionalHandlers: OptionalUserNotFoundHandlers = {}
+  const optionalUnhandled = Effect.matchErrorPartial(
+    Result.err<number, UserNotFound | AccessDenied>(notFound),
+    optionalHandlers
+  )
+
+  expect(Result.isError(optionalUnhandled)).toBe(true)
+  if (Result.isError(optionalUnhandled)) {
+    expect(optionalUnhandled.error).toBe(notFound)
+  }
+
+  optionalHandlers.UserNotFound = (error) => new HttpNotFound({ message: error.message })
+  const optionalHandled = Effect.matchErrorPartial(
+    Result.err<number, UserNotFound | AccessDenied>(notFound),
+    optionalHandlers
+  )
+
+  expect(Result.isError(optionalHandled)).toBe(true)
+  if (Result.isError(optionalHandled)) {
+    expect(optionalHandled.error).toBeInstanceOf(HttpNotFound)
   }
 })

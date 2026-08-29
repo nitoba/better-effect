@@ -109,6 +109,15 @@ expectTypeOf(fullyMappedPartialErrors).toEqualTypeOf<
   EffectType<number, HttpNotFound | HttpBadRequest, Database>
 >()
 
+type OptionalHandlers = {
+  UserNotFound?: (error: UserNotFound) => HttpNotFound
+}
+declare const optionalHandlers: OptionalHandlers
+const optionallyMappedErrors = Effect.matchErrorPartial(effect, optionalHandlers)
+expectTypeOf(optionallyMappedErrors).toEqualTypeOf<
+  EffectType<number, UserNotFound | AccessDenied | HttpNotFound, Database>
+>()
+
 const asyncMappedErrors = Effect.matchError(asyncEffect, {
   UserNotFound: (error) => new HttpNotFound({ message: error.message }),
   AccessDenied: (error) => new HttpForbidden({ message: error.reason })
