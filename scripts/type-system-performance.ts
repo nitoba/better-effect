@@ -7,6 +7,8 @@ const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
 
 const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
+const honoSizes = [1, 3, 6, 10] as const
+type HonoSize = (typeof honoSizes)[number]
 
 const scenarios = [
   'merge',
@@ -15,7 +17,8 @@ const scenarios = [
   'runtime-run',
   'transitive',
   'methods',
-  'program-chain'
+  'program-chain',
+  'hono-mixed'
 ] as const
 type Scenario = (typeof scenarios)[number]
 
@@ -30,7 +33,7 @@ type Metrics = {
 
 type Result = Metrics & {
   readonly scenario: Scenario
-  readonly size: Size
+  readonly size: number
   readonly fixture: string
   readonly status: 'ok' | 'error'
   readonly error: string | undefined
@@ -57,6 +60,19 @@ const budgets = {
     maxTypes: 800_000
   }
 } satisfies Record<Size, Budget>
+
+const honoBudgets = {
+  1: { maxCheckMs: 2_000, maxInstantiations: 400_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  3: { maxCheckMs: 3_000, maxInstantiations: 450_000, maxMemoryMiB: 512, maxTypes: 200_000 },
+  6: { maxCheckMs: 6_000, maxInstantiations: 500_000, maxMemoryMiB: 768, maxTypes: 400_000 },
+  10: {
+    maxCheckMs: 12_000,
+    maxInstantiations: 600_000,
+    maxMemoryMiB: 1_024,
+    maxMemoryMiB: 1_024,
+    maxTypes: 800_000
+  }
+} satisfies Record<HonoSize, Budget>
 
 const parseList = <T extends string>(value: string, allowed: readonly T[]): T[] => {
   const values = value.split(',').map((item) => item.trim())
@@ -86,8 +102,25 @@ const parseSizes = (value: string): Size[] => {
   return values as Size[]
 }
 
+const parseHonoSizes = (value: string): HonoSize[] => {
+  const values = value.split(',').map((item) => Number(item.trim()))
+
+  for (const item of values) {
+    // SAFETY: `item` is checked against the supported middleware-count literals before use.
+    if (!honoSizes.includes(item as HonoSize)) {
+      throw new Error(
+        `Unknown Hono middleware count '${item}'. Allowed values: ${honoSizes.join(', ')}`
+      )
+    }
+  }
+
+  // SAFETY: Every parsed value passed the middleware-count membership check above.
+  return values as HonoSize[]
+}
+
 type ParsedOptions = {
   readonly sizes: Size[]
+  readonly honoSizes: HonoSize[]
   readonly scenarios: Scenario[]
   readonly checkBudget: boolean
   readonly json: boolean
@@ -95,6 +128,7 @@ type ParsedOptions = {
 
 const parseArgs = (): ParsedOptions => {
   let selectedSizes: Size[] = [...sizes]
+  let selectedHonoSizes: HonoSize[] = [...honoSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
   let checkBudget = false
   let json = false
@@ -106,6 +140,8 @@ const parseArgs = (): ParsedOptions => {
       json = true
     } else if (argument.startsWith('--sizes=')) {
       selectedSizes = parseSizes(argument.slice('--sizes='.length))
+    } else if (argument.startsWith('--hono-sizes=')) {
+      selectedHonoSizes = parseHonoSizes(argument.slice('--hono-sizes='.length))
     } else if (argument.startsWith('--scenarios=')) {
       selectedScenarios = parseList(argument.slice('--scenarios='.length), scenarios)
     } else if (argument === '--help') {
@@ -114,6 +150,7 @@ const parseArgs = (): ParsedOptions => {
           'Usage: bun scripts/type-system-performance.ts [options]',
           '',
           `  --sizes=10,25,50,100       Service counts (default: ${sizes.join(',')})`,
+          `  --hono-sizes=1,3,6,10       Hono middleware counts (default: ${honoSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
           '  --check-budget             Exit non-zero when a configured ceiling is exceeded',
           '  --json                     Print machine-readable results'
@@ -125,7 +162,13 @@ const parseArgs = (): ParsedOptions => {
     }
   }
 
-  return { sizes: selectedSizes, scenarios: selectedScenarios, checkBudget, json }
+  return {
+    sizes: selectedSizes,
+    honoSizes: selectedHonoSizes,
+    scenarios: selectedScenarios,
+    checkBudget,
+    json
+  }
 }
 
 const serviceName = (index: number): string => `Service${String(index + 1).padStart(3, '0')}`
@@ -254,8 +297,85 @@ ${body}
 void Runtime.run(AppLive, () => program)`
 }
 
-const fixtureSource = (scenario: Scenario, size: Size): string => {
-  const names = serviceNames(size)
+const honoValidatorTargets = ['param', 'header', 'query', 'cookie', 'json', 'form'] as const
+
+type HonoValidatorTarget = (typeof honoValidatorTargets)[number]
+
+const capitalize = (value: string): string => `${value[0]!.toUpperCase()}${value.slice(1)}`
+
+const honoFixtureSource = (size: number): string => {
+  const targets: HonoValidatorTarget[] = Array.from(
+    { length: size },
+    (_, index) => honoValidatorTargets[index % honoValidatorTargets.length]!
+  )
+  const readTargets = [...new Set(targets)]
+  const middlewareNames = targets.map((target) => `validate${capitalize(target)}`)
+  const middlewareArguments = middlewareNames.join(',\n  ')
+  const reads = readTargets
+    .map((target) => `    const ${target} = c.req.valid('${target}')`)
+    .join('\n')
+  const resultFields = readTargets.map((target) => `${target}: ${target}`).join(', ')
+  const header = `import { Effect, Runtime } from '../../../packages/better-effect/src/index.ts'
+import { HonoEffect } from '../../../packages/better-effect/src/hono/index.ts'
+import { Result } from '../../../packages/better-effect/node_modules/better-result'
+import { validator } from '../../../packages/better-effect/node_modules/hono/dist/types/validator/validator.js'
+
+`
+
+  return `${header}const runtime = {} as Runtime<never>
+const http = HonoEffect.make(runtime)
+
+const validateParam = validator('param', (value: { id?: string }) => ({
+  id: value.id ?? ''
+}))
+const validateHeader = validator('header', (value: Record<string, string>) => ({
+  requestId: value['x-request-id'] ?? ''
+}))
+const validateQuery = validator('query', () => ({
+  page: '1'
+}))
+const validateCookie = validator('cookie', (value: Record<string, string>) => ({
+  session: value.session ?? ''
+}))
+const validateJson = validator('json', (value: { name?: string } | null) => ({
+  name: value?.name ?? ''
+}))
+const validateForm = validator('form', () => ({
+  note: ''
+}))
+
+const generated = http.gen(
+  ${middlewareArguments},
+  async function* (c) {
+${reads}
+    return Result.ok({ ${resultFields} })
+  },
+  { status: 201 }
+)
+
+const generatedHandler = http.handler(
+  ${middlewareArguments},
+  (c) => {
+${reads}
+    return Effect.fn(async function* () {
+      return Result.ok({ ${resultFields} })
+    })
+  },
+  undefined
+)
+
+void generated
+void generatedHandler
+`
+}
+
+const fixtureSource = (scenario: Scenario, size: number): string => {
+  if (scenario === 'hono-mixed') {
+    return honoFixtureSource(size)
+  }
+
+  // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
+  const names = serviceNames(size as Size)
   const withMethods = scenario === 'methods'
   const declarations = serviceDeclarations(names, withMethods)
   const header = `import { Effect, Layer, Program, Runtime, Service } from '../../../packages/better-effect/src/index.ts'
@@ -290,7 +410,7 @@ import { Result } from '../../../packages/better-effect/node_modules/better-resu
   return `${header}${declarations}\n\n${layers}\n\n${runtimeRunProgram(names, withMethods)}\n`
 }
 
-const writeFixture = async (scenario: Scenario, size: Size): Promise<string> => {
+const writeFixture = async (scenario: Scenario, size: number): Promise<string> => {
   const filename = `${scenario}-${size}.ts`
   const fixture = join(fixtureRoot, filename)
 
@@ -377,8 +497,8 @@ const runTsc = async (
   }
 }
 
-const budgetFailures = (size: Size, metrics: Metrics): string[] => {
-  const budget = budgets[size]
+const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): string[] => {
+  const budget = scenario === 'hono-mixed' ? honoBudgets[size as HonoSize] : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -426,10 +546,12 @@ const main = async (): Promise<void> => {
   const results: Result[] = []
 
   for (const scenario of options.scenarios) {
-    for (const size of options.sizes) {
+    const scenarioSizes = scenario === 'hono-mixed' ? options.honoSizes : options.sizes
+
+    for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)
       const run = await runTsc(fixture)
-      const budgetExceeded = budgetFailures(size, run.metrics)
+      const budgetExceeded = budgetFailures(scenario, size, run.metrics)
 
       if (run.error) {
         budgetExceeded.push('compile error')

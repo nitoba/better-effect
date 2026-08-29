@@ -319,9 +319,9 @@ app.get(
 )
 ```
 
-Hono validators can precede the generator or handler callback. Their validated
-`c.req.valid(...)` inputs are combined and inferred without a manual `Input`
-helper:
+One or more Hono validators can precede the generator or handler callback, in
+the order they should run. Their validated `c.req.valid(...)` inputs are
+combined and inferred without a manual `Input` helper:
 
 ```ts
 import { sValidator } from '@hono/standard-validator'

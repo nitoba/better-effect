@@ -26,12 +26,28 @@ import type {
   HonoEffectRouteOptions,
   HonoRequestLayerChecks,
   HonoEffectSuccess,
+  FirstMiddleware,
   MiddlewareEnvironment,
   ResponseLike,
-  MiddlewareInput,
   MiddlewareInputs,
   MiddlewarePath
 } from './types'
+
+type HonoRouteArguments<Middlewares extends readonly AnyHonoMiddleware[], Body, Options> =
+  | [...middlewares: Middlewares, body: Body]
+  | [...middlewares: Middlewares, body: Body, options: Options | undefined]
+
+type HonoHandlerFactory<
+  ContextType extends object,
+  Provided extends AnyService,
+  Failure,
+  ProgramFactory extends (context: ContextType) => AnyProgram
+> = ProgramFactory &
+  ([ReturnType<ProgramFactory>] extends [
+    CompleteProgram<Provided, ReturnType<ProgramFactory>, Failure>
+  ]
+    ? unknown
+    : (context: ContextType) => CompleteProgram<Provided, ReturnType<ProgramFactory>, Failure>)
 
 /** Run Effect Programs inside one Runtime execution per Hono request. */
 export class HonoEffect<
@@ -91,65 +107,29 @@ export class HonoEffect<
     options?: HonoEffectRouteOptions<EffectSuccess<Program>, Context<E, Path, InputType>>
   ): Handler<E, Path, InputType, Promise<Response>>
   handler<
-    const FirstMiddleware extends AnyHonoMiddleware,
-    const SecondMiddleware extends AnyHonoMiddleware,
-    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
-    Path extends string = MiddlewarePath<FirstMiddleware>,
-    Program extends AnyProgram = AnyProgram
+    const Middlewares extends readonly AnyHonoMiddleware[],
+    E extends Env = MiddlewareEnvironment<FirstMiddleware<Middlewares>>,
+    Path extends string = MiddlewarePath<FirstMiddleware<Middlewares>>,
+    const ProgramFactory extends (
+      context: HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>
+    ) => AnyProgram = (
+      context: HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>
+    ) => AnyProgram
   >(
-    firstMiddleware: FirstMiddleware,
-    secondMiddleware: SecondMiddleware,
-    makeProgram: (
-      context: HonoEffectContext<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<Program>,
-      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
-    >
-  ): Handler<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>, Promise<Response>>
-  handler<
-    const FirstMiddleware extends AnyHonoMiddleware,
-    const SecondMiddleware extends AnyHonoMiddleware,
-    const ThirdMiddleware extends AnyHonoMiddleware,
-    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
-    Path extends string = MiddlewarePath<FirstMiddleware>,
-    Program extends AnyProgram = AnyProgram
-  >(
-    firstMiddleware: FirstMiddleware,
-    secondMiddleware: SecondMiddleware,
-    thirdMiddleware: ThirdMiddleware,
-    makeProgram: (
-      context: HonoEffectContext<
-        E,
-        Path,
-        MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>
+    ...args: HonoRouteArguments<
+      Middlewares,
+      HonoHandlerFactory<
+        HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>,
+        AvailableServices<Provided, RequestLayer>,
+        Failure,
+        ProgramFactory
+      >,
+      HonoEffectRouteOptions<
+        EffectSuccess<ReturnType<ProgramFactory>>,
+        Context<E, Path, MiddlewareInputs<Middlewares>>
       >
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<Program>,
-      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>>
     >
-  ): Handler<
-    E,
-    Path,
-    MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>,
-    Promise<Response>
-  >
-  handler<
-    const InputMiddleware extends AnyHonoMiddleware,
-    E extends Env = MiddlewareEnvironment<InputMiddleware>,
-    Path extends string = MiddlewarePath<InputMiddleware>,
-    Program extends AnyProgram = AnyProgram
-  >(
-    inputMiddleware: InputMiddleware,
-    makeProgram: (
-      context: HonoEffectContext<E, Path, MiddlewareInput<InputMiddleware>>
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<Program>,
-      Context<E, Path, MiddlewareInput<InputMiddleware>>
-    >
-  ): Handler<E, Path, MiddlewareInput<InputMiddleware>, Promise<Response>>
+  ): Handler<E, Path, MiddlewareInputs<Middlewares>, Promise<Response>>
   handler(...args: unknown[]): Handler<any, any, any, Promise<Response>> {
     const last = args.at(-1)
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
@@ -184,77 +164,22 @@ export class HonoEffect<
     >
   ): Handler<E, Path, InputType, Promise<Response>>
   gen<
-    const FirstMiddleware extends AnyHonoMiddleware,
-    const SecondMiddleware extends AnyHonoMiddleware,
-    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
-    Path extends string = MiddlewarePath<FirstMiddleware>,
+    const Middlewares extends readonly AnyHonoMiddleware[],
+    E extends Env = MiddlewareEnvironment<FirstMiddleware<Middlewares>>,
+    Path extends string = MiddlewarePath<FirstMiddleware<Middlewares>>,
     const Yield extends EffectYield = EffectYield,
     const Returned extends AnyResult = AnyResult
   >(
-    firstMiddleware: FirstMiddleware,
-    secondMiddleware: SecondMiddleware,
-    body: GeneratorBody<
-      HonoEffectContext<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>,
-      Yield,
-      Returned
-    > &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
-      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>>
+    ...args: HonoRouteArguments<
+      Middlewares,
+      GeneratorBody<HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>, Yield, Returned> &
+        GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
+      HonoEffectRouteOptions<
+        EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
+        Context<E, Path, MiddlewareInputs<Middlewares>>
+      >
     >
-  ): Handler<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware]>, Promise<Response>>
-  gen<
-    const FirstMiddleware extends AnyHonoMiddleware,
-    const SecondMiddleware extends AnyHonoMiddleware,
-    const ThirdMiddleware extends AnyHonoMiddleware,
-    E extends Env = MiddlewareEnvironment<FirstMiddleware>,
-    Path extends string = MiddlewarePath<FirstMiddleware>,
-    const Yield extends EffectYield = EffectYield,
-    const Returned extends AnyResult = AnyResult
-  >(
-    firstMiddleware: FirstMiddleware,
-    secondMiddleware: SecondMiddleware,
-    thirdMiddleware: ThirdMiddleware,
-    body: GeneratorBody<
-      HonoEffectContext<
-        E,
-        Path,
-        MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>
-      >,
-      Yield,
-      Returned
-    > &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
-      Context<E, Path, MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>>
-    >
-  ): Handler<
-    E,
-    Path,
-    MiddlewareInputs<[FirstMiddleware, SecondMiddleware, ThirdMiddleware]>,
-    Promise<Response>
-  >
-  gen<
-    const InputMiddleware extends AnyHonoMiddleware,
-    E extends Env = MiddlewareEnvironment<InputMiddleware>,
-    Path extends string = MiddlewarePath<InputMiddleware>,
-    const Yield extends EffectYield = EffectYield,
-    const Returned extends AnyResult = AnyResult
-  >(
-    inputMiddleware: InputMiddleware,
-    body: GeneratorBody<
-      HonoEffectContext<E, Path, MiddlewareInput<InputMiddleware>>,
-      Yield,
-      Returned
-    > &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
-      Context<E, Path, MiddlewareInput<InputMiddleware>>
-    >
-  ): Handler<E, Path, MiddlewareInput<InputMiddleware>, Promise<Response>>
+  ): Handler<E, Path, MiddlewareInputs<Middlewares>, Promise<Response>>
   gen(...args: unknown[]): Handler<any, any, any, Promise<Response>> {
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch distinguishes middleware from the generator body.
     const last = args.at(-1)

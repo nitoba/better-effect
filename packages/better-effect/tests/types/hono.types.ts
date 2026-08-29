@@ -1,9 +1,13 @@
+import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 import { Hono } from 'hono'
+import type { Handler, MiddlewareHandler } from 'hono'
 import { validator } from 'hono/validator'
 
 import { Effect, Layer, Runtime, Service } from '../../src'
+import type { EffectError } from '../../src/effect'
 import { HonoEffect } from '../../src/hono'
+import type { MiddlewareInputs } from '../../src/hono/types'
 import { CurrentRequest } from '../../src/standard-services'
 
 class Available extends Service<Available>()('HonoAvailable') {}
@@ -47,8 +51,8 @@ const invalidFailure = http.gen(
 
 void invalidFailure
 
+// @ts-expect-error Hono handler routes reject an error outside the configured Failure union.
 const invalidFailureHandler = http.handler(() =>
-  // @ts-expect-error The private diagnostic is attached at the Program boundary.
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.err(new OtherFailure())
@@ -75,8 +79,8 @@ const invalidService = http.gen(async function* () {
 
 void invalidService
 
+// @ts-expect-error Handler Programs use the same Runtime requirement check as gen.
 const invalidHandler = http.handler(() =>
-  // @ts-expect-error Handler Programs use the same Runtime requirement check as gen.
   Effect.fn(async function* () {
     const missing = yield* Missing
     return Result.ok(missing)
@@ -249,3 +253,254 @@ const combinedHandler = http.handler(validateParam, validateHeader, (c) => {
 })
 
 void combinedHandler
+
+type RouteEnv = {
+  readonly Bindings: {
+    readonly API_KEY: string
+  }
+  readonly Variables: {
+    readonly user: {
+      readonly id: string
+    }
+  }
+}
+type RoutePath = '/work-orders/:id'
+
+const environmentAndPathMiddleware: MiddlewareHandler<RouteEnv, RoutePath> = async (c, next) => {
+  expectTypeOf(c.env.API_KEY).toEqualTypeOf<string>()
+  expectTypeOf(c.get('user')).toEqualTypeOf<{ readonly id: string }>()
+  await next()
+}
+
+const validateQuery = validator('query', () => ({
+  page: '1'
+}))
+const validateCookie = validator('cookie', (value: Record<string, string>) => ({
+  session: value.session ?? 'anonymous'
+}))
+const validateForm = validator('form', () => ({
+  note: ''
+}))
+
+const requestVariadicGenerator = requestHttp.gen(validateParam, validateHeader, async function* () {
+  const requestId = yield* RequestId
+  return Result.ok(requestId)
+})
+
+void requestVariadicGenerator
+
+const variadicSixGenerator = http.gen(
+  environmentAndPathMiddleware,
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  validateCookie,
+  validateForm,
+  async function* (c) {
+    expectTypeOf(c.env.API_KEY).toEqualTypeOf<string>()
+    expectTypeOf(c.get('user')).toEqualTypeOf<{ readonly id: string }>()
+
+    const params = c.req.valid('param')
+    const headers = c.req.valid('header')
+    const query = c.req.valid('query')
+    const json = c.req.valid('json')
+    const cookie = c.req.valid('cookie')
+    const form = c.req.valid('form')
+
+    expectTypeOf(params).toEqualTypeOf<{ id: string }>()
+    expectTypeOf(headers).toEqualTypeOf<{ 'X-Idempotency-Key': string }>()
+    expectTypeOf(query).toEqualTypeOf<{ page: string }>()
+    expectTypeOf(json).toEqualTypeOf<{ name: string }>()
+    expectTypeOf(cookie).toEqualTypeOf<{ session: string }>()
+    expectTypeOf(form).toEqualTypeOf<{ note: string }>()
+
+    const available = yield* Available
+    return Result.ok({ params, headers, query, json, cookie, form, available })
+  },
+  { status: 201 }
+)
+
+const typedApp = new Hono<RouteEnv>()
+typedApp.post('/work-orders/:id', variadicSixGenerator)
+
+expectTypeOf(variadicSixGenerator).toEqualTypeOf<
+  Handler<
+    RouteEnv,
+    RoutePath,
+    MiddlewareInputs<
+      [
+        typeof environmentAndPathMiddleware,
+        typeof validateParam,
+        typeof validateHeader,
+        typeof validateQuery,
+        typeof validateJson,
+        typeof validateCookie,
+        typeof validateForm
+      ]
+    >,
+    Promise<Response>
+  >
+>()
+
+const variadicFourGenerator = http.gen(
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  async function* (c) {
+    const params = c.req.valid('param')
+    const headers = c.req.valid('header')
+    const query = c.req.valid('query')
+    const json = c.req.valid('json')
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+
+    return Result.ok({ params, headers, query, json })
+  },
+  undefined
+)
+
+const variadicTenHandler = http.handler(
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  validateCookie,
+  validateForm,
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  (c) => {
+    const params = c.req.valid('param')
+    const headers = c.req.valid('header')
+    const query = c.req.valid('query')
+    const json = c.req.valid('json')
+
+    return Effect.fn(async function* () {
+      yield* Available
+      return Result.ok({ params, headers, query, json })
+    })
+  },
+  undefined
+)
+
+void variadicFourGenerator
+void variadicTenHandler
+
+const reusableVariadicProgram = Effect.fn(async function* () {
+  yield* Available
+  return Result.ok('reusable')
+})
+const reusableVariadicHandler = http.handler(
+  validateParam,
+  validateHeader,
+  () => reusableVariadicProgram,
+  undefined
+)
+
+void reusableVariadicHandler
+
+const variadicHandlerOptions = http.handler(
+  validateParam,
+  validateHeader,
+  validateQuery,
+  (c) => {
+    const id = c.req.valid('param').id
+    const key = c.req.valid('header')['X-Idempotency-Key']
+    const page = c.req.valid('query').page
+
+    return Effect.fn(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok({ id, key, page })
+    })
+  },
+  {
+    status: 201,
+    serialize: (value) => `${value.id}:${value.key}:${value.page}`
+  }
+)
+
+void variadicHandlerOptions
+
+const readonlyValidators = [
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  validateCookie,
+  validateForm
+] as const
+const readonlyTupleGenerator = http.gen(...readonlyValidators, async function* (c) {
+  yield* Result.await(Promise.resolve(Result.ok(undefined)))
+  return Result.ok({
+    params: c.req.valid('param'),
+    headers: c.req.valid('header'),
+    query: c.req.valid('query'),
+    json: c.req.valid('json'),
+    cookie: c.req.valid('cookie'),
+    form: c.req.valid('form')
+  })
+})
+
+void readonlyTupleGenerator
+
+const invalidVariadicService = http.gen(
+  // @ts-expect-error Variadic generator routes still reject missing Services.
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  async function* () {
+    const missing = yield* Missing
+    return Result.ok(missing)
+  }
+)
+
+void invalidVariadicService
+
+const invalidVariadicGeneratorFailure = http.gen(
+  // @ts-expect-error Variadic generator routes still reject failures outside Failure.
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.err(new OtherFailure())
+  }
+)
+
+void invalidVariadicGeneratorFailure
+
+const invalidVariadicHandlerService = http.handler(
+  // @ts-expect-error Variadic handler routes still reject missing Services.
+  validateParam,
+  validateHeader,
+  validateQuery,
+  () =>
+    Effect.fn(async function* () {
+      const missing = yield* Missing
+      return Result.ok(missing)
+    })
+)
+
+void invalidVariadicHandlerService
+
+const invalidVariadicFailureProgram = Effect.fn(async function* () {
+  yield* Result.await(Promise.resolve(Result.ok(undefined)))
+  return Result.err(new OtherFailure())
+})
+
+expectTypeOf<EffectError<typeof invalidVariadicFailureProgram>>().toEqualTypeOf<OtherFailure>()
+
+const invalidVariadicFailure = http.handler(
+  // @ts-expect-error Variadic handler routes still reject failures outside Failure.
+  validateParam,
+  validateHeader,
+  validateQuery,
+  validateJson,
+  () => invalidVariadicFailureProgram
+)
+
+void invalidVariadicFailure
