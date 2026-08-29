@@ -2,6 +2,7 @@ import { Result } from 'better-result'
 
 import {
   Effect,
+  Program,
   Layer,
   MapLayerBackend,
   Runtime,
@@ -100,7 +101,18 @@ const LeanLive = Layer.make(LeanDatabase)
 // @ts-expect-error incompatible same-tag overrides fail at the call site
 Layer.override(RichLive, LeanLive)
 
-type Program = typeof program
+type EagerProgram = typeof program
+
+const lazyProgram = Effect.fn(function* () {
+  yield* []
+  return Result.ok('lazy')
+})
+const mappedProgram = Program.map(lazyProgram, (value) => value.length)
+const chainedProgram = Program.andThen(mappedProgram, (value) => Result.ok(value > 0))
+const observedProgram = Program.tap(chainedProgram, () => undefined)
+const recoveredProgram = Program.recover(observedProgram, () => Result.ok(false))
+
+void recoveredProgram
 
 export type ProgramAlias = Expect<
   Equal<
@@ -112,10 +124,12 @@ export type EffectProgramAlias = Expect<
   Equal<Effect.Program<string, never, Database>, LazyProgram<string, never, Database>>
 >
 
-export type EffectSuccessAlias = Expect<Equal<Effect.Success<Program>, EffectSuccess<Program>>>
-export type EffectErrorAlias = Expect<Equal<Effect.Error<Program>, EffectError<Program>>>
+export type EffectSuccessAlias = Expect<
+  Equal<Effect.Success<EagerProgram>, EffectSuccess<EagerProgram>>
+>
+export type EffectErrorAlias = Expect<Equal<Effect.Error<EagerProgram>, EffectError<EagerProgram>>>
 export type EffectRequirementsAlias = Expect<
-  Equal<Effect.Requirements<Program>, EffectRequirements<Program>>
+  Equal<Effect.Requirements<EagerProgram>, EffectRequirements<EagerProgram>>
 >
 export type EffectAnyAlias = Expect<Equal<Effect.Any, AnyEffect>>
 

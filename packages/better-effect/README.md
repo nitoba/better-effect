@@ -128,6 +128,16 @@ input order. If a Program returns an error or throws, scheduling stops, already-
 started Programs are allowed to settle, and the deterministic primary failure remains selected;
 there is no cancellation or Fiber scheduler.
 
+Use `Effect.*` to transform an already-created Result, and `Program.*` to compose
+an `Effect.fn` Program without starting it. `Program.map`, `mapError`, `tap`, and
+`tapError` preserve that laziness; `andThen` and `recover` accept an Effect, a
+Promise of an Effect, or another Program only after their matching Result branch
+is selected. `Program.andThen` unions its source and continuation error and
+Service requirement channels. `Program.recover` handles and removes the source
+`Err` channel, exposes the recovery error channel, and unions the source and
+recovery Service requirements. Taps preserve the original Result object on
+success.
+
 `Runtime.make(AppLive)` and `Runtime.run(AppLive, program)` use the built-in
 `MapLayerBackend`. Pass `{ backend: new ItiLayerBackend() }` when an external
 container is needed; `MemoryLayerBackend` remains its compatibility alias from
