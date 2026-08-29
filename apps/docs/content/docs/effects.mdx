@@ -287,6 +287,39 @@ Acquisition failures are part of the Effect's `UnhandledException` Result
 error channel. Release failures belong to Scope cleanup, so a Runtime can
 report them without silently changing a primary program failure.
 
+### Acquire a Result-valued resource
+
+When a database pool or another adapter already returns a `Result`,
+`acquireReleaseResult` keeps the typed acquisition error and registers only an
+`Ok` value:
+
+```ts
+const connection =
+  yield *
+  Effect.acquireReleaseResult(
+    () => pool.connect(),
+    (connection, outcome) => connection.close(outcome)
+  )
+```
+
+An `Err` is returned unchanged and its release callback is not run. Thrown or
+rejected acquisition defects use `UnhandledException`; release failures stay
+with Scope cleanup.
+
+### Acquire a disposable resource
+
+Use `acquireDisposable` for a file, socket, or client that implements
+`Symbol.asyncDispose` or `Symbol.dispose`:
+
+```ts
+const file = yield * Effect.acquireDisposable(() => openFile('notes.txt'))
+const contents = yield * Result.await(file.read())
+```
+
+The helper acquires lazily when the generator reaches it, preserves the exact
+resource type, and delegates validation and async-first disposal to the current
+execution Scope.
+
 ## Register an already-acquired disposable
 
 `Effect.add` does not acquire anything and does not create a Scope. It registers

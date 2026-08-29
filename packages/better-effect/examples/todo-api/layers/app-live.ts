@@ -9,15 +9,11 @@ import { UserRepository } from '../repositories/user-repository'
 import { AuthService } from '../services/auth-service'
 import { TodoService } from '../services/todo-service'
 
-const DatabaseLive = Layer.scoped(
-  Database,
-  async () => {
-    const database = new Database(new SQL(':memory:', { adapter: 'sqlite' }))
-    await database.initialize()
-    return database
-  },
-  (database) => database.close()
-)
+const DatabaseLive = Layer.scopedDisposable(Database, async () => {
+  const database = new Database(new SQL(':memory:', { adapter: 'sqlite' }))
+  await database.initialize()
+  return database
+})
 
 const RepositoriesLive = Layer.merge(
   Layer.make(UserRepository),

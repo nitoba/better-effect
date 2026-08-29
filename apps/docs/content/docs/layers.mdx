@@ -68,6 +68,20 @@ The resource is acquired lazily on first resolution, stays alive across
 `runtime.run` calls, and is released when the Runtime root closes. Use
 `scopedGen` when acquisition also needs contextual Services.
 
+## `Layer.scopedDisposable`
+
+For a Service whose implementation already exposes a JavaScript disposal
+protocol, `scopedDisposable` removes the repeated release callback:
+
+```ts
+const DatabaseLive = Layer.scopedDisposable(Database, () => Database.connect())
+```
+
+The provider must return a disposable `Service.Contract` at the type boundary.
+`Symbol.asyncDispose` wins when both protocols exist. The Runtime root owns the
+release, so the resource remains available across executions and the DI backend
+only registers and resolves it.
+
 ## `Layer.gen` and `Layer.scopedGen`
 
 Provider factories can request contextual Services during acquisition:

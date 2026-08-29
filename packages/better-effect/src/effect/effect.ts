@@ -290,6 +290,61 @@ export function acquireRelease<R>(
   return Result.await(Result.tryPromise(() => scope.acquire(acquire, release)))
 }
 
+class AcquireReleaseResultFailure<R, E> {
+  constructor(readonly result: Err<R, E>) {}
+}
+
+/**
+ * Acquire a Result-valued resource and register only successful acquisitions.
+ *
+ * Typed acquisition failures remain unchanged in the Effect error channel;
+ * unexpected acquisition and registration failures are normalized by
+ * `better-result`. Release failures remain Scope cleanup failures.
+ */
+export function acquireReleaseResult<R, E>(
+  acquire: () => MaybePromise<ResultType<R, E>>,
+  release: (resource: R, outcome: ScopeOutcome) => MaybePromise<void>
+): AsyncGenerator<Err<never, E | UnhandledException>, R, unknown> {
+  const scope = Scope.current()
+  const registered = Result.tryPromise(async (): Promise<ResultType<R, E>> => {
+    try {
+      const resource = await scope.acquire(async () => {
+        const result = await acquire()
+
+        if (Result.isError(result)) {
+          throw new AcquireReleaseResultFailure(result)
+        }
+
+        return result.value
+      }, release)
+
+      return Result.ok(resource)
+    } catch (cause) {
+      if (cause instanceof AcquireReleaseResultFailure) {
+        return cause.result
+      }
+
+      throw cause
+    }
+  })
+
+  return Result.await(registered.then((result) => result.andThen((acquired) => acquired)))
+}
+
+/**
+ * Lazily acquire and register a disposable resource in the current Scope.
+ *
+ * Disposal is delegated to `Scope.add`, including protocol preference,
+ * validation, race-safe registration, and cleanup error handling.
+ */
+export function acquireDisposable<R extends DisposableResource>(
+  acquire: () => MaybePromise<R>
+): AsyncGenerator<Err<never, UnhandledException>, R, unknown> {
+  const scope = Scope.current()
+
+  return Result.await(Result.tryPromise(async () => scope.add(await acquire())))
+}
+
 /**
  * Register an already-acquired disposable resource in the current Scope.
  *
@@ -320,6 +375,8 @@ type EffectNamespace = {
   readonly gen: typeof gen
   readonly fn: typeof fn
   readonly acquireRelease: typeof acquireRelease
+  readonly acquireReleaseResult: typeof acquireReleaseResult
+  readonly acquireDisposable: typeof acquireDisposable
   readonly add: typeof add
   readonly map: typeof map
   readonly mapError: typeof mapError
@@ -350,6 +407,10 @@ export const Effect: EffectNamespace = {
   fn,
   /** Acquire and register a resource in the current Scope. */
   acquireRelease,
+  /** Acquire a Result-valued resource and register successful acquisitions. */
+  acquireReleaseResult,
+  /** Acquire and register a disposable resource in the current Scope. */
+  acquireDisposable,
   /** Register an already-acquired disposable in the current Scope. */
   add,
   /** Map a successful Effect result. */
