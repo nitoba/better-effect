@@ -17,7 +17,7 @@
     "lint": "turbo run lint",
     "format": "turbo run format",
     "format:check": "turbo run format:check",
-    "publint": "turbo run publint --filter=better-effect",
+    "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq",
     "check": "turbo run check",
     "perf:type-system": "bun scripts/type-system-performance.ts"
   },
