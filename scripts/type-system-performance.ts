@@ -70,7 +70,6 @@ const honoBudgets = {
     maxCheckMs: 12_000,
     maxInstantiations: 600_000,
     maxMemoryMiB: 1_024,
-    maxMemoryMiB: 1_024,
     maxTypes: 800_000
   }
 } satisfies Record<HonoSize, Budget>
