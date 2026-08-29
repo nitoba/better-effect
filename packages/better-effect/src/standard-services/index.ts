@@ -216,7 +216,7 @@ export class ClockTest implements Service.Contract<Clock> {
   }
 
   /** Advance all pending deadlines, guarding at 1,000 steps by default. */
-  async runAll(options?: ClockTestRunAllOptions | number): Promise<number> {
+  async runAll(options?: ClockTestRunAllOptions): Promise<number> {
     const maxSteps = getMaxSteps(options)
     let steps = 0
 
@@ -281,10 +281,8 @@ export class ClockTest implements Service.Contract<Clock> {
   }
 }
 
-const getMaxSteps = (options?: ClockTestRunAllOptions | number): number => {
-  const maxSteps =
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- support a numeric max-step shorthand.
-    typeof options === 'number' ? options : (options?.maxSteps ?? defaultClockTestMaxSteps)
+const getMaxSteps = (options?: ClockTestRunAllOptions): number => {
+  const maxSteps = options?.maxSteps ?? defaultClockTestMaxSteps
 
   if (!Number.isInteger(maxSteps) || maxSteps < 0) {
     throw new RangeError('ClockTest.runAll maxSteps must be a finite non-negative integer')

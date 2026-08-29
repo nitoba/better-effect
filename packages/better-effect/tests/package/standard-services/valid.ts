@@ -47,6 +47,10 @@ const legacyClock = {
 
 const runAllOptions: ClockTestRunAllOptions = { maxSteps: 10 }
 declare const clockTest: ClockTest
+void clockTest.runAll()
+void clockTest.runAll(runAllOptions)
+// @ts-expect-error ClockTest.runAll accepts object options, not a numeric shorthand.
+void clockTest.runAll(10)
 // @ts-expect-error pendingSleeps is a readonly count.
 clockTest.pendingSleeps = 0
 void legacyClock
