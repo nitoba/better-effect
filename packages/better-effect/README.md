@@ -208,6 +208,42 @@ Or let `Runtime.use` own the lifetime:
 const result = await Runtime.use(AppLive, (runtime) => runtime.run(program))
 ```
 
+For isolated application tests, use the testing facade over that same Layer and
+Runtime. It installs only the controlled Services you pass, records lifecycle
+events, and disposes automatically:
+
+```ts
+import { ClockTest, LoggerTest, TestRuntime } from 'better-effect/testing'
+
+const logger = new LoggerTest()
+const result = await TestRuntime.use(
+  AppLive,
+  {
+    overrides: [DatabaseTest],
+    clock: new ClockTest(Date.UTC(2026, 0, 1)),
+    logger
+  },
+  async (test) => {
+    const value = await test.run(loadDashboard)
+    expect(test.observer.executionEnds).toHaveLength(1)
+    return value
+  }
+)
+
+expect(logger.events).toHaveLength(1)
+```
+
+A long-lived test boundary supports integration-style request Layers as well:
+
+```ts
+await using test = await TestRuntime.make(AppLive, { overrides: [DatabaseTest] })
+const result = await test.runWith(RequestLive, handleRequest)
+```
+
+`TestRuntime.use` preserves program-vs-cleanup failure precedence. The default
+recorder is available as `test.observer`; use `test.runtime` only when an
+advanced test explicitly needs the underlying Runtime.
+
 Layer providers remain lazy unless startup validation is requested. Warm them
 all before accepting work with either form:
 

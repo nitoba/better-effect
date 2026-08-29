@@ -70,11 +70,13 @@ jobs:
           import 'better-effect/hono'
           import 'better-effect/runtime/explicit'
           import 'better-effect/runtime/node'
-          import 'better-effect/standard-services'
+          import { Logger } from 'better-effect/standard-services'
           import {
             layerBackendContract,
+            LoggerTest,
             RecordedRuntimeObserver,
-            RuntimeObserver
+            RuntimeObserver,
+            TestRuntime
           } from 'better-effect/testing'
           import { Result } from 'better-result'
 
@@ -98,6 +100,29 @@ jobs:
             recorded.executionEnds.length !== 1
           ) {
             throw new Error('packed consumer smoke test failed')
+          }
+
+          const logger = new LoggerTest()
+          const testResult = await TestRuntime.use(
+            Layer.make(Greeting),
+            { logger },
+            (test) =>
+              test.run(
+                Effect.fn(async function* () {
+                  const greeting = yield* Greeting
+                  const testLogger = yield* Logger
+                  testLogger.info('test')
+                  return Result.ok(greeting)
+                })
+              )
+          )
+
+          if (!Result.isOk(testResult) || !(testResult.value instanceof Greeting)) {
+            throw new Error('packed TestRuntime.use smoke test failed')
+          }
+
+          if (logger.events.length !== 1) {
+            throw new Error('packed TestRuntime standard service smoke test failed')
           }
 
           const scenario = layerBackendContract({

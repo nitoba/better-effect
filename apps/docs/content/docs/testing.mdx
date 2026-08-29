@@ -7,6 +7,64 @@ icon: TestTube
 Testing is one of the main reasons to keep Services and Layers separate. The
 Service contains behavior; the test Layer supplies controlled implementations.
 
+## Use an isolated TestRuntime
+
+`better-effect/testing` provides a thin facade over the real `Layer` and
+`Runtime`. It creates a fresh backend, records Runtime lifecycle events, and
+releases all resources when the test finishes. Standard test Services are
+installed only when they are passed explicitly:
+
+```ts
+import { Result } from 'better-result'
+import { Effect } from 'better-effect'
+import { Clock, Logger, Random } from 'better-effect/standard-services'
+import { ClockTest, LoggerTest, RandomSeeded, TestRuntime } from 'better-effect/testing'
+
+const logger = new LoggerTest()
+const result = await TestRuntime.use(
+  AppLive,
+  {
+    overrides: [DatabaseTest],
+    clock: new ClockTest(new Date('2026-01-01T00:00:00Z')),
+    logger,
+    random: new RandomSeeded(42)
+  },
+  async (test) => {
+    const value = await test.run(
+      Effect.fn(async function* () {
+        const clock = yield* Clock
+        const runtimeLogger = yield* Logger
+        const random = yield* Random
+        runtimeLogger.info('loading', { sample: random.nextInt(10) })
+        return Result.ok({ at: clock.now() })
+      })
+    )
+
+    expect(test.observer.executionEnds).toHaveLength(1)
+    expect(test.logger.events).toHaveLength(1)
+    return value
+  }
+)
+```
+
+The long-lived form supports JavaScript async disposal and the same typed
+`run`/`runWith` methods:
+
+```ts
+await using test = await TestRuntime.make(AppLive, {
+  overrides: [DatabaseTest]
+})
+
+const result = await test.run(loadDashboard)
+const requestResult = await test.runWith(RequestLive, handleRequest)
+```
+
+`TestRuntime.use` disposes in `finally`; a program failure remains primary over
+cleanup failure. Disposal is idempotent, and two TestRuntime instances can run
+concurrently without sharing backend or resolver state. The recorded observer
+is available as `test.observer`. The underlying Runtime is available as
+`test.runtime` only for advanced test cases; normal tests should use the facade.
+
 ## Use the built-in backend
 
 ```ts
