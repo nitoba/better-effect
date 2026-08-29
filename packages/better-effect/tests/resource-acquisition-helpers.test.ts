@@ -45,6 +45,14 @@ class DisposableClient extends Service<DisposableClient>()('DisposableClient') {
   async [Symbol.asyncDispose](): Promise<void> {}
 }
 
+class SyncDisposableClient extends Service<SyncDisposableClient>()('SyncDisposableClient') {
+  request(): string {
+    return 'request'
+  }
+
+  [Symbol.dispose](): void {}
+}
+
 class RecordingBackend extends MapLayerBackend {
   constructor(private readonly events: string[]) {
     super()
@@ -514,6 +522,82 @@ describe('Effect.acquireDisposable', () => {
 })
 
 describe('Layer.scopedDisposable', () => {
+  test('uses the disposer captured before an accessor removes the protocol', async () => {
+    const events: string[] = []
+    let dispose: (() => void) | undefined = () => {
+      events.push('dispose')
+    }
+    const client = SyncDisposableClient.of({
+      request: () => 'ok',
+      get [Symbol.dispose](): () => void {
+        return dispose!
+      }
+    })
+    const runtime = await Runtime.make(
+      Layer.scopedDisposable(SyncDisposableClient, () => client),
+      new MapLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(SyncDisposableClient))
+    dispose = undefined
+
+    await runtime.dispose()
+
+    expect(events).toEqual(['dispose'])
+  })
+
+  test('invokes an async disposer exactly once for a dual-protocol resource', async () => {
+    const events: string[] = []
+    const implementation = {
+      request: () => 'ok',
+      [Symbol.dispose]() {
+        events.push('dispose')
+      },
+      async [Symbol.asyncDispose]() {
+        events.push('asyncDispose')
+      }
+    }
+    const client = DisposableClient.of(implementation)
+    const runtime = await Runtime.make(
+      Layer.scopedDisposable(DisposableClient, () => client),
+      new MapLayerBackend()
+    )
+
+    await runtime.run(() => ServiceRuntime.resolve(DisposableClient))
+    await runtime.dispose()
+
+    expect(events).toEqual(['asyncDispose'])
+  })
+
+  test('captures disposal independently for concurrent runtimes sharing a Layer', async () => {
+    const events: string[] = []
+    let acquisitions = 0
+    const client = SyncDisposableClient.of({
+      request: () => 'ok',
+      get [Symbol.dispose](): () => void {
+        const acquisition = ++acquisitions
+        return () => {
+          events.push(`dispose-${acquisition}`)
+        }
+      }
+    })
+    const layer = Layer.scopedDisposable(SyncDisposableClient, () => client)
+    const [firstRuntime, secondRuntime] = await Promise.all([
+      Runtime.make(layer, new MapLayerBackend()),
+      Runtime.make(layer, new MapLayerBackend())
+    ])
+
+    await Promise.all([
+      firstRuntime.run(() => ServiceRuntime.resolve(SyncDisposableClient)),
+      secondRuntime.run(() => ServiceRuntime.resolve(SyncDisposableClient))
+    ])
+
+    await secondRuntime.dispose()
+    await firstRuntime.dispose()
+
+    expect(events).toEqual(['dispose-2', 'dispose-1'])
+  })
+
   test('keeps a disposable Layer resource until root and disposes before backend cleanup', async () => {
     const events: string[] = []
     const client = DisposableClient.of({

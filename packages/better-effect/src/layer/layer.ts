@@ -3,7 +3,7 @@ import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } f
 import { ResourceNotDisposableError } from '../scope'
 import { getDisposeFinalizer } from '../scope/disposable'
 
-import type { DisposableResource, ScopeOutcome } from '../scope'
+import type { DisposableResource, ScopeFinalizer, ScopeOutcome } from '../scope'
 import type { Covariant, Invariant } from '../internal/variance'
 import type { MaybePromise } from '../utils/types'
 
@@ -32,10 +32,18 @@ interface LayerVariance<in out Provided, out Required> {
   readonly _Required: Covariant<Required>
 }
 
+type CapturedLayerAcquisition = {
+  readonly instance: unknown
+  readonly release: ScopeFinalizer
+}
+
 interface LayerProvider extends LayerRegistration {
   /** Provider storage deliberately erases the concrete instance type. */
   // oxlint-disable-next-line anti-slop/no-unknown-parameters
   readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+
+  /** Capture acquisition-local cleanup without retaining the acquired instance. */
+  readonly acquireWithRelease?: () => MaybePromise<CapturedLayerAcquisition>
 }
 
 /** A Service class whose constructor can be called without arguments. */
@@ -146,27 +154,25 @@ export class Layer<
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>> & DisposableResource>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
-    return Layer.scoped<S>(
-      service,
-      async () => {
-        const instance = await acquire()
+    const acquireWithRelease = async (): Promise<CapturedLayerAcquisition> => {
+      const instance = await acquire()
+      const finalizer = getDisposeFinalizer(instance)
 
-        if (!getDisposeFinalizer(instance)) {
-          throw new ResourceNotDisposableError()
-        }
-
-        return instance
-      },
-      (instance, outcome) => {
-        const finalizer = getDisposeFinalizer(instance)
-
-        if (!finalizer) {
-          throw new ResourceNotDisposableError()
-        }
-
-        return finalizer(outcome)
+      if (!finalizer) {
+        throw new ResourceNotDisposableError()
       }
-    )
+
+      return { instance, release: finalizer }
+    }
+
+    // SAFETY: The public callback constrains the acquired value and this runtime-only carrier is erased at the Layer boundary.
+    return new Layer([
+      {
+        service,
+        acquire: async () => (await acquireWithRelease()).instance,
+        acquireWithRelease
+      }
+    ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
   }
 
   /** Define a provider whose acquisition can yield contextual Services. */

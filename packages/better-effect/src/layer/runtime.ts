@@ -44,7 +44,7 @@ import type {
 
 import type { LayerRegistration } from './types'
 
-import type { ScopeOutcome } from '../scope'
+import type { ScopeFinalizer, ScopeOutcome } from '../scope'
 
 type LayerProvider = LayerInput['providers'][number]
 
@@ -121,6 +121,28 @@ const notifyShutdownFailure = async (
   }
 }
 
+const releaseLayerResource = async (
+  service: LayerProvider['service'],
+  release: ScopeFinalizer,
+  outcome: ScopeOutcome,
+  observers: readonly RuntimeObserver[]
+): Promise<void> => {
+  try {
+    await release(outcome)
+    notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
+      service,
+      outcome
+    })
+  } catch (cause) {
+    notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
+      service,
+      outcome,
+      error: cause
+    })
+    throw cause
+  }
+}
+
 const bindProviderToScope = (
   provider: LayerProvider,
   scope: CloseableScope,
@@ -147,27 +169,24 @@ const bindProviderToScope = (
           const resolutionPath = current?.resolutionPath ?? [provider.service]
 
           try {
-            const instance = provider.release
-              ? await scope.acquire(
-                  () => provider.acquire(),
-                  async (resource, outcome) => {
-                    try {
-                      await provider.release!(resource, outcome)
-                      notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
-                        service: provider.service,
-                        outcome
-                      })
-                    } catch (cause) {
-                      notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
-                        service: provider.service,
+            const instance = provider.acquireWithRelease
+              ? (
+                  await scope.acquire(provider.acquireWithRelease, (acquired, outcome) =>
+                    releaseLayerResource(provider.service, acquired.release, outcome, observers)
+                  )
+                ).instance
+              : provider.release
+                ? await scope.acquire(
+                    () => provider.acquire(),
+                    (resource, outcome) =>
+                      releaseLayerResource(
+                        provider.service,
+                        (releaseOutcome) => provider.release!(resource, releaseOutcome),
                         outcome,
-                        error: cause
-                      })
-                      throw cause
-                    }
-                  }
-                )
-              : await provider.acquire()
+                        observers
+                      )
+                  )
+                : await provider.acquire()
 
             notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, {
               service: provider.service,
