@@ -1,3 +1,4 @@
+import { captureServiceTag } from '../service/tag'
 import type { AnyService, AnyServiceToken, ServiceResolver } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
@@ -25,6 +26,7 @@ import {
 import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
 
 import { LayerDisposeError, LayerRegistrationError } from './errors'
+import { captureLayerRegistrationTag } from './registration'
 
 import { createResolutionResolver } from './resolution'
 
@@ -253,6 +255,7 @@ const bindProviderToScope = (
   observers: readonly RuntimeObserver[]
 ): LayerRegistration => ({
   service: provider.service,
+  serviceTag: provider.serviceTag,
 
   acquire: () => {
     const current = getRuntimeContext(contextStorage)
@@ -325,12 +328,14 @@ class ExecutionLayerBackend implements LayerBackend {
   ) {}
 
   register(registration: LayerRegistration): void {
-    this.localTags.add(registration.service.serviceTag)
+    this.localTags.add(captureLayerRegistrationTag(registration))
     this.local.register(registration)
   }
 
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
-    if (this.localTags.has(token.serviceTag)) {
+    const tag = captureServiceTag(token)
+
+    if (this.localTags.has(tag)) {
       return await this.local.resolve(token)
     }
 
@@ -367,9 +372,10 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly signal: AbortSignal | undefined,
     private readonly observers: readonly RuntimeObserver[],
     private readonly services: readonly AnyServiceToken[],
+    serviceTags: readonly string[],
     private readonly executionDependencies: RuntimeExecutionDependencies
   ) {
-    this.serviceTags = Object.freeze(services.map((service) => service.serviceTag))
+    this.serviceTags = Object.freeze([...serviceTags])
   }
 
   inspect(): RuntimeInspection {
@@ -803,6 +809,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   options: RuntimeOptions = {},
   executionOverrides: RuntimeExecutionDependencyOverrides = {}
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
+  const services = layer.providers.map((provider) => provider.service)
+  const serviceTags = layer.providers.map((provider) => captureLayerRegistrationTag(provider))
   const rootScope = Scope.make()
   const contextStorage = options.contextStorage ?? defaultRuntimeContextStorage
   const observers = options.observers ?? []
@@ -869,7 +877,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     contextStorage,
     options.signal,
     observers,
-    layer.providers.map((provider) => provider.service),
+    services,
+    serviceTags,
     executionDependencies
   )
 }

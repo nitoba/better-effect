@@ -1,4 +1,5 @@
 import { ServiceRuntime } from './runtime'
+import { registerServiceTag, validateServiceTag } from './tag'
 
 import type { ServiceRequirement } from '../effect/types'
 
@@ -60,9 +61,7 @@ interface ServiceFactory<Self> {
  */
 export function Service<Self>(): ServiceFactory<Self> {
   return function <const Tag extends string>(tag: ServiceTagLiteral<Tag>) {
-    if (tag.length === 0) {
-      throw new TypeError('Service tags must not be empty')
-    }
+    validateServiceTag(tag)
 
     abstract class BaseService implements ServiceIdentity<Tag> {
       /** The stable logical identity used by Layers and resolver backends. */
@@ -105,6 +104,8 @@ export function Service<Self>(): ServiceFactory<Self> {
         return await ServiceRuntime.resolve(this)
       }
     }
+
+    registerServiceTag(BaseService, tag)
 
     return BaseService
   }

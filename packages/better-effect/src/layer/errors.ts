@@ -1,3 +1,4 @@
+import { captureServiceTag } from '../service/tag'
 import type { AnyServiceToken, ServiceClass } from '../service'
 import type { ScopeOutcome } from '../scope'
 
@@ -6,7 +7,7 @@ type LayerCause = Extract<ScopeOutcome, { readonly status: 'failure' }>['cause']
 /** Thrown when a Layer registers the same Service tag more than once. */
 export class DuplicateServiceError extends Error {
   constructor(readonly service: ServiceClass<any>) {
-    super(`Duplicate service tag "${service.serviceTag}"`)
+    super(`Duplicate service tag "${captureServiceTag(service)}"`)
 
     this.name = 'DuplicateServiceError'
   }
@@ -19,7 +20,7 @@ export class ServiceTagCollisionError extends Error {
     readonly incoming: AnyServiceToken
   ) {
     super(
-      `Service tag "${incoming.serviceTag}" is already associated with "${existing.name}" ` +
+      `Service tag "${captureServiceTag(incoming)}" is already associated with "${existing.name}" ` +
         `and cannot be associated with "${incoming.name}"`
     )
 
@@ -35,7 +36,9 @@ export class LayerRegistrationError extends Error {
     readonly cleanupCause?: LayerCause
   ) {
     super(
-      service ? `Failed to register service "${service.serviceTag}"` : 'Failed to build Layer',
+      service
+        ? `Failed to register service "${captureServiceTag(service)}"`
+        : 'Failed to build Layer',
       {
         cause: registrationCause
       }
@@ -57,7 +60,7 @@ export class LayerDisposeError extends Error {
 /** Thrown when a Layer generator yields a value other than a Service requirement. */
 export class LayerGeneratorYieldError extends Error {
   constructor(readonly service: ServiceClass<any>) {
-    super(`Layer.gen("${service.serviceTag}") yielded an unsupported value`)
+    super(`Layer.gen("${captureServiceTag(service)}") yielded an unsupported value`)
 
     this.name = 'LayerGeneratorYieldError'
   }

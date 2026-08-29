@@ -1,7 +1,8 @@
+import { captureServiceTag } from './tag'
 import type { AnyServiceToken } from './types'
 
 const formatResolutionPath = (path: readonly AnyServiceToken[]): string =>
-  path.map((service) => service.serviceTag).join(' → ')
+  path.map((service) => captureServiceTag(service)).join(' → ')
 
 /** Thrown when a Service is accessed without an active runtime resolver. */
 export class ServiceRuntimeNotConfiguredError extends Error {
@@ -15,7 +16,7 @@ export class ServiceRuntimeNotConfiguredError extends Error {
 /** Thrown when a runtime has no provider for the requested Service tag. */
 export class ServiceNotFoundError extends Error {
   constructor(readonly service: AnyServiceToken) {
-    super(`Service "${service.serviceTag}" was not provided`)
+    super(`Service "${captureServiceTag(service)}" was not provided`)
 
     this.name = 'ServiceNotFoundError'
   }
@@ -47,7 +48,7 @@ export class ServiceAcquisitionError extends Error {
     const normalizedPath = Object.freeze([...resolutionPath])
 
     super(
-      `Failed to acquire Service "${service.serviceTag}"` +
+      `Failed to acquire Service "${captureServiceTag(service)}"` +
         (normalizedPath.length > 0
           ? ` while resolving: ${formatResolutionPath(normalizedPath)}`
           : '')

@@ -1,4 +1,5 @@
 import { assertServiceCompatibility } from './internal-identity'
+import { captureLayerRegistrationTag, normalizeLayerRegistration } from './registration'
 
 import { DuplicateServiceError, ServiceTagCollisionError } from './errors'
 
@@ -6,6 +7,7 @@ import type { LayerBackend, LayerBackendDisposeOptions } from './backend'
 import type { LayerRegistration } from './types'
 
 import { ServiceNotFoundError, type AnyServiceToken } from '../service'
+import { captureServiceTag } from '../service/tag'
 
 type LayerAcquiredValue = Awaited<ReturnType<LayerRegistration['acquire']>>
 
@@ -19,23 +21,24 @@ export class MapLayerBackend implements LayerBackend {
 
   /** Register a provider, rejecting duplicate or colliding Service tags. */
   register(registration: LayerRegistration): void {
-    const tag = registration.service.serviceTag
+    const normalized = normalizeLayerRegistration(registration)
+    const tag = captureLayerRegistrationTag(normalized)
     const existing = this.providers.get(tag)
 
     if (existing) {
-      if (existing.service !== registration.service) {
-        throw new ServiceTagCollisionError(existing.service, registration.service)
+      if (existing.service !== normalized.service) {
+        throw new ServiceTagCollisionError(existing.service, normalized.service)
       }
 
-      throw new DuplicateServiceError(registration.service)
+      throw new DuplicateServiceError(normalized.service)
     }
 
-    this.providers.set(tag, registration)
+    this.providers.set(tag, normalized)
   }
 
   /** Resolve and cache a provider instance by Service tag. */
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
-    const tag = token.serviceTag
+    const tag = captureServiceTag(token)
     const provider = this.providers.get(tag)
 
     if (!provider) {

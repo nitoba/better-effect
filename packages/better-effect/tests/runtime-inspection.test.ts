@@ -7,11 +7,15 @@ import {
   Effect,
   Layer,
   LayerDisposeError,
+  MapLayerBackend,
   Program,
   Runtime,
   Scope,
   Service,
   ServiceRuntime,
+  type AnyServiceToken,
+  type LayerBackend,
+  type LayerRegistration,
   type RuntimeInspection
 } from '../src'
 
@@ -27,6 +31,10 @@ class InspectionFailingRelease extends Service<InspectionFailingRelease>()(
   'inspection.failing-release'
 ) {}
 
+class InspectionCanonicalService extends Service<InspectionCanonicalService>()(
+  'inspection.canonical'
+) {}
+
 type Deferred = {
   readonly promise: Promise<void>
   readonly resolve: () => void
@@ -39,6 +47,32 @@ const deferred = (): Deferred => {
   })
 
   return { promise, resolve }
+}
+
+class DelayedRegistrationBackend implements LayerBackend {
+  readonly delegate = new MapLayerBackend()
+  readonly registeredTags: string[] = []
+
+  constructor(private readonly registrationGate: Deferred) {}
+
+  register(registration: LayerRegistration): Promise<void> {
+    return this.registrationGate.promise.then(() => {
+      if (registration.serviceTag === undefined) {
+        throw new Error('Expected a canonical registration tag')
+      }
+
+      this.registeredTags.push(registration.serviceTag)
+      this.delegate.register(registration)
+    })
+  }
+
+  resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    return this.delegate.resolve(token)
+  }
+
+  disposeAll(): Promise<void> {
+    return this.delegate.disposeAll()
+  }
 }
 
 const namedProgram = (
@@ -104,6 +138,8 @@ describe('Runtime.inspect', () => {
       })
       expect(acquisitions).toBe(0)
       expect(observerEvents).toBe(0)
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Verify snapshots do not retain object tag aliases.
+      expect(initial.services.every((tag) => typeof tag === 'string')).toBe(true)
       expect(Object.isFrozen(initial)).toBe(true)
       expect(Object.isFrozen(initial.executions)).toBe(true)
       expect(Object.isFrozen(initial.services)).toBe(true)
@@ -124,6 +160,32 @@ describe('Runtime.inspect', () => {
         'services',
         'shutdownSignalAborted'
       ])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('uses canonical tags across asynchronous backend registration', async () => {
+    const registrationGate = deferred()
+    const backend = new DelayedRegistrationBackend(registrationGate)
+    const runtimePromise = Runtime.make(
+      Layer.make(InspectionCanonicalService, () => new InspectionCanonicalService()),
+      backend
+    )
+
+    await Promise.resolve()
+    expect(backend.registeredTags).toEqual([])
+
+    expect(Reflect.set(InspectionCanonicalService, 'serviceTag', 'inspection.mutated')).toBe(false)
+
+    registrationGate.resolve()
+    const runtime = await runtimePromise
+
+    try {
+      expect(backend.registeredTags).toEqual(['inspection.canonical'])
+      expect(runtime.inspect().services).toEqual(['inspection.canonical'])
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Verify the backend-facing tag is primitive.
+      expect(runtime.inspect().services.every((tag) => typeof tag === 'string')).toBe(true)
     } finally {
       await runtime.dispose()
     }

@@ -23,7 +23,27 @@ class StructuralService extends Service<StructuralService>()('StructuralService'
   }
 }
 
+const runtimeServiceFactory = Service<unknown>()
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- This test deliberately probes invalid JavaScript inputs.
+const invokeRuntimeServiceFactory = (tag: unknown): void => {
+  // oxlint-disable-next-line anti-slop/no-reflect-apply -- This test deliberately invokes the typed factory with forged JavaScript inputs.
+  Reflect.apply(runtimeServiceFactory, undefined, [tag])
+}
+
 describe('Service', () => {
+  test('accepts only non-empty primitive string tags', () => {
+    for (const tag of ['', new String('boxed'), { length: 7 }, null, undefined, 42]) {
+      expect(() => invokeRuntimeServiceFactory(tag)).toThrow(TypeError)
+    }
+  })
+
+  test('locks the declared tag against runtime mutation', () => {
+    class ImmutableService extends Service<ImmutableService>()('ImmutableService') {}
+
+    expect(Reflect.set(ImmutableService, 'serviceTag', 'mutated')).toBe(false)
+    expect(ImmutableService.serviceTag).toBe('ImmutableService')
+  })
   test('resolves a service using yield*', async () => {
     const instance = new CounterService(41)
 

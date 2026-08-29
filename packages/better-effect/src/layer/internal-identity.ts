@@ -1,3 +1,4 @@
+import { captureServiceTag } from '../service/tag'
 import type { AnyServiceToken } from '../service'
 
 import { ServiceTagCollisionError } from './errors'
@@ -37,7 +38,7 @@ export const assertServiceCompatibility = (
   registered: AnyServiceToken,
   instance: LayerAcquiredValue
 ): void => {
-  if (requested === registered || requested.serviceTag !== registered.serviceTag) {
+  if (requested === registered || captureServiceTag(requested) !== captureServiceTag(registered)) {
     return
   }
 

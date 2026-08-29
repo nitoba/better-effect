@@ -1,4 +1,5 @@
 import { ServiceRuntimeNotConfiguredError } from './errors'
+import { captureServiceTag } from './tag'
 
 import { RuntimeContextNotConfiguredError } from '../runtime/errors'
 
@@ -75,6 +76,7 @@ export class ServiceRuntime {
 
   /** Resolve a Service token using the active resolver. */
   static async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+    captureServiceTag(token)
     const resolver = ServiceRuntime.current()
 
     return await resolver.resolve(token)
