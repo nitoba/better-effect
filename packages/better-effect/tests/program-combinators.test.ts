@@ -33,6 +33,282 @@ test('Program.all is lazy, bounded, and preserves tuple order', async () => {
   expect(maximum).toBe(2)
 })
 
+test('Program.forEach is lazy, bounded, and preserves factory indexes and output order', async () => {
+  const values = ['a', 'b', 'c', 'd'] as const
+  let active = 0
+  let maximum = 0
+  let factories = 0
+
+  const collected = Program.forEach(
+    values,
+    (value, index) => {
+      factories++
+
+      return Effect.fn(async function* () {
+        yield* []
+        active++
+        maximum = Math.max(maximum, active)
+        await new Promise<void>((resolve) => setTimeout(resolve, values.length - index))
+        active--
+
+        return Result.ok(`${index}:${value}`)
+      })
+    },
+    { concurrency: 2 }
+  )
+
+  expect(factories).toBe(0)
+
+  const result = await collected()
+  expectResult(result, Result.ok(['0:a', '1:b', '2:c', '3:d']))
+  expect(factories).toBe(values.length)
+  expect(maximum).toBe(2)
+})
+
+test('Program.allResults collects typed errors and preserves exact child Results', async () => {
+  const first = Result.ok('first')
+  const second = Result.err<number, 'invalid'>('invalid')
+  const third = Result.ok('third')
+  let started = 0
+
+  const programs = [
+    Effect.fn(async function* () {
+      yield* []
+      started++
+      await Promise.resolve()
+      return first
+    }),
+    Effect.fn(async function* () {
+      yield* []
+      started++
+      return second
+    }),
+    Effect.fn(async function* () {
+      yield* []
+      started++
+      return third
+    })
+  ] as const
+
+  const result = await Program.allResults(programs, { concurrency: 2 })()
+
+  expect(Result.isError(result)).toBe(false)
+  if (!Result.isError(result)) {
+    expect(result.value).toHaveLength(3)
+    expect(Object.is(result.value[0], first)).toBe(true)
+    expect(Object.is(result.value[1], second)).toBe(true)
+    expect(Object.is(result.value[2], third)).toBe(true)
+  }
+  expect(started).toBe(3)
+})
+
+test('Program.forEach stops after failure, waits for claimed work, and prefers lower indexes', async () => {
+  const typedFailure = Result.err<number, 'typed'>('typed')
+  let releaseFirst!: () => void
+  let firstStarted!: () => void
+  let factories = 0
+  let thirdStarted = false
+
+  const firstMayFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  const firstStartedPromise = new Promise<void>((resolve) => {
+    firstStarted = resolve
+  })
+
+  const running = Program.forEach(
+    [0, 1, 2] as const,
+    (value) => {
+      factories++
+
+      if (value === 0) {
+        return Effect.fn(async function* () {
+          yield* []
+          firstStarted()
+          await firstMayFinish
+          return typedFailure
+        })
+      }
+
+      if (value === 1) {
+        return Effect.fn(function* () {
+          yield* []
+          throw new Error('higher defect')
+        })
+      }
+
+      return Effect.fn(function* () {
+        yield* []
+        thirdStarted = true
+        return Result.ok(value)
+      })
+    },
+    { concurrency: 2 }
+  )()
+
+  await firstStartedPromise
+  expect(factories).toBe(2)
+  expect(thirdStarted).toBe(false)
+
+  releaseFirst()
+  const result = await running
+
+  expect(Object.is(result, typedFailure)).toBe(true)
+})
+
+test('Program.allResults stops on defects, waits for claimed work, and keeps index order', async () => {
+  const lowerDefect = new Error('lower defect')
+  const higherDefect = new Error('higher defect')
+  let releaseLower!: () => void
+  let lowerStarted!: () => void
+  let thirdStarted = false
+
+  const lowerMayFinish = new Promise<void>((resolve) => {
+    releaseLower = resolve
+  })
+  const lowerStartedPromise = new Promise<void>((resolve) => {
+    lowerStarted = resolve
+  })
+
+  const programs = [
+    Effect.fn(async function* () {
+      yield* []
+      lowerStarted()
+      await lowerMayFinish
+      throw lowerDefect
+    }),
+    Effect.fn(function* () {
+      yield* []
+      throw higherDefect
+    }),
+    Effect.fn(function* () {
+      yield* []
+      thirdStarted = true
+      return Result.ok(2)
+    })
+  ] as const
+
+  const running = Program.allResults(programs, { concurrency: 2 })()
+  await lowerStartedPromise
+  expect(thirdStarted).toBe(false)
+
+  releaseLower()
+
+  let error: unknown
+  try {
+    await running
+  } catch (cause) {
+    error = cause
+  }
+
+  expect(error).toBeInstanceOf(Error)
+  expect(error).toMatchObject({ cause: lowerDefect })
+})
+
+test('Program collection APIs return successful empty collections', async () => {
+  let factoryCalls = 0
+  const emptyProgram = Effect.fn(function* () {
+    yield* []
+    return Result.ok(true)
+  })
+
+  const all = Program.all([] as const)
+  const forEach = Program.forEach([] as const, () => {
+    factoryCalls++
+    return emptyProgram
+  })
+  const allResults = Program.allResults([] as const)
+
+  expectResult(await all(), Result.ok([]))
+  expectResult(await forEach(), Result.ok([]))
+  expectResult(await allResults(), Result.ok([]))
+  expect(factoryCalls).toBe(0)
+})
+
+test('Program collection APIs share concurrency validation', () => {
+  const program = Effect.fn(async function* () {
+    yield* []
+    return Result.ok(true)
+  })
+  const invalidConcurrency = [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, NaN]
+
+  for (const concurrency of invalidConcurrency) {
+    expect(() => Program.all([program], { concurrency })).toThrow(RangeError)
+    expect(() => Program.forEach([true], () => program, { concurrency })).toThrow(RangeError)
+    expect(() => Program.allResults([program], { concurrency })).toThrow(RangeError)
+  }
+})
+
+test('Program collections use unbounded concurrency by default', async () => {
+  let active = 0
+  let maximum = 0
+  const programs = Array.from({ length: 4 }, (_, value) =>
+    Effect.fn(async function* () {
+      yield* []
+      active++
+      maximum = Math.max(maximum, active)
+      await Promise.resolve()
+      active--
+      return Result.ok(value)
+    })
+  )
+
+  const result = await Program.allResults(programs)()
+
+  expectResult(result, Result.ok(programs.map((_, index) => Result.ok(index))))
+  expect(maximum).toBe(programs.length)
+})
+
+test('Program collections serialize work with concurrency one', async () => {
+  let active = 0
+  let maximum = 0
+  const result = await Program.forEach(
+    [0, 1, 2] as const,
+    (value) =>
+      Effect.fn(async function* () {
+        yield* []
+        active++
+        maximum = Math.max(maximum, active)
+        await Promise.resolve()
+        active--
+        return Result.ok(value)
+      }),
+    { concurrency: 1 }
+  )()
+
+  expectResult(result, Result.ok([0, 1, 2]))
+  expect(maximum).toBe(1)
+})
+
+test('bounded Program collections handle large synchronously settling inputs without recursion', async () => {
+  const count = 20_000
+  let active = 0
+  let maximum = 0
+  const values = Array.from({ length: count }, (_, index) => index)
+  const collected = Program.forEach(
+    values,
+    (value) =>
+      Effect.fn(function* () {
+        yield* []
+        active++
+        maximum = Math.max(maximum, active)
+        active--
+        return Result.ok(value)
+      }),
+    { concurrency: 4 }
+  )
+
+  const result = await collected()
+
+  expect(Result.isError(result)).toBe(false)
+  if (!Result.isError(result)) {
+    expect(result.value).toHaveLength(count)
+    expect(result.value[0]).toBe(0)
+    expect(result.value[count - 1]).toBe(count - 1)
+  }
+  expect(maximum).toBe(1)
+})
+
 test('Program.all validates concurrency before execution', () => {
   const program = Effect.fn(async function* () {
     yield* []

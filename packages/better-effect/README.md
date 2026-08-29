@@ -128,6 +128,35 @@ input order. If a Program returns an error or throws, scheduling stops, already-
 started Programs are allowed to settle, and the deterministic primary failure remains selected;
 there is no cancellation or Fiber scheduler.
 
+Use `Program.forEach` when each item needs a lazy Program factory. The callback
+receives the item and its input index, and the returned Program produces a
+readonly collection in input order:
+
+```ts
+const synchronized = Program.forEach(userIds, (userId, index) => synchronizeUser(userId, index), {
+  concurrency: 8
+})
+
+const result = await runtime.run(synchronized)
+```
+
+Use `Program.allResults` when typed validation errors should be retained rather
+than short-circuiting. It returns every exact child `Result` as a successful
+collection element; defects still stop new work and reject the outer Program:
+
+```ts
+const validations = Program.allResults(
+  [validateIdentity, validateAddress, validateDocuments] as const,
+  { concurrency: 3 }
+)
+
+const results = await runtime.run(validations)
+```
+
+Both helpers use the same lazy bounded scheduler as `Program.all`: indexes are
+claimed in order, output order is stable, and already-started work is always
+allowed to settle.
+
 Use `Effect.*` to transform an already-created Result, and `Program.*` to compose
 an `Effect.fn` Program without starting it. `Program.map`, `mapError`, `tap`, and
 `tapError` preserve that laziness; `andThen` and `recover` accept an Effect, a

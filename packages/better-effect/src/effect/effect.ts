@@ -1,6 +1,6 @@
-import { Err, Result } from 'better-result'
+import { Result } from 'better-result'
 
-import type { Result as ResultType, UnhandledException } from 'better-result'
+import type { Err, Result as ResultType, UnhandledException } from 'better-result'
 
 import { Scope } from '../scope'
 
@@ -49,6 +49,11 @@ import {
   tap as programTap,
   tapError as programTapError
 } from './program-combinators'
+import {
+  firstProgramFailure,
+  runProgramCollection,
+  validateProgramConcurrency
+} from './program-scheduler'
 
 export type Effect<A, E, R extends AnyService = never> = EffectType<A, E, R>
 
@@ -75,6 +80,27 @@ type ProgramAllResult<Programs extends readonly AnyProgram[]> = ProgramType<
   ProgramAllSuccess<Programs>,
   ProgramAllError<Programs>,
   ProgramAllRequirements<Programs>
+>
+
+type ProgramResultFor<Child> = Child extends AnyProgram
+  ? ResultType<EffectSuccess<Child>, EffectError<Child>>
+  : never
+
+type ProgramAllResultsSuccess<Programs extends readonly AnyProgram[]> =
+  number extends Programs['length']
+    ? ReadonlyArray<ResultType<EffectSuccess<Programs[number]>, EffectError<Programs[number]>>>
+    : { readonly [Index in keyof Programs]: ProgramResultFor<Programs[Index]> }
+
+type ProgramAllResultsResult<Programs extends readonly AnyProgram[]> = ProgramType<
+  ProgramAllResultsSuccess<Programs>,
+  never,
+  ProgramAllRequirements<Programs>
+>
+
+type ProgramForEachResult<Child extends AnyProgram> = ProgramType<
+  ReadonlyArray<EffectSuccess<Child>>,
+  EffectError<Child>,
+  EffectRequirements<Child>
 >
 
 export type ProgramAllOptions = {
@@ -137,13 +163,46 @@ export function fn(body: EffectGenerator): Program<any, any, AnyService> {
   return program as Program<any, any, AnyService>
 }
 
-const validateProgramConcurrency = (concurrency: number | undefined): void => {
-  if (
-    concurrency !== undefined &&
-    (!Number.isFinite(concurrency) || !Number.isInteger(concurrency) || concurrency <= 0)
-  ) {
-    throw new RangeError('Program.all concurrency must be a positive integer')
+const runShortCircuitingCollection = async (
+  length: number,
+  task: (index: number) => AnyResult | PromiseLike<AnyResult>,
+  concurrency: number | undefined
+): Promise<AnyResult> => {
+  const outcome = await runProgramCollection(length, task, {
+    concurrency,
+    stopOnResultError: true
+  })
+  const failure = firstProgramFailure(outcome.failures)
+
+  if (failure?.kind === 'defect') {
+    throw failure.cause
   }
+
+  if (failure?.kind === 'result') {
+    return failure.result
+  }
+
+  // SAFETY: The scheduler records one Result per claimed index before completing successfully.
+  return Result.all(outcome.results as AnyResult[])
+}
+
+const runAllResultsCollection = async (
+  length: number,
+  task: (index: number) => AnyResult | PromiseLike<AnyResult>,
+  concurrency: number | undefined
+): Promise<AnyResult> => {
+  const outcome = await runProgramCollection(length, task, {
+    concurrency,
+    stopOnResultError: false
+  })
+  const failure = firstProgramFailure(outcome.failures)
+
+  if (failure?.kind === 'defect') {
+    throw failure.cause
+  }
+
+  // SAFETY: The scheduler records each successful Result object at its input index.
+  return Result.ok(outcome.results as AnyResult[])
 }
 
 /** Build a lazy Program collection with optional bounded concurrency. */
@@ -151,59 +210,53 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
   programs: Programs,
   options: ProgramAllOptions = {}
 ): ProgramAllResult<Programs> {
-  validateProgramConcurrency(options.concurrency)
-
   const concurrency = options.concurrency
-  const program = async (): Promise<AnyResult> => {
-    const results: Array<AnyResult | undefined> = Array.from({ length: programs.length })
-    const failures: boolean[] = Array.from({ length: programs.length }, () => false)
-    const causes: unknown[] = Array.from({ length: programs.length })
-    let nextIndex = 0
-    let stopScheduling = false
-
-    const worker = async (): Promise<void> => {
-      while (!stopScheduling) {
-        const index = nextIndex++
-
-        if (index >= programs.length) {
-          return
-        }
-
-        try {
-          const result = await programs[index]!()
-          results[index] = result
-
-          if (result instanceof Err) {
-            stopScheduling = true
-          }
-        } catch (cause) {
-          failures[index] = true
-          causes[index] = cause
-          stopScheduling = true
-        }
-      }
-    }
-
-    const workers = Math.min(concurrency ?? programs.length, programs.length)
-    await Promise.all(Array.from({ length: workers }, () => worker()))
-
-    const failureIndex = failures.findIndex(Boolean)
-
-    if (failureIndex >= 0) {
-      throw causes[failureIndex]
-    }
-
-    // SAFETY: Program's callable contract produces Result values; the array is erased only at this collection boundary.
-    return Result.all(results as AnyResult[])
-  }
+  validateProgramConcurrency(concurrency)
+  const program = () =>
+    runShortCircuitingCollection(programs.length, (index) => programs[index]!(), concurrency)
 
   // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
   return program as ProgramAllResult<Programs>
 }
 
+/** Build a lazy Program collection from an input array and Program factory. */
+export function programForEach<const Items extends readonly unknown[], Child extends AnyProgram>(
+  items: Items,
+  makeProgram: (item: Items[number], index: number) => Child,
+  options: ProgramAllOptions = {}
+): ProgramForEachResult<Child> {
+  const concurrency = options.concurrency
+  validateProgramConcurrency(concurrency)
+  const program = () =>
+    runShortCircuitingCollection(
+      items.length,
+      (index) => makeProgram(items[index]!, index)(),
+      concurrency
+    )
+
+  // SAFETY: Program channels are declaration-only and are restored from the factory's result type.
+  return program as ProgramForEachResult<Child>
+}
+
+/** Build a lazy Program collection that retains every child Result. */
+export function programAllResults<const Programs extends readonly AnyProgram[]>(
+  programs: Programs,
+  options: ProgramAllOptions = {}
+): ProgramAllResultsResult<Programs> {
+  const concurrency = options.concurrency
+  validateProgramConcurrency(concurrency)
+  const program = () =>
+    runAllResultsCollection(programs.length, (index) => programs[index]!(), concurrency)
+
+  // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
+  return program as ProgramAllResultsResult<Programs>
+}
+
 /** Value-level namespace for lazy Program combinators. */
 export const Program = {
   all: programAll,
+  forEach: programForEach,
+  allResults: programAllResults,
   map: programMap,
   mapError: programMapError,
   andThen: programAndThen,

@@ -1,6 +1,6 @@
 import { expectTypeOf } from 'bun:test'
 
-import { Result } from 'better-result'
+import { Result, type Result as ResultType } from 'better-result'
 
 import {
   Effect,
@@ -71,9 +71,56 @@ expectTypeOf(collectedPrograms).toEqualTypeOf<
   Program<[string, string], never, GreetingService | RequestContext>
 >()
 
+const allResultsTuple = Program.allResults([greet, requestProgram] as const, { concurrency: 2 })
+expectTypeOf(allResultsTuple).toEqualTypeOf<
+  Program<
+    readonly [ResultType<string, never>, ResultType<string, never>],
+    never,
+    GreetingService | RequestContext
+  >
+>()
+
+const forEachProgram = Program.forEach(['first', 'second'] as const, (value, index) => {
+  expectTypeOf(value).toEqualTypeOf<'first' | 'second'>()
+  expectTypeOf(index).toEqualTypeOf<number>()
+
+  return Effect.fn(async function* () {
+    const greeting = yield* GreetingService
+
+    return Result.ok(`${greeting.greet(value)}:${index}`)
+  })
+})
+expectTypeOf(forEachProgram).toEqualTypeOf<Program<readonly string[], never, GreetingService>>()
+
+const failedGreet = Effect.fn(async function* () {
+  yield* []
+  return Result.err<string, 'failed'>('failed')
+})
+const mixedForEach = Program.forEach([true, false] as const, (value) =>
+  value ? greet : failedGreet
+)
+expectTypeOf(mixedForEach).toEqualTypeOf<Program<readonly string[], 'failed', GreetingService>>()
+
+declare const firstCollectionProgram: Program<string, 'first', GreetingService>
+declare const secondCollectionProgram: Program<number, 'second', RequestContext>
+const collectionArray: Array<typeof firstCollectionProgram | typeof secondCollectionProgram> = [
+  firstCollectionProgram,
+  secondCollectionProgram
+]
+const allResultsArray = Program.allResults(collectionArray)
+expectTypeOf(allResultsArray).toEqualTypeOf<
+  Program<
+    readonly ResultType<string | number, 'first' | 'second'>[],
+    never,
+    GreetingService | RequestContext
+  >
+>()
+
 declare const greetingRuntime: Runtime<GreetingService>
 // @ts-expect-error Program.all retains the complete union of child requirements.
 void greetingRuntime.run(collectedPrograms)
+// @ts-expect-error Program.allResults retains the complete union of child requirements.
+void greetingRuntime.run(allResultsTuple)
 
 declare const emptyRuntime: Runtime<never>
 const backend = new MemoryLayerBackend()

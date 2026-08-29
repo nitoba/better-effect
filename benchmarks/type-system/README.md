@@ -14,7 +14,7 @@ bun run perf:type-system
 
 The generated sources live under `benchmarks/type-system/generated/` and are
 ignored by Git. Use `--json` for machine-readable output, or narrow a run with
-`--sizes=50,100` and `--scenarios=merge,override`.
+`--sizes=50,100` and `--scenarios=merge,override,program-collections`.
 
 The Hono fixtures exercise both `http.gen` and `http.handler` with mixed
 `param`, `header`, `query`, `cookie`, `json`, and `form` validator inputs. The
@@ -29,7 +29,8 @@ Each fixture measures:
 - `Runtime.run` requirement validation;
 - transitively required Services (`ServiceN` requires `ServiceN-1`);
 - Services exposing five Effect-returning methods each;
-- lazy Program transformation, observation, continuation, and recovery chains.
+- lazy Program transformation, observation, continuation, and recovery chains;
+- lazy `Program.all`, `Program.forEach`, and `Program.allResults` collections.
 
 The report includes files, types, instantiations, memory, check time, and total
 time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or

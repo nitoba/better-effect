@@ -18,7 +18,8 @@ const scenarios = [
   'transitive',
   'methods',
   'program-chain',
-  'hono-mixed'
+  'hono-mixed',
+  'program-collections'
 ] as const
 type Scenario = (typeof scenarios)[number]
 
@@ -274,6 +275,42 @@ ${combinators}
 void Runtime.run(AppLive, program${names.length})`
 }
 
+const programCollections = (names: readonly string[]): string => {
+  const collectionNames = names.slice(0, 3)
+  const programs = collectionNames
+    .map(
+      (name) => `  Effect.fn(async function* () {
+    const service = yield* ${name}
+    void service
+    return Result.ok('${name}')
+  })`
+    )
+    .join(',\n')
+  const values = collectionNames.map((name) => `'${name}'`).join(', ')
+  const firstService = names[0]!
+
+  return `const collectionPrograms = [
+${programs}
+] as const
+
+const collected = Program.all(collectionPrograms, { concurrency: 4 })
+const retained = Program.allResults(collectionPrograms, { concurrency: 4 })
+const mapped = Program.forEach(
+  [${values}] as const,
+  (name, index) =>
+    Effect.fn(async function* () {
+      const service = yield* ${firstService}
+      void service
+      return Result.ok(\`\${index}:\${name}\`)
+    })
+)
+
+void Runtime.run(AppLive, collected)
+void Runtime.run(AppLive, retained)
+void Runtime.run(AppLive, mapped)
+`
+}
+
 const runtimeRunProgram = (names: readonly string[], callMethods: boolean): string => {
   const body = names
     .map((name) => {
@@ -405,6 +442,10 @@ import { Result } from '../../../packages/better-effect/node_modules/better-resu
 
   if (scenario === 'program-chain') {
     return `${header}${declarations}\n\n${layers}\n\n${programCombinatorChain(names)}\n`
+  }
+
+  if (scenario === 'program-collections') {
+    return `${header}${declarations}\n\n${layers}\n\n${programCollections(names)}\n`
   }
 
   return `${header}${declarations}\n\n${layers}\n\n${runtimeRunProgram(names, withMethods)}\n`
