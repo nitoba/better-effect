@@ -69,7 +69,32 @@ export class Logger extends Service<Logger>()('Logger') {
   log(): void {}
 }
 
+export class AliasSource extends Service<AliasSource>()('AliasSource') {
+  read(): string {
+    return 'source'
+  }
+}
+
+export class AliasTarget extends Service<AliasTarget>()('AliasTarget') {
+  declare read: AliasSource['read']
+}
+
 const DatabaseLive = Layer.make(Database)
+const AliasLive = Layer.alias({ from: AliasSource, to: AliasTarget })
+const AliasComplete = Layer.merge(Layer.empty, Layer.make(AliasSource), AliasLive)
+declare const UnionAliasTarget: typeof AliasTarget | typeof Logger
+
+declare const UnionAliasSource: typeof AliasSource | typeof AliasTarget
+
+// @ts-expect-error Alias targets must identify exactly one runtime Service token.
+Layer.alias({ from: AliasSource, to: UnionAliasTarget })
+
+// @ts-expect-error Alias sources must identify exactly one runtime Service token.
+Layer.alias({ from: UnionAliasSource, to: AliasTarget })
+
+export type AliasProvided = Expect<Equal<Layer.Provided<typeof AliasLive>, AliasTarget>>
+export type AliasRequired = Expect<Equal<Layer.Required<typeof AliasLive>, AliasSource>>
+export type AliasCompleteRequired = Expect<Equal<Layer.Required<typeof AliasComplete>, never>>
 declare const AppLive: Layer<Database | Logger, never>
 
 // @ts-expect-error built Layer declarations cannot invent providers
@@ -85,6 +110,8 @@ const erasedByAlias: Layer.Any = DatabaseLive
 const erasedOrdinaryLayer: Layer<any, any> = DatabaseLive
 
 const EmptyLive = Layer.merge()
+const EmptyAlias = Layer.empty
+export type EmptyAliasExact = Expect<Equal<typeof EmptyAlias, Layer<never, never>>>
 const erasedEmptyLayer: Layer.Any = EmptyLive
 
 // @ts-expect-error Layer<any, any> does not erase an inferred empty Layer

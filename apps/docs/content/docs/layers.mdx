@@ -8,6 +8,23 @@ A Layer is a declarative collection of providers. It stores how a Service can
 be acquired and (optionally) released; it does not acquire instances while the
 Layer is being built.
 
+## `Layer.empty`
+
+Use `Layer.empty` for an explicitly empty application environment. It is a
+stable, immutable, provider-free Layer, so it can be reused as the neutral
+value in composition:
+
+```ts
+const EmptyLive = Layer.empty
+const ApplicationLive = Layer.merge(EmptyLive, InfrastructureLive)
+
+const runtime = await Runtime.make(EmptyLive)
+await runtime.run(() => 'no Services required')
+```
+
+`Layer.empty` has the exact public type `Layer<never, never>` and does not
+create providers or requirements.
+
 ## `Layer.make`
 
 With no acquire callback, the Service must be constructible without arguments:
@@ -109,6 +126,37 @@ const RepositoryLive = Layer.scopedGen(
 The generator can yield only Service requirements. A different yielded value
 produces `LayerGeneratorYieldError` at runtime. The generator's requirements
 are included in the Layer completeness contract.
+
+## `Layer.alias`
+
+Expose one Service implementation through another compatible port without
+constructing a second object:
+
+```ts
+class SqlUserRepository extends Service<SqlUserRepository>()('SqlUserRepository') {
+  findById(id: string): string {
+    return `sql:${id}`
+  }
+}
+
+class UserRepository extends Service<UserRepository>()('UserRepository') {
+  declare findById: SqlUserRepository['findById']
+}
+
+const SqlLive = Layer.make(SqlUserRepository)
+const UserRepositoryPort = Layer.alias({
+  from: SqlUserRepository,
+  to: UserRepository
+})
+const ApplicationLive = Layer.merge(Layer.empty, SqlLive, UserRepositoryPort)
+```
+
+The alias lazily resolves `from`, returns that exact instance, and provides it
+under `to`; it does not clone, proxy, or mutate the implementation. The source
+must satisfy `Service.Contract<UserRepository>` at compile time. The alias itself
+requires the source Service, so composing it with `SqlLive` leaves no missing
+requirements. Missing sources, duplicate tags, and circular aliases use the
+same Layer and Runtime diagnostics as other providers.
 
 ## `Layer.merge`
 

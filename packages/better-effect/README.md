@@ -99,6 +99,40 @@ const AppLive = Layer.merge(DatabaseLive, UserRepositoryLive)
 const runtime = await Runtime.make(AppLive)
 ```
 
+Use `Layer.empty` when a composition root intentionally has no providers. It is
+stable and has the exact `Layer<never, never>` type:
+
+```ts
+const EmptyLive = Layer.empty
+const runtime = await Runtime.make(EmptyLive)
+await runtime.run(() => 'no Services required')
+```
+
+For a port/adapter boundary, `Layer.alias` exposes one compatible implementation
+under another Service token without constructing, cloning, or proxying it:
+
+```ts
+class SqlUserRepository extends Service<SqlUserRepository>()('SqlUserRepository') {
+  findById(id: string): string {
+    return `sql:${id}`
+  }
+}
+
+class UserRepository extends Service<UserRepository>()('UserRepository') {
+  declare findById: SqlUserRepository['findById']
+}
+
+const UserRepositoryPort = Layer.alias({
+  from: SqlUserRepository,
+  to: UserRepository
+})
+const ApplicationLive = Layer.merge(Layer.empty, Layer.make(SqlUserRepository), UserRepositoryPort)
+```
+
+The alias lazily resolves `from`, returns the same object under `to`, and checks
+that the source satisfies the target's `Service.Contract`. Its source remains an
+external Layer requirement until the source provider is composed.
+
 And the contract does not disappear after startup.
 
 A Runtime also knows which Services exist in its environment:

@@ -1,4 +1,5 @@
 import type { ServiceRequirement } from '../effect/types'
+import { ServiceRuntime } from '../service'
 import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } from '../service'
 import { ResourceNotDisposableError } from '../scope'
 import { getDisposeFinalizer } from '../scope/disposable'
@@ -52,6 +53,29 @@ type DefaultConstructibleServiceClass<
   Instance extends AnyService = AnyService
 > = ServiceClass<Tag, Instance> & (new () => Instance)
 
+type IsUnion<Type, Candidate = Type> = Type extends unknown
+  ? [Candidate] extends [Type]
+    ? false
+    : true
+  : never
+
+type InvalidUnionAliasToken = {
+  readonly __betterEffectUnionLayerAliasToken: unique symbol
+}
+
+type RejectUnionAliasToken<Token> = IsUnion<Token> extends true ? InvalidUnionAliasToken : unknown
+
+type LayerAliasOptions<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>> = {
+  readonly from: From
+  readonly to: To
+} & RejectUnionAliasToken<From> &
+  RejectUnionAliasToken<To> &
+  ([ServiceContract<InstanceType<From>>] extends [ServiceContract<InstanceType<To>>]
+    ? unknown
+    : {
+        readonly __betterEffectIncompatibleLayerAlias: unique symbol
+      })
+
 /**
  * Declarative collection of Service providers.
  *
@@ -81,6 +105,9 @@ export class Layer<
   private constructor(providers: readonly LayerProvider[]) {
     this.providers = Object.freeze([...providers])
   }
+
+  /** A stable provider-free Layer for composition roots with no Services. */
+  static readonly empty: Layer<never, never> = Object.freeze(new Layer<never, never>([]))
 
   /** Create a Layer that lazily acquires a Service instance. */
   static make<S extends DefaultConstructibleServiceClass<any, any>>(
@@ -128,6 +155,29 @@ export class Layer<
         acquire: normalizedAcquire
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
+  }
+
+  /** Alias a source Service under a compatible target contract. */
+  static alias<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>>(
+    options: LayerAliasOptions<From, To>
+  ): LayerResult<
+    ProviderEntry<InstanceType<To>, InstanceType<From> | ServiceRequirements<InstanceType<To>>>
+  > {
+    const { from, to } = options
+
+    // Keep alias acquisition in the normal Layer generator path so Runtime supplies the active resolver and resolution diagnostics.
+    // oxlint-disable-next-line require-yield
+    const alias = Layer.gen(to, async function* () {
+      const source = await ServiceRuntime.resolve(from)
+
+      // SAFETY: LayerAliasOptions checks that the source implementation satisfies the target contract.
+      return source as ServiceContract<InstanceType<To>>
+    })
+
+    // SAFETY: The alias factory resolves the declared source token before returning the target contract.
+    return alias as LayerResult<
+      ProviderEntry<InstanceType<To>, InstanceType<From> | ServiceRequirements<InstanceType<To>>>
+    >
   }
 
   /** Define a provider with Runtime-root cleanup. */
@@ -275,6 +325,15 @@ export class Layer<
     return new Layer([...providers.values()]) as Layer<any, any>
   }
 }
+
+// TypeScript's `readonly` does not affect the runtime property descriptor. Keep
+// the class field's enumerable behavior while locking the singleton binding.
+Object.defineProperty(Layer, 'empty', {
+  value: Layer.empty,
+  writable: false,
+  enumerable: true,
+  configurable: false
+})
 
 const normalizeAcquire =
   <S extends ServiceClass<any, any>>(
