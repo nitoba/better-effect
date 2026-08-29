@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { Result, TaggedError } from 'better-result'
 import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import { validator } from 'hono/validator'
 
 import { Effect, Layer, Runtime, Service } from '../src'
@@ -295,6 +296,136 @@ test('HonoEffect passes Response failures through the default policy', async () 
     expect(response).toBe(responseFailure)
     expect(response.status).toBe(404)
     expect(await response.text()).toBe('not here')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect composes six mixed middleware in order inside one request Scope', async () => {
+  const runtime = await makeRuntime()
+  const order: string[] = []
+  let programRuns = 0
+  let releases = 0
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+  const middleware = (name: string, asynchronous: boolean): MiddlewareHandler =>
+    asynchronous
+      ? async (_context, next) => {
+          order.push(`${name}:before`)
+          await Promise.resolve()
+          await next()
+          order.push(`${name}:after`)
+        }
+      : (_context, next) => {
+          order.push(`${name}:before`)
+          return next().then(() => {
+            order.push(`${name}:after`)
+          })
+        }
+
+  app.use('*', http.middleware())
+  app.get(
+    '/six',
+    http.gen(
+      middleware('one', false),
+      middleware('two', true),
+      middleware('three', false),
+      middleware('four', true),
+      middleware('five', false),
+      middleware('six', true),
+      async function* () {
+        programRuns += 1
+        yield* Effect.acquireRelease(
+          () => ({}),
+          () => {
+            releases += 1
+            order.push('release')
+          }
+        )
+        return Result.ok('six')
+      },
+      undefined
+    )
+  )
+
+  try {
+    const response = await app.request('/six')
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ data: 'six' })
+    expect(programRuns).toBe(1)
+    expect(releases).toBe(1)
+    expect(order).toEqual([
+      'one:before',
+      'two:before',
+      'three:before',
+      'four:before',
+      'five:before',
+      'six:before',
+      'six:after',
+      'five:after',
+      'four:after',
+      'three:after',
+      'two:after',
+      'one:after',
+      'release'
+    ])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect short-circuits a six-middleware route before the Program', async () => {
+  const runtime = await makeRuntime()
+  const order: string[] = []
+  let programRuns = 0
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+  const middleware =
+    (name: string): MiddlewareHandler =>
+    async (_context, next) => {
+      order.push(`${name}:before`)
+      await next()
+      order.push(`${name}:after`)
+    }
+  const stop: MiddlewareHandler = async () => {
+    order.push('stop')
+    return new Response('stopped', { status: 418 })
+  }
+
+  app.use('*', http.middleware())
+  app.get(
+    '/short',
+    http.gen(
+      middleware('one'),
+      middleware('two'),
+      middleware('three'),
+      stop,
+      middleware('five'),
+      middleware('six'),
+      async function* () {
+        programRuns += 1
+        yield* Result.await(Promise.resolve(Result.ok(undefined)))
+        return Result.ok('unexpected')
+      }
+    )
+  )
+
+  try {
+    const response = await app.request('/short')
+
+    expect(response.status).toBe(418)
+    expect(await response.text()).toBe('stopped')
+    expect(programRuns).toBe(0)
+    expect(order).toEqual([
+      'one:before',
+      'two:before',
+      'three:before',
+      'stop',
+      'three:after',
+      'two:after',
+      'one:after'
+    ])
   } finally {
     await runtime.dispose()
   }

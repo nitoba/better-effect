@@ -118,8 +118,8 @@ provided by the Runtime.
 
 ## Hono validation and Standard Schema
 
-`http.gen` and `http.handler` accept a Hono input middleware as their first
-argument. The middleware runs before the Program, and the inferred value from
+`http.gen` and `http.handler` accept one or more Hono input middlewares before
+the callback. They run in the order provided, and each inferred value from
 `c.req.valid(...)` is preserved in the route Context. There is no `JsonInput<T>`
 helper to pass manually.
 
@@ -159,6 +159,22 @@ app.post(
     const input = c.req.valid('json')
 
     return createWorkOrder(input)
+  })
+)
+```
+
+List multiple validators before the callback when a route needs several input
+categories:
+
+```ts
+app.post(
+  '/api/work-orders/:id',
+  http.gen(validateParam, validateHeader, validateCreateWorkOrder, async function* (c) {
+    const id = c.req.valid('param').id
+    const key = c.req.valid('header')['X-Idempotency-Key']
+    const input = c.req.valid('json')
+
+    return Result.ok({ id, key, input })
   })
 )
 ```

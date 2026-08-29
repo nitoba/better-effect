@@ -31,13 +31,16 @@ export type AnyRouteOptions = HonoEffectRouteOptions<any, any>
 export type MiddlewareInput<Middleware extends AnyHonoMiddleware> =
   Middleware extends MiddlewareHandler<any, any, infer InputType> ? InputType : Input
 
+type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
+  value: infer Intersection
+) => void
+  ? Intersection
+  : never
+
 export type MiddlewareInputs<Middlewares extends readonly AnyHonoMiddleware[]> =
-  Middlewares extends readonly [
-    infer Head extends AnyHonoMiddleware,
-    ...infer Tail extends AnyHonoMiddleware[]
-  ]
-    ? MiddlewareInput<Head> & MiddlewareInputs<Tail>
-    : Input
+  Middlewares extends readonly []
+    ? Input
+    : Input & UnionToIntersection<MiddlewareInput<Middlewares[number]>>
 
 type ValidatedTarget<InputType extends Input, Target extends 'param' | 'header'> =
   NonNullable<InputType['out']> extends Record<Target, infer Value>
@@ -77,11 +80,24 @@ export type HonoEffectContext<E extends Env, P extends string, InputType extends
   readonly req: ValidatedRequest<P, InputType>
 }
 
-export type MiddlewareEnvironment<Middleware extends AnyHonoMiddleware> =
-  Middleware extends MiddlewareHandler<infer Environment, any, any> ? Environment : Env
+export type FirstMiddleware<Middlewares extends readonly AnyHonoMiddleware[]> =
+  Middlewares extends readonly [infer Head extends AnyHonoMiddleware, ...AnyHonoMiddleware[]]
+    ? Head
+    : never
 
-export type MiddlewarePath<Middleware extends AnyHonoMiddleware> =
-  Middleware extends MiddlewareHandler<any, infer Path, any> ? Path : string
+export type MiddlewareEnvironment<Middleware extends AnyHonoMiddleware> = [Middleware] extends [
+  never
+]
+  ? Env
+  : Middleware extends MiddlewareHandler<infer Environment, any, any>
+    ? Environment
+    : Env
+
+export type MiddlewarePath<Middleware extends AnyHonoMiddleware> = [Middleware] extends [never]
+  ? string
+  : Middleware extends MiddlewareHandler<any, infer Path, any>
+    ? Path
+    : string
 
 export type HonoJsonValue =
   | null
