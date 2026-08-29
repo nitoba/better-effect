@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom'
 import { describe, expect, test } from 'bun:test'
 
 import { Layer, Runtime, RuntimeObserver, Service, ServiceRuntime } from '../src'
@@ -58,6 +59,61 @@ const captureRejection = async (promise: Promise<unknown>): Promise<Error | unde
     () => undefined,
     (cause) => (cause instanceof Error ? cause : new Error(String(cause)))
   )
+
+type MermaidSecurityLevel = 'antiscript' | 'loose'
+
+// Mermaid's dagre renderer needs SVG layout APIs absent from JSDOM. This
+// deterministic measurement shim keeps the test focused on parsing and DOM
+// interpretation without starting a browser or adding a runtime dependency.
+const createMermaidDom = (): JSDOM => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'http://localhost/'
+  })
+  const { window } = dom
+
+  Object.defineProperty(window.SVGElement.prototype, 'getBBox', {
+    configurable: true,
+    value: () => ({ x: 0, y: 0, width: 100, height: 30 })
+  })
+  Object.defineProperty(window.SVGElement.prototype, 'getComputedTextLength', {
+    configurable: true,
+    value: () => 100
+  })
+  Object.assign(globalThis, {
+    window,
+    document: window.document,
+    navigator: window.navigator,
+    Node: window.Node,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    SVGElement: window.SVGElement,
+    SVGSVGElement: window.SVGSVGElement,
+    DOMParser: window.DOMParser,
+    XMLSerializer: window.XMLSerializer,
+    CSSStyleSheet: window.CSSStyleSheet,
+    CSSStyleDeclaration: window.CSSStyleDeclaration,
+    MutationObserver: window.MutationObserver,
+    getComputedStyle: window.getComputedStyle.bind(window)
+  })
+
+  return dom
+}
+
+let mermaidDom: JSDOM | undefined
+let mermaid: typeof import('mermaid').default | undefined
+let mermaidRenderId = 0
+
+const renderMermaid = async (
+  source: string,
+  securityLevel: MermaidSecurityLevel
+): Promise<JSDOM> => {
+  mermaidDom ??= createMermaidDom()
+  mermaid ??= (await import('mermaid')).default
+  mermaid.initialize({ startOnLoad: false, securityLevel })
+  await mermaid.parse(source)
+  const result = await mermaid.render(`runtime-graph-test-${mermaidRenderId++}`, source)
+  return new JSDOM(result.svg)
+}
 
 describe('RuntimeGraphObserver', () => {
   test('observes a linear transitive graph from public resolution paths', async () => {
@@ -395,6 +451,97 @@ describe('RuntimeGraphObserver', () => {
     } finally {
       await firstRuntime.dispose()
       await secondRuntime.dispose()
+    }
+  })
+
+  test('parses and renders adversarial labels as literal text', async () => {
+    const serviceTag =
+      '<img src=x onerror=alert(1)> **bold** `code` &lt;entity&gt; &amp; #60; "quotes" \'single\' [brackets] | pipes'
+    const rootLabel =
+      'Runtime <img src=x onerror=alert(2)> **root** `markdown` &amp; &lt;root-entity&gt; [link](javascript:alert(3)) "root"'
+    class LiteralLabelService extends Service<LiteralLabelService>()(serviceTag) {}
+    const graph = RuntimeGraphObserver.make({ rootLabel })
+
+    graph.onServiceResolve({
+      service: LiteralLabelService,
+      resolutionPath: [LiteralLabelService],
+      outcome: { status: 'success' }
+    })
+
+    const source = graph.toMermaid()
+    expect(source).toContain('flowchart TD')
+    expect(source).toContain('#60;')
+    expect(source).toContain('#62;')
+    expect(source).toContain('#96;')
+    expect(source).toContain('#38;')
+    expect(source).not.toContain('<img')
+    expect(source).not.toContain('**')
+    expect(source).not.toContain('`code`')
+    expect(source).not.toContain('&lt;entity&gt;')
+
+    for (const securityLevel of ['loose', 'antiscript'] as const) {
+      const rendered = await renderMermaid(source, securityLevel)
+      const labels = [...rendered.window.document.querySelectorAll('.nodeLabel')]
+
+      expect(labels.map((label) => label.textContent)).toEqual([rootLabel, serviceTag])
+
+      for (const label of labels) {
+        expect(
+          label.querySelector(
+            'a,area,embed,form,iframe,img,input,link,object,script,style,textarea,video,strong,em,code'
+          )
+        ).toBeNull()
+        expect(label.querySelector('[onerror],[onclick],[href],[src]')).toBeNull()
+      }
+    }
+  })
+
+  test('encodes control and Unicode whitespace before Mermaid rendering', async () => {
+    const serviceTag = 'unicode\u0000\t\u0085\u2028\u2029\u00a0\u200b\ufeff😀'
+    const rootLabel = 'root\n\r\u000b\u2028\u2029\u00a0\u200d😀'
+    class UnicodeLabelService extends Service<UnicodeLabelService>()(serviceTag) {}
+    const graph = RuntimeGraphObserver.make({ rootLabel })
+
+    graph.onServiceResolve({
+      service: UnicodeLabelService,
+      resolutionPath: [UnicodeLabelService],
+      outcome: { status: 'success' }
+    })
+
+    const source = graph.toMermaid()
+    for (const encoded of [
+      '#0;',
+      '#9;',
+      '#11;',
+      '#133;',
+      '#160;',
+      '#8203;',
+      '#8205;',
+      '#8232;',
+      '#8233;',
+      '#65279;'
+    ]) {
+      expect(source).toContain(encoded)
+    }
+    for (const control of ['\u0000', '\t', '\u0085', '\u2028', '\u2029', '\u200b', '\ufeff']) {
+      expect(source).not.toContain(control)
+    }
+
+    for (const securityLevel of ['loose', 'antiscript'] as const) {
+      const rendered = await renderMermaid(source, securityLevel)
+      const labels = [...rendered.window.document.querySelectorAll('.nodeLabel')]
+
+      expect(labels).toHaveLength(2)
+      expect(labels.some((label) => label.textContent?.includes('unicode'))).toBe(true)
+      expect(labels.some((label) => label.textContent?.includes('root'))).toBe(true)
+      expect(
+        labels.every(
+          (label) =>
+            label.querySelector(
+              'a,area,embed,form,iframe,img,input,link,object,script,style,textarea,video,strong,em,code'
+            ) === null
+        )
+      ).toBe(true)
     }
   })
 

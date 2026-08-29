@@ -66,36 +66,59 @@ const serviceTags = (path: readonly AnyServiceToken[], targetTag: string): strin
   return tags
 }
 
+const mermaidLabelPunctuation = new Set([
+  '&',
+  '"',
+  "'",
+  '\\',
+  '[',
+  ']',
+  '(',
+  ')',
+  '{',
+  '}',
+  '|',
+  '#',
+  ';',
+  '<',
+  '>',
+  '=',
+  '`',
+  '*',
+  '_',
+  '~',
+  '!',
+  '^',
+  '$'
+])
+
+const isMermaidLabelControl = (character: string, codePoint: number): boolean =>
+  codePoint <= 0x1f ||
+  (codePoint >= 0x7f && codePoint <= 0x9f) ||
+  (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+  (/\s/u.test(character) && character !== ' ') ||
+  /\p{Cf}/u.test(character)
+
+/**
+ * Escape Mermaid syntax while keeping the decoded label readable.
+ *
+ * Mermaid's documented `#number;` form is a syntax-level escape. Encoding the
+ * entity introducers themselves prevents label text from creating a second
+ * entity, while encoding Markdown and HTML punctuation keeps it out of the
+ * renderer's interpretation paths.
+ */
 const escapeMermaidLabel = (label: string): string => {
   let escaped = ''
 
-  for (let index = 0; index < label.length; index += 1) {
-    const character = label[index]
-    const code = label.charCodeAt(index)
+  for (const character of label) {
+    const codePoint = character.codePointAt(0)
 
-    if (character === undefined) {
+    if (codePoint === undefined) {
       continue
     }
 
-    if (
-      code <= 0x1f ||
-      code === 0x7f ||
-      code === 0x2028 ||
-      code === 0x2029 ||
-      character === '&' ||
-      character === '"' ||
-      character === '\\' ||
-      character === '[' ||
-      character === ']' ||
-      character === '(' ||
-      character === ')' ||
-      character === '{' ||
-      character === '}' ||
-      character === '|' ||
-      character === '#' ||
-      character === ';'
-    ) {
-      escaped += `#${code};`
+    if (isMermaidLabelControl(character, codePoint) || mermaidLabelPunctuation.has(character)) {
+      escaped += `#${codePoint};`
     } else {
       escaped += character
     }
