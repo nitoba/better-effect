@@ -322,9 +322,9 @@ type ApplyErasedOverrides<
     >
   : Erased
 
-type HasUncheckedLayerInTuple<Layers extends readonly LayerInput[]> = true extends (
-  Layers[number] extends unknown ? IsExactUncheckedLayer<Layers[number]> : never
-)
+type HasUncheckedLayerInTuple<Layers extends readonly LayerInput[]> = true extends {
+  [Index in keyof Layers]: IsExactUncheckedLayer<Layers[Index]>
+}[number]
   ? true
   : false
 
@@ -528,21 +528,56 @@ export type ValidateOneOverride<
             >
           >)
 
+type IsTuple<Values extends readonly unknown[]> = number extends Values['length'] ? false : true
+
+type InvalidWidenedOverrideList = {
+  readonly __betterEffectWidenedOverrideList: unique symbol
+}
+
 /** Validate ordered overrides against the state produced by earlier overrides. */
-export type ValidateOverrides<
+export type ValidateOverrides<Base extends LayerInput, Overrides extends readonly LayerInput[]> =
+  IsTuple<Overrides> extends false
+    ? IsExactUncheckedLayer<Base> extends true
+      ? unknown
+      : InvalidWidenedOverrideList
+    : Overrides extends readonly []
+      ? unknown
+      : ValidateOverrideLayerInput<Base> &
+          ValidateOverrideTuple<Overrides> &
+          ValidateOverridesFromState<
+            Overrides,
+            ServiceTagMap<Extract<ProvidedEnvironment<Base>, AnyService>>,
+            Extract<ProvidedEnvironment<Base>, AnyService>,
+            false,
+            IsExactUncheckedLayer<Base>
+          >
+
+type ValidationFailureWitness<Value> = Value extends {
+  readonly __betterEffectIncompatibleLayerOverride: infer Tokens
+}
+  ? { readonly __betterEffectIncompatibleLayerOverride: Tokens }
+  : Value extends { readonly __betterEffectInvalidLayerErasure: unique symbol }
+    ? Value
+    : Value extends { readonly __betterEffectAmbiguousLayerUnion: unique symbol }
+      ? Value
+      : Value extends { readonly __betterEffectWidenedProvidedEnvironment: unique symbol }
+        ? Value
+        : Value extends { readonly __betterEffectWidenedOverrideList: unique symbol }
+          ? Value
+          : Value extends readonly (infer Element)[]
+            ? ValidationFailureWitness<Element>
+            : never
+
+/** Reduce Layer override validation to a usable call-site diagnostic witness. */
+export type ValidateOverridesWitness<
   Base extends LayerInput,
   Overrides extends readonly LayerInput[]
-> = Overrides extends readonly []
-  ? unknown
-  : ValidateOverrideLayerInput<Base> &
-      ValidateOverrideTuple<Overrides> &
-      ValidateOverridesFromState<
-        Overrides,
-        ServiceTagMap<Extract<ProvidedEnvironment<Base>, AnyService>>,
-        Extract<ProvidedEnvironment<Base>, AnyService>,
-        false,
-        IsExactUncheckedLayer<Base>
-      >
+> =
+  ValidationFailureWitness<ValidateOverrides<Base, Overrides>> extends infer Failure
+    ? [Failure] extends [never]
+      ? unknown
+      : Failure
+    : never
 
 /** A Layer accepted by Runtime boundaries after completeness validation. */
 export type CompleteInput<L extends LayerInput> = ValidateLayerInput<L> &

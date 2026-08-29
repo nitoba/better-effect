@@ -6,11 +6,11 @@ import type {
   LayerInput,
   LayerInputState,
   OverrideLayerResult,
-  OverrideResult,
   ProvidedEnvironment,
   RequiredEnvironment,
   ValidateLayerInput,
-  ValidateOverrides
+  ValidateOverrides,
+  ValidateOverridesWitness
 } from '../layer/inference'
 import type { LayerBackend } from '../layer/backend'
 import { LayerDisposeError } from '../layer/errors'
@@ -30,34 +30,60 @@ import type { MissingDependencies } from '../internal/missing-dependencies'
 import type { AnyService } from '../service'
 import { RecordedRuntimeObserver } from './recorded-runtime-observer'
 
+declare const TestRuntimeOptionsOverridesTypeId: unique symbol
+
+type ValidatedTestServiceOption<
+  Base extends LayerInput,
+  Overrides extends readonly LayerInput[],
+  Replacement extends LayerInput,
+  Value
+> = Value & ValidateOverridesWitness<Base, readonly [...Overrides, Replacement]>
+
 /** Options for an isolated TestRuntime. */
 export type TestRuntimeOptions<
   Base extends LayerInput = LayerInput,
-  Overrides extends readonly LayerInput[] = readonly LayerInput[]
+  Overrides extends readonly LayerInput[] = readonly []
 > = Omit<RuntimeOptions, 'backend' | 'observers'> & {
   /** Explicitly replace or add providers through `Layer.override`. */
   readonly overrides?: Overrides & ValidateOverrides<Base, Overrides>
   /** Backend used by the underlying Runtime. Defaults to a fresh MapLayerBackend. */
   readonly backend?: LayerBackend
   /** Deterministic Clock provider to install for this TestRuntime. */
-  readonly clock?: ClockTest
+  readonly clock?: ValidatedTestServiceOption<Base, Overrides, ClockTestLayer, ClockTest>
   /** In-memory Logger provider to install for this TestRuntime. */
-  readonly logger?: LoggerTest
+  readonly logger?: ValidatedTestServiceOption<Base, Overrides, LoggerTestLayer, LoggerTest>
   /** Seeded Random provider to install for this TestRuntime. */
-  readonly random?: RandomSeeded
+  readonly random?: ValidatedTestServiceOption<Base, Overrides, RandomSeededLayer, RandomSeeded>
   /** Additional best-effort observers after the default recorder. */
   readonly observers?: readonly RuntimeObserver[]
+} & {
+  readonly [TestRuntimeOptionsOverridesTypeId]?: Overrides
 }
 
 type ClockTestLayer = ReturnType<typeof ClockTest.layer>
 type LoggerTestLayer = ReturnType<typeof LoggerTest.layer>
 type RandomSeededLayer = ReturnType<typeof RandomSeeded.layer>
 
-type ExplicitOverrides<Options> = Options extends {
-  readonly overrides: infer Overrides extends readonly LayerInput[]
+type TestRuntimeOptionsInput = Omit<RuntimeOptions, 'backend' | 'observers'> & {
+  readonly overrides?: readonly LayerInput[]
+  readonly backend?: LayerBackend
+  readonly clock?: ClockTest
+  readonly logger?: LoggerTest
+  readonly random?: RandomSeeded
+  readonly observers?: readonly RuntimeObserver[]
 }
-  ? Overrides
-  : readonly []
+
+type ExplicitOverrides<Options extends TestRuntimeOptionsInput> =
+  typeof TestRuntimeOptionsOverridesTypeId extends keyof Options
+    ? Exclude<
+        Options[typeof TestRuntimeOptionsOverridesTypeId],
+        undefined
+      > extends infer Overrides extends readonly LayerInput[]
+      ? Overrides
+      : readonly []
+    : Exclude<Options['overrides'], undefined> extends infer Overrides extends readonly LayerInput[]
+      ? Overrides
+      : readonly []
 
 type HasDefinedOption<Options, Key extends PropertyKey> = Key extends keyof Options
   ? {} extends Pick<Options, Key>
@@ -67,35 +93,40 @@ type HasDefinedOption<Options, Key extends PropertyKey> = Key extends keyof Opti
       : true
   : false
 
-type ApplyOptionalOverride<
+type HasPotentialOption<Options, Key extends PropertyKey> = Key extends keyof Options
+  ? [Exclude<Options[Key], undefined>] extends [never]
+    ? false
+    : true
+  : false
+
+type TestRuntimeOptionLayers<Options extends TestRuntimeOptionsInput> = [
+  ...ExplicitOverrides<Options>,
+  ...(HasDefinedOption<Options, 'clock'> extends true ? [ClockTestLayer] : []),
+  ...(HasDefinedOption<Options, 'logger'> extends true ? [LoggerTestLayer] : []),
+  ...(HasDefinedOption<Options, 'random'> extends true ? [RandomSeededLayer] : [])
+]
+
+type TestRuntimeValidationLayers<Options extends TestRuntimeOptionsInput> = [
+  ...ExplicitOverrides<Options>,
+  ...(HasPotentialOption<Options, 'clock'> extends true ? [ClockTestLayer] : []),
+  ...(HasPotentialOption<Options, 'logger'> extends true ? [LoggerTestLayer] : []),
+  ...(HasPotentialOption<Options, 'random'> extends true ? [RandomSeededLayer] : [])
+]
+
+type TestRuntimeLayer<
   Base extends LayerInput,
-  Options,
-  Key extends PropertyKey,
-  Replacement extends LayerInput
-> = HasDefinedOption<Options, Key> extends true ? OverrideResult<Base, Replacement> : Base
+  Options extends TestRuntimeOptionsInput
+> = OverrideLayerResult<Base, TestRuntimeOptionLayers<Options>>
 
-type TestRuntimeLayer<Base extends LayerInput, Options> = ApplyOptionalOverride<
-  ApplyOptionalOverride<
-    ApplyOptionalOverride<
-      OverrideLayerResult<Base, ExplicitOverrides<Options>>,
-      Options,
-      'clock',
-      ClockTestLayer
-    >,
-    Options,
-    'logger',
-    LoggerTestLayer
-  >,
-  Options,
-  'random',
-  RandomSeededLayer
->
-
-type TestRuntimeOptionsValidation<Base extends LayerInput, Options> = Options extends {
-  readonly overrides: infer Overrides extends readonly LayerInput[]
+type TestRuntimeOptionsValidation<
+  Base extends LayerInput,
+  Options extends TestRuntimeOptionsInput
+> = (Options extends {
+  readonly overrides?: infer Overrides extends readonly LayerInput[]
 }
-  ? { readonly overrides: Overrides & ValidateOverrides<Base, Overrides> }
-  : unknown
+  ? { readonly overrides?: Overrides & ValidateOverrides<Base, Overrides> }
+  : unknown) &
+  ValidateOverridesWitness<Base, TestRuntimeValidationLayers<Options>>
 
 type CompleteLayerCheck<L extends LayerInput> = ValidateLayerInput<L> &
   (LayerInputState<L> extends 'typed'
@@ -174,12 +205,12 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
     layer: L & CompleteLayerCheck<L>
   ): Promise<TestRuntime<ProvidedEnvironment<L>>>
 
-  static make<L extends LayerInput, const Options extends TestRuntimeOptions<L>>(
-    layer: L & ValidateLayerInput<L> & CompleteLayerCheck<TestRuntimeLayer<L, Options>>,
+  static make<L extends LayerInput, const Options extends TestRuntimeOptionsInput>(
+    layer: L & ValidateLayerInput<L> & CompleteLayerCheck<TestRuntimeLayer<L, NoInfer<Options>>>,
     options: Options & TestRuntimeOptionsValidation<L, Options>
   ): Promise<TestRuntime<ProvidedEnvironment<TestRuntimeLayer<L, Options>>, Options>>
 
-  static async make<L extends LayerInput, const Options extends TestRuntimeOptions<L> = {}>(
+  static async make<L extends LayerInput, const Options extends TestRuntimeOptionsInput = {}>(
     layer: L,
     options?: Options
   ): Promise<TestRuntime<ProvidedEnvironment<TestRuntimeLayer<L, Options>>, Options>> {
@@ -191,7 +222,7 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
 
   private static async makeInternal<
     L extends LayerInput,
-    const Options extends TestRuntimeOptions<L>
+    const Options extends TestRuntimeOptionsInput
   >(
     layer: L,
     options: Options
@@ -303,13 +334,13 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
     use: TestCallback<ProvidedEnvironment<L>, A>
   ): Promise<Awaited<A>>
 
-  static use<A, L extends LayerInput, const Options extends TestRuntimeOptions<L>>(
-    layer: L & ValidateLayerInput<L> & CompleteLayerCheck<TestRuntimeLayer<L, Options>>,
+  static use<A, L extends LayerInput, const Options extends TestRuntimeOptionsInput>(
+    layer: L & ValidateLayerInput<L> & CompleteLayerCheck<TestRuntimeLayer<L, NoInfer<Options>>>,
     options: Options & TestRuntimeOptionsValidation<L, Options>,
     use: TestCallback<ProvidedEnvironment<TestRuntimeLayer<L, Options>>, A, Options>
   ): Promise<Awaited<A>>
 
-  static async use<A, L extends LayerInput, const Options extends TestRuntimeOptions<L> = {}>(
+  static async use<A, L extends LayerInput, const Options extends TestRuntimeOptionsInput = {}>(
     layer: L,
     optionsOrUse:
       | Options
@@ -367,7 +398,10 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
 const isScopeOutcome = (input: RuntimeDisposeOptions | ScopeOutcome): input is ScopeOutcome =>
   'status' in input
 
-const composeTestLayer = (layer: LayerInput, options: TestRuntimeOptions): LayerInput => {
+const composeTestLayer = <Base extends LayerInput, Options extends TestRuntimeOptionsInput>(
+  layer: Base,
+  options: Options
+): TestRuntimeLayer<Base, Options> => {
   const overrides = [...(options.overrides ?? [])]
 
   if (options.clock !== undefined) {
@@ -382,12 +416,13 @@ const composeTestLayer = (layer: LayerInput, options: TestRuntimeOptions): Layer
     overrides.push(Layer.succeed(Random, options.random))
   }
 
-  // SAFETY: Runtime composition has already passed the public typed override boundary.
-  const uncheckedLayer = layer as Layer.Any
-  // SAFETY: The list is erased only while passing heterogeneous providers to Layer.override.
-  const uncheckedOverrides = overrides as readonly Layer.Any[]
+  // SAFETY: The public overloads validate the Layer and every generated option override.
+  const typedLayer = layer as Base & ValidateLayerInput<Base>
+  // SAFETY: Runtime branches collect the tuple described by TestRuntimeOptionLayers; the cast only restores that validated tuple for Layer.override.
+  const typedOverrides = overrides as TestRuntimeOptionLayers<Options> &
+    ValidateOverrides<Base, TestRuntimeOptionLayers<Options>>
 
-  return Layer.override(uncheckedLayer, ...uncheckedOverrides)
+  return Layer.override<Base, TestRuntimeOptionLayers<Options>>(typedLayer, ...typedOverrides)
 }
 
 type UnmatchedExecutionEvents = {
@@ -445,7 +480,7 @@ export declare namespace TestRuntime {
   /** Options accepted by `TestRuntime.make` and `TestRuntime.use`. */
   export type Options<
     Base extends LayerInput = LayerInput,
-    Overrides extends readonly LayerInput[] = readonly LayerInput[]
+    Overrides extends readonly LayerInput[] = readonly []
   > = TestRuntimeOptions<Base, Overrides>
 
   /** Optional signal supplied to one managed TestRuntime execution. */

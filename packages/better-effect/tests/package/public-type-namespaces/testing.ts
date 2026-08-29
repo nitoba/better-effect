@@ -39,7 +39,39 @@ export type TimelineIsReadonly = Expect<
 
 class PackageTestingService extends Service<PackageTestingService>()('PackageTestingService') {}
 
+class PackageIncompatibleTestingService extends Service<PackageIncompatibleTestingService>()(
+  'PackageTestingService'
+) {
+  write(): void {}
+}
+
+class PackageClockCollision extends Service<PackageClockCollision>()('Clock') {
+  now(): string {
+    return ''
+  }
+
+  sleep(): Promise<void> {
+    return Promise.resolve()
+  }
+}
+
+class PackageLoggerCollision extends Service<PackageLoggerCollision>()('Logger') {
+  log(message: string): void {
+    void message
+  }
+}
+
+class PackageRandomCollision extends Service<PackageRandomCollision>()('Random') {
+  next(): string {
+    return ''
+  }
+}
+
 const packageTestingLayer = Layer.make(PackageTestingService)
+const packageIncompatibleTestingLayer = Layer.make(PackageIncompatibleTestingService)
+const packageClockCollisionLayer = Layer.make(PackageClockCollision)
+const packageLoggerCollisionLayer = Layer.make(PackageLoggerCollision)
+const packageRandomCollisionLayer = Layer.make(PackageRandomCollision)
 const packageTestingProgram = Effect.fn(async function* () {
   const service = yield* PackageTestingService
   const clock = yield* Clock
@@ -74,6 +106,55 @@ export type PackageTestRuntime = Expect<
 export type PackageTestResult = Expect<
   Equal<Awaited<typeof packageTestResult>, Awaited<ReturnType<typeof packageTestingProgram>>>
 >
+
+const packageReplacement = Layer.succeed(PackageTestingService, new PackageTestingService())
+const packagePredeclaredOverrides = [packageReplacement] as const
+const packagePredeclaredOptions = {
+  overrides: packagePredeclaredOverrides
+} satisfies TestRuntime.Options<typeof packageTestingLayer, typeof packagePredeclaredOverrides>
+const packagePredeclaredRuntime = TestRuntime.make(packageTestingLayer, packagePredeclaredOptions)
+export type PackagePredeclaredRuntime = Expect<
+  Equal<Awaited<typeof packagePredeclaredRuntime>['runtime'], Runtime<PackageTestingService>>
+>
+
+const packageIncompatibleOptions = {
+  overrides: [packageIncompatibleTestingLayer] as const
+}
+// @ts-expect-error predeclared same-tag overrides must preserve Layer compatibility checks
+void TestRuntime.make(packageTestingLayer, packageIncompatibleOptions)
+
+const packageWidenedOverrides: readonly Layer.Any[] = [packageIncompatibleTestingLayer]
+const packageWidenedOptions = { overrides: packageWidenedOverrides }
+// @ts-expect-error widened override arrays cannot prove same-tag compatibility
+void TestRuntime.make(packageTestingLayer, packageWidenedOptions)
+const packageExplicitlyWidenedOptions: TestRuntime.Options<typeof packageTestingLayer> = {
+  // @ts-expect-error the default options type cannot erase override tuple information
+  overrides: packageWidenedOverrides
+}
+void packageExplicitlyWidenedOptions
+
+const packageUncheckedOverride: Layer.Any = packageIncompatibleTestingLayer
+const packageUncheckedRuntime = TestRuntime.make(packageTestingLayer, {
+  overrides: [packageUncheckedOverride] as const
+})
+export type PackageUncheckedRuntime = Expect<
+  Equal<Awaited<typeof packageUncheckedRuntime>['runtime'], Runtime<any>>
+>
+
+const packageClockOptions: TestRuntime.Options<typeof packageClockCollisionLayer> = {
+  // @ts-expect-error predeclared standard options must preserve same-tag compatibility
+  clock: new ClockTest()
+}
+void packageClockOptions
+
+// @ts-expect-error standard Clock options must remain compatible with a same-tag base provider
+void TestRuntime.make(packageClockCollisionLayer, { clock: new ClockTest() })
+// @ts-expect-error standard Logger options must remain compatible with a same-tag base provider
+void TestRuntime.make(packageLoggerCollisionLayer, { logger: new LoggerTest() })
+// @ts-expect-error standard Random options must remain compatible with a same-tag base provider
+void TestRuntime.make(packageRandomCollisionLayer, { random: new RandomSeeded(42) })
+// @ts-expect-error TestRuntime.use must validate standard option collisions too
+void TestRuntime.use(packageClockCollisionLayer, { clock: new ClockTest() }, () => Result.ok(true))
 
 void composed
 void snapshot

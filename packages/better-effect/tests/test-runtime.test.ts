@@ -102,6 +102,47 @@ describe('TestRuntime', () => {
     }
   })
 
+  test('run preserves a direct Result.err value and reports failure outcome', async () => {
+    const error = new Error('run failed')
+    const expected = Result.err(error)
+    const testRuntime = await TestRuntime.make(Layer.merge())
+
+    try {
+      const result = await testRuntime.run(() => expected)
+
+      expect(result).toBe(expected)
+      expect(testRuntime.observer.executionEnds).toHaveLength(1)
+      expect(testRuntime.observer.executionEnds[0]?.outcome).toEqual({
+        status: 'failure',
+        cause: error
+      })
+    } finally {
+      await testRuntime.dispose()
+    }
+  })
+
+  test('run preserves a direct defect', async () => {
+    const defect = new Error('run defect')
+    const testRuntime = await TestRuntime.make(Layer.merge())
+
+    try {
+      const failure = await captureRejection(
+        testRuntime.run(() => {
+          throw defect
+        })
+      )
+
+      expect(failure).toBe(defect)
+      expect(testRuntime.observer.executionEnds).toHaveLength(1)
+      expect(testRuntime.observer.executionEnds[0]?.outcome).toEqual({
+        status: 'failure',
+        cause: defect
+      })
+    } finally {
+      await testRuntime.dispose()
+    }
+  })
+
   test('overrides providers and supports execution-local runWith Layers', async () => {
     const databaseOverride = Layer.succeed(
       TestDatabase,
