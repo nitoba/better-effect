@@ -25,7 +25,16 @@ import { Runtime } from '../runtime/runtime'
 import type { RuntimeObserver } from '../runtime/observer'
 import type { RuntimeExecutionEndEvent, RuntimeExecutionStartEvent } from '../runtime/observer'
 import type { ScopeOutcome } from '../scope'
-import { Clock, ClockTest, Logger, LoggerTest, Random, RandomSeeded } from '../standard-services'
+import {
+  Clock,
+  ClockTest,
+  IdGenerator,
+  IdGeneratorTest,
+  Logger,
+  LoggerTest,
+  Random,
+  RandomSeeded
+} from '../standard-services'
 import type { MissingDependencies } from '../internal/missing-dependencies'
 import type { AnyService } from '../service'
 import { RecordedRuntimeObserver } from './recorded-runtime-observer'
@@ -54,6 +63,13 @@ export type TestRuntimeOptions<
   readonly logger?: ValidatedTestServiceOption<Base, Overrides, LoggerTestLayer, LoggerTest>
   /** Seeded Random provider to install for this TestRuntime. */
   readonly random?: ValidatedTestServiceOption<Base, Overrides, RandomSeededLayer, RandomSeeded>
+  /** Deterministic IdGenerator provider to install for this TestRuntime. */
+  readonly idGenerator?: ValidatedTestServiceOption<
+    Base,
+    Overrides,
+    IdGeneratorTestLayer,
+    IdGeneratorTest
+  >
   /** Additional best-effort observers after the default recorder. */
   readonly observers?: readonly RuntimeObserver[]
 } & {
@@ -63,6 +79,7 @@ export type TestRuntimeOptions<
 type ClockTestLayer = ReturnType<typeof ClockTest.layer>
 type LoggerTestLayer = ReturnType<typeof LoggerTest.layer>
 type RandomSeededLayer = ReturnType<typeof RandomSeeded.layer>
+type IdGeneratorTestLayer = ReturnType<typeof IdGeneratorTest.layer>
 
 type TestRuntimeOptionsInput = Omit<RuntimeOptions, 'backend' | 'observers'> & {
   readonly overrides?: readonly LayerInput[]
@@ -70,6 +87,7 @@ type TestRuntimeOptionsInput = Omit<RuntimeOptions, 'backend' | 'observers'> & {
   readonly clock?: ClockTest
   readonly logger?: LoggerTest
   readonly random?: RandomSeeded
+  readonly idGenerator?: IdGeneratorTest
   readonly observers?: readonly RuntimeObserver[]
 }
 
@@ -121,14 +139,16 @@ type TestRuntimeOptionLayers<Options extends TestRuntimeOptionsInput> = [
   ...ExplicitOverrides<Options>,
   ...(HasGuaranteedOption<Options, 'clock'> extends true ? [ClockTestLayer] : []),
   ...(HasGuaranteedOption<Options, 'logger'> extends true ? [LoggerTestLayer] : []),
-  ...(HasGuaranteedOption<Options, 'random'> extends true ? [RandomSeededLayer] : [])
+  ...(HasGuaranteedOption<Options, 'random'> extends true ? [RandomSeededLayer] : []),
+  ...(HasGuaranteedOption<Options, 'idGenerator'> extends true ? [IdGeneratorTestLayer] : [])
 ]
 
 type TestRuntimeValidationLayers<Options extends TestRuntimeOptionsInput> = [
   ...ExplicitOverrides<Options>,
   ...(HasPotentialOption<Options, 'clock'> extends true ? [ClockTestLayer] : []),
   ...(HasPotentialOption<Options, 'logger'> extends true ? [LoggerTestLayer] : []),
-  ...(HasPotentialOption<Options, 'random'> extends true ? [RandomSeededLayer] : [])
+  ...(HasPotentialOption<Options, 'random'> extends true ? [RandomSeededLayer] : []),
+  ...(HasPotentialOption<Options, 'idGenerator'> extends true ? [IdGeneratorTestLayer] : [])
 ]
 
 type TestRuntimeLayer<
@@ -200,6 +220,7 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
   readonly clock: ConfiguredService<Options, 'clock', ClockTest>
   readonly logger: ConfiguredService<Options, 'logger', LoggerTest>
   readonly random: ConfiguredService<Options, 'random', RandomSeeded>
+  readonly idGenerator: ConfiguredService<Options, 'idGenerator', IdGeneratorTest>
 
   private disposalPromise: Promise<void> | undefined
 
@@ -210,7 +231,8 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
     readonly observer: RecordedRuntimeObserver,
     clock: ClockTest | undefined,
     logger: LoggerTest | undefined,
-    random: RandomSeeded | undefined
+    random: RandomSeeded | undefined,
+    idGenerator: IdGeneratorTest | undefined
   ) {
     // SAFETY: The public factory's Options type records which explicit test services were supplied.
     this.clock = clock as ConfiguredService<Options, 'clock', ClockTest>
@@ -218,6 +240,8 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
     this.logger = logger as ConfiguredService<Options, 'logger', LoggerTest>
     // SAFETY: The public factory's Options type records which explicit test services were supplied.
     this.random = random as ConfiguredService<Options, 'random', RandomSeeded>
+    // SAFETY: The public factory's Options type records which explicit test services were supplied.
+    this.idGenerator = idGenerator as ConfiguredService<Options, 'idGenerator', IdGeneratorTest>
   }
 
   /** Create a TestRuntime with a fresh backend and default lifecycle recorder. */
@@ -264,7 +288,8 @@ export class TestRuntime<Provided extends AnyService = any, Options extends obje
       observer,
       options.clock,
       options.logger,
-      options.random
+      options.random,
+      options.idGenerator
     )
   }
 
@@ -434,6 +459,10 @@ const composeTestLayer = <Base extends LayerInput, Options extends TestRuntimeOp
 
   if (options.random !== undefined) {
     overrides.push(Layer.succeed(Random, options.random))
+  }
+
+  if (options.idGenerator !== undefined) {
+    overrides.push(Layer.succeed(IdGenerator, options.idGenerator))
   }
 
   // SAFETY: The public overloads validate the Layer and every generated option override.

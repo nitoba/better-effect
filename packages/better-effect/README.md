@@ -671,10 +671,40 @@ const now = await runtime.run(async () => ServiceRuntime.resolve(Clock))
 await runtime.dispose()
 ```
 
-The entrypoint also provides `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
-`Config`, `CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. None
-is installed implicitly; compose a normal Layer or use the provided test
-helpers.
+`IdGenerator` uses the host's cryptographic `crypto.randomUUID()` and is also
+opt-in. Use `IdGeneratorTest` to make entity creation deterministic without
+introducing a domain-specific ID type:
+
+```ts
+import { Result } from 'better-result'
+import { Effect, Layer, Service } from 'better-effect'
+import { IdGenerator } from 'better-effect/standard-services'
+import { IdGeneratorTest, TestRuntime } from 'better-effect/testing'
+
+class User extends Service<User>()('User') {
+  constructor(readonly id: string) {
+    super()
+  }
+}
+
+const createUser = Effect.fn(async function* () {
+  const ids = yield* IdGenerator
+  return Result.ok(new User(ids.next()))
+})
+
+const result = await TestRuntime.use(
+  Layer.merge(),
+  { idGenerator: new IdGeneratorTest(['user-1']) },
+  (test) => test.run(createUser)
+)
+// Result.ok(User { id: 'user-1' })
+```
+
+`IdGeneratorTest.from((index) => ...)` provides an unbounded deterministic
+sequence; its first factory index is zero and increases monotonically. The
+entrypoint also provides `Random`/`RandomSeeded`, `Logger`/`LoggerTest`, `Config`,
+`CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. None is
+installed implicitly; compose a normal Layer or use the provided test helpers.
 
 For typed environment configuration, bind a Standard Schema directly to a
 reusable descriptor:

@@ -5,6 +5,10 @@ import {
   Config,
   ConfigLive,
   CurrentRequest,
+  IdGenerator,
+  IdGeneratorLive,
+  IdGeneratorTest,
+  IdGeneratorTestLayer,
   Logger,
   LoggerTest,
   Random,
@@ -23,8 +27,12 @@ export type RandomTag = Expect<Equal<typeof Random.serviceTag, 'Random'>>
 export type LoggerTag = Expect<Equal<typeof Logger.serviceTag, 'Logger'>>
 export type RequestTag = Expect<Equal<typeof CurrentRequest.serviceTag, 'CurrentRequest'>>
 export type ConfigTag = Expect<Equal<typeof Config.serviceTag, 'Config'>>
+export type IdGeneratorTag = Expect<Equal<typeof IdGenerator.serviceTag, 'IdGenerator'>>
 export type ClockProvider = Expect<Equal<typeof ClockLive extends object ? true : false, true>>
 export type ConfigProvider = Expect<Equal<typeof ConfigLive extends object ? true : false, true>>
+export type IdGeneratorProvider = Expect<
+  Equal<typeof IdGeneratorLive extends object ? true : false, true>
+>
 export type ClockContract = Expect<
   Equal<Pick<ClockTest, 'now' | 'sleep'> extends Pick<Clock, 'now' | 'sleep'> ? true : false, true>
 >
@@ -36,4 +44,10 @@ export type RandomContract = Expect<
 >
 export type LoggerContract = Expect<
   Equal<Pick<LoggerTest, 'log' | 'info'> extends Pick<Logger, 'log' | 'info'> ? true : false, true>
+>
+export type IdGeneratorContract = Expect<
+  Equal<Pick<IdGeneratorTest, 'next'> extends Pick<IdGenerator, 'next'> ? true : false, true>
+>
+export type IdGeneratorLayer = Expect<
+  Equal<typeof IdGeneratorTestLayer extends object ? true : false, true>
 >

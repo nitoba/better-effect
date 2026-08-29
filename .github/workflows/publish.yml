@@ -139,7 +139,7 @@ jobs:
           import 'better-effect/hono'
           import 'better-effect/runtime/explicit'
           import 'better-effect/runtime/node'
-          import 'better-effect/standard-services'
+          import { IdGenerator, IdGeneratorTest } from 'better-effect/standard-services'
           import {
             layerBackendContract,
             RecordedRuntimeObserver,
@@ -150,24 +150,44 @@ jobs:
           class Greeting extends Service()('Greeting') {}
 
           const recorded = RecordedRuntimeObserver.make()
-          const runtime = await Runtime.make(Layer.make(Greeting), {
-            observers: [RuntimeObserver.compose(recorded)]
-          })
+          const runtime = await Runtime.make(
+            Layer.merge(Layer.make(Greeting), Layer.make(IdGenerator)),
+            {
+              observers: [RuntimeObserver.compose(recorded)]
+            }
+          )
           const result = await runtime.run(
             Effect.fn(async function* () {
               const greeting = yield* Greeting
-              return Result.ok(greeting)
+              const ids = yield* IdGenerator
+              return Result.ok({ greeting, id: ids.next() })
             })
           )
 
           if (
             !Result.isOk(result) ||
-            !(result.value instanceof Greeting) ||
+            !(result.value.greeting instanceof Greeting) ||
+            typeof result.value.id !== 'string' ||
             recorded.executionStarts.length !== 1 ||
             recorded.executionEnds.length !== 1
           ) {
             throw new Error('packed consumer smoke test failed')
           }
+
+          const testIds = new IdGeneratorTest(['packed-test-id'])
+          const testRuntime = await Runtime.make(IdGeneratorTest.layer(testIds))
+          const testResult = await testRuntime.run(
+            Effect.fn(async function* () {
+              const ids = yield* IdGenerator
+              return Result.ok(ids.next())
+            })
+          )
+
+          if (!Result.isOk(testResult) || testResult.value !== 'packed-test-id') {
+            throw new Error('packed IdGenerator test smoke failed')
+          }
+
+          await testRuntime.dispose()
 
           const scenario = layerBackendContract({
             makeBackend: () => new MapLayerBackend(),

@@ -70,8 +70,9 @@ jobs:
           import 'better-effect/hono'
           import 'better-effect/runtime/explicit'
           import 'better-effect/runtime/node'
-          import { Logger } from 'better-effect/standard-services'
+          import { IdGenerator, Logger } from 'better-effect/standard-services'
           import {
+            IdGeneratorTest,
             layerBackendContract,
             LoggerTest,
             RecordedRuntimeObserver,
@@ -83,19 +84,24 @@ jobs:
           class Greeting extends Service()('Greeting') {}
 
           const recorded = RecordedRuntimeObserver.make()
-          const runtime = await Runtime.make(Layer.make(Greeting), {
-            observers: [RuntimeObserver.compose(recorded)]
-          })
+          const runtime = await Runtime.make(
+            Layer.merge(Layer.make(Greeting), Layer.make(IdGenerator)),
+            {
+              observers: [RuntimeObserver.compose(recorded)]
+            }
+          )
           const result = await runtime.run(
             Effect.fn(async function* () {
               const greeting = yield* Greeting
-              return Result.ok(greeting)
+              const ids = yield* IdGenerator
+              return Result.ok({ greeting, id: ids.next() })
             })
           )
 
           if (
             !Result.isOk(result) ||
-            !(result.value instanceof Greeting) ||
+            !(result.value.greeting instanceof Greeting) ||
+            typeof result.value.id !== 'string' ||
             recorded.executionStarts.length !== 1 ||
             recorded.executionEnds.length !== 1
           ) {
@@ -103,21 +109,27 @@ jobs:
           }
 
           const logger = new LoggerTest()
+          const ids = new IdGeneratorTest(['packed-test-id'])
           const testResult = await TestRuntime.use(
             Layer.make(Greeting),
-            { logger },
+            { logger, idGenerator: ids },
             (test) =>
               test.run(
                 Effect.fn(async function* () {
                   const greeting = yield* Greeting
                   const testLogger = yield* Logger
+                  const testIds = yield* IdGenerator
                   testLogger.info('test')
-                  return Result.ok(greeting)
+                  return Result.ok({ greeting, id: testIds.next() })
                 })
               )
           )
 
-          if (!Result.isOk(testResult) || !(testResult.value instanceof Greeting)) {
+          if (
+            !Result.isOk(testResult) ||
+            !(testResult.value.greeting instanceof Greeting) ||
+            testResult.value.id !== 'packed-test-id'
+          ) {
             throw new Error('packed TestRuntime.use smoke test failed')
           }
 
