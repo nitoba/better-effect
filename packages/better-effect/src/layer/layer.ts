@@ -218,9 +218,7 @@ export class Layer<
 
   static override<Base extends LayerInput, const Overrides extends readonly LayerInput[]>(
     base: Base & ValidateLayerInput<Base>,
-    ...overrides: Overrides extends readonly [LayerInput, ...LayerInput[]]
-      ? never
-      : Overrides & ValidateOverrides<Base, Overrides>
+    ...overrides: Overrides & ValidateOverrides<Base, Overrides>
   ): OverrideLayerResult<Base, Overrides>
 
   static override(base: LayerInput, ...overrides: readonly LayerInput[]): Layer<any, any> {

@@ -2,7 +2,15 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { Effect, Layer, LayerDisposeError, Runtime, Service, ServiceRuntime } from '../src'
+import {
+  Effect,
+  Layer,
+  LayerDisposeError,
+  Runtime,
+  Service,
+  ServiceNotFoundError,
+  ServiceRuntime
+} from '../src'
 import { Clock, Logger, Random } from '../src/standard-services'
 import {
   ClockTest,
@@ -18,6 +26,79 @@ const captureRejection = async (promise: Promise<unknown>) =>
     () => undefined,
     (cause) => cause
   )
+
+type CapturedServiceResolution =
+  | Clock
+  | Logger
+  | Random
+  | ClockTest
+  | LoggerTest
+  | RandomSeeded
+  | ServiceNotFoundError
+type ConfiguredStandardService = ClockTest | LoggerTest | RandomSeeded
+type StandardOptions =
+  | {}
+  | { readonly clock: ClockTest }
+  | { readonly logger: LoggerTest }
+  | { readonly random: RandomSeeded }
+type EmptyOrClockOverrideOptions =
+  | { readonly overrides: readonly [] }
+  | { readonly overrides: readonly [ReturnType<typeof ClockTest.layer>] }
+type ExpectedStandardServices = {
+  readonly clock: ClockTest | undefined
+  readonly logger: LoggerTest | undefined
+  readonly random: RandomSeeded | undefined
+}
+
+const captureResolution = async (
+  service: typeof Clock | typeof Logger | typeof Random
+): Promise<CapturedServiceResolution> => {
+  try {
+    return await ServiceRuntime.resolve(service)
+  } catch (cause) {
+    if (cause instanceof ServiceNotFoundError) {
+      return cause
+    }
+
+    throw cause
+  }
+}
+
+const expectCapturedService = (
+  actual: CapturedServiceResolution,
+  expected: ConfiguredStandardService | undefined
+): void => {
+  if (expected === undefined) {
+    expect(actual).toBeInstanceOf(ServiceNotFoundError)
+  } else {
+    expect(actual).toBe(expected)
+  }
+}
+
+const assertStandardBranch = async (
+  options: StandardOptions,
+  expected: ExpectedStandardServices
+): Promise<void> => {
+  const testRuntime = await TestRuntime.make(Layer.merge(), options)
+
+  try {
+    expect(testRuntime.clock).toBe(expected.clock)
+    expect(testRuntime.logger).toBe(expected.logger)
+    expect(testRuntime.random).toBe(expected.random)
+
+    const resolved = await testRuntime.run(async () => ({
+      clock: await captureResolution(Clock),
+      logger: await captureResolution(Logger),
+      random: await captureResolution(Random)
+    }))
+
+    expectCapturedService(resolved.clock, expected.clock)
+    expectCapturedService(resolved.logger, expected.logger)
+    expectCapturedService(resolved.random, expected.random)
+  } finally {
+    await testRuntime.dispose()
+  }
+}
 
 class TestDatabase extends Service<TestDatabase>()('TestRuntimeDatabase') {
   query(): string {
@@ -99,6 +180,99 @@ describe('TestRuntime', () => {
       expect(logger.events).toHaveLength(1)
     } finally {
       await testRuntime[Symbol.asyncDispose]()
+    }
+  })
+
+  test('installs standard Services from union-shaped options', async () => {
+    const clock = new ClockTest(new Date('2026-02-01T00:00:00.000Z'))
+    const logger = new LoggerTest()
+    const random = new RandomSeeded(42)
+    const options:
+      | {}
+      | {
+          readonly clock: ClockTest
+          readonly logger: LoggerTest
+          readonly random: RandomSeeded
+        } = { clock, logger, random }
+    const testRuntime = await TestRuntime.make(Layer.merge(), options)
+
+    try {
+      const resolved = await testRuntime.run(async () => ({
+        clock: await ServiceRuntime.resolve(Clock),
+        logger: await ServiceRuntime.resolve(Logger),
+        random: await ServiceRuntime.resolve(Random)
+      }))
+
+      expect(Object.is(resolved.clock, clock)).toBe(true)
+      expect(Object.is(resolved.logger, logger)).toBe(true)
+      expect(Object.is(resolved.random, random)).toBe(true)
+    } finally {
+      await testRuntime.dispose()
+    }
+  })
+
+  test('only installs services selected by a union-shaped options branch', async () => {
+    const clock = new ClockTest(new Date('2026-02-02T00:00:00.000Z'))
+    const logger = new LoggerTest()
+    const random = new RandomSeeded(42)
+
+    await assertStandardBranch({}, { clock: undefined, logger: undefined, random: undefined })
+    await assertStandardBranch({ clock }, { clock, logger: undefined, random: undefined })
+    await assertStandardBranch({ logger }, { clock: undefined, logger, random: undefined })
+    await assertStandardBranch({ random }, { clock: undefined, logger: undefined, random })
+  })
+
+  test('does not expose an explicit override from an empty union branch', async () => {
+    const options: EmptyOrClockOverrideOptions = { overrides: [] }
+    const testRuntime = await TestRuntime.make(Layer.merge(), options)
+
+    try {
+      expect(testRuntime.clock).toBeUndefined()
+      const resolved = await testRuntime.run(() => captureResolution(Clock))
+      expect(resolved).toBeInstanceOf(ServiceNotFoundError)
+    } finally {
+      await testRuntime.dispose()
+    }
+  })
+
+  test('run preserves a direct Result.err value and reports failure outcome', async () => {
+    const error = new Error('run failed')
+    const expected = Result.err(error)
+    const testRuntime = await TestRuntime.make(Layer.merge())
+
+    try {
+      const result = await testRuntime.run(() => expected)
+
+      expect(result).toBe(expected)
+      expect(testRuntime.observer.executionEnds).toHaveLength(1)
+      expect(testRuntime.observer.executionEnds[0]?.outcome).toEqual({
+        status: 'failure',
+        cause: error
+      })
+    } finally {
+      await testRuntime.dispose()
+    }
+  })
+
+  test('run preserves a direct defect', async () => {
+    const defect = new Error('run defect')
+    const testRuntime = await TestRuntime.make(Layer.merge())
+
+    try {
+      const failure = await captureRejection(
+        testRuntime.run(() => {
+          throw defect
+        })
+      )
+
+      expect(failure).toBe(defect)
+      expect(testRuntime.observer.executionEnds).toHaveLength(1)
+      expect(testRuntime.observer.executionEnds[0]?.outcome).toEqual({
+        status: 'failure',
+        cause: defect
+      })
+    } finally {
+      await testRuntime.dispose()
     }
   })
 
