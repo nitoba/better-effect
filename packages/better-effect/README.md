@@ -12,7 +12,9 @@ bun add better-effect better-result
 
 The published Runtime entrypoint is officially supported on Node.js and Bun.
 The tested runtime matrix is Node.js 24 and Bun 1.3.14, and the default runtime
-context uses Node/Bun async context propagation.
+context uses Node/Bun async context propagation. `bun run check` also deletes
+and rebuilds `dist`, packs the result into a temporary consumer, and runs the
+full Node/Bun `NodeRuntime` child-process suite.
 
 ## TypeScript knows what your application needs
 
@@ -423,6 +425,38 @@ const cancellableProgram = Effect.fn(async function* () {
   return Result.ok(await fetchData({ signal }))
 })
 ```
+
+For a Node.js or Bun CLI, use the host-specific `better-effect/node` entrypoint.
+`NodeRuntime.runMain` validates its signal and callback options before installing
+`SIGINT`/`SIGTERM` listeners, links the first signal to `CurrentAbortSignal`,
+and disposes the Runtime exactly once:
+
+```ts
+import { NodeRuntime } from 'better-effect/node'
+
+const main = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+  return Result.ok(await runCommand({ signal }))
+})
+
+await NodeRuntime.runMain(AppLive, main, {
+  onFailure: (error) => {
+    console.error(error)
+    return 1
+  },
+  onSuccess: () => 0
+})
+```
+
+`Result.err` uses `onFailure` (or exit code `1` by default), while thrown defects
+remain rejected and may be reported with `onDefect`. Cleanup-only failures use
+`onCleanupFailure`, remain observable, and still set a non-zero
+`process.exitCode` after successful work. The first `SIGINT` or `SIGTERM`
+immediately aborts `CurrentAbortSignal`; Runtime disposal then waits
+cooperatively for the main execution. Listeners are removed in `finally`,
+repeated signals are ignored, and the helper never calls `process.exit()`.
+The Node boundary intentionally does not expose a second grace-period policy;
+use `Runtime.dispose` directly when a managed Runtime needs one.
 
 For request-local context or overrides, add a Layer only to that execution:
 

@@ -24,6 +24,7 @@ import {
   type RuntimeRunOptions
 } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
+import { NodeRuntime, type NodeRuntimeOptions } from '../../src/node'
 import { Service, type AnyServiceToken, type ServiceResolver } from '../../src/service'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import type { CompleteExecution, ExecutionMissing } from '../../src/layer/inference'
@@ -310,6 +311,76 @@ void emptyHandle.run(plainValue)
 void emptyHandle.run(plainResult)
 void emptyHandle.run(scopeOnly)
 void emptyHandle.run(acquireReleaseOnly)
+
+const nodePlainResult = NodeRuntime.runMain(Layer.empty, plainValue, {
+  onSuccess: (value) => {
+    expectTypeOf(value).toEqualTypeOf<number>()
+    return 0
+  }
+})
+const nodeTypedResult = NodeRuntime.runMain(AppLive, backend, requiresDatabaseAndLogger, {
+  onSuccess: (value) => {
+    expectTypeOf(value).toEqualTypeOf<{ database: Database; logger: Logger }>()
+    return 0
+  }
+})
+const nodeOkResult = NodeRuntime.runMain(Layer.empty, plainResult, {
+  onSuccess: (value) => {
+    expectTypeOf(value).toEqualTypeOf<string>()
+    return 0
+  }
+})
+const plainOrResult = () => (Math.random() > 0.5 ? 42 : Result.ok('plain-or-result'))
+const nodeMixedResult = NodeRuntime.runMain(Layer.empty, plainOrResult, {
+  onSuccess: (value) => {
+    expectTypeOf(value).toEqualTypeOf<number | string>()
+    return 0
+  }
+})
+const asyncPlainOrResult = async () => plainOrResult()
+const nodeAsyncMixedResult = NodeRuntime.runMain(Layer.empty, asyncPlainOrResult, {
+  onSuccess: (value) => {
+    expectTypeOf(value).toEqualTypeOf<number | string>()
+    return 0
+  }
+})
+const nodeFailureResult = NodeRuntime.runMain(Layer.empty, plainResult, {
+  onFailure: (error) => {
+    expectTypeOf(error).toEqualTypeOf<never>()
+    return 1
+  }
+})
+const nodeOptions: NodeRuntimeOptions<string, Error> = {
+  signals: ['SIGINT', 'SIGTERM'],
+  onSuccess: (value) => {
+    expectTypeOf(value).toEqualTypeOf<string>()
+    return 0
+  },
+  onFailure: (error) => {
+    expectTypeOf(error).toEqualTypeOf<Error>()
+    return 1
+  }
+}
+// @ts-expect-error NodeRuntime has no separate grace-period cancellation policy.
+const nodeGraceOptions: NodeRuntimeOptions = { gracePeriod: 5_000 }
+
+expectTypeOf(nodePlainResult).toEqualTypeOf<Promise<Awaited<ReturnType<typeof plainValue>>>>()
+expectTypeOf(nodeTypedResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(nodeOkResult).toEqualTypeOf<Promise<Awaited<ReturnType<typeof plainResult>>>>()
+expectTypeOf(nodeMixedResult).toEqualTypeOf<Promise<Awaited<ReturnType<typeof plainOrResult>>>>()
+expectTypeOf(nodeAsyncMixedResult).toEqualTypeOf<
+  Promise<Awaited<ReturnType<typeof asyncPlainOrResult>>>
+>()
+expectTypeOf(nodeFailureResult).toEqualTypeOf<Promise<Awaited<ReturnType<typeof plainResult>>>>()
+expectTypeOf<NodeRuntime.Options<string, Error>>().toEqualTypeOf<
+  NodeRuntimeOptions<string, Error>
+>()
+void nodeOptions
+void nodeGraceOptions
+
+// @ts-expect-error Logger is not supplied by this NodeRuntime Layer.
+void NodeRuntime.runMain(DatabaseLive, requiresDatabaseAndLogger)
+
 void Runtime.run(DatabaseLive, backend, plainValue)
 void Runtime.run(DatabaseLive, backend, plainResult)
 void Runtime.run(DatabaseLive, backend, scopeOnly)

@@ -1,44 +1,55 @@
 import { Result } from 'better-result'
 
-import { ItiLayerBackend, Runtime } from './better-effect'
+import {
+  CurrentAbortSignal,
+  Effect,
+  ItiLayerBackend,
+  NodeRuntime,
+  Scope,
+  ServiceRuntime
+} from './better-effect'
 import { AppLive } from './layers/app-live'
 import { seedDemoUser } from './seed'
 import { createServer } from './server'
 
-const runtime = await Runtime.make(AppLive, {
-  backend: new ItiLayerBackend()
-})
+const main = Effect.fn(async function* () {
+  const resolver = ServiceRuntime.current()
+  const scope = yield* Scope
+  yield* Result.await(Promise.resolve(seedDemoUser()))
 
-const seed = await runtime.run(seedDemoUser)
+  const signal = yield* CurrentAbortSignal
+  const server = createServer(resolver, scope)
 
-if (Result.isError(seed)) {
-  await runtime.dispose()
-  throw seed.error
-}
+  try {
+    console.log(`TODO API running at ${server.url.toString()}`)
+    console.log('Demo credentials: demo@example.com / demo1234')
 
-const server = createServer(runtime)
+    await new Promise<void>((resolve) => {
+      if (signal.aborted) {
+        resolve()
+      } else {
+        signal.addEventListener('abort', () => resolve(), { once: true })
+      }
+    })
 
-console.log(`TODO API running at ${server.url.toString()}`)
-
-console.log('Demo credentials: demo@example.com / demo1234')
-
-let shuttingDown = false
-
-const shutdown = async () => {
-  if (shuttingDown) {
-    return
+    return Result.ok(undefined)
+  } finally {
+    await server.stop()
   }
-
-  shuttingDown = true
-
-  await server.stop()
-  await runtime.dispose()
-}
-
-process.once('SIGINT', () => {
-  void shutdown()
 })
 
-process.once('SIGTERM', () => {
-  void shutdown()
-})
+await NodeRuntime.runMain(
+  AppLive,
+  {
+    backend: new ItiLayerBackend(),
+    onFailure: (error) => {
+      console.error(error)
+      return 1
+    },
+    onDefect: (cause) => {
+      console.error(cause)
+      return 1
+    }
+  },
+  main
+)

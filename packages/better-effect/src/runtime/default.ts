@@ -1,4 +1,4 @@
-import { nodeRuntimeContextStorage } from './node'
+import { nodeRuntimeContextStorage } from './node-context'
 
 import { setDefaultRuntimeContextStorage } from './context'
 

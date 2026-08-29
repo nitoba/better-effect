@@ -149,8 +149,19 @@ connection lease, so this example does not register a fake execution resource wi
 no-op release.
 
 Each request handled by the server receives its own child execution scope. During
-shutdown, `runtime.dispose()` stops accepting new executions, waits for active
-requests to finish, and then closes the root scope that owns the database layer.
-Real request-local resources can use `Effect.acquireRelease()` and are closed with that
-request's execution scope. For a nested batch lifetime, use `scope.fork()` with
-`Scope.provide()` and close the child explicitly when the batch ends.
+shutdown, `NodeRuntime.runMain()` stops accepting new executions, waits for the
+main Program and active requests to finish, and then closes the root scope that
+owns the database layer. Real request-local resources can use
+`Effect.acquireRelease()` and are closed with that request's execution scope. For
+a nested batch lifetime, use `scope.fork()` with `Scope.provide()` and close the
+child explicitly when the batch ends.
+
+### NodeRuntime
+
+`index.ts` passes the actual `AppLive` Layer and typed `main` Program to
+`NodeRuntime.runMain()`. That boundary owns the one application Runtime: the
+main Program seeds the database, starts the server with its resolver context,
+and stops the server when `CurrentAbortSignal` is aborted. The helper installs
+`SIGINT`/`SIGTERM` handlers only while the main Program is running, waits for
+cleanup, removes its listeners, sets `process.exitCode`, and never calls
+`process.exit()`.

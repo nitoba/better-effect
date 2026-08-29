@@ -1,3 +1,15 @@
-export { Effect, Layer, Resource, Scope, Service, ServiceRuntime, Runtime } from '../../src/index'
+export {
+  CurrentAbortSignal,
+  Effect,
+  Layer,
+  Resource,
+  Runtime,
+  Scope,
+  Service,
+  ServiceRuntime
+} from '../../src/index'
 
+export { NodeRuntime } from '../../src/node'
 export { ItiLayerBackend } from '../../src/adapters/iti'
+
+export type { ScopeOutcome } from '../../src/index'
