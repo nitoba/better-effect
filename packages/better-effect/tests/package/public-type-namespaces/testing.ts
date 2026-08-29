@@ -14,9 +14,14 @@ import {
   LoggerTest,
   RandomSeeded,
   RecordedRuntimeObserver,
+  RuntimeGraphObserver,
   RuntimeObserver,
   TestRuntime,
   type RecordedRuntimeObserverSnapshot,
+  type RuntimeGraphEdge,
+  type RuntimeGraphNode,
+  type RuntimeGraphObserverOptions,
+  type RuntimeGraphSnapshot,
   type RuntimeObserverEvent
 } from 'better-effect/testing'
 
@@ -36,12 +41,24 @@ const expectExactType = <Actual, Expected>(
 const recorder = RecordedRuntimeObserver.make()
 const composed: RuntimeObserverContract = RuntimeObserver.compose(recorder)
 const snapshot = recorder.snapshot()
+const graph = RuntimeGraphObserver.make({ includeFailures: true, rootLabel: 'Runtime' })
+const graphSnapshot = graph.toJSON()
+const graphOptions: RuntimeGraphObserverOptions = { rootLabel: 'Runtime' }
 
 export type RecorderIsRuntimeObserver = Expect<
   Equal<RecordedRuntimeObserver extends RuntimeObserverContract ? true : false, true>
 >
+export type GraphObserverIsRuntimeObserver = Expect<
+  Equal<RuntimeGraphObserver extends RuntimeObserverContract ? true : false, true>
+>
 export type TimelineIsReadonly = Expect<
   Equal<RecordedRuntimeObserverSnapshot['timeline'], readonly RuntimeObserverEvent[]>
+>
+export type GraphSnapshotIsReadonly = Expect<
+  Equal<RuntimeGraphSnapshot['nodes'], readonly RuntimeGraphNode[]>
+>
+export type GraphEdgesAreReadonly = Expect<
+  Equal<RuntimeGraphSnapshot['edges'], readonly RuntimeGraphEdge[]>
 >
 
 class PackageTestingService extends Service<PackageTestingService>()('PackageTestingService') {}
@@ -432,6 +449,9 @@ Layer.override(packageClockCollisionLayer, ...packageInvalidOverrideOptions.over
 
 void composed
 void snapshot
+void graph
+void graphSnapshot
+void graphOptions
 void packageTestRuntime
 void packageTestResult
 void packageIdGeneratorRuntime

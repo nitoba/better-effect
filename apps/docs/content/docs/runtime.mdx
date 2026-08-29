@@ -90,6 +90,30 @@ objects, or sensitive data that an observer might log or use as metric labels.
 An integration package can translate these events to OpenTelemetry or another
 telemetry system without adding that dependency to better-effect.
 
+For a deterministic startup graph, use the public testing observer with Layer
+warmup:
+
+```ts
+import { Runtime } from 'better-effect'
+import { RuntimeGraphObserver } from 'better-effect/testing'
+
+const graph = RuntimeGraphObserver.make({ rootLabel: 'Runtime' })
+const runtime = await Runtime.make(AppLive, {
+  warmup: true,
+  observers: [graph]
+})
+
+console.log(graph.toJSON())
+console.log(graph.toMermaid())
+await runtime.dispose()
+```
+
+The graph reflects observed resolution paths, so lazy Services do not appear
+until they are resolved. Snapshots are sorted, detached and immutable, and keep
+only literal Service tags and counters; instances, scopes, causes and execution
+attributes are not serialized. Call `graph.clear()` before a later diagnostic
+session.
+
 ## Cooperative cancellation
 
 Runtime cancellation is based on `AbortSignal`; it does not introduce fibers or
