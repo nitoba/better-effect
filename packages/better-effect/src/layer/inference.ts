@@ -124,6 +124,10 @@ export type ErasedEntries<L extends LayerInput> =
       ? never
       : ErasedProvenance<ProvidedEnvironment<L>, RequiredEnvironment<L>>
 
+type PossibleProvidedEnvironment<L extends LayerInput> =
+  | EntryProvided<PreciseEntries<L>>
+  | ErasedProvided<ErasedEntries<L>>
+
 type LayerMetadata<Entries extends AnyProviderEntry, Erased extends AnyErasedProvenance> = [
   Entries | Erased
 ] extends [never]
@@ -133,13 +137,11 @@ type LayerMetadata<Entries extends AnyProviderEntry, Erased extends AnyErasedPro
 /** Opaque internal result type used by Layer constructors and combinators. */
 export type LayerResult<
   Entries extends AnyProviderEntry,
-  Erased extends AnyErasedProvenance = never
+  Erased extends AnyErasedProvenance = never,
+  VisibleProvided extends AnyService = EntryProvided<Entries> | ErasedProvided<Erased>
 > = Layer<
-  EntryProvided<Entries> | ErasedProvided<Erased>,
-  LayerExternalRequirements<
-    EntryRequired<Entries> | ErasedRequired<Erased>,
-    EntryProvided<Entries> | ErasedProvided<Erased>
-  >
+  VisibleProvided,
+  LayerExternalRequirements<EntryRequired<Entries> | ErasedRequired<Erased>, VisibleProvided>
 > &
   LayerMetadata<Entries, Erased>
 
@@ -322,6 +324,32 @@ type ApplyErasedOverrides<
     >
   : Erased
 
+type HasMatchingService<Candidate extends AnyService, Available extends AnyService> = true extends (
+  Available extends AnyService ? SameService<Candidate, Available> : never
+)
+  ? true
+  : false
+
+type GuaranteedServiceCandidates<
+  Candidates extends AnyService,
+  Branches extends LayerInput
+> = Candidates extends AnyService
+  ? false extends (
+      Branches extends LayerInput
+        ? HasMatchingService<Candidates, Extract<ProvidedEnvironment<Branches>, AnyService>>
+        : never
+    )
+    ? never
+    : Candidates
+  : never
+
+type GuaranteedProvided<
+  Branch extends LayerInput,
+  Branches extends LayerInput = Branch
+> = Branch extends LayerInput
+  ? GuaranteedServiceCandidates<Extract<ProvidedEnvironment<Branch>, AnyService>, Branches>
+  : never
+
 type HasUncheckedLayerInTuple<Layers extends readonly LayerInput[]> = true extends {
   [Index in keyof Layers]: IsExactUncheckedLayer<Layers[Index]>
 }[number]
@@ -336,6 +364,27 @@ type MergeLayerResult<Layers extends readonly LayerInput[]> =
 /** Internal result type for Layer.merge. */
 export type MergeResult<Layers extends readonly LayerInput[]> = MergeLayerResult<Layers>
 
+type ApplyVisibleOverrides<
+  CurrentProvided extends AnyService,
+  Overrides extends readonly LayerInput[]
+> = Overrides extends readonly [
+  infer Head extends LayerInput,
+  ...infer Tail extends readonly LayerInput[]
+]
+  ? ApplyVisibleOverrides<
+      | RemoveCompatibleServices<CurrentProvided, Extract<ProvidedEnvironment<Head>, AnyService>>
+      | Extract<ProvidedEnvironment<Head>, AnyService>,
+      Tail
+    >
+  : CurrentProvided
+
+type OverrideLayerBranches<
+  Base extends LayerInput,
+  Overrides extends readonly LayerInput[]
+> = Overrides extends readonly LayerInput[]
+  ? Layer<ApplyVisibleOverrides<Extract<ProvidedEnvironment<Base>, AnyService>, Overrides>, never>
+  : never
+
 type OverrideLayerResultUnchecked<
   Base extends LayerInput,
   Overrides extends readonly LayerInput[]
@@ -344,7 +393,8 @@ type OverrideLayerResultUnchecked<
     ? Layer<any, any>
     : LayerResult<
         ApplyPreciseOverrides<PreciseEntries<Base>, Overrides>,
-        ApplyErasedOverrides<ErasedEntries<Base>, Overrides>
+        ApplyErasedOverrides<ErasedEntries<Base>, Overrides>,
+        Extract<GuaranteedProvided<OverrideLayerBranches<Base, Overrides>>, AnyService>
       >
 
 /** Internal result type for Layer.override. */
@@ -395,9 +445,28 @@ type ValidateOverrideLayerInput<L extends LayerInput> =
           ? InvalidWidenedProvidedEnvironment
           : unknown)
 
+type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
+  value: infer Intersection
+) => void
+  ? Intersection
+  : never
+
+type ValidationFailuresToConstraint<Failures> = [Failures] extends [never]
+  ? unknown
+  : UnionToIntersection<Failures>
+
 type ValidateOverrideTuple<Overrides extends readonly LayerInput[]> = {
   [Index in keyof Overrides]: ValidateOverrideLayerInput<Overrides[Index]>
 }
+
+type ValidateOverrideTupleFailures<Overrides extends readonly LayerInput[]> =
+  ValidationFailuresToConstraint<
+    Overrides extends readonly LayerInput[]
+      ? ValidationFailureWitness<{
+          [Index in keyof Overrides]: ValidateOverrideLayerInput<Overrides[Index]>
+        }>
+      : never
+  >
 
 type ServiceAtTag<Services, Tag extends string> = Tag extends keyof Services
   ? Extract<Services[Tag], AnyService>
@@ -463,7 +532,7 @@ type ValidateOverridePair<
  * Rebuilding the full Layer provenance for every step is quadratic and can
  * exhaust TypeScript's instantiation depth on otherwise simple override lists.
  */
-type ValidateOverridesFromState<
+type ValidateOverridesFromStateForArm<
   Overrides extends readonly LayerInput[],
   BaseMap,
   CurrentProvided extends AnyService,
@@ -474,14 +543,14 @@ type ValidateOverridesFromState<
   ...infer Tail extends readonly LayerInput[]
 ]
   ? CurrentUnchecked extends true
-    ? ValidateOverridesFromState<Tail, BaseMap, AnyService, true, true>
+    ? ValidateOverridesFromStateForArm<Tail, BaseMap, AnyService, true, true>
     : IsExactUncheckedLayer<Head> extends true
-      ? ValidateOverridesFromState<Tail, BaseMap, AnyService, true, true>
+      ? ValidateOverridesFromStateForArm<Tail, BaseMap, AnyService, true, true>
       : CurrentChanged extends false
         ? CanSkipBaseOverride<BaseMap, Extract<ProvidedEnvironment<Head>, AnyService>> extends true
-          ? ValidateOverridesFromState<Tail, BaseMap, CurrentProvided, false, false>
+          ? ValidateOverridesFromStateForArm<Tail, BaseMap, CurrentProvided, false, false>
           : ValidateOverridePair<CurrentProvided, Extract<ProvidedEnvironment<Head>, AnyService>> &
-              ValidateOverridesFromState<
+              ValidateOverridesFromStateForArm<
                 Tail,
                 BaseMap,
                 ApplyValidationOverride<
@@ -492,7 +561,7 @@ type ValidateOverridesFromState<
                 false
               >
         : ValidateOverridePair<CurrentProvided, Extract<ProvidedEnvironment<Head>, AnyService>> &
-            ValidateOverridesFromState<
+            ValidateOverridesFromStateForArm<
               Tail,
               BaseMap,
               ApplyValidationOverride<
@@ -503,6 +572,27 @@ type ValidateOverridesFromState<
               false
             >
   : unknown
+
+/** Validate every possible override tuple arm instead of accepting one valid arm. */
+type ValidateOverridesFromState<
+  Overrides extends readonly LayerInput[],
+  BaseMap,
+  CurrentProvided extends AnyService,
+  CurrentChanged extends boolean,
+  CurrentUnchecked extends boolean
+> = ValidationFailuresToConstraint<
+  Overrides extends readonly LayerInput[]
+    ? ValidationFailureWitness<
+        ValidateOverridesFromStateForArm<
+          Overrides,
+          BaseMap,
+          CurrentProvided,
+          CurrentChanged,
+          CurrentUnchecked
+        >
+      >
+    : never
+>
 
 /** Validate one override against the currently accumulated Layer state. */
 export type ValidateOneOverride<
@@ -516,15 +606,15 @@ export type ValidateOneOverride<
       ? unknown
       : [
             IncompatibleOverridePairs<
-              Extract<ProvidedEnvironment<Current>, AnyService>,
-              Extract<ProvidedEnvironment<Replacement>, AnyService>
+              Extract<PossibleProvidedEnvironment<Current>, AnyService>,
+              Extract<PossibleProvidedEnvironment<Replacement>, AnyService>
             >
           ] extends [never]
         ? unknown
         : IncompatibleLayerOverride<
             IncompatibleOverridePairs<
-              Extract<ProvidedEnvironment<Current>, AnyService>,
-              Extract<ProvidedEnvironment<Replacement>, AnyService>
+              Extract<PossibleProvidedEnvironment<Current>, AnyService>,
+              Extract<PossibleProvidedEnvironment<Replacement>, AnyService>
             >
           >)
 
@@ -535,22 +625,33 @@ type InvalidWidenedOverrideList = {
 }
 
 /** Validate ordered overrides against the state produced by earlier overrides. */
-export type ValidateOverrides<Base extends LayerInput, Overrides extends readonly LayerInput[]> =
-  IsTuple<Overrides> extends false
+export type ValidateOverrides<Base extends LayerInput, Overrides extends readonly LayerInput[]> = [
+  Overrides
+] extends [never]
+  ? unknown
+  : IsTuple<Overrides> extends false
     ? IsExactUncheckedLayer<Base> extends true
       ? unknown
       : InvalidWidenedOverrideList
-    : Overrides extends readonly []
-      ? unknown
-      : ValidateOverrideLayerInput<Base> &
-          ValidateOverrideTuple<Overrides> &
-          ValidateOverridesFromState<
-            Overrides,
-            ServiceTagMap<Extract<ProvidedEnvironment<Base>, AnyService>>,
-            Extract<ProvidedEnvironment<Base>, AnyService>,
-            false,
-            IsExactUncheckedLayer<Base>
-          >
+    : ValidateOverrideLayerInput<Base> &
+        ValidateOverrideTuple<Overrides> &
+        ValidationFailuresToConstraint<
+          Overrides extends readonly LayerInput[]
+            ? [Overrides] extends [readonly []]
+              ? never
+              : ValidationFailureWitness<
+                  ValidateOverrideTuple<Overrides> &
+                    ValidateOverrideTupleFailures<Overrides> &
+                    ValidateOverridesFromState<
+                      Overrides,
+                      ServiceTagMap<Extract<PossibleProvidedEnvironment<Base>, AnyService>>,
+                      Extract<PossibleProvidedEnvironment<Base>, AnyService>,
+                      false,
+                      IsExactUncheckedLayer<Base>
+                    >
+                >
+            : never
+        >
 
 type ValidationFailureWitness<Value> = Value extends {
   readonly __betterEffectIncompatibleLayerOverride: infer Tokens

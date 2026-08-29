@@ -128,12 +128,43 @@ type EmptyStandardOptions =
 type GuaranteedClockOptions =
   | { readonly clock: ClockTest; readonly logger: LoggerTest }
   | { readonly clock: ClockTest; readonly random: RandomSeeded }
+type GuaranteedLoggerOptions =
+  | { readonly logger: LoggerTest; readonly clock: ClockTest }
+  | { readonly logger: LoggerTest; readonly random: RandomSeeded }
+type GuaranteedRandomOptions =
+  | { readonly random: RandomSeeded; readonly clock: ClockTest }
+  | { readonly random: RandomSeeded; readonly logger: LoggerTest }
 
 declare const disjointOptions: DisjointStandardOptions
 declare const emptyOptions: {}
 declare const emptyUnionOptions: EmptyStandardOptions
 declare const neverOptions: never
 declare const guaranteedClockOptions: GuaranteedClockOptions
+declare const guaranteedLoggerOptions: GuaranteedLoggerOptions
+declare const guaranteedRandomOptions: GuaranteedRandomOptions
+
+const explicitClockLayer = ClockTest.layer()
+const explicitLoggerLayer = LoggerTest.layer()
+const explicitRandomLayer = RandomSeeded.layer(42)
+type EmptyOverrideOptions =
+  | { readonly overrides: readonly [] }
+  | { readonly overrides: readonly [typeof explicitClockLayer] }
+type DisjointOverrideOptions =
+  | { readonly overrides: readonly [typeof explicitClockLayer] }
+  | { readonly overrides: readonly [typeof explicitLoggerLayer] }
+  | { readonly overrides: readonly [typeof explicitRandomLayer] }
+type SharedOverrideOptions =
+  | { readonly overrides: readonly [typeof explicitClockLayer, typeof explicitLoggerLayer] }
+  | { readonly overrides: readonly [typeof explicitClockLayer, typeof explicitRandomLayer] }
+type InvalidOverrideOptions =
+  | { readonly overrides: readonly [] }
+  | { readonly overrides: readonly [typeof incompatibleClockLayer] }
+
+declare const emptyOverrideOptions: EmptyOverrideOptions
+declare const disjointOverrideOptions: DisjointOverrideOptions
+declare const sharedOverrideOptions: SharedOverrideOptions
+declare const invalidOverrideOptions: InvalidOverrideOptions
+
 const unionClockRuntime = TestRuntime.make(Layer.merge(), unionClockOptions)
 const unionLoggerRuntime = TestRuntime.make(Layer.merge(), unionLoggerOptions)
 const unionRandomRuntime = TestRuntime.make(Layer.merge(), unionRandomOptions)
@@ -142,6 +173,11 @@ const emptyRuntime = TestRuntime.make(Layer.merge(), emptyOptions)
 const emptyUnionRuntime = TestRuntime.make(Layer.merge(), emptyUnionOptions)
 const neverRuntime = TestRuntime.make(Layer.merge(), neverOptions)
 const guaranteedClockRuntime = TestRuntime.make(Layer.merge(), guaranteedClockOptions)
+const guaranteedLoggerRuntime = TestRuntime.make(Layer.merge(), guaranteedLoggerOptions)
+const guaranteedRandomRuntime = TestRuntime.make(Layer.merge(), guaranteedRandomOptions)
+const emptyOverrideRuntime = TestRuntime.make(Layer.merge(), emptyOverrideOptions)
+const disjointOverrideRuntime = TestRuntime.make(Layer.merge(), disjointOverrideOptions)
+const sharedOverrideRuntime = TestRuntime.make(Layer.merge(), sharedOverrideOptions)
 expectTypeOf<Awaited<typeof unionClockRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
 expectTypeOf<Awaited<typeof unionLoggerRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
 expectTypeOf<Awaited<typeof unionRandomRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
@@ -150,6 +186,22 @@ expectTypeOf<Awaited<typeof emptyRuntime>['runtime']>().toEqualTypeOf<Runtime<ne
 expectTypeOf<Awaited<typeof emptyUnionRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
 expectTypeOf<Awaited<typeof neverRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
 expectTypeOf<Awaited<typeof guaranteedClockRuntime>['runtime']>().toEqualTypeOf<Runtime<Clock>>()
+expectTypeOf<Awaited<typeof guaranteedLoggerRuntime>['runtime']>().toEqualTypeOf<Runtime<Logger>>()
+expectTypeOf<Awaited<typeof guaranteedRandomRuntime>['runtime']>().toEqualTypeOf<Runtime<Random>>()
+expectTypeOf<Awaited<typeof emptyOverrideRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof disjointOverrideRuntime>['runtime']>().toEqualTypeOf<Runtime<never>>()
+expectTypeOf<Awaited<typeof sharedOverrideRuntime>['runtime']>().toEqualTypeOf<Runtime<Clock>>()
+
+const directEmptyOverride = Layer.override(Layer.merge(), ...emptyOverrideOptions.overrides)
+const directDisjointOverride = Layer.override(Layer.merge(), ...disjointOverrideOptions.overrides)
+const directSharedOverride = Layer.override(Layer.merge(), ...sharedOverrideOptions.overrides)
+expectTypeOf<Layer.Provided<typeof directEmptyOverride>>().toBeNever()
+expectTypeOf<Layer.Provided<typeof directDisjointOverride>>().toBeNever()
+expectTypeOf<Layer.Provided<typeof directSharedOverride>>().toEqualTypeOf<Clock>()
+const chainedOverride = Layer.override(directEmptyOverride, LoggerTest.layer())
+expectTypeOf<Layer.Provided<typeof chainedOverride>>().toEqualTypeOf<Logger>()
+// @ts-expect-error Possible providers from an earlier override branch remain collision-checked.
+Layer.override(directEmptyOverride, incompatibleClockLayer)
 
 const uncheckedClockOverride: Layer.Any = incompatibleClockLayer
 const uncheckedStandardRuntime = TestRuntime.make(incompatibleClockLayer, {
@@ -199,6 +251,16 @@ const requiresClockProgram = Effect.fn(async function* () {
   return Result.ok(clock.now())
 })
 
+const requiresLoggerProgram = Effect.fn(async function* () {
+  const logger = yield* Logger
+  return Result.ok(logger)
+})
+
+const requiresRandomProgram = Effect.fn(async function* () {
+  const random = yield* Random
+  return Result.ok(random)
+})
+
 const disjointMakeRun = disjointRuntime.then((test) => {
   // @ts-expect-error A disjoint options union does not guarantee standard services.
   return test.run(standardProgram)
@@ -215,6 +277,21 @@ const neverMakeRun = neverRuntime.then((test) => {
   // @ts-expect-error A never options union cannot provide standard services.
   return test.run(standardProgram)
 })
+const emptyOverrideMakeRun = emptyOverrideRuntime.then((test) => {
+  // @ts-expect-error An empty override arm does not guarantee Clock.
+  return test.run(requiresClockProgram)
+})
+const disjointOverrideMakeRun = disjointOverrideRuntime.then((test) => {
+  // @ts-expect-error Disjoint override arms do not guarantee Clock.
+  return test.run(requiresClockProgram)
+})
+const sharedOverrideMakeRun = sharedOverrideRuntime.then((test) => test.run(requiresClockProgram))
+const guaranteedLoggerMakeRun = guaranteedLoggerRuntime.then((test) =>
+  test.run(requiresLoggerProgram)
+)
+const guaranteedRandomMakeRun = guaranteedRandomRuntime.then((test) =>
+  test.run(requiresRandomProgram)
+)
 
 const disjointUseResult = TestRuntime.use(Layer.merge(), disjointOptions, (test) => {
   expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
@@ -240,6 +317,40 @@ const guaranteedClockUseResult = TestRuntime.use(Layer.merge(), guaranteedClockO
   expectTypeOf(test.runtime).toEqualTypeOf<Runtime<Clock>>()
   return test.run(requiresClockProgram)
 })
+const emptyOverrideUseResult = TestRuntime.use(Layer.merge(), emptyOverrideOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
+  // @ts-expect-error An empty override arm does not guarantee Clock.
+  return test.run(requiresClockProgram)
+})
+const disjointOverrideUseResult = TestRuntime.use(
+  Layer.merge(),
+  disjointOverrideOptions,
+  (test) => {
+    expectTypeOf(test.runtime).toEqualTypeOf<Runtime<never>>()
+    // @ts-expect-error Disjoint override arms do not guarantee Clock.
+    return test.run(requiresClockProgram)
+  }
+)
+const sharedOverrideUseResult = TestRuntime.use(Layer.merge(), sharedOverrideOptions, (test) => {
+  expectTypeOf(test.runtime).toEqualTypeOf<Runtime<Clock>>()
+  return test.run(requiresClockProgram)
+})
+const guaranteedLoggerUseResult = TestRuntime.use(
+  Layer.merge(),
+  guaranteedLoggerOptions,
+  (test) => {
+    expectTypeOf(test.runtime).toEqualTypeOf<Runtime<Logger>>()
+    return test.run(requiresLoggerProgram)
+  }
+)
+const guaranteedRandomUseResult = TestRuntime.use(
+  Layer.merge(),
+  guaranteedRandomOptions,
+  (test) => {
+    expectTypeOf(test.runtime).toEqualTypeOf<Runtime<Random>>()
+    return test.run(requiresRandomProgram)
+  }
+)
 
 const configuredResult = TestRuntime.use(
   Layer.make(Repository),
@@ -304,6 +415,14 @@ void TestRuntime.use(incompatibleClockLayer, unionClockOptions, () => Result.ok(
 void TestRuntime.use(incompatibleLoggerLayer, unionLoggerOptions, () => Result.ok(true))
 // @ts-expect-error Union-shaped Random options must remain compatible with a same-tag base provider.
 void TestRuntime.use(incompatibleRandomLayer, unionRandomOptions, () => Result.ok(true))
+// @ts-expect-error Every possible explicit override arm must pass collision validation.
+void TestRuntime.make(ClockTest.layer(), invalidOverrideOptions)
+// @ts-expect-error TestRuntime.use must validate every possible explicit override arm.
+void TestRuntime.use(ClockTest.layer(), invalidOverrideOptions, () => Result.ok(true))
+// @ts-expect-error Every possible explicit override arm must pass Layer collision validation.
+Layer.override(ClockTest.layer(), ...invalidOverrideOptions.overrides)
+// @ts-expect-error A concrete incompatible override must fail directly too.
+Layer.override(ClockTest.layer(), incompatibleClockLayer)
 
 const callbackResult = TestRuntime.use(
   Layer.merge(completeLayer, ClockTest.layer(), LoggerTest.layer(), RandomSeeded.layer(42)),
@@ -328,3 +447,16 @@ void emptyUseResult
 void emptyUnionUseResult
 void neverUseResult
 void guaranteedClockUseResult
+void emptyOverrideMakeRun
+void disjointOverrideMakeRun
+void sharedOverrideMakeRun
+void emptyOverrideUseResult
+void disjointOverrideUseResult
+void sharedOverrideUseResult
+void guaranteedLoggerMakeRun
+void guaranteedRandomMakeRun
+void guaranteedLoggerUseResult
+void guaranteedRandomUseResult
+void directEmptyOverride
+void directDisjointOverride
+void directSharedOverride

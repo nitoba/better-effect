@@ -41,6 +41,9 @@ type StandardOptions =
   | { readonly clock: ClockTest }
   | { readonly logger: LoggerTest }
   | { readonly random: RandomSeeded }
+type EmptyOrClockOverrideOptions =
+  | { readonly overrides: readonly [] }
+  | { readonly overrides: readonly [ReturnType<typeof ClockTest.layer>] }
 type ExpectedStandardServices = {
   readonly clock: ClockTest | undefined
   readonly logger: LoggerTest | undefined
@@ -217,6 +220,19 @@ describe('TestRuntime', () => {
     await assertStandardBranch({ clock }, { clock, logger: undefined, random: undefined })
     await assertStandardBranch({ logger }, { clock: undefined, logger, random: undefined })
     await assertStandardBranch({ random }, { clock: undefined, logger: undefined, random })
+  })
+
+  test('does not expose an explicit override from an empty union branch', async () => {
+    const options: EmptyOrClockOverrideOptions = { overrides: [] }
+    const testRuntime = await TestRuntime.make(Layer.merge(), options)
+
+    try {
+      expect(testRuntime.clock).toBeUndefined()
+      const resolved = await testRuntime.run(() => captureResolution(Clock))
+      expect(resolved).toBeInstanceOf(ServiceNotFoundError)
+    } finally {
+      await testRuntime.dispose()
+    }
   })
 
   test('run preserves a direct Result.err value and reports failure outcome', async () => {
