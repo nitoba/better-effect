@@ -80,24 +80,55 @@ export type HonoEffectContext<E extends Env, P extends string, InputType extends
   readonly req: ValidatedRequest<P, InputType>
 }
 
-export type FirstMiddleware<Middlewares extends readonly AnyHonoMiddleware[]> =
-  Middlewares extends readonly [infer Head extends AnyHonoMiddleware, ...AnyHonoMiddleware[]]
-    ? Head
-    : never
+type IsAny<Type> = 0 extends 1 & Type ? true : false
 
-export type MiddlewareEnvironment<Middleware extends AnyHonoMiddleware> = [Middleware] extends [
-  never
-]
+type Specific<Type> = IsAny<Type> extends true ? never : Type
+
+type MiddlewareEnvironmentOf<Middleware extends AnyHonoMiddleware> =
+  Middleware extends MiddlewareHandler<infer Environment, any, any> ? Environment : never
+
+type MiddlewarePathOf<Middleware extends AnyHonoMiddleware> =
+  Middleware extends MiddlewareHandler<any, infer Path, any> ? Path : never
+
+type MiddlewareEnvironmentCandidates<Middlewares extends readonly AnyHonoMiddleware[]> =
+  Middlewares extends readonly [
+    infer Head extends AnyHonoMiddleware,
+    ...infer Tail extends readonly AnyHonoMiddleware[]
+  ]
+    ? Specific<MiddlewareEnvironmentOf<Head>> | MiddlewareEnvironmentCandidates<Tail>
+    : Specific<MiddlewareEnvironmentOf<Middlewares[number]>>
+
+type MiddlewarePathCandidates<Middlewares extends readonly AnyHonoMiddleware[]> =
+  Middlewares extends readonly [
+    infer Head extends AnyHonoMiddleware,
+    ...infer Tail extends readonly AnyHonoMiddleware[]
+  ]
+    ? Specific<MiddlewarePathOf<Head>> extends infer Path
+      ? Path extends string
+        ? string extends Path
+          ? MiddlewarePathCandidates<Tail>
+          : Path | MiddlewarePathCandidates<Tail>
+        : MiddlewarePathCandidates<Tail>
+      : never
+    : Specific<MiddlewarePathOf<Middlewares[number]>> extends infer Path
+      ? Path extends string
+        ? string extends Path
+          ? never
+          : Path
+        : never
+      : never
+
+export type MiddlewareEnvironment<Middlewares extends readonly AnyHonoMiddleware[]> = [
+  MiddlewareEnvironmentCandidates<Middlewares>
+] extends [never]
   ? Env
-  : Middleware extends MiddlewareHandler<infer Environment, any, any>
-    ? Environment
-    : Env
+  : Extract<UnionToIntersection<MiddlewareEnvironmentCandidates<Middlewares>>, Env>
 
-export type MiddlewarePath<Middleware extends AnyHonoMiddleware> = [Middleware] extends [never]
+export type MiddlewarePath<Middlewares extends readonly AnyHonoMiddleware[]> = [
+  MiddlewarePathCandidates<Middlewares>
+] extends [never]
   ? string
-  : Middleware extends MiddlewareHandler<any, infer Path, any>
-    ? Path
-    : string
+  : MiddlewarePathCandidates<Middlewares>
 
 export type HonoJsonValue =
   | null

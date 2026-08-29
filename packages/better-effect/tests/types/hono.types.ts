@@ -343,6 +343,31 @@ expectTypeOf(variadicSixGenerator).toEqualTypeOf<
   >
 >()
 
+const validatorFirstGenerator = http.gen(
+  validateJson,
+  environmentAndPathMiddleware,
+  async function* (c) {
+    expectTypeOf(c.env.API_KEY).toEqualTypeOf<string>()
+    expectTypeOf(c.get('user')).toEqualTypeOf<{ readonly id: string }>()
+    expectTypeOf(c.req.param('id')).toEqualTypeOf<string>()
+    expectTypeOf(c.req.valid('json')).toEqualTypeOf<{ name: string }>()
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+
+    return Result.ok(c.req.param('id'))
+  }
+)
+
+typedApp.post('/work-orders/:id', validatorFirstGenerator)
+
+expectTypeOf(validatorFirstGenerator).toEqualTypeOf<
+  Handler<
+    RouteEnv,
+    RoutePath,
+    MiddlewareInputs<[typeof validateJson, typeof environmentAndPathMiddleware]>,
+    Promise<Response>
+  >
+>()
+
 const variadicFourGenerator = http.gen(
   validateParam,
   validateHeader,

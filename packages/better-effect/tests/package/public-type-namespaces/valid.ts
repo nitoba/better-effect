@@ -1,4 +1,6 @@
 import { Result, TaggedError, type Result as ResultType } from 'better-result'
+import type { Context, MiddlewareHandler } from 'hono'
+import { validator } from 'hono/validator'
 
 import {
   Effect,
@@ -32,6 +34,7 @@ import {
   type ServiceToken,
   type ServiceTokenOf
 } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
 import {
   layerBackendContract,
   runtimeContextStorageContract,
@@ -93,6 +96,49 @@ const program = Effect.gen(async function* () {
 
   return Result.ok({ database, repository })
 })
+
+type RouteEnv = {
+  readonly Bindings: {
+    readonly API_KEY: string
+  }
+  readonly Variables: {
+    readonly user: {
+      readonly id: string
+    }
+  }
+}
+type RoutePath = '/work-orders/:id'
+
+const validateJson = validator('json', (value: { name?: string } | null) => ({
+  name: value?.name ?? ''
+}))
+const routeMiddleware: MiddlewareHandler<RouteEnv, RoutePath> = async (_context, next) => {
+  await next()
+}
+declare const honoRuntime: Runtime<never>
+const validatorFirstHandler = HonoEffect.make(honoRuntime).gen(
+  validateJson,
+  routeMiddleware,
+  async function* (context) {
+    const apiKey: string = context.env.API_KEY
+    const userId: string = context.get('user').id
+    const input: { name: string } = context.req.valid('json')
+    const id: string = context.req.param('id')
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+
+    return Result.ok(`${apiKey}:${userId}:${input.name}:${id}`)
+  }
+)
+
+type HandlerContext = Parameters<typeof validatorFirstHandler>[0]
+type HandlerEnvironment =
+  HandlerContext extends Context<infer _Environment, infer _Path, infer _Input>
+    ? _Environment
+    : never
+type HandlerPath =
+  HandlerContext extends Context<infer _Environment, infer _Path, infer _Input> ? _Path : never
+export type ValidatorFirstEnvironment = Expect<Equal<HandlerEnvironment, RouteEnv>>
+export type ValidatorFirstPath = Expect<Equal<HandlerPath, RoutePath>>
 
 const DatabaseLive = Layer.succeed(Database, new Database())
 const nativeBackend = new MapLayerBackend()
