@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.11.0] - 2026-08-29
+
+### Added
+
+- Official testing tools: `RecordedRuntimeObserver`, safe observer composition,
+  runner-agnostic `LayerBackend`/`RuntimeContextStorage` conformance kits, and
+  `TestRuntime` for isolated, automatically disposed application tests.
+- Lazy `Program` transformation, observation, recovery, bounded collection, and
+  typed result-collection combinators, including `Program.forEach` and
+  `Program.allResults`.
+- Requirement-preserving asynchronous Effect taps and tagged-error matching.
+- `Effect.acquireReleaseResult` and `Effect.acquireDisposable`, plus
+  `Layer.scopedDisposable`, for Result-aware and protocol-based scoped resource
+  acquisition.
+- `Layer.empty` and lazy, contract-preserving `Layer.alias({ from, to })`.
+
+### Changed
+
+- Hono route helpers now infer variadic middleware input, environment, and path
+  types across an entire middleware tuple and reject repeated `next()` calls
+  without re-executing a Program.
+- Layer override and TestRuntime option inference now retain only Services
+  guaranteed across union branches while validating every possible collision.
+- Layer aliases and the shared empty Layer are hardened against unsound union
+  tokens and JavaScript mutation.
+
+### Compatibility
+
+- Existing `Effect.acquireRelease`, `Effect.add`, `Layer.scoped`,
+  `Layer.scopedGen`, Resource APIs, and Hono routes remain compatible.
+
 ## [0.10.0] - 2026-08-28
 
 This release contains Runtime and integration hardening for the 0.10.0 line.
