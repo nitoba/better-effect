@@ -1,4 +1,5 @@
 import type { ServiceRequirement } from '../effect/types'
+import { ServiceRuntime } from '../service'
 import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } from '../service'
 import type { ScopeOutcome } from '../scope'
 import type { Covariant, Invariant } from '../internal/variance'
@@ -41,6 +42,15 @@ type DefaultConstructibleServiceClass<
   Instance extends AnyService = AnyService
 > = ServiceClass<Tag, Instance> & (new () => Instance)
 
+type LayerAliasOptions<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>> = {
+  readonly from: From
+  readonly to: To
+} & ([ServiceContract<InstanceType<From>>] extends [ServiceContract<InstanceType<To>>]
+  ? unknown
+  : {
+      readonly __betterEffectIncompatibleLayerAlias: unique symbol
+    })
+
 /**
  * Declarative collection of Service providers.
  *
@@ -70,6 +80,9 @@ export class Layer<
   private constructor(providers: readonly LayerProvider[]) {
     this.providers = Object.freeze([...providers])
   }
+
+  /** A stable provider-free Layer for composition roots with no Services. */
+  static readonly empty: Layer<never, never> = new Layer<never, never>([])
 
   /** Create a Layer that lazily acquires a Service instance. */
   static make<S extends DefaultConstructibleServiceClass<any, any>>(
@@ -117,6 +130,29 @@ export class Layer<
         acquire: normalizedAcquire
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
+  }
+
+  /** Alias a source Service under a compatible target contract. */
+  static alias<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>>(
+    options: LayerAliasOptions<From, To>
+  ): LayerResult<
+    ProviderEntry<InstanceType<To>, InstanceType<From> | ServiceRequirements<InstanceType<To>>>
+  > {
+    const { from, to } = options
+
+    // Keep alias acquisition in the normal Layer generator path so Runtime supplies the active resolver and resolution diagnostics.
+    // oxlint-disable-next-line require-yield
+    const alias = Layer.gen(to, async function* () {
+      const source = await ServiceRuntime.resolve(from)
+
+      // SAFETY: LayerAliasOptions checks that the source implementation satisfies the target contract.
+      return source as ServiceContract<InstanceType<To>>
+    })
+
+    // SAFETY: The alias factory resolves the declared source token before returning the target contract.
+    return alias as LayerResult<
+      ProviderEntry<InstanceType<To>, InstanceType<From> | ServiceRequirements<InstanceType<To>>>
+    >
   }
 
   /** Define a provider with Runtime-root cleanup. */
