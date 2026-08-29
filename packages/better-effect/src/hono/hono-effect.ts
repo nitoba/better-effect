@@ -26,7 +26,6 @@ import type {
   HonoEffectRouteOptions,
   HonoRequestLayerChecks,
   HonoEffectSuccess,
-  FirstMiddleware,
   MiddlewareEnvironment,
   ResponseLike,
   MiddlewareInputs,
@@ -108,8 +107,8 @@ export class HonoEffect<
   ): Handler<E, Path, InputType, Promise<Response>>
   handler<
     const Middlewares extends readonly AnyHonoMiddleware[],
-    E extends Env = MiddlewareEnvironment<FirstMiddleware<Middlewares>>,
-    Path extends string = MiddlewarePath<FirstMiddleware<Middlewares>>,
+    E extends Env = MiddlewareEnvironment<Middlewares>,
+    Path extends string = MiddlewarePath<Middlewares>,
     const ProgramFactory extends (
       context: HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>
     ) => AnyProgram = (
@@ -165,8 +164,8 @@ export class HonoEffect<
   ): Handler<E, Path, InputType, Promise<Response>>
   gen<
     const Middlewares extends readonly AnyHonoMiddleware[],
-    E extends Env = MiddlewareEnvironment<FirstMiddleware<Middlewares>>,
-    Path extends string = MiddlewarePath<FirstMiddleware<Middlewares>>,
+    E extends Env = MiddlewareEnvironment<Middlewares>,
+    Path extends string = MiddlewarePath<Middlewares>,
     const Yield extends EffectYield = EffectYield,
     const Returned extends AnyResult = AnyResult
   >(
@@ -283,10 +282,18 @@ export class HonoEffect<
   ): Handler<any, any, any, Promise<Response>> {
     return async (context, next) => {
       let downstreamResponse: Response | undefined
+      let nextCalled = false
 
-      const middlewareResponse = await inputMiddleware(context, async () => {
+      // Match Hono's compose guard: a middleware may advance the chain only once.
+      const nextOnce = async (): Promise<void> => {
+        if (nextCalled) {
+          throw new Error('next() called multiple times')
+        }
+
+        nextCalled = true
         downstreamResponse = await handler(context, next)
-      })
+      }
+      const middlewareResponse = await inputMiddleware(context, nextOnce)
 
       if (middlewareResponse instanceof Response) {
         return middlewareResponse

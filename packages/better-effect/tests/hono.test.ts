@@ -375,6 +375,58 @@ test('HonoEffect composes six mixed middleware in order inside one request Scope
   }
 })
 
+test('HonoEffect rejects a middleware that calls next twice without rerunning the Program', async () => {
+  const runtime = await makeRuntime()
+  const observed: unknown[] = []
+  let programRuns = 0
+  let releases = 0
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+  const malicious: MiddlewareHandler = async (_context, next) => {
+    await next()
+    await next()
+  }
+
+  app.onError((error, context) => {
+    observed.push(error)
+    return context.text('double next', 500)
+  })
+  app.use('*', http.middleware())
+  app.get(
+    '/double-next',
+    http.gen(malicious, async function* () {
+      programRuns += 1
+      yield* Effect.acquireRelease(
+        () => ({}),
+        () => {
+          releases += 1
+        }
+      )
+      return Result.ok('ok')
+    })
+  )
+
+  try {
+    const response = await app.request('/double-next')
+
+    expect(response.status).toBe(500)
+    expect(await response.text()).toBe('double next')
+    expect(programRuns).toBe(1)
+    expect(releases).toBe(1)
+    expect(observed).toHaveLength(1)
+    const error = observed[0]
+    expect(error).toBeInstanceOf(Error)
+
+    if (!(error instanceof Error)) {
+      throw new Error('Expected Hono to receive the double-next error')
+    }
+
+    expect(error.message).toBe('next() called multiple times')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('HonoEffect short-circuits a six-middleware route before the Program', async () => {
   const runtime = await makeRuntime()
   const order: string[] = []
