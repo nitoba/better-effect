@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.12.0] - 2026-08-29
+
+### Added
+
+- `better-effect/node` with `NodeRuntime.runMain` for typed Node/Bun main
+  Programs, cooperative signal handling, graceful cleanup, exit-code policies,
+  and fresh packed-package lifecycle coverage under both hosts.
+- Lazy `Program.named` metadata and per-execution attributes, stable execution
+  IDs, monotonic durations, and correlated Runtime observer events.
+- `RuntimeGraphObserver` in `better-effect/testing`, with immutable
+  deterministic JSON/Mermaid graph snapshots and safe Mermaid label rendering.
+- Immutable, synchronous `runtime.inspect()` diagnostic snapshots for Runtime
+  lifecycle, warmup, active executions, and registered Service tags.
+- Cancellable `Clock.sleep` plus deterministic `ClockTest` scheduling helpers:
+  `pendingSleeps`, `advanceToNext`, and guarded `runAll`.
+- Opt-in `IdGenerator`, `IdGeneratorLive`, and deterministic `IdGeneratorTest`
+  Standard Services.
+- An experimental `better-effect-mq` package foundation with explicit package
+  boundary and packed-consumer checks; its public entrypoints intentionally
+  remain inert pending a later roadmap phase.
+
+### Changed
+
+- Runtime/Layer Service tags are validated as non-empty primitive strings,
+  made immutable, and captured before asynchronous backend boundaries.
+- Runtime observer metadata and inspection snapshots are detached and immutable
+  even under concurrent execution and hostile observer/input mutation.
+
+### Compatibility
+
+- `Clock.sleep(milliseconds)` remains supported; cancellation uses its optional
+  second options argument.
+- Existing Runtime, Layer, Program, Scope, Resource, and Standard Service APIs
+  remain compatible; diagnostics are additive and side-effect free.
+
 ## [0.11.0] - 2026-08-29
 
 ### Added
