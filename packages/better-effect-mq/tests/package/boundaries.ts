@@ -1,8 +1,9 @@
 import { readdir, readFile } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import * as ts from 'typescript'
 
-const packageRoot = fileURLToPath(new URL('../..', import.meta.url))
+const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const sourceRoot = join(packageRoot, 'src')
 const distRoot = join(packageRoot, 'dist')
 const expectedExports = {
@@ -17,16 +18,12 @@ const expectedPeers = {
   typescript: '>=5.7.0'
 } as const satisfies Record<string, string>
 
-const allowedExternalImports = new Set([
-  'better-effect',
-  'better-effect/adapters/iti',
-  'better-effect/hono',
-  'better-effect/runtime/explicit',
-  'better-effect/runtime/node',
-  'better-effect/standard-services',
-  'better-effect/testing',
-  'better-result'
-])
+type Entrypoint = 'core' | 'testing'
+
+const allowedExternalImportsByEntrypoint = {
+  core: new Set<string>(['better-effect', 'better-result']),
+  testing: new Set<string>(['better-effect', 'better-result'])
+} satisfies Record<Entrypoint, ReadonlySet<string>>
 
 const forbiddenPackagePrefixes = [
   'drizzle-orm',
@@ -51,6 +48,14 @@ const forbiddenPackagePrefixes = [
   'better-sqlite3',
   '@libsql',
   '@planetscale'
+]
+
+const forbiddenBetterEffectEntrypoints = [
+  'better-effect/adapters',
+  'better-effect/hono',
+  'better-effect/runtime',
+  'better-effect/standard-services',
+  'better-effect/testing'
 ]
 
 type JsonPrimitive = string | number | boolean | null
@@ -130,6 +135,12 @@ const assertManifestPeers = (manifest: JsonObject): void => {
   }
 }
 
+const isForbiddenDependencyName = (name: string): boolean =>
+  name === 'effect' ||
+  name === '@effect' ||
+  name.startsWith('@effect/') ||
+  forbiddenPackagePrefixes.some((prefix) => name === prefix || name.startsWith(`${prefix}/`))
+
 const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
   const sections = ['dependencies', 'optionalDependencies', 'devDependencies', 'peerDependencies']
 
@@ -141,13 +152,10 @@ const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
     }
 
     for (const name of Object.keys(value)) {
-      const forbidden =
-        name === 'effect' ||
-        name === '@effect' ||
-        name.startsWith('@effect/') ||
-        forbiddenPackagePrefixes.some((prefix) => name === prefix || name.startsWith(`${prefix}/`))
-
-      assertCondition(!forbidden, `Forbidden dependency ${name} appears in ${section}`)
+      assertCondition(
+        !isForbiddenDependencyName(name),
+        `Forbidden dependency ${name} appears in ${section}`
+      )
     }
   }
 
@@ -176,54 +184,170 @@ const assertManifest = async (): Promise<void> => {
   assertNoForbiddenDependencyNames(manifest)
 }
 
-const moduleSpecifiers = (source: string): string[] => {
+const scriptKindFor = (path: string): ts.ScriptKind => {
+  switch (extname(path)) {
+    case '.js':
+    case '.mjs':
+    case '.cjs':
+      return ts.ScriptKind.JS
+    case '.jsx':
+      return ts.ScriptKind.JSX
+    case '.tsx':
+      return ts.ScriptKind.TSX
+    default:
+      return ts.ScriptKind.TS
+  }
+}
+
+const staticModuleSpecifier = (node: ts.Node | undefined): string | undefined => {
+  if (node === undefined) {
+    return undefined
+  }
+
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return node.text
+  }
+
+  if (ts.isLiteralTypeNode(node)) {
+    return staticModuleSpecifier(node.literal)
+  }
+
+  if (ts.isParenthesizedExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isAsExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isTypeAssertionExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isSatisfiesExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  return undefined
+}
+
+const moduleSpecifiers = (source: string, path: string): string[] => {
+  const sourceFile = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindFor(path)
+  )
   const specifiers = new Set<string>()
-  const patterns = [
-    /\b(?:import|export)\s+(?:type\s+)?[\s\S]*?\sfrom\s*["']([^"']+)["']/g,
-    /\bimport\s*["']([^"']+)["']/g,
-    /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g,
-    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g
-  ]
 
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      const specifier = match[1]
+  const addDeclarationSpecifier = (node: ts.Node | undefined, kind: string): void => {
+    const specifier = staticModuleSpecifier(node)
 
-      if (specifier !== undefined) {
-        specifiers.add(specifier)
+    assertCondition(specifier !== undefined, `Unverifiable ${kind} in ${path}`)
+    specifiers.add(specifier)
+  }
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      addDeclarationSpecifier(node.moduleSpecifier, 'import declaration')
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+      addDeclarationSpecifier(node.moduleSpecifier, 'export declaration')
+    } else if (ts.isImportTypeNode(node)) {
+      addDeclarationSpecifier(node.argument, 'import type')
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      const reference = node.moduleReference
+
+      if (ts.isExternalModuleReference(reference)) {
+        addDeclarationSpecifier(reference.expression, 'import-equals declaration')
+      }
+    } else if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
+      const callName = ts.isIdentifier(node.expression) ? node.expression.text : undefined
+
+      if (isDynamicImport || callName === 'require' || callName === '__require') {
+        const kind = isDynamicImport
+          ? 'dynamic import'
+          : `${callName === '__require' ? 'emitted helper' : 'static'} require`
+        addDeclarationSpecifier(node.arguments[0], kind)
       }
     }
+
+    ts.forEachChild(node, visit)
   }
+
+  visit(sourceFile)
 
   return [...specifiers]
 }
-
-const isLocalSpecifier = (specifier: string): boolean =>
-  specifier.startsWith('.') ||
-  specifier.startsWith('/') ||
-  specifier.startsWith('#') ||
-  specifier.startsWith('node:')
 
 const isForbiddenPackage = (specifier: string): boolean =>
   specifier === 'effect' ||
   specifier === '@effect' ||
   specifier === 'node:sqlite' ||
   specifier.startsWith('@effect/') ||
+  forbiddenBetterEffectEntrypoints.some(
+    (prefix) => specifier === prefix || specifier.startsWith(`${prefix}/`)
+  ) ||
   forbiddenPackagePrefixes.some(
     (prefix) => specifier === prefix || specifier.startsWith(`${prefix}/`)
   )
 
+const isWithinPackageRoot = (path: string): boolean => {
+  const fromPackageRoot = relative(packageRoot, path)
+
+  return (
+    fromPackageRoot === '' ||
+    (!isAbsolute(fromPackageRoot) &&
+      fromPackageRoot !== '..' &&
+      !fromPackageRoot.startsWith(`..${sep}`))
+  )
+}
+
+const assertLocalSpecifier = (importingFile: string, specifier: string): void => {
+  const resolvedPath = resolve(dirname(importingFile), specifier)
+  const moduleLabel = relative(packageRoot, importingFile)
+
+  assertCondition(
+    isWithinPackageRoot(resolvedPath),
+    `Local import ${specifier} in ${moduleLabel} resolves outside package root: ${resolvedPath}`
+  )
+}
+
+const entrypointFor = (path: string): Entrypoint => {
+  const packagePath = relative(packageRoot, path)
+  const testingSourcePrefix = `src${sep}testing${sep}`
+  const testingDistPrefix = `dist${sep}testing.`
+
+  return packagePath.startsWith(testingSourcePrefix) || packagePath.startsWith(testingDistPrefix)
+    ? 'testing'
+    : 'core'
+}
+
 const assertModuleBoundary = (path: string, source: string): void => {
-  for (const specifier of moduleSpecifiers(source)) {
+  for (const specifier of moduleSpecifiers(source, path)) {
     assertCondition(!isForbiddenPackage(specifier), `Forbidden import ${specifier} in ${path}`)
 
-    if (isLocalSpecifier(specifier)) {
+    if (specifier.startsWith('node:')) {
       continue
     }
 
+    if (specifier.startsWith('#')) {
+      throw new Error(
+        `Package alias ${specifier} in ${relative(packageRoot, path)} cannot bypass the package-root audit`
+      )
+    }
+
+    if (specifier.startsWith('.') || isAbsolute(specifier)) {
+      assertLocalSpecifier(path, specifier)
+      continue
+    }
+
+    const allowedImports = allowedExternalImportsByEntrypoint[entrypointFor(path)]
+
     assertCondition(
-      allowedExternalImports.has(specifier),
-      `Unapproved external import ${specifier} in ${path}; adapters must stay out of core`
+      allowedImports.has(specifier),
+      `Unapproved external import ${specifier} in ${path}; only public package foundations are allowed`
     )
   }
 }
@@ -231,9 +355,19 @@ const assertModuleBoundary = (path: string, source: string): void => {
 const assertAllModuleBoundaries = async (paths: string[]): Promise<void> => {
   for (const path of paths) {
     const source = await readFile(path, 'utf8')
-    assertModuleBoundary(relative(packageRoot, path), source)
+    assertModuleBoundary(path, source)
   }
 }
+
+const sourceModuleExtensions = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs', '.jsx']
+
+const isSourceModule = (path: string): boolean =>
+  sourceModuleExtensions.some((extension) => path.endsWith(extension))
+
+const isGeneratedBundle = (path: string): boolean => path.endsWith('.mjs')
+
+const isDeclaration = (path: string): boolean =>
+  path.endsWith('.d.ts') || path.endsWith('.d.mts') || path.endsWith('.d.cts')
 
 const assertRequiredFiles = (files: string[], required: string[], label: string): void => {
   const names = new Set(files.map((path) => relative(distRoot, path)))
@@ -246,9 +380,9 @@ const assertRequiredFiles = (files: string[], required: string[], label: string)
 const assertGeneratedBoundaries = async (): Promise<void> => {
   const sourceFiles = await collectFiles(sourceRoot)
   const generatedFiles = await collectFiles(distRoot)
-  const sourceModules = sourceFiles.filter((path) => /\.(?:[cm]?ts|tsx)$/.test(path))
-  const bundles = generatedFiles.filter((path) => path.endsWith('.mjs'))
-  const declarations = generatedFiles.filter((path) => path.endsWith('.d.mts'))
+  const sourceModules = sourceFiles.filter(isSourceModule)
+  const bundles = generatedFiles.filter(isGeneratedBundle)
+  const declarations = generatedFiles.filter(isDeclaration)
 
   assertCondition(sourceModules.length >= 2, 'Expected both source entrypoints to exist')
   assertCondition(bundles.length >= 2, 'Expected both ESM entrypoints to be emitted')
@@ -261,12 +395,150 @@ const assertGeneratedBoundaries = async (): Promise<void> => {
   await assertAllModuleBoundaries([...sourceModules, ...bundles, ...declarations])
 }
 
+const assertThrows = (operation: () => void, expectedMessage: string): void => {
+  let thrown = false
+  let error: unknown
+
+  try {
+    operation()
+  } catch (caught) {
+    thrown = true
+    error = caught
+  }
+
+  assertCondition(thrown, `Expected boundary audit to reject ${expectedMessage}`)
+  assertCondition(error instanceof Error, `Boundary audit threw a non-Error for ${expectedMessage}`)
+  assertCondition(
+    error.message.includes(expectedMessage),
+    `Expected boundary error containing ${expectedMessage}, got: ${error.message}`
+  )
+}
+
+const assertSupportedModuleForms = (coreFixture: string, testingFixture: string): void => {
+  const localImports = `
+    import type { TypeOnly } from './type-only'
+    type ImportedType = import('./import-type').TypeOnly
+    export { value } from './exported'
+    import './side-effect'
+    import Alias = require('./alias')
+    const required = require('./required')
+    const helper = __require('./helper')
+    void import('./dynamic', { with: { type: 'json' } })
+    void import(
+      \`./template\`,
+      { with: { type: 'json' } }
+    )
+    void Alias
+    void required
+    void helper
+    void (0 as unknown as TypeOnly)
+  `
+  const extracted = moduleSpecifiers(localImports, coreFixture).sort()
+  const expected = [
+    './alias',
+    './dynamic',
+    './exported',
+    './helper',
+    './import-type',
+    './required',
+    './side-effect',
+    './template',
+    './type-only'
+  ]
+
+  assertCondition(
+    JSON.stringify(extracted) === JSON.stringify(expected),
+    `AST module extraction missed a supported form: ${JSON.stringify(extracted)}`
+  )
+  assertModuleBoundary(coreFixture, localImports)
+  assertModuleBoundary(
+    testingFixture,
+    "import { Effect } from 'better-effect'\nimport { Result } from 'better-result'"
+  )
+}
+
+const assertIgnoresNonModuleText = (coreFixture: string): void => {
+  assertModuleBoundary(coreFixture, `const source = "require('pg')"`)
+  assertModuleBoundary(coreFixture, `/* import 'pg' */\nconst source = "import('pg')"`)
+}
+
+const assertBoundaryPathSafety = (coreFixture: string): void => {
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "import '../../better-effect/src/index'"),
+    'outside package root'
+  )
+  assertThrows(
+    () =>
+      assertModuleBoundary(
+        coreFixture,
+        "import Unsafe = require('../../better-effect/src/index.ts')"
+      ),
+    'outside package root'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void __require('../../better-effect/src/index.ts')"),
+    'outside package root'
+  )
+  assertThrows(
+    () =>
+      assertModuleBoundary(
+        coreFixture,
+        "void import('../../better-effect/src/index.ts', { with: { type: 'module' } })"
+      ),
+    'outside package root'
+  )
+
+  const outsidePath = join(packageRoot, '..', 'better-effect', 'src', 'index.ts')
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, `void import(${JSON.stringify(outsidePath)})`),
+    'outside package root'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "import '#outside-package'"),
+    'cannot bypass the package-root audit'
+  )
+}
+
+const assertExternalPolicy = (coreFixture: string): void => {
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('better-effect/adapters/iti')"),
+    'Forbidden import'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('better-effect/hono')"),
+    'Forbidden import'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "const driver = require('pg')"),
+    'Forbidden import'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('node:sqlite')"),
+    'Forbidden import'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, 'void import(dynamicSpecifier)'),
+    'Unverifiable dynamic import'
+  )
+}
+
+const assertBoundarySelfTests = (): void => {
+  const coreFixture = join(sourceRoot, 'boundary-fixture.ts')
+  const testingFixture = join(sourceRoot, 'testing', 'boundary-fixture.ts')
+
+  assertSupportedModuleForms(coreFixture, testingFixture)
+  assertIgnoresNonModuleText(coreFixture)
+  assertBoundaryPathSafety(coreFixture)
+  assertExternalPolicy(coreFixture)
+}
+
 const assertInertEntrypoint = async (path: string, label: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
 
   assertCondition(Object.keys(module).length === 0, `${label} exposes provisional runtime APIs`)
 }
 
+assertBoundarySelfTests()
 await assertManifest()
 await assertGeneratedBoundaries()
 await assertInertEntrypoint(join(distRoot, 'index.mjs'), 'Core entrypoint')
