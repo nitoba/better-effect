@@ -206,9 +206,11 @@ recorded.clear()
 
 Category views and `snapshot()` are immutable copies that retain the original
 Runtime event objects. `timeline` preserves their cross-category invocation
-order. `clear()` resets the recorder so one instance can be reused in a test.
-Observers run in declaration order, and a throwing or rejecting observer never
-prevents later observers from seeing an event or changes the Runtime result.
+order. Execution start/end pairs can be matched by `executionId`; they also
+carry the Program name, readonly per-run attributes, and non-negative duration.
+`clear()` resets the recorder so one instance can be reused in a test. Observers
+run in declaration order, and a throwing or rejecting observer never prevents
+later observers from seeing an event or changes the Runtime result.
 
 ## Type-contract tests
 

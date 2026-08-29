@@ -29,11 +29,13 @@ import type { RuntimeFor } from './types'
 
 import type { RuntimeObserver } from './observer'
 
-type RuntimeBackendInput = LayerBackend | RuntimeOptions | undefined
+type RuntimeOptionsInput = RuntimeOptions & RuntimeRunOptions
+
+type RuntimeBackendInput = LayerBackend | RuntimeOptionsInput | undefined
 
 type RuntimeConfig = {
   readonly backend: LayerBackend
-  readonly options: RuntimeOptions
+  readonly options: RuntimeOptionsInput
 }
 
 const isLayerBackend = (value: RuntimeBackendInput): value is LayerBackend =>
@@ -41,7 +43,7 @@ const isLayerBackend = (value: RuntimeBackendInput): value is LayerBackend =>
 
 const resolveRuntimeConfig = (
   backendOrOptions: RuntimeBackendInput,
-  legacyOptions?: RuntimeOptions
+  legacyOptions?: RuntimeOptionsInput
 ): RuntimeConfig => {
   if (isLayerBackend(backendOrOptions)) {
     return {
@@ -123,18 +125,18 @@ export class Runtime<Provided extends AnyService = any> {
     layer: L & CompleteInput<L>,
     backend: LayerBackend,
     program: CompleteExecution<ProvidedEnvironment<L>, A>,
-    options?: RuntimeOptions
+    options?: RuntimeOptionsInput
   ): Promise<Awaited<A>>
 
   static run<A, L extends LayerInput>(
     layer: L & CompleteInput<L>,
     program: CompleteExecution<ProvidedEnvironment<L>, A>,
-    options?: RuntimeOptions
+    options?: RuntimeOptionsInput
   ): Promise<Awaited<A>>
 
   static run<A, L extends LayerInput>(
     layer: L & CompleteInput<L>,
-    options: RuntimeOptions,
+    options: RuntimeOptionsInput,
     program: CompleteExecution<ProvidedEnvironment<L>, A>
   ): Promise<Awaited<A>>
 
@@ -142,20 +144,20 @@ export class Runtime<Provided extends AnyService = any> {
     layer: L & CompleteInput<L>,
     backendOrProgramOrOptions:
       | LayerBackend
-      | RuntimeOptions
+      | RuntimeOptionsInput
       | CompleteExecution<ProvidedEnvironment<L>, A>,
-    programOrOptions?: CompleteExecution<ProvidedEnvironment<L>, A> | RuntimeOptions,
-    legacyOptions?: RuntimeOptions
+    programOrOptions?: CompleteExecution<ProvidedEnvironment<L>, A> | RuntimeOptionsInput,
+    legacyOptions?: RuntimeOptionsInput
   ): Promise<Awaited<A>> {
     let program: CompleteExecution<ProvidedEnvironment<L>, A>
     let backendOrOptions: RuntimeBackendInput
-    let options: RuntimeOptions | undefined
+    let options: RuntimeOptionsInput | undefined
 
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch needs to distinguish a Program callback from configuration.
     if (typeof backendOrProgramOrOptions === 'function') {
       program = backendOrProgramOrOptions
       // SAFETY: The function overload branch establishes that this argument is the optional RuntimeOptions value.
-      backendOrOptions = programOrOptions as RuntimeOptions | undefined
+      backendOrOptions = programOrOptions as RuntimeOptionsInput | undefined
       options = undefined
     } else {
       backendOrOptions = backendOrProgramOrOptions
@@ -182,7 +184,7 @@ export class Runtime<Provided extends AnyService = any> {
     let executionFailure: unknown
 
     try {
-      value = await runtime.runUnchecked(program)
+      value = await runtime.runUnchecked(program, config.options)
     } catch (cause) {
       executionFailed = true
       executionFailure = cause
@@ -295,9 +297,12 @@ export class Runtime<Provided extends AnyService = any> {
     return this.handle.runWith(layer, program, options)
   }
 
-  private runUnchecked<A>(program: () => A | PromiseLike<A>): Promise<Awaited<A>> {
+  private runUnchecked<A>(
+    program: () => A | PromiseLike<A>,
+    options?: RuntimeRunOptions
+  ): Promise<Awaited<A>> {
     // SAFETY: One-shot Runtime.run performs the same complete-program validation at its public boundary before using this internal escape hatch.
-    return this.handle.run(program as CompleteExecution<Provided, A>)
+    return this.handle.run(program as CompleteExecution<Provided, A>, options)
   }
 
   /** Stop new executions and release the Runtime's Layer resources. */

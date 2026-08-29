@@ -156,6 +156,28 @@ Scope.
 Scope. `Effect.fn` captures the generator as a lazy `Program` for Runtime
 boundaries; the callback form remains supported for compatibility.
 
+Name a Program without executing it. The name is private diagnostic metadata,
+so the value remains an ordinary callable function and can be used with `pipe`:
+
+```ts
+const loadUser = pipe(
+  Effect.fn(async function* () {
+    return Result.ok(await userRepository.load(userId))
+  }),
+  Program.named('user.load')
+)
+
+const result = await runtime.run(loadUser, {
+  attributes: { userId, requestId }
+})
+```
+
+`Program.map`, `mapError`, `andThen`, `tap`, `tapError`, and `recover` preserve
+their source name. A later `Program.named` call overrides it. Collection
+Programs do not concatenate child names; give `Program.all`, `Program.forEach`,
+or `Program.allResults` an optional `{ name }` when the collection itself needs
+a diagnostic name.
+
 `Program.all` keeps a collection lazy until the returned Program is run. Pass
 `{ concurrency: n }` for a positive bounded FIFO worker pool; values retain
 input order. If a Program returns an error or throws, scheduling stops, already-
@@ -320,7 +342,30 @@ await runtime.warmup()
 Warmup failures include the Service and resolution path, release resources
 already acquired, dispose the backend and reject the Runtime. Optional
 observers expose Service resolution/acquisition, execution and Layer release
-events without coupling the core to an observability SDK:
+events without coupling the core to an observability SDK. Execution events
+carry one matching `executionId`, the optional Program name, copied readonly
+attributes, and a monotonic `durationMs` measured through execution cleanup:
+
+```ts
+const runtime = await Runtime.make(AppLive, {
+  observers: [
+    {
+      onExecutionStart: ({ executionId, name, attributes }) =>
+        console.debug('program.start', { executionId, name, attributes }),
+      onExecutionEnd: ({ executionId, outcome, durationMs }) =>
+        metrics.observe('program.duration_ms', durationMs, {
+          executionId,
+          outcome: outcome.status
+        })
+    }
+  ]
+})
+```
+
+The Runtime does not serialize or inspect attribute values. Attributes are
+shallow-copied and exposed as a readonly event view; do not attach secrets,
+large objects, or mutable application state. Keep sensitive values out of
+observer logs and metrics labels.
 
 Missing, circular, and provider-construction failures use the logical Service
 tags in `ServiceNotFoundError`, `CircularDependencyError`, and

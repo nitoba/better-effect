@@ -3,13 +3,19 @@ import { describe, expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
 import {
+  Effect,
   Layer,
   LayerDisposeError,
+  MapLayerBackend,
+  Program,
   Runtime,
   Service,
   ServiceAcquisitionError,
-  ServiceRuntime
+  ServiceRuntime,
+  type RuntimeExecutionEndEvent,
+  type RuntimeExecutionStartEvent
 } from '../src'
+import { createRuntimeHandle } from '../src/layer/runtime'
 import { RecordedRuntimeObserver, RuntimeObserver, type RuntimeObserverEvent } from '../src/testing'
 
 class RecordedService extends Service<RecordedService>()('RecordedService') {}
@@ -19,6 +25,12 @@ class BrokenService extends Service<BrokenService>()('RecordedBrokenService') {}
 class FailingReleaseService extends Service<FailingReleaseService>()(
   'RecordedFailingReleaseService'
 ) {}
+
+const captureRejection = async (promise: Promise<unknown>) =>
+  promise.then(
+    () => undefined,
+    (cause) => cause
+  )
 
 describe('RecordedRuntimeObserver', () => {
   test('records lifecycle events in immutable ordered snapshots', async () => {
@@ -274,6 +286,568 @@ describe('RecordedRuntimeObserver', () => {
       outcome: { status: 'success' },
       error: releaseFailure
     })
+  })
+  test('correlates concurrent named executions and isolates attributes', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    let firstStarted!: () => void
+    let secondStarted!: () => void
+
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve
+    })
+    const firstStartedPromise = new Promise<void>((resolve) => {
+      firstStarted = resolve
+    })
+    const secondStartedPromise = new Promise<void>((resolve) => {
+      secondStarted = resolve
+    })
+    const firstAttributes = { requestId: 'first' }
+    const secondAttributes = { requestId: 'second' }
+    const first = Program.named(
+      'users.first',
+      Effect.fn(async function* () {
+        yield* []
+        firstStarted()
+        await firstGate
+        return Result.ok('first')
+      })
+    )
+    const second = Program.named(
+      'users.second',
+      Effect.fn(async function* () {
+        yield* []
+        secondStarted()
+        await secondGate
+        return Result.ok('second')
+      })
+    )
+
+    try {
+      const firstRun = runtime.run(first, { attributes: firstAttributes })
+      await firstStartedPromise
+      const secondRun = runtime.run(second, { attributes: secondAttributes })
+      await secondStartedPromise
+
+      expect(recorder.executionStarts).toHaveLength(2)
+      releaseFirst()
+      releaseSecond()
+      await Promise.all([firstRun, secondRun])
+
+      const firstStart = recorder.executionStarts.find((event) => event.name === 'users.first')
+      const secondStart = recorder.executionStarts.find((event) => event.name === 'users.second')
+      const firstEnd = recorder.executionEnds.find((event) => event.name === 'users.first')
+      const secondEnd = recorder.executionEnds.find((event) => event.name === 'users.second')
+
+      if (!firstStart || !secondStart || !firstEnd || !secondEnd) {
+        throw new Error('Expected correlated named execution events')
+      }
+
+      expect(firstStart.executionId).not.toBe(secondStart.executionId)
+      expect(firstStart.executionId).toBe(firstEnd.executionId)
+      expect(secondStart.executionId).toBe(secondEnd.executionId)
+      expect(firstStart.startedAt).toBe(firstEnd.startedAt)
+      expect(secondStart.startedAt).toBe(secondEnd.startedAt)
+      expect(firstStart.attributes).toEqual(firstAttributes)
+      expect(secondStart.attributes).toEqual(secondAttributes)
+      expect(firstStart.attributes).not.toBe(firstAttributes)
+      expect(secondStart.attributes).not.toBe(secondAttributes)
+      expect(firstStart.attributes).not.toBe(secondStart.attributes)
+      expect(Object.isFrozen(firstStart.attributes)).toBe(true)
+      expect(Object.isFrozen(secondStart.attributes)).toBe(true)
+      expect(firstEnd.durationMs).toBeGreaterThanOrEqual(0)
+      expect(secondEnd.durationMs).toBeGreaterThanOrEqual(0)
+    } finally {
+      releaseFirst()
+      releaseSecond()
+      await runtime.dispose()
+    }
+  })
+
+  test('freezes execution event envelopes before observer dispatch', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const mutate = (event: RuntimeExecutionStartEvent | RuntimeExecutionEndEvent): void => {
+      Reflect.set(event, 'executionId', 'mutated-id')
+      Reflect.set(event, 'name', 'mutated-name')
+      Reflect.set(event, 'attributes', { requestId: 'mutated-request' })
+    }
+    const runtime = await Runtime.make(Layer.merge(), {
+      observers: [
+        {
+          onExecutionStart: mutate,
+          onExecutionEnd: mutate
+        },
+        recorder
+      ]
+    })
+    const program = Program.named(
+      'events.stable',
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok('stable')
+      })
+    )
+
+    try {
+      await runtime.run(program, { attributes: { requestId: 'original-request' } })
+    } finally {
+      await runtime.dispose()
+    }
+
+    const start = recorder.executionStarts[0]
+    const end = recorder.executionEnds[0]
+
+    if (!start || !end) {
+      throw new Error('Expected frozen execution events')
+    }
+
+    expect(Object.isFrozen(start)).toBe(true)
+    expect(Object.isFrozen(end)).toBe(true)
+    expect(start.executionId).toBe(end.executionId)
+    expect(start.name).toBe('events.stable')
+    expect(end.name).toBe('events.stable')
+    expect(start.attributes).toEqual({ requestId: 'original-request' })
+    expect(end.attributes).toEqual({ requestId: 'original-request' })
+  })
+
+  test('preflights metadata before forking run and runWith executions', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const getterFailure = new Error('execution attribute getter failed')
+    const attributes = Object.defineProperty({}, 'requestId', {
+      enumerable: true,
+      get: () => {
+        throw getterFailure
+      }
+    })
+    const program = () => Result.ok('not-started')
+
+    try {
+      const runFailure = await captureRejection(runtime.run(program, { attributes }))
+      const runWithFailure = await captureRejection(
+        runtime.runWith(Layer.merge(), program, { attributes })
+      )
+
+      expect(runFailure).toBe(getterFailure)
+      expect(runWithFailure).toBe(getterFailure)
+      expect(recorder.executionStarts).toHaveLength(0)
+      expect(recorder.executionEnds).toHaveLength(0)
+
+      const recovered = await runtime.run(() => Result.ok('recovered'))
+      expect(Result.isOk(recovered) && recovered.value).toBe('recovered')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('rejects runs disposed during metadata preparation before starting them', async () => {
+    for (const form of ['run', 'runWith'] as const) {
+      const recorder = RecordedRuntimeObserver.make()
+      const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+      let releaseExecution!: () => void
+      let markExecutionStarted!: () => void
+      let disposal: Promise<void> | undefined
+      let lateRuns = 0
+
+      const executionStarted = new Promise<void>((resolve) => {
+        markExecutionStarted = resolve
+      })
+      const executionMayFinish = new Promise<void>((resolve) => {
+        releaseExecution = resolve
+      })
+      const ongoing = runtime.run(async () => {
+        markExecutionStarted()
+        await executionMayFinish
+        return Result.ok('ongoing')
+      })
+      await executionStarted
+
+      const program = () => {
+        lateRuns++
+        return Result.ok('late')
+      }
+      const attributes = {
+        get requestId(): string {
+          disposal = runtime.dispose()
+          return 'reentrant'
+        }
+      }
+      const controller = new AbortController()
+      const signalOptions = {
+        get signal(): AbortSignal {
+          disposal = runtime.dispose()
+          return controller.signal
+        }
+      }
+
+      try {
+        if (form === 'run') {
+          expect(() => runtime.run(program, { attributes })).toThrow(
+            'Cannot run a program using a disposed Layer'
+          )
+        } else {
+          expect(() => runtime.runWith(Layer.merge(), program, signalOptions)).toThrow(
+            'Cannot run a program using a disposed Layer'
+          )
+        }
+
+        if (!disposal) {
+          throw new Error('Expected metadata preparation to start Runtime disposal')
+        }
+
+        let disposalFinished = false
+        void disposal.then(() => {
+          disposalFinished = true
+        })
+
+        await Promise.resolve()
+        expect(disposalFinished).toBe(false)
+        expect(lateRuns).toBe(0)
+
+        releaseExecution()
+        await ongoing
+        await disposal
+
+        expect(disposalFinished).toBe(true)
+        expect(recorder.executionStarts).toHaveLength(1)
+        expect(recorder.executionEnds).toHaveLength(1)
+      } finally {
+        releaseExecution()
+        await ongoing.catch(() => {})
+        await disposal?.catch(() => {})
+      }
+    }
+  })
+
+  test('keeps Program names lazy, private, and explicit for collections', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    let runs = 0
+    const child = Program.named(
+      'child.name',
+      Effect.fn(function* () {
+        yield* []
+        runs++
+        return Result.ok('child')
+      })
+    )
+
+    expect(runs).toBe(0)
+    expect(Object.keys(child)).toEqual([])
+
+    try {
+      const unnamed = Program.all([child])
+      const named = Program.all([child], { name: 'users.batch' })
+      const namedResults = Program.allResults([child], { name: 'users.results' })
+      const namedForEach = Program.forEach([1], () => child, { name: 'users.each' })
+      const renamed = Program.named('users.renamed', named)
+
+      expect(runs).toBe(0)
+      await runtime.run(unnamed)
+      await runtime.run(renamed)
+      await runtime.run(namedResults)
+      await runtime.run(namedForEach)
+      expect(runs).toBe(4)
+
+      expect(recorder.executionStarts[0]?.name).toBeUndefined()
+      expect(recorder.executionStarts[1]?.name).toBe('users.renamed')
+      expect(recorder.executionStarts[2]?.name).toBe('users.results')
+      expect(recorder.executionStarts[3]?.name).toBe('users.each')
+      expect(recorder.executionEnds[0]?.name).toBeUndefined()
+      expect(recorder.executionEnds[1]?.name).toBe('users.renamed')
+      expect(recorder.executionEnds[2]?.name).toBe('users.results')
+      expect(recorder.executionEnds[3]?.name).toBe('users.each')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('snapshots collection names once before attaching metadata', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const child = Effect.fn(function* () {
+      yield* []
+      return Result.ok(true)
+    })
+    const makeOptions = (name: string) => {
+      let reads = 0
+      const options = Object.defineProperty({}, 'name', {
+        enumerable: true,
+        get: () => {
+          reads++
+          return reads === 1 ? name : 42
+        }
+      })
+
+      return { options, getReads: () => reads }
+    }
+    const allOptions = makeOptions('users.all')
+    const forEachOptions = makeOptions('users.each')
+    const allResultsOptions = makeOptions('users.results')
+    const all = Program.all([child], allOptions.options)
+    const forEach = Program.forEach([true], () => child, forEachOptions.options)
+    const allResults = Program.allResults([child], allResultsOptions.options)
+
+    try {
+      await runtime.run(all)
+      await runtime.run(forEach)
+      await runtime.run(allResults)
+
+      expect(allOptions.getReads()).toBe(1)
+      expect(forEachOptions.getReads()).toBe(1)
+      expect(allResultsOptions.getReads()).toBe(1)
+      expect(recorder.executionStarts.map((event) => event.name)).toEqual([
+        'users.all',
+        'users.each',
+        'users.results'
+      ])
+      expect(recorder.executionEnds.map((event) => event.name)).toEqual([
+        'users.all',
+        'users.each',
+        'users.results'
+      ])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('rejects non-string collection name accessors before attaching metadata', () => {
+    const child = Effect.fn(function* () {
+      yield* []
+      return Result.ok(true)
+    })
+    const makeOptions = () =>
+      Object.defineProperty({}, 'name', {
+        enumerable: true,
+        get: () => 42
+      })
+
+    expect(() => Program.all([child], makeOptions())).toThrow(TypeError)
+    expect(() => Program.forEach([true], () => child, makeOptions())).toThrow(TypeError)
+    expect(() => Program.allResults([child], makeOptions())).toThrow(TypeError)
+  })
+
+  test('carries metadata through execution-local runWith Layers', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const program = Program.named(
+      'request.handle',
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok('handled')
+      })
+    )
+
+    try {
+      const result = await runtime.runWith(Layer.merge(), program, {
+        attributes: { requestId: 'request-1' }
+      })
+
+      expect(Result.isOk(result) && result.value).toBe('handled')
+      expect(recorder.executionStarts[0]?.name).toBe('request.handle')
+      expect(recorder.executionStarts[0]?.attributes).toEqual({ requestId: 'request-1' })
+      expect(recorder.executionEnds[0]?.executionId).toBe(recorder.executionStarts[0]?.executionId)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('propagates names through transparent Program combinators', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const source = Program.named(
+      'users.source',
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok(1)
+      })
+    )
+    const mapped = Program.map(source, (value) => value + 1)
+    const errorMapped = Program.mapError(source, (error) => String(error))
+    const tapped = Program.tap(source, () => {})
+    const errorTapped = Program.tapError(source, () => {})
+    const chained = Program.andThen(source, (value) => Result.ok(value + 1))
+    const failed = Program.named(
+      'users.failed',
+      Effect.fn(async function* () {
+        yield* []
+        return Result.err<number, 'failed'>('failed')
+      })
+    )
+    const recovered = Program.recover(failed, () => Result.ok(0))
+
+    try {
+      await Promise.all([
+        runtime.run(mapped),
+        runtime.run(errorMapped),
+        runtime.run(tapped),
+        runtime.run(errorTapped),
+        runtime.run(chained),
+        runtime.run(recovered)
+      ])
+
+      expect(recorder.executionStarts.map((event) => event.name)).toEqual([
+        'users.source',
+        'users.source',
+        'users.source',
+        'users.source',
+        'users.source',
+        'users.failed'
+      ])
+      expect(recorder.executionEnds.map((event) => event.name)).toEqual(
+        expect.arrayContaining(['users.source', 'users.failed'])
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('emits exactly one correlated end after every execution outcome', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+    const resultFailure = new Error('result failure')
+    const thrownFailure = new Error('thrown failure')
+    const rejectedFailure = new Error('rejected failure')
+    const cleanupFailure = new Error('cleanup failure')
+
+    try {
+      await runtime.run(() => Result.err(resultFailure))
+      await runtime
+        .run(() => {
+          throw thrownFailure
+        })
+        .catch((cause) => {
+          expect(cause).toBe(thrownFailure)
+        })
+      await runtime
+        .run(() => Promise.reject(rejectedFailure))
+        .catch((cause) => {
+          expect(cause).toBe(rejectedFailure)
+        })
+      await runtime
+        .run(
+          Effect.fn(async function* () {
+            yield* Effect.acquireRelease(
+              () => 'resource',
+              () => {
+                throw cleanupFailure
+              }
+            )
+            return Result.ok(true)
+          })
+        )
+        .catch((cause) => {
+          expect(cause).toMatchObject({ causes: [cleanupFailure] })
+        })
+
+      expect(recorder.executionStarts).toHaveLength(4)
+      expect(recorder.executionEnds).toHaveLength(4)
+      expect(recorder.executionEnds).toEqual(
+        expect.arrayContaining(
+          recorder.executionStarts.map((start) =>
+            expect.objectContaining({ executionId: start.executionId })
+          )
+        )
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('rejects ID and timestamp failures before forking either execution form', async () => {
+    const idFailure = new Error('execution ID failed')
+    const timestampFailure = new Error('execution timestamp failed')
+    const failures = [
+      {
+        cause: idFailure,
+        overrides: {
+          createExecutionId: () => {
+            throw idFailure
+          }
+        }
+      },
+      {
+        cause: timestampFailure,
+        overrides: {
+          now: () => {
+            throw timestampFailure
+          }
+        }
+      }
+    ]
+
+    for (const { cause, overrides } of failures) {
+      const recorder = RecordedRuntimeObserver.make()
+      const handle = await createRuntimeHandle(
+        Layer.merge(),
+        new MapLayerBackend(),
+        { observers: [recorder] },
+        overrides
+      )
+      const program = () => Result.ok('not-started')
+
+      try {
+        const runFailure = await captureRejection(handle.run(program))
+        const runWithFailure = await captureRejection(handle.runWith(Layer.merge(), program))
+
+        expect(runFailure).toBe(cause)
+        expect(runWithFailure).toBe(cause)
+        expect(recorder.executionStarts).toHaveLength(0)
+        expect(recorder.executionEnds).toHaveLength(0)
+      } finally {
+        await handle.dispose()
+      }
+    }
+  })
+
+  test('uses injected monotonic dependencies and measures execution cleanup', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    let nextId = 0
+    const timestamps = [100, 145]
+    let cleanupSettled = false
+    const handle = await createRuntimeHandle(
+      Layer.merge(),
+      new MapLayerBackend(),
+      { observers: [recorder] },
+      {
+        createExecutionId: () => `test-execution-${++nextId}`,
+        now: () => timestamps.shift() ?? 145
+      }
+    )
+
+    try {
+      await handle.run(
+        Effect.fn(async function* () {
+          yield* Effect.acquireRelease(
+            () => 'resource',
+            () => {
+              cleanupSettled = true
+            }
+          )
+          return Result.ok(true)
+        })
+      )
+
+      const start = recorder.executionStarts[0]
+      const end = recorder.executionEnds[0]
+
+      if (!start || !end) {
+        throw new Error('Expected injected execution events')
+      }
+
+      expect(start.executionId).toBe('test-execution-1')
+      expect(end.executionId).toBe(start.executionId)
+      expect(start.startedAt).toBe(100)
+      expect(end.durationMs).toBe(45)
+      expect(cleanupSettled).toBe(true)
+    } finally {
+      await handle.dispose()
+    }
   })
 })
 

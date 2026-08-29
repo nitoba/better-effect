@@ -3,6 +3,7 @@ import { Result } from 'better-result'
 import type { Result as ResultType } from 'better-result'
 
 import type { AnyService } from '../service'
+import { inheritProgramName } from './program-metadata'
 import { isPromiseLike } from '../utils/runtime'
 
 import type { EffectError, EffectRequirements, EffectSuccess, Program } from './types'
@@ -158,23 +159,38 @@ const recoverRuntime = (
 const mapProgram = <Input extends RuntimeProgram, B>(
   program: ProgramInput<Input>,
   fn: (value: EffectSuccess<Input>) => B
-): MappedProgram<Input, B> => asProgram<MappedProgram<Input, B>>(() => mapRuntime(program(), fn))
+): MappedProgram<Input, B> => {
+  const mapped = asProgram<MappedProgram<Input, B>>(() => mapRuntime(program(), fn))
+
+  return inheritProgramName(program, mapped)
+}
 
 const mapErrorProgram = <Input extends RuntimeProgram, E2>(
   program: ProgramInput<Input>,
   fn: (error: EffectError<Input>) => E2
-): ErrorMappedProgram<Input, E2> =>
-  asProgram<ErrorMappedProgram<Input, E2>>(() => mapErrorRuntime(program(), fn))
+): ErrorMappedProgram<Input, E2> => {
+  const mapped = asProgram<ErrorMappedProgram<Input, E2>>(() => mapErrorRuntime(program(), fn))
+
+  return inheritProgramName(program, mapped)
+}
 
 const tapProgram = <Input extends RuntimeProgram>(
   program: ProgramInput<Input>,
   fn: (value: EffectSuccess<Input>) => any
-): TappedProgram<Input> => asProgram<TappedProgram<Input>>(() => tapRuntime(program(), fn))
+): TappedProgram<Input> => {
+  const tapped = asProgram<TappedProgram<Input>>(() => tapRuntime(program(), fn))
+
+  return inheritProgramName(program, tapped)
+}
 
 const tapErrorProgram = <Input extends RuntimeProgram>(
   program: ProgramInput<Input>,
   fn: (error: EffectError<Input>) => any
-): TappedProgram<Input> => asProgram<TappedProgram<Input>>(() => tapErrorRuntime(program(), fn))
+): TappedProgram<Input> => {
+  const tapped = asProgram<TappedProgram<Input>>(() => tapErrorRuntime(program(), fn))
+
+  return inheritProgramName(program, tapped)
+}
 
 /** Lazily map the successful Result value of a Program. */
 export function map<A, B>(fn: (value: A) => B): MapOperation<A, B>
@@ -225,14 +241,19 @@ export function andThen(
   second?: RuntimeContinuation
 ): any {
   if (second === undefined) {
-    return (program: RuntimeProgram) =>
+    return (program: RuntimeProgram) => {
       // SAFETY: The curried overload supplies a Program and a continuation for its success channel.
-      () =>
-        andThenRuntime(program(), first as RuntimeContinuation)
+      const chained = () => andThenRuntime(program(), first as RuntimeContinuation)
+
+      return inheritProgramName(program, chained)
+    }
   }
 
   // SAFETY: The data-first overload supplies a Program as its first argument.
-  return () => andThenRuntime((first as RuntimeProgram)(), second)
+  const source = first as RuntimeProgram
+  const chained = () => andThenRuntime(source(), second)
+
+  return inheritProgramName(source, chained)
 }
 
 /** Lazily observe a successful Program value without changing its Result. */
@@ -284,12 +305,17 @@ export function recover(
   second?: RuntimeContinuation
 ): any {
   if (second === undefined) {
-    return (program: RuntimeProgram) =>
+    return (program: RuntimeProgram) => {
       // SAFETY: The curried overload supplies a Program and a recovery callback for its error channel.
-      () =>
-        recoverRuntime(program(), first as RuntimeContinuation)
+      const recovered = () => recoverRuntime(program(), first as RuntimeContinuation)
+
+      return inheritProgramName(program, recovered)
+    }
   }
 
   // SAFETY: The data-first overload supplies a Program as its first argument.
-  return () => recoverRuntime((first as RuntimeProgram)(), second)
+  const source = first as RuntimeProgram
+  const recovered = () => recoverRuntime(source(), second)
+
+  return inheritProgramName(source, recovered)
 }

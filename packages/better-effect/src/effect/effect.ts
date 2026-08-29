@@ -5,6 +5,8 @@ import type { Err, Result as ResultType, UnhandledException } from 'better-resul
 import { Scope } from '../scope'
 
 import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
+
+import { setProgramName } from './program-metadata'
 import type { AnyService } from '../service'
 
 import type {
@@ -106,6 +108,8 @@ type ProgramForEachResult<Child extends AnyProgram> = ProgramType<
 
 export type ProgramAllOptions = {
   readonly concurrency?: number
+  /** Optional diagnostic name for the collection execution. */
+  readonly name?: string
 }
 
 type EffectGenerator =
@@ -164,6 +168,30 @@ export function fn(body: EffectGenerator): Program<any, any, AnyService> {
   return program as Program<any, any, AnyService>
 }
 
+type ProgramNamedOperation = {
+  <Input extends AnyProgram>(program: Input): Input
+}
+
+const validateProgramName = (name: string): void => {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate JavaScript callers at the public boundary.
+  if (typeof name !== 'string') {
+    throw new TypeError('Program name must be a string')
+  }
+}
+
+/** Attach a lazy diagnostic name to a Program without invoking it. */
+function programNamed(name: string): ProgramNamedOperation
+function programNamed<Input extends AnyProgram>(name: string, program: Input): Input
+function programNamed(name: string, program?: AnyProgram): AnyProgram | ProgramNamedOperation {
+  validateProgramName(name)
+
+  if (program === undefined) {
+    return (source) => setProgramName(source, name)
+  }
+
+  return setProgramName(program, name)
+}
+
 const runShortCircuitingCollection = async (
   length: number,
   task: (index: number) => AnyResult | PromiseLike<AnyResult>,
@@ -212,9 +240,15 @@ export function programAll<const Programs extends readonly AnyProgram[]>(
   options: ProgramAllOptions = {}
 ): ProgramAllResult<Programs> {
   const concurrency = options.concurrency
+  const name = options?.name
   validateProgramConcurrency(concurrency)
   const program = () =>
     runShortCircuitingCollection(programs.length, (index) => programs[index]!(), concurrency)
+
+  if (name !== undefined) {
+    validateProgramName(name)
+    setProgramName(program, name)
+  }
 
   // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
   return program as ProgramAllResult<Programs>
@@ -227,6 +261,7 @@ export function programForEach<const Items extends readonly unknown[], Child ext
   options: ProgramAllOptions = {}
 ): ProgramForEachResult<Child> {
   const concurrency = options.concurrency
+  const name = options?.name
   validateProgramConcurrency(concurrency)
   const program = () =>
     runShortCircuitingCollection(
@@ -234,6 +269,11 @@ export function programForEach<const Items extends readonly unknown[], Child ext
       (index) => makeProgram(items[index]!, index)(),
       concurrency
     )
+
+  if (name !== undefined) {
+    validateProgramName(name)
+    setProgramName(program, name)
+  }
 
   // SAFETY: Program channels are declaration-only and are restored from the factory's result type.
   return program as ProgramForEachResult<Child>
@@ -245,9 +285,15 @@ export function programAllResults<const Programs extends readonly AnyProgram[]>(
   options: ProgramAllOptions = {}
 ): ProgramAllResultsResult<Programs> {
   const concurrency = options.concurrency
+  const name = options?.name
   validateProgramConcurrency(concurrency)
   const program = () =>
     runAllResultsCollection(programs.length, (index) => programs[index]!(), concurrency)
+
+  if (name !== undefined) {
+    validateProgramName(name)
+    setProgramName(program, name)
+  }
 
   // SAFETY: Program channels are declaration-only and are restored from the input tuple here.
   return program as ProgramAllResultsResult<Programs>
@@ -255,6 +301,7 @@ export function programAllResults<const Programs extends readonly AnyProgram[]>(
 
 /** Value-level namespace for lazy Program combinators. */
 export const Program = {
+  named: programNamed,
   all: programAll,
   forEach: programForEach,
   allResults: programAllResults,

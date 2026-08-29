@@ -28,7 +28,22 @@ import { LayerDisposeError, LayerRegistrationError } from './errors'
 
 import { createResolutionResolver } from './resolution'
 
-import { notifyRuntimeObservers, type RuntimeObserver } from '../runtime/observer'
+import { getProgramName } from '../effect/program-metadata'
+import type { ProgramIdentity } from '../effect/program-metadata'
+
+import {
+  makeRuntimeExecutionDependencies,
+  type RuntimeExecutionDependencies,
+  type RuntimeExecutionDependencyOverrides
+} from '../runtime/execution'
+
+import { notifyRuntimeObservers } from '../runtime/observer'
+
+import type {
+  RuntimeExecutionAttributes,
+  RuntimeExecutionMetadata,
+  RuntimeObserver
+} from '../runtime/observer'
 
 import type { LayerBackend } from './backend'
 
@@ -104,6 +119,81 @@ const validateDisposeOptions = (options: RuntimeDisposeOptions): void => {
 
 type ActiveExecution = {
   readonly promise: Promise<unknown>
+}
+
+const copyExecutionAttributes = (
+  attributes: RuntimeExecutionAttributes | undefined
+): RuntimeExecutionAttributes | undefined => {
+  if (attributes === undefined) {
+    return undefined
+  }
+
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate JavaScript callers at the Runtime boundary.
+  if (typeof attributes !== 'object' || attributes === null) {
+    throw new TypeError('Runtime execution attributes must be an object')
+  }
+
+  return Object.freeze({ ...attributes })
+}
+
+type MutableRuntimeExecutionMetadata = {
+  executionId: string
+  startedAt: number
+  name?: string
+  attributes?: RuntimeExecutionAttributes
+}
+
+type PreparedExecution = {
+  readonly metadata: RuntimeExecutionMetadata
+  readonly signalLink: AbortSignalLink
+}
+
+const prepareExecution = <ProgramValue>(
+  program: () => ProgramValue | PromiseLike<ProgramValue>,
+  options: RuntimeRunOptions | undefined,
+  dependencies: RuntimeExecutionDependencies,
+  runtimeSignal: AbortSignal | undefined,
+  shutdownSignal: AbortSignal
+): PreparedExecution => ({
+  metadata: makeExecutionMetadata(program, options?.attributes, dependencies),
+  signalLink: linkAbortSignals(runtimeSignal, options?.signal, shutdownSignal)
+})
+
+const makeExecutionMetadata = (
+  program: ProgramIdentity,
+  attributes: RuntimeExecutionAttributes | undefined,
+  dependencies: RuntimeExecutionDependencies
+): RuntimeExecutionMetadata => {
+  const name = getProgramName(program)
+  const copiedAttributes = copyExecutionAttributes(attributes)
+
+  const metadata: MutableRuntimeExecutionMetadata = {
+    executionId: dependencies.createExecutionId(),
+    startedAt: dependencies.now()
+  }
+
+  if (name !== undefined) {
+    metadata.name = name
+  }
+
+  if (copiedAttributes !== undefined) {
+    metadata.attributes = copiedAttributes
+  }
+
+  return Object.freeze(metadata)
+}
+
+const executionDuration = (
+  metadata: RuntimeExecutionMetadata,
+  dependencies: RuntimeExecutionDependencies
+): number => {
+  try {
+    const elapsed = dependencies.now() - metadata.startedAt
+
+    return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0
+  } catch {
+    return 0
+  }
 }
 
 const notifyShutdownFailure = async (
@@ -260,7 +350,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly contextStorage: RuntimeContextStorage,
     private readonly signal: AbortSignal | undefined,
     private readonly observers: readonly RuntimeObserver[],
-    private readonly services: readonly AnyServiceToken[]
+    private readonly services: readonly AnyServiceToken[],
+    private readonly executionDependencies: RuntimeExecutionDependencies
   ) {}
 
   run<A>(
@@ -269,15 +360,44 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
   ): Promise<Awaited<A>> {
     this.assertActive()
 
-    const executionScope = this.rootScope.fork()
-    const signalLink = linkAbortSignals(
-      this.signal,
-      options?.signal,
-      this.shutdownController.signal
-    )
+    let prepared: PreparedExecution
 
-    return this.startExecution<Awaited<A>>(signalLink, () =>
-      this.runExecution(executionScope, program, this.resolver, signalLink.signal)
+    try {
+      prepared = prepareExecution(
+        program,
+        options,
+        this.executionDependencies,
+        this.signal,
+        this.shutdownController.signal
+      )
+    } catch (cause) {
+      return Promise.reject(cause)
+    }
+
+    try {
+      this.assertActive()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+
+    let executionScope: CloseableScope
+
+    try {
+      executionScope = this.rootScope.fork()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+
+    return this.startExecution<Awaited<A>>(prepared.signalLink, prepared.metadata, () =>
+      this.runExecution(
+        executionScope,
+        program,
+        this.resolver,
+        prepared.signalLink.signal,
+        prepared.metadata
+      )
     )
   }
 
@@ -288,42 +408,70 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
   ): Promise<Awaited<A>> {
     this.assertActive()
 
-    const executionScope = this.rootScope.fork()
+    let prepared: PreparedExecution
+
+    try {
+      prepared = prepareExecution(
+        program,
+        options,
+        this.executionDependencies,
+        this.signal,
+        this.shutdownController.signal
+      )
+    } catch (cause) {
+      return Promise.reject(cause)
+    }
+
+    try {
+      this.assertActive()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+
     const localBackend = new MapLayerBackend()
     const backend = new ExecutionLayerBackend(localBackend, this.backend)
     const resolver = createResolutionResolver(backend, this.contextStorage, this.observers)
-    const signalLink = linkAbortSignals(
-      this.signal,
-      options?.signal,
-      this.shutdownController.signal
-    )
+    let executionScope: CloseableScope
 
-    return this.startExecution<Awaited<A>>(signalLink, async (): Promise<Awaited<A>> => {
-      try {
-        return await this.runExecution<Awaited<A>>(
-          executionScope,
-          async (): Promise<Awaited<A>> => {
-            for (const provider of layer.providers) {
-              backend.register(
-                bindProviderToScope(
-                  provider,
-                  executionScope,
-                  this.contextStorage,
-                  resolver,
-                  this.observers
+    try {
+      executionScope = this.rootScope.fork()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+
+    return this.startExecution<Awaited<A>>(
+      prepared.signalLink,
+      prepared.metadata,
+      async (): Promise<Awaited<A>> => {
+        try {
+          return await this.runExecution<Awaited<A>>(
+            executionScope,
+            async (): Promise<Awaited<A>> => {
+              for (const provider of layer.providers) {
+                backend.register(
+                  bindProviderToScope(
+                    provider,
+                    executionScope,
+                    this.contextStorage,
+                    resolver,
+                    this.observers
+                  )
                 )
-              )
-            }
+              }
 
-            return await program()
-          },
-          resolver,
-          signalLink.signal
-        )
-      } finally {
-        await localBackend.disposeAll()
+              return await program()
+            },
+            resolver,
+            prepared.signalLink.signal,
+            prepared.metadata
+          )
+        } finally {
+          await localBackend.disposeAll()
+        }
       }
-    })
+    )
   }
 
   warmup(): Promise<void> {
@@ -361,7 +509,11 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     return warmup
   }
 
-  private startExecution<A>(signalLink: AbortSignalLink, run: () => PromiseLike<A>): Promise<A> {
+  private startExecution<A>(
+    signalLink: AbortSignalLink,
+    metadata: RuntimeExecutionMetadata,
+    run: (metadata: RuntimeExecutionMetadata) => PromiseLike<A>
+  ): Promise<A> {
     let resolveExecution!: (value: A | PromiseLike<A>) => void
     let rejectExecution!: (cause?: unknown) => void
 
@@ -386,7 +538,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     )
 
     try {
-      const running = run()
+      const running = run(metadata)
 
       void running.then(
         (value) => {
@@ -407,9 +559,10 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     executionScope: CloseableScope,
     program: () => A | PromiseLike<A>,
     resolver: ServiceResolver = this.resolver,
-    signal: AbortSignal = this.shutdownController.signal
+    signal: AbortSignal = this.shutdownController.signal,
+    metadata: RuntimeExecutionMetadata
   ): Promise<Awaited<A>> {
-    let outcome!: ScopeOutcome
+    let outcome: ScopeOutcome | undefined
     const onOutcome = (determinedOutcome: ScopeOutcome): void => {
       outcome = determinedOutcome
     }
@@ -424,29 +577,61 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           onOutcome
         }
 
-    notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionStart, {
+    const startEvent = Object.freeze({
+      ...metadata,
       scope: executionScope
     })
+    notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionStart, startEvent)
 
-    const execution = runScoped(executionScope, program, {
-      ...runOptions,
-      contextStorage: this.contextStorage,
-      context: makeRuntimeContext(resolver, executionScope, [], signal)
-    })
+    let ended = false
+    const notifyEnd = (finalOutcome: ScopeOutcome): void => {
+      if (ended) {
+        return
+      }
+
+      ended = true
+      const endEvent = Object.freeze({
+        ...metadata,
+        scope: executionScope,
+        outcome: finalOutcome,
+        durationMs: executionDuration(metadata, this.executionDependencies)
+      })
+      notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, endEvent)
+    }
+
+    let execution: Promise<Awaited<A>>
+
+    try {
+      execution = runScoped(executionScope, program, {
+        ...runOptions,
+        contextStorage: this.contextStorage,
+        context: makeRuntimeContext(resolver, executionScope, [], signal)
+      })
+    } catch (cause) {
+      const failure: ScopeOutcome = {
+        status: 'failure',
+        cause
+      }
+      notifyEnd(failure)
+      return Promise.reject(cause)
+    }
 
     return execution.then(
       (value) => {
-        notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, {
-          scope: executionScope,
-          outcome
-        })
+        notifyEnd(
+          outcome ?? {
+            status: 'success'
+          }
+        )
         return value
       },
       (cause) => {
-        notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, {
-          scope: executionScope,
-          outcome
-        })
+        notifyEnd(
+          outcome ?? {
+            status: 'failure',
+            cause
+          }
+        )
         throw cause
       }
     )
@@ -560,12 +745,14 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 export const createRuntimeHandle = async <L extends LayerInput>(
   layer: L & CompleteInput<L>,
   backend: LayerBackend,
-  options: RuntimeOptions = {}
+  options: RuntimeOptions = {},
+  executionOverrides: RuntimeExecutionDependencyOverrides = {}
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const rootScope = Scope.make()
   const contextStorage = options.contextStorage ?? defaultRuntimeContextStorage
   const observers = options.observers ?? []
   const resolver = createResolutionResolver(backend, contextStorage, observers)
+  const executionDependencies = makeRuntimeExecutionDependencies(executionOverrides)
   ScopeRuntime.bind(rootScope, contextStorage)
   let current: LayerProvider | undefined
 
@@ -627,6 +814,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     contextStorage,
     options.signal,
     observers,
-    layer.providers.map((provider) => provider.service)
+    layer.providers.map((provider) => provider.service),
+    executionDependencies
   )
 }

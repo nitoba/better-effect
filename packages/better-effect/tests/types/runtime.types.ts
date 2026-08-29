@@ -16,6 +16,8 @@ import {
   Runtime,
   type RuntimeContext,
   type RuntimeDisposeOptions,
+  type RuntimeExecutionAttributes,
+  type RuntimeExecutionMetadata,
   type RuntimeFor,
   type RuntimeObserver,
   type RuntimeOptions,
@@ -91,9 +93,15 @@ const runtimeObserver: RuntimeObserver = {
   },
   onExecutionStart: (event) => {
     expectTypeOf(event.scope).toEqualTypeOf<Scope>()
+    expectTypeOf(event.executionId).toEqualTypeOf<string>()
+    expectTypeOf(event.name).toEqualTypeOf<string | undefined>()
+    expectTypeOf(event.attributes).toEqualTypeOf<RuntimeExecutionAttributes | undefined>()
+    expectTypeOf(event.startedAt).toEqualTypeOf<number>()
   },
   onExecutionEnd: (event) => {
     expectTypeOf(event.outcome).toMatchTypeOf<ScopeOutcome>()
+    expectTypeOf(event.executionId).toEqualTypeOf<string>()
+    expectTypeOf(event.durationMs).toEqualTypeOf<number>()
   },
   onResourceRelease: (event) => {
     expectTypeOf(event.service).toEqualTypeOf<AnyServiceToken>()
@@ -111,6 +119,9 @@ expectTypeOf<Awaited<typeof defaultRuntimePromise>>().toEqualTypeOf<Runtime<Data
 expectTypeOf<Awaited<typeof configuredRuntimePromise>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf(warmupOptions).toEqualTypeOf<RuntimeOptions>()
+expectTypeOf<RuntimeExecutionMetadata['attributes']>().toEqualTypeOf<
+  RuntimeExecutionAttributes | undefined
+>()
 
 const requiresDatabaseAndLogger = () =>
   Effect.gen(async function* () {
@@ -154,12 +165,18 @@ declare const emptyRuntime: Runtime<never>
 declare const emptyHandle: RuntimeHandle<never>
 
 const managedResult = typedRuntime.run(requiresDatabaseAndLogger)
+const managedMetadataResult = typedRuntime.run(requiresDatabaseAndLogger, {
+  attributes: { requestId: 'request-1' }
+})
 const managedCancellationResult = typedRuntime.run(readsAbortSignal, {
   signal: new AbortController().signal
 })
 const builtResult = typedBuiltLayer.run(requiresDatabaseAndLogger)
 const oneShotResult = Runtime.run(AppLive, backend, requiresDatabaseAndLogger)
 const defaultOneShotResult = Runtime.run(AppLive, requiresDatabaseAndLogger)
+const oneShotMetadataResult = Runtime.run(AppLive, requiresDatabaseAndLogger, {
+  attributes: { requestId: 'request-2' }
+})
 const oneShotCancellationResult = Runtime.run(AppLive, readsAbortSignal, {
   signal: new AbortController().signal
 })
@@ -184,11 +201,13 @@ const explicitlyTypedOneShot = Runtime.run<CompleteProgram, typeof AppLive>(
 )
 
 expectTypeOf(managedResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(managedMetadataResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(managedCancellationResult).toEqualTypeOf<
   Promise<Awaited<ReturnType<typeof readsAbortSignal>>>
 >()
 expectTypeOf(builtResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(oneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(oneShotMetadataResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(defaultOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(oneShotCancellationResult).toEqualTypeOf<
   Promise<Awaited<ReturnType<typeof readsAbortSignal>>>
@@ -211,6 +230,8 @@ void typedRuntime.dispose(disposeOptions)
 
 // @ts-expect-error Logger is not supplied by this managed Runtime.
 void databaseRuntime.run(requiresDatabaseAndLogger)
+// @ts-expect-error Optional execution attributes must not weaken requirement checks.
+void databaseRuntime.run(requiresDatabaseAndLogger, { attributes: { requestId: 'missing' } })
 
 // @ts-expect-error Logger is not supplied by this RuntimeHandle.
 void databaseHandle.run(requiresDatabaseAndLogger)

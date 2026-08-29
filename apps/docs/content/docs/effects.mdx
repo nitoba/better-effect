@@ -45,6 +45,33 @@ nominal `Program<A, E, R>` function whose invocation produces an `Effect` (or a
 Promise of one), preserving the generator's success, error and Service
 requirements. Runtime callbacks remain supported for compatibility.
 
+Name a Program lazily for runtime diagnostics. `Program.named` is data-first or
+pipe-compatible and never invokes the source:
+
+```ts
+const loadUser = pipe(findUser(userId), Program.named('user.load'))
+
+const result = await runtime.run(loadUser, {
+  attributes: { userId, requestId }
+})
+```
+
+Names are preserved by the single-source `Program` transformations (`map`,
+`mapError`, `andThen`, `tap`, `tapError`, and `recover`); a later
+`Program.named` overrides the source name. Collection Programs use only their
+optional collection name, rather than concatenating child names:
+
+```ts
+const loadUsers = Program.all(userPrograms, {
+  concurrency: 8,
+  name: 'users.load'
+})
+```
+
+Execution attributes are copied into readonly observer metadata. The library
+does not serialize or inspect them automatically; do not attach secrets, large
+mutable objects, or sensitive values intended for logs or metric labels.
+
 ## `Effect.gen`
 
 Use a generator when a workflow has multiple steps or contextual dependencies:

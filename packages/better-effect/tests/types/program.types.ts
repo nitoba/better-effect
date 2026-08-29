@@ -42,6 +42,11 @@ expectTypeOf<Effect.Error<typeof greet>>().toEqualTypeOf<never>()
 expectTypeOf<Effect.Requirements<typeof greet>>().toEqualTypeOf<GreetingService>()
 expectTypeOf<EffectRequirements<typeof greet>>().toEqualTypeOf<GreetingService>()
 
+const namedGreet = Program.named('greeting.load', greet)
+const pipedNamedGreet = pipe(greet, Program.named('greeting.load.piped'))
+expectTypeOf(namedGreet).toEqualTypeOf<Program<string, never, GreetingService>>()
+expectTypeOf(pipedNamedGreet).toEqualTypeOf<Program<string, never, GreetingService>>()
+
 const findUser = (id: string) =>
   Effect.fn(async function* () {
     const repository = yield* UserRepository
@@ -126,8 +131,13 @@ declare const emptyRuntime: Runtime<never>
 const backend = new MemoryLayerBackend()
 const runtimePromise = Runtime.make(GreetingLive, backend)
 const oneShotResult = Runtime.run(GreetingLive, backend, greet)
+const namedRunOptions = {
+  attributes: { requestId: 'request-1' }
+} satisfies import('../../src/runtime').RuntimeRunOptions
+const namedOneShotResult = Runtime.run(GreetingLive, backend, namedGreet, namedRunOptions)
 
 expectTypeOf(oneShotResult).toEqualTypeOf<Promise<ProgramResult>>()
+expectTypeOf(namedOneShotResult).toEqualTypeOf<Promise<ProgramResult>>()
 
 const EmptyLive = Layer.merge()
 

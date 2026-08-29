@@ -20,6 +20,7 @@ test('exposes Runtime as the managed Layer entry point', () => {
   expect(BetterEffect.Effect.tapBothAsync).toBeDefined()
   expect(BetterEffect.Effect.matchError).toBeDefined()
   expect(BetterEffect.Effect.matchErrorPartial).toBeDefined()
+  expect(BetterEffect.Program.named).toBeDefined()
   expect(BetterEffect.Program.all).toBeDefined()
   expect(BetterEffect.Program.forEach).toBeDefined()
   expect(BetterEffect.Program.allResults).toBeDefined()
