@@ -5,16 +5,20 @@ if (!runtimeEntry || !coreEntry) {
   throw new Error('NodeRuntime child entries are required')
 }
 
+const resultEntry = process.env.BETTER_EFFECT_RESULT_ENTRY ?? 'better-result'
+
 const [{ NodeRuntime }, core, { Result }] = await Promise.all([
   import(runtimeEntry),
   import(coreEntry),
-  import('better-result')
+  import(resultEntry)
 ])
 
-const { CurrentAbortSignal, Effect, Layer, Service, ServiceRuntime } = core
+const { CurrentAbortSignal, Effect, Layer, MapLayerBackend, Service, ServiceRuntime } = core
 const scenario = process.argv[2]
 const keepAlive =
-  scenario === 'signal' || scenario === 'signal-error' ? setInterval(() => {}, 1_000) : undefined
+  scenario === 'signal' || scenario === 'signal-error' || scenario === 'repeated-signal'
+    ? setInterval(() => {}, 1_000)
+    : undefined
 let processExitCalled = false
 const originalExit = process.exit
 
@@ -214,6 +218,51 @@ try {
       status: result.status,
       reason: result.value,
       released,
+      sigintListeners: process.listenerCount('SIGINT'),
+      sigtermListeners: process.listenerCount('SIGTERM'),
+      exitCode: process.exitCode ?? null
+    })
+  } else if (scenario === 'repeated-signal') {
+    let released = 0
+    let backendDisposals = 0
+    const backend = new MapLayerBackend()
+    const disposeAll = backend.disposeAll.bind(backend)
+    backend.disposeAll = async (...args) => {
+      backendDisposals += 1
+      return await disposeAll(...args)
+    }
+    const result = await NodeRuntime.runMain(
+      makeLayer(() => {
+        released += 1
+      }),
+      backend,
+      Effect.fn(async function* () {
+        await ServiceRuntime.resolve(ChildService)
+        const signal = yield* CurrentAbortSignal
+        process.stdout.write('READY\n')
+        await new Promise((resolve) => {
+          const finish = () => {
+            process.stdout.write('ABORT_ACK\n')
+            setTimeout(resolve, 100)
+          }
+
+          if (signal.aborted) {
+            finish()
+          } else {
+            signal.addEventListener('abort', finish, { once: true })
+          }
+        })
+        return Result.ok(signal.reason)
+      }),
+      { signals: ['SIGINT', 'SIGTERM'], onSuccess: () => 0 }
+    )
+
+    print({
+      kind: 'repeated-signal',
+      status: result.status,
+      reason: result.value,
+      released,
+      backendDisposals,
       sigintListeners: process.listenerCount('SIGINT'),
       sigtermListeners: process.listenerCount('SIGTERM'),
       exitCode: process.exitCode ?? null

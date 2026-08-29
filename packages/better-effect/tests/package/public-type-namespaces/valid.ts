@@ -230,6 +230,25 @@ const nodeRuntimeResult = NodeRuntime.runMain(
 )
 void nodeRuntimeResult
 
+const mixedNodeMain = () => (Math.random() > 0.5 ? 42 : Result.ok('mixed-node-main'))
+const mixedNodeRuntimeResult = NodeRuntime.runMain(Layer.empty, mixedNodeMain, {
+  onSuccess: (value) => {
+    const exact: string | number = value
+    void exact
+    return 0
+  }
+})
+void mixedNodeRuntimeResult
+
+// @ts-expect-error A mixed plain/Result main must not accept a string-only success handler.
+void NodeRuntime.runMain(Layer.empty, mixedNodeMain, {
+  onSuccess: (value: string) => value.length
+})
+
+// @ts-expect-error NodeRuntime has no separate grace-period cancellation policy.
+const removedNodeGraceOptions: NodeRuntimeOptions = { gracePeriod: 5_000 }
+void removedNodeGraceOptions
+
 const DatabaseLive = Layer.succeed(Database, new Database())
 const nativeBackend = new MapLayerBackend()
 declare const contextStorage: RuntimeContextStorage

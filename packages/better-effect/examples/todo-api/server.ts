@@ -1,6 +1,6 @@
-import { Result } from 'better-result'
+import { Err, Result } from 'better-result'
 
-import { Effect, type Runtime } from './better-effect'
+import { Effect, Scope, ServiceRuntime, type Runtime, type ScopeOutcome } from './better-effect'
 import {
   readJson,
   requireUser,
@@ -16,10 +16,58 @@ import type { AppLive } from './layers/app-live'
 
 type AppRuntime = Runtime.For<typeof AppLive>
 
-export const createServer = (runtimeInput: AppRuntime, signal?: AbortSignal) => {
-  const runWithSignal: AppRuntime['run'] = (program) =>
-    signal === undefined ? runtimeInput.run(program) : runtimeInput.run(program, { signal })
-  const runtime: Pick<AppRuntime, 'run'> = { run: runWithSignal }
+type AppResolver = ReturnType<typeof ServiceRuntime.current>
+
+const runInRequestScope = async <A>(
+  resolver: AppResolver,
+  parentScope: Scope,
+  program: () => A | PromiseLike<A>
+): Promise<Awaited<A>> => {
+  const requestScope = parentScope.fork()
+  let value!: Awaited<A>
+  let programFailed = false
+  let programFailure: unknown
+  let outcome: ScopeOutcome = { status: 'failure', cause: undefined }
+  let outcomeStatus: ScopeOutcome['status'] = 'failure'
+
+  try {
+    value = await Scope.provide(requestScope, () => ServiceRuntime.run(resolver, program))
+    outcome =
+      value instanceof Err ? { status: 'failure', cause: value.error } : { status: 'success' }
+    outcomeStatus = outcome.status
+  } catch (cause) {
+    programFailed = true
+    programFailure = cause
+    outcome = { status: 'failure', cause }
+  }
+
+  let cleanupFailure: unknown
+
+  try {
+    await requestScope.close(outcome)
+  } catch (cause) {
+    cleanupFailure = cause
+  }
+
+  if (programFailed) {
+    throw programFailure
+  }
+
+  if (outcomeStatus === 'failure') {
+    return value
+  }
+
+  if (cleanupFailure !== undefined) {
+    throw cleanupFailure
+  }
+
+  return value
+}
+
+export const createServer = (resolver: AppResolver, parentScope: Scope) => {
+  const runtime: Pick<AppRuntime, 'run'> = {
+    run: (program) => runInRequestScope(resolver, parentScope, program)
+  }
 
   return Bun.serve({
     port: Number(process.env.PORT ?? 3333),

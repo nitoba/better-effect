@@ -106,7 +106,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run quality gates
+      - name: Run quality gates (including fresh packed NodeRuntime child tests)
         run: bun run check
 
       - name: Inspect packed package and run consumer smoke test

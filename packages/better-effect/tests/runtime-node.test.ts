@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -12,6 +11,7 @@ type ChildData = {
   readonly firstStatus?: string
   readonly secondStatus?: string
   readonly released?: number
+  readonly backendDisposals?: number
   readonly sameError?: boolean
   readonly caught?: boolean
   readonly sameDefect?: boolean
@@ -36,32 +36,46 @@ type ChildTarget = {
   readonly command: string
   readonly runtimeEntry: string
   readonly coreEntry: string
+  readonly resultEntry?: string
 }
 
 const packageRoot = resolve(fileURLToPath(new URL('../', import.meta.url)))
 const childScript = resolve(packageRoot, 'tests/helpers/node-runtime-child.mjs')
 const sourceRuntimeEntry = pathToFileURL(resolve(packageRoot, 'src/node.ts')).href
 const sourceCoreEntry = pathToFileURL(resolve(packageRoot, 'src/index.ts')).href
-const distRuntimePath = resolve(packageRoot, 'dist/node.mjs')
-const distCorePath = resolve(packageRoot, 'dist/index.mjs')
+const packedRuntimeEntry = process.env.BETTER_EFFECT_NODE_RUNTIME_ENTRY
+const packedCoreEntry = process.env.BETTER_EFFECT_NODE_CORE_ENTRY
+const packedResultEntry = process.env.BETTER_EFFECT_RESULT_ENTRY
+
+if (
+  new Set(
+    [packedRuntimeEntry, packedCoreEntry, packedResultEntry].map((entry) => entry !== undefined)
+  ).size > 1
+) {
+  throw new Error('Packed NodeRuntime test entries must be provided together')
+}
+
+const packedNodeTarget: ChildTarget | undefined =
+  packedRuntimeEntry !== undefined &&
+  packedCoreEntry !== undefined &&
+  packedResultEntry !== undefined
+    ? {
+        name: 'Node (fresh packed package)',
+        command: 'node',
+        runtimeEntry: packedRuntimeEntry,
+        coreEntry: packedCoreEntry,
+        resultEntry: packedResultEntry
+      }
+    : undefined
 
 const targets: readonly ChildTarget[] = [
   {
-    name: 'Bun',
+    name: 'Bun (source)',
     command: process.execPath,
     runtimeEntry: sourceRuntimeEntry,
     coreEntry: sourceCoreEntry
   },
-  ...(existsSync(distRuntimePath)
-    ? [
-        {
-          name: 'Node',
-          command: 'node',
-          runtimeEntry: pathToFileURL(distRuntimePath).href,
-          coreEntry: pathToFileURL(distCorePath).href
-        }
-      ]
-    : [])
+  ...(packedNodeTarget === undefined ? [] : [packedNodeTarget])
 ]
 
 const readChildResult = (output: string): ChildData => {
@@ -79,18 +93,31 @@ const readChildResult = (output: string): ChildData => {
   return JSON.parse(line) as ChildData
 }
 
+type ProcessSignal = 'SIGINT' | 'SIGTERM'
+
+const hasLine = (output: string, line: string): boolean =>
+  output.trim().split(/\r?\n/).includes(line)
+
 const runChild = async (
   target: ChildTarget,
   scenario: string,
-  signal?: 'SIGINT' | 'SIGTERM'
+  signals: readonly ProcessSignal[] = []
 ): Promise<ChildResult> => {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    BETTER_EFFECT_RUNTIME_ENTRY: target.runtimeEntry,
+    BETTER_EFFECT_CORE_ENTRY: target.coreEntry
+  }
+
+  if (target.resultEntry === undefined) {
+    delete environment.BETTER_EFFECT_RESULT_ENTRY
+  } else {
+    environment.BETTER_EFFECT_RESULT_ENTRY = target.resultEntry
+  }
+
   const child = spawn(target.command, [childScript, scenario], {
     cwd: packageRoot,
-    env: {
-      ...process.env,
-      BETTER_EFFECT_RUNTIME_ENTRY: target.runtimeEntry,
-      BETTER_EFFECT_CORE_ENTRY: target.coreEntry
-    },
+    env: environment,
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -108,11 +135,35 @@ const runChild = async (
     rejectReady = rejectPromise
   })
 
+  const waitForLine = (line: string): Promise<void> => {
+    if (hasLine(output, line)) {
+      return Promise.resolve()
+    }
+
+    return new Promise<void>((resolveLine, rejectLine) => {
+      const timeout = setTimeout(() => {
+        child.stdout?.off('data', onData)
+        rejectLine(new Error(`NodeRuntime child did not emit ${line}:\n${output}`))
+      }, 5_000)
+      const onData = (): void => {
+        if (!hasLine(output, line)) {
+          return
+        }
+
+        clearTimeout(timeout)
+        child.stdout?.off('data', onData)
+        resolveLine()
+      }
+
+      child.stdout?.on('data', onData)
+    })
+  }
+
   child.stdout.setEncoding('utf8')
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', (chunk: string) => {
     output += chunk
-    if (!ready && output.split(/\r?\n/).includes('READY')) {
+    if (!ready && hasLine(output, 'READY')) {
       ready = true
       resolveReady()
     }
@@ -126,13 +177,17 @@ const runChild = async (
     }
   })
 
-  if (signal) {
+  if (signals.length > 0) {
     const readyTimeout = setTimeout(() => {
       rejectReady(new Error(`NodeRuntime child did not become ready:\n${errorOutput}`))
     }, 5_000)
     await readyPromise.finally(() => clearTimeout(readyTimeout))
-    child.kill(signal)
-    child.kill(signal)
+    child.kill(signals[0]!)
+
+    if (scenario === 'repeated-signal') {
+      await waitForLine('ABORT_ACK')
+      child.kill(signals[1]!)
+    }
   }
 
   const result = await new Promise<{ code: number | null; signal: string | null }>(
@@ -266,7 +321,7 @@ for (const target of targets) {
 
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       test(`aborts and disposes exactly once on ${signal}`, async () => {
-        const result = await runChild(target, 'signal', signal)
+        const result = await runChild(target, 'signal', [signal])
 
         expect(result.code).toBe(0)
         expect(result.signal).toBeNull()
@@ -282,7 +337,7 @@ for (const target of targets) {
     }
 
     test('preserves a typed error returned while handling a signal', async () => {
-      const result = await runChild(target, 'signal-error', 'SIGTERM')
+      const result = await runChild(target, 'signal-error', ['SIGTERM'])
 
       expect(result.code).toBe(7)
       expect(result.signal).toBeNull()
@@ -291,6 +346,22 @@ for (const target of targets) {
         status: 'error',
         sameError: true,
         exitCode: 7
+      })
+      expectNoProcessExit(result)
+    })
+
+    test('ignores a second signal after the first one is acknowledged', async () => {
+      const result = await runChild(target, 'repeated-signal', ['SIGINT', 'SIGTERM'])
+
+      expect(result.code).toBe(0)
+      expect(result.signal).toBeNull()
+      expect(result.data).toMatchObject({
+        kind: 'repeated-signal',
+        status: 'ok',
+        reason: 'SIGINT',
+        released: 1,
+        backendDisposals: 1,
+        exitCode: 0
       })
       expectNoProcessExit(result)
     })

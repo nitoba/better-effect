@@ -11,3 +11,5 @@ export {
 
 export { NodeRuntime } from '../../src/node'
 export { ItiLayerBackend } from '../../src/adapters/iti'
+
+export type { ScopeOutcome } from '../../src/index'

@@ -13,49 +13,12 @@ import type {
 import { Runtime } from './runtime'
 import { linkAbortSignals } from './signal'
 
-import type { RuntimeDisposeOptions, RuntimeOptions } from './outcome'
+import type { RuntimeOptions } from './outcome'
 import type { RuntimeExecutionEndEvent, RuntimeObserver } from './observer'
 import type { ScopeOutcome } from '../scope'
 
-/** A Node.js/Bun process signal name; uncatchable signals are rejected at runtime. */
-export type NodeRuntimeSignal =
-  | 'SIGABRT'
-  | 'SIGALRM'
-  | 'SIGBUS'
-  | 'SIGCHLD'
-  | 'SIGCONT'
-  | 'SIGFPE'
-  | 'SIGHUP'
-  | 'SIGILL'
-  | 'SIGINT'
-  | 'SIGIO'
-  | 'SIGIOT'
-  | 'SIGKILL'
-  | 'SIGPIPE'
-  | 'SIGPOLL'
-  | 'SIGPROF'
-  | 'SIGPWR'
-  | 'SIGQUIT'
-  | 'SIGSEGV'
-  | 'SIGSTKFLT'
-  | 'SIGSYS'
-  | 'SIGSTOP'
-  | 'SIGTERM'
-  | 'SIGTRAP'
-  | 'SIGTSTP'
-  | 'SIGTTIN'
-  | 'SIGTTOU'
-  | 'SIGUNUSED'
-  | 'SIGURG'
-  | 'SIGUSR1'
-  | 'SIGUSR2'
-  | 'SIGVTALRM'
-  | 'SIGWINCH'
-  | 'SIGXCPU'
-  | 'SIGXFSZ'
-  | 'SIGBREAK'
-  | 'SIGLOST'
-  | 'SIGINFO'
+/** Process signals supported by the Node.js/Bun process boundary. */
+export type NodeRuntimeSignal = 'SIGINT' | 'SIGTERM'
 
 /** Translate a successful main result to a process exit code. */
 export type NodeRuntimeSuccessHandler<Success> = (value: Success) => number
@@ -70,10 +33,6 @@ export type NodeRuntimeDefectHandler = (cause: unknown) => number | void
 export type NodeRuntimeOptions<Success = unknown, Failure = unknown> = RuntimeOptions & {
   /** Process signals that request cooperative shutdown. Defaults to SIGINT and SIGTERM. */
   readonly signals?: readonly NodeRuntimeSignal[]
-  /** Time to let the main execution settle before Runtime requests cancellation. */
-  readonly gracePeriod?: number
-  /** Request cancellation after `gracePeriod` while disposing the Runtime. */
-  readonly abortAfterGracePeriod?: boolean
   /** Map a nominal Result.ok value, or a plain successful value, to an exit code. */
   readonly onSuccess?: NodeRuntimeSuccessHandler<Success>
   /** Map a nominal Result.err error to an exit code. */
@@ -82,58 +41,17 @@ export type NodeRuntimeOptions<Success = unknown, Failure = unknown> = RuntimeOp
   readonly onDefect?: NodeRuntimeDefectHandler
 }
 
-type MainSuccess<Value> = [EffectSuccess<Value>] extends [never]
-  ? Awaited<Value> extends ResultType<any, any>
-    ? never
-    : Awaited<Value>
-  : EffectSuccess<Value>
+type NonResultMainSuccess<Value> = Value extends ResultType<any, any> ? never : Value
+
+type PlainMainSuccess<Value> = NonResultMainSuccess<Awaited<Value>>
+
+type MainSuccess<Value> = EffectSuccess<Value> | PlainMainSuccess<Value>
 
 type MainFailure<Value> = EffectError<Value>
 
 type MainOptions<Value> = NodeRuntimeOptions<MainSuccess<Value>, MainFailure<Value>>
 
 const DEFAULT_SIGNALS = ['SIGINT', 'SIGTERM'] as const satisfies readonly NodeRuntimeSignal[]
-
-// SIGKILL and SIGSTOP cannot be intercepted by a process listener. The other
-// names are accepted by Node's signal API, although the host may still reject
-// a signal unavailable on the current platform while installing it.
-const CATCHABLE_SIGNALS: ReadonlySet<string> = new Set([
-  'SIGABRT',
-  'SIGALRM',
-  'SIGBUS',
-  'SIGCHLD',
-  'SIGCONT',
-  'SIGFPE',
-  'SIGHUP',
-  'SIGILL',
-  'SIGINT',
-  'SIGIO',
-  'SIGIOT',
-  'SIGPIPE',
-  'SIGPOLL',
-  'SIGPROF',
-  'SIGPWR',
-  'SIGQUIT',
-  'SIGSEGV',
-  'SIGSTKFLT',
-  'SIGSYS',
-  'SIGTERM',
-  'SIGTRAP',
-  'SIGTSTP',
-  'SIGTTIN',
-  'SIGTTOU',
-  'SIGURG',
-  'SIGUSR1',
-  'SIGUSR2',
-  'SIGVTALRM',
-  'SIGWINCH',
-  'SIGBREAK',
-  'SIGUNUSED',
-  'SIGLOST',
-  'SIGXCPU',
-  'SIGXFSZ',
-  'SIGINFO'
-])
 
 type InstalledSignalListener = {
   readonly signal: NodeRuntimeSignal
@@ -205,30 +123,15 @@ const validateSignals = <Success, Failure>(
 
   for (const signal of signals ?? DEFAULT_SIGNALS) {
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate untyped options before process.on receives them.
-    if (typeof signal !== 'string' || !CATCHABLE_SIGNALS.has(signal)) {
+    if (typeof signal !== 'string' || (signal !== 'SIGINT' && signal !== 'SIGTERM')) {
       throw new RangeError(`NodeRuntime signal "${String(signal)}" is not supported`)
     }
   }
 }
 
-const validateLifecycleOptions = <Success, Failure>(
+const validateRuntimeOptions = <Success, Failure>(
   options: NodeRuntimeOptions<Success, Failure>
 ): void => {
-  if (
-    options.gracePeriod !== undefined &&
-    (!Number.isFinite(options.gracePeriod) || options.gracePeriod < 0)
-  ) {
-    throw new RangeError('Runtime dispose gracePeriod must be a finite non-negative number')
-  }
-
-  if (
-    options.abortAfterGracePeriod !== undefined &&
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate untyped options before Runtime.dispose receives them.
-    typeof options.abortAfterGracePeriod !== 'boolean'
-  ) {
-    throw new TypeError('NodeRuntime abortAfterGracePeriod must be a boolean')
-  }
-
   if (options.signal !== undefined && !isAbortSignal(options.signal)) {
     throw new TypeError('NodeRuntime signal must be an AbortSignal')
   }
@@ -260,7 +163,7 @@ const validateCallbacks = <Success, Failure>(
 
 const validateOptions = <Success, Failure>(options: NodeRuntimeOptions<Success, Failure>): void => {
   validateSignals(options.signals)
-  validateLifecycleOptions(options)
+  validateRuntimeOptions(options)
   validateCallbacks(options)
 
   if (options.observers !== undefined && !Array.isArray(options.observers)) {
@@ -278,28 +181,6 @@ const normalizeSignals = (
   }
 
   return [...unique]
-}
-
-type MutableDisposeOptions = {
-  gracePeriod?: number
-  abortAfterGracePeriod?: boolean
-}
-
-const makeDisposeOptions = (
-  gracePeriod: number | undefined,
-  abortAfterGracePeriod: boolean | undefined
-): RuntimeDisposeOptions => {
-  const options: MutableDisposeOptions = {}
-
-  if (gracePeriod !== undefined) {
-    options.gracePeriod = gracePeriod
-  }
-
-  if (abortAfterGracePeriod !== undefined) {
-    options.abortAfterGracePeriod = abortAfterGracePeriod
-  }
-
-  return options
 }
 
 const removeSignalListeners = (listeners: InstalledSignalListener[]): readonly unknown[] => {
@@ -429,8 +310,6 @@ export class NodeRuntime {
     const shutdownController = new AbortController()
     const configuredSignals = normalizeSignals(normalizedOptions.signals)
     const {
-      gracePeriod,
-      abortAfterGracePeriod,
       onSuccess,
       onFailure,
       onDefect,
@@ -440,7 +319,6 @@ export class NodeRuntime {
     const signalLink = linkAbortSignals(callerSignal, shutdownController.signal)
     const listeners: InstalledSignalListener[] = []
     const cleanupFailures: unknown[] = []
-    const disposeOptions = makeDisposeOptions(gracePeriod, abortAfterGracePeriod)
 
     let runtime: Runtime<ProvidedEnvironment<L>> | undefined
     let disposalPromise: Promise<void> | undefined
@@ -461,7 +339,7 @@ export class NodeRuntime {
       }
 
       try {
-        disposalPromise = runtime!.dispose(disposeOptions)
+        disposalPromise = runtime!.dispose()
       } catch (cause) {
         disposalPromise = Promise.reject(cause)
       }
