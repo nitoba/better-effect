@@ -50,6 +50,7 @@ import {
   tapError as programTapError
 } from './program-combinators'
 import {
+  firstProgramDefect,
   firstProgramFailure,
   runProgramCollection,
   validateProgramConcurrency
@@ -172,7 +173,7 @@ const runShortCircuitingCollection = async (
     concurrency,
     stopOnResultError: true
   })
-  const failure = firstProgramFailure(outcome.failures)
+  const failure = firstProgramFailure(outcome.results, outcome.defects)
 
   if (failure?.kind === 'defect') {
     throw failure.cause
@@ -195,13 +196,13 @@ const runAllResultsCollection = async (
     concurrency,
     stopOnResultError: false
   })
-  const failure = firstProgramFailure(outcome.failures)
+  const defect = firstProgramDefect(outcome.defects)
 
-  if (failure?.kind === 'defect') {
-    throw failure.cause
+  if (defect !== undefined) {
+    throw defect.cause
   }
 
-  // SAFETY: The scheduler records each successful Result object at its input index.
+  // SAFETY: The scheduler records each Result object at its input index.
   return Result.ok(outcome.results as AnyResult[])
 }
 

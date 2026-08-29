@@ -4,13 +4,15 @@ import type { Result as ResultType } from 'better-result'
 
 type AnyResult = ResultType<any, any>
 
-export type ProgramCollectionFailure =
+type ProgramCollectionFailure =
   | { readonly kind: 'result'; readonly result: AnyResult }
   | { readonly kind: 'defect'; readonly cause: unknown }
 
-export type ProgramCollectionOutcome = {
+type ProgramCollectionDefect = { readonly cause: unknown }
+
+type ProgramCollectionOutcome = {
   readonly results: Array<AnyResult | undefined>
-  readonly failures: Array<ProgramCollectionFailure | undefined>
+  readonly defects: Array<ProgramCollectionDefect | undefined>
 }
 
 export type ProgramCollectionOptions = {
@@ -24,7 +26,7 @@ type SchedulerState = {
   nextIndex: number
   stopScheduling: boolean
   readonly results: Array<AnyResult | undefined>
-  readonly failures: Array<ProgramCollectionFailure | undefined>
+  readonly defects: Array<ProgramCollectionDefect | undefined>
 }
 
 /** Validate the shared bounded-concurrency option before a Program is run. */
@@ -55,11 +57,10 @@ const runWorker = async (
       state.results[index] = result
 
       if (result instanceof Err) {
-        state.failures[index] = { kind: 'result', result }
         state.stopScheduling ||= stopOnResultError
       }
     } catch (cause) {
-      state.failures[index] = { kind: 'defect', cause }
+      state.defects[index] = { cause }
       state.stopScheduling = true
     }
   }
@@ -75,7 +76,7 @@ export const runProgramCollection = async (
     nextIndex: 0,
     stopScheduling: false,
     results: Array.from({ length }),
-    failures: Array.from({ length })
+    defects: Array.from({ length })
   }
   const workerCount = Math.min(options.concurrency ?? length, length)
   const workers = Array.from({ length: workerCount }, () =>
@@ -87,13 +88,35 @@ export const runProgramCollection = async (
   return state
 }
 
-/** Select the first failure by input index, independent of settlement order. */
+/** Select the first defect by input index, independent of settlement order. */
+export const firstProgramDefect = (
+  defects: readonly (ProgramCollectionDefect | undefined)[]
+): ProgramCollectionDefect | undefined => {
+  for (const defect of defects) {
+    if (defect !== undefined) {
+      return defect
+    }
+  }
+
+  return undefined
+}
+
+/** Select the first short-circuiting failure by input index. */
 export const firstProgramFailure = (
-  failures: readonly (ProgramCollectionFailure | undefined)[]
+  results: readonly (AnyResult | undefined)[],
+  defects: readonly (ProgramCollectionDefect | undefined)[]
 ): ProgramCollectionFailure | undefined => {
-  for (const failure of failures) {
-    if (failure !== undefined) {
-      return failure
+  const length = Math.max(results.length, defects.length)
+
+  for (let index = 0; index < length; index++) {
+    const defect = defects[index]
+    if (defect !== undefined) {
+      return { kind: 'defect', cause: defect.cause }
+    }
+
+    const result = results[index]
+    if (result instanceof Err) {
+      return { kind: 'result', result }
     }
   }
 

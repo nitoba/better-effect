@@ -92,6 +92,7 @@ test('Program.allResults collects typed errors and preserves exact child Results
 
   const result = await Program.allResults(programs, { concurrency: 2 })()
 
+  expectResult(result, Result.ok([first, second, third]))
   expect(Result.isError(result)).toBe(false)
   if (!Result.isError(result)) {
     expect(result.value).toHaveLength(3)
@@ -100,6 +101,120 @@ test('Program.allResults collects typed errors and preserves exact child Results
     expect(Object.is(result.value[2], third)).toBe(true)
   }
   expect(started).toBe(3)
+})
+
+test('Program.allResults rejects a later defect after a typed Err', async () => {
+  const typedFailure = Result.err<number, 'typed'>('typed')
+  const laterDefect = new Error('later defect')
+  const programs = [
+    Effect.fn(function* () {
+      yield* []
+      return typedFailure
+    }),
+    Effect.fn(async function* () {
+      yield* []
+      await Promise.resolve()
+      throw laterDefect
+    })
+  ] as const
+
+  let error: unknown
+  try {
+    await Program.allResults(programs, { concurrency: 2 })()
+  } catch (cause) {
+    error = cause
+  }
+
+  expect(error).toBeInstanceOf(Error)
+  expect(error).toMatchObject({ cause: laterDefect })
+})
+
+test('Program.allResults rejects a lower-index defect before a typed Err', async () => {
+  const lowerDefect = new Error('lower defect')
+  const typedFailure = Result.err<number, 'typed'>('typed')
+  let releaseLower!: () => void
+  let lowerStarted!: () => void
+
+  const lowerMayFinish = new Promise<void>((resolve) => {
+    releaseLower = resolve
+  })
+  const lowerStartedPromise = new Promise<void>((resolve) => {
+    lowerStarted = resolve
+  })
+  const programs = [
+    Effect.fn(async function* () {
+      yield* []
+      lowerStarted()
+      await lowerMayFinish
+      throw lowerDefect
+    }),
+    Effect.fn(function* () {
+      yield* []
+      return typedFailure
+    })
+  ] as const
+
+  const running = Program.allResults(programs, { concurrency: 2 })()
+  await lowerStartedPromise
+  releaseLower()
+
+  let error: unknown
+  try {
+    await running
+  } catch (cause) {
+    error = cause
+  }
+
+  expect(error).toBeInstanceOf(Error)
+  expect(error).toMatchObject({ cause: lowerDefect })
+})
+
+test('Program.allResults selects the lower defect from concurrent mixed settlement', async () => {
+  const typedFailure = Result.err<number, 'typed'>('typed')
+  const lowerDefect = new Error('lower defect')
+  const higherDefect = new Error('higher defect')
+  let releaseLower!: () => void
+  let lowerStarted!: () => void
+  let higherStarted = false
+
+  const lowerMayFinish = new Promise<void>((resolve) => {
+    releaseLower = resolve
+  })
+  const lowerStartedPromise = new Promise<void>((resolve) => {
+    lowerStarted = resolve
+  })
+  const programs = [
+    Effect.fn(function* () {
+      yield* []
+      return typedFailure
+    }),
+    Effect.fn(async function* () {
+      yield* []
+      lowerStarted()
+      await lowerMayFinish
+      throw lowerDefect
+    }),
+    Effect.fn(function* () {
+      yield* []
+      higherStarted = true
+      throw higherDefect
+    })
+  ] as const
+
+  const running = Program.allResults(programs, { concurrency: 3 })()
+  await lowerStartedPromise
+  expect(higherStarted).toBe(true)
+  releaseLower()
+
+  let error: unknown
+  try {
+    await running
+  } catch (cause) {
+    error = cause
+  }
+
+  expect(error).toBeInstanceOf(Error)
+  expect(error).toMatchObject({ cause: lowerDefect })
 })
 
 test('Program.forEach stops after failure, waits for claimed work, and prefers lower indexes', async () => {
