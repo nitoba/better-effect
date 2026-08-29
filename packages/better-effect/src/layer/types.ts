@@ -7,6 +7,15 @@ export interface LayerRegistration {
   /** The class-backed Service token provided by this registration. */
   readonly service: ServiceClass<any, any>
 
+  /**
+   * The canonical tag captured when the provider was created.
+   *
+   * This remains optional for direct backend registrations created against the
+   * pre-inspection API; backends capture the token tag synchronously when it is
+   * omitted.
+   */
+  readonly serviceTag?: string
+
   /** Lazily acquire the Service instance; concrete types are erased at this backend boundary. */
   readonly acquire: () => MaybePromise<unknown>
 }

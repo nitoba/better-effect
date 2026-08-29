@@ -9,8 +9,10 @@ import {
 } from '../layer'
 
 import { ServiceNotFoundError, type AnyServiceToken } from '../service'
+import { captureServiceTag } from '../service/tag'
 
 import { assertServiceCompatibility } from '../layer/internal-identity'
+import { captureLayerRegistrationTag, normalizeLayerRegistration } from '../layer/registration'
 import { isPromiseLike } from '../utils/runtime'
 
 type LayerAcquiredValue = Awaited<ReturnType<LayerRegistration['acquire']>>
@@ -35,8 +37,7 @@ export class ItiLayerBackend implements LayerBackend {
    */
   private readonly pending = new Map<Promise<unknown>, AnyServiceToken>()
 
-  private keyFor(token: AnyServiceToken): string {
-    const tag = token.serviceTag
+  private keyFor(tag: string): string {
     const existing = this.keys.get(tag)
 
     if (existing) {
@@ -52,8 +53,9 @@ export class ItiLayerBackend implements LayerBackend {
 
   /** Register a Layer provider under its deterministic Service-tag key. */
   register(registration: LayerRegistration): void {
-    const token = registration.service
-    const tag = token.serviceTag
+    const normalized = normalizeLayerRegistration(registration)
+    const token = normalized.service
+    const tag = captureLayerRegistrationTag(normalized)
     const existing = this.registered.get(tag)
 
     if (existing === token) {
@@ -64,10 +66,10 @@ export class ItiLayerBackend implements LayerBackend {
       throw new ServiceTagCollisionError(existing, token)
     }
 
-    const key = this.keyFor(token)
+    const key = this.keyFor(tag)
 
     this.container = this.container.add({
-      [key]: registration.acquire
+      [key]: normalized.acquire
     })
 
     this.registered.set(tag, token)
@@ -75,13 +77,14 @@ export class ItiLayerBackend implements LayerBackend {
 
   /** Resolve a registered Service through the ITI container. */
   resolve<T extends AnyServiceToken>(token: T): InstanceType<T> | PromiseLike<InstanceType<T>> {
-    const registered = this.registered.get(token.serviceTag)
+    const tag = captureServiceTag(token)
+    const registered = this.registered.get(tag)
 
     if (registered === undefined) {
       throw new ServiceNotFoundError(token)
     }
 
-    const key = this.keyFor(token)
+    const key = this.keyFor(tag)
     const resolved = this.container.get(key)
 
     const validate = (instance: LayerAcquiredValue): InstanceType<T> => {

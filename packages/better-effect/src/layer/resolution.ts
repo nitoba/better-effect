@@ -1,3 +1,5 @@
+import { captureServiceTag } from '../service/tag'
+
 import {
   CircularDependencyError,
   ServiceAcquisitionError,
@@ -18,8 +20,8 @@ import type { ScopeOutcome } from '../scope'
 
 import { ServiceTagCollisionError } from './errors'
 
-const findCycleStart = (path: readonly AnyServiceToken[], token: AnyServiceToken): number =>
-  path.findIndex((current) => current.serviceTag === token.serviceTag)
+const findCycleStart = (path: readonly AnyServiceToken[], tag: string): number =>
+  path.findIndex((current) => captureServiceTag(current) === tag)
 
 const shouldPreserve = (cause: unknown): boolean =>
   cause instanceof CircularDependencyError ||
@@ -35,9 +37,10 @@ export const createResolutionResolver = (
 ): ServiceResolver => {
   const wrapped: ServiceResolver = {
     async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
+      const tag = captureServiceTag(token)
       const context = getRuntimeContext(storage)
       const path = context?.resolutionPath ?? []
-      const cycleStart = findCycleStart(path, token)
+      const cycleStart = findCycleStart(path, tag)
       const resolutionPath = [...path, token]
 
       const notifyResolve = (outcome: ScopeOutcome): void => {

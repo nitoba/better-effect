@@ -86,6 +86,8 @@ export type {
   RuntimeContext,
   RuntimeContextStorage,
   RuntimeFor,
+  RuntimeExecutionInspection,
+  RuntimeInspection,
   RuntimeExecutionAttributes,
   RuntimeExecutionEndEvent,
   RuntimeExecutionMetadata,

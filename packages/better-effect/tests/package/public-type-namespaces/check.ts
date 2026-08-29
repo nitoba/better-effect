@@ -76,7 +76,7 @@ const aliases = {
     'Requirements'
   ],
   Layer: ['Any', 'Provided', 'Required', 'Missing', 'Complete'],
-  Runtime: ['For', 'Options', 'ShutdownDiagnostic'],
+  Runtime: ['For', 'Options', 'ShutdownDiagnostic', 'Inspection', 'ExecutionInspection'],
   Scope: ['Closeable', 'Outcome', 'Finalizer', 'Disposable']
 } satisfies Record<string, readonly string[]>
 

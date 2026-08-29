@@ -1,3 +1,4 @@
+import { captureServiceTag } from '../service/tag'
 import type { AnyService, AnyServiceToken, ServiceResolver } from '../service'
 
 import { Scope, type CloseableScope } from '../scope'
@@ -25,6 +26,7 @@ import {
 import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
 
 import { LayerDisposeError, LayerRegistrationError } from './errors'
+import { captureLayerRegistrationTag } from './registration'
 
 import { createResolutionResolver } from './resolution'
 
@@ -44,6 +46,8 @@ import type {
   RuntimeExecutionMetadata,
   RuntimeObserver
 } from '../runtime/observer'
+
+import type { RuntimeInspection } from '../runtime/types'
 
 import type { LayerBackend } from './backend'
 
@@ -79,6 +83,9 @@ interface RuntimeHandleCore<Provided extends AnyService> {
 
   /** Resolve every registered provider before accepting normal executions. */
   warmup(): Promise<void>
+
+  /** Return a detached diagnostic snapshot without changing Runtime state. */
+  inspect(): RuntimeInspection
 
   /** Stop new executions and release Layer-owned resources. */
   dispose(input?: RuntimeDisposeOptions | ScopeOutcome): Promise<void>
@@ -119,6 +126,13 @@ const validateDisposeOptions = (options: RuntimeDisposeOptions): void => {
 
 type ActiveExecution = {
   readonly promise: Promise<unknown>
+  readonly metadata: RuntimeExecutionMetadata
+}
+
+type MutableRuntimeExecutionInspection = {
+  executionId: string
+  startedAt: number
+  name?: string
 }
 
 const copyExecutionAttributes = (
@@ -241,6 +255,7 @@ const bindProviderToScope = (
   observers: readonly RuntimeObserver[]
 ): LayerRegistration => ({
   service: provider.service,
+  serviceTag: provider.serviceTag,
 
   acquire: () => {
     const current = getRuntimeContext(contextStorage)
@@ -313,12 +328,14 @@ class ExecutionLayerBackend implements LayerBackend {
   ) {}
 
   register(registration: LayerRegistration): void {
-    this.localTags.add(registration.service.serviceTag)
+    this.localTags.add(captureLayerRegistrationTag(registration))
     this.local.register(registration)
   }
 
   async resolve<T extends AnyServiceToken>(token: T): Promise<InstanceType<T>> {
-    if (this.localTags.has(token.serviceTag)) {
+    const tag = captureServiceTag(token)
+
+    if (this.localTags.has(tag)) {
       return await this.local.resolve(token)
     }
 
@@ -338,9 +355,13 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private readonly executions = new Set<ActiveExecution>()
 
+  private readonly serviceTags: readonly string[]
+
   private readonly shutdownController = new AbortController()
 
   private state: 'active' | 'disposing' | 'disposed' = 'active'
+
+  private warmupState: RuntimeInspection['warmup'] = 'idle'
 
   constructor(
     readonly backend: LayerBackend,
@@ -351,8 +372,37 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly signal: AbortSignal | undefined,
     private readonly observers: readonly RuntimeObserver[],
     private readonly services: readonly AnyServiceToken[],
+    serviceTags: readonly string[],
     private readonly executionDependencies: RuntimeExecutionDependencies
-  ) {}
+  ) {
+    this.serviceTags = Object.freeze([...serviceTags])
+  }
+
+  inspect(): RuntimeInspection {
+    const executions = Object.freeze(
+      [...this.executions].map(({ metadata }) => {
+        const inspection: MutableRuntimeExecutionInspection = {
+          executionId: metadata.executionId,
+          startedAt: metadata.startedAt
+        }
+
+        if (metadata.name !== undefined) {
+          inspection.name = metadata.name
+        }
+
+        return Object.freeze(inspection)
+      })
+    )
+
+    return Object.freeze({
+      state: this.state,
+      warmup: this.warmupState,
+      activeExecutions: executions.length,
+      executions,
+      services: Object.freeze([...this.serviceTags]),
+      shutdownSignalAborted: this.shutdownController.signal.aborted
+    })
+  }
 
   run<A>(
     program: CompleteExecution<Provided, A>,
@@ -481,26 +531,37 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       return this.warmupPromise
     }
 
-    const warmup = runRuntimeContext(
-      this.contextStorage,
-      makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
-      async () => {
-        for (const service of this.services) {
-          await this.resolver.resolve(service)
+    this.warmupState = 'running'
+
+    let warmup: Promise<void>
+
+    try {
+      warmup = runRuntimeContext(
+        this.contextStorage,
+        makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
+        async () => {
+          for (const service of this.services) {
+            await this.resolver.resolve(service)
+          }
         }
-      }
-    )
+      )
+    } catch (cause) {
+      this.warmupState = 'failed'
+      return Promise.reject(cause)
+    }
 
     this.warmupPromise = warmup
 
     void warmup.then(
       () => {
         if (this.warmupPromise === warmup) {
+          this.warmupState = 'completed'
           this.warmupPromise = undefined
         }
       },
       () => {
         if (this.warmupPromise === warmup) {
+          this.warmupState = 'failed'
           this.warmupPromise = undefined
         }
       }
@@ -522,7 +583,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       rejectExecution = reject
     })
 
-    const activeExecution: ActiveExecution = { promise: execution }
+    const activeExecution: ActiveExecution = { promise: execution, metadata }
 
     this.executions.add(activeExecution)
 
@@ -748,6 +809,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   options: RuntimeOptions = {},
   executionOverrides: RuntimeExecutionDependencyOverrides = {}
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
+  const services = layer.providers.map((provider) => provider.service)
+  const serviceTags = layer.providers.map((provider) => captureLayerRegistrationTag(provider))
   const rootScope = Scope.make()
   const contextStorage = options.contextStorage ?? defaultRuntimeContextStorage
   const observers = options.observers ?? []
@@ -814,7 +877,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     contextStorage,
     options.signal,
     observers,
-    layer.providers.map((provider) => provider.service),
+    services,
+    serviceTags,
     executionDependencies
   )
 }

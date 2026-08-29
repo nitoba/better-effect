@@ -25,7 +25,7 @@ import {
 
 import type { ScopeOutcome } from '../scope'
 
-import type { RuntimeFor } from './types'
+import type { RuntimeExecutionInspection, RuntimeFor, RuntimeInspection } from './types'
 
 import type { RuntimeObserver } from './observer'
 
@@ -280,6 +280,11 @@ export class Runtime<Provided extends AnyService = any> {
     }
   }
 
+  /** Return a detached diagnostic snapshot without changing Runtime state. */
+  inspect(): RuntimeInspection {
+    return this.handle.inspect()
+  }
+
   /** Run one execution in this Runtime's child Scope. */
   run<A>(
     program: CompleteExecution<Provided, A>,
@@ -341,4 +346,10 @@ export declare namespace Runtime {
 
   /** Diagnostic reported for aggregated Runtime shutdown cleanup failures. */
   export type ShutdownDiagnostic = RuntimeShutdownDiagnostic
+
+  /** Detached diagnostic snapshot returned by `Runtime.inspect()`. */
+  export type Inspection = RuntimeInspection
+
+  /** Detached diagnostic view of one active execution. */
+  export type ExecutionInspection = RuntimeExecutionInspection
 }

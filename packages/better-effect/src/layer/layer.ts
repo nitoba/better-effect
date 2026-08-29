@@ -1,5 +1,6 @@
 import type { ServiceRequirement } from '../effect/types'
 import { ServiceRuntime } from '../service'
+import { captureServiceTag } from '../service/tag'
 import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } from '../service'
 import { ResourceNotDisposableError } from '../scope'
 import { getDisposeFinalizer } from '../scope/disposable'
@@ -10,6 +11,7 @@ import type { MaybePromise } from '../utils/types'
 
 import { DuplicateServiceError, ServiceTagCollisionError } from './errors'
 import { runLayerGenerator } from './internal'
+import { captureLayerRegistrationTag } from './registration'
 
 import type {
   LayerInput,
@@ -39,6 +41,9 @@ type CapturedLayerAcquisition = {
 }
 
 interface LayerProvider extends LayerRegistration {
+  /** The tag captured before this provider can cross an asynchronous boundary. */
+  readonly serviceTag: string
+
   /** Provider storage deliberately erases the concrete instance type. */
   // oxlint-disable-next-line anti-slop/no-unknown-parameters
   readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
@@ -103,7 +108,14 @@ export class Layer<
   readonly providers: readonly LayerProvider[]
 
   private constructor(providers: readonly LayerProvider[]) {
-    this.providers = Object.freeze([...providers])
+    this.providers = Object.freeze(
+      providers.map((provider) =>
+        Object.freeze({
+          ...provider,
+          serviceTag: captureLayerRegistrationTag(provider)
+        })
+      )
+    )
   }
 
   /** A stable provider-free Layer for composition roots with no Services. */
@@ -123,6 +135,7 @@ export class Layer<
     service: S,
     acquire?: () => MaybePromise<ServiceContract<InstanceType<S>>>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
+    const serviceTag = captureServiceTag(service)
     const defaultAcquire = (): InstanceType<S> => {
       // SAFETY: The no-argument overload constrains `service` to a default constructible class.
       const Constructor = service as new () => InstanceType<S>
@@ -136,6 +149,7 @@ export class Layer<
     return new Layer([
       {
         service,
+        serviceTag,
         acquire: normalizedAcquire
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
@@ -146,12 +160,14 @@ export class Layer<
     service: S,
     instance: ServiceContract<InstanceType<S>>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
+    const serviceTag = captureServiceTag(service)
     const normalizedAcquire = normalizeAcquire<S>(() => instance)
 
     // SAFETY: The structural instance has been checked against the requested Service contract.
     return new Layer([
       {
         service,
+        serviceTag,
         acquire: normalizedAcquire
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
@@ -164,6 +180,7 @@ export class Layer<
     ProviderEntry<InstanceType<To>, InstanceType<From> | ServiceRequirements<InstanceType<To>>>
   > {
     const { from, to } = options
+    void captureServiceTag(from)
 
     // Keep alias acquisition in the normal Layer generator path so Runtime supplies the active resolver and resolution diagnostics.
     // oxlint-disable-next-line require-yield
@@ -186,10 +203,13 @@ export class Layer<
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>,
     release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
+    const serviceTag = captureServiceTag(service)
+
     // SAFETY: The public callbacks constrain acquisition and release to the requested Service.
     return new Layer([
       {
         service,
+        serviceTag,
         acquire: normalizeAcquire<S>(acquire),
         release: (instance, outcome) => {
           // SAFETY: The backend invokes release with the instance acquired for this token.
@@ -215,10 +235,13 @@ export class Layer<
       return { instance, release: finalizer }
     }
 
+    const serviceTag = captureServiceTag(service)
+
     // SAFETY: The public callback constrains the acquired value and this runtime-only carrier is erased at the Layer boundary.
     return new Layer([
       {
         service,
+        serviceTag,
         acquire: async () => (await acquireWithRelease()).instance,
         acquireWithRelease
       }
@@ -231,10 +254,13 @@ export class Layer<
     factory: LayerGenerator<S, Yield>,
     release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
   ): LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>> {
+    const serviceTag = captureServiceTag(service)
+
     // SAFETY: The generator and release callback are checked against the requested Service.
     return new Layer([
       {
         service,
+        serviceTag,
         acquire: () => runLayerGenerator(service, factory),
         release: (instance, outcome) => {
           // SAFETY: The backend invokes release with the instance acquired for this token.
@@ -249,10 +275,13 @@ export class Layer<
     service: S,
     factory: LayerGenerator<S, Yield>
   ): LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>> {
+    const serviceTag = captureServiceTag(service)
+
     // SAFETY: The generator result is normalized to the requested Service at the runtime boundary.
     return new Layer([
       {
         service,
+        serviceTag,
         acquire: () => runLayerGenerator(service, factory)
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>>
@@ -267,7 +296,8 @@ export class Layer<
     for (const layer of layers) {
       for (const provider of layer.providers) {
         const service = provider.service
-        const existing = providers.get(service.serviceTag)
+        const serviceTag = captureLayerRegistrationTag(provider)
+        const existing = providers.get(serviceTag)
 
         if (existing) {
           if (existing.service !== service) {
@@ -277,7 +307,7 @@ export class Layer<
           throw new DuplicateServiceError(service)
         }
 
-        providers.set(service.serviceTag, provider)
+        providers.set(serviceTag, provider)
       }
     }
 
@@ -312,12 +342,12 @@ export class Layer<
     const providers = new Map<string, LayerProvider>()
 
     for (const provider of base.providers) {
-      providers.set(provider.service.serviceTag, provider)
+      providers.set(captureLayerRegistrationTag(provider), provider)
     }
 
     for (const layer of overrides) {
       for (const provider of layer.providers) {
-        providers.set(provider.service.serviceTag, provider)
+        providers.set(captureLayerRegistrationTag(provider), provider)
       }
     }
 
