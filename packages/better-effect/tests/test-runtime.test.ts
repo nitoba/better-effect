@@ -102,6 +102,34 @@ describe('TestRuntime', () => {
     }
   })
 
+  test('installs standard Services from union-shaped options', async () => {
+    const clock = new ClockTest(new Date('2026-02-01T00:00:00.000Z'))
+    const logger = new LoggerTest()
+    const random = new RandomSeeded(42)
+    const options:
+      | {}
+      | {
+          readonly clock: ClockTest
+          readonly logger: LoggerTest
+          readonly random: RandomSeeded
+        } = { clock, logger, random }
+    const testRuntime = await TestRuntime.make(Layer.merge(), options)
+
+    try {
+      const resolved = await testRuntime.run(async () => ({
+        clock: await ServiceRuntime.resolve(Clock),
+        logger: await ServiceRuntime.resolve(Logger),
+        random: await ServiceRuntime.resolve(Random)
+      }))
+
+      expect(Object.is(resolved.clock, clock)).toBe(true)
+      expect(Object.is(resolved.logger, logger)).toBe(true)
+      expect(Object.is(resolved.random, random)).toBe(true)
+    } finally {
+      await testRuntime.dispose()
+    }
+  })
+
   test('run preserves a direct Result.err value and reports failure outcome', async () => {
     const error = new Error('run failed')
     const expected = Result.err(error)

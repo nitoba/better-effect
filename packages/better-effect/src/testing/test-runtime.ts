@@ -85,18 +85,30 @@ type ExplicitOverrides<Options extends TestRuntimeOptionsInput> =
       ? Overrides
       : readonly []
 
-type HasDefinedOption<Options, Key extends PropertyKey> = Key extends keyof Options
-  ? {} extends Pick<Options, Key>
-    ? false
-    : undefined extends Options[Key]
-      ? false
-      : true
+type HasDefinedOption<Options, Key extends PropertyKey> = true extends (
+  Options extends unknown
+    ? Key extends keyof Options
+      ? {} extends Pick<Options, Key>
+        ? false
+        : undefined extends Options[Key]
+          ? false
+          : true
+      : false
+    : never
+)
+  ? true
   : false
 
-type HasPotentialOption<Options, Key extends PropertyKey> = Key extends keyof Options
-  ? [Exclude<Options[Key], undefined>] extends [never]
-    ? false
-    : true
+type HasPotentialOption<Options, Key extends PropertyKey> = true extends (
+  Options extends unknown
+    ? Key extends keyof Options
+      ? [Exclude<Options[Key], undefined>] extends [never]
+        ? false
+        : true
+      : false
+    : never
+)
+  ? true
   : false
 
 type TestRuntimeOptionLayers<Options extends TestRuntimeOptionsInput> = [
@@ -135,13 +147,15 @@ type CompleteLayerCheck<L extends LayerInput> = ValidateLayerInput<L> &
       : MissingDependencies<Extract<RequiredEnvironment<L>, AnyService>>
     : unknown)
 
-type ConfiguredService<Options, Key extends PropertyKey, Service> = Key extends keyof Options
-  ? undefined extends Options[Key]
-    ? undefined
-    : Options[Key] extends Service
-      ? Options[Key]
-      : undefined
-  : undefined
+type ConfiguredService<Options, Key extends PropertyKey, Service> = Options extends unknown
+  ? Key extends keyof Options
+    ? undefined extends Options[Key]
+      ? undefined
+      : Options[Key] extends Service
+        ? Options[Key]
+        : undefined
+    : undefined
+  : never
 
 type TestCallback<Provided extends AnyService, A, Options extends object = {}> = (
   test: TestRuntime<Provided, Options>

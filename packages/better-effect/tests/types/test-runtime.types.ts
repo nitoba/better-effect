@@ -112,6 +112,17 @@ expectTypeOf<Awaited<typeof completeRuntime>>().toEqualTypeOf<TestRuntime<Databa
 const controlledClock = new ClockTest(new Date('2026-01-01T00:00:00.000Z'))
 const controlledLogger = new LoggerTest()
 const controlledRandom = new RandomSeeded(42)
+
+const unionClockOptions: {} | { readonly clock: ClockTest } = { clock: controlledClock }
+const unionLoggerOptions: {} | { readonly logger: LoggerTest } = { logger: controlledLogger }
+const unionRandomOptions: {} | { readonly random: RandomSeeded } = { random: controlledRandom }
+const unionClockRuntime = TestRuntime.make(Layer.merge(), unionClockOptions)
+const unionLoggerRuntime = TestRuntime.make(Layer.merge(), unionLoggerOptions)
+const unionRandomRuntime = TestRuntime.make(Layer.merge(), unionRandomOptions)
+expectTypeOf<Awaited<typeof unionClockRuntime>['runtime']>().toEqualTypeOf<Runtime<Clock>>()
+expectTypeOf<Awaited<typeof unionLoggerRuntime>['runtime']>().toEqualTypeOf<Runtime<Logger>>()
+expectTypeOf<Awaited<typeof unionRandomRuntime>['runtime']>().toEqualTypeOf<Runtime<Random>>()
+
 const uncheckedClockOverride: Layer.Any = incompatibleClockLayer
 const uncheckedStandardRuntime = TestRuntime.make(incompatibleClockLayer, {
   overrides: [uncheckedClockOverride] as const,
@@ -190,6 +201,12 @@ void TestRuntime.make(incompatibleClockLayer, { clock: controlledClock })
 void TestRuntime.make(incompatibleLoggerLayer, { logger: controlledLogger })
 // @ts-expect-error Standard Random options must remain compatible with a same-tag base provider.
 void TestRuntime.make(incompatibleRandomLayer, { random: controlledRandom })
+// @ts-expect-error Union-shaped Clock options must remain compatible with a same-tag base provider.
+void TestRuntime.make(incompatibleClockLayer, unionClockOptions)
+// @ts-expect-error Union-shaped Logger options must remain compatible with a same-tag base provider.
+void TestRuntime.make(incompatibleLoggerLayer, unionLoggerOptions)
+// @ts-expect-error Union-shaped Random options must remain compatible with a same-tag base provider.
+void TestRuntime.make(incompatibleRandomLayer, unionRandomOptions)
 
 const predeclaredClockOptions: TestRuntime.Options<typeof incompatibleClockLayer> = {
   // @ts-expect-error Predeclared standard options must retain same-tag compatibility checks.
@@ -199,6 +216,12 @@ void predeclaredClockOptions
 
 // @ts-expect-error TestRuntime.use must validate standard option collisions too.
 void TestRuntime.use(incompatibleClockLayer, { clock: controlledClock }, () => Result.ok(true))
+// @ts-expect-error Union-shaped Clock options must remain compatible with a same-tag base provider.
+void TestRuntime.use(incompatibleClockLayer, unionClockOptions, () => Result.ok(true))
+// @ts-expect-error Union-shaped Logger options must remain compatible with a same-tag base provider.
+void TestRuntime.use(incompatibleLoggerLayer, unionLoggerOptions, () => Result.ok(true))
+// @ts-expect-error Union-shaped Random options must remain compatible with a same-tag base provider.
+void TestRuntime.use(incompatibleRandomLayer, unionRandomOptions, () => Result.ok(true))
 
 const callbackResult = TestRuntime.use(
   Layer.merge(completeLayer, ClockTest.layer(), LoggerTest.layer(), RandomSeeded.layer(42)),
@@ -211,3 +234,6 @@ void configuredRuntime
 void configuredResult
 void runWithResult
 void callbackResult
+void unionClockRuntime
+void unionLoggerRuntime
+void unionRandomRuntime

@@ -147,16 +147,49 @@ const packageClockOptions: TestRuntime.Options<typeof packageClockCollisionLayer
 }
 void packageClockOptions
 
+const packageUnionClockOptions: {} | { readonly clock: ClockTest } = { clock: new ClockTest() }
+const packageUnionLoggerOptions: {} | { readonly logger: LoggerTest } = { logger: new LoggerTest() }
+const packageUnionRandomOptions: {} | { readonly random: RandomSeeded } = {
+  random: new RandomSeeded(42)
+}
+const packageUnionClockRuntime = TestRuntime.make(Layer.merge(), packageUnionClockOptions)
+const packageUnionLoggerRuntime = TestRuntime.make(Layer.merge(), packageUnionLoggerOptions)
+const packageUnionRandomRuntime = TestRuntime.make(Layer.merge(), packageUnionRandomOptions)
+export type PackageUnionClockRuntime = Expect<
+  Equal<Awaited<typeof packageUnionClockRuntime>['runtime'], Runtime<Clock>>
+>
+export type PackageUnionLoggerRuntime = Expect<
+  Equal<Awaited<typeof packageUnionLoggerRuntime>['runtime'], Runtime<Logger>>
+>
+export type PackageUnionRandomRuntime = Expect<
+  Equal<Awaited<typeof packageUnionRandomRuntime>['runtime'], Runtime<Random>>
+>
+
 // @ts-expect-error standard Clock options must remain compatible with a same-tag base provider
 void TestRuntime.make(packageClockCollisionLayer, { clock: new ClockTest() })
 // @ts-expect-error standard Logger options must remain compatible with a same-tag base provider
 void TestRuntime.make(packageLoggerCollisionLayer, { logger: new LoggerTest() })
 // @ts-expect-error standard Random options must remain compatible with a same-tag base provider
 void TestRuntime.make(packageRandomCollisionLayer, { random: new RandomSeeded(42) })
+// @ts-expect-error Union-shaped Clock options must remain compatible with a same-tag base provider
+void TestRuntime.make(packageClockCollisionLayer, packageUnionClockOptions)
+// @ts-expect-error Union-shaped Logger options must remain compatible with a same-tag base provider
+void TestRuntime.make(packageLoggerCollisionLayer, packageUnionLoggerOptions)
+// @ts-expect-error Union-shaped Random options must remain compatible with a same-tag base provider
+void TestRuntime.make(packageRandomCollisionLayer, packageUnionRandomOptions)
 // @ts-expect-error TestRuntime.use must validate standard option collisions too
 void TestRuntime.use(packageClockCollisionLayer, { clock: new ClockTest() }, () => Result.ok(true))
+// @ts-expect-error Union-shaped Clock options must remain compatible with a same-tag base provider
+void TestRuntime.use(packageClockCollisionLayer, packageUnionClockOptions, () => Result.ok(true))
+// @ts-expect-error Union-shaped Logger options must remain compatible with a same-tag base provider
+void TestRuntime.use(packageLoggerCollisionLayer, packageUnionLoggerOptions, () => Result.ok(true))
+// @ts-expect-error Union-shaped Random options must remain compatible with a same-tag base provider
+void TestRuntime.use(packageRandomCollisionLayer, packageUnionRandomOptions, () => Result.ok(true))
 
 void composed
 void snapshot
 void packageTestRuntime
 void packageTestResult
+void packageUnionClockRuntime
+void packageUnionLoggerRuntime
+void packageUnionRandomRuntime
