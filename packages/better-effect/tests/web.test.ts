@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom'
 import { expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
@@ -310,6 +311,8 @@ test('WebEffect default success policy rejects unsupported JSON values explicitl
 test('WebEffect accepts compatible alternate Web Responses across policies', async () => {
   const runtime = await Runtime.make(Layer.empty)
   const headers = new Headers()
+  const crossRealmDom = new JSDOM()
+  const crossRealmHeaders = new crossRealmDom.window.Headers()
   // SAFETY: This structural fixture supplies every Response member validated by WebEffect.
   const alternateResponse = {
     body: null,
@@ -339,10 +342,12 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
     return Object.assign({}, alternateResponse, overrides) as Response
   }
   const streamResponse = withResponseOverrides({ body: new ReadableStream<Uint8Array>() })
-  const incompleteHeaders = (missing: 'get' | 'set') => ({
+  const crossRealmResponse = withResponseOverrides({ headers: crossRealmHeaders })
+  const incompleteHeaders = (missing: 'get' | 'set' | 'getSetCookie') => ({
     append: () => undefined,
     delete: () => undefined,
     get: missing === 'get' ? undefined : () => null,
+    getSetCookie: missing === 'getSetCookie' ? undefined : () => [],
     has: () => false,
     set: missing === 'set' ? undefined : () => undefined,
     forEach: () => undefined
@@ -351,6 +356,7 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
     // SAFETY: These fixtures intentionally omit one required structural capability.
     ['bytes', withResponseOverrides({ bytes: undefined })],
     ['headers.get', withResponseOverrides({ headers: incompleteHeaders('get') })],
+    ['headers.getSetCookie', withResponseOverrides({ headers: incompleteHeaders('getSetCookie') })],
     ['headers.set', withResponseOverrides({ headers: incompleteHeaders('set') })],
     [
       'body.getReader',
@@ -385,6 +391,22 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
         return Result.err(alternateResponse)
       })
     )
+    const crossRealmSuccess = await WebEffect.handle(
+      runtime,
+      request('/cross-realm-success'),
+      // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
+      Effect.fn(async function* () {
+        return Result.ok(crossRealmResponse)
+      })
+    )
+    const crossRealmFailure = await WebEffect.handle(
+      runtime,
+      request('/cross-realm-failure'),
+      // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
+      Effect.fn(async function* () {
+        return Result.err(crossRealmResponse)
+      })
+    )
     const customSuccess = await WebEffect.handle(
       runtime,
       request('/custom-success'),
@@ -406,6 +428,8 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
 
     expect(defaultSuccess).toBe(alternateResponse)
     expect(defaultFailure).toBe(alternateResponse)
+    expect(crossRealmSuccess).toBe(crossRealmResponse)
+    expect(crossRealmFailure).toBe(crossRealmResponse)
     expect(customSuccess).toBe(streamResponse)
     expect(customFailure).toBe(alternateResponse)
 
@@ -466,6 +490,7 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
     // SAFETY: The preceding assertion establishes that the rejection is an Error instance.
     expect((forgedCause as Error).message).toContain('must return a Response')
   } finally {
+    crossRealmDom.window.close()
     await runtime.dispose()
   }
 })

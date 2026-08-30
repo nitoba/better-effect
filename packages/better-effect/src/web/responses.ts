@@ -52,6 +52,7 @@ type HeadersCandidate = {
   readonly append: unknown
   readonly delete: unknown
   readonly get: unknown
+  readonly getSetCookie: unknown
   readonly has: unknown
   readonly set: unknown
   readonly forEach: unknown
@@ -69,6 +70,7 @@ const isHeaders = (value: unknown): boolean => {
     isCallable(candidate.append) &&
     isCallable(candidate.delete) &&
     isCallable(candidate.get) &&
+    isCallable(candidate.getSetCookie) &&
     isCallable(candidate.has) &&
     isCallable(candidate.set) &&
     isCallable(candidate.forEach)
