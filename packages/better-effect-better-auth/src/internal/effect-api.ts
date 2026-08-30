@@ -4,7 +4,6 @@ import type { BetterAuthApiError } from '../errors'
 import type {
   BetterAuthEffectApi,
   BetterAuthOperation,
-  BetterAuthOperationFailure,
   BetterAuthTransportFlag
 } from '../effect-api'
 
@@ -119,6 +118,10 @@ export function makeBetterAuthEffectApi<Api extends object, Code extends string>
         return cached
       }
 
+      if (!Object.prototype.hasOwnProperty.call(target, key)) {
+        return undefined
+      }
+
       // oxlint-disable-next-line anti-slop/no-reflect-get -- A Proxy must inspect the property selected by its PropertyKey without assuming a string-only API.
       const candidate = Reflect.get(target, key)
       if (!(candidate instanceof Function)) {
@@ -133,6 +136,6 @@ export function makeBetterAuthEffectApi<Api extends object, Code extends string>
     }
   })
 
-  // SAFETY: the Proxy maps every callable member lazily to the public effectful endpoint contract and hides non-callable members.
+  // SAFETY: the Proxy maps every callable own member lazily to the public effectful endpoint contract and hides all other members.
   return effectApi as BetterAuthEffectApi<Api, Code>
 }
