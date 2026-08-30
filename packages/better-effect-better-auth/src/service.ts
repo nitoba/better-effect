@@ -1,6 +1,6 @@
 import { Layer, Service } from 'better-effect'
 
-import type { ServiceRequirement, ServiceToken } from 'better-effect'
+import type { ServiceClass, ServiceRequirement } from 'better-effect'
 
 import type {
   BetterAuthEffectApi,
@@ -37,11 +37,11 @@ export type BetterAuthServiceInstance<
   Auth extends BetterAuthInstance
 > = BetterAuthService<Auth> & Service.Identity<Tag>
 
-/** Yieldable Service token returned directly by `BetterAuth.service`. */
+/** Yieldable, concrete Service class returned directly by `BetterAuth.service`. */
 export type BetterAuthServiceToken<
   Tag extends string,
   Auth extends BetterAuthInstance
-> = ServiceToken<Tag, BetterAuthServiceInstance<Tag, Auth>> & {
+> = ServiceClass<Tag, BetterAuthServiceInstance<Tag, Auth>> & {
   readonly layer: Layer<BetterAuthServiceInstance<Tag, Auth>, never>
   readonly [Symbol.asyncIterator]: () => AsyncGenerator<
     ServiceRequirement<BetterAuthServiceInstance<Tag, Auth>>,
@@ -99,7 +99,7 @@ export function betterAuthService<
     writable: false
   })
 
-  // SAFETY: the class is the exact Service token created above and the readonly Layer was attached with a locked descriptor.
+  // SAFETY: the class is the exact concrete Service class created above and the readonly Layer was attached with a locked descriptor.
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The static class type cannot observe a property attached through Object.defineProperty.
   return AuthService as unknown as BetterAuthServiceToken<Tag, Auth>
 }
