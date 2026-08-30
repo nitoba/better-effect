@@ -112,6 +112,62 @@ test('identity constructors validate without changing persistent identity string
       expect(JobDefinitionError.is(result.error)).toBe(true)
     }
   }
+
+  const highSurrogate = String.fromCharCode(0xd800)
+  const lowSurrogate = String.fromCharCode(0xdc00)
+  const malformedUnicode: readonly unknown[] = [
+    highSurrogate,
+    lowSurrogate,
+    `prefix${highSurrogate}`,
+    `${lowSurrogate}suffix`,
+    `${highSurrogate}${highSurrogate}`,
+    `${lowSurrogate}${lowSurrogate}`
+  ]
+
+  for (const value of malformedUnicode) {
+    expect(Result.isError(JobId.make(value))).toBe(true)
+  }
+
+  const scalar = unwrap(JobId.make(`emoji-${String.fromCodePoint(0x1f642)}`))
+  expect(String(scalar)).toBe(`emoji-${String.fromCodePoint(0x1f642)}`)
+})
+
+test('metadata accepts only own string fields on a plain object', () => {
+  const invalidMetadata: readonly unknown[] = [undefined, 1, true, false, 'source', [], null]
+
+  for (const metadata of invalidMetadata) {
+    expect(Result.isError(makeJobRecord({ ...waitingJob(), metadata }))).toBe(true)
+  }
+
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), metadata: { source: 1 } }))).toBe(true)
+
+  // SAFETY: this cast describes a deliberately invalid custom-prototype test object.
+  const inherited = Object.create({ source: 'inherited' }) as Record<string, string>
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), metadata: inherited }))).toBe(true)
+
+  const symbols = { source: 'safe', [Symbol('secret')]: 'hidden' }
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), metadata: symbols }))).toBe(true)
+
+  const getter = {}
+  Object.defineProperty(getter, 'source', {
+    enumerable: true,
+    get: () => {
+      throw new Error('metadata getter')
+    }
+  })
+  expect(() => makeJobRecord({ ...waitingJob(), metadata: getter })).not.toThrow()
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), metadata: getter }))).toBe(true)
+
+  const revoked = Proxy.revocable({ source: 'safe' }, {})
+  revoked.revoke()
+  expect(() => makeJobRecord({ ...waitingJob(), metadata: revoked.proxy })).not.toThrow()
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), metadata: revoked.proxy }))).toBe(true)
+
+  // SAFETY: the null-prototype object is intentionally populated with string values only.
+  const nullPrototype = Object.create(null) as Record<string, string>
+  nullPrototype.source = 'safe'
+  const checked = unwrap(makeJobRecord({ ...waitingJob(), metadata: nullPrototype }))
+  expect(checked.metadata).toEqual({ source: 'safe' })
 })
 
 test('record and attempt validators reject unsafe DTOs', () => {
@@ -145,6 +201,54 @@ test('record and attempt validators reject unsafe DTOs', () => {
       })
     )
   ).toBe(true)
+})
+
+test('counter boundaries reserve execution slots and reject unsafe overflow values', () => {
+  const maximum = Number.MAX_SAFE_INTEGER
+  const validAtMaximum = waitingJob({
+    attemptsMax: maximum,
+    attemptsMade: maximum - 1,
+    deliveryCount: maximum,
+    stalledCount: maximum
+  })
+
+  expect(Result.isOk(validateJobRecord(validAtMaximum))).toBe(true)
+
+  for (const state of ['waiting', 'delayed', 'active'] as const) {
+    const record =
+      state === 'active'
+        ? activeJob({ state, attemptsMax: maximum, attemptsMade: maximum })
+        : waitingJob({ state, attemptsMax: maximum, attemptsMade: maximum })
+
+    expect(Result.isError(validateJobRecord(record))).toBe(true)
+  }
+
+  expect(
+    Result.isError(makeJobRecord({ ...waitingJob(), attemptsMax: Number.POSITIVE_INFINITY }))
+  ).toBe(true)
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), attemptsMax: 0 }))).toBe(true)
+  expect(Result.isError(makeJobRecord({ ...waitingJob(), attemptsMade: Number.NaN }))).toBe(true)
+  expect(
+    Result.isError(
+      makeJobRecord({
+        ...waitingJob(),
+        state: 'cancelled',
+        attemptsMade: 4,
+        attemptsMax: 3
+      })
+    )
+  ).toBe(true)
+
+  const saturatedClaim = claimJob(waitingJob({ deliveryCount: maximum }), {
+    type: 'claim',
+    jobId,
+    workerId: worker,
+    leaseToken,
+    leaseExpiresAt: 200,
+    now: 100
+  })
+
+  expect(Result.isError(saturatedClaim)).toBe(true)
 })
 
 test('public DTO boundaries reject extra fields and hostile access', () => {
@@ -315,17 +419,36 @@ test('claim ordering is priority, due time, durable sequence, then id', () => {
   expect(compareJobOrder(sequenceTieOther, sequenceTie)).toBeGreaterThan(0)
 })
 
-test('the final JobId tie-breaker compares UTF-8 bytes rather than UTF-16 code units', () => {
+test('the final JobId tie-breaker compares distinct valid Unicode by UTF-8 bytes', () => {
   const privateUse = unwrap(JobId.make('\uE000'))
   const astral = unwrap(JobId.make('\u{10000}'))
+  const composed = unwrap(JobId.make('é'))
+  const decomposed = unwrap(JobId.make('e\u0301'))
   const left = waitingJob({ priority: 1, runAt: 100, orderingSequence: 3, id: privateUse })
   const right = waitingJob({ priority: 1, runAt: 100, orderingSequence: 3, id: astral })
+  const composedJob = waitingJob({
+    priority: 1,
+    runAt: 100,
+    orderingSequence: 3,
+    id: composed
+  })
+  const decomposedJob = waitingJob({
+    priority: 1,
+    runAt: 100,
+    orderingSequence: 3,
+    id: decomposed
+  })
 
   // JavaScript UTF-16 ordering puts the astral surrogate pair first; bytewise
   // UTF-8 ordering puts E0 before F0 and therefore the private-use ID first.
   expect(privateUse < astral).toBe(false)
   expect(compareJobOrder(left, right)).toBeLessThan(0)
   expect(unwrap(orderJobs([right, left])).map((job) => job.id)).toEqual([privateUse, astral])
+  expect(compareJobOrder(decomposedJob, composedJob)).toBeLessThan(0)
+  expect(unwrap(orderJobs([composedJob, decomposedJob])).map((job) => job.id)).toEqual([
+    decomposed,
+    composed
+  ])
 })
 
 test('due delayed jobs become active atomically during claim', () => {
@@ -619,7 +742,7 @@ test('requested cancellation cannot be dropped by release or stalled recovery', 
   expect(recovered.attempt?.attempt).toBe(0)
 })
 
-test('cancelled settlement consumes exactly one attempt, including at budget edges', () => {
+test('cancelled settlement consumes exactly one attempt and active jobs retain a slot', () => {
   const settled = unwrap(
     reduceJob(activeJob({ attemptsMade: 2, attemptsMax: 3 }), {
       type: 'settle',
@@ -634,18 +757,39 @@ test('cancelled settlement consumes exactly one attempt, including at budget edg
   expect(settled.record.attemptsMade).toBe(3)
   expect(settled.attempt?.attempt).toBe(3)
 
-  const atBudget = unwrap(
-    settleJob(activeJob({ attemptsMade: 3, attemptsMax: 3 }), {
-      type: 'settle',
-      jobId,
-      leaseToken,
-      now: 160,
-      outcome: { type: 'cancelled' }
-    })
+  const atBudget = activeJob({ attemptsMade: 3, attemptsMax: 3 })
+  const atBudgetSnapshot = structuredClone(atBudget)
+  const rejected = settleJob(atBudget, {
+    type: 'settle',
+    jobId,
+    leaseToken,
+    now: 160,
+    outcome: { type: 'cancelled' }
+  })
+
+  expect(Result.isError(rejected)).toBe(true)
+  expect(Result.isError(validateJobRecord(atBudget))).toBe(true)
+  expect(atBudget).toEqual(atBudgetSnapshot)
+
+  const maximum = unwrap(
+    reduceJob(
+      activeJob({
+        attemptsMade: Number.MAX_SAFE_INTEGER - 1,
+        attemptsMax: Number.MAX_SAFE_INTEGER
+      }),
+      {
+        type: 'settle',
+        jobId,
+        leaseToken,
+        now: 160,
+        outcome: { type: 'cancelled' }
+      }
+    )
   )
 
-  expect(atBudget.attemptsMade).toBe(4)
-  expect(Result.isOk(validateJobRecord(atBudget))).toBe(true)
+  expect(maximum.record.attemptsMade).toBe(Number.MAX_SAFE_INTEGER)
+  expect(maximum.attempt?.attempt).toBe(Number.MAX_SAFE_INTEGER)
+  expect(Result.isOk(validateJobRecord(maximum.record))).toBe(true)
 })
 
 test('stalled recovery is visible without consuming an attempt', () => {
@@ -675,6 +819,60 @@ test('stalled recovery is visible without consuming an attempt', () => {
 
   expect(highStallCount.state).toBe('waiting')
   expect(highStallCount.stalledCount).toBe(11)
+
+  const lastRecoverable = unwrap(
+    recoverStalledJob(activeJob({ stalledCount: Number.MAX_SAFE_INTEGER - 1 }), {
+      type: 'recover-stalled',
+      jobId,
+      now: 200
+    })
+  )
+
+  expect(lastRecoverable.state).toBe('waiting')
+  expect(lastRecoverable.stalledCount).toBe(Number.MAX_SAFE_INTEGER)
+
+  const saturated = unwrap(
+    reduceJob(activeJob({ stalledCount: Number.MAX_SAFE_INTEGER }), {
+      type: 'recover-stalled',
+      jobId,
+      now: 200
+    })
+  )
+
+  expect(saturated.record.state).toBe('failed')
+  expect(saturated.record.stalledCount).toBe(Number.MAX_SAFE_INTEGER)
+  expect(saturated.record.attemptsMade).toBe(0)
+  expect(saturated.record.failure).toMatchObject({ kind: 'stalled', retryable: false })
+  expect(saturated.attempt).toMatchObject({
+    attempt: 0,
+    delivery: 1,
+    outcome: 'failed'
+  })
+
+  const requestedAtSaturation = unwrap(
+    requestJobCancellation(activeJob({ stalledCount: Number.MAX_SAFE_INTEGER }), {
+      type: 'request-cancellation',
+      jobId,
+      now: 150
+    })
+  )
+  const cancelledAtSaturation = unwrap(
+    reduceJob(requestedAtSaturation, {
+      type: 'recover-stalled',
+      jobId,
+      now: 200
+    })
+  )
+
+  expect(cancelledAtSaturation.record.state).toBe('cancelled')
+  expect(cancelledAtSaturation.record.stalledCount).toBe(Number.MAX_SAFE_INTEGER)
+  expect(cancelledAtSaturation.record.attemptsMade).toBe(0)
+  expect(cancelledAtSaturation.record.failure?.kind).toBe('cancelled')
+  expect(cancelledAtSaturation.attempt).toMatchObject({
+    attempt: 0,
+    delivery: 1,
+    outcome: 'cancelled'
+  })
 })
 
 test('the v0.1 codec contract exposes one tagged runtime error', () => {

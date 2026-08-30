@@ -48,8 +48,13 @@ const worker = WorkerId.make('worker-a')
 ```
 
 Identity constructors return a `better-result` `Result` and reject non-string or
-empty values. They preserve the supplied string exactly: they do not trim,
-case-fold, normalize, or otherwise canonicalize a persistent identity.
+empty values. `JobId` additionally requires well-formed Unicode scalar text:
+unpaired UTF-16 surrogates are rejected rather than replaced. Accepted identity
+strings are preserved exactly: they are not trimmed, case-folded, normalized, or
+otherwise canonicalized. `metadata` is stricter than a general JSON value: it
+must be a non-null plain object whose own enumerable string keys all map to
+strings. Primitive values, arrays, null, symbols, inherited fields, and unsafe
+accessors are rejected.
 
 `SerializedJobFailure` has a deliberately small whitelist:
 
@@ -91,7 +96,7 @@ and `cancelled`.
              | waiting |  retry (due) / release   |
              +---------+                          +-- fenced Complete --> completed
                  |  ^                              |
-                 |  | admin cancel                 +-- expired recoverStalled --> waiting
+                 |  | admin cancel                 +-- expired recoverStalled --> waiting (or terminal failed/cancelled at counter edge)
                  +-> cancelled
 
              failed/cancelled -- explicit admin redrive --> waiting or delayed
@@ -110,18 +115,22 @@ are:
   Missing, old, or expired tokens return `LeaseLostError` and leave the snapshot
   unchanged.
 - `recover-stalled` is the administrative, unfenced path for an active lease
-  whose expiry is reached. It increments `stalledCount`, records a `stalled`
-  ledger entry, and returns the job to `waiting` without consuming an attempt.
-  There is no stalled-recovery budget in this protocol; every expired active
-  job can be recovered.
+  whose expiry is reached. While `stalledCount` is below its non-negative safe
+  integer maximum, it increments the counter, records a `stalled` ledger entry,
+  and returns the job to `waiting` without consuming an attempt. At the maximum,
+  recovery is still atomic: a pending cancellation terminalizes as `cancelled`
+  while preserving the saturated count; otherwise the job terminalizes as
+  `failed` with a non-retryable `stalled` failure and one `failed` ledger entry.
+  It never wraps the counter or leaves a saturated active job waiting forever.
 - Cancelling an active job first records a cancellation request while retaining
   its lease. It does not steal the lease. The next active exit is deterministically
   terminal: a `settle` (including complete, retry, fail, or cancelled) becomes
   `cancelled`, and release or stalled recovery becomes `cancelled` instead of
   requeueing the job. A worker must use the current token for a handler
-  settlement. A requested cancellation observed by stalled recovery still
-  increments `stalledCount`; the cancellation ledger entry does not consume an
-  attempt because no handler settled. Waiting and delayed jobs can be cancelled
+  settlement. A requested cancellation observed by stalled recovery increments
+  `stalledCount` while possible and preserves a saturated count at the numeric
+  maximum; the cancellation ledger entry does not consume an attempt because no
+  handler settled. Waiting and delayed jobs can be cancelled
   by an administrative cancel command.
 - `completed`, `failed`, and `cancelled` are terminal. They never silently
   revive. `redrive` is the explicit administrative transition for a failed or
@@ -136,20 +145,26 @@ it. Storage adapters own the transaction; this package does not implement one.
 
 ## Attempts, deliveries, and stalls
 
-These counters are intentionally different:
+These counters are intentionally different, and all use safe integer
+representations:
 
-- `attemptsMade` counts handler executions that settle as `completed`, `retried`,
-  `failed`, or `cancelled`, and is compared with `attemptsMax`. A handler
-  `Cancelled` settlement increments it exactly once and its ledger entry uses
-  that new attempt number. Release during shutdown and stalled recovery do not
-  consume this retry budget. If a cancellation settlement is the first event
-  after the configured budget edge, the terminal cancellation is still
-  recorded and may make `attemptsMade` one greater than `attemptsMax`; it is not
-  retryable and cannot requeue.
+- `attemptsMax` is a positive safe integer. `attemptsMade` counts handler
+  executions that settle as `completed`, `retried`, `failed`, or `cancelled`,
+  and is compared with `attemptsMax`. `waiting`, `delayed`, and `active` records
+  must have `attemptsMade < attemptsMax`, reserving one safe execution-counter
+  slot before a job can be claimed. A handler `cancelled` settlement increments
+  `attemptsMade` exactly once, including when that slot reaches `attemptsMax`;
+  it never overflows or creates an `attemptsMax + 1` record. Release during
+  shutdown and stalled recovery do not consume this retry budget. A record at
+  the budget edge must be terminal or explicitly redriven before it can run
+  again.
 - `deliveryCount` counts every successful claim/reservation, including
-  redelivery after a release or stalled recovery.
+  redelivery after a release or stalled recovery. A claim at its safe-integer
+  maximum is rejected rather than wrapping.
 - `stalledCount` counts recoveries of expired active leases, including a recovery
-  that terminalizes a pending cancellation.
+  that terminalizes a pending cancellation. It increments while possible and
+  saturates at its safe-integer maximum; the saturated recovery behavior is
+  defined above.
 
 `AttemptRecord.attempt` and `.delivery` preserve those meanings. `released` and
 `stalled` entries remain visible even when no handler returned an outcome; a
@@ -165,10 +180,11 @@ Adapters must use the same total claim order:
 3. lower persisted `orderingSequence` first (stable insertion order);
 4. compare the JobId UTF-8 byte sequences lexicographically as unsigned bytes:
    at the first differing byte, the lower byte sorts first; when one sequence is
-   a prefix of the other, the shorter sequence sorts first. Encode JavaScript
-   strings with standard UTF-8 replacement of each unpaired UTF-16 surrogate by
-   U+FFFD. This is bytewise UTF-8 order, not JavaScript UTF-16 order or locale
-   collation, and every adapter must reproduce it exactly.
+   a prefix of the other, the shorter sequence sorts first. JobId validation
+   rejects unpaired UTF-16 surrogates, so accepted IDs encode each Unicode scalar
+   exactly with standard UTF-8; no replacement or canonicalization is performed.
+   This is bytewise UTF-8 order, not JavaScript UTF-16 order or locale collation,
+   and every adapter must reproduce it exactly.
 
 All protocol timestamps and durations are validated before reaching a store.
 Timestamps are non-negative safe integer epoch milliseconds. Durations are

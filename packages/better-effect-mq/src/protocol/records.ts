@@ -85,8 +85,10 @@ type MutableFailureCopy = {
   data?: JsonValue
 }
 
-const isJsonObject = (value: JsonValue): value is JsonObject =>
-  value !== null && !Array.isArray(value)
+const isJsonObject = (value: JsonValue): value is JsonObject => {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- metadata must be a non-null object, never a JSON primitive.
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 const invalidRecord = (field: string, message: string): ResultType<JobRecord, JobDefinitionError> =>
   Result.err(new JobDefinitionError({ field, message }))
@@ -445,13 +447,18 @@ const validateJobRecordInternal = (
     return invalidRecord(failure.error.field, failure.error.message)
   }
 
-  const cancellationOverflow =
-    state.value === 'cancelled' &&
-    attemptsMax.value < Number.MAX_SAFE_INTEGER &&
-    attemptsMade.value === attemptsMax.value + 1
-
-  if (attemptsMade.value > attemptsMax.value && !cancellationOverflow) {
+  if (attemptsMade.value > attemptsMax.value) {
     return invalidRecord('attemptsMade', 'must not exceed attemptsMax')
+  }
+
+  if (
+    (state.value === 'waiting' || state.value === 'delayed' || state.value === 'active') &&
+    attemptsMade.value >= attemptsMax.value
+  ) {
+    return invalidRecord(
+      'attemptsMade',
+      'waiting, delayed, and active jobs must retain an attempt slot below attemptsMax'
+    )
   }
 
   const backoff =

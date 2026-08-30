@@ -217,18 +217,9 @@ const validateOutcomeFailure = (
 }
 
 const nextAttemptNumber = (
-  record: JobRecord,
-  allowCancellationOverflow = false
+  record: JobRecord
 ): ResultType<number, JobNotRetryableError | JobDefinitionError> => {
-  const next = record.attemptsMade + 1
-
-  if (!Number.isSafeInteger(next)) {
-    return Result.err(
-      new JobDefinitionError({ field: 'attemptsMade', message: 'cannot exceed safe integer range' })
-    )
-  }
-
-  if (!allowCancellationOverflow && next > record.attemptsMax) {
+  if (record.attemptsMade >= record.attemptsMax) {
     return Result.err(
       new JobNotRetryableError({
         jobId: record.id,
@@ -238,7 +229,22 @@ const nextAttemptNumber = (
     )
   }
 
-  return Result.ok(next)
+  if (record.attemptsMade >= Number.MAX_SAFE_INTEGER) {
+    return Result.err(
+      new JobDefinitionError({ field: 'attemptsMade', message: 'cannot exceed safe integer range' })
+    )
+  }
+
+  const next = record.attemptsMade + 1
+
+  return Number.isSafeInteger(next)
+    ? Result.ok(next)
+    : Result.err(
+        new JobDefinitionError({
+          field: 'attemptsMade',
+          message: 'cannot exceed safe integer range'
+        })
+      )
 }
 
 const makeCancellationFailure = (
@@ -457,6 +463,42 @@ const terminalCancelWithoutHandler = (
   return transition(next, attempt)
 }
 
+const terminalizeStalledRecovery = (record: JobRecord, now: number): TransitionResult => {
+  const failure = makeSerializedJobFailure({
+    kind: 'stalled',
+    message: 'Lease expired after stalledCount reached its maximum',
+    retryable: false,
+    recordedAt: now
+  })
+
+  if (Result.isError(failure)) {
+    return Result.err(failure.error)
+  }
+
+  const next: JobRecord = {
+    ...record,
+    state: 'failed',
+    updatedAt: now,
+    processedAt: now,
+    finishedAt: now,
+    ...clearLease(),
+    cancellationRequestedAt: undefined,
+    result: undefined,
+    failure: failure.value
+  }
+  const attempt: AttemptRecord = Object.freeze({
+    attempt: record.attemptsMade,
+    delivery: record.deliveryCount,
+    startedAt: undefined,
+    finishedAt: now,
+    outcome: 'failed',
+    result: undefined,
+    failure: failure.value
+  })
+
+  return transition(next, attempt)
+}
+
 const settle = (record: JobRecord, command: SettleCommand): TransitionResult => {
   const prepared = prepareNow(record, command.jobId, command.now)
 
@@ -489,8 +531,7 @@ const settle = (record: JobRecord, command: SettleCommand): TransitionResult => 
   }
 
   const cancellationRequested = prepared.value.cancellationRequestedAt !== undefined
-  const isCancellationSettlement = cancellationRequested || command.outcome.type === 'cancelled'
-  const attempt = nextAttemptNumber(prepared.value, isCancellationSettlement)
+  const attempt = nextAttemptNumber(prepared.value)
 
   if (Result.isError(attempt)) {
     return Result.err(attempt.error)
@@ -594,9 +635,7 @@ const claim = (record: JobRecord, command: ClaimCommand): TransitionResult => {
     )
   }
 
-  const deliveryCount = prepared.value.deliveryCount + 1
-
-  if (!Number.isSafeInteger(deliveryCount)) {
+  if (prepared.value.deliveryCount >= Number.MAX_SAFE_INTEGER) {
     return Result.err(
       new JobDefinitionError({
         field: 'deliveryCount',
@@ -604,6 +643,8 @@ const claim = (record: JobRecord, command: ClaimCommand): TransitionResult => {
       })
     )
   }
+
+  const deliveryCount = prepared.value.deliveryCount + 1
 
   const next: JobRecord = {
     ...prepared.value,
@@ -811,18 +852,20 @@ const recoverStalled = (record: JobRecord, command: RecoverStalledCommand): Tran
     )
   }
 
-  const stalledCount = prepared.value.stalledCount + 1
-
-  if (!Number.isSafeInteger(stalledCount)) {
-    return Result.err(
-      new JobDefinitionError({ field: 'stalledCount', message: 'cannot exceed safe integer range' })
-    )
-  }
-
   if (prepared.value.cancellationRequestedAt !== undefined) {
+    const stalledCount =
+      prepared.value.stalledCount === Number.MAX_SAFE_INTEGER
+        ? prepared.value.stalledCount
+        : prepared.value.stalledCount + 1
+
     return terminalCancelWithoutHandler(prepared.value, command.now, stalledCount)
   }
 
+  if (prepared.value.stalledCount === Number.MAX_SAFE_INTEGER) {
+    return terminalizeStalledRecovery(prepared.value, command.now)
+  }
+
+  const stalledCount = prepared.value.stalledCount + 1
   const failure = makeSerializedJobFailure({
     kind: 'stalled',
     message: 'Lease expired before settlement',

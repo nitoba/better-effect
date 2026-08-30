@@ -44,7 +44,8 @@ const asWorkerId = (value: string): WorkerId => {
 export const makeJobId = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- this is a public untyped identity boundary.
   value: unknown
-): ResultType<JobId, JobDefinitionError> => validateIdentity(value, 'jobId', asJobId)
+): ResultType<JobId, JobDefinitionError> =>
+  validateIdentity(value, 'jobId', asJobId, { requireWellFormedUnicode: true })
 
 export const makeQueueName = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- this is a public untyped identity boundary.
