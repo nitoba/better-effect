@@ -1,9 +1,11 @@
 import { betterAuth } from 'better-auth'
 import { APIError } from 'better-auth/api'
 import { admin } from 'better-auth/plugins'
-import type { UnhandledException } from 'better-result'
+import { Result, type UnhandledException } from 'better-result'
+import { Effect, Layer, type Runtime } from 'better-effect'
 
 import {
+  BetterAuth,
   BetterAuthApiError,
   Unauthenticated,
   type BetterAuthErrorCode,
@@ -14,6 +16,14 @@ import {
 const auth = betterAuth({
   plugins: [admin()]
 })
+const Auth = BetterAuth.service('@external/Auth', auth)
+
+type AuthInstance = BetterAuth.ServiceInstance<'@external/Auth', typeof auth>
+
+type _AuthToken = Assert<
+  IsAssignable<typeof Auth, BetterAuth.ServiceToken<'@external/Auth', typeof auth>>
+>
+const authLayer: Layer<AuthInstance, never> = Auth.layer
 
 type Codes = BetterAuthErrorCode<typeof auth>
 type Failure = BetterAuthFailure<typeof auth>
@@ -39,3 +49,16 @@ const unauthenticated = new Unauthenticated({
 
 normalized.statusCode satisfies number
 unauthenticated._tag satisfies 'Unauthenticated'
+
+const program = Effect.fn(async function* () {
+  const service = yield* Auth
+  const session = yield* service.session.get(new Headers())
+  const response = yield* service.handle(new Request('https://example.test/api/auth/session'))
+
+  return Result.ok({ session, response })
+})
+
+type _AuthRequirement = Assert<IsAssignable<Effect.Requirements<typeof program>, AuthInstance>>
+declare const runtime: Runtime<AuthInstance>
+void authLayer
+void runtime.run(program)

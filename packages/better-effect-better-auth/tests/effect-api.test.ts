@@ -80,6 +80,7 @@ class RawApi {
 describe('makeBetterAuthEffectApi', () => {
   test('adapts all transport modes without mutating the input or losing the receiver', async () => {
     const raw = new RawApi()
+    // oxlint-disable-next-line typescript/unbound-method -- The test compares the raw prototype method with the adapted endpoint.
     const originalEndpoint = raw.endpoint
     const api = makeBetterAuthEffectApi<RawApi, 'AUTH_ERROR'>(raw)
     const input = {
@@ -141,7 +142,9 @@ describe('makeBetterAuthEffectApi', () => {
         returnStatus: false
       }
     ])
+    // oxlint-disable-next-line typescript/unbound-method -- The raw method must remain unchanged after adaptation.
     expect(raw.endpoint).toBe(originalEndpoint)
+    // oxlint-disable-next-line typescript/unbound-method -- The raw method must not gain transport helpers.
     expect('asResponse' in raw.endpoint).toBe(false)
   })
 
@@ -193,6 +196,7 @@ describe('makeBetterAuthEffectApi', () => {
     const api = makeBetterAuthEffectApi<RawApi, 'AUTH_ERROR'>(raw)
 
     // SAFETY: this test deliberately bypasses the public input type to verify the JavaScript boundary.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The test must forge an invalid JavaScript input type.
     const callWithConflict = api.endpoint as unknown as (
       input: EndpointInput
     ) => BetterAuthOperation<EndpointOutput, BetterAuthApiError<'AUTH_ERROR'> | UnhandledException>
@@ -205,6 +209,7 @@ describe('makeBetterAuthEffectApi', () => {
 
     const responseConflict = await execute(
       // SAFETY: this test deliberately bypasses the public input type to verify the JavaScript boundary.
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The test must forge an invalid JavaScript input type.
       (api.endpoint.asResponse as unknown as typeof callWithConflict)({
         returnHeaders: true
       })
@@ -266,9 +271,11 @@ describe('makeBetterAuthEffectApi', () => {
     const api = makeBetterAuthEffectApi<RawApi, 'AUTH_ERROR'>(raw)
 
     // SAFETY: runtime access intentionally probes values excluded by the public mapped type.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-unsafe-dictionary-type -- The test needs an opaque view to probe excluded runtime properties.
     const runtimeApi = api as unknown as Readonly<Record<PropertyKey, unknown>>
 
     expect(runtimeApi.metadata).toBeUndefined()
+    // oxlint-disable-next-line typescript/unbound-method -- The test checks that the inherited method is hidden.
     expect(runtimeApi.toString).toBeUndefined()
     expect(runtimeApi[Symbol.toStringTag]).toBeUndefined()
   })

@@ -209,4 +209,4 @@ api.getSession.withHeaders({ headers, returnHeaders: true })
 // @ts-expect-error status transport remains available only through `auth.raw`
 customApi.customEndpoint({ returnStatus: true })
 // @ts-expect-error non-function API metadata is not an effectful endpoint
-customApi.metadata
+void customApi.metadata

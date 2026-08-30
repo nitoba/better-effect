@@ -1,3 +1,8 @@
+/* oxlint-disable anti-slop/no-object-parameters -- Proxy internals operate on opaque owner objects validated at the public generic boundary. */
+/* oxlint-disable anti-slop/no-unknown-parameters -- Better Auth endpoint arguments are opaque until the endpoint validates them. */
+/* oxlint-disable anti-slop/no-unknown-returns -- Better Auth endpoint results vary by concrete endpoint and are typed by the public mapped API. */
+/* oxlint-disable anti-slop/no-unsafe-dictionary-type -- The Proxy context is inspected only after its object boundary is established. */
+
 import type { UnhandledException } from 'better-result'
 
 import type { BetterAuthApiError } from '../errors'

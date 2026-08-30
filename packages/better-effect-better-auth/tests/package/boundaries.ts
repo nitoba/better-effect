@@ -49,6 +49,7 @@ const allowedExternalImports = new Set([
   'node:url'
 ])
 
+// SAFETY: this boundary test validates each required package manifest field before relying on it.
 const packageManifest = JSON.parse(await readFile(packageManifestPath, 'utf8')) as {
   readonly name: string
   readonly version: string
@@ -61,6 +62,7 @@ const packageManifest = JSON.parse(await readFile(packageManifestPath, 'utf8')) 
   readonly devDependencies: Readonly<Record<string, string>>
 }
 
+// SAFETY: this boundary test validates each required repository field before relying on it.
 const repositoryManifest = JSON.parse(await readFile(repositoryManifestPath, 'utf8')) as {
   readonly workspaces: readonly string[]
   readonly scripts: Readonly<Record<string, string>>
@@ -356,6 +358,7 @@ const assertPackedManifest = async (): Promise<void> => {
       `tar extraction failed:\n${extraction.stderr.toString()}`
     )
 
+    // SAFETY: this boundary test reads the manifest emitted by bun pm pack and checks the field below before use.
     const packedManifest = JSON.parse(
       await readFile(join(extractedRoot, 'package', 'package.json'), 'utf8')
     ) as {
