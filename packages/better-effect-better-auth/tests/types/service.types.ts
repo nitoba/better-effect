@@ -99,9 +99,9 @@ Auth.of({
   raw: rawAuth
 })
 
-// @ts-expect-error session options are intentionally exact
 void testImplementation.session.get(new Headers(), {
   disableCookieCache: true,
+  // @ts-expect-error session options are intentionally exact
   unsupported: true
 })
 
