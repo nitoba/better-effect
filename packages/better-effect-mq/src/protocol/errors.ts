@@ -1,7 +1,11 @@
 import { TaggedError } from 'better-result'
 
+import { hasTaggedError } from '../internal/tagged'
+
 import type { JobState } from './types'
 import type { JobId, LeaseToken } from './brands'
+
+type TaggedErrorConstructor = abstract new (...args: never[]) => object
 
 const messageOr = (message: string | undefined, fallback: string): string => message ?? fallback
 
@@ -146,6 +150,15 @@ export class JobCodecFailure extends TaggedError('JobCodecFailure')<{
 }> {
   constructor(args: { readonly message?: string } = {}) {
     super({ message: messageOr(args.message, 'Job codec operation failed') })
+  }
+
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- guards accept arbitrary cross-package values.
+  static override is<C extends TaggedErrorConstructor>(
+    this: C,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- guards accept arbitrary cross-package values.
+    value: unknown
+  ): value is InstanceType<C> {
+    return hasTaggedError(value, 'JobCodecFailure')
   }
 }
 

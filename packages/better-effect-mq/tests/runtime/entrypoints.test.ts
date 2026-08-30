@@ -4,9 +4,12 @@ import * as core from '../../src/index'
 import * as testing from '../../src/testing/index'
 
 const expectedCoreRuntimeExports = [
+  'Codec',
   'InvalidJobTransitionError',
   'JobCodecFailure',
+  'JobDecodeFailure',
   'JobDefinitionError',
+  'JobEncodeFailure',
   'JobId',
   'JobName',
   'JobNotCancellableError',

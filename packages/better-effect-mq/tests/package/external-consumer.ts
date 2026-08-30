@@ -112,7 +112,7 @@ const assertArchiveContents = (entries: string[]): void => {
 
 const installPeerDependencies = (fixture: string): void => {
   const result = run(['bun', 'install', '--ignore-scripts', '--no-save'], fixture)
-  assertSuccess(result, 'Installing the better-result peer dependency')
+  assertSuccess(result, 'Installing the better-effect and better-result peer dependencies')
 }
 
 const installArchive = async (archive: string, fixture: string): Promise<string> => {
