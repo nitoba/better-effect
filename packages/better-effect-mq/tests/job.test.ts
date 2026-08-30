@@ -2,6 +2,7 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test casts describe invalid boundary values.
 // oxlint-disable anti-slop/no-known-value-widening -- test casts deliberately model malformed JavaScript.
 // oxlint-disable anti-slop/no-unknown-parameters -- codec implementations cross an untyped boundary.
+// oxlint-disable no-eval -- direct eval is intentionally covered by definition-boundary regressions.
 
 import { cp, mkdtemp, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -180,6 +181,48 @@ test('job definitions reject super methods before any codec invocation', () => {
   expect(invocations).toBe(0)
 })
 
+test('job definitions reject direct eval receiver access before mutation can leak', () => {
+  const queue = Queue.define('eval-codecs')
+  const codec = {
+    prefix: 'original',
+    encode(value: string) {
+      return Codec.string.encode(`${eval('this.prefix')}:${value}`)
+    },
+    decode(value: unknown) {
+      return Codec.string.decode(`${eval('this.prefix')}:${String(value)}`)
+    }
+  }
+
+  codec.prefix = 'mutated'
+  expectDefinitionError(() => queue.job('direct-eval', { version: 1, payload: codec }))
+})
+
+test('job definitions reject eval-hidden super before invocation', () => {
+  const queue = Queue.define('eval-super-codecs')
+
+  class BaseCodec {
+    format(value: string) {
+      return `base:${value}`
+    }
+  }
+
+  class EvalSuperCodec extends BaseCodec {
+    encode(value: string) {
+      void value
+      return Codec.string.encode(eval('super.format(value)'))
+    }
+
+    decode(value: unknown) {
+      void value
+      return Codec.string.decode(eval('super.format(String(value))'))
+    }
+  }
+
+  expectDefinitionError(() =>
+    queue.job('eval-super', { version: 1, payload: new EvalSuperCodec() })
+  )
+})
+
 test('job definitions reject private-field codecs at definition time', () => {
   const queue = Queue.define('private-codecs')
 
@@ -206,6 +249,51 @@ test('job definitions reject private-field codecs at definition time', () => {
 
   expect(JobDefinitionError.is(error)).toBe(true)
   expect(JSON.stringify(error)).not.toContain('private')
+})
+
+test('job definitions reject Unicode and escaped private-field codecs synchronously', () => {
+  const queue = Queue.define('private-codecs')
+
+  class UnicodePrivateCodec {
+    #é = true
+
+    encode(value: string) {
+      void this.#é
+      return Codec.string.encode(value)
+    }
+
+    decode(value: unknown) {
+      return Codec.string.decode(String(value))
+    }
+  }
+
+  // Keep the escape in Function#toString so the scanner sees the raw private-name form.
+  // oxlint-disable-next-line no-implied-eval -- this test constructs syntax that TypeScript prints normalized.
+  const EscapedPrivateCodec = Function(
+    'Codec',
+    String.raw`return class EscapedPrivateCodec {
+      #\u0062rand = true
+
+      encode(value) {
+        void this.#\u0062rand
+        return Codec.string.encode(value)
+      }
+
+      decode(value) {
+        return Codec.string.decode(String(value))
+      }
+    }`
+  )(Codec) as unknown as new () => CodecType<string>
+
+  expect(Function.prototype.toString.call(EscapedPrivateCodec.prototype.encode)).toContain(
+    String.raw`#\u0062rand`
+  )
+  expectDefinitionError(() =>
+    queue.job('unicode-private', { version: 1, payload: new UnicodePrivateCodec() })
+  )
+  expectDefinitionError(() =>
+    queue.job('escaped-private', { version: 1, payload: new EscapedPrivateCodec() })
+  )
 })
 
 test('job definitions reject arrow codecs with lexical receivers', () => {

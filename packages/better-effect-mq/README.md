@@ -153,8 +153,8 @@ does not clone external closure state; callers must treat captured state as
 callback behavior, not descriptor data. A later mutation of captured application
 state may consequently affect codec results, while mutation of the source
 receiver's supported fields or prototype helpers cannot. Methods containing
-`super`, private names/brands, or `new.target`, methods with non-intrinsic
-mutable properties, and methods whose source cannot be inspected are rejected
+`super`, private names/brands, direct `eval(...)`, or `new.target`, methods with
+non-intrinsic mutable properties, and methods whose source cannot be inspected are rejected
 because their receiver semantics cannot be safely detached. This is a narrow
 receiver-safety check, not a free-variable or closure restriction.
 

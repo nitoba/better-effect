@@ -670,7 +670,12 @@ const hasUnsafeMethodSyntax = (source: string): boolean => {
 
   return (
     tokens.some((token, index) => {
-      if (token.value === '#' && tokens[index + 1]?.identifier) {
+      // Do not try to decode escaped identifiers: they can hide private names or eval.
+      if (
+        token.value === '#' ||
+        token.value === '\\' ||
+        (token.identifier && token.value === 'eval')
+      ) {
         return true
       }
 
