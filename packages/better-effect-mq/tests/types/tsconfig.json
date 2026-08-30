@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "files": ["protocol.types.ts", "codec.types.ts"]
+  "files": ["protocol.types.ts", "codec.types.ts", "jobs.types.ts"]
 }
