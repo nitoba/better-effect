@@ -7,6 +7,15 @@ import type { WebEffectSuccess, WebJsonValue } from './types'
 
 const DEFAULT_FAILURE_MESSAGE = 'Internal Server Error'
 
+type BodyCandidate = {
+  readonly cancel: unknown
+  readonly getReader: unknown
+  readonly locked: unknown
+  readonly pipeThrough: unknown
+  readonly pipeTo: unknown
+  readonly tee: unknown
+}
+
 type ResponseCandidate = {
   readonly body: unknown
   readonly bodyUsed: unknown
@@ -19,6 +28,7 @@ type ResponseCandidate = {
   readonly url: unknown
   readonly arrayBuffer: unknown
   readonly blob: unknown
+  readonly bytes: unknown
   readonly clone: unknown
   readonly formData: unknown
   readonly json: unknown
@@ -39,9 +49,12 @@ const isCallable = (value: unknown): value is (...arguments_: never[]) => unknow
   typeof value === 'function'
 
 type HeadersCandidate = {
-  readonly get?: unknown
-  readonly has?: unknown
-  readonly forEach?: unknown
+  readonly append: unknown
+  readonly delete: unknown
+  readonly get: unknown
+  readonly has: unknown
+  readonly set: unknown
+  readonly forEach: unknown
 }
 
 const isHeaders = (value: unknown): boolean => {
@@ -52,7 +65,36 @@ const isHeaders = (value: unknown): boolean => {
   // SAFETY: isObject above establishes the runtime object shape before structural field inspection.
   const candidate = value as HeadersCandidate
 
-  return isCallable(candidate.get) && isCallable(candidate.has) && isCallable(candidate.forEach)
+  return (
+    isCallable(candidate.append) &&
+    isCallable(candidate.delete) &&
+    isCallable(candidate.get) &&
+    isCallable(candidate.has) &&
+    isCallable(candidate.set) &&
+    isCallable(candidate.forEach)
+  )
+}
+
+const isBody = (value: unknown): boolean => {
+  if (value === null) {
+    return true
+  }
+
+  if (!isObject(value)) {
+    return false
+  }
+
+  // SAFETY: isObject above establishes the runtime object shape before structural field inspection.
+  const candidate = value as BodyCandidate
+
+  return (
+    typeof candidate.locked === 'boolean' &&
+    isCallable(candidate.cancel) &&
+    isCallable(candidate.getReader) &&
+    isCallable(candidate.pipeThrough) &&
+    isCallable(candidate.pipeTo) &&
+    isCallable(candidate.tee)
+  )
 }
 
 const isResponseStatus = (value: unknown): value is number =>
@@ -85,7 +127,7 @@ const isWebResponse = (value: unknown): value is Response => {
     }
 
     return (
-      (candidate.body === null || isObject(candidate.body)) &&
+      isBody(candidate.body) &&
       typeof candidate.bodyUsed === 'boolean' &&
       isHeaders(candidate.headers) &&
       typeof candidate.ok === 'boolean' &&
@@ -96,6 +138,7 @@ const isWebResponse = (value: unknown): value is Response => {
       typeof candidate.url === 'string' &&
       isCallable(candidate.arrayBuffer) &&
       isCallable(candidate.blob) &&
+      isCallable(candidate.bytes) &&
       isCallable(candidate.clone) &&
       isCallable(candidate.formData) &&
       isCallable(candidate.json) &&

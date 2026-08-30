@@ -307,7 +307,7 @@ test('WebEffect default success policy rejects unsupported JSON values explicitl
   }
 })
 
-test('WebEffect accepts compatible alternate Web Responses and rejects forged prototypes', async () => {
+test('WebEffect accepts compatible alternate Web Responses across policies', async () => {
   const runtime = await Runtime.make(Layer.empty)
   const headers = new Headers()
   // SAFETY: This structural fixture supplies every Response member validated by WebEffect.
@@ -329,21 +329,128 @@ test('WebEffect accepts compatible alternate Web Responses and rejects forged pr
     text: async () => '',
     bytes: async () => new Uint8Array()
   } as Response
+  type ResponseOverrides = {
+    readonly body?: object | null
+    readonly bytes?: unknown
+    readonly headers?: object
+  }
+  const withResponseOverrides = (overrides: ResponseOverrides): Response => {
+    // SAFETY: The base fixture has every Response property; overrides intentionally remove one capability.
+    return Object.assign({}, alternateResponse, overrides) as Response
+  }
+  const streamResponse = withResponseOverrides({ body: new ReadableStream<Uint8Array>() })
+  const incompleteHeaders = (missing: 'get' | 'set') => ({
+    append: () => undefined,
+    delete: () => undefined,
+    get: missing === 'get' ? undefined : () => null,
+    has: () => false,
+    set: missing === 'set' ? undefined : () => undefined,
+    forEach: () => undefined
+  })
+  const incompleteResponses: readonly (readonly [string, Response])[] = [
+    // SAFETY: These fixtures intentionally omit one required structural capability.
+    ['bytes', withResponseOverrides({ bytes: undefined })],
+    ['headers.get', withResponseOverrides({ headers: incompleteHeaders('get') })],
+    ['headers.set', withResponseOverrides({ headers: incompleteHeaders('set') })],
+    [
+      'body.getReader',
+      withResponseOverrides({
+        body: {
+          locked: false,
+          cancel: () => undefined,
+          pipeThrough: () => undefined,
+          pipeTo: () => undefined,
+          tee: () => undefined
+        }
+      })
+    ]
+  ]
   // SAFETY: This fixture intentionally creates an object with a forged Response prototype.
   const forgedResponse = Object.create(Response.prototype) as Response
 
   try {
-    const alternate = await WebEffect.handle(
+    const defaultSuccess = await WebEffect.handle(
       runtime,
-      request('/alternate'),
-      // oxlint-disable-next-line require-yield -- This fixture returns a value through the alternate Response policy.
+      request('/default-success'),
+      // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
+      Effect.fn(async function* () {
+        return Result.ok(alternateResponse)
+      })
+    )
+    const defaultFailure = await WebEffect.handle(
+      runtime,
+      request('/default-failure'),
+      // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
+      Effect.fn(async function* () {
+        return Result.err(alternateResponse)
+      })
+    )
+    const customSuccess = await WebEffect.handle(
+      runtime,
+      request('/custom-success'),
+      // oxlint-disable-next-line require-yield -- This fixture checks a custom Response policy.
       Effect.fn(async function* () {
         return Result.ok('ok')
       }),
-      { onSuccess: () => alternateResponse }
+      { onSuccess: () => streamResponse }
+    )
+    const customFailure = await WebEffect.handle(
+      runtime,
+      request('/custom-failure'),
+      // oxlint-disable-next-line require-yield -- This fixture checks a custom Response policy.
+      Effect.fn(async function* () {
+        return Result.err('failure')
+      }),
+      { onFailure: () => alternateResponse }
     )
 
-    expect(alternate).toBe(alternateResponse)
+    expect(defaultSuccess).toBe(alternateResponse)
+    expect(defaultFailure).toBe(alternateResponse)
+    expect(customSuccess).toBe(streamResponse)
+    expect(customFailure).toBe(alternateResponse)
+
+    for (const [name, incompleteResponse] of incompleteResponses) {
+      const defaultSuccessCause = await WebEffect.handle(
+        runtime,
+        request(`/default-invalid-success/${name}`),
+        // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
+        Effect.fn(async function* () {
+          return Result.ok(incompleteResponse)
+        })
+      ).catch((cause) => cause)
+      const defaultFailure = await WebEffect.handle(
+        runtime,
+        request(`/default-invalid-failure/${name}`),
+        // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
+        Effect.fn(async function* () {
+          return Result.err(incompleteResponse)
+        })
+      )
+      const successCause = await WebEffect.handle(
+        runtime,
+        request(`/invalid-success/${name}`),
+        // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
+        Effect.fn(async function* () {
+          return Result.ok('ok')
+        }),
+        { onSuccess: () => incompleteResponse }
+      ).catch((cause) => cause)
+      const failureCause = await WebEffect.handle(
+        runtime,
+        request(`/invalid-failure/${name}`),
+        // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
+        Effect.fn(async function* () {
+          return Result.err('failure')
+        }),
+        { onFailure: () => incompleteResponse }
+      ).catch((cause) => cause)
+
+      expect(defaultSuccessCause).toBeInstanceOf(WebEffectSerializationError)
+      expect(defaultFailure).not.toBe(incompleteResponse)
+      expect(defaultFailure.status).toBe(500)
+      expect(successCause).toBeInstanceOf(TypeError)
+      expect(failureCause).toBeInstanceOf(TypeError)
+    }
 
     const forgedCause = await WebEffect.handle(
       runtime,

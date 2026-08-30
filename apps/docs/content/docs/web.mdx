@@ -120,9 +120,18 @@ The default policy is deliberately constrained:
 - every other typed failure is redacted to `{ error: 'Internal Server Error' }`
   with status `500`.
 
-Native cross-realm Responses and compatible Web Response implementations are
-accepted. Malformed values, including forged `Response.prototype` objects,
-are rejected with `TypeError` before they are returned.
+A supported Web `Response` is checked structurally, so native cross-realm
+Responses do not need to pass `instanceof Response`. The checked protocol
+requires an integer `status` of `0` or `200` through `599`, a matching boolean
+`ok`, boolean `redirected` and `bodyUsed`, string `statusText` and `url`, a
+standard `type`, and callable `arrayBuffer()`, `blob()`, `bytes()`, `clone()`,
+`formData()`, `json()`, and `text()` methods. `headers` must expose callable
+`append()`, `delete()`, `get()`, `has()`, `set()`, and `forEach()` operations.
+`body` must be `null` (including legitimate null-body Responses such as `204`)
+or a ReadableStream-compatible object with a boolean `locked` property and
+callable `cancel()`, `getReader()`, `pipeThrough()`, `pipeTo()`, and `tee()`
+methods. A missing capability, forged `Response.prototype` object, or other
+malformed value is rejected with `TypeError` before it is returned.
 
 Provide asynchronous policies when a framework needs its own response helper:
 

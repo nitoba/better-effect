@@ -80,6 +80,16 @@ const response = WebEffect.handle(runtime, new Request('https://example.test'), 
 
 expectTypeOf(response).toEqualTypeOf<Promise<Response>>()
 
+const defaultResponse = WebEffect.handle(
+  runtime,
+  new Request('https://example.test'),
+  // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy type.
+  Effect.fn(async function* () {
+    return Result.ok(new Response(null, { status: 204 }))
+  })
+)
+expectTypeOf(defaultResponse).toEqualTypeOf<Promise<Response>>()
+
 const failureProgram = Effect.fn(async function* () {
   yield* Result.await(Promise.resolve(Result.ok(undefined)))
   return Result.err(new ExpectedFailure())
@@ -98,6 +108,17 @@ const failureResponse = WebEffect.handle(
 )
 
 expectTypeOf(failureResponse).toEqualTypeOf<Promise<Response>>()
+
+const responseFailureProgram = Effect.fn(async function* () {
+  yield* Result.await(Promise.resolve(Result.ok(undefined)))
+  return Result.err(new Response('not found', { status: 404 }))
+})
+const responseFailureResponse = WebEffect.handle(
+  runtime,
+  new Request('https://example.test'),
+  responseFailureProgram
+)
+expectTypeOf(responseFailureResponse).toEqualTypeOf<Promise<Response>>()
 
 const configuredProgram = Effect.fn(async function* () {
   yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -124,6 +145,34 @@ const configuredResponse = WebEffect.handle(
   options
 )
 expectTypeOf(configuredResponse).toEqualTypeOf<Promise<Response>>()
+
+const asynchronousConfiguredResponse = WebEffect.handle(
+  runtime,
+  new Request('https://example.test'),
+  configuredProgram,
+  {
+    onSuccess: async ({ value }) => {
+      expectTypeOf(value).toEqualTypeOf<string>()
+      return new Response(value, { status: 201 })
+    },
+    onFailure: async (error: ExpectedFailure) => {
+      expectTypeOf(error).toEqualTypeOf<ExpectedFailure>()
+      return new Response('failure', { status: 422 })
+    }
+  }
+)
+expectTypeOf(asynchronousConfiguredResponse).toEqualTypeOf<Promise<Response>>()
+
+// @ts-expect-error Response policies must return a standard Response.
+const invalidPolicyResponse = WebEffect.handle(
+  runtime,
+  new Request('https://example.test'),
+  configuredProgram,
+  {
+    onSuccess: () => ({})
+  }
+)
+void invalidPolicyResponse
 
 const missingProgram = Effect.fn(async function* () {
   const missing = yield* Missing

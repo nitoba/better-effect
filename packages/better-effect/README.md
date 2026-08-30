@@ -645,11 +645,22 @@ non-plain objects are rejected with `WebEffectSerializationError` (a
 through a standards-compatible `Response` failure and redacts every other typed
 failure to `{ error: 'Internal Server Error' }` with status 500. Custom
 `onSuccess`/`onFailure` policies may be asynchronous but must return a
-standards-compatible `Response`; malformed or forged response values fail with
-`TypeError`. Native cross-realm Responses and compatible Web Response
-implementations are accepted. Thrown defects remain rejected. The Program's
-Service and failure channels, request-Layer requirements, and override
-compatibility are checked at the TypeScript boundary.
+standards-compatible `Response`. The boundary checks that protocol structurally:
+`status` is an integer in `0` or `200` through `599`, `ok` matches the 2xx
+status range, `redirected` and `bodyUsed` are booleans, `statusText` and `url`
+are strings, `type` is a standard Response type, and
+`arrayBuffer()`, `blob()`, `bytes()`, `clone()`, `formData()`, `json()`, and
+`text()` are callable. `headers` must provide callable `append()`, `delete()`,
+`get()`, `has()`, `set()`, and `forEach()` operations. `body` must be `null`
+(including legitimate null-body Responses such as `204`) or a
+ReadableStream-compatible object with a boolean `locked` property and callable
+`cancel()`, `getReader()`, `pipeThrough()`, `pipeTo()`, and `tee()` methods.
+Native cross-realm Responses and other values satisfying this protocol are
+accepted without `instanceof Response`; missing capabilities and forged
+`Response.prototype` values fail with `TypeError`. Thrown defects remain
+rejected. The Program's Service and failure channels, request-Layer
+requirements, and override compatibility are checked at the TypeScript
+boundary.
 
 ### Hono request boundaries
 
