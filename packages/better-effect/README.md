@@ -767,6 +767,71 @@ bun add better-effect better-result next
 public native Route Handler shape, so the core and other entrypoints remain
 usable without Next.js.
 
+### Bun.serve fetch adapter
+
+The optional `better-effect/bun` entrypoint is a small Bun-only adapter over
+`WebEffect`. It does not create a Runtime, own a Bun server, install a router,
+or make the Bun server an implicit Service. The route factory receives Bun's
+`Request` and `Bun.Server` values explicitly:
+
+```ts
+import { Result } from 'better-result'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service } from 'better-effect'
+import { CurrentRequest } from 'better-effect/standard-services'
+import { BunEffect } from 'better-effect/bun'
+
+class AppService extends Service<AppService>()('AppService') {
+  handle(url: string) {
+    return url
+  }
+}
+
+const AppLive = Layer.make(AppService)
+const runtime = await Runtime.make(AppLive)
+const http = BunEffect.make(runtime, {
+  onFailure: (_error, request) =>
+    Response.json({ error: 'Request failed', url: request.url }, { status: 500 })
+})
+
+const server = Bun.serve({
+  port: 3000,
+  fetch: http.handler((request, server) =>
+    Effect.fn(async function* () {
+      const app = yield* AppService
+      const currentRequest = yield* CurrentRequest
+      const signal = yield* CurrentAbortSignal
+
+      return Result.ok({
+        value: app.handle(request.url),
+        currentUrl: (currentRequest.request as Request).url,
+        port: server.port,
+        aborted: signal.aborted
+      })
+    })
+  )
+})
+```
+
+`BunEffect.handler` invokes exactly one `WebEffect` request boundary. That
+boundary supplies `CurrentRequest`, forwards the request signal, composes
+request-local Layers, applies the configured failure/response policies, keeps
+thrown defects rejected, and releases request resources before the handler
+Promise resolves. Runtime-root resources remain shared and owned by `runtime`.
+
+The application owns both long-lived resources and must shut them down
+explicitly. Stop accepting requests before releasing root Services, then
+release the Runtime:
+
+```ts
+await server.stop()
+await runtime.dispose()
+```
+
+`server.stop()` is the Bun server lifecycle boundary; `BunEffect` does not
+provide a `serve` helper or dispose either resource for you. Keep a single
+application-owned shutdown Promise if shutdown can be requested more than once.
+This Bun-specific entrypoint makes no Node compatibility claim.
+
 ### Hono request boundaries
 
 The optional `better-effect/hono` entrypoint supplies Hono's middleware,
