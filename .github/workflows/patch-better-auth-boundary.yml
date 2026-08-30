@@ -1,0 +1,86 @@
+name: Patch Better Auth boundary audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/better-auth-effectful-service
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-better-auth-boundary
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5
+        with:
+          ref: feat/better-auth-effectful-service
+
+      - name: Patch boundary classification
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('packages/better-effect-better-auth/tests/package/boundaries.ts')
+          source = path.read_text()
+
+          source = source.replace(
+              """const forbiddenPeerInternals = [
+            /^better-auth\\/.+\\/.+/,
+            /^better-effect\\/.+\\/.+/,
+            /^better-result\\/.+\\/.+/
+          ] as const""",
+              """const forbiddenPeerInternalPrefixes = [
+            'better-auth/',
+            'better-effect/',
+            'better-result/'
+          ] as const""",
+          )
+
+          source = source.replace(
+              """const isForbiddenPeerInternal = (specifier: string): boolean =>
+            forbiddenPeerInternals.some((pattern) => pattern.test(specifier))""",
+              """const isForbiddenPeerInternal = (specifier: string): boolean =>
+            !allowedExternalImports.has(specifier) &&
+            forbiddenPeerInternalPrefixes.some((prefix) => specifier.startsWith(prefix))""",
+          )
+
+          source = source.replace(
+              "'Forbidden import better-auth/internal'",
+              "'Forbidden peer internal import better-auth/internal'",
+          )
+
+          path.write_text(source)
+          PY
+
+          grep -F "const forbiddenPeerInternalPrefixes" packages/better-effect-better-auth/tests/package/boundaries.ts
+          grep -F "Forbidden peer internal import better-auth/internal" packages/better-effect-better-auth/tests/package/boundaries.ts
+
+      - name: Run focused regression gate
+        working-directory: packages/better-effect-better-auth
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          bun run test:package-boundaries
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          if git diff --quiet -- packages/better-effect-better-auth/tests/package/boundaries.ts; then
+            echo "Boundary audit is already patched"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/better-effect-better-auth/tests/package/boundaries.ts
+          git commit -m "fix: classify peer subpath imports consistently"
+          git push origin HEAD:feat/better-auth-effectful-service
