@@ -670,6 +670,77 @@ rejected. The Program's Service and failure channels, request-Layer
 requirements, and override compatibility are checked at the TypeScript
 boundary.
 
+### Next.js App Router request boundaries
+
+The optional `better-effect/next` entrypoint adapts an application-owned
+Runtime to native Next.js App Router Route Handlers without importing Next.js
+from the core or main entrypoint:
+
+```ts
+import { Result } from 'better-result'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { NextEffect } from 'better-effect/next'
+
+class UserService extends Service<UserService>()('UserService') {
+  find(id: string) {
+    return { id, name: 'Ada' }
+  }
+}
+
+const runtime = await Runtime.make(Layer.make(UserService))
+const http = NextEffect.make(runtime)
+
+export const GET = http.gen(async function* (_request, context: RouteContext<'/api/users/[id]'>) {
+  const { id } = await context.params
+  const users = yield* UserService
+
+  return Result.ok(users.find(id))
+})
+```
+
+`NextEffect.gen` and `NextEffect.handler` return the native
+`(request, context) => Promise<Response>` shape expected by App Router route
+files. The context is typed with Next's asynchronous `params`; `handler` is
+useful when the complete `Effect.fn` Program already exists. The Runtime is
+application-owned and must be disposed by the application, for example with
+`await using` during startup. If a deployment requires per-invocation
+ownership, use the existing `Runtime.use` helper explicitly; the adapter never
+creates a Runtime per request by default:
+
+```ts
+export const GET = (request, context) =>
+  Runtime.use(AppLive, (runtime) =>
+    NextEffect.make(runtime).handler(() => getUser(context))(request, context)
+  )
+```
+
+Each request creates one WebEffect execution and child Scope, installs
+`CurrentRequest` and `CurrentAbortSignal`, and releases request-local Layers
+before the handler Promise resolves. The request's
+`AbortSignal` is linked into the execution signal, and concurrent requests keep
+request Layers and context isolated.
+
+The default success policy passes through a returned `Response`; other values
+are encoded as `{ data: value }` JSON using the same strict serialization rules
+as `better-effect/web`. Use a route-level `respond` callback for a complete
+Response or `serialize` to transform a JSON-safe value. Shared `onSuccess` and
+`onFailure` policies receive the native Request and route context. Typed
+`Result.err` failures use `onFailure` (or the redacted 500 default), while
+thrown defects remain rejected. Policies must return a standards-compatible
+`Response` and may be asynchronous. This adapter does not add Edge-runtime
+support; use it only in hosts supported by the configured better-effect
+Runtime.
+
+Install Next.js only when this subpath is used:
+
+```bash
+bun add better-effect better-result next
+```
+
+`next` is an optional peer dependency, and `better-effect/next` uses only the
+public native Route Handler shape, so the core and other entrypoints remain
+usable without Next.js.
+
 ### Hono request boundaries
 
 The optional `better-effect/hono` entrypoint supplies Hono's middleware,

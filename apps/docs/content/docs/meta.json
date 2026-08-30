@@ -9,6 +9,7 @@
     "layers",
     "runtime",
     "web",
+    "next",
     "hono",
     "scope",
     "resource",

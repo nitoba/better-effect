@@ -31,6 +31,7 @@
     ".": "./dist/index.mjs",
     "./adapters/iti": "./dist/adapters/iti.mjs",
     "./hono": "./dist/hono.mjs",
+    "./next": "./dist/next.mjs",
     "./node": "./dist/node.mjs",
     "./opentelemetry": "./dist/opentelemetry.mjs",
     "./runtime/explicit": "./dist/runtime/explicit.mjs",
@@ -53,6 +54,8 @@
     "test:coverage": "bun test --coverage",
     "test:package-types": "tsc --version && tsc -p tests/package/public-type-namespaces/tsconfig.json",
     "test:package-types:minimum": "bunx --bun --package typescript@5.7.2 tsc --version && bunx --bun --package typescript@5.7.2 tsc -p tests/package/public-type-namespaces/tsconfig.json",
+    "test:package-next": "tsc -p tests/package/next/tsconfig.json",
+    "test:package-next:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/package/next/tsconfig.json",
     "test:package-opentelemetry": "tsc -p tests/package/opentelemetry/tsconfig.json",
     "test:package-opentelemetry:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/package/opentelemetry/tsconfig.json",
     "test:package-standard-services": "tsc -p tests/package/standard-services/tsconfig.json",
@@ -66,13 +69,14 @@
     "publint": "publint",
     "check:public-type-namespaces": "bun run test:package-types && bun run test:package-types:minimum && bun tests/package/public-type-namespaces/check.ts",
     "check:node-runtime": "bun tests/check-node-runtime.ts",
+    "check:next-package": "bun tests/check-next-package.ts",
     "check:opentelemetry": "bun run test:package-opentelemetry && bun run test:package-opentelemetry:minimum && bun tests/check-opentelemetry-package.ts",
     "check:web-package": "bun tests/check-web-package.ts",
     "check:hono-package": "bun tests/check-hono-package.ts",
     "check:standard-services": "bun run test:package-standard-services && bun run test:package-standard-services:minimum",
     "check:public-type-variance": "bun run test:package-variance && bun run test:package-variance:minimum && bun tests/package/public-type-variance/check.ts",
     "check:instance-requirements": "bun tests/package/instance-requirements/check.ts",
-    "check": "bun run typecheck && bun test && bun run format:check && bun run check:node-runtime && bun run check:opentelemetry && bun run check:web-package && bun run check:hono-package && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run check:node-runtime && bun run check:opentelemetry && bun run check:web-package && bun run check:hono-package && bun run check:next-package && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint"
     "prepublishOnly": "bun run check",
     "release:dry": "bun publish --dry-run"
   },
@@ -81,15 +85,20 @@
     "@opentelemetry/sdk-trace-base": "2.10.0",
     "@types/bun": "1.3.14",
     "@types/jsdom": "21.1.7",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
     "hono": "^4.9.0",
     "iti": "^0.8.0",
     "jsdom": "26.1.0",
     "lefthook": "^2.1.10",
     "mermaid": "11.17.2",
+    "next": "16.3.0",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0",
     "oxlint-tsgolint": "^7.0.2001",
     "publint": "^0.3.23",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "tsdown": "^0.22.14"
   },
   "peerDependencies": {
@@ -97,6 +106,7 @@
     "better-result": "^3.0.0",
     "hono": ">=4.0.0",
     "iti": "^0.8.0",
+    "next": ">=15.5.0 <17.0.0",
     "typescript": ">=5.7.0"
   },
   "peerDependenciesMeta": {
@@ -107,6 +117,9 @@
       "optional": true
     },
     "iti": {
+      "optional": true
+    },
+    "next": {
       "optional": true
     }
   }

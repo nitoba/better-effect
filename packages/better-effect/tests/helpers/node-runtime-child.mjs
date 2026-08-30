@@ -54,6 +54,7 @@ const keepAlive =
     ? setInterval(() => {}, 1_000)
     : undefined
 let processExitCalled = false
+// oxlint-disable-next-line typescript/unbound-method -- the child restores the exact process method after exercising the exit boundary.
 const originalExit = process.exit
 
 process.exit = (...args) => {
@@ -380,6 +381,7 @@ try {
       exitCode: process.exitCode ?? null
     })
   } else if (scenario === 'setup') {
+    // oxlint-disable-next-line typescript/unbound-method -- the child restores the exact process method after testing listener setup.
     const originalOn = process.on
     let calls = 0
     let caught = false
