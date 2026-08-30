@@ -130,6 +130,75 @@ a codec without a version change only for a documented backward-compatible
 wire change. Upcasters, registries, and persisted job definitions are outside
 this issue’s scope.
 
+## Queue and versioned Job definitions
+
+The primary definition API is `Queue.define(...).job(...)`. It creates an inert,
+immutable descriptor; it does not create a worker, resolve a Service, open a
+connection, or register anything globally. The persisted identity is exactly the
+literal queue, job name, and positive integer version. Function and class names
+never participate in identity.
+
+```ts
+import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'
+
+const Emails = Queue.define('emails')
+const payload = Codec.json<{
+  readonly messageId: string
+  readonly tenantId: string
+  readonly recipient: string
+}>()
+const failure = Codec.json<{ readonly code: string }>()
+const backoff = makePersistedBackoff({
+  type: 'exponential',
+  delayMs: 1_000,
+  maxDelayMs: 60_000
+}).unwrap()
+
+const SendEmailV1 = Emails.job('send-email', {
+  version: 1,
+  payload,
+  failure,
+  defaults: { attempts: 5, backoff, timeoutMs: 30_000, priority: 0 },
+  idempotencyKey: ({ messageId }) => messageId,
+  metadata: ({ tenantId }) => ({ tenantId }),
+  retryable: ({ code }) => code !== 'recipient-blocked'
+})
+const SendEmailV2 = Job.define('send-email', {
+  queue: Emails,
+  version: 2,
+  payload,
+  failure
+})
+
+const Jobs = JobRegistry.make([SendEmailV1, SendEmailV2] as const)
+Jobs.acceptedClaimIdentities // both versions, in definition order
+Jobs.lookup({ queue: 'emails', name: 'send-email', version: 1 }) // Result<..., JobDefinitionError>
+```
+
+`Job.define` is optional direct-call sugar over the same `Queue.job` implementation;
+`Queue.define(...).job(...)` is the documented ergonomic form. `Job.PayloadInput`
+is `Codec.Input` (the schema/input side), while `Job.Payload` is `Codec.Value`
+(the decoded handler value). Idempotency and metadata callbacks receive
+`Job.Payload`, and are not called while defining a job. Their later producer-side
+outputs can be safely normalized with `normalizeIdempotencyKey` and
+`normalizeMetadata`; invalid or throwing callbacks become a redacted
+`JobDefinitionError` rather than exposing payload details.
+
+`defaults.attempts` is a positive safe integer, `defaults.timeoutMs` is an
+optional positive finite safe-integer millisecond duration, `priority` defaults
+to the safe integer `0`, and `backoff` uses the existing `PersistedBackoff`
+shape. Retention fields such as `keep` and `retain` are intentionally not part of
+this v0.1 descriptor. Result and failure codecs are optional; when absent,
+the corresponding `Job.Success` or `Job.Failure` type is `never`, and this
+package performs no result persistence or worker execution.
+
+`Job.is` and `Queue.is` use stable `Symbol.for` TypeIds and bounded, accessor-free
+checks, so descriptors from duplicate package copies can be recognized safely.
+The registry is local and immutable: duplicate queue/name/version identities are
+rejected, unknown lookups return an explicit error Result, and no handlers are
+registered. Enqueue, storage, retry scheduling, and worker execution are
+separate features.
+
 ## State machine
 
 The only v0.1 states are `waiting`, `delayed`, `active`, `completed`, `failed`,

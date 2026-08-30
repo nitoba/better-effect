@@ -1,4 +1,4 @@
-import { Codec, JobId, protocolVersion } from 'better-effect-mq'
+import { Codec, JobId, JobRegistry, Queue, protocolVersion } from 'better-effect-mq'
 import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
 import packageJson from 'better-effect-mq/package.json' with { type: 'json' }
@@ -14,6 +14,13 @@ if (JobId.make === undefined) {
 const decoded = Codec.string.decode('external')
 if (decoded.status !== 'ok' || decoded.value !== 'external') {
   throw new Error('the better-effect-mq codec did not resolve')
+}
+
+const queue = Queue.define('external')
+const job = queue.job('smoke', { version: 1, payload: Codec.string })
+const registry = JobRegistry.make([job])
+if (registry.lookup(job.identity).status !== 'ok') {
+  throw new Error('the better-effect-mq job registry did not resolve')
 }
 
 if (Object.keys(testing).length !== 0) {
