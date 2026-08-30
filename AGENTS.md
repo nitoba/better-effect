@@ -567,24 +567,37 @@ The npm release workflow uses Trusted Publishing/OIDC.
 
 Do not add a long-lived `NPM_TOKEN` secret when Trusted Publishing is available.
 
-Release tags use:
+Release routes are package-qualified and allowlisted:
 
 ```text
-v<package-version>
+better-effect             -> v<package-version>
+better-effect-better-auth -> better-effect-better-auth-v<package-version>
 ```
 
-Example:
+The existing core `v0.1.0` tag is owned by `better-effect` and must never be
+reused for the Better Auth package. The integration has its own package-local
+`CHANGELOG.md` and qualified tag.
 
-```text
-package.json: 0.1.3
-GitHub Release tag: v0.1.3
+Use the release script with an explicit package for new releases:
+
+```bash
+./scripts/release.sh better-effect 0.14.0
+./scripts/release.sh better-effect-better-auth 0.1.0
 ```
 
-The publish workflow must reject mismatched package and tag versions. The
-local release script requires a matching changelog entry. Quality and publish
-gates use non-mutating format checks and fail if tracked files become dirty. The
-release script creates the version commit and tag, then uses one atomic push;
-it must not be run from an agent worktree or used to push during review.
+The artifact dry gate uses `bun pm pack --ignore-scripts`; it is local and
+registry-auth-free, and checks the selected package name, version, archive
+allowlist, declarations, source maps, and absence of workspace/file
+references. It must not be replaced with `bun publish --dry-run`. Real npm
+publication remains exclusively in the Trusted Publishing/OIDC workflow.
+
+The publish workflow must reject mismatched package, tag, and release-note
+paths and must publish only the package selected by the qualified tag. The
+local release script requires a matching package-local changelog entry.
+Quality and publish gates use non-mutating format checks and fail if tracked
+files become dirty. The release script creates the version commit when needed,
+creates the qualified tag, and uses one atomic push; it must not be run from an
+agent worktree or used to push during review.
 
 ## Change discipline
 

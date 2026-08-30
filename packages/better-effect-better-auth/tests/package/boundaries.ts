@@ -19,7 +19,7 @@ const expectedExports = {
 
 const expectedPeers = {
   'better-auth': '^1.7.0',
-  'better-effect': '^0.12.0',
+  'better-effect': '>=0.12.0 <0.14.0',
   'better-result': '^3.0.0',
   typescript: '>=5.7.0'
 } as const satisfies Record<string, string>
@@ -51,6 +51,7 @@ const forbiddenPackagePrefixes = [
 ] as const
 
 const forbiddenPeerInternalPrefixes = ['better-auth/', 'better-effect/', 'better-result/'] as const
+const allowedDevelopmentOnlyPackages = new Set(['hono'])
 
 const allowedExternalImports = new Set([
   'better-auth/api',
@@ -302,8 +303,10 @@ const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
     }
 
     for (const name of Object.keys(value)) {
+      const allowedDevelopmentOnly =
+        section === 'devDependencies' && allowedDevelopmentOnlyPackages.has(name)
       assertCondition(
-        !isForbiddenPackage(name),
+        allowedDevelopmentOnly || !isForbiddenPackage(name),
         `Forbidden dependency ${name} appears in ${section}`
       )
     }
@@ -328,7 +331,8 @@ const assertPackageManifest = (): void => {
     'The package must declare no import side effects'
   )
   assertCondition(
-    JSON.stringify(packageManifest['files']) === JSON.stringify(['dist', 'LICENSE', 'README.md']),
+    JSON.stringify(packageManifest['files']) ===
+      JSON.stringify(['dist', 'LICENSE', 'README.md', 'CHANGELOG.md']),
     'Package files allowlist changed'
   )
   assertManifestExports(packageManifest)
@@ -360,6 +364,7 @@ const assertPackageManifest = (): void => {
     'test',
     'test:package-boundaries',
     'test:package-consumer',
+    'test:types:performance',
     'lint',
     'format:check',
     'publint',

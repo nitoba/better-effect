@@ -1,106 +1,227 @@
-import { APIError } from 'better-auth/api'
-import { Effect, Layer, Runtime } from 'better-effect'
-import { Result } from 'better-result'
+import { betterAuth } from 'better-auth'
+import { APIError, createAuthEndpoint } from 'better-auth/api'
+import { memoryAdapter } from 'better-auth/adapters/memory'
+import { admin } from 'better-auth/plugins'
+import { Effect, Runtime } from 'better-effect'
 import { BetterAuth, BetterAuthApiError, Unauthenticated } from 'better-effect-better-auth'
+import { Result } from 'better-result'
 
-const headers = new Headers({
-  'set-cookie': 'session=secret'
+const baseURL = 'http://localhost:3000'
+const credentials = {
+  email: 'consumer-admin@example.com',
+  name: 'External Consumer Admin',
+  password: 'a-valid-password-123'
+}
+
+const makeDatabase = () => ({
+  account: [],
+  session: [],
+  user: [],
+  verification: []
 })
-const source = new APIError(
-  'UNAUTHORIZED',
-  {
-    code: 'INVALID_EMAIL_OR_PASSWORD',
-    message: 'Invalid email or password',
-    secret: 'body-secret'
-  },
+
+const cookieHeaderFromSetCookie = (headers) =>
   headers
-)
-const normalized = BetterAuthApiError.from(source)
-const unauthenticated = new Unauthenticated({
-  message: 'Authentication is required'
-})
-const publicApi = await import('better-effect-better-auth')
-const runtimeExports = Object.keys(publicApi).sort()
-const expectedRuntimeExports = ['BetterAuth', 'BetterAuthApiError', 'Unauthenticated']
+    .getSetCookie()
+    .map((setCookie) => setCookie.split(';', 1)[0])
+    .join('; ')
 
-if (JSON.stringify(runtimeExports) !== JSON.stringify(expectedRuntimeExports)) {
-  throw new Error(`Unexpected runtime exports: ${runtimeExports.join(', ')}`)
-}
-if (publicApi.BetterAuth !== BetterAuth) {
-  throw new Error('BetterAuth static import does not match the package export')
-}
-if (BetterAuth === null || !(BetterAuth.service instanceof Function)) {
-  throw new Error('BetterAuth.service is not callable')
-}
-
-const session = Object.freeze({
-  session: Object.freeze({ id: 'packed-session' }),
-  user: Object.freeze({ id: 'packed-user' })
-})
-const request = new Request('https://example.test/protected', {
-  headers: {
-    authorization: 'Bearer packed'
-  }
-})
-const apiInputs = []
-const rawApi = {
-  async getSession(input) {
-    if (this !== rawApi) {
-      throw new Error('Better Auth API receiver was not preserved')
-    }
-    if (
-      input.asResponse !== false ||
-      input.returnHeaders !== false ||
-      input.returnStatus !== false
-    ) {
-      throw new Error('Better Auth API transport flags were not normalized')
-    }
-
-    apiInputs.push(input)
-    return input.headers.get('authorization') === 'Bearer packed' ? session : null
-  }
-}
-let handlerResponse
-const rawAuth = {
-  api: rawApi,
-  async handler(input) {
-    if (this !== rawAuth || input !== request) {
-      throw new Error('Better Auth handler receiver or Request was not preserved')
-    }
-
-    handlerResponse = new Response('packed-handler', {
-      status: 207,
-      headers: {
-        'x-packed-auth': 'ok'
+const releaseGatePlugin = (signals) => ({
+  id: 'release-gate',
+  endpoints: {
+    consumerEcho: createAuthEndpoint('/consumer-echo', { method: 'GET' }, async (context) =>
+      context.json({ value: context.query?.value ?? null })
+    ),
+    consumerFailure: createAuthEndpoint('/consumer-failure', { method: 'GET' }, async () => {
+      throw new APIError(
+        'TOO_MANY_REQUESTS',
+        {
+          code: 'CONSUMER_PLUGIN_FAILURE',
+          message: 'The consumer plugin failed'
+        },
+        new Headers({
+          'retry-after': '7',
+          'set-cookie': 'consumer-secret=do-not-log'
+        })
+      )
+    }),
+    consumerForbidden: createAuthEndpoint('/consumer-forbidden', { method: 'GET' }, async () => {
+      throw new APIError('FORBIDDEN', {
+        code: 'CONSUMER_FORBIDDEN',
+        message: 'The consumer request is forbidden'
+      })
+    }),
+    consumerRedirect: createAuthEndpoint(
+      '/consumer-redirect',
+      { method: 'GET' },
+      async (context) => {
+        throw context.redirect(`${baseURL}/consumer-target`)
       }
-    })
-    return handlerResponse
+    ),
+    consumerReleaseGate: createAuthEndpoint(
+      '/consumer-release-gate',
+      { method: 'GET' },
+      async (context) => context.json({ source: 'real-plugin' })
+    ),
+    consumerSignal: createAuthEndpoint(
+      '/consumer-signal',
+      { method: 'GET', requireRequest: true },
+      async (context) => {
+        signals.push(context.request.signal)
+        return context.json({ aborted: context.request.signal.aborted })
+      }
+    ),
+    consumerStream: createAuthEndpoint(
+      '/consumer-stream',
+      { method: 'GET' },
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('consumer-stream-body'))
+              controller.close()
+            }
+          }),
+          { headers: { 'content-type': 'text/plain' } }
+        )
+    )
+  },
+  schema: {
+    session: {
+      fields: {
+        tenantId: {
+          required: false,
+          type: 'string'
+        }
+      }
+    },
+    user: {
+      fields: {
+        plan: {
+          required: false,
+          type: 'string'
+        }
+      }
+    }
+  },
+  $ERROR_CODES: {
+    CONSUMER_PLUGIN_FAILURE: {
+      code: 'CONSUMER_PLUGIN_FAILURE',
+      message: 'The consumer plugin failed'
+    },
+    CONSUMER_FORBIDDEN: {
+      code: 'CONSUMER_FORBIDDEN',
+      message: 'The consumer request is forbidden'
+    }
   }
-}
-const Auth = BetterAuth.service('@external/Auth', rawAuth)
-const constructed = new Auth()
+})
 
-if (!(Auth instanceof Function) || Auth.serviceTag !== '@external/Auth') {
-  throw new Error('BetterAuth.service did not return a tagged Service token')
-}
-if (Auth.layer === null || !(Auth.layer instanceof Object)) {
-  throw new Error('BetterAuth.service did not attach its Layer')
-}
-if (constructed.raw !== rawAuth || !(constructed.api instanceof Object)) {
-  throw new Error('Constructed Better Auth Service is incomplete')
+const makeAuth = (options = {}) => {
+  const signals = []
+  const rawAuth = betterAuth({
+    baseURL,
+    database: memoryAdapter(makeDatabase()),
+    emailAndPassword: {
+      enabled: true
+    },
+    ...options,
+    plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin(signals)],
+    secret: 'external-consumer-secret-not-for-production-use'
+  })
+  return { rawAuth, signals }
 }
 
-const runtime = await Runtime.make(Layer.merge(Auth.layer, Layer.empty))
+const { rawAuth, signals } = makeAuth()
+const Auth = BetterAuth.service('@consumer/Auth', rawAuth)
+
+const execute = (operation) =>
+  Result.gen(async function* () {
+    return Result.ok(yield* operation)
+  })
+
+const runtime = await Runtime.make(Auth.layer)
 let result
 try {
   result = await runtime.run(
     Effect.fn(async function* () {
       const auth = yield* Auth
-      const apiSession = yield* auth.api.getSession({ headers: request.headers })
-      const requiredSession = yield* auth.session.require(request)
-      const response = yield* auth.handle(request)
+      const created = yield* auth.api.signUpEmail({
+        body: credentials
+      })
+      const signedIn = yield* auth.api.signInEmail.withHeaders({
+        body: {
+          email: credentials.email,
+          password: credentials.password
+        }
+      })
+      const cookies = signedIn.headers.getSetCookie()
+      const headers = new Headers({
+        cookie: cookieHeaderFromSetCookie(signedIn.headers)
+      })
+      const request = new Request(`${baseURL}/protected`, { headers })
+      const session = yield* auth.session.require(request)
+      const users = yield* auth.api.listUsers({
+        headers,
+        query: {
+          limit: 5
+        }
+      })
+      const plugin = yield* auth.api.consumerReleaseGate({ headers })
+      const pluginResponse = yield* auth.api.consumerReleaseGate.asResponse({ headers })
+      const streamResponse = yield* auth.handle(new Request(`${baseURL}/api/auth/consumer-stream`))
+      const signalRequest = new Request(`${baseURL}/api/auth/consumer-signal`)
+      const signalResponse = yield* auth.handle(signalRequest)
+      const abortedController = new AbortController()
+      abortedController.abort()
+      const abortedRequest = new Request(`${baseURL}/api/auth/consumer-signal`, {
+        signal: abortedController.signal
+      })
+      const abortedResponse = yield* auth.handle(abortedRequest)
+      const invalidHandler = yield* auth.handle(
+        new Request(`${baseURL}/api/auth/sign-in/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: credentials.email,
+            password: 'not-the-password'
+          })
+        })
+      )
+      const badRequestHandler = yield* auth.handle(
+        new Request(`${baseURL}/api/auth/sign-in/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: 'not-an-email',
+            password: 'not-a-password'
+          })
+        })
+      )
+      const handler = yield* auth.handle(
+        new Request(`${baseURL}/api/auth/get-session`, {
+          headers
+        })
+      )
+      const signOut = yield* auth.api.signOut.withHeaders({ headers })
 
-      return Result.ok({ auth, apiSession, requiredSession, response })
+      return Result.ok({
+        abortedRequest,
+        abortedResponse,
+        auth,
+        badRequestHandler,
+        cookies,
+        created,
+        handler,
+        invalidHandler,
+        plugin,
+        pluginResponse,
+        session,
+        signalRequest,
+        signalResponse,
+        signOut,
+        streamResponse,
+        users
+      })
     })
   )
 } finally {
@@ -108,35 +229,148 @@ try {
 }
 
 if (!Result.isOk(result)) {
-  throw new Error(`Packed Better Auth program failed: ${String(result.error)}`)
+  throw new Error(`External Better Auth Program failed: ${String(result.error)}`)
 }
 if (
-  result.value.auth.raw !== rawAuth ||
-  result.value.apiSession !== session ||
-  result.value.requiredSession !== session ||
-  result.value.response !== handlerResponse ||
-  result.value.response.status !== 207 ||
-  result.value.response.headers.get('x-packed-auth') !== 'ok' ||
-  (await result.value.response.text()) !== 'packed-handler' ||
-  apiInputs.length !== 2
+  result.value.created.user.role !== 'admin' ||
+  result.value.cookies.length === 0 ||
+  result.value.session.user.email !== credentials.email ||
+  result.value.users.total !== 1 ||
+  result.value.plugin.source !== 'real-plugin' ||
+  result.value.pluginResponse.status !== 200 ||
+  result.value.pluginResponse.bodyUsed ||
+  result.value.streamResponse.status !== 200 ||
+  result.value.streamResponse.bodyUsed ||
+  result.value.signalResponse.status !== 200 ||
+  result.value.signalResponse.bodyUsed ||
+  result.value.abortedResponse.status !== 200 ||
+  result.value.abortedResponse.bodyUsed ||
+  result.value.invalidHandler.status !== 401 ||
+  result.value.invalidHandler.bodyUsed ||
+  result.value.badRequestHandler.status !== 400 ||
+  result.value.badRequestHandler.bodyUsed ||
+  result.value.handler.status !== 200 ||
+  result.value.handler.bodyUsed ||
+  result.value.signOut.response.success !== true ||
+  result.value.signOut.headers.getSetCookie().length === 0
 ) {
-  throw new Error('Packed Better Auth program did not preserve Service behavior')
+  throw new Error('External Better Auth Service behavior did not pass')
+}
+if ((await result.value.pluginResponse.text()) !== '{"source":"real-plugin"}') {
+  throw new Error('External plugin Response mode did not preserve its body')
+}
+if ((await result.value.streamResponse.text()) !== 'consumer-stream-body') {
+  throw new Error('External handler streaming Response did not preserve its body')
+}
+if ((await result.value.signalResponse.json()).aborted !== false) {
+  throw new Error('External handler did not preserve a live Request AbortSignal')
+}
+if ((await result.value.abortedResponse.json()).aborted !== true) {
+  throw new Error('External handler did not preserve an aborted Request AbortSignal')
 }
 if (
-  normalized.cause !== source ||
-  normalized.headers !== headers ||
-  normalized.statusCode !== 401
+  signals[0] !== result.value.signalRequest.signal ||
+  signals[1] !== result.value.abortedRequest.signal
 ) {
-  throw new Error('BetterAuthApiError did not preserve the APIError in memory')
-}
-if (normalized.code !== 'INVALID_EMAIL_OR_PASSWORD') {
-  throw new Error('BetterAuthApiError did not preserve the runtime code')
-}
-if (unauthenticated._tag !== 'Unauthenticated') {
-  throw new Error('Unauthenticated did not preserve its tagged identity')
+  throw new Error('External handler changed the Request AbortSignal identity')
 }
 
-const json = JSON.stringify(normalized)
-if (json.includes('session=secret') || json.includes('body-secret')) {
-  throw new Error('BetterAuthApiError serialized sensitive fields')
+const loggedOutHeaders = new Headers({
+  cookie: cookieHeaderFromSetCookie(result.value.signOut.headers)
+})
+const loggedOutRequest = new Request(`${baseURL}/protected`, {
+  headers: loggedOutHeaders
+})
+const loggedOut = await execute(result.value.auth.session.get(loggedOutRequest))
+const loggedOutRequired = await execute(result.value.auth.session.require(loggedOutRequest))
+const missing = await execute(result.value.auth.session.get(new Headers()))
+const requiredMissing = await execute(result.value.auth.session.require(new Headers()))
+const invalidCredentials = await execute(
+  result.value.auth.api.signInEmail({
+    body: {
+      email: credentials.email,
+      password: 'not-the-password'
+    }
+  })
+)
+const pluginFailure = await execute(result.value.auth.api.consumerFailure())
+const forbiddenHandler = await execute(
+  result.value.auth.handle(new Request(`${baseURL}/api/auth/consumer-forbidden`))
+)
+const redirect = await execute(
+  result.value.auth.handle(new Request(`${baseURL}/api/auth/consumer-redirect`))
+)
+const failedHandler = await execute(
+  result.value.auth.handle(new Request(`${baseURL}/api/auth/consumer-failure`))
+)
+const notFound = await execute(
+  result.value.auth.handle(new Request(`${baseURL}/api/auth/not-a-real-endpoint`))
+)
+const [slow, fast] = await Promise.all([
+  execute(result.value.auth.api.consumerEcho({ query: { value: 'slow' } })),
+  execute(result.value.auth.api.consumerEcho({ query: { value: 'fast' } }))
+])
+
+if (
+  !Result.isOk(loggedOut) ||
+  loggedOut.value !== null ||
+  !Result.isError(loggedOutRequired) ||
+  !(loggedOutRequired.error instanceof Unauthenticated) ||
+  !Result.isOk(missing) ||
+  missing.value !== null ||
+  !Result.isError(requiredMissing) ||
+  !(requiredMissing.error instanceof Unauthenticated) ||
+  !Result.isError(invalidCredentials) ||
+  !(invalidCredentials.error instanceof BetterAuthApiError) ||
+  invalidCredentials.error.code !== 'INVALID_EMAIL_OR_PASSWORD' ||
+  !Result.isError(pluginFailure) ||
+  !(pluginFailure.error instanceof BetterAuthApiError) ||
+  pluginFailure.error.statusCode !== 429 ||
+  pluginFailure.error.code !== 'CONSUMER_PLUGIN_FAILURE' ||
+  new Headers(pluginFailure.error.headers).get('retry-after') !== '7' ||
+  JSON.stringify(pluginFailure.error).includes('consumer-secret') ||
+  !Result.isOk(forbiddenHandler) ||
+  forbiddenHandler.value.status !== 403 ||
+  forbiddenHandler.value.bodyUsed ||
+  !Result.isOk(redirect) ||
+  redirect.value.status !== 302 ||
+  redirect.value.headers.get('location') !== `${baseURL}/consumer-target` ||
+  !Result.isOk(failedHandler) ||
+  failedHandler.value.status !== 429 ||
+  failedHandler.value.headers.get('retry-after') !== '7' ||
+  failedHandler.value.headers.getSetCookie()[0] !== 'consumer-secret=do-not-log' ||
+  !Result.isOk(notFound) ||
+  notFound.value.status !== 404 ||
+  !Result.isOk(slow) ||
+  !Result.isOk(fast) ||
+  slow.value.value !== 'slow' ||
+  fast.value.value !== 'fast'
+) {
+  throw new Error('External error, handler, or concurrency checks failed')
 }
+
+const throwing = makeAuth({ onAPIError: { throw: true } })
+const ThrowingAuth = BetterAuth.service('@consumer/ThrowingAuth', throwing.rawAuth)
+const throwingRuntime = await Runtime.make(ThrowingAuth.layer)
+let throwingResult
+try {
+  throwingResult = await throwingRuntime.run(
+    Effect.fn(async function* () {
+      const auth = yield* ThrowingAuth
+      return Result.ok(await execute(auth.api.consumerFailure()))
+    })
+  )
+} finally {
+  await throwingRuntime.dispose()
+}
+if (
+  !Result.isOk(throwingResult) ||
+  !Result.isError(throwingResult.value) ||
+  !(throwingResult.value.error instanceof BetterAuthApiError) ||
+  throwingResult.value.error.statusCode !== 429 ||
+  throwingResult.value.error.code !== 'CONSUMER_PLUGIN_FAILURE'
+) {
+  throw new Error('Public Better Auth onAPIError.throw handling did not pass')
+}
+
+console.log('packed Better Auth consumer passed')

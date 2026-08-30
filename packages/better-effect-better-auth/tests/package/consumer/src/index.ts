@@ -1,64 +1,107 @@
-import { betterAuth } from 'better-auth'
-import { APIError } from 'better-auth/api'
+import { betterAuth, type BetterAuthPlugin } from 'better-auth'
+import { createAuthEndpoint } from 'better-auth/api'
+import { memoryAdapter } from 'better-auth/adapters/memory'
 import { admin } from 'better-auth/plugins'
-import { Result, type UnhandledException } from 'better-result'
 import { Effect, Layer, type Runtime } from 'better-effect'
-
+import { Result } from 'better-result'
 import {
   BetterAuth,
-  BetterAuthApiError,
-  Unauthenticated,
+  type BetterAuthEndpointResult,
   type BetterAuthErrorCode,
   type BetterAuthFailure,
-  type BetterAuthRuntimeErrorCode
+  type BetterAuthServiceInstance
 } from 'better-effect-better-auth'
 
-const auth = betterAuth({
-  plugins: [admin()]
-})
-const Auth = BetterAuth.service('@external/Auth', auth)
-
-type AuthInstance = BetterAuth.ServiceInstance<'@external/Auth', typeof auth>
-
-type _AuthToken = Assert<
-  IsAssignable<typeof Auth, BetterAuth.ServiceToken<'@external/Auth', typeof auth>>
->
-const authLayer: Layer<AuthInstance, never> = Auth.layer
-
-type Codes = BetterAuthErrorCode<typeof auth>
-type Failure = BetterAuthFailure<typeof auth>
-type Assert<T extends true> = T
+type Assert<Condition extends true> = Condition
 type IsAssignable<From, To> = [From] extends [To] ? true : false
+type IsAny<Value> = 0 extends 1 & Value ? true : false
+type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false
 
-type _BuiltInCode = Assert<IsAssignable<'INVALID_EMAIL_OR_PASSWORD', Codes>>
-type _PluginCode = Assert<IsAssignable<'YOU_ARE_NOT_ALLOWED_TO_LIST_USERS', Codes>>
-type _ApiFailure = Assert<IsAssignable<BetterAuthApiError<Codes>, Failure>>
-type _UnhandledFailure = Assert<IsAssignable<UnhandledException, Failure>>
-type _RuntimeCode = Assert<
-  IsAssignable<BetterAuthRuntimeErrorCode, BetterAuthApiError<Codes>['code']>
->
+const releaseGatePlugin = () =>
+  ({
+    id: 'release-gate',
+    endpoints: {
+      consumerReleaseGate: createAuthEndpoint(
+        '/consumer-release-gate',
+        { method: 'GET' },
+        async (context) => context.json({ source: 'real-plugin' as const })
+      )
+    },
+    schema: {
+      session: {
+        fields: {
+          tenantId: {
+            required: false,
+            type: 'string'
+          }
+        }
+      },
+      user: {
+        fields: {
+          plan: {
+            required: false,
+            type: 'string'
+          }
+        }
+      }
+    },
+    $ERROR_CODES: {
+      CONSUMER_PLUGIN_FAILURE: {
+        code: 'CONSUMER_PLUGIN_FAILURE',
+        message: 'The consumer plugin failed'
+      }
+    }
+  }) satisfies BetterAuthPlugin
 
-const source = new APIError('UNAUTHORIZED', {
-  code: 'INVALID_EMAIL_OR_PASSWORD',
-  message: 'Invalid email or password'
+const makeDatabase = () => ({
+  account: [],
+  session: [],
+  user: [],
+  verification: []
 })
-const normalized: BetterAuthApiError<Codes> = BetterAuthApiError.from<Codes>(source)
-const unauthenticated = new Unauthenticated({
-  message: 'Authentication is required'
+
+const rawAuth = betterAuth({
+  baseURL: 'http://localhost:3000',
+  database: memoryAdapter(makeDatabase()),
+  emailAndPassword: {
+    enabled: true
+  },
+  plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin()],
+  secret: 'external-consumer-secret-not-for-production-use'
 })
+const Auth = BetterAuth.service('@consumer/Auth', rawAuth)
 
-normalized.statusCode satisfies number
-unauthenticated._tag satisfies 'Unauthenticated'
+type AuthType = typeof rawAuth
+type AuthInstance = BetterAuthServiceInstance<'@consumer/Auth', AuthType>
+type Codes = BetterAuthErrorCode<AuthType>
+type Failure = BetterAuthFailure<AuthType>
+type Session = AuthType['$Infer']['Session']
+type Users = BetterAuthEndpointResult<AuthType['api']['listUsers']>
 
+type _Token = Assert<IsAssignable<typeof Auth, BetterAuth.ServiceToken<'@consumer/Auth', AuthType>>>
+type _AdminEndpoint = Assert<IsAssignable<'listUsers', keyof AuthType['api']>>
+type _PluginEndpoint = Assert<IsAssignable<'consumerReleaseGate', keyof AuthType['api']>>
+type _PluginCode = Assert<IsAssignable<'CONSUMER_PLUGIN_FAILURE', Codes>>
+type _SessionField = Assert<IsAssignable<'tenantId', keyof Session['session']>>
+type _UserField = Assert<IsAssignable<'plan', keyof Session['user']>>
+type _UsersNotAny = Assert<IsAny<Users> extends false ? true : false>
+type _UsersNotUnknown = Assert<IsUnknown<Users> extends false ? true : false>
+type _Failure = Assert<IsAssignable<Failure, BetterAuth.Failure<AuthType>>>
+
+const authLayer: Layer<AuthInstance, never> = Auth.layer
 const program = Effect.fn(async function* () {
-  const service = yield* Auth
-  const session = yield* service.session.get(new Headers())
-  const response = yield* service.handle(new Request('https://example.test/api/auth/session'))
+  const auth = yield* Auth
+  const session = yield* auth.session.get(new Headers())
+  const users = yield* auth.api.listUsers({
+    query: {
+      limit: 5
+    }
+  })
+  const plugin = yield* auth.api.consumerReleaseGate()
 
-  return Result.ok({ session, response })
+  return Result.ok({ plugin, session, users })
 })
 
-type _AuthRequirement = Assert<IsAssignable<Effect.Requirements<typeof program>, AuthInstance>>
 declare const runtime: Runtime<AuthInstance>
 void authLayer
 void runtime.run(program)

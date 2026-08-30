@@ -1,5 +1,51 @@
 # Changelog
 
+## [better-effect-better-auth@0.1.0] - 2026-08-30
+
+### Added
+
+- The first independent `better-effect-better-auth` release, adapting an
+  existing Better Auth server to typed `better-effect` Services and Layers.
+- Result-oriented endpoint data, Web `Response`, and `{ response, headers }`
+  transport modes, session `get`/`require` helpers, and the Web-standard
+  handler bridge.
+- Plugin-preserving type inference for endpoints, User/Session fields, and
+  Better Auth error codes, with `BetterAuthApiError` and explicit
+  `Unauthenticated` failures.
+
+### Tested peer matrix
+
+| Peer            | Minimum tested | Current tested |
+| --------------- | -------------- | -------------- |
+| `better-auth`   | `1.7.0`        | `1.7.2`        |
+| `better-effect` | `0.12.0`       | `0.13.0`       |
+| `better-result` | `3.0.0`        | `3.0.0`        |
+| TypeScript      | `5.7.2`        | `6.0.3`        |
+
+The release gate also runs the packed consumer on Node.js `24.x` and Bun
+`1.3.14`. The declared peer ranges remain Better Auth `^1.7.0`, better-effect
+`>=0.12.0 <0.14.0`, better-result `^3.0.0`, and TypeScript `>=5.7.0`.
+
+### v0.1 non-goals
+
+- server-side only in v0.1;
+- no client hooks or React/Vue/Svelte/Solid adapters;
+- no framework middleware helpers or framework subpaths;
+- no implicit `CurrentAuthSession` or request-scoped session integration;
+- no roles, policy, or authorization engine;
+- no automatic conversion to application-domain failures;
+- no retry, timeout, or circuit-breaker policies;
+- no database adapter;
+- no database migrations;
+- no environment or configuration ownership;
+- no Runtime or dependency-container ownership;
+- no official Better Auth-maintained integration or compatibility guarantee.
+
+The package adapts an existing Better Auth instance and does not create or own
+Better Auth, database, environment, Runtime, or dependency-container
+lifecycle. Better Auth remains responsible for its public server APIs and
+plugin compatibility.
+
 ## [0.13.0] - 2026-08-30
 
 ### Added

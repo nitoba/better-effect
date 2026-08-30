@@ -1,0 +1,278 @@
+---
+title: Better Auth
+description: Adapt a Better Auth server to typed better-effect Programs.
+icon: ShieldCheck
+---
+
+`better-effect-better-auth` is a small, server-side adapter. Better Auth still
+owns authentication, cookies, sessions, plugins, database adapters, and its
+Web-standard handler. The adapter only turns an existing Better Auth instance
+into a yieldable `better-effect` Service whose operations use `better-result`.
+
+## Install
+
+```bash
+bun add better-effect-better-auth better-auth better-effect better-result
+```
+
+The v0.1 release supports:
+
+- `better-auth` `^1.7.0`
+- `better-effect` `>=0.12.0 <0.14.0`
+- `better-result` `^3.0.0`
+- TypeScript `>=5.7.0`
+
+The adapter has no runtime framework or database dependency. Configure Better
+Auth normally, then adapt the instance at the application composition root:
+
+```ts
+import { betterAuth } from 'better-auth'
+import { memoryAdapter } from 'better-auth/adapters/memory'
+import { Effect, Runtime } from 'better-effect'
+import { BetterAuth } from 'better-effect-better-auth'
+import { Result } from 'better-result'
+
+const rawAuth = betterAuth({
+  baseURL: 'http://localhost:3000',
+  database: memoryAdapter({
+    account: [],
+    session: [],
+    user: [],
+    verification: []
+  }),
+  emailAndPassword: { enabled: true },
+  secret: 'replace-this-example-secret'
+})
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+
+const readSession = (request: Request) =>
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const session = yield* auth.session.get(request)
+
+    return Result.ok(session)
+  })
+
+const runtime = await Runtime.make(Auth.layer)
+const result = await runtime.run(readSession(new Request('http://localhost:3000')))
+await runtime.dispose()
+```
+
+`Auth.layer` provides the adapted Service. `auth.raw` is the original Better
+Auth instance when an application needs an intentionally unadapted Better Auth
+API. The Service tag must be unique when several Better Auth instances are
+provided to one Runtime.
+
+## Endpoints and transport modes
+
+Every endpoint visible on the concrete Better Auth instance is available under
+`auth.api` with the same inferred input and output types:
+
+```ts
+const program = Effect.fn(async function* () {
+  const auth = yield* Auth
+  const data = yield* auth.api.getSession({
+    headers: request.headers
+  })
+  const response = yield* auth.api.getSession.asResponse({
+    headers: request.headers
+  })
+  const withHeaders = yield* auth.api.signInEmail.withHeaders({
+    body: {
+      email: 'ada@example.com',
+      password: 'a-password'
+    }
+  })
+
+  return Result.ok({ data, response, withHeaders })
+})
+```
+
+The normal mode returns the endpoint's data, `.asResponse` returns the Web
+`Response`, and `.withHeaders` returns `{ response, headers }`. Transport
+choices are methods rather than Better Auth's `asResponse`, `returnHeaders`, or
+`returnStatus` input flags, so endpoint input remains the schema-defined input.
+The wrapper preserves response bodies, status codes, redirect locations, and
+headers, including repeated `set-cookie` headers.
+
+## Sessions
+
+`auth.session.get(requestOrHeaders)` returns the inferred Better Auth session or
+`null`. `auth.session.require(requestOrHeaders)` returns the same session type
+but fails with `Unauthenticated` when no session is present. Neither helper
+creates a session or changes Better Auth's cookie behavior.
+
+```ts
+const readSessions = (request: Request) =>
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const optional = yield* auth.session.get(request)
+    const required = yield* auth.session.require(request)
+
+    return Result.ok({ optional, required })
+  })
+
+const sessionRuntime = await Runtime.make(Auth.layer)
+const sessionResult = await sessionRuntime.run(
+  readSessions(new Request('http://localhost:3000/api/auth/get-session'))
+)
+await sessionRuntime.dispose()
+```
+
+Plugin-added user and session fields are preserved when the Service is created
+from a concrete `betterAuth(...)` value. Plugin endpoints and `$ERROR_CODES`
+are likewise available to TypeScript:
+
+```ts
+import { admin } from 'better-auth/plugins'
+
+const rawAuth = betterAuth({
+  // ...database and normal Better Auth options
+  plugins: [admin()]
+})
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+
+const program = Effect.fn(async function* () {
+  const auth = yield* Auth
+  const users = yield* auth.api.listUsers({ query: { limit: 10 } })
+
+  return Result.ok(users)
+})
+```
+
+Keep plugin definitions and configuration in the Better Auth application. Do
+not add plugin-specific behavior to the adapter.
+
+## Handler integration
+
+`auth.handle(request)` adapts Better Auth's Web-standard handler to an Effect
+operation and preserves its `Response` exactly. It is framework-neutral, so a
+Hono application can continue to use Better Auth's documented route directly:
+
+```ts
+import { Hono } from 'hono'
+
+const app = new Hono()
+app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+```
+
+Use `auth.handle` when the handler itself belongs inside a better-effect
+Program. There is no `better-effect-better-auth/hono` entry point and no Hono
+runtime dependency in this package.
+
+## Failures and boundaries
+
+Expected Better Auth `APIError` values become
+`BetterAuthApiError<BetterAuthErrorCode<typeof rawAuth>>`. The adapter keeps the
+status, status code, runtime code, body, headers, and original cause in memory;
+its serialized form redacts those potentially sensitive details. Unexpected
+throws and rejected non-API errors become `better-result`'s
+`UnhandledException`. `Unauthenticated` is reserved for `session.require`.
+
+For explicit application handling, match `BetterAuthApiError` by `_tag`,
+`code`, and `statusCode`, then translate it to a domain failure at your own
+boundary:
+
+```ts
+import { BetterAuthApiError, Unauthenticated } from 'better-effect-better-auth'
+
+type DomainFailure =
+  | { readonly _tag: 'LoginRequired' }
+  | { readonly _tag: 'InvalidCredentials' }
+  | {
+      readonly _tag: 'AuthProviderFailure'
+      readonly code: string | undefined
+      readonly statusCode: number
+    }
+
+const toDomainFailure = (failure: BetterAuthApiError | Unauthenticated): DomainFailure => {
+  if (failure._tag === 'Unauthenticated') {
+    return { _tag: 'LoginRequired' }
+  }
+
+  if (
+    failure._tag === 'BetterAuthApiError' &&
+    failure.code === 'INVALID_EMAIL_OR_PASSWORD' &&
+    failure.statusCode === 401
+  ) {
+    return { _tag: 'InvalidCredentials' }
+  }
+
+  return {
+    _tag: 'AuthProviderFailure',
+    code: failure.code,
+    statusCode: failure.statusCode
+  }
+}
+```
+
+Do not log `body`, `headers`, or `cause` indiscriminately: those fields can
+contain cookies, tokens, request data, or adapter details even though the
+error's serialized form redacts them.
+
+`auth.raw` is an escape hatch for Better Auth's `$context`, `$ERROR_CODES`,
+options, endpoint metadata, or another API the adapter intentionally does not
+reinterpret. Normal data, responses, headers, and cookies do not require
+`raw`.
+
+## Testing and limits
+
+Use ordinary `better-effect` Layers for local replacements rather than module
+mocking or global resets. This executable example replaces only the handler:
+
+```ts
+import { Layer } from 'better-effect'
+
+const liveRuntime = await Runtime.make(Auth.layer)
+const liveResult = await liveRuntime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* Auth)
+  })
+)
+await liveRuntime.dispose()
+
+if (Result.isError(liveResult)) throw liveResult.error
+
+const AuthTest = Layer.succeed(
+  Auth,
+  Auth.of({
+    ...liveResult.value,
+    handle: async function* () {
+      return new Response(JSON.stringify({ source: 'test' }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    }
+  })
+)
+const testRuntime = await Runtime.make(AuthTest)
+const testResult = await testRuntime.run(
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const response = yield* auth.handle(new Request('https://example.test'))
+    return Result.ok(await response.json())
+  })
+)
+await testRuntime.dispose()
+
+void testResult
+```
+
+## v0.1 non-goals
+
+- server-side only in v0.1;
+- no client hooks or React/Vue/Svelte/Solid adapters;
+- no framework middleware helpers or framework subpaths;
+- no implicit `CurrentAuthSession` or request-scoped session integration;
+- no roles, policy, or authorization engine;
+- no automatic conversion to application-domain failures;
+- no retry, timeout, or circuit-breaker policies;
+- no database adapter;
+- no database migrations;
+- no environment or configuration ownership;
+- no Runtime or dependency-container ownership;
+- no official Better Auth-maintained integration or compatibility guarantee.
+
+The package adapts an existing Better Auth instance and does not create or own
+Better Auth, database, environment, Runtime, or dependency-container
+lifecycle. Better Auth remains responsible for its public server APIs and
+plugin compatibility.

@@ -8,6 +8,7 @@ working with the library. The tested runtime matrix is Node.js 24 and Bun
 ## Workspaces
 
 - [`packages/better-effect`](./packages/better-effect) — the published TypeScript library
+- [`packages/better-effect-better-auth`](./packages/better-effect-better-auth) — the independent server-side Better Auth integration
 - [`packages/better-effect-mq`](./packages/better-effect-mq) — the experimental message-queue foundation
 - [`apps/docs`](./apps/docs) — the Next.js documentation application powered by Fumadocs
 - [`skills/better-effect`](./skills/better-effect) — the official Agent Skill for implementing, reviewing, debugging, and refactoring `better-effect` applications

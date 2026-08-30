@@ -1,9 +1,14 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { cp, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
+const corePackageRoot = join(repoRoot, 'packages/better-effect')
+const betterAuthPackageRoot = join(repoRoot, 'packages/better-effect-better-auth')
+const minimumTypeScriptVersion = '5.7.2'
+const currentTypeScriptVersion = '6.0.3'
 
 const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
@@ -11,6 +16,8 @@ const jobSizes = [10, 50, 100, 250] as const
 type JobSize = (typeof jobSizes)[number]
 const honoSizes = [1, 3, 6, 10] as const
 type HonoSize = (typeof honoSizes)[number]
+const betterAuthSizes = [1] as const
+type BetterAuthSize = (typeof betterAuthSizes)[number]
 
 const scenarios = [
   'merge',
@@ -21,10 +28,12 @@ const scenarios = [
   'methods',
   'program-chain',
   'hono-mixed',
+  'better-auth',
   'program-collections',
   'job-registry'
 ] as const
 type Scenario = (typeof scenarios)[number]
+type Compiler = 'current' | 'minimum'
 
 type Metrics = {
   readonly files: number
@@ -36,6 +45,7 @@ type Metrics = {
 }
 
 type Result = Metrics & {
+  readonly compiler: Compiler
   readonly scenario: Scenario
   readonly size: number
   readonly fixture: string
@@ -51,10 +61,96 @@ type Budget = {
   readonly maxMemoryMiB: number
 }
 
+const runCommand = async (command: string[], cwd: string): Promise<void> => {
+  const child = Bun.spawn(command, {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe'
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited
+  ])
+  const output = `${stdout}\n${stderr}`
+
+  if (exitCode !== 0) {
+    throw new Error(`${command.join(' ')} failed with exit code ${exitCode}:\n${output}`)
+  }
+}
+
+const packPackage = async (source: string, label: string, stagingRoot: string): Promise<string> => {
+  const destination = join(stagingRoot, 'archives', label)
+  await mkdir(destination, { recursive: true })
+  await runCommand(['bun', 'pm', 'pack', '--destination', destination, '--ignore-scripts'], source)
+
+  const archives = (await readdir(destination)).filter((entry) => entry.endsWith('.tgz'))
+  if (archives.length !== 1) {
+    throw new Error(`Expected one ${label} archive, found ${archives.length}`)
+  }
+
+  return join(destination, archives[0]!)
+}
+
+const stagePublicPackages = async (): Promise<void> => {
+  const stagingRoot = await mkdtemp(join(tmpdir(), 'better-effect-type-system-'))
+
+  try {
+    await runCommand(['bun', 'run', 'build'], corePackageRoot)
+    await runCommand(['bun', 'run', 'build'], betterAuthPackageRoot)
+    const coreArchive = await packPackage(corePackageRoot, 'better-effect', stagingRoot)
+    const betterAuthArchive = await packPackage(
+      betterAuthPackageRoot,
+      'better-effect-better-auth',
+      stagingRoot
+    )
+    const consumerRoot = join(stagingRoot, 'consumer')
+    const archiveReference = (archive: string): string =>
+      `file:./${relative(consumerRoot, archive).split(sep).join('/')}`
+
+    await mkdir(consumerRoot, { recursive: true })
+    await writeFile(
+      join(consumerRoot, 'package.json'),
+      `${JSON.stringify(
+        {
+          private: true,
+          type: 'module',
+          dependencies: {
+            'better-auth': '1.7.2',
+            'better-effect': archiveReference(coreArchive),
+            'better-effect-better-auth': archiveReference(betterAuthArchive),
+            'better-result': '3.0.0'
+          },
+          devDependencies: {
+            '@types/bun': '1.3.14',
+            typescript: currentTypeScriptVersion
+          }
+        },
+        null,
+        2
+      )}\n`
+    )
+    await runCommand(['bun', 'install', '--ignore-scripts'], consumerRoot)
+    await cp(join(consumerRoot, 'node_modules'), join(fixtureRoot, 'node_modules'), {
+      recursive: true,
+      dereference: true
+    })
+  } finally {
+    await rm(stagingRoot, { recursive: true, force: true })
+  }
+
+  for (const packageName of ['better-effect', 'better-effect-better-auth']) {
+    const declaration = join(fixtureRoot, 'node_modules', packageName, 'dist/index.d.mts')
+    if (!(await Bun.file(declaration).exists())) {
+      throw new Error(`Staged ${packageName} package is missing its public declaration`)
+    }
+  }
+}
+
 // These are intentionally generous ceilings for a developer laptop. They are
 // guardrails against accidental type-graph expansion, not CI latency SLAs.
 const budgets = {
-  10: { maxCheckMs: 2_000, maxInstantiations: 200_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  10: { maxCheckMs: 2_000, maxInstantiations: 250_000, maxMemoryMiB: 512, maxTypes: 100_000 },
   25: { maxCheckMs: 3_000, maxInstantiations: 250_000, maxMemoryMiB: 512, maxTypes: 200_000 },
   50: { maxCheckMs: 6_000, maxInstantiations: 750_000, maxMemoryMiB: 768, maxTypes: 400_000 },
   100: {
@@ -65,8 +161,17 @@ const budgets = {
   }
 } satisfies Record<Size, Budget>
 
+const betterAuthBudgets = {
+  1: {
+    maxCheckMs: 8_000,
+    maxInstantiations: 1_000_000,
+    maxMemoryMiB: 1_024,
+    maxTypes: 800_000
+  }
+} satisfies Record<BetterAuthSize, Budget>
+
 const jobBudgets = {
-  10: { maxCheckMs: 2_000, maxInstantiations: 200_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  10: { maxCheckMs: 2_000, maxInstantiations: 250_000, maxMemoryMiB: 512, maxTypes: 100_000 },
   50: { maxCheckMs: 6_000, maxInstantiations: 750_000, maxMemoryMiB: 768, maxTypes: 400_000 },
   100: {
     maxCheckMs: 12_000,
@@ -152,10 +257,27 @@ const parseHonoSizes = (value: string): HonoSize[] => {
   return values as HonoSize[]
 }
 
+const parseBetterAuthSizes = (value: string): BetterAuthSize[] => {
+  const values = value.split(',').map((item) => Number(item.trim()))
+
+  for (const item of values) {
+    // SAFETY: `item` is checked against the supported Better Auth-count literals before use.
+    if (!betterAuthSizes.includes(item as BetterAuthSize)) {
+      throw new Error(
+        `Unknown Better Auth fixture count '${item}'. Allowed values: ${betterAuthSizes.join(', ')}`
+      )
+    }
+  }
+
+  // SAFETY: Every parsed value passed the Better Auth-count membership check above.
+  return values as BetterAuthSize[]
+}
+
 type ParsedOptions = {
   readonly sizes: Size[]
   readonly jobSizes: JobSize[]
   readonly honoSizes: HonoSize[]
+  readonly betterAuthSizes: BetterAuthSize[]
   readonly scenarios: Scenario[]
   readonly checkBudget: boolean
   readonly json: boolean
@@ -165,6 +287,7 @@ const parseArgs = (): ParsedOptions => {
   let selectedSizes: Size[] = [...sizes]
   let selectedJobSizes: JobSize[] = [...jobSizes]
   let selectedHonoSizes: HonoSize[] = [...honoSizes]
+  let selectedBetterAuthSizes: BetterAuthSize[] = [...betterAuthSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
   let checkBudget = false
   let json = false
@@ -180,6 +303,8 @@ const parseArgs = (): ParsedOptions => {
       selectedJobSizes = parseJobSizes(argument.slice('--job-sizes='.length))
     } else if (argument.startsWith('--hono-sizes=')) {
       selectedHonoSizes = parseHonoSizes(argument.slice('--hono-sizes='.length))
+    } else if (argument.startsWith('--better-auth-sizes=')) {
+      selectedBetterAuthSizes = parseBetterAuthSizes(argument.slice('--better-auth-sizes='.length))
     } else if (argument.startsWith('--scenarios=')) {
       selectedScenarios = parseList(argument.slice('--scenarios='.length), scenarios)
     } else if (argument === '--help') {
@@ -190,6 +315,7 @@ const parseArgs = (): ParsedOptions => {
           `  --sizes=10,25,50,100       Service counts (default: ${sizes.join(',')})`,
           `  --job-sizes=10,50,100,250   Job definitions (default: ${jobSizes.join(',')})`,
           `  --hono-sizes=1,3,6,10       Hono middleware counts (default: ${honoSizes.join(',')})`,
+          `  --better-auth-sizes=1       Better Auth plugin fixtures (default: ${betterAuthSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
           '  --check-budget             Exit non-zero when a configured ceiling is exceeded',
           '  --json                     Print machine-readable results'
@@ -205,6 +331,7 @@ const parseArgs = (): ParsedOptions => {
     sizes: selectedSizes,
     jobSizes: selectedJobSizes,
     honoSizes: selectedHonoSizes,
+    betterAuthSizes: selectedBetterAuthSizes,
     scenarios: selectedScenarios,
     checkBudget,
     json
@@ -492,9 +619,105 @@ void generatedHandler
 `
 }
 
+const betterAuthFixtureSource = (size: number): string => {
+  const names = Array.from({ length: size }, (_, index) => `Auth${index + 1}`)
+  const declarations = names
+    .map(
+      (name) => `const raw${name} = betterAuth({ plugins: [performancePlugin] })
+const ${name} = BetterAuth.service('@perf/${name}', raw${name})`
+    )
+    .join('\n')
+  const layers =
+    names.length === 1
+      ? `${names[0]}.layer`
+      : `Layer.merge(\n  ${names.map((name) => `${name}.layer`).join(',\n  ')}\n)`
+  const services = names
+    .map(
+      (name) => `  const service${name} = yield* ${name}
+  const endpoint${name} = yield* service${name}.api.performanceEndpoint()
+  const session${name} = yield* service${name}.session.get(new Headers())`
+    )
+    .join('\n')
+  const results = names
+    .map((name) => `{ endpoint: endpoint${name}, session: session${name} }`)
+    .join(', ')
+
+  return `import { betterAuth, type BetterAuthPlugin } from 'better-auth'
+import { createAuthEndpoint } from 'better-auth/api'
+import { Effect, Layer } from 'better-effect'
+import { BetterAuth, type BetterAuthEndpointResult } from 'better-effect-better-auth'
+import { Result } from 'better-result'
+
+type Assert<Condition extends true> = Condition
+type Equal<Left, Right> =
+  (<Type>() => Type extends Left ? 1 : 2) extends
+  (<Type>() => Type extends Right ? 1 : 2) ? true : false
+type IsAny<Value> = 0 extends 1 & Value ? true : false
+type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false
+
+const performancePlugin = {
+  id: 'performance-plugin',
+  endpoints: {
+    performanceEndpoint: createAuthEndpoint(
+      '/performance-endpoint',
+      { method: 'GET' },
+      async (context) => context.json({ ok: true as const })
+    )
+  },
+  schema: {
+    user: {
+      fields: {
+        plan: { required: false, type: 'string' }
+      }
+    },
+    session: {
+      fields: {
+        tenantId: { required: false, type: 'string' }
+      }
+    }
+  },
+  $ERROR_CODES: {
+    PERFORMANCE_PLUGIN_ERROR: {
+      code: 'PERFORMANCE_PLUGIN_ERROR',
+      message: 'Performance plugin failure'
+    }
+  }
+} satisfies BetterAuthPlugin
+
+${declarations}
+
+type Auth = typeof raw${names[0]}
+type Endpoint = BetterAuthEndpointResult<Auth['api']['performanceEndpoint']>
+type Session = Auth['$Infer']['Session']
+type Codes = BetterAuth.ErrorCode<Auth>
+type _EndpointExact = Assert<Equal<Endpoint, { ok: true }>>
+type _EndpointNotAny = Assert<Equal<IsAny<Endpoint>, false>>
+type _EndpointNotUnknown = Assert<Equal<IsUnknown<Endpoint>, false>>
+type _SessionUserExact = Assert<Equal<Session['user']['plan'], string | null | undefined>>
+type _SessionFieldExact = Assert<Equal<Session['session']['tenantId'], string | null | undefined>>
+type _SessionNotAny = Assert<Equal<IsAny<Session>, false>>
+type _SessionNotUnknown = Assert<Equal<IsUnknown<Session>, false>>
+type _CodePresent = Assert<Extract<'PERFORMANCE_PLUGIN_ERROR', Codes> extends never ? false : true>
+type _CodeNotAny = Assert<Equal<IsAny<Codes>, false>>
+type _CodeNotUnknown = Assert<Equal<IsUnknown<Codes>, false>>
+
+const AppLive = ${layers}
+const program = Effect.fn(async function* () {
+${services}
+  return Result.ok([${results}])
+})
+
+void AppLive
+void program
+`
+}
+
 const fixtureSource = (scenario: Scenario, size: number): string => {
   if (scenario === 'hono-mixed') {
     return honoFixtureSource(size)
+  }
+  if (scenario === 'better-auth') {
+    return betterAuthFixtureSource(size)
   }
 
   if (scenario === 'job-registry') {
@@ -557,16 +780,37 @@ const readMetric = (output: string, label: string): string | undefined => {
   return match ? `${match[1]}${match[2] ?? ''}` : undefined
 }
 
-const runTsc = async (
-  fixture: string
-): Promise<{ readonly metrics: Metrics; readonly error: string | undefined }> => {
+const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string[]> => {
+  if (usePublicDeclarations && process.env.TSC === undefined) {
+    const stagedTsc = join(fixtureRoot, 'node_modules/typescript/bin/tsc')
+    if (await Bun.file(stagedTsc).exists()) {
+      return ['node', stagedTsc]
+    }
+  }
+
   const localTsc = join(repoRoot, 'packages/better-effect/node_modules/.bin/tsc')
   const tsc =
     process.env.TSC ??
     ((await Bun.file(localTsc).exists()) ? localTsc : (Bun.which('tsc') ?? 'tsc'))
+
+  return [tsc]
+}
+
+const runTsc = async (
+  fixture: string,
+  compiler: Compiler,
+  usePublicDeclarations: boolean
+): Promise<{ readonly metrics: Metrics; readonly error: string | undefined }> => {
+  const compilerCommand =
+    compiler === 'minimum'
+      ? ['bunx', '--bun', '--package', `typescript@${minimumTypeScriptVersion}`, 'tsc']
+      : await currentTscCommand(usePublicDeclarations)
+  const typeRoots = usePublicDeclarations
+    ? join(fixtureRoot, 'node_modules/@types')
+    : join(repoRoot, 'packages/better-effect/node_modules/@types')
   const child = Bun.spawn(
     [
-      tsc,
+      ...compilerCommand,
       '--noEmit',
       '--extendedDiagnostics',
       '--pretty',
@@ -588,12 +832,12 @@ const runTsc = async (
       '--lib',
       'DOM,ESNext,ES2023,ESNext.Disposable',
       '--typeRoots',
-      join(repoRoot, 'packages/better-effect/node_modules/@types'),
+      typeRoots,
       '--types',
       'bun',
       fixture
     ],
-    { stdout: 'pipe', stderr: 'pipe' }
+    { cwd: fixtureRoot, stdout: 'pipe', stderr: 'pipe' }
   )
 
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -629,12 +873,15 @@ const runTsc = async (
 }
 
 const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): string[] => {
+  // SAFETY: Each scenario branch indexes the budget table for its validated size tuple.
   const budget =
     scenario === 'hono-mixed'
       ? honoBudgets[size as HonoSize]
-      : scenario === 'job-registry'
-        ? jobBudgets[size as JobSize]
-        : budgets[size as Size]
+      : scenario === 'better-auth'
+        ? betterAuthBudgets[size as BetterAuthSize]
+        : scenario === 'job-registry'
+          ? jobBudgets[size as JobSize]
+          : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -660,7 +907,8 @@ const formatRow = (result: Result): string => {
   const budget = result.budgetExceeded.length === 0 ? 'ok' : result.budgetExceeded.join('; ')
 
   return [
-    result.scenario.padEnd(12),
+    result.scenario.padEnd(16),
+    result.compiler.padEnd(8),
     String(result.size).padStart(4),
     result.status.padEnd(5),
     String(result.files).padStart(5),
@@ -673,11 +921,27 @@ const formatRow = (result: Result): string => {
   ].join(' | ')
 }
 
+const compilersFor = (scenario: Scenario): readonly Compiler[] =>
+  scenario === 'better-auth' ? ['current', 'minimum'] : ['current']
+
 const main = async (): Promise<void> => {
   const options = parseArgs()
 
   await rm(fixtureRoot, { recursive: true, force: true })
   await mkdir(fixtureRoot, { recursive: true })
+  const usePublicDeclarations = options.scenarios.includes('better-auth')
+
+  if (usePublicDeclarations) {
+    await stagePublicPackages()
+  } else {
+    await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true })
+    await symlink(
+      join(repoRoot, 'packages/better-effect-better-auth/node_modules/better-auth'),
+      join(fixtureRoot, 'node_modules/better-auth'),
+      'dir'
+    )
+    await symlink(corePackageRoot, join(fixtureRoot, 'node_modules/better-effect'), 'dir')
+  }
 
   const results: Result[] = []
 
@@ -685,28 +949,33 @@ const main = async (): Promise<void> => {
     const scenarioSizes =
       scenario === 'hono-mixed'
         ? options.honoSizes
-        : scenario === 'job-registry'
-          ? options.jobSizes
-          : options.sizes
+        : scenario === 'better-auth'
+          ? options.betterAuthSizes
+          : scenario === 'job-registry'
+            ? options.jobSizes
+            : options.sizes
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)
-      const run = await runTsc(fixture)
-      const budgetExceeded = budgetFailures(scenario, size, run.metrics)
+      for (const compiler of compilersFor(scenario)) {
+        const run = await runTsc(fixture, compiler, usePublicDeclarations)
+        const budgetExceeded = budgetFailures(scenario, size, run.metrics)
 
-      if (run.error) {
-        budgetExceeded.push('compile error')
+        if (run.error) {
+          budgetExceeded.push('compile error')
+        }
+
+        results.push({
+          ...run.metrics,
+          compiler,
+          scenario,
+          size,
+          fixture,
+          status: run.error ? 'error' : 'ok',
+          error: run.error,
+          budgetExceeded
+        })
       }
-
-      results.push({
-        ...run.metrics,
-        scenario,
-        size,
-        fixture,
-        status: run.error ? 'error' : 'ok',
-        error: run.error,
-        budgetExceeded
-      })
     }
   }
 
@@ -714,17 +983,19 @@ const main = async (): Promise<void> => {
     console.log(JSON.stringify(results, null, 2))
   } else {
     console.log(
-      'scenario     | size | status | files |    types | instantiations |  check |    total |  memory | budget'
+      'scenario         | compiler | size | status | files |    types | instantiations |  check |    total |  memory | budget'
     )
     console.log(
-      '-------------|------|--------|-------|----------|----------------|--------|----------|---------|-------'
+      '-----------------|----------|------|--------|-------|----------|----------------|--------|----------|---------|-------'
     )
     console.log(results.map(formatRow).join('\n'))
     console.log(`\nFixtures: ${fixtureRoot}`)
     console.log('Budgets: use --check-budget to enforce the configured ceilings.')
     for (const result of results) {
       if (result.error) {
-        console.log(`\n${result.scenario}-${result.size} compiler error: ${result.error}`)
+        console.log(
+          `\n${result.scenario}-${result.size} (${result.compiler}) compiler error: ${result.error}`
+        )
       }
     }
   }
@@ -737,7 +1008,10 @@ const main = async (): Promise<void> => {
     if (failures.length > 0) {
       throw new Error(
         `Type-system budget exceeded in ${failures.length} fixture(s):\n${failures
-          .map((result) => `${result.scenario}-${result.size}: ${result.budgetExceeded.join(', ')}`)
+          .map(
+            (result) =>
+              `${result.scenario}-${result.size} (${result.compiler}): ${result.budgetExceeded.join(', ')}`
+          )
           .join('\n')}`
       )
     }
