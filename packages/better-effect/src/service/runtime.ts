@@ -47,7 +47,8 @@ export class ServiceRuntime {
       current?.scope,
       current?.resolver === resolver ? current.resolutionPath : [],
       current?.signal,
-      current?.resolver === resolver ? current : undefined
+      current?.resolver === resolver ? current : undefined,
+      current?.executionId
     )
 
     return runRuntimeContext(storage, context, program)

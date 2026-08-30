@@ -43,8 +43,11 @@ import { notifyRuntimeObservers } from '../runtime/observer'
 
 import type {
   RuntimeExecutionAttributes,
+  RuntimeExecutionEndEvent,
   RuntimeExecutionMetadata,
-  RuntimeObserver
+  RuntimeObserver,
+  RuntimeResourceReleaseEvent,
+  RuntimeServiceAcquireEvent
 } from '../runtime/observer'
 
 import type { RuntimeInspection } from '../runtime/types'
@@ -63,7 +66,12 @@ import type {
 
 import type { LayerRegistration } from './types'
 
-import type { ScopeFinalizer, ScopeOutcome } from '../scope'
+import type {
+  CleanupFailureDiagnostic,
+  ScopeCloseError,
+  ScopeFinalizer,
+  ScopeOutcome
+} from '../scope'
 
 type LayerProvider = LayerInput['providers'][number]
 
@@ -229,20 +237,26 @@ const releaseLayerResource = async (
   service: LayerProvider['service'],
   release: ScopeFinalizer,
   outcome: ScopeOutcome,
-  observers: readonly RuntimeObserver[]
+  observers: readonly RuntimeObserver[],
+  executionId: string | undefined
 ): Promise<void> => {
   try {
     await release(outcome)
-    notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
-      service,
-      outcome
-    })
+    const event: RuntimeResourceReleaseEvent = { service, outcome }
+
+    if (executionId !== undefined) {
+      Object.assign(event, { executionId })
+    }
+
+    notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, event)
   } catch (cause) {
-    notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, {
-      service,
-      outcome,
-      error: cause
-    })
+    const event: RuntimeResourceReleaseEvent = { service, outcome, error: cause }
+
+    if (executionId !== undefined) {
+      Object.assign(event, { executionId })
+    }
+
+    notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, event)
     throw cause
   }
 }
@@ -252,13 +266,15 @@ const bindProviderToScope = (
   scope: CloseableScope,
   contextStorage: RuntimeContextStorage,
   resolver: ServiceResolver,
-  observers: readonly RuntimeObserver[]
+  observers: readonly RuntimeObserver[],
+  ownerExecutionId?: string
 ): LayerRegistration => ({
   service: provider.service,
   serviceTag: provider.serviceTag,
 
   acquire: () => {
     const current = getRuntimeContext(contextStorage)
+    const executionId = current?.executionId ?? ownerExecutionId
     const context = makeRuntimeContext(
       resolver,
       scope,
@@ -277,7 +293,13 @@ const bindProviderToScope = (
             const instance = provider.acquireWithRelease
               ? (
                   await scope.acquire(provider.acquireWithRelease, (acquired, outcome) =>
-                    releaseLayerResource(provider.service, acquired.release, outcome, observers)
+                    releaseLayerResource(
+                      provider.service,
+                      acquired.release,
+                      outcome,
+                      observers,
+                      ownerExecutionId
+                    )
                   )
                 ).instance
               : provider.release
@@ -288,27 +310,40 @@ const bindProviderToScope = (
                         provider.service,
                         (releaseOutcome) => provider.release!(resource, releaseOutcome),
                         outcome,
-                        observers
+                        observers,
+                        ownerExecutionId
                       )
                   )
                 : await provider.acquire()
 
-            notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, {
+            const event: RuntimeServiceAcquireEvent = {
               service: provider.service,
               resolutionPath,
               outcome: SCOPE_SUCCESS
-            })
+            }
+
+            if (executionId !== undefined) {
+              Object.assign(event, { executionId })
+            }
+
+            notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, event)
 
             return instance
           } catch (cause) {
-            notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, {
+            const event: RuntimeServiceAcquireEvent = {
               service: provider.service,
               resolutionPath,
               outcome: {
                 status: 'failure',
                 cause
               }
-            })
+            }
+
+            if (executionId !== undefined) {
+              Object.assign(event, { executionId })
+            }
+
+            notifyRuntimeObservers(observers, (observer) => observer.onServiceAcquire, event)
             throw cause
           }
         },
@@ -506,7 +541,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
                     executionScope,
                     this.contextStorage,
                     resolver,
-                    this.observers
+                    this.observers,
+                    prepared.metadata.executionId
                   )
                 )
               }
@@ -624,19 +660,24 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     metadata: RuntimeExecutionMetadata
   ): Promise<Awaited<A>> {
     let outcome: ScopeOutcome | undefined
+    let cleanupFailure: ScopeCloseError | undefined
     const onOutcome = (determinedOutcome: ScopeOutcome): void => {
       outcome = determinedOutcome
     }
-    const runOptions = this.onCleanupFailure
-      ? {
-          classify: classifyRuntimeOutcome,
-          onOutcome,
-          onCleanupFailure: this.onCleanupFailure
-        }
-      : {
-          classify: classifyRuntimeOutcome,
-          onOutcome
-        }
+    const onExecutionCleanupFailure = async (
+      diagnostic: CleanupFailureDiagnostic
+    ): Promise<void> => {
+      cleanupFailure = diagnostic.error
+
+      if (this.onCleanupFailure !== undefined) {
+        await this.onCleanupFailure(diagnostic)
+      }
+    }
+    const runOptions = {
+      classify: classifyRuntimeOutcome,
+      onOutcome,
+      onCleanupFailure: onExecutionCleanupFailure
+    }
 
     const startEvent = Object.freeze({
       ...metadata,
@@ -651,13 +692,22 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       }
 
       ended = true
-      const endEvent = Object.freeze({
+      const endEvent: RuntimeExecutionEndEvent = {
         ...metadata,
         scope: executionScope,
         outcome: finalOutcome,
         durationMs: executionDuration(metadata, this.executionDependencies)
-      })
-      notifyRuntimeObservers(this.observers, (observer) => observer.onExecutionEnd, endEvent)
+      }
+
+      if (cleanupFailure !== undefined) {
+        Object.assign(endEvent, { cleanupFailure })
+      }
+
+      notifyRuntimeObservers(
+        this.observers,
+        (observer) => observer.onExecutionEnd,
+        Object.freeze(endEvent)
+      )
     }
 
     let execution: Promise<Awaited<A>>
@@ -666,7 +716,14 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       execution = runScoped(executionScope, program, {
         ...runOptions,
         contextStorage: this.contextStorage,
-        context: makeRuntimeContext(resolver, executionScope, [], signal)
+        context: makeRuntimeContext(
+          resolver,
+          executionScope,
+          [],
+          signal,
+          undefined,
+          metadata.executionId
+        )
       })
     } catch (cause) {
       const failure: ScopeOutcome = {

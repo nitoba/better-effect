@@ -10,6 +10,8 @@ export interface RuntimeContext {
   readonly scope?: Scope
   readonly signal?: AbortSignal
   readonly resolutionPath: readonly AnyServiceToken[]
+  /** Runtime execution owner, omitted for warmup and Runtime-root activity. */
+  readonly executionId?: string
 }
 
 /** A context with both channels required by a Runtime execution. */
@@ -73,23 +75,27 @@ export function makeRuntimeContext(
   scope: Scope,
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
-  parent?: RuntimeContext
+  parent?: RuntimeContext,
+  executionId?: string
 ): CompleteRuntimeContext
 export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
   scope: Scope | undefined,
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
-  parent?: RuntimeContext
+  parent?: RuntimeContext,
+  executionId?: string
 ): RuntimeContext
 export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
   scope: Scope | undefined,
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
-  parent?: RuntimeContext
+  parent?: RuntimeContext,
+  executionId?: string
 ): RuntimeContext {
   const context: RuntimeContext = { resolutionPath }
+  const ownerExecutionId = executionId ?? parent?.executionId
 
   if (resolver !== undefined) {
     Object.assign(context, { resolver })
@@ -101,6 +107,10 @@ export function makeRuntimeContext(
 
   if (signal !== undefined) {
     Object.assign(context, { signal })
+  }
+
+  if (ownerExecutionId !== undefined) {
+    Object.assign(context, { executionId: ownerExecutionId })
   }
 
   if (parent !== undefined) {

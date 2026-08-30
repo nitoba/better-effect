@@ -344,9 +344,13 @@ await runtime.warmup()
 Warmup failures include the Service and resolution path, release resources
 already acquired, dispose the backend and reject the Runtime. Optional
 observers expose Service resolution/acquisition, execution and Layer release
-events without coupling the core to an observability SDK. Execution events
-carry one matching `executionId`, the optional Program name, copied readonly
-attributes, and a monotonic `durationMs` measured through execution cleanup:
+events without coupling the core to an observability SDK. Service events carry
+an optional matching `executionId` only when they occur inside an active
+execution; warmup and Runtime-root activity omit it. Execution events carry one
+matching `executionId`, the optional Program name, copied readonly attributes,
+and a monotonic `durationMs` measured through execution cleanup. An end event
+keeps the primary program `outcome` and adds `cleanupFailure` when execution
+Scope cleanup fails:
 
 ```ts
 const runtime = await Runtime.make(AppLive, {
@@ -470,10 +474,12 @@ const runtime = await Runtime.make(AppLive, { observers: [observer] })
 
 The adapter starts one span for each execution, keyed only by the Runtime's
 `executionId`. The Program name is the span name, with
-`better-effect.execution` as the stable fallback. Successful executions use
-OpenTelemetry `OK`; typed `Result.err` values and thrown defects use `ERROR`.
-The Runtime observer event model intentionally exposes only success/failure for
-both failures, so the adapter does not guess a typed-vs-defect distinction.
+`better-effect.execution` as the stable fallback. Executions whose program and
+execution cleanup succeed use OpenTelemetry `OK`; typed `Result.err` values,
+thrown defects and execution cleanup failures use `ERROR`. The Runtime observer
+keeps cleanup failure separate from the primary program outcome, so the adapter
+can report the final execution status without turning cleanup into a program
+defect or serializing its cause by default.
 Span timing is supplied by OpenTelemetry's start/end clock; `durationMs` is not
 written as a second duration source.
 
@@ -481,12 +487,12 @@ Service telemetry is explicit and defaults to `off`:
 
 - `off` creates no Service telemetry.
 - `events` adds resolution, acquisition and release events to an execution span
-  only when the current OpenTelemetry context identifies one unambiguous active
-  execution. Otherwise it uses a short standalone service-event span.
-- `spans` creates child Service spans only when that execution context can be
-  established reliably. Warmup and Runtime-root cleanup happen outside an
-  execution and are represented by standalone service spans (or generic
-  event-carrier spans in `events` mode).
+  only when the Runtime event carries an explicit active execution ID. Warmup,
+  Runtime-root cleanup and other events without an owner use standalone spans.
+- `spans` creates child Service spans only for events with an explicit active
+  execution ID. Warmup and Runtime-root cleanup are represented by standalone
+  service spans (or generic event-carrier spans in `events` mode); ambient
+  OpenTelemetry context is never used to guess ownership.
 
 Service identity is always the logical `serviceTag`; constructor names and
 Service instances are never used. `RuntimeObserver.compose` can combine this

@@ -115,10 +115,18 @@ type FailureDetails = {
 
 type ExecutionSpan = {
   readonly executionId: string
+  span?: Span
+  executionContext?: Context
+  pendingEnd?: RuntimeExecutionEndEvent
+  ended: boolean
+}
+
+type StartedExecutionSpan = ExecutionSpan & {
   readonly span: Span
-  readonly parentContext: Context
+}
+
+type ActiveExecutionSpan = StartedExecutionSpan & {
   readonly executionContext: Context
-  readonly parentSpan: Span | undefined
 }
 
 type ServiceEvent =
@@ -128,8 +136,19 @@ type ServiceEvent =
 
 type ServiceEventStatus = 'success' | 'failure'
 
+type ExecutionEventStatus = 'success' | 'failure'
+
 const serviceEventStatus = (event: ServiceEvent): ServiceEventStatus =>
   'error' in event && event.error !== undefined ? 'failure' : event.outcome.status
+
+const executionEventStatus = (event: RuntimeExecutionEndEvent): ExecutionEventStatus =>
+  event.cleanupFailure !== undefined ? 'failure' : event.outcome.status
+
+const isStartedExecutionSpan = (execution: ExecutionSpan): execution is StartedExecutionSpan =>
+  execution.span !== undefined
+
+const isActiveExecutionSpan = (execution: ExecutionSpan): execution is ActiveExecutionSpan =>
+  isStartedExecutionSpan(execution) && execution.executionContext !== undefined
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- This private guard validates untrusted values before scalar validation.
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -199,53 +218,71 @@ const normalizeLimits = (options: OpenTelemetryRuntimeObserverBaseOptions): Limi
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Normalize callback output before it reaches the OTel API.
 const normalizeStringArray = (values: readonly unknown[], limit: number): string[] | undefined => {
-  if (
-    !values.every(
-      (value) =>
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Accept only OTel string-array values.
-        value === undefined || value === null || typeof value === 'string'
-    )
-  ) {
-    return undefined
+  const normalized: string[] = []
+  const length = Math.min(values.length, MAX_ARRAY_LENGTH)
+
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index]
+
+    if (value === undefined || value === null) {
+      continue
+    }
+
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Accept only OTel string-array values.
+    if (typeof value !== 'string') {
+      return undefined
+    }
+
+    normalized.push(value.slice(0, limit))
   }
 
-  return values
-    .filter(
-      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Retain only validated OTel string values.
-      (value): value is string => typeof value === 'string'
-    )
-    .slice(0, MAX_ARRAY_LENGTH)
-    .map((value) => value.slice(0, limit))
+  return normalized
 }
 
 const normalizeNumberArray = (values: readonly unknown[]): number[] | undefined => {
-  if (
-    !values.every(
-      (value) =>
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Accept only finite OTel number-array values.
-        typeof value === 'number' && Number.isFinite(value)
-    )
-  ) {
-    return undefined
+  const normalized: number[] = []
+  const length = Math.min(values.length, MAX_ARRAY_LENGTH)
+  normalized.length = length
+
+  for (let index = 0; index < length; index += 1) {
+    if (!(index in values)) {
+      continue
+    }
+
+    const value = values[index]
+
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Accept only finite OTel number-array values.
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return undefined
+    }
+
+    normalized[index] = value
   }
 
-  // SAFETY: every element was checked as a finite number immediately above.
-  return values.slice(0, MAX_ARRAY_LENGTH) as number[]
+  return normalized
 }
 
 const normalizeBooleanArray = (values: readonly unknown[]): boolean[] | undefined => {
-  if (
-    !values.every(
-      (value) =>
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Accept only OTel boolean-array values.
-        typeof value === 'boolean'
-    )
-  ) {
-    return undefined
+  const normalized: boolean[] = []
+  const length = Math.min(values.length, MAX_ARRAY_LENGTH)
+  normalized.length = length
+
+  for (let index = 0; index < length; index += 1) {
+    if (!(index in values)) {
+      continue
+    }
+
+    const value = values[index]
+
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Accept only OTel boolean-array values.
+    if (typeof value !== 'boolean') {
+      return undefined
+    }
+
+    normalized[index] = value
   }
 
-  // SAFETY: every element was checked as a boolean immediately above.
-  return values.slice(0, MAX_ARRAY_LENGTH) as boolean[]
+  return normalized
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Normalize explicit sanitizer and allowlist output.
@@ -283,15 +320,23 @@ const normalizeAttributeValue = (
 // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-known-value-widening -- Validate sanitizer output into the private OTel attribute owner.
 const normalizeAttributes = (value: unknown, limits: Limits): AttributeMap => {
   const result: AttributeMap = {}
+  let inspected = 0
+  let normalizedCount = 0
 
   if (!isRecord(value)) {
     // oxlint-disable-next-line anti-slop/no-known-value-widening -- Return the private validated OTel attribute owner.
     return result
   }
 
-  for (const key of Object.keys(value)) {
-    if (Object.keys(result).length >= limits.maxAttributeCount) {
+  for (const key in value) {
+    if (inspected >= limits.maxAttributeCount) {
       break
+    }
+
+    inspected += 1
+
+    if (!Object.prototype.propertyIsEnumerable.call(value, key)) {
+      continue
     }
 
     if (key.length === 0 || key.length > limits.maxAttributeLength) {
@@ -308,6 +353,11 @@ const normalizeAttributes = (value: unknown, limits: Limits): AttributeMap => {
 
     if (normalized !== undefined) {
       result[key] = normalized
+      normalizedCount += 1
+
+      if (normalizedCount >= limits.maxAttributeCount) {
+        break
+      }
     }
   }
 
@@ -326,20 +376,29 @@ const selectAllowlistedAttributes = (
 
   // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- Values are parsed immediately by normalizeAttributes.
   const selected: Record<string, unknown> = {}
+  const length = Math.min(allowlist.length, limits.maxAttributeCount)
+  let selectedCount = 0
 
-  for (const key of allowlist) {
-    if (
-      Object.keys(selected).length >= limits.maxAttributeCount ||
-      key.length === 0 ||
-      key.length > limits.maxAttributeLength
-    ) {
+  for (let index = 0; index < length; index += 1) {
+    const key = allowlist[index]
+
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Reject malformed JavaScript allowlist entries before reading source attributes.
+    if (typeof key !== 'string' || key.length === 0 || key.length > limits.maxAttributeLength) {
       continue
     }
 
     try {
+      if (!(key in selected)) {
+        selectedCount += 1
+      }
+
       selected[key] = source[key]
     } catch {
       // A hostile getter is an unusable optional attribute, not a Runtime failure.
+    }
+
+    if (selectedCount >= limits.maxAttributeCount) {
+      break
     }
   }
 
@@ -582,15 +641,6 @@ const readActiveContext = (): Context | undefined => {
   }
 }
 
-const readActiveSpan = (): Span | undefined => {
-  try {
-    const span = trace.getActiveSpan()
-    return isSpan(span) ? span : undefined
-  } catch {
-    return undefined
-  }
-}
-
 const setSpanInContext = (parent: Context, span: Span): Context | undefined => {
   try {
     return trace.setSpan(parent, span)
@@ -697,7 +747,11 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
     this.executionSpans.clear()
 
     for (const execution of pending) {
-      callSpan(() => execution.span.end())
+      const span = execution.span
+
+      if (span !== undefined) {
+        callSpan(() => span.end())
+      }
     }
   }
 
@@ -743,50 +797,91 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
     }
   }
 
+  private removeExecution(execution: ExecutionSpan): void {
+    if (this.executionSpans.get(execution.executionId) === execution) {
+      this.executionSpans.delete(execution.executionId)
+    }
+  }
+
+  private finishPendingExecution(execution: ExecutionSpan): void {
+    if (execution.pendingEnd !== undefined && isActiveExecutionSpan(execution)) {
+      this.finishExecution(execution, execution.pendingEnd)
+    }
+  }
+
   private startExecution(event: RuntimeExecutionStartEvent): void {
     if (this.executionSpans.has(event.executionId)) {
       return
     }
 
+    // Reserve the ID before calling user tracer code: startSpan may synchronously re-enter this observer.
+    const execution: ExecutionSpan = { executionId: event.executionId, ended: false }
+    this.executionSpans.set(event.executionId, execution)
     const parentContext = readActiveContext() ?? ROOT_CONTEXT
-    const span = this.startSpan(
-      boundedNonEmptyString(event.name, this.limits.maxAttributeLength) ??
-        DEFAULT_EXECUTION_SPAN_NAME,
-      makeExecutionSpanAttributes(event, this.options, this.limits),
-      parentContext
-    )
+    let span: Span | undefined
 
-    if (span === undefined) {
+    try {
+      span = this.startSpan(
+        boundedNonEmptyString(event.name, this.limits.maxAttributeLength) ??
+          DEFAULT_EXECUTION_SPAN_NAME,
+        makeExecutionSpanAttributes(event, this.options, this.limits),
+        parentContext
+      )
+    } catch {
+      this.removeExecution(execution)
       return
     }
 
-    const executionContext = setSpanInContext(parentContext, span)
+    if (span === undefined) {
+      this.removeExecution(execution)
+      return
+    }
 
-    if (executionContext === undefined) {
+    if (this.disposed || this.executionSpans.get(event.executionId) !== execution) {
       callSpan(() => span.end())
       return
     }
 
-    this.executionSpans.set(event.executionId, {
-      executionId: event.executionId,
-      span,
-      parentContext,
-      executionContext,
-      parentSpan: readActiveSpan()
-    })
+    execution.span = span
+    const executionContext = setSpanInContext(parentContext, span)
+
+    if (executionContext === undefined) {
+      const pendingEnd = execution.pendingEnd
+      this.removeExecution(execution)
+
+      if (pendingEnd !== undefined && isStartedExecutionSpan(execution)) {
+        this.finishExecution(execution, pendingEnd)
+      } else {
+        callSpan(() => span.end())
+      }
+
+      return
+    }
+
+    execution.executionContext = executionContext
+    this.finishPendingExecution(execution)
   }
 
   private endExecution(event: RuntimeExecutionEndEvent): void {
     const execution = this.executionSpans.get(event.executionId)
 
-    if (execution === undefined) {
+    if (execution === undefined || execution.ended) {
       return
     }
 
-    this.executionSpans.delete(event.executionId)
+    execution.ended = true
 
+    if (!isActiveExecutionSpan(execution)) {
+      execution.pendingEnd = event
+      return
+    }
+
+    this.finishExecution(execution, event)
+  }
+
+  private finishExecution(execution: StartedExecutionSpan, event: RuntimeExecutionEndEvent): void {
     try {
-      const status = event.outcome.status
+      const status = executionEventStatus(event)
       callSpan(() => execution.span.setAttribute(OUTCOME_ATTRIBUTE, status))
       callSpan(() =>
         execution.span.setStatus({
@@ -795,11 +890,9 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
       )
 
       if (status === 'failure' && this.recordFailures) {
-        const details = makeFailureDetails(
-          event.outcome.cause,
-          this.options.sanitizeFailure,
-          this.limits
-        )
+        const cause =
+          event.outcome.status === 'failure' ? event.outcome.cause : event.cleanupFailure
+        const details = makeFailureDetails(cause, this.options.sanitizeFailure, this.limits)
 
         if (details !== undefined) {
           addFailureDetails(execution.span, details)
@@ -807,25 +900,17 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
       }
     } finally {
       callSpan(() => execution.span.end())
+      this.executionSpans.delete(execution.executionId)
     }
   }
 
-  private findCorrelatedExecution(): ExecutionSpan | undefined {
-    const activeContext = readActiveContext()
-    const activeSpan = readActiveSpan()
-    const matches: ExecutionSpan[] = []
-
-    for (const execution of this.executionSpans.values()) {
-      if (
-        (activeContext !== undefined && execution.parentContext === activeContext) ||
-        (activeSpan !== undefined && execution.parentSpan === activeSpan) ||
-        (activeSpan !== undefined && execution.span === activeSpan)
-      ) {
-        matches.push(execution)
-      }
+  private findCorrelatedExecution(event: ServiceEvent): ActiveExecutionSpan | undefined {
+    if (event.executionId === undefined) {
+      return undefined
     }
 
-    return matches.length === 1 ? matches[0] : undefined
+    const execution = this.executionSpans.get(event.executionId)
+    return execution !== undefined && isActiveExecutionSpan(execution) ? execution : undefined
   }
 
   private observeService(name: string, event: ServiceEvent): void {
@@ -833,7 +918,7 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
       return
     }
 
-    const execution = this.findCorrelatedExecution()
+    const execution = this.findCorrelatedExecution(event)
     const executionId = execution === undefined ? undefined : this.findExecutionId(execution)
     const attributes = makeServiceEventAttributes(event, this.limits, executionId)
     let failureCause: unknown
@@ -868,7 +953,7 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
   private observeCorrelatedService(
     name: string,
     event: ServiceEvent,
-    execution: ExecutionSpan,
+    execution: ActiveExecutionSpan,
     attributes: AttributeMap,
     details: FailureDetails | undefined
   ): void {
@@ -900,7 +985,7 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
     const span = this.startSpan(
       this.serviceResolution === 'events' ? DEFAULT_SERVICE_SPAN_NAME : name,
       attributes,
-      readActiveContext()
+      ROOT_CONTEXT
     )
 
     if (span === undefined) {

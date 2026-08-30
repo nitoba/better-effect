@@ -114,6 +114,9 @@ describe('RecordedRuntimeObserver', () => {
     expect(snapshot.timeline[2]).toBe(serviceResolution)
     expect(snapshot.timeline[3]).toBe(executionEnd)
     expect(snapshot.timeline[4]).toBe(resourceRelease)
+    expect(serviceAcquisition.executionId).toBe(executionStart.executionId)
+    expect(serviceResolution.executionId).toBe(executionStart.executionId)
+    expect(resourceRelease.executionId).toBeUndefined()
     expect(Object.isFrozen(snapshot)).toBe(true)
     expect(Object.isFrozen(snapshot.timeline)).toBe(true)
     expect(Object.isFrozen(recorder.executionStarts)).toBe(true)
@@ -287,6 +290,33 @@ describe('RecordedRuntimeObserver', () => {
       error: releaseFailure
     })
   })
+  test('stamps execution ownership on execution-local provider releases', async () => {
+    const recorder = RecordedRuntimeObserver.make()
+    const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
+
+    try {
+      await runtime.runWith(
+        Layer.scoped(
+          RecordedService,
+          () => new RecordedService(),
+          () => {}
+        ),
+        () => ServiceRuntime.resolve(RecordedService)
+      )
+    } finally {
+      await runtime.dispose()
+    }
+
+    const start = recorder.executionStarts[0]
+    const release = recorder.resourceReleases[0]
+
+    if (!start || !release) {
+      throw new Error('Expected execution-local provider lifecycle events')
+    }
+
+    expect(release.executionId).toBe(start.executionId)
+  })
+
   test('correlates concurrent named executions and isolates attributes', async () => {
     const recorder = RecordedRuntimeObserver.make()
     const runtime = await Runtime.make(Layer.merge(), { observers: [recorder] })
@@ -747,6 +777,9 @@ describe('RecordedRuntimeObserver', () => {
 
       expect(recorder.executionStarts).toHaveLength(4)
       expect(recorder.executionEnds).toHaveLength(4)
+      const cleanupEnd = recorder.executionEnds.find((event) => event.cleanupFailure !== undefined)
+      expect(cleanupEnd?.outcome).toEqual({ status: 'success' })
+      expect(cleanupEnd?.cleanupFailure?.causes).toEqual([cleanupFailure])
       expect(recorder.executionEnds).toEqual(
         expect.arrayContaining(
           recorder.executionStarts.map((start) =>
