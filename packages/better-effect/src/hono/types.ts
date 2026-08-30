@@ -7,7 +7,7 @@ import type {
   Program as ProgramType,
   ProgramFromGenerator
 } from '../effect/types'
-import type { CurrentRequest } from '../standard-services'
+import type { CurrentRequest } from '../standard-services/current-request'
 import type {
   ExecutionMissing,
   LayerInput,

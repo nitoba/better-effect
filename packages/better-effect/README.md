@@ -596,6 +596,80 @@ with the execution Scope and never change the shared Runtime environment. Its
 external requirements must be provided by the Runtime, and the Hono failure
 handler/request-Layer types are checked at the adapter boundary.
 
+### Framework-neutral Web request boundaries
+
+The `better-effect/web` entrypoint provides a small Request-to-Response
+boundary without depending on Hono or another framework. Use it anywhere a
+framework gives you standard Web `Request` and `Response` values:
+
+```ts
+import { Result } from 'better-result'
+import { CurrentAbortSignal, Effect } from 'better-effect'
+import { CurrentRequest } from 'better-effect/standard-services'
+import { WebEffect } from 'better-effect/web'
+
+const handleRequest = (request: Request) =>
+  WebEffect.handle(
+    runtime,
+    request,
+    Effect.fn(async function* () {
+      const currentRequest = yield* CurrentRequest
+      const signal = yield* CurrentAbortSignal
+      const user = yield* UserService
+      const result = yield* Result.await(user.find())
+
+      return Result.ok({
+        result,
+        url: (currentRequest.request as Request).url,
+        aborted: signal.aborted
+      })
+    })
+  )
+```
+
+`WebEffect.handle` supplies `CurrentRequest`, forwards `request.signal`, and
+runs one lazy Program in a child Scope. Request-local resources are released
+before the returned Promise resolves; Runtime-root resources remain owned by
+the Runtime. A `requestLayer` option can add per-request providers or
+intentionally override a compatible request tag.
+
+The default success policy passes through a Web `Response`, maps top-level
+`undefined` to 204, and wraps supported values as `{ data: value }` JSON. A
+non-`undefined`, non-`Response` value must be an acyclic graph of `null`,
+booleans, strings, finite numbers, dense arrays, and plain object records.
+Arrays must have only the own string properties `length` and one property for
+each index from `0` through `length - 1`; each index must be an enumerable data
+property. Symbol keys, extra own properties (including non-enumerable ones),
+sparse holes, and accessor elements are rejected. Object records must have
+`Object.prototype` or `null` as their prototype, and every own string-keyed
+property must be an enumerable data property. Own symbol keys,
+non-enumerable properties, accessors, custom prototypes, and other non-plain
+objects are rejected. Shared references in separate branches are serialized as
+repeated values. Nested `undefined`, `bigint`, functions, symbols, and
+non-finite numbers (`NaN` and infinities) are rejected with
+`WebEffectSerializationError` (a `TypeError`) instead of being silently dropped
+or coerced. Use an explicit `onSuccess` policy for other representations. The
+default failure policy passes through a standards-compatible `Response`
+failure and redacts every other typed failure to `{ error: 'Internal Server Error' }`
+with status 500. Custom
+`onSuccess`/`onFailure` policies may be asynchronous but must return a
+standards-compatible `Response`. The boundary checks that protocol structurally:
+`status` is an integer in `0` or `200` through `599`, `ok` matches the 2xx
+status range, `redirected` and `bodyUsed` are booleans, `statusText` and `url`
+are strings, `type` is a standard Response type, and
+`arrayBuffer()`, `blob()`, `bytes()`, `clone()`, `formData()`, `json()`, and
+`text()` are callable. `headers` must provide callable `append()`, `delete()`,
+`get()`, `getSetCookie()`, `has()`, `set()`, and `forEach()` operations. `body`
+must be `null` (including legitimate null-body Responses such as `204`) or a
+ReadableStream-compatible object with a boolean `locked` property and callable
+`cancel()`, `getReader()`, `pipeThrough()`, `pipeTo()`, and `tee()` methods.
+Native cross-realm Responses and other values satisfying this protocol are
+accepted without `instanceof Response`; missing capabilities and forged
+`Response.prototype` values fail with `TypeError`. Thrown defects remain
+rejected. The Program's Service and failure channels, request-Layer
+requirements, and override compatibility are checked at the TypeScript
+boundary.
+
 ### Hono request boundaries
 
 The optional `better-effect/hono` entrypoint runs one Runtime execution and

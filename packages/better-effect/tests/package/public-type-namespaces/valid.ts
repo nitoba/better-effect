@@ -47,6 +47,9 @@ import {
 } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { NodeRuntime, type NodeRuntimeOptions } from 'better-effect/node'
+import { WebEffect } from 'better-effect/web'
+import type { WebEffectOptions } from 'better-effect/web'
+import { CurrentRequest } from 'better-effect/standard-services'
 import {
   layerBackendContract,
   runtimeContextStorageContract,
@@ -192,6 +195,29 @@ const routeMiddleware: MiddlewareHandler<RouteEnv, RoutePath> = async (_context,
   await next()
 }
 declare const honoRuntime: Runtime<never>
+declare const webRuntime: Runtime<never>
+const webProgram = Effect.fn(async function* () {
+  const currentRequest = yield* CurrentRequest
+  return Result.ok(currentRequest.request)
+})
+const webResponse = WebEffect.handle(webRuntime, new Request('https://example.test'), webProgram, {
+  onSuccess: ({ value }) => Response.json(value)
+})
+const webOptions: WebEffectOptions<unknown> = {
+  onFailure: () => new Response(null, { status: 500 })
+}
+const webResponseWithOptions = WebEffect.handle(
+  webRuntime,
+  new Request('https://example.test'),
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok('ok')
+  }),
+  webOptions
+)
+void webResponse
+void webResponseWithOptions
+
 const validatorFirstHandler = HonoEffect.make(honoRuntime).gen(
   validateJson,
   routeMiddleware,

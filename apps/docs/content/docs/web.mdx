@@ -1,0 +1,168 @@
+---
+title: Web boundaries
+description: Run better-effect Programs at a framework-neutral Request to Response boundary.
+icon: Globe
+---
+
+The `better-effect/web` entry point provides a small, framework-neutral
+Request to Response boundary. It uses the standard Web `Request` and
+`Response` APIs, so it does not depend on Hono or another HTTP framework.
+
+The published Runtime entry point is officially supported on Node.js and Bun.
+The Web APIs here are standard, but the Runtime still needs a supported context
+storage implementation.
+
+## Handle a request
+
+Create a long-lived Runtime during application startup, then call
+`WebEffect.handle` from your framework's request callback:
+
+```ts
+import { Result } from 'better-result'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service } from 'better-effect'
+import { CurrentRequest } from 'better-effect/standard-services'
+import { WebEffect } from 'better-effect/web'
+
+class UserService extends Service<UserService>()('UserService') {
+  find(): Promise<Result<{ readonly id: string }, never>> {
+    return Promise.resolve(Result.ok({ id: 'user-1' }))
+  }
+}
+
+const runtime = await Runtime.make(Layer.make(UserService))
+
+const handleRequest = (request: Request): Promise<Response> =>
+  WebEffect.handle(
+    runtime,
+    request,
+    Effect.fn(async function* () {
+      const currentRequest = yield* CurrentRequest
+      const signal = yield* CurrentAbortSignal
+      const userService = yield* UserService
+      const user = yield* Result.await(userService.find())
+
+      return Result.ok({
+        id: user.id,
+        url: (currentRequest.request as Request).url,
+        aborted: signal.aborted
+      })
+    })
+  )
+
+const response = await handleRequest(new Request('https://example.test/users'))
+// { "data": { "id": "user-1", ... } }
+
+await runtime.dispose()
+```
+
+`WebEffect.handle` invokes the lazy Program once. It supplies
+`CurrentRequest` for the current request and forwards `request.signal` to
+`CurrentAbortSignal`. The request execution uses a child Scope; resources
+acquired by the Program are released before the returned Promise resolves.
+Resources owned by the Runtime's root Layer remain available to later requests
+and are released by `runtime.dispose()`.
+
+## Request-local Layers
+
+Use `requestLayer` when a dependency belongs to one request rather than to the
+shared application Runtime:
+
+```ts
+class RequestId extends Service<RequestId>()('RequestId') {
+  constructor(readonly id: string) {
+    super()
+  }
+}
+
+const response = await WebEffect.handle(
+  runtime,
+  request,
+  Effect.fn(async function* () {
+    const requestId = yield* RequestId
+    return Result.ok({ requestId })
+  }),
+  {
+    requestLayer: (request) =>
+      Layer.scoped(
+        RequestId,
+        () => new RequestId(request.headers.get('X-Request-Id') ?? crypto.randomUUID()),
+        (requestId) => {
+          // Release request-local state here.
+          void requestId
+        }
+      )
+  }
+)
+```
+
+The factory receives the same Web `Request` passed to `handle` and runs once
+per request. Its Layer is composed over the built-in `CurrentRequest` Layer,
+so a compatible same-tag provider can intentionally override it. Request-Layer
+external requirements must be provided by the Runtime. Concrete Layer unions
+and incompatible overrides are rejected by TypeScript; use the exact `Layer.Any`
+erasure only when an unchecked boundary is intentional.
+
+## Response and failure policies
+
+The default policy is deliberately constrained:
+
+- a standards-compatible successful `Response` is returned unchanged;
+- top-level `undefined` succeeds with a `204` Response;
+- `null`, booleans, strings, finite numbers, arrays, and plain objects become
+  `{ data: value }` JSON with status `200` when every nested value satisfies the
+  same rules;
+- the serialized JSON value graph must be acyclic. Arrays must be dense and
+  unaugmented: their own string properties must be exactly `length` and one
+  property for every index from `0` through `length - 1`, with each index an
+  enumerable data property. Symbol keys, extra own properties (including
+  non-enumerable ones), sparse holes, and accessor elements are rejected;
+- object records must have `Object.prototype` or `null` as their prototype, and
+  every own string-keyed property must be an enumerable data property. Own
+  symbol keys, non-enumerable properties, accessors, custom prototypes, and
+  other non-plain objects are rejected. Shared references in separate branches
+  are serialized as repeated values;
+- nested `undefined`, `bigint`, functions, symbols, `NaN`, and infinities reject
+  the boundary with `WebEffectSerializationError` (a `TypeError`), rather than
+  being silently dropped or coerced;
+- use an explicit `onSuccess` policy when a value is outside that JSON contract;
+- a failed standards-compatible `Response` is passed through unchanged;
+- every other typed failure is redacted to `{ error: 'Internal Server Error' }`
+  with status `500`.
+
+A supported Web `Response` is checked structurally, so native cross-realm
+Responses do not need to pass `instanceof Response`. The checked protocol
+requires an integer `status` of `0` or `200` through `599`, a matching boolean
+`ok`, boolean `redirected` and `bodyUsed`, string `statusText` and `url`, a
+standard `type`, and callable `arrayBuffer()`, `blob()`, `bytes()`, `clone()`,
+`formData()`, `json()`, and `text()` methods. `headers` must expose callable
+`append()`, `delete()`, `get()`, `getSetCookie()`, `has()`, `set()`, and
+`forEach()` operations.
+`body` must be `null` (including legitimate null-body Responses such as `204`)
+or a ReadableStream-compatible object with a boolean `locked` property and
+callable `cancel()`, `getReader()`, `pipeThrough()`, `pipeTo()`, and `tee()`
+methods. A missing capability, forged `Response.prototype` object, or other
+malformed value is rejected with `TypeError` before it is returned.
+
+Provide asynchronous policies when a framework needs its own response helper:
+
+```ts
+const response = await WebEffect.handle(runtime, request, program, {
+  onSuccess: async ({ value }) => Response.json(value, { status: 201 }),
+  onFailure: async (error) => {
+    console.error(error)
+    return new Response('Request failed', { status: 422 })
+  }
+})
+```
+
+The Program's typed failure channel is checked against `onFailure`. A policy
+must return a Web `Response`; a bad runtime value raises a `TypeError` rather
+than leaking an arbitrary object as a response. Thrown or rejected defects
+remain rejected by `handle`, while `Result.err` is converted by the failure
+policy. In both cases request cleanup still runs. The original typed failure
+is supplied to request finalizers through the execution's failure outcome.
+
+The boundary is intentionally only an adapter. It does not parse request
+bodies, choose routes, install framework middleware, or catch framework errors.
+A framework can use `handleRequest` anywhere it already receives a standard Web
+`Request` and must return a standard Web `Response`.

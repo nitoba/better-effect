@@ -10,6 +10,7 @@ export default defineConfig({
     'standard-services': 'src/standard-services/index.ts',
     hono: 'src/hono/index.ts',
     opentelemetry: 'src/opentelemetry/index.ts',
+    web: 'src/web/index.ts',
     testing: 'src/testing/index.ts'
   },
   format: ['esm'],
