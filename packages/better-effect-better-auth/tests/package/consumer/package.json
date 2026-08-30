@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "better-auth": "1.7.2",
-    "better-result": "3.0.1"
+    "better-auth": "1.7.0",
+    "better-result": "3.0.0"
   }
 }

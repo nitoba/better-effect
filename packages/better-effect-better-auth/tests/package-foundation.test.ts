@@ -2,6 +2,6 @@ import { expect, test } from 'bun:test'
 
 import * as publicApi from '../src'
 
-test('does not publish provisional runtime symbols', () => {
-  expect(Object.keys(publicApi)).toEqual([])
+test('publishes only the implemented runtime error constructors', () => {
+  expect(Object.keys(publicApi).sort()).toEqual(['BetterAuthApiError', 'Unauthenticated'])
 })

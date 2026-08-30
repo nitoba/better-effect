@@ -285,9 +285,11 @@ const assertGeneratedPackage = async (): Promise<void> => {
   }
 
   const entrypoint = await import(pathToFileURL(join(distRoot, 'index.mjs')).href)
+  const runtimeExports = Object.keys(entrypoint).sort()
+
   assertCondition(
-    Object.keys(entrypoint).length === 0,
-    'The package foundation must not expose provisional runtime symbols'
+    JSON.stringify(runtimeExports) === JSON.stringify(['BetterAuthApiError', 'Unauthenticated']),
+    `Unexpected runtime exports: ${runtimeExports.join(', ')}`
   )
 }
 

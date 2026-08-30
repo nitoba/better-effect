@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const workspaceRoot = resolve(packageRoot, '../..')
 const coreSource = join(workspaceRoot, 'packages/better-effect')
-const workspaceNodeModules = join(workspaceRoot, 'node_modules')
+const coreNodeModules = join(coreSource, 'node_modules')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const decoder = new TextDecoder()
 
@@ -75,7 +75,7 @@ const prepareCorePackage = async (root: string): Promise<string> => {
     recursive: true,
     filter: shouldCopyCorePath
   })
-  await symlink(workspaceNodeModules, join(copy, 'node_modules'), 'dir')
+  await symlink(coreNodeModules, join(copy, 'node_modules'), 'dir')
   assertSuccess(run(['bun', 'run', 'build'], copy), 'Building copied better-effect package')
 
   return copy
@@ -85,7 +85,10 @@ const pack = async (root: string, source: string, label: string): Promise<string
   const destination = join(root, `pack-${label}`)
   await mkdir(destination)
 
-  const result = run(['bun', 'pm', 'pack', '--destination', destination, '--ignore-scripts'], source)
+  const result = run(
+    ['bun', 'pm', 'pack', '--destination', destination, '--ignore-scripts'],
+    source
+  )
   assertSuccess(result, `Packing ${label}`)
 
   const archives = (await readdir(destination)).filter((name) => name.endsWith('.tgz'))
