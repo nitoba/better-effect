@@ -14,6 +14,7 @@ const repositoryLockfilePath = join(repositoryRoot, 'bun.lock')
 
 const expectedExports = {
   '.': './dist/index.mjs',
+  './hooks': './dist/hooks.mjs',
   './package.json': './package.json'
 } as const satisfies Record<string, string>
 
@@ -424,6 +425,8 @@ const assertGeneratedPackage = async (): Promise<void> => {
   assertCondition(sourceFiles.length > 0, 'Expected at least one source module')
   assertCondition(generatedNames.has('index.mjs'), 'Missing generated index.mjs')
   assertCondition(generatedNames.has('index.d.mts'), 'Missing generated index.d.mts')
+  assertCondition(generatedNames.has('hooks.mjs'), 'Missing generated hooks.mjs')
+  assertCondition(generatedNames.has('hooks.d.mts'), 'Missing generated hooks.d.mts')
 
   for (const path of [...sourceFiles, ...generatedModules]) {
     assertModuleBoundary(path, await readFile(path, 'utf8'))
@@ -436,6 +439,14 @@ const assertGeneratedPackage = async (): Promise<void> => {
     JSON.stringify(runtimeExports) ===
       JSON.stringify(['BetterAuth', 'BetterAuthApiError', 'Unauthenticated']),
     `Unexpected runtime exports: ${runtimeExports.join(', ')}`
+  )
+
+  const hooksEntrypoint = await import(pathToFileURL(join(distRoot, 'hooks.mjs')).href)
+  const hooksRuntimeExports = Object.keys(hooksEntrypoint).sort()
+
+  assertCondition(
+    JSON.stringify(hooksRuntimeExports) === JSON.stringify(['BetterAuthHooks']),
+    `Unexpected hooks runtime exports: ${hooksRuntimeExports.join(', ')}`
   )
 }
 

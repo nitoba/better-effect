@@ -28,6 +28,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./dist/index.mjs",
+    "./hooks": "./dist/hooks.mjs",
     "./package.json": "./package.json"
   },
   "publishConfig": {

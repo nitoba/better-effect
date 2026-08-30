@@ -94,6 +94,109 @@ The adapter does not create plugin configuration or add framework-specific
 helpers. Keep Better Auth's plugins, database adapter, cookies, and handler in
 the application.
 
+## Effectful hooks and middleware
+
+The optional `better-effect-better-auth/hooks` subpath adapts Better Auth's
+public `createAuthMiddleware` contract to a caller-owned `Runtime`. The bridge
+never creates or disposes that Runtime:
+
+```ts
+import { APIError } from 'better-auth/api'
+import { Effect, Runtime } from 'better-effect'
+import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
+import { Result, TaggedError } from 'better-result'
+
+class RegistrationDenied extends TaggedError('@app/RegistrationDenied')<{
+  readonly message: string
+}> {}
+
+const coreRuntime = await Runtime.make(CoreLive)
+const AuthHooks = BetterAuthHooks.make('@app/BetterAuthHookContext', coreRuntime)
+
+const rawAuth = betterAuth({
+  hooks: {
+    before: AuthHooks.middleware(
+      (context) =>
+        Effect.fn(async function* () {
+          const policy = yield* RegistrationPolicy
+          const allowed = yield* policy.canRegister(context.body?.email)
+
+          return allowed
+            ? Result.ok()
+            : Result.err(new RegistrationDenied({ message: 'Registration is not allowed' }))
+        }),
+      {
+        onFailure: (failure) =>
+          new APIError('FORBIDDEN', {
+            code: failure._tag,
+            message: failure.message
+          })
+      }
+    )
+  }
+})
+```
+
+`CoreLive` and `RegistrationPolicy` above are application services supplied by
+the existing Runtime. Construct the core Runtime before constructing Better Auth,
+and keep hook Programs dependent on core services rather than the Better Auth
+Service itself; this avoids an Auth hook → Runtime → Auth cycle. The bridge does
+not own either Runtime or the Better Auth instance. A hook callback receives the
+exact Better Auth context,
+and deeper Programs can access the same reference through the execution-scoped
+`AuthHooks.Context` Service:
+
+```ts
+const audit = AuthHooks.middleware(() =>
+  Effect.fn(async function* () {
+    const hook = yield* AuthHooks.Context
+    // hook.context is the original Better Auth middleware context.
+    void hook.context.path
+    return Result.ok()
+  })
+)
+```
+
+`Result.ok(...)` values cross the bridge unchanged, including `undefined`,
+`{ context: ... }` replacements, and `Response` values. A typed failure must
+provide an explicit `onFailure` mapper returning `APIError`, `Response`, or a
+promise of either. A `Response` keeps its identity, headers, cookies, redirect,
+status, and body; an `APIError` is thrown for Better Auth to process. Program,
+Runtime, and mapper defects are not guessed or converted to auth failures.
+
+The request's `AbortSignal` is forwarded to the `better-effect` execution when
+Better Auth supplies a request, and is available through `CurrentAbortSignal`.
+Cancellation remains cooperative; cleanup still belongs to the execution
+Scope. Direct server-side calls without a request run without an invented
+signal.
+
+The same middleware value can be used for global `before`/`after` hooks, plugin
+hooks, or plugin `middlewares` without reimplementing matchers:
+
+```ts
+import type { BetterAuthPlugin } from 'better-auth'
+
+const auditMiddleware = AuthHooks.middleware(() =>
+  Effect.fn(async function* () {
+    const hook = yield* AuthHooks.Context
+    hook.context.runInBackground(Promise.resolve())
+    return Result.ok()
+  })
+)
+
+const auditPlugin = {
+  id: 'audit-plugin',
+  hooks: {
+    after: [{ matcher: (context) => context.path === '/sign-in/email', handler: auditMiddleware }]
+  },
+  middlewares: [{ path: '/audit/*', middleware: auditMiddleware }]
+} satisfies BetterAuthPlugin
+```
+
+Better Auth still decides when hooks and request-only plugin middlewares run,
+and owns background-task semantics. The bridge does not store contexts, create
+a global controller, run detached Runtime work, or provide framework adapters.
+
 ## Sessions
 
 Use the explicit session helpers inside a Program. The optional helper keeps a

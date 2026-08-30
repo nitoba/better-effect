@@ -4,6 +4,7 @@ import { memoryAdapter } from 'better-auth/adapters/memory'
 import { admin } from 'better-auth/plugins'
 import { Effect, Layer, type Runtime } from 'better-effect'
 import { Result } from 'better-result'
+import { BetterAuthHooks, type BetterAuthMiddlewareContext } from 'better-effect-better-auth/hooks'
 import {
   BetterAuth,
   type BetterAuthEndpointResult,
@@ -103,5 +104,15 @@ const program = Effect.fn(async function* () {
 })
 
 declare const runtime: Runtime<AuthInstance>
+const Hooks = BetterAuthHooks.make('@consumer/HookContext', runtime)
+const hookMiddleware = Hooks.middleware(() =>
+  Effect.fn(async function* () {
+    const hook = yield* Hooks.Context
+    type _HookContext = Assert<IsAssignable<typeof hook.context, BetterAuthMiddlewareContext>>
+    return Result.ok()
+  })
+)
+
 void authLayer
 void runtime.run(program)
+void hookMiddleware

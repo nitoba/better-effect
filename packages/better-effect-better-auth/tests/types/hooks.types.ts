@@ -1,0 +1,148 @@
+import { expectTypeOf } from 'bun:test'
+import type { BetterAuthPlugin } from 'better-auth'
+import { APIError } from 'better-auth/api'
+import { Effect, Runtime, Service } from 'better-effect'
+import type { AnyService } from 'better-effect'
+import { Result, TaggedError } from 'better-result'
+
+import {
+  BetterAuthHooks,
+  type BetterAuthHookContext,
+  type BetterAuthHookContextValue,
+  type BetterAuthHookFailureResult,
+  type BetterAuthHookSuccess,
+  type BetterAuthMiddleware,
+  type BetterAuthMiddlewareContext
+} from '../../src/hooks'
+
+import type { Assert, Equal, IsAny, IsAssignable } from '../package/public-types/assert'
+
+class Policy extends Service<Policy>()('@types/Policy') {}
+class MissingService extends Service<MissingService>()('@types/MissingService') {}
+
+class Denied extends TaggedError('@types/Denied')<{
+  readonly message: string
+}> {}
+
+type PolicyInstance = InstanceType<typeof Policy>
+type Provided = PolicyInstance
+
+declare const runtime: Runtime<Provided>
+const Hooks = BetterAuthHooks.make('@types/HookContext', runtime)
+
+const noFailure = Hooks.middleware((context) =>
+  Effect.fn(async function* () {
+    const hook = yield* Hooks.Context
+    const policy = yield* Policy
+
+    expectTypeOf(context).toEqualTypeOf<BetterAuthMiddlewareContext>()
+    expectTypeOf(hook).toEqualTypeOf<BetterAuthHookContextValue>()
+    expectTypeOf(hook.context).toEqualTypeOf<BetterAuthMiddlewareContext>()
+    expectTypeOf(policy).toEqualTypeOf<PolicyInstance>()
+    expectTypeOf(context.request).toEqualTypeOf<Request | undefined>()
+
+    return Result.ok()
+  })
+)
+
+expectTypeOf(noFailure).toMatchTypeOf<BetterAuthMiddleware>()
+
+const typedFailure = Hooks.middleware(
+  () =>
+    Effect.fn(async function* () {
+      yield* []
+      return Result.err(new Denied({ message: 'denied' }))
+    }),
+  {
+    onFailure: (failure, context) => {
+      expectTypeOf(failure).toEqualTypeOf<Denied>()
+      expectTypeOf(context).toEqualTypeOf<BetterAuthMiddlewareContext>()
+      return new APIError('FORBIDDEN', {
+        code: failure._tag,
+        message: failure.message
+      })
+    }
+  }
+)
+
+expectTypeOf(typedFailure).toMatchTypeOf<BetterAuthMiddleware>()
+
+const responseFailure = Hooks.middleware(
+  () =>
+    Effect.fn(async function* () {
+      yield* []
+      return Result.err(new Denied({ message: 'denied' }))
+    }),
+  {
+    onFailure: async () => new Response(null, { status: 403 })
+  }
+)
+
+expectTypeOf(responseFailure).toMatchTypeOf<BetterAuthMiddleware>()
+
+const plugin = {
+  id: 'types-plugin',
+  hooks: {
+    before: [
+      {
+        matcher: (context) => context.path === '/types',
+        handler: noFailure
+      }
+    ],
+    after: [
+      {
+        matcher: (context) => context.path === '/types',
+        handler: typedFailure
+      }
+    ]
+  },
+  middlewares: [
+    {
+      path: '/types/*',
+      middleware: noFailure
+    }
+  ]
+} satisfies BetterAuthPlugin
+
+void plugin.hooks
+
+const needsMissingService = () =>
+  Effect.fn(async function* () {
+    yield* MissingService
+    return Result.ok()
+  })
+
+// @ts-expect-error the Runtime does not provide MissingService
+Hooks.middleware(needsMissingService)
+
+declare const completeRuntime: Runtime<Provided | InstanceType<typeof MissingService>>
+const CompleteHooks = BetterAuthHooks.make('@types/CompleteHookContext', completeRuntime)
+const completeMiddleware = CompleteHooks.middleware(needsMissingService)
+
+expectTypeOf(completeMiddleware).toMatchTypeOf<BetterAuthMiddleware>()
+
+const invalidSuccess = () =>
+  Effect.fn(async function* () {
+    yield* []
+    return Result.ok(123)
+  })
+
+// @ts-expect-error Better Auth middleware success values cannot be arbitrary primitives
+Hooks.middleware(invalidSuccess)
+
+declare const _contextAlias: BetterAuthHookContext
+const successAlias: BetterAuthHookSuccess = undefined
+const failureResult: BetterAuthHookFailureResult = new Response(null)
+if (successAlias !== undefined) {
+  throw new Error('unreachable success fixture')
+}
+
+type _AliasContext = Assert<Equal<BetterAuthHookContext, BetterAuthMiddlewareContext>>
+type _ContextNotAny = Assert<IsAny<BetterAuthMiddlewareContext> extends false ? true : false>
+type _SuccessResponse = Assert<IsAssignable<Response, BetterAuthHookSuccess>>
+type _FailureResponse = Assert<IsAssignable<Response, BetterAuthHookFailureResult>>
+type _NoSelfServiceRequirement = Assert<
+  IsAssignable<InstanceType<typeof Hooks.Context>, BetterAuthHookContextValue & AnyService>
+>
+
+void failureResult

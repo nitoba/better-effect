@@ -118,6 +118,10 @@ const assertIntegrationArchive = (entries: string[]): void => {
     'package/CHANGELOG.md',
     'package/LICENSE',
     'package/README.md',
+    'package/dist/hooks.d.mts',
+    'package/dist/hooks.d.mts.map',
+    'package/dist/hooks.mjs',
+    'package/dist/hooks.mjs.map',
     'package/dist/index.d.mts',
     'package/dist/index.d.mts.map',
     'package/dist/index.mjs',
@@ -305,7 +309,12 @@ const declarationCheck = async (fixture: string): Promise<void> => {
 }
 
 const assertPackedSourceMaps = async (installedPackage: string): Promise<void> => {
-  for (const mapName of ['dist/index.mjs.map', 'dist/index.d.mts.map']) {
+  for (const mapName of [
+    'dist/hooks.mjs.map',
+    'dist/hooks.d.mts.map',
+    'dist/index.mjs.map',
+    'dist/index.d.mts.map'
+  ]) {
     const value = await readJsonObject(join(installedPackage, mapName), mapName)
     const rawSources = value['sources']
     assertCondition(Array.isArray(rawSources), `Source map ${mapName} must list sources`)

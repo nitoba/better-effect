@@ -2,11 +2,22 @@ import { betterAuth } from 'better-auth'
 import { APIError, createAuthEndpoint } from 'better-auth/api'
 import { memoryAdapter } from 'better-auth/adapters/memory'
 import { admin } from 'better-auth/plugins'
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { BetterAuth, BetterAuthApiError, Unauthenticated } from 'better-effect-better-auth'
+import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
 import { Result } from 'better-result'
 
 const baseURL = 'http://localhost:3000'
+const hookPaths = []
+const hookRuntime = await Runtime.make(Layer.empty)
+const AuthHooks = BetterAuthHooks.make('@consumer/HookContext', hookRuntime)
+const hookMiddleware = AuthHooks.middleware(() =>
+  Effect.fn(async function* () {
+    const hook = yield* AuthHooks.Context
+    hookPaths.push(hook.context.path)
+    return Result.ok()
+  })
+)
 const credentials = {
   email: 'consumer-admin@example.com',
   name: 'External Consumer Admin',
@@ -125,6 +136,9 @@ const makeAuth = (options = {}) => {
       enabled: true
     },
     ...options,
+    hooks: {
+      before: hookMiddleware
+    },
     plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin(signals)],
     secret: 'external-consumer-secret-not-for-production-use'
   })
@@ -371,6 +385,11 @@ if (
   throwingResult.value.error.code !== 'CONSUMER_PLUGIN_FAILURE'
 ) {
   throw new Error('Public Better Auth onAPIError.throw handling did not pass')
+}
+
+await hookRuntime.dispose()
+if (!hookPaths.includes('/sign-up/email')) {
+  throw new Error('Packed Better Auth hooks subpath did not execute its middleware')
 }
 
 console.log('packed Better Auth consumer passed')
