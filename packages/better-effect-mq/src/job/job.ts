@@ -676,12 +676,21 @@ const hasPotentialDirectEval = (source: string): boolean =>
   source.includes('eval') || decodeUnicodeEscapes(source).includes('eval')
 
 /**
+ * Check the raw source before tokenization because the scanner may mistake a
+ * division after a numeric literal for a regex and skip an actual super receiver.
+ * This intentionally treats textual and escaped super spellings as unsafe; this
+ * boundary prefers rejecting harmless text over allowing receiver-sensitive super.
+ */
+const hasPotentialSuper = (source: string): boolean =>
+  source.includes('super') || decodeUnicodeEscapes(source).includes('super')
+
+/**
  * Check only syntax whose receiver semantics cannot survive detachment. This is
  * deliberately not a free-variable or closure analysis: direct user functions
  * retain their lexical environment when the Job invokes them with the snapshot receiver.
  */
 const hasUnsafeMethodSyntax = (source: string): boolean => {
-  if (hasPotentialDirectEval(source)) {
+  if (hasPotentialDirectEval(source) || hasPotentialSuper(source)) {
     return true
   }
 

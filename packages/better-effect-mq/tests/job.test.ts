@@ -201,6 +201,46 @@ test('job definitions reject direct eval hidden behind division before mutation 
   expectDefinitionError(() => queue.job('direct-eval', { version: 1, payload: codec }))
 })
 
+test('job definitions reject super hidden behind division before mutation can leak', () => {
+  const queue = Queue.define('super-division-codecs')
+  const calls = { count: 0 }
+
+  class BaseCodec {
+    factor() {
+      return 1
+    }
+  }
+
+  // Keep the minified division expression in Function#toString so the scanner
+  // cannot classify `/super.factor()` as a regex after the numeric literal.
+  // oxlint-disable-next-line no-implied-eval -- this test constructs the exact hostile source.
+  const SuperCodec = Function(
+    'Codec',
+    'BaseCodec',
+    'calls',
+    String.raw`return class SuperCodec extends BaseCodec {
+      encode(value) {
+        calls.count += 1
+        return Codec.number.encode(1/super.factor()/value)
+      }
+
+      decode(value) {
+        calls.count += 1
+        return Codec.number.decode(value)
+      }
+    }`
+  )(Codec, BaseCodec, calls) as unknown as new () => CodecType<number>
+
+  const codec = new SuperCodec()
+
+  expect(Function.prototype.toString.call(SuperCodec.prototype.encode)).toContain(
+    '1/super.factor()/value'
+  )
+  BaseCodec.prototype.factor = () => 2
+  expectDefinitionError(() => queue.job('super-division', { version: 1, payload: codec }))
+  expect(calls.count).toBe(0)
+})
+
 test('job definitions reject eval-hidden super before invocation', () => {
   const queue = Queue.define('eval-super-codecs')
 
