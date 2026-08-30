@@ -382,6 +382,20 @@ test('tagged-error guards terminate on cyclic prototype and proxy chains', () =>
   expect(JobEncodeFailure.is(secondProxy)).toBe(false)
 })
 
+test('tagged-error guards terminate on infinitely fresh prototype chains', () => {
+  let prototypeInspections = 0
+  const freshProxy = (): object =>
+    new Proxy(Object.create(null), {
+      getPrototypeOf: () => {
+        prototypeInspections += 1
+        return freshProxy()
+      }
+    })
+
+  expect(JobEncodeFailure.is(freshProxy())).toBe(false)
+  expect(prototypeInspections).toBe(32)
+})
+
 test('tagged-error guards remain tag based across package copies', () => {
   const oldFailure = new JobCodecFailure({ message: 'legacy' })
   const encodeFailure = new JobEncodeFailure({ message: 'encode' })

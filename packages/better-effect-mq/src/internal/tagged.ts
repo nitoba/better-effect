@@ -1,4 +1,6 @@
 /** Read a declaration-only tag without relying on a package-local class identity. */
+const maxPrototypeDepth = 32
+
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- guards accept arbitrary cross-package values.
 export const hasTaggedError = <Tag extends string>(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- guards accept arbitrary cross-package values.
@@ -14,8 +16,9 @@ export const hasTaggedError = <Tag extends string>(
     // SAFETY: the preceding guard permits only objects and functions here.
     let current = value as object | null
     const visited = new Set<object>()
+    let prototypeDepth = 0
 
-    while (current !== null) {
+    while (current !== null && prototypeDepth <= maxPrototypeDepth) {
       if (visited.has(current)) {
         return false
       }
@@ -27,7 +30,12 @@ export const hasTaggedError = <Tag extends string>(
         return 'value' in descriptor && descriptor.value === tag
       }
 
+      if (prototypeDepth === maxPrototypeDepth) {
+        return false
+      }
+
       current = Object.getPrototypeOf(current)
+      prototypeDepth += 1
     }
   } catch {
     return false
