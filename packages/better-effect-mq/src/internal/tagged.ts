@@ -13,8 +13,14 @@ export const hasTaggedError = <Tag extends string>(
   try {
     // SAFETY: the preceding guard permits only objects and functions here.
     let current = value as object | null
+    const visited = new Set<object>()
 
     while (current !== null) {
+      if (visited.has(current)) {
+        return false
+      }
+
+      visited.add(current)
       const descriptor = Object.getOwnPropertyDescriptor(current, '_tag')
 
       if (descriptor !== undefined) {

@@ -33,7 +33,19 @@ const expectOk = (result: ResultShape, expected: unknown): void => {
   }
 }
 
-test('primitive and void codecs use stable JSON representations', async () => {
+test('primitive codecs round-trip every JSON primitive and void representation', async () => {
+  const codec = Codec.json()
+
+  for (const value of [null, 'hello', 42, false] as const) {
+    const encoded = await Promise.resolve(codec.encode(value))
+
+    expectOk(encoded, value)
+
+    if (Result.isOk(encoded)) {
+      expectOk(await Promise.resolve(codec.decode(encoded.value)), value)
+    }
+  }
+
   expectOk(await Promise.resolve(Codec.string.encode('hello')), 'hello')
   expectOk(await Promise.resolve(Codec.string.decode('hello')), 'hello')
   expectOk(await Promise.resolve(Codec.number.encode(42)), 42)
@@ -49,7 +61,7 @@ test('primitive and void codecs use stable JSON representations', async () => {
   }
 })
 
-test('JSON codec validates nested values without cloning or serializing them', async () => {
+test('JSON codec returns a detached, deeply frozen nested value', async () => {
   const value = { profile: { name: 'Ada' }, roles: ['reader'] as const }
   const codec = Codec.json<typeof value>()
   const encoded = await Promise.resolve(codec.encode(value))
@@ -58,7 +70,10 @@ test('JSON codec validates nested values without cloning or serializing them', a
   expectOk(encoded, value)
   expectOk(decoded, value)
   if (Result.isOk(decoded)) {
-    expect(decoded.value).toBe(value)
+    expect(decoded.value).not.toBe(value)
+    expect(Object.isFrozen(decoded.value)).toBe(true)
+    expect(Object.isFrozen(decoded.value.profile)).toBe(true)
+    expect(Object.isFrozen(decoded.value.roles)).toBe(true)
   }
 })
 
@@ -109,6 +124,38 @@ test('JSON codec rejects unsafe values and cycles without invoking accessors', a
   }
 
   expect(accessed).toBe(false)
+})
+
+test('JSON codec materializes descriptor values instead of trusting a proxy', async () => {
+  const target = { payload: 'target value' }
+  const proxy = new Proxy(target, {
+    get: (_source, key) => (key === 'payload' ? 1n : undefined),
+    getOwnPropertyDescriptor: (source, key) => {
+      const descriptor = Reflect.getOwnPropertyDescriptor(source, key)
+
+      return descriptor === undefined || key !== 'payload'
+        ? descriptor
+        : { ...descriptor, value: 'safe descriptor value' }
+    }
+  })
+  const codec = Codec.json<{ readonly payload: string }>()
+  const encoded = await Promise.resolve(codec.encode(proxy))
+  const decoded = await Promise.resolve(codec.decode(proxy))
+
+  expectOk(encoded, { payload: 'safe descriptor value' })
+  expectOk(decoded, { payload: 'safe descriptor value' })
+  if (Result.isOk(encoded)) {
+    expect(encoded.value).not.toBe(proxy)
+    if (typeof encoded.value === 'object' && encoded.value !== null && 'payload' in encoded.value) {
+      expect(Object.isFrozen(encoded.value)).toBe(true)
+      expect(typeof encoded.value.payload).toBe('string')
+    }
+  }
+  if (Result.isOk(decoded)) {
+    expect(decoded.value).not.toBe(proxy)
+    expect(Object.isFrozen(decoded.value)).toBe(true)
+    expect(typeof decoded.value.payload).toBe('string')
+  }
 })
 
 test('JSON codec safely accepts pollution-looking own keys', async () => {
@@ -265,13 +312,14 @@ test('Standard Schema supports sync and async validation with safe issues', asyn
 test('Standard Schema identity output is checked when no encode callback is supplied', async () => {
   type Value = { readonly count: number }
   type Types = { input: unknown; output: Value }
+  const schemaOutput: Value = { count: 3 }
   const schema = {
     '~standard': {
       version: 1,
       vendor: 'codec-json-test',
       types: {} as Types,
-      validate: (value: unknown): StandardSchemaV1.Result<Value> => ({
-        value: { count: typeof value === 'number' ? value : 0 }
+      validate: (_value: unknown): StandardSchemaV1.Result<Value> => ({
+        value: schemaOutput
       })
     }
   } satisfies StandardSchemaV1<unknown, Value>
@@ -281,9 +329,60 @@ test('Standard Schema identity output is checked when no encode callback is supp
 
   expectOk(result, { count: 3 })
   expectOk(encoded, { count: 3 })
+  if (Result.isOk(result)) {
+    expect(result.value).not.toBe(schemaOutput)
+    expect(Object.isFrozen(result.value)).toBe(true)
+  }
 })
 
-test('old and new codec failures coexist and guards are tag based', () => {
+test('old and new codec versions coexist with distinct wire behavior', async () => {
+  const oldCodec = Codec.make<{ readonly id: string }>({
+    encode: (value) => Result.ok({ version: 1, id: value.id }),
+    decode: (value) =>
+      Result.ok({
+        id:
+          typeof value === 'object' && value !== null && 'id' in value
+            ? String(value.id)
+            : String(value)
+      })
+  })
+  const newCodec = Codec.make<{ readonly id: string }>({
+    encode: (value) => Result.ok({ version: 2, subject: value.id.toUpperCase() }),
+    decode: (value) =>
+      Result.ok({
+        id:
+          typeof value === 'object' && value !== null && 'subject' in value
+            ? String(value.subject).toLowerCase()
+            : String(value)
+      })
+  })
+  const oldEncoded = await Promise.resolve(oldCodec.encode({ id: 'ada' }))
+  const newEncoded = await Promise.resolve(newCodec.encode({ id: 'ada' }))
+
+  expectOk(oldEncoded, { version: 1, id: 'ada' })
+  expectOk(newEncoded, { version: 2, subject: 'ADA' })
+  expect(oldEncoded).not.toEqual(newEncoded)
+  if (Result.isOk(oldEncoded) && Result.isOk(newEncoded)) {
+    expectOk(await Promise.resolve(oldCodec.decode(oldEncoded.value)), { id: 'ada' })
+    expectOk(await Promise.resolve(newCodec.decode(newEncoded.value)), { id: 'ada' })
+  }
+})
+
+test('tagged-error guards terminate on cyclic prototype and proxy chains', () => {
+  let firstProxy: object
+  let secondProxy: object
+  firstProxy = new Proxy(Object.create(null), {
+    getPrototypeOf: () => secondProxy
+  })
+  secondProxy = new Proxy(Object.create(null), {
+    getPrototypeOf: () => firstProxy
+  })
+
+  expect(JobCodecFailure.is(firstProxy)).toBe(false)
+  expect(JobEncodeFailure.is(secondProxy)).toBe(false)
+})
+
+test('tagged-error guards remain tag based across package copies', () => {
   const oldFailure = new JobCodecFailure({ message: 'legacy' })
   const encodeFailure = new JobEncodeFailure({ message: 'encode' })
   const decodeFailure = new JobDecodeFailure({ message: 'decode' })

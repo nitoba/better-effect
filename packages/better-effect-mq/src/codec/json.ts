@@ -18,12 +18,23 @@ type JsonValidationSuccess = {
 
 export type JsonValidationResult = JsonValidationFailure | JsonValidationSuccess
 
+type JsonEntry = {
+  readonly key: string
+  readonly segment: CodecPathSegment
+  readonly value: unknown
+}
+
+// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- the object is populated only with validated JSON values.
+type MutableJsonObject = Record<string, JsonValue>
+
 type JsonFrame = {
-  readonly value: object
+  readonly source: object
   readonly path: CodecPath
-  readonly keys: readonly string[]
+  readonly entries: readonly JsonEntry[]
   readonly array: boolean
+  readonly output: MutableJsonObject | JsonValue[]
   next: number
+  pending: JsonEntry | undefined
 }
 
 const emptyPath = (): CodecPath => Object.freeze([])
@@ -74,6 +85,7 @@ const readDataProperty = (value: object, key: string): DataProperty | InvalidPro
       return { ok: false, code: 'accessor-property' }
     }
 
+    // Read only the captured descriptor value. Never read the property through the object.
     return { ok: true, value: descriptor.value }
   } catch {
     return { ok: false, code: 'unreadable-property' }
@@ -123,7 +135,7 @@ const prepareFrame = (value: object, path: CodecPath): JsonFrame | JsonValidatio
       return failure(path, 'invalid-array')
     }
 
-    const indexKeys: string[] = []
+    const entries: JsonEntry[] = []
     const seen = new Set<number>()
 
     for (const key of keys) {
@@ -149,21 +161,29 @@ const prepareFrame = (value: object, path: CodecPath): JsonFrame | JsonValidatio
       }
 
       seen.add(index)
-      indexKeys.push(key)
+      entries.push({ key, segment: index, value: property.value })
     }
 
     if (seen.size !== length) {
       return failure(path, 'sparse-array')
     }
 
-    return { value, path, keys: indexKeys, array: true, next: 0 }
+    return {
+      source: value,
+      path,
+      entries,
+      array: true,
+      output: [],
+      next: 0,
+      pending: undefined
+    }
   }
 
   if (prototype !== Object.prototype && prototype !== null) {
     return failure(path, 'unsupported-object')
   }
 
-  const objectKeys: string[] = []
+  const entries: JsonEntry[] = []
   const seen = new Set<string>()
 
   for (const key of keys) {
@@ -183,10 +203,18 @@ const prepareFrame = (value: object, path: CodecPath): JsonFrame | JsonValidatio
     }
 
     seen.add(key)
-    objectKeys.push(key)
+    entries.push({ key, segment: key, value: property.value })
   }
 
-  return { value, path, keys: objectKeys, array: false, next: 0 }
+  return {
+    source: value,
+    path,
+    entries,
+    array: false,
+    output: {},
+    next: 0,
+    pending: undefined
+  }
 }
 
 const primitiveFailure = (
@@ -224,7 +252,29 @@ const isValidPrimitive = (
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-/** Validate JSON structure without invoking accessors, cloning, or serializing it. */
+const assignOutput = (frame: JsonFrame, entry: JsonEntry, value: JsonValue): void => {
+  if (frame.array) {
+    if (!Array.isArray(frame.output)) {
+      throw new TypeError('Invalid JSON array frame')
+    }
+
+    // The frame was built from a validated canonical array index.
+    frame.output[Number(entry.key)] = value
+    return
+  }
+
+  // defineProperty keeps __proto__ as data and cannot invoke a prototype setter.
+  Object.defineProperty(frame.output, entry.key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true
+  })
+}
+
+const freezeOutput = (frame: JsonFrame): JsonValue => Object.freeze(frame.output)
+
+/** Validate JSON structure and return a detached, deeply frozen clone iteratively. */
 export const validateJsonValue = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- codecs are intentionally a trust boundary.
   value: unknown
@@ -235,96 +285,87 @@ export const validateJsonValue = (
   let currentPath = emptyPath()
 
   try {
-    const advance = (): boolean | JsonValidationFailure => {
-      while (frames.length > 0) {
-        const parent = frames[frames.length - 1]
-
-        if (parent === undefined) {
-          return false
-        }
-
-        if (parent.next >= parent.keys.length) {
-          active.delete(parent.value)
-          frames.pop()
-          continue
-        }
-
-        const key = parent.keys[parent.next]
-
-        if (key === undefined) {
-          return false
-        }
-
-        parent.next += 1
-        const property = readDataProperty(parent.value, key)
-
-        if (!property.ok) {
-          const index = isArrayIndex(key)
-          const segment = parent.array && index !== undefined ? index : key
-          return failure(appendPath(parent.path, segment), property.code)
-        }
-
-        const index = isArrayIndex(key)
-        const segment = parent.array && index !== undefined ? index : key
-        current = property.value
-        currentPath = appendPath(parent.path, segment)
-        return true
-      }
-
-      return false
-    }
-
     for (;;) {
       if (currentPath.length > jsonDepthLimit) {
         return failure(currentPath, 'depth-limit')
       }
 
+      let completed: JsonValue
+
       if (isValidPrimitive(current)) {
-        const advanced = advance()
+        // SAFETY: isValidPrimitive accepts exactly the JsonPrimitive members.
+        completed = current as JsonValue
+      } else {
+        const primitiveError = primitiveFailure(current, currentPath)
 
-        if (advanced === false) {
-          // SAFETY: every reachable value was validated before traversal completed.
-          return { ok: true, value: value as JsonValue }
+        if (primitiveError !== undefined) {
+          return primitiveError
         }
 
-        if (advanced !== true) {
-          return advanced
+        // SAFETY: the primitive branches above leave only non-null objects here.
+        const object = current as object
+
+        if (active.has(object)) {
+          return failure(currentPath, 'cycle')
         }
 
-        continue
+        const frame = prepareFrame(object, currentPath)
+
+        if ('ok' in frame) {
+          return frame
+        }
+
+        active.add(object)
+        frames.push(frame)
+
+        if (frame.entries.length === 0) {
+          active.delete(object)
+          frames.pop()
+          completed = freezeOutput(frame)
+        } else {
+          const entry = frame.entries[0]
+
+          if (entry === undefined) {
+            return failure(currentPath, 'unreadable-value')
+          }
+
+          frame.next = 1
+          frame.pending = entry
+          current = entry.value
+          currentPath = appendPath(frame.path, entry.segment)
+          continue
+        }
       }
 
-      const primitiveError = primitiveFailure(current, currentPath)
+      for (;;) {
+        const parent = frames[frames.length - 1]
 
-      if (primitiveError !== undefined) {
-        return primitiveError
-      }
+        if (parent === undefined) {
+          return { ok: true, value: completed }
+        }
 
-      // SAFETY: the primitive branches above leave only non-null objects here.
-      const object = current as object
+        const pending = parent.pending
 
-      if (active.has(object)) {
-        return failure(currentPath, 'cycle')
-      }
+        if (pending === undefined) {
+          return failure(parent.path, 'unreadable-value')
+        }
 
-      const frame = prepareFrame(object, currentPath)
+        assignOutput(parent, pending, completed)
+        parent.pending = undefined
 
-      if (!('keys' in frame)) {
-        return frame
-      }
+        const entry = parent.entries[parent.next]
 
-      active.add(object)
-      frames.push(frame)
+        if (entry !== undefined) {
+          parent.next += 1
+          parent.pending = entry
+          current = entry.value
+          currentPath = appendPath(parent.path, entry.segment)
+          break
+        }
 
-      const advanced = advance()
-
-      if (advanced === false) {
-        // SAFETY: every reachable value was validated before traversal completed.
-        return { ok: true, value: value as JsonValue }
-      }
-
-      if (advanced !== true) {
-        return advanced
+        frames.pop()
+        active.delete(parent.source)
+        completed = freezeOutput(parent)
       }
     }
   } catch {

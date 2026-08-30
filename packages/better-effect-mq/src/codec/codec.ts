@@ -37,14 +37,14 @@ type RequirementFreeEffect = {
 type RequirementFreeResult<Value, Failure> = ResultType<Value, Failure> & RequirementFreeEffect
 
 /**
- * Values accepted from a codec callback. An Effect with Service requirements
- * is not a valid Result here: its public requirement marker cannot satisfy the
- * requirement-free metadata constraint.
+ * Values accepted from a codec callback. Callbacks return a completed
+ * requirement-free Result/Effect; raw values are intentionally not accepted.
+ * Keeping the result wrapper in the contract prevents broad `Value` types such
+ * as `unknown` from swallowing a Service-dependent Effect.
  */
 export type CodecCallbackResult<Value, Failure> =
-  | Value
   | RequirementFreeResult<Value, Failure>
-  | PromiseLike<Value | RequirementFreeResult<Value, Failure>>
+  | PromiseLike<RequirementFreeResult<Value, Failure>>
 
 type CodecOperation<Value, Failure> =
   | CodecEffect<Value, Failure>
@@ -338,7 +338,7 @@ export type CodecMakeOptions<
   readonly decode: (value: unknown) => DecodeReturn
 }
 
-/** Create a codec from Result/raw callbacks; callbacks are intentionally requirement-free. */
+/** Create a codec from requirement-free Result/Effect callbacks. */
 export function make<
   Value,
   EncodeReturn extends CodecCallbackResult<JsonValue, JobEncodeFailure> = CodecCallbackResult<
@@ -485,6 +485,9 @@ const normalizeSchemaResult = <Value>(
     if (!checked.ok) {
       return errEffect(jsonDecodeFailure(checked.code, checked.path))
     }
+
+    // SAFETY: checked.value is the validated, detached JSON representation of the schema output.
+    return okEffect(checked.value as Value)
   }
 
   // SAFETY: Standard Schema's successful result declares Value as its output type.

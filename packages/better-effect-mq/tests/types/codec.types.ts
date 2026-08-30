@@ -48,25 +48,73 @@ expectTypeOf<Effect.Success<ReturnType<typeof custom.decode>>>().toEqualTypeOf<U
 expectTypeOf<Effect.Requirements<ReturnType<typeof custom.encode>>>().toBeNever()
 expectTypeOf<Effect.Requirements<ReturnType<typeof custom.decode>>>().toBeNever()
 
-const rawCallbacks = Codec.make<User>({
-  encode: (value) => ({ id: value.id, active: value.active }),
-  decode: (value) => ({ id: String(value), active: true })
+const resultCallbacks = Codec.make<User>({
+  encode: (value) => Result.ok({ id: value.id, active: value.active }),
+  decode: (value) => Result.ok({ id: String(value), active: true })
 })
-expectTypeOf<Effect.Success<ReturnType<typeof rawCallbacks.encode>>>().toEqualTypeOf<JsonValue>()
-expectTypeOf<Effect.Success<ReturnType<typeof rawCallbacks.decode>>>().toEqualTypeOf<User>()
+expectTypeOf<Effect.Success<ReturnType<typeof resultCallbacks.encode>>>().toEqualTypeOf<JsonValue>()
+expectTypeOf<Effect.Success<ReturnType<typeof resultCallbacks.decode>>>().toEqualTypeOf<User>()
 
 const asyncCallbacks = Codec.make<User>({
   encode: async (value) => Result.ok({ id: value.id, active: value.active }),
-  decode: async (value) => ({ id: String(value), active: false })
+  decode: async (value) => Result.ok({ id: String(value), active: false })
 })
 expectTypeOf<Effect.Success<ReturnType<typeof asyncCallbacks.encode>>>().toEqualTypeOf<JsonValue>()
 expectTypeOf<Effect.Success<ReturnType<typeof asyncCallbacks.decode>>>().toEqualTypeOf<User>()
+
+const requirementFreeEffect = Effect.gen(function* () {
+  yield* Result.ok(undefined)
+  return Result.ok('free')
+})
+const requirementFreeObjectEffect = Effect.gen(function* () {
+  yield* Result.ok(undefined)
+  return Result.ok({ decoded: true })
+})
+
+const resultUnknown = Codec.make<unknown>({
+  encode: () => Result.ok({ encoded: true }),
+  decode: () => Result.ok('decoded')
+})
+const resultObject = Codec.make<object>({
+  encode: () => Result.ok({ encoded: true }),
+  decode: () => Result.ok({ decoded: true })
+})
+const resultUnion = Codec.make<string | Date>({
+  encode: () => Result.ok('encoded'),
+  decode: () => Result.ok('decoded')
+})
+const effectUnknown = Codec.make<unknown>({
+  encode: () => requirementFreeEffect,
+  decode: () => requirementFreeEffect
+})
+const effectObject = Codec.make<object>({
+  encode: () => requirementFreeObjectEffect,
+  decode: () => requirementFreeObjectEffect
+})
+const promiseResult = Codec.make<unknown>({
+  encode: () => Promise.resolve(Result.ok('encoded')),
+  decode: () => Promise.resolve(Result.ok('decoded'))
+})
+const promiseEffect = Codec.make<unknown>({
+  encode: () => Promise.resolve(requirementFreeEffect),
+  decode: () => Promise.resolve(requirementFreeEffect)
+})
+expectTypeOf<Effect.Requirements<ReturnType<typeof resultUnknown.encode>>>().toBeNever()
+expectTypeOf<Effect.Requirements<ReturnType<typeof resultObject.decode>>>().toBeNever()
+expectTypeOf<Effect.Requirements<ReturnType<typeof resultUnion.encode>>>().toBeNever()
+expectTypeOf<Effect.Requirements<ReturnType<typeof effectUnknown.encode>>>().toBeNever()
+expectTypeOf<Effect.Requirements<ReturnType<typeof promiseResult.decode>>>().toBeNever()
+expectTypeOf<Effect.Requirements<ReturnType<typeof promiseEffect.encode>>>().toBeNever()
 
 class CodecDependency extends Service<CodecDependency>()('CodecDependency') {}
 
 const dependent = Effect.gen(async function* () {
   yield* CodecDependency
   return Result.ok('dependent')
+})
+const dependentObject = Effect.gen(async function* () {
+  yield* CodecDependency
+  return Result.ok({ dependent: true })
 })
 
 expectTypeOf<Effect.Requirements<typeof dependent>>().toEqualTypeOf<CodecDependency>()
@@ -78,26 +126,41 @@ const dependentCodec: Codec<User> = {
 }
 void dependentCodec
 
-const dependentCodecFromMake = Codec.make({
-  // @ts-expect-error Codec v0.1 callbacks cannot require Services.
+const dependentUnknown = Codec.make<unknown>({
+  // @ts-expect-error Service requirements must not be swallowed by unknown Value.
   encode: (_value) => dependent,
-  decode: (value) => Codec.json<User>().decode(value)
+  // @ts-expect-error Service requirements must not be swallowed by unknown Value.
+  decode: (_value) => dependent
 })
-
-const dependentCodecWithExplicitValue = Codec.make<User>({
-  // @ts-expect-error Codec v0.1 callbacks cannot require Services, even when Value is explicit.
+const dependentObjectCodec = Codec.make<object>({
+  // @ts-expect-error Service requirements must not be swallowed by object Value.
+  encode: (_value) => dependentObject,
+  // @ts-expect-error Service requirements must not be swallowed by object Value.
+  decode: (_value) => dependentObject
+})
+const dependentUnion = Codec.make<string | Date>({
+  // @ts-expect-error Service requirements must not be swallowed by union Value.
   encode: (_value) => dependent,
-  decode: (value) => Codec.json<User>().decode(value)
+  // @ts-expect-error Service requirements must not be swallowed by union Value.
+  decode: (_value) => dependent
 })
-
-const dependentCodecPromise = Codec.make<User>({
+const dependentInferred = Codec.make({
+  // @ts-expect-error Inference must not widen Value to accept a dependent Effect.
+  encode: (_value) => dependent,
+  // @ts-expect-error Inference must not widen Value to accept a dependent Effect.
+  decode: (_value) => dependent
+})
+const dependentPromise = Codec.make<unknown>({
   // @ts-expect-error Promise callbacks cannot carry Service requirements either.
-  encode: async (_value) => dependent,
-  decode: (value) => Codec.json<User>().decode(value)
+  encode: () => Promise.resolve(dependent),
+  // @ts-expect-error Promise callbacks cannot carry Service requirements either.
+  decode: () => Promise.resolve(dependent)
 })
-void dependentCodecFromMake
-void dependentCodecWithExplicitValue
-void dependentCodecPromise
+void dependentUnknown
+void dependentObjectCodec
+void dependentUnion
+void dependentInferred
+void dependentPromise
 
 const syncSchema = {
   '~standard': {
@@ -166,6 +229,7 @@ const explicitJsonCodec = Codec.standardSchema({ schema: explicitJsonSchema })
 expectTypeOf<Codec.Value<typeof explicitJsonCodec>>().toEqualTypeOf<User>()
 
 void custom
+void effectObject
 void syncCodec
 void asyncCodec
 void explicitJsonCodec

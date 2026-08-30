@@ -82,10 +82,11 @@ accessor failures, and other non-JSON values are rejected as
 ## Portable codecs and trust boundaries
 
 `Codec` is deliberately storage-neutral and requirement-free in v0.1: its
-encode/decode callbacks cannot yield a `Service`. Callbacks may return raw
-values, completed `Result`s, or a `PromiseLike` of either; a better-effect
-`Effect` is accepted only when its Service requirements are `never`. Keep
-contextual I/O outside the codec and pass a completed value to `Codec.make`.
+encode/decode callbacks cannot yield a `Service`. Custom callbacks return a
+completed `Result` or requirement-free better-effect `Effect`, optionally
+wrapped in a `PromiseLike`; raw values are not part of the callback contract.
+Keep contextual I/O outside the codec and pass a completed result to
+`Codec.make`.
 
 ```ts
 import { Codec } from 'better-effect-mq'
@@ -103,11 +104,11 @@ The primitive representations are identity strings, finite numbers, booleans,
 `null`, and `undefined` only after decoding `Codec.void` from persisted `null`.
 `Codec.json()` validates an object/array graph iteratively, rejects accessors,
 cycles, class instances, `Date`, `Map`, `Set`, `Error`, non-finite numbers, and
-other non-JSON values, and accepts at most 1,024 structural levels. It returns
-validated JSON by identity: it does not stringify, parse, clone, or freeze the
-caller’s value. Treat that value as immutable after crossing the boundary.
-There is no payload-size limit in this first API; put large payloads in external
-storage and persist a reference instead.
+other non-JSON values, and accepts at most 1,024 structural levels. It reads
+only own data descriptors, then returns a detached, deeply frozen JSON-safe
+clone; it never returns an untrusted input object or proxy. There is no
+payload-size limit in this first API; put large payloads in external storage
+and persist a reference instead.
 
 Standard Schema is structural and has no validator dependency. A transformed
 schema whose output is not JSON-safe must provide an explicit encoder; no
