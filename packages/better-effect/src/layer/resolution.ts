@@ -14,7 +14,11 @@ import { defaultRuntimeContextStorage } from '../runtime/default'
 
 import type { RuntimeContextStorage } from '../runtime/context'
 
-import { notifyRuntimeObservers, type RuntimeObserver } from '../runtime/observer'
+import {
+  notifyRuntimeObservers,
+  type RuntimeObserver,
+  type RuntimeServiceResolveEvent
+} from '../runtime/observer'
 
 import type { ScopeOutcome } from '../scope'
 
@@ -44,11 +48,17 @@ export const createResolutionResolver = (
       const resolutionPath = [...path, token]
 
       const notifyResolve = (outcome: ScopeOutcome): void => {
-        notifyRuntimeObservers(observers, (observer) => observer.onServiceResolve, {
+        const event: RuntimeServiceResolveEvent = {
           service: token,
           resolutionPath,
           outcome
-        })
+        }
+
+        if (context?.executionId !== undefined) {
+          Object.assign(event, { executionId: context.executionId })
+        }
+
+        notifyRuntimeObservers(observers, (observer) => observer.onServiceResolve, event)
       }
 
       if (cycleStart >= 0) {

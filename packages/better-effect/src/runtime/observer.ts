@@ -1,6 +1,6 @@
 import type { AnyServiceToken } from '../service'
 import type { Scope } from '../scope'
-import type { ScopeOutcome } from '../scope'
+import type { ScopeCloseError, ScopeOutcome } from '../scope'
 import type { MaybePromise } from '../utils/types'
 
 /** Event emitted after a Service resolution attempt settles. */
@@ -8,6 +8,8 @@ export type RuntimeServiceResolveEvent = {
   readonly service: AnyServiceToken
   readonly resolutionPath: readonly AnyServiceToken[]
   readonly outcome: ScopeOutcome
+  /** Runtime execution owner, omitted for warmup and other root activity. */
+  readonly executionId?: string
 }
 
 /** Event emitted after a provider acquisition attempt settles. */
@@ -15,6 +17,8 @@ export type RuntimeServiceAcquireEvent = {
   readonly service: AnyServiceToken
   readonly resolutionPath: readonly AnyServiceToken[]
   readonly outcome: ScopeOutcome
+  /** Runtime execution owner, omitted for warmup and other root activity. */
+  readonly executionId?: string
 }
 
 /** Values supplied to one Runtime execution for diagnostic correlation. */
@@ -39,7 +43,10 @@ export type RuntimeExecutionStartEvent = RuntimeExecutionMetadata & {
 /** Event emitted after a program and its execution Scope settle. */
 export type RuntimeExecutionEndEvent = RuntimeExecutionMetadata & {
   readonly scope: Scope
+  /** The program outcome used to run execution-scope cleanup. */
   readonly outcome: ScopeOutcome
+  /** Execution-scope cleanup failure, without changing the primary program outcome. */
+  readonly cleanupFailure?: ScopeCloseError
   /** Monotonic elapsed time for the Program and its execution cleanup. */
   readonly durationMs: number
 }
@@ -49,6 +56,8 @@ export type RuntimeResourceReleaseEvent = {
   readonly service: AnyServiceToken
   readonly outcome: ScopeOutcome
   readonly error?: unknown
+  /** Runtime execution owner, omitted for Runtime-root cleanup. */
+  readonly executionId?: string
 }
 
 /** Optional best-effort hooks for Runtime lifecycle and resolution events. */
