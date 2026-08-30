@@ -11,6 +11,7 @@ export default defineConfig({
     hono: 'src/hono/index.ts',
     next: 'src/next/index.ts',
     opentelemetry: 'src/opentelemetry/index.ts',
+    bun: 'src/bun/index.ts',
     web: 'src/web/index.ts',
     testing: 'src/testing/index.ts'
   },
