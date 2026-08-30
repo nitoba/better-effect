@@ -2,7 +2,7 @@ import { Result } from 'better-result'
 
 import { Layer } from '../layer'
 import type { LayerInput } from '../layer/inference'
-import { CurrentRequest } from '../standard-services'
+import { CurrentRequest } from '../standard-services/current-request'
 import type { Runtime } from '../runtime'
 import type { AnyService } from '../service'
 import type { EffectError, EffectSuccess } from '../effect/types'
@@ -12,6 +12,7 @@ import type {
   CompleteWebProgram,
   DefaultRequestLayer,
   WebEffectOptions,
+  WebEffectProgram,
   WebProgramChecks,
   WebRequestLayerChecks
 } from './types'
@@ -135,17 +136,15 @@ export declare namespace WebEffect {
   export type ResponseLike = Response | PromiseLike<Response>
 
   /** A lazy Result-valued Program accepted by `handle`. */
-  export type Program = AnyProgram
-
-  /** Request-layer validation applied by `handle`. */
-  export type RequestLayer<
-    Provided extends AnyService,
-    Layer extends LayerInput
-  > = WebRequestLayerChecks<Provided, Layer>
+  export type Program<A = unknown, E = unknown, R extends AnyService = never> = WebEffectProgram<
+    A,
+    E,
+    R
+  >
 
   /** Extract a Program's success channel. */
-  export type Value<Program extends AnyProgram> = EffectSuccess<Program>
+  export type Value<Program extends WebEffectProgram<any, any, AnyService>> = EffectSuccess<Program>
 
   /** Extract a Program's typed failure channel. */
-  export type Failure<Program extends AnyProgram> = EffectError<Program>
+  export type Failure<Program extends WebEffectProgram<any, any, AnyService>> = EffectError<Program>
 }

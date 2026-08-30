@@ -22,8 +22,28 @@ class UnexpectedFailure extends Error {
   readonly kind = 'unexpected' as const
 }
 
-// SAFETY: This declaration-only fixture never executes a Runtime.
+class RootBoundaryService extends Service<RootBoundaryService>()('WebRootBoundary') {
+  value(): string {
+    return 'root'
+  }
+}
+
+class CompatibleRootBoundary extends Service<CompatibleRootBoundary>()('WebRootBoundary') {
+  value(): string {
+    return 'request'
+  }
+}
+
+class IncompatibleRootBoundary extends Service<IncompatibleRootBoundary>()('WebRootBoundary') {
+  other(): number {
+    return 1
+  }
+}
+
+// SAFETY: These declaration-only fixtures never execute a Runtime.
 const runtime = {} as Runtime<Available>
+// SAFETY: This declaration-only fixture never executes a Runtime.
+const rootBoundaryRuntime = {} as Runtime<RootBoundaryService>
 
 const program = Effect.fn(async function* () {
   const available = yield* Available
@@ -222,3 +242,30 @@ const invalidOverride = WebEffect.handle(
   { requestLayer: () => incompatibleCurrentRequest }
 )
 void invalidOverride
+
+const compatibleRootOverride = WebEffect.handle(
+  rootBoundaryRuntime,
+  new Request('https://example.test'),
+  Effect.fn(async function* () {
+    const service = yield* RootBoundaryService
+    return Result.ok(service.value())
+  }),
+  {
+    requestLayer: () => Layer.succeed(CompatibleRootBoundary, new CompatibleRootBoundary())
+  }
+)
+void compatibleRootOverride
+
+// @ts-expect-error Request overrides must also be compatible with same-tag root Runtime providers.
+const invalidRootOverride = WebEffect.handle(
+  rootBoundaryRuntime,
+  new Request('https://example.test'),
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok('invalid')
+  }),
+  {
+    requestLayer: () => Layer.succeed(IncompatibleRootBoundary, new IncompatibleRootBoundary())
+  }
+)
+void invalidRootOverride

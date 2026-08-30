@@ -29,6 +29,8 @@ const assertCondition = (condition: boolean, message: string): asserts condition
   }
 }
 
+const decoder = new TextDecoder()
+
 const readDeclarationGraph = async (entry: string): Promise<string> => {
   const visited = new Set<string>()
   const sources: string[] = []
@@ -155,15 +157,7 @@ const webDeclarations = await readDeclarationGraph(
   join(distRoot, 'web.mjs').replace(/\.mjs$/, '.d.mts')
 )
 const webEsm = await readFile(join(distRoot, 'web.mjs'), 'utf8')
-const webAliases = [
-  'Options',
-  'Success',
-  'ResponseLike',
-  'Program',
-  'RequestLayer',
-  'Value',
-  'Failure'
-] as const
+const webAliases = ['Options', 'Success', 'ResponseLike', 'Program', 'Value', 'Failure'] as const
 const webNamespaceMatch = webDeclarations.match(/declare namespace WebEffect\s*\{([\s\S]*?)\n\}/)
 
 assertCondition(webNamespaceMatch !== null, 'Missing declaration namespace WebEffect')
@@ -185,9 +179,23 @@ assertCondition(
   !/\(\s*function\s*\(\s*WebEffect\s*\)/.test(webEsm),
   'Unexpected WebEffect namespace IIFE'
 )
+assertCondition(
+  !/\btype\s+RequestLayer(?:\s*<|\s*=)/.test(webNamespaceBody),
+  'Removed WebEffect.RequestLayer alias remains'
+)
 
 const web = await import(pathToFileURL(join(distRoot, 'web.mjs')).href)
 assertCondition(web.WebEffect !== undefined, 'Missing WebEffect runtime export')
+assertCondition(
+  web.WebEffectSerializationError !== undefined,
+  'Missing WebEffectSerializationError runtime export'
+)
+for (const member of ['defaultFailure', 'defaultSuccess']) {
+  assertCondition(
+    !Object.prototype.hasOwnProperty.call(web, member),
+    `Unexpected internal WebEffect export: ${member}`
+  )
+}
 for (const member of webAliases) {
   assertCondition(
     !Object.prototype.hasOwnProperty.call(web.WebEffect, member),
@@ -256,6 +264,66 @@ const invalidLayerExports = [
   }
 ] as const
 
+const invalidWebSource = await readFile(
+  join(packageRoot, 'tests/package/public-type-namespaces/invalid-web.ts'),
+  'utf8'
+)
+const invalidWebFixtures = [
+  {
+    label: 'current TypeScript',
+    command: [
+      'bun',
+      'run',
+      '--silent',
+      'tsc',
+      '--',
+      '-p',
+      'tests/package/public-type-namespaces/tsconfig.invalid-web.json',
+      '--pretty',
+      'false'
+    ]
+  },
+  {
+    label: 'TypeScript 5.7.2',
+    command: [
+      'bunx',
+      '--bun',
+      '--package',
+      'typescript@5.7.2',
+      'tsc',
+      '-p',
+      'tests/package/public-type-namespaces/tsconfig.invalid-web.json',
+      '--pretty',
+      'false'
+    ]
+  }
+] as const
+
+for (const fixture of invalidWebFixtures) {
+  const result = Bun.spawnSync(fixture.command, {
+    cwd: packageRoot,
+    stdout: 'pipe',
+    stderr: 'pipe'
+  })
+  const output = `${decoder.decode(result.stdout)}\n${decoder.decode(result.stderr)}`
+
+  assertCondition(
+    result.exitCode !== 0,
+    `Invalid Web request-layer fixture unexpectedly typechecked under ${fixture.label}`
+  )
+
+  const line =
+    invalidWebSource
+      .split('\n')
+      .findIndex((candidate) => candidate.includes('const invalidRootOverride')) + 1
+
+  assertCondition(line > 0, 'Missing invalid Web request-layer fixture line')
+  assertCondition(
+    new RegExp(`invalid-web\\.ts\\(${line},`).test(output),
+    `Incompatible root request override was not rejected under ${fixture.label}`
+  )
+}
+
 const removedLayerNames = [
   'AnyLayer',
   'AnyLayerSpec',
@@ -266,8 +334,6 @@ const removedLayerNames = [
   'LayerSpec',
   'LayerSpecs'
 ] as const
-const decoder = new TextDecoder()
-
 for (const fixture of invalidLayerExports) {
   const result = Bun.spawnSync(fixture.command, {
     cwd: packageRoot,

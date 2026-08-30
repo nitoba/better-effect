@@ -633,14 +633,23 @@ before the returned Promise resolves; Runtime-root resources remain owned by
 the Runtime. A `requestLayer` option can add per-request providers or
 intentionally override a compatible request tag.
 
-The default success policy passes through a `Response`, maps `undefined` to
-204, and wraps every other value as `{ data: value }` JSON. The default failure
-policy passes through a `Response` failure and redacts every other typed
+The default success policy passes through a Web `Response`, maps top-level
+`undefined` to 204, and wraps supported values as `{ data: value }` JSON. A
+supported value is `null`, a boolean, a finite number, a string, an array of
+supported values, or a plain object whose own string-keyed data properties are
+supported values. Nested `undefined`, `bigint`, functions, symbols, non-finite
+numbers (`NaN` and infinities), circular values, sparse arrays, accessors, and
+non-plain objects are rejected with `WebEffectSerializationError` (a
+`TypeError`) instead of being silently dropped or coerced. Use an explicit
+`onSuccess` policy for other representations. The default failure policy passes
+through a standards-compatible `Response` failure and redacts every other typed
 failure to `{ error: 'Internal Server Error' }` with status 500. Custom
 `onSuccess`/`onFailure` policies may be asynchronous but must return a
-`Response`; thrown defects remain rejected. The Program's Service and failure
-channels, request-Layer requirements, and override compatibility are checked
-at the TypeScript boundary.
+standards-compatible `Response`; malformed or forged response values fail with
+`TypeError`. Native cross-realm Responses and compatible Web Response
+implementations are accepted. Thrown defects remain rejected. The Program's
+Service and failure channels, request-Layer requirements, and override
+compatibility are checked at the TypeScript boundary.
 
 ### Hono request boundaries
 

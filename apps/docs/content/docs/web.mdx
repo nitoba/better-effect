@@ -104,14 +104,25 @@ erasure only when an unchecked boundary is intentional.
 
 ## Response and failure policies
 
-The default policy is deliberately small:
+The default policy is deliberately constrained:
 
-- a successful `Response` is returned unchanged;
-- `undefined` succeeds with a `204` Response;
-- every other success value becomes `{ data: value }` JSON with status `200`;
-- a failed `Response` is passed through unchanged;
+- a standards-compatible successful `Response` is returned unchanged;
+- top-level `undefined` succeeds with a `204` Response;
+- `null`, booleans, strings, finite numbers, arrays of those values, and plain
+  objects with enumerable string-keyed data properties become `{ data: value }`
+  JSON with status `200`;
+- nested `undefined`, `bigint`, functions, symbols, `NaN`, infinities,
+  circular values, sparse arrays, accessors, and non-plain objects reject the
+  boundary with `WebEffectSerializationError` (a `TypeError`), rather than
+  being silently dropped or coerced;
+- use an explicit `onSuccess` policy when a value is outside that JSON contract;
+- a failed standards-compatible `Response` is passed through unchanged;
 - every other typed failure is redacted to `{ error: 'Internal Server Error' }`
   with status `500`.
+
+Native cross-realm Responses and compatible Web Response implementations are
+accepted. Malformed values, including forged `Response.prototype` objects,
+are rejected with `TypeError` before they are returned.
 
 Provide asynchronous policies when a framework needs its own response helper:
 

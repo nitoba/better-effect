@@ -1,5 +1,3 @@
-import type { Result as ResultType } from 'better-result'
-
 import type { EffectError, Program as ProgramType } from '../effect/types'
 import type {
   ExecutionMissing,
@@ -11,11 +9,22 @@ import type {
   ValidateOneOverride
 } from '../layer/inference'
 import type { AnyService } from '../service'
-import type { CurrentRequest } from '../standard-services'
+import type { ServiceTagOf } from '../service/types'
+import type { CurrentRequest } from '../standard-services/current-request'
+import type { Layer } from '../layer/layer'
 import type { MissingDependencies } from '../internal/missing-dependencies'
 
 /** A Web Response returned synchronously or asynchronously by a boundary policy. */
 export type ResponseLike = Response | PromiseLike<Response>
+
+/** JSON-compatible values accepted by the default Web success policy. */
+export type WebJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly WebJsonValue[]
+  | { readonly [key: string]: WebJsonValue }
 
 /** The value passed to a WebEffect success policy. */
 export type WebEffectSuccess<A = unknown> = {
@@ -29,16 +38,21 @@ export type WebEffectProgram<A = unknown, E = unknown, R extends AnyService = ne
   R
 >
 
-export type AnyResult = ResultType<any, any>
+/** @internal */
 export type AnyProgram = WebEffectProgram<any, any, AnyService>
 
-/** The request Layer installed by WebEffect when no custom Layer is supplied. */
+type IsAny<Type> = 0 extends 1 & Type ? true : false
+
+type IsWidenedEnvironment<Provided extends AnyService> =
+  IsAny<Provided> extends true ? true : string extends ServiceTagOf<Provided> ? true : false
+
+/** @internal The request Layer installed by WebEffect when no custom Layer is supplied. */
 export type DefaultRequestLayer = ReturnType<typeof CurrentRequest.layer>
 
-/** Services provided by a request Layer. */
+/** @internal Services provided by a request Layer. */
 export type RequestProvided<RequestLayer extends LayerInput> = ProvidedEnvironment<RequestLayer>
 
-/** Services available to a WebEffect Program. */
+/** @internal Services available to a WebEffect Program. */
 export type AvailableServices<Provided extends AnyService, RequestLayer extends LayerInput> =
   | Provided
   | InstanceType<typeof CurrentRequest>
@@ -63,24 +77,27 @@ type RequestLayerMissing<
   Extract<Provided | InstanceType<typeof CurrentRequest>, AnyService>
 >
 
-/** Validate a custom request Layer against the Runtime and CurrentRequest. */
+/** @internal Validate a custom request Layer against the Runtime and CurrentRequest. */
 export type WebRequestLayerChecks<
   Provided extends AnyService,
   RequestLayer extends LayerInput
 > = ValidateLayerInput<RequestLayer> &
+  (IsWidenedEnvironment<Provided> extends true
+    ? unknown
+    : ValidateOneOverride<Layer<Provided, never>, RequestLayer>) &
   ValidateOneOverride<DefaultRequestLayer, RequestLayer> &
   ([RequestLayerMissing<Provided, RequestLayer>] extends [never]
     ? unknown
     : MissingDependencies<RequestLayerMissing<Provided, RequestLayer>>)
 
-/** Services missing from a WebEffect Program. */
+/** @internal Services missing from a WebEffect Program. */
 export type WebProgramMissing<
   Provided extends AnyService,
   RequestLayer extends LayerInput,
   Program extends AnyProgram
 > = ExecutionMissing<AvailableServices<Provided, RequestLayer>, Program>
 
-/** Validate a WebEffect Program's Services and typed failure channel. */
+/** @internal Validate a WebEffect Program's Services and typed failure channel. */
 export type CompleteWebProgram<
   Provided extends AnyService,
   RequestLayer extends LayerInput,
@@ -88,7 +105,7 @@ export type CompleteWebProgram<
   Failure = unknown
 > = Program & WebProgramChecks<Provided, RequestLayer, Program, Failure>
 
-/** Checks applied to a Program after the request Layer has been inferred. */
+/** @internal Checks applied to a Program after the request Layer has been inferred. */
 export type WebProgramChecks<
   Provided extends AnyService,
   RequestLayer extends LayerInput,
@@ -112,12 +129,3 @@ export type WebEffectOptions<
   /** Convert a typed Program failure into a Response. */
   readonly onFailure?: (error: Failure) => ResponseLike
 }
-
-/** A type-level view of a WebEffect boundary's request-layer contract. */
-export type WebEffectRequestLayer<
-  Provided extends AnyService,
-  RequestLayer extends LayerInput
-> = WebRequestLayerChecks<Provided, RequestLayer>
-
-/** A type-level view of a WebEffect boundary's failure contract. */
-export type WebEffectFailureCheck<Failure, Actual> = FailureCheck<Failure, Actual>

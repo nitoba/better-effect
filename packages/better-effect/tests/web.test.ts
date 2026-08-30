@@ -11,7 +11,7 @@ import {
   type ScopeOutcome
 } from '../src'
 import { CurrentRequest } from '../src/standard-services'
-import { WebEffect } from '../src/web'
+import { WebEffect, WebEffectSerializationError } from '../src/web'
 
 class RootService extends Service<RootService>()('WebRootService') {
   value(): string {
@@ -229,6 +229,135 @@ test('WebEffect accepts asynchronous response policies and rejects invalid polic
       { onSuccess: () => ({}) as Response }
     ).catch((cause) => cause)
     expect(invalidPolicyCause).toBeInstanceOf(TypeError)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect default success policy preserves the supported JSON value contract', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+
+  try {
+    const response = await WebEffect.handle(
+      runtime,
+      request('/json'),
+      // oxlint-disable-next-line require-yield -- This fixture checks the default policy with a pure success value.
+      Effect.fn(async function* () {
+        return Result.ok({
+          nullValue: null,
+          booleanValue: true,
+          numberValue: 42,
+          stringValue: 'safe',
+          nested: [null, false, 0, 'nested', { value: 1 }]
+        })
+      })
+    )
+
+    expect(await response.json()).toEqual({
+      data: {
+        nullValue: null,
+        booleanValue: true,
+        numberValue: 42,
+        stringValue: 'safe',
+        nested: [null, false, 0, 'nested', { value: 1 }]
+      }
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect default success policy rejects unsupported JSON values explicitly', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  type CircularValue = { self?: CircularValue }
+  const circular: CircularValue = {}
+  circular.self = circular
+  const symbolKeyedArray = Object.assign([], { [Symbol('unsupported')]: true })
+  const unsupported: readonly [string, unknown][] = [
+    ['bigint', 1n],
+    ['circular', circular],
+    ['symbol-keyed', symbolKeyedArray],
+    ['function', { callback: () => undefined }],
+    ['symbol', { value: Symbol('unsupported') }],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['undefined', { value: undefined }]
+  ]
+
+  try {
+    for (const [name, value] of unsupported) {
+      const cause = await WebEffect.handle(
+        runtime,
+        request(`/unsupported/${name}`),
+        // oxlint-disable-next-line require-yield -- This fixture deliberately returns each unsupported value directly.
+        Effect.fn(async function* () {
+          return Result.ok(value)
+        })
+      ).catch((error) => error)
+
+      expect(cause).toBeInstanceOf(WebEffectSerializationError)
+      expect(cause).toBeInstanceOf(TypeError)
+      // SAFETY: The preceding assertions establish that the rejection is an Error instance.
+      expect((cause as Error).message).toContain(
+        name === 'NaN' || name === 'Infinity' ? 'non-finite' : name
+      )
+    }
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect accepts compatible alternate Web Responses and rejects forged prototypes', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const headers = new Headers()
+  // SAFETY: This structural fixture supplies every Response member validated by WebEffect.
+  const alternateResponse = {
+    body: null,
+    bodyUsed: false,
+    headers,
+    ok: true,
+    redirected: false,
+    status: 200,
+    statusText: 'OK',
+    type: 'default',
+    url: 'https://example.test/alternate',
+    arrayBuffer: async () => new ArrayBuffer(0),
+    blob: async () => new Blob(),
+    clone: () => alternateResponse,
+    formData: async () => new FormData(),
+    json: async () => ({}),
+    text: async () => '',
+    bytes: async () => new Uint8Array()
+  } as Response
+  // SAFETY: This fixture intentionally creates an object with a forged Response prototype.
+  const forgedResponse = Object.create(Response.prototype) as Response
+
+  try {
+    const alternate = await WebEffect.handle(
+      runtime,
+      request('/alternate'),
+      // oxlint-disable-next-line require-yield -- This fixture returns a value through the alternate Response policy.
+      Effect.fn(async function* () {
+        return Result.ok('ok')
+      }),
+      { onSuccess: () => alternateResponse }
+    )
+
+    expect(alternate).toBe(alternateResponse)
+
+    const forgedCause = await WebEffect.handle(
+      runtime,
+      request('/forged'),
+      // oxlint-disable-next-line require-yield -- This fixture returns a value through the forged Response policy.
+      Effect.fn(async function* () {
+        return Result.ok('ok')
+      }),
+      { onSuccess: () => forgedResponse }
+    ).catch((cause) => cause)
+
+    expect(forgedCause).toBeInstanceOf(TypeError)
+    // SAFETY: The preceding assertion establishes that the rejection is an Error instance.
+    expect((forgedCause as Error).message).toContain('must return a Response')
   } finally {
     await runtime.dispose()
   }

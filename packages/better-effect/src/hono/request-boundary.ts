@@ -2,7 +2,7 @@ import { Result } from 'better-result'
 import { createMiddleware } from 'hono/factory'
 import type { Env, MiddlewareHandler } from 'hono'
 
-import { CurrentRequest } from '../standard-services'
+import { CurrentRequest } from '../standard-services/current-request'
 import { Layer } from '../layer'
 import type { LayerInput } from '../layer/inference'
 import { Runtime } from '../runtime'
