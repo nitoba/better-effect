@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.13.0] - 2026-08-30
+
+### Added
+
+- Framework-neutral `better-effect/web` with `WebEffect.handle`, typed
+  request-local Layers, `CurrentRequest`/AbortSignal propagation, safe Response
+  policies, and deterministic request Scope cleanup.
+- Optional `better-effect/opentelemetry` with `OpenTelemetryRuntimeObserver` for
+  correlated, privacy-preserving Runtime execution and Service telemetry.
+- Optional `better-effect/next` for Next.js 16.3.0 App Router Route Handlers,
+  including typed asynchronous route context and application-owned Runtime
+  lifecycle guidance.
+- Optional `better-effect/bun` with a typed `Bun.serve` fetch handler adapter
+  and Bun server lifecycle guidance.
+
+### Changed
+
+- `HonoEffect` now delegates its shared request lifecycle to `WebEffect` while
+  preserving Hono middleware order, Context inference, typed failure behavior,
+  guard Scope outcomes, and defect handling.
+
+### Compatibility
+
+- Existing HonoEffect APIs remain source compatible. Web, Next, Bun, and
+  OpenTelemetry integrations are opt-in subpaths; core and the main entrypoint
+  remain free of framework and telemetry runtime dependencies.
+
 ## [0.12.0] - 2026-08-29
 
 ### Added
