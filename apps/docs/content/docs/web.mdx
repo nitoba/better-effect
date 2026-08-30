@@ -62,6 +62,62 @@ acquired by the Program are released before the returned Promise resolves.
 Resources owned by the Runtime's root Layer remain available to later requests
 and are released by `runtime.dispose()`.
 
+## Bun.serve adapter
+
+For Bun applications, `better-effect/bun` provides the same boundary as a
+Bun.serve `fetch` handler. The adapter is intentionally thin: the application
+owns the long-lived Runtime and the Bun server, while the route factory gets
+both Bun values explicitly.
+
+```ts
+import { Result } from 'better-result'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service } from 'better-effect'
+import { CurrentRequest } from 'better-effect/standard-services'
+import { BunEffect } from 'better-effect/bun'
+
+class AppService extends Service<AppService>()('AppService') {}
+
+const runtime = await Runtime.make(Layer.make(AppService))
+const http = BunEffect.make(runtime)
+
+const server = Bun.serve({
+  port: 3000,
+  fetch: http.handler((request, server) =>
+    Effect.fn(async function* () {
+      const app = yield* AppService
+      const currentRequest = yield* CurrentRequest
+      const signal = yield* CurrentAbortSignal
+
+      return Result.ok({
+        app,
+        url: (currentRequest.request as Request).url,
+        requestUrl: request.url,
+        port: server.port,
+        aborted: signal.aborted
+      })
+    })
+  )
+})
+```
+
+`BunEffect.handler` delegates one request to `WebEffect`: it supplies
+`CurrentRequest`, forwards `request.signal`, applies request Layers and response
+policies, keeps defects rejected, and releases request resources before the
+handler Promise resolves. Runtime-root Services remain shared across requests.
+
+The adapter does not own server or Runtime shutdown. On graceful shutdown,
+stop accepting new requests before releasing root resources, then dispose the
+Runtime:
+
+```ts
+await server.stop()
+await runtime.dispose()
+```
+
+If shutdown can be requested more than once, share one application-owned
+shutdown Promise. This optional entrypoint is Bun-specific and makes no Node
+compatibility claim.
+
 ## Request-local Layers
 
 Use `requestLayer` when a dependency belongs to one request rather than to the
