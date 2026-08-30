@@ -176,7 +176,10 @@ describe('makeBetterAuthEffectApi', () => {
 
     if (Result.isError(apiFailure)) {
       expect(apiFailure.error).toBeInstanceOf(BetterAuthApiError)
-      expect(apiFailure.error.code).toBe('INVALID_SESSION')
+
+      if (apiFailure.error instanceof BetterAuthApiError) {
+        expect(apiFailure.error.code).toBe('INVALID_SESSION')
+      }
     }
 
     if (Result.isError(unexpectedFailure)) {
