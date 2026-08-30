@@ -38,7 +38,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run quality gates (including fresh packed NodeRuntime child tests)
-        run: bun run check
+        run: bun run build && bun run check
 
       - name: Inspect packed package and run consumer smoke test
         working-directory: packages/better-effect
@@ -57,6 +57,8 @@ jobs:
           tar -tzf "$archive" | grep -Fx 'package/README.md'
           tar -tzf "$archive" | grep -Fx 'package/dist/index.mjs'
           tar -tzf "$archive" | grep -Fx 'package/dist/node.mjs'
+          tar -tzf "$archive" | grep -Fx 'package/dist/next.mjs'
+          tar -tzf "$archive" | grep -Fx 'package/dist/next.d.mts'
 
           mkdir -p "$temp_dir/consumer/node_modules"
           tar -xzf "$archive" -C "$temp_dir/consumer/node_modules"
@@ -70,6 +72,7 @@ jobs:
           import { NodeRuntime } from 'better-effect/node'
           import 'better-effect/adapters/iti'
           import 'better-effect/hono'
+          import { NextEffect } from 'better-effect/next'
           import 'better-effect/runtime/explicit'
           import 'better-effect/runtime/node'
           import { IdGenerator, Logger } from 'better-effect/standard-services'
@@ -99,6 +102,10 @@ jobs:
               return Result.ok({ greeting, id: ids.next() })
             })
           )
+
+          if (typeof NextEffect.make !== 'function') {
+            throw new Error('packed NextEffect subpath smoke test failed')
+          }
 
           if (
             !Result.isOk(result) ||

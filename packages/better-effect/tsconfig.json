@@ -29,5 +29,5 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src", "tests"],
-  "exclude": ["tests/package"]
+  "exclude": ["tests/package", "tests/fixtures/next-app"]
 }

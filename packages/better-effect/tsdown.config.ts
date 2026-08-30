@@ -9,6 +9,7 @@ export default defineConfig({
     'runtime/node': 'src/runtime/node.ts',
     'standard-services': 'src/standard-services/index.ts',
     hono: 'src/hono/index.ts',
+    next: 'src/next/index.ts',
     opentelemetry: 'src/opentelemetry/index.ts',
     web: 'src/web/index.ts',
     testing: 'src/testing/index.ts'
