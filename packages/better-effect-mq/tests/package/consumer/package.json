@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "better-effect": "^0.11.0",
     "better-result": "^3.0.0"
   }
 }

@@ -12,6 +12,19 @@ export const LeaseToken = LeaseTokenFactory
 export const QueueName = QueueNameFactory
 export const WorkerId = WorkerIdFactory
 
+export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
+
+export type {
+  CodecCallbackResult,
+  CodecEffect,
+  CodecIssue,
+  CodecMakeOptions,
+  CodecPath,
+  CodecPathSegment,
+  JobCodecFailureOptions,
+  StandardSchemaCodecOptions
+} from './codec'
+
 export {
   InvalidJobTransitionError,
   JobCodecFailure,

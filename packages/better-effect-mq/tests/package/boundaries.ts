@@ -21,9 +21,12 @@ const expectedPeers = {
 type Entrypoint = 'core' | 'testing'
 
 const expectedCoreRuntimeExports = [
+  'Codec',
   'InvalidJobTransitionError',
   'JobCodecFailure',
+  'JobDecodeFailure',
   'JobDefinitionError',
+  'JobEncodeFailure',
   'JobId',
   'JobName',
   'JobNotCancellableError',

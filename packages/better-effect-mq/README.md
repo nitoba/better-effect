@@ -3,10 +3,11 @@
 **Experimental durable message-queue protocol foundations for `better-effect`.**
 
 `better-effect-mq` defines the storage-neutral protocol used by future queue,
-codec, store, and worker packages. Version 0.1 intentionally exposes only the
-protocol model: JSON-safe records, nominal identities, deterministic claim
-ordering, persisted failure envelopes, and pure state transitions. It does not
-open connections, start workers, implement codecs, or provide a `JobStore`.
+store, and worker packages. Version 0.1 exposes the protocol model and a small
+portable Codec boundary: JSON-safe records, nominal identities, deterministic
+claim ordering, persisted failure envelopes, pure state transitions, and
+explicit JSON/Standard Schema conversion. It does not open connections, start
+workers, or provide a `JobStore`.
 
 The package is built on [`better-result`](https://github.com/nitoba/better-result)
 and is not an Effect dependency.
@@ -66,16 +67,68 @@ accessors are rejected.
 - integer epoch-millisecond `recordedAt`.
 
 The protocol never calls `TaggedError.toJSON()` to create this envelope and has
-no generic `fromError` copier. `JobCodecFailure` is the single tagged runtime
-error placeholder exposed by this package; the detailed encode/decode issue
-surface belongs to the later Codec API and is not exported here. This package
-does not implement a codec.
+no generic `fromError` copier. `JobCodecFailure` remains exported for
+protocol compatibility. Portable codec operations use the more specific
+`JobEncodeFailure` and `JobDecodeFailure`
+errors; all three errors are tagged and can be identified by their `_tag` even
+when values came from a duplicated package copy.
 
 All public DTO validators accept untrusted persistence values, reject unknown
 own top-level fields, and return a canonical copy. JSON payloads, metadata, and
 failure data are recursively copied and frozen; functions, live errors, symbols,
 accessor failures, and other non-JSON values are rejected as
 `JobDefinitionError` without mutating the input.
+
+## Portable codecs and trust boundaries
+
+`Codec` is deliberately storage-neutral and requirement-free in v0.1: its
+encode/decode callbacks cannot yield a `Service`. Custom callbacks return a
+completed `Result` or requirement-free better-effect `Effect`, optionally
+wrapped in a `PromiseLike`; raw values are not part of the callback contract.
+Keep contextual I/O outside the codec and pass a completed result to
+`Codec.make`.
+
+```ts
+import { Codec } from 'better-effect-mq'
+
+const payload = Codec.json<{
+  readonly recipient: string
+  readonly attempts: number
+}>()
+
+const encoded = payload.encode({ recipient: 'ada@example.test', attempts: 1 })
+const decoded = payload.decode({ recipient: 'ada@example.test', attempts: 1 })
+```
+
+The primitive representations are identity strings, finite numbers, booleans,
+`null`, and `undefined` only after decoding `Codec.void` from persisted `null`.
+`Codec.json()` validates an object/array graph iteratively, rejects accessors,
+cycles, class instances, `Date`, `Map`, `Set`, `Error`, non-finite numbers, and
+other non-JSON values, and accepts at most 1,024 structural levels. It reads
+only own data descriptors, then returns a detached, deeply frozen JSON-safe
+clone; it never returns an untrusted input object or proxy. There is no
+payload-size limit in this first API; put large payloads in external storage
+and persist a reference instead.
+
+Standard Schema is structural and has no validator dependency. A transformed
+schema whose output is not JSON-safe must provide an explicit encoder; no
+`Date` or class serialization is inferred:
+
+```ts
+import { Result } from 'better-result'
+
+const dateCodec = Codec.standardSchema({
+  schema: DateFromIsoSchema,
+  encode: (date) => Result.ok(date.toISOString())
+})
+```
+
+Codec failures contain only bounded safe diagnostics, sanitized JSON-safe
+paths/codes, and no payload, stack, arbitrary cause, or validator message that
+could echo a secret. Codec identity belongs to a Job’s `name + version`; change
+a codec without a version change only for a documented backward-compatible
+wire change. Upcasters, registries, and persisted job definitions are outside
+this issue’s scope.
 
 ## State machine
 
@@ -225,6 +278,19 @@ bun add better-effect-mq better-effect better-result
 
 TypeScript `5.7` or newer is supported, together with the Node.js and Bun
 runtime matrix used by this repository.
+
+### Repository validation
+
+Run `bun run check` from the repository root for the canonical package check.
+Turbo builds the workspace `better-effect` dependency before this package
+checks its public declarations, so the command is safe from a clean checkout.
+A package-local `bun run check` does not orchestrate sibling workspace builds;
+when running it directly, build the dependency first:
+
+```bash
+(cd ../better-effect && bun run build)
+bun run check
+```
 
 ## License
 
