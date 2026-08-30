@@ -105,10 +105,7 @@ type CustomPluginFailure = BetterAuthApiError<CustomPluginCode> | UnhandledExcep
 
 declare const api: BetterAuthEffectApi<Auth['api'], Code>
 declare const plainApi: BetterAuthEffectApi<PlainAuth['api'], PlainCode>
-declare const customPluginApi: BetterAuthEffectApi<
-  CustomPluginAuth['api'],
-  CustomPluginCode
->
+declare const customPluginApi: BetterAuthEffectApi<CustomPluginAuth['api'], CustomPluginCode>
 declare const customApi: BetterAuthEffectApi<CustomApi, 'CUSTOM_ERROR'>
 
 const headers = new Headers()
