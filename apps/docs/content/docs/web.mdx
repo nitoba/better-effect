@@ -108,12 +108,21 @@ The default policy is deliberately constrained:
 
 - a standards-compatible successful `Response` is returned unchanged;
 - top-level `undefined` succeeds with a `204` Response;
-- `null`, booleans, strings, finite numbers, arrays of those values, and plain
-  objects with enumerable string-keyed data properties become `{ data: value }`
-  JSON with status `200`;
-- nested `undefined`, `bigint`, functions, symbols, `NaN`, infinities,
-  circular values, sparse arrays, accessors, and non-plain objects reject the
-  boundary with `WebEffectSerializationError` (a `TypeError`), rather than
+- `null`, booleans, strings, finite numbers, arrays, and plain objects become
+  `{ data: value }` JSON with status `200` when every nested value satisfies the
+  same rules;
+- the serialized JSON value graph must be acyclic. Arrays must be dense and
+  unaugmented: their own string properties must be exactly `length` and one
+  property for every index from `0` through `length - 1`, with each index an
+  enumerable data property. Symbol keys, extra own properties (including
+  non-enumerable ones), sparse holes, and accessor elements are rejected;
+- object records must have `Object.prototype` or `null` as their prototype, and
+  every own string-keyed property must be an enumerable data property. Own
+  symbol keys, non-enumerable properties, accessors, custom prototypes, and
+  other non-plain objects are rejected. Shared references in separate branches
+  are serialized as repeated values;
+- nested `undefined`, `bigint`, functions, symbols, `NaN`, and infinities reject
+  the boundary with `WebEffectSerializationError` (a `TypeError`), rather than
   being silently dropped or coerced;
 - use an explicit `onSuccess` policy when a value is outside that JSON contract;
 - a failed standards-compatible `Response` is passed through unchanged;
@@ -126,7 +135,8 @@ requires an integer `status` of `0` or `200` through `599`, a matching boolean
 `ok`, boolean `redirected` and `bodyUsed`, string `statusText` and `url`, a
 standard `type`, and callable `arrayBuffer()`, `blob()`, `bytes()`, `clone()`,
 `formData()`, `json()`, and `text()` methods. `headers` must expose callable
-`append()`, `delete()`, `get()`, `has()`, `set()`, and `forEach()` operations.
+`append()`, `delete()`, `get()`, `getSetCookie()`, `has()`, `set()`, and
+`forEach()` operations.
 `body` must be `null` (including legitimate null-body Responses such as `204`)
 or a ReadableStream-compatible object with a boolean `locked` property and
 callable `cancel()`, `getReader()`, `pipeThrough()`, `pipeTo()`, and `tee()`

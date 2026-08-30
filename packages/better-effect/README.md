@@ -635,15 +635,23 @@ intentionally override a compatible request tag.
 
 The default success policy passes through a Web `Response`, maps top-level
 `undefined` to 204, and wraps supported values as `{ data: value }` JSON. A
-supported value is `null`, a boolean, a finite number, a string, an array of
-supported values, or a plain object whose own string-keyed data properties are
-supported values. Nested `undefined`, `bigint`, functions, symbols, non-finite
-numbers (`NaN` and infinities), circular values, sparse arrays, accessors, and
-non-plain objects are rejected with `WebEffectSerializationError` (a
-`TypeError`) instead of being silently dropped or coerced. Use an explicit
-`onSuccess` policy for other representations. The default failure policy passes
-through a standards-compatible `Response` failure and redacts every other typed
-failure to `{ error: 'Internal Server Error' }` with status 500. Custom
+non-`undefined`, non-`Response` value must be an acyclic graph of `null`,
+booleans, strings, finite numbers, dense arrays, and plain object records.
+Arrays must have only the own string properties `length` and one property for
+each index from `0` through `length - 1`; each index must be an enumerable data
+property. Symbol keys, extra own properties (including non-enumerable ones),
+sparse holes, and accessor elements are rejected. Object records must have
+`Object.prototype` or `null` as their prototype, and every own string-keyed
+property must be an enumerable data property. Own symbol keys,
+non-enumerable properties, accessors, custom prototypes, and other non-plain
+objects are rejected. Shared references in separate branches are serialized as
+repeated values. Nested `undefined`, `bigint`, functions, symbols, and
+non-finite numbers (`NaN` and infinities) are rejected with
+`WebEffectSerializationError` (a `TypeError`) instead of being silently dropped
+or coerced. Use an explicit `onSuccess` policy for other representations. The
+default failure policy passes through a standards-compatible `Response`
+failure and redacts every other typed failure to `{ error: 'Internal Server Error' }`
+with status 500. Custom
 `onSuccess`/`onFailure` policies may be asynchronous but must return a
 standards-compatible `Response`. The boundary checks that protocol structurally:
 `status` is an integer in `0` or `200` through `599`, `ok` matches the 2xx
@@ -651,8 +659,8 @@ status range, `redirected` and `bodyUsed` are booleans, `statusText` and `url`
 are strings, `type` is a standard Response type, and
 `arrayBuffer()`, `blob()`, `bytes()`, `clone()`, `formData()`, `json()`, and
 `text()` are callable. `headers` must provide callable `append()`, `delete()`,
-`get()`, `has()`, `set()`, and `forEach()` operations. `body` must be `null`
-(including legitimate null-body Responses such as `204`) or a
+`get()`, `getSetCookie()`, `has()`, `set()`, and `forEach()` operations. `body`
+must be `null` (including legitimate null-body Responses such as `204`) or a
 ReadableStream-compatible object with a boolean `locked` property and callable
 `cancel()`, `getReader()`, `pipeThrough()`, `pipeTo()`, and `tee()` methods.
 Native cross-realm Responses and other values satisfying this protocol are

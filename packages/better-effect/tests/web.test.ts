@@ -274,19 +274,27 @@ test('WebEffect default success policy rejects unsupported JSON values explicitl
   const circular: CircularValue = {}
   circular.self = circular
   const symbolKeyedArray = Object.assign([], { [Symbol('unsupported')]: true })
-  const unsupported: readonly [string, unknown][] = [
-    ['bigint', 1n],
-    ['circular', circular],
-    ['symbol-keyed', symbolKeyedArray],
-    ['function', { callback: () => undefined }],
-    ['symbol', { value: Symbol('unsupported') }],
-    ['NaN', Number.NaN],
-    ['Infinity', Number.POSITIVE_INFINITY],
-    ['undefined', { value: undefined }]
+  const augmentedArray = Object.assign([1], { extra: true })
+  const nonEnumerableObject = { visible: true }
+  Object.defineProperty(nonEnumerableObject, 'hidden', { value: true })
+  const nonEnumerableArray = [1]
+  Object.defineProperty(nonEnumerableArray, 'extra', { value: true })
+  const unsupported: readonly [string, unknown, string][] = [
+    ['bigint', 1n, 'bigint'],
+    ['circular', circular, 'circular'],
+    ['symbol-keyed', symbolKeyedArray, 'symbol-keyed'],
+    ['augmented-array', augmentedArray, 'augmented'],
+    ['non-enumerable-object', nonEnumerableObject, 'non-enumerable'],
+    ['non-enumerable-array', nonEnumerableArray, 'augmented'],
+    ['function', { callback: () => undefined }, 'function'],
+    ['symbol', { value: Symbol('unsupported') }, 'symbol'],
+    ['NaN', Number.NaN, 'non-finite'],
+    ['Infinity', Number.POSITIVE_INFINITY, 'non-finite'],
+    ['undefined', { value: undefined }, 'undefined']
   ]
 
   try {
-    for (const [name, value] of unsupported) {
+    for (const [name, value, expectedDetail] of unsupported) {
       const cause = await WebEffect.handle(
         runtime,
         request(`/unsupported/${name}`),
@@ -299,9 +307,7 @@ test('WebEffect default success policy rejects unsupported JSON values explicitl
       expect(cause).toBeInstanceOf(WebEffectSerializationError)
       expect(cause).toBeInstanceOf(TypeError)
       // SAFETY: The preceding assertions establish that the rejection is an Error instance.
-      expect((cause as Error).message).toContain(
-        name === 'NaN' || name === 'Infinity' ? 'non-finite' : name
-      )
+      expect((cause as Error).message).toContain(expectedDetail)
     }
   } finally {
     await runtime.dispose()
