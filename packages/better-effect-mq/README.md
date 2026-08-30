@@ -82,8 +82,10 @@ accessor failures, and other non-JSON values are rejected as
 ## Portable codecs and trust boundaries
 
 `Codec` is deliberately storage-neutral and requirement-free in v0.1: its
-encode/decode callbacks cannot yield a `Service`. Keep contextual I/O outside
-the codec and pass a completed `Result` or value to `Codec.make`.
+encode/decode callbacks cannot yield a `Service`. Callbacks may return raw
+values, completed `Result`s, or a `PromiseLike` of either; a better-effect
+`Effect` is accepted only when its Service requirements are `never`. Keep
+contextual I/O outside the codec and pass a completed value to `Codec.make`.
 
 ```ts
 import { Codec } from 'better-effect-mq'
@@ -275,6 +277,19 @@ bun add better-effect-mq better-effect better-result
 
 TypeScript `5.7` or newer is supported, together with the Node.js and Bun
 runtime matrix used by this repository.
+
+### Repository validation
+
+Run `bun run check` from the repository root for the canonical package check.
+Turbo builds the workspace `better-effect` dependency before this package
+checks its public declarations, so the command is safe from a clean checkout.
+A package-local `bun run check` does not orchestrate sibling workspace builds;
+when running it directly, build the dependency first:
+
+```bash
+(cd ../better-effect && bun run build)
+bun run check
+```
 
 ## License
 

@@ -48,6 +48,20 @@ expectTypeOf<Effect.Success<ReturnType<typeof custom.decode>>>().toEqualTypeOf<U
 expectTypeOf<Effect.Requirements<ReturnType<typeof custom.encode>>>().toBeNever()
 expectTypeOf<Effect.Requirements<ReturnType<typeof custom.decode>>>().toBeNever()
 
+const rawCallbacks = Codec.make<User>({
+  encode: (value) => ({ id: value.id, active: value.active }),
+  decode: (value) => ({ id: String(value), active: true })
+})
+expectTypeOf<Effect.Success<ReturnType<typeof rawCallbacks.encode>>>().toEqualTypeOf<JsonValue>()
+expectTypeOf<Effect.Success<ReturnType<typeof rawCallbacks.decode>>>().toEqualTypeOf<User>()
+
+const asyncCallbacks = Codec.make<User>({
+  encode: async (value) => Result.ok({ id: value.id, active: value.active }),
+  decode: async (value) => ({ id: String(value), active: false })
+})
+expectTypeOf<Effect.Success<ReturnType<typeof asyncCallbacks.encode>>>().toEqualTypeOf<JsonValue>()
+expectTypeOf<Effect.Success<ReturnType<typeof asyncCallbacks.decode>>>().toEqualTypeOf<User>()
+
 class CodecDependency extends Service<CodecDependency>()('CodecDependency') {}
 
 const dependent = Effect.gen(async function* () {
@@ -69,7 +83,21 @@ const dependentCodecFromMake = Codec.make({
   encode: (_value) => dependent,
   decode: (value) => Codec.json<User>().decode(value)
 })
+
+const dependentCodecWithExplicitValue = Codec.make<User>({
+  // @ts-expect-error Codec v0.1 callbacks cannot require Services, even when Value is explicit.
+  encode: (_value) => dependent,
+  decode: (value) => Codec.json<User>().decode(value)
+})
+
+const dependentCodecPromise = Codec.make<User>({
+  // @ts-expect-error Promise callbacks cannot carry Service requirements either.
+  encode: async (_value) => dependent,
+  decode: (value) => Codec.json<User>().decode(value)
+})
 void dependentCodecFromMake
+void dependentCodecWithExplicitValue
+void dependentCodecPromise
 
 const syncSchema = {
   '~standard': {
@@ -111,6 +139,13 @@ expectTypeOf<Effect.Error<ReturnType<typeof asyncCodec.decode>>>().toEqualTypeOf
 expectTypeOf<Effect.Success<ReturnType<typeof asyncCodec.encode>>>().toEqualTypeOf<JsonValue>()
 expectTypeOf<Effect.Requirements<ReturnType<typeof asyncCodec.decode>>>().toBeNever()
 expectTypeOf<Effect.Requirements<ReturnType<typeof asyncCodec.encode>>>().toBeNever()
+
+const dependentSchemaCodec = Codec.standardSchema({
+  schema: dateSchema,
+  // @ts-expect-error Standard Schema encoders cannot carry Service requirements.
+  encode: (_value) => dependent
+})
+void dependentSchemaCodec
 
 // @ts-expect-error A transformed non-JSON output requires an explicit encoder.
 const missingDateEncoder = Codec.standardSchema({ schema: dateSchema })

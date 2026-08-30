@@ -4,7 +4,7 @@
 import { Result } from 'better-result'
 
 import type { Result as ResultType, StandardSchemaV1 } from 'better-result'
-import type { Effect as EffectType, EffectRequirements } from 'better-effect'
+import type { Effect as EffectType } from 'better-effect'
 
 import type { JsonValue } from '../protocol/types'
 
@@ -20,23 +20,35 @@ import type { CodecIssue, CodecPath } from './errors'
 
 export type CodecEffect<Value, Failure> = EffectType<Value, Failure, never>
 
+/**
+ * The declaration-only Service requirement marker added by better-effect's
+ * Effect type. It is derived from public types so the codec never imports an
+ * implementation detail or a private marker symbol.
+ */
+type EffectRequirementKey = Exclude<
+  keyof EffectType<unknown, unknown, never>,
+  keyof ResultType<unknown, unknown>
+>
+
+type RequirementFreeEffect = {
+  readonly [Key in EffectRequirementKey]?: { readonly requirements: never }
+}
+
+type RequirementFreeResult<Value, Failure> = ResultType<Value, Failure> & RequirementFreeEffect
+
+/**
+ * Values accepted from a codec callback. An Effect with Service requirements
+ * is not a valid Result here: its public requirement marker cannot satisfy the
+ * requirement-free metadata constraint.
+ */
 export type CodecCallbackResult<Value, Failure> =
   | Value
-  | ResultType<Value, Failure>
-  | PromiseLike<Value | ResultType<Value, Failure>>
+  | RequirementFreeResult<Value, Failure>
+  | PromiseLike<Value | RequirementFreeResult<Value, Failure>>
 
 type CodecOperation<Value, Failure> =
   | CodecEffect<Value, Failure>
   | Promise<CodecEffect<Value, Failure>>
-
-type RequirementFree<Returned> =
-  Returned extends PromiseLike<infer Awaited>
-    ? [EffectRequirements<Awaited>] extends [never]
-      ? Returned
-      : never
-    : [EffectRequirements<Returned>] extends [never]
-      ? Returned
-      : never
 
 type UnknownResult = ResultType<unknown, unknown>
 
@@ -322,8 +334,8 @@ export type CodecMakeOptions<
     JobDecodeFailure
   >
 > = {
-  readonly encode: (value: Value) => EncodeReturn & RequirementFree<EncodeReturn>
-  readonly decode: (value: unknown) => DecodeReturn & RequirementFree<DecodeReturn>
+  readonly encode: (value: Value) => EncodeReturn
+  readonly decode: (value: unknown) => DecodeReturn
 }
 
 /** Create a codec from Result/raw callbacks; callbacks are intentionally requirement-free. */
@@ -389,20 +401,35 @@ export function json<Value extends JsonValue = JsonValue>(): Codec<Value, Value>
 type SchemaInput<Schema extends StandardSchemaV1> = StandardSchemaV1.InferInput<Schema>
 type SchemaOutput<Schema extends StandardSchemaV1> = StandardSchemaV1.InferOutput<Schema>
 
-type StandardSchemaEncoder<Value, Returned> = (value: Value) => Returned & RequirementFree<Returned>
+type StandardSchemaEncoder<Value, Returned extends StandardSchemaEncodeResult> = (
+  value: Value
+) => Returned
 
 type StandardSchemaEncodeResult = CodecCallbackResult<JsonValue, JobEncodeFailure>
+
+type StandardSchemaValidationResult<Value> = StandardSchemaV1.Result<Value> & RequirementFreeEffect
+
+type RequirementFreeSchema<Schema extends StandardSchemaV1> = Schema & {
+  readonly '~standard': Schema['~standard'] & {
+    readonly validate: (
+      value: unknown,
+      options?: StandardSchemaV1.Options
+    ) =>
+      | StandardSchemaValidationResult<SchemaOutput<Schema>>
+      | Promise<StandardSchemaValidationResult<SchemaOutput<Schema>>>
+  }
+}
 
 export type StandardSchemaCodecOptions<
   Schema extends StandardSchemaV1,
   EncodeReturn extends StandardSchemaEncodeResult = StandardSchemaEncodeResult
 > = [SchemaOutput<Schema>] extends [JsonValue]
   ? {
-      readonly schema: Schema
+      readonly schema: RequirementFreeSchema<Schema>
       readonly encode?: StandardSchemaEncoder<SchemaOutput<Schema>, EncodeReturn>
     }
   : {
-      readonly schema: Schema
+      readonly schema: RequirementFreeSchema<Schema>
       readonly encode: StandardSchemaEncoder<SchemaOutput<Schema>, EncodeReturn>
     }
 
