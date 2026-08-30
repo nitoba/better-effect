@@ -14,8 +14,10 @@ bun add better-effect better-result hono
 ```
 
 The adapter does not resolve Services into the Hono Context and does not wrap
-individual methods with a Proxy. It opens one Runtime execution and one child
-Scope around the whole request instead.
+individual methods with a Proxy. It keeps Hono's middleware, validator, and
+Context behavior local, then hands the standard Web Request to the shared
+`better-effect/web` boundary. That boundary owns the single Runtime execution,
+Result/defect policy, and request Scope cleanup for the whole request.
 
 ## Configure the request boundary
 
@@ -61,7 +63,9 @@ await runtime.dispose()
 The request boundary supplies `CurrentRequest` and links the request's
 `AbortSignal` to the Runtime execution. Services are resolved lazily through
 `yield* Service`, and resources acquired with `Effect.acquireRelease` belong to
-that request's Scope. The default failure policy redacts every non-`Response`
+that request's Scope. Registering the middleware more than once for a request
+still creates only one execution. The default failure policy redacts every
+non-`Response`
 failure value to `{ error: 'Internal Server Error' }` with status 500, including
 non-`Error` values. An explicitly returned `Response` failure is intentionally
 passed through unchanged. A custom `onFailure` should expose only safe,

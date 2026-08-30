@@ -164,5 +164,7 @@ is supplied to request finalizers through the execution's failure outcome.
 
 The boundary is intentionally only an adapter. It does not parse request
 bodies, choose routes, install framework middleware, or catch framework errors.
-A framework can use `handleRequest` anywhere it already receives a standard Web
-`Request` and must return a standard Web `Response`.
+Framework integrations such as `better-effect/hono` provide that framework
+composition and delegate the shared Request, Runtime, Result, and Scope
+lifecycle here. A framework can also use `handleRequest` anywhere it already
+receives a standard Web `Request` and must return a standard Web `Response`.

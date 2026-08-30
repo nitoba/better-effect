@@ -672,10 +672,16 @@ boundary.
 
 ### Hono request boundaries
 
-The optional `better-effect/hono` entrypoint runs one Runtime execution and
-Scope around each request. Handlers can yield Services directly; the adapter
-provides `CurrentRequest`, forwards `Request.signal`, and converts Results to
-Responses in one policy:
+The optional `better-effect/hono` entrypoint supplies Hono's middleware,
+validator, and Context integration around the same Web request boundary used
+by `better-effect/web`. It adapts Hono's Context to a standard Web `Request`,
+then delegates the single `Runtime` execution, Result/defect handling, and
+request Scope cleanup to that shared boundary. You only need to configure one
+Hono middleware boundary per request; the adapter prevents duplicate
+registrations from opening another execution.
+
+Handlers can yield Services directly; the adapter provides `CurrentRequest`,
+forwards `Request.signal`, and converts Results to Responses in one policy:
 
 ```ts
 import { Hono } from 'hono'
