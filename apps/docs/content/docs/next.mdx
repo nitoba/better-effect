@@ -72,6 +72,32 @@ A missing Service or incompatible request Layer is rejected at the TypeScript
 boundary. The `Failure` channel is also checked when a typed `onFailure`
 policy is configured.
 
+For a long-lived App Router application, keep the Runtime in an
+application-owned module and expose explicit disposal for the host lifecycle:
+
+```ts
+// app/runtime.ts
+export const appRuntime = await Runtime.make(AppLive)
+
+// Call this from the actual host/server shutdown hook.
+export const disposeAppRuntime = (): Promise<void> => appRuntime.dispose()
+```
+
+Route modules import that Runtime and bind it to the adapter:
+
+```ts
+// app/api/users/[id]/route.ts
+import { appRuntime } from '@/app/runtime'
+
+const http = NextEffect.make(appRuntime)
+```
+
+Do not put this long-lived Runtime in an `await using` scope that ends during
+module initialization; that would dispose it before exported handlers serve
+requests. `NextEffect.make` stores only the Runtime supplied by the caller: it
+does not create a process-global singleton or mutate hidden adapter state.
+Sharing `appRuntime` is an application ownership choice.
+
 ## Request context and lifecycle
 
 Each invocation creates exactly one WebEffect execution and child Scope. The
@@ -94,10 +120,11 @@ const http = NextEffect.make(runtime, {
 })
 ```
 
-The Runtime remains application-owned; dispose it during application shutdown.
-Concurrent handlers keep their request Layers, requests, and route contexts
-isolated. Root Layer resources remain owned by the Runtime and are not released
-at the end of an individual request.
+The Runtime remains application-owned; call `disposeAppRuntime()` from the
+actual application/server shutdown hook. Concurrent handlers keep their
+request Layers, requests, and route contexts isolated. Root Layer resources
+remain owned by the Runtime and are not released at the end of an individual
+request.
 
 For a deployment that cannot retain a long-lived Runtime, use the existing
 `Runtime.use` helper explicitly around the handler invocation. This opts into
@@ -117,8 +144,10 @@ by the configured better-effect Runtime.
 ## Responses and failures
 
 By default, a successful value is returned as `{ data: value }` JSON. A
-successful `Response` is passed through unchanged. Use `serialize` for a
-JSON-safe transformation or `respond` for complete Response control:
+successful `Response` is passed through unchanged. A route may select at most
+one success policy: use `serialize` for a JSON-safe transformation, `respond`
+for complete Response control, or route-level `onSuccess` to replace the
+shared success policy:
 
 ```ts
 export const GET = http.gen(

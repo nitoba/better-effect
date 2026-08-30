@@ -701,11 +701,35 @@ export const GET = http.gen(async function* (_request, context: RouteContext<'/a
 `NextEffect.gen` and `NextEffect.handler` return the native
 `(request, context) => Promise<Response>` shape expected by App Router route
 files. The context is typed with Next's asynchronous `params`; `handler` is
-useful when the complete `Effect.fn` Program already exists. The Runtime is
-application-owned and must be disposed by the application, for example with
-`await using` during startup. If a deployment requires per-invocation
-ownership, use the existing `Runtime.use` helper explicitly; the adapter never
-creates a Runtime per request by default:
+useful when the complete `Effect.fn` Program already exists.
+
+For a long-lived App Router application, keep the Runtime in an
+application-owned module and expose explicit disposal for the host lifecycle:
+
+```ts
+// app/runtime.ts
+export const appRuntime = await Runtime.make(AppLive)
+
+// Call this from the actual host/server shutdown hook.
+export const disposeAppRuntime = (): Promise<void> => appRuntime.dispose()
+```
+
+Route modules import that Runtime and bind it to the adapter:
+
+```ts
+// app/api/users/[id]/route.ts
+import { appRuntime } from '@/app/runtime'
+
+const http = NextEffect.make(appRuntime)
+```
+
+Do not put this long-lived Runtime in an `await using` scope that ends during
+module initialization; that would dispose it before exported handlers serve
+requests. `NextEffect.make` stores only the Runtime supplied by the caller: it
+does not create a process-global singleton or mutate hidden adapter state.
+Sharing `appRuntime` is an application ownership choice. If a deployment
+requires per-invocation ownership instead, use the existing `Runtime.use`
+helper explicitly; the adapter never creates a Runtime per request by default:
 
 ```ts
 export const GET = (request, context) =>
@@ -722,9 +746,11 @@ request Layers and context isolated.
 
 The default success policy passes through a returned `Response`; other values
 are encoded as `{ data: value }` JSON using the same strict serialization rules
-as `better-effect/web`. Use a route-level `respond` callback for a complete
-Response or `serialize` to transform a JSON-safe value. Shared `onSuccess` and
-`onFailure` policies receive the native Request and route context. Typed
+as `better-effect/web`. A route may select at most one success policy:
+`respond` handles a complete Response, `serialize` transforms a JSON-safe
+value, and route-level `onSuccess` replaces the shared success policy. Shared
+`onSuccess` and `onFailure` policies receive the native Request and route
+context. Typed
 `Result.err` failures use `onFailure` (or the redacted 500 default), while
 thrown defects remain rejected. Policies must return a standards-compatible
 `Response` and may be asynchronous. This adapter does not add Edge-runtime
