@@ -69,6 +69,10 @@ const makeBoundaryOptions = <Provided extends AnyService, RequestLayer extends L
 ): BoundaryOptions<RequestLayer> => {
   const boundaryOptions: BoundaryOptions<RequestLayer> = {
     onSuccess: ({ value }) => {
+      if (context.finalized) {
+        return context.res
+      }
+
       const outcome = state.outcome
 
       if (outcome?.kind !== 'success') {
@@ -93,6 +97,10 @@ const makeBoundaryOptions = <Provided extends AnyService, RequestLayer extends L
       return options.onSuccess(success, context)
     },
     onFailure: (error) => {
+      if (context.error !== undefined || context.finalized) {
+        return context.res
+      }
+
       if (state.outcome?.kind === 'defect') {
         // SAFETY: Hono has already converted its Error into context.res through app.onError; WebEffect validates it.
         return context.res

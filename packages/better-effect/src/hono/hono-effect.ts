@@ -12,6 +12,7 @@ import {
   recordRequestSuccess,
   type RequestState
 } from './request-boundary'
+import { assertResponse } from '../web/responses'
 import { defaultFailure, defaultSuccess } from './responses'
 import type {
   AnyGeneratorBody,
@@ -29,6 +30,7 @@ import type {
   HonoEffectContext,
   HonoEffectOptions,
   HonoEffectRouteOptions,
+  HonoEffectSuccess,
   HonoRequestLayerChecks,
   MiddlewareEnvironment,
   MiddlewareInputs,
@@ -237,8 +239,7 @@ export class HonoEffect<
       const result = await program()
 
       if (Result.isError(result)) {
-        this.recordFailure(state, result.error)
-        return
+        return await this.handleFailure(state, result.error, context)
       }
 
       await next()
@@ -262,12 +263,46 @@ export class HonoEffect<
       const result = await makeProgram(context)()
 
       if (Result.isError(result)) {
-        this.recordFailure(state, result.error)
-        return
+        return await this.handleFailure(state, result.error, context)
       }
 
       recordRequestSuccess(state, result.value, options)
+      return await this.handleSuccess(result.value, options, context)
     }
+  }
+
+  private async handleSuccess(
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Route values are intentionally opaque until the Hono success policy consumes them.
+    value: unknown,
+    options: AnyRouteOptions,
+    context: HonoContext
+  ): Promise<Response> {
+    if (options.respond !== undefined) {
+      return assertResponse(await options.respond(value, context))
+    }
+
+    const success: HonoEffectSuccess = { value }
+
+    if (options.status !== undefined) {
+      Object.assign(success, { status: options.status })
+    }
+
+    if (options.serialize !== undefined) {
+      Object.assign(success, { serialize: options.serialize })
+    }
+
+    return assertResponse(await this.onSuccess(success, context))
+  }
+
+  private async handleFailure(
+    state: RequestState,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result errors are intentionally opaque until the Hono failure policy consumes them.
+    error: unknown,
+    context: HonoContext
+  ): Promise<Response> {
+    this.recordFailure(state, error)
+    // SAFETY: The public handler, generator, and guard constraints validate this error against Failure.
+    return assertResponse(await this.onFailure(error as Failure, context))
   }
 
   private composeInputMiddleware(
