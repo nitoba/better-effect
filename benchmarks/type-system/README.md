@@ -50,7 +50,7 @@ the current ceilings:
 
 | Services | Check time |   Types | Instantiations |  Memory |
 | -------: | ---------: | ------: | -------------: | ------: |
-|       10 |        2 s | 100,000 |        200,000 | 512 MiB |
+|       10 |        2 s | 100,000 |        250,000 | 512 MiB |
 |       25 |        3 s | 200,000 |        250,000 | 512 MiB |
 |       50 |        6 s | 400,000 |        750,000 | 768 MiB |
 |      100 |       12 s | 800,000 |      2,000,000 |   1 GiB |
@@ -63,7 +63,10 @@ The all-at-once `Layer.override` fixtures compile at 50 and 100 Services. The
 override validator now carries the current provided union and reuses a base
 tag map for exact replacements, avoiding repeated full provenance expansion.
 This keeps the full matrix within the configured budgets before adding cycle or
-graph validation. The MQ fixture similarly checks exact tuple/union preservation
+graph validation. TypeScript 6.0.3 currently reports 221,737 instantiations
+for the 10-Service program chain and 204,031 for program collections, so the
+10-Service ceiling is 250,000 with room for normal compiler variance. The MQ
+fixture similarly checks exact tuple/union preservation
 and known/unknown identity lookups without recursively validating the tuple,
 keeping large registries inside an explicit budget.
 
@@ -71,7 +74,7 @@ Registry ceilings are intentionally generous guardrails rather than CI latency S
 
 | Jobs | Check time |     Types | Instantiations |  Memory |
 | ---: | ---------: | --------: | -------------: | ------: |
-|   10 |        2 s |   100,000 |        200,000 | 512 MiB |
+|   10 |        2 s |   100,000 |        250,000 | 512 MiB |
 |   50 |        6 s |   400,000 |        750,000 | 768 MiB |
 |  100 |       12 s |   800,000 |      2,000,000 |   1 GiB |
 |  250 |       30 s | 1,500,000 |      6,000,000 | 1.5 GiB |

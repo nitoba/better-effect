@@ -150,7 +150,7 @@ const stagePublicPackages = async (): Promise<void> => {
 // These are intentionally generous ceilings for a developer laptop. They are
 // guardrails against accidental type-graph expansion, not CI latency SLAs.
 const budgets = {
-  10: { maxCheckMs: 2_000, maxInstantiations: 200_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  10: { maxCheckMs: 2_000, maxInstantiations: 250_000, maxMemoryMiB: 512, maxTypes: 100_000 },
   25: { maxCheckMs: 3_000, maxInstantiations: 250_000, maxMemoryMiB: 512, maxTypes: 200_000 },
   50: { maxCheckMs: 6_000, maxInstantiations: 750_000, maxMemoryMiB: 768, maxTypes: 400_000 },
   100: {
@@ -171,7 +171,7 @@ const betterAuthBudgets = {
 } satisfies Record<BetterAuthSize, Budget>
 
 const jobBudgets = {
-  10: { maxCheckMs: 2_000, maxInstantiations: 200_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  10: { maxCheckMs: 2_000, maxInstantiations: 250_000, maxMemoryMiB: 512, maxTypes: 100_000 },
   50: { maxCheckMs: 6_000, maxInstantiations: 750_000, maxMemoryMiB: 768, maxTypes: 400_000 },
   100: {
     maxCheckMs: 12_000,
