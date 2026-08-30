@@ -138,6 +138,16 @@ connection, or register anything globally. The persisted identity is exactly the
 literal queue, job name, and positive integer version. Function and class names
 never participate in identity.
 
+At definition time, a codec's `encode` and `decode` methods are captured with a
+new frozen receiver. This preserves ordinary `this`-based class or structural
+codecs without retaining their source instance. Receiver state must use string-keyed data properties whose values are finite
+primitives, `null`, `undefined`, or recursively plain records and arrays.
+Ordinary prototype helper methods are captured as behavior, but callable own
+state other than the codec operations, accessors, symbols, class instances,
+cycles, and oversized or unreadable graphs are rejected as `JobDefinitionError`.
+The copied receiver state is deeply frozen, so later mutation of a source codec
+cannot change a Job descriptor.
+
 ```ts
 import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'
 

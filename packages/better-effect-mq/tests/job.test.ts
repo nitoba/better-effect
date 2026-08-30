@@ -94,31 +94,31 @@ test('Queue.job creates an inert immutable versioned descriptor with normalized 
   expect(definition.defaults.attempts).toBe(5)
 })
 
-test('job definitions snapshot decorated and class codecs without exposing mutable state', async () => {
+test('job definitions snapshot decorated and class codec receivers at definition time', async () => {
   const queue = Queue.define('codecs')
-  let unrelatedReads = 0
-  const decorated: { encode: typeof Codec.string.encode; decode: typeof Codec.string.decode } = {
-    encode: Codec.string.encode,
-    decode: Codec.string.decode
-  }
-  Object.defineProperty(decorated, 'unrelated', {
-    enumerable: true,
-    get: () => {
-      unrelatedReads += 1
-      throw new Error('unrelated property was read')
+  const decorated = {
+    state: { prefix: 'decorated' },
+    encode(value: string) {
+      return Codec.string.encode(`${this.state.prefix}:${value}`)
+    },
+    decode(value: unknown) {
+      return Codec.string.decode(`${this.state.prefix}:${String(value)}`)
     }
-  })
-  Object.freeze(decorated)
+  }
 
   class StatefulCodec implements CodecType<string> {
-    readonly prefix = 'stateful'
+    prefix = 'stateful'
+
+    format(value: string) {
+      return `${this.prefix}:${value}`
+    }
 
     encode(value: string) {
-      return Codec.string.encode(`${this.prefix}:${value}`)
+      return Codec.string.encode(this.format(value))
     }
 
     decode(value: unknown) {
-      return Codec.string.decode(`${this.prefix}:${String(value)}`)
+      return Codec.string.decode(this.format(String(value)))
     }
   }
 
@@ -126,16 +126,95 @@ test('job definitions snapshot decorated and class codecs without exposing mutab
   const decoratedJob = queue.job('decorated', { version: 1, payload: decorated })
   const classJob = queue.job('class', { version: 1, payload: statefulCodec })
 
+  decorated.state.prefix = 'mutated'
+  decorated.encode = () => Codec.string.encode('mutated')
+  statefulCodec.prefix = 'mutated'
+  StatefulCodec.prototype.format = () => 'mutated'
+
   expect(decoratedJob.payload).not.toBe(decorated)
   expect(Object.isFrozen(decoratedJob.payload)).toBe(true)
   expect(Object.keys(decoratedJob.payload)).toEqual(['encode', 'decode'])
-  expect(unrelatedReads).toBe(0)
   expect(classJob.payload).not.toBe(statefulCodec)
   expect(Object.isFrozen(classJob.payload)).toBe(true)
   expect(Object.keys(classJob.payload)).toEqual(['encode', 'decode'])
 
+  expect(unwrap(await Promise.resolve(decoratedJob.payload.encode('value')))).toBe(
+    'decorated:value'
+  )
+  expect(unwrap(await Promise.resolve(decoratedJob.payload.decode('value')))).toBe(
+    'decorated:value'
+  )
   expect(unwrap(await Promise.resolve(classJob.payload.encode('value')))).toBe('stateful:value')
   expect(unwrap(await Promise.resolve(classJob.payload.decode('value')))).toBe('stateful:value')
+})
+
+test('job definitions reject unsupported and malicious codec receiver state without reading it', () => {
+  const queue = Queue.define('unsafe-codecs')
+  let getterReads = 0
+  const accessorCodec = {
+    encode: Codec.string.encode,
+    decode: Codec.string.decode
+  }
+  Object.defineProperty(accessorCodec, 'secret', {
+    enumerable: true,
+    get: () => {
+      getterReads += 1
+      throw new Error('payload-secret')
+    }
+  })
+
+  let accessorError: unknown
+
+  try {
+    queue.job('accessor', { version: 1, payload: accessorCodec })
+  } catch (cause) {
+    accessorError = cause
+  }
+
+  expect(JobDefinitionError.is(accessorError)).toBe(true)
+  expect(getterReads).toBe(0)
+  expect(JSON.stringify(accessorError)).not.toContain('payload-secret')
+
+  const unsupportedCodec = {
+    state: new Map([['secret', 'value']]),
+    encode: Codec.string.encode,
+    decode: Codec.string.decode
+  }
+
+  expectDefinitionError(() => queue.job('unsupported', { version: 1, payload: unsupportedCodec }))
+
+  const cyclicState: { self?: unknown } = {}
+  cyclicState.self = cyclicState
+  const cyclicCodec = {
+    state: cyclicState,
+    encode: Codec.string.encode,
+    decode: Codec.string.decode
+  }
+
+  expectDefinitionError(() => queue.job('cyclic', { version: 1, payload: cyclicCodec }))
+
+  const throwingProxy = new Proxy(
+    {
+      encode: Codec.string.encode,
+      decode: Codec.string.decode
+    },
+    {
+      ownKeys: () => {
+        throw new Error('receiver-secret')
+      }
+    }
+  )
+
+  let proxyError: unknown
+
+  try {
+    queue.job('proxy', { version: 1, payload: throwingProxy })
+  } catch (cause) {
+    proxyError = cause
+  }
+
+  expect(JobDefinitionError.is(proxyError)).toBe(true)
+  expect(JSON.stringify(proxyError)).not.toContain('receiver-secret')
 })
 
 test('definitions validate names, versions, and persisted default policies', () => {
