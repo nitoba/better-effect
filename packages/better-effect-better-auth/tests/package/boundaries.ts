@@ -217,7 +217,10 @@ const assertPackageManifest = (): void => {
   ]
 
   for (const script of requiredScripts) {
-    assertCondition(packageManifest.scripts[script] !== undefined, `Missing package script ${script}`)
+    assertCondition(
+      packageManifest.scripts[script] !== undefined,
+      `Missing package script ${script}`
+    )
   }
 }
 
@@ -317,10 +320,7 @@ const assertBoundarySelfTests = (): void => {
     () => assertModuleBoundary(fixture, "import 'drizzle-orm'"),
     'Forbidden import drizzle-orm'
   )
-  assertThrows(
-    () => assertModuleBoundary(fixture, "import 'react'"),
-    'Forbidden import react'
-  )
+  assertThrows(() => assertModuleBoundary(fixture, "import 'react'"), 'Forbidden import react')
   assertThrows(
     () => assertModuleBoundary(fixture, "import '../../outside'"),
     'resolves outside the package root'
