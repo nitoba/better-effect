@@ -744,14 +744,16 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
 
     this.disposed = true
     const pending = [...this.executionSpans.values()]
-    this.executionSpans.clear()
 
     for (const execution of pending) {
       const span = execution.span
 
-      if (span !== undefined) {
-        callSpan(() => span.end())
+      if (span === undefined) {
+        // An in-flight start can publish its span after this reentrant disposal returns.
+        continue
       }
+
+      this.endExecutionSpan(execution, span)
     }
   }
 
@@ -797,9 +799,22 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
     }
   }
 
-  private removeExecution(execution: ExecutionSpan): void {
-    if (this.executionSpans.get(execution.executionId) === execution) {
-      this.executionSpans.delete(execution.executionId)
+  private ownsExecutionSpan(execution: ExecutionSpan, span: Span): boolean {
+    return this.executionSpans.get(execution.executionId) === execution && execution.span === span
+  }
+
+  private claimExecutionSpan(execution: ExecutionSpan, span: Span | undefined): boolean {
+    if (this.executionSpans.get(execution.executionId) !== execution || execution.span !== span) {
+      return false
+    }
+
+    this.executionSpans.delete(execution.executionId)
+    return true
+  }
+
+  private endExecutionSpan(execution: ExecutionSpan, span: Span): void {
+    if (this.claimExecutionSpan(execution, span)) {
+      callSpan(() => span.end())
     }
   }
 
@@ -828,31 +843,35 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
         parentContext
       )
     } catch {
-      this.removeExecution(execution)
+      this.claimExecutionSpan(execution, undefined)
       return
     }
 
     if (span === undefined) {
-      this.removeExecution(execution)
-      return
-    }
-
-    if (this.disposed || this.executionSpans.get(event.executionId) !== execution) {
-      callSpan(() => span.end())
+      this.claimExecutionSpan(execution, undefined)
       return
     }
 
     execution.span = span
+
+    if (this.disposed) {
+      this.endExecutionSpan(execution, span)
+      return
+    }
+
+    if (!this.ownsExecutionSpan(execution, span)) {
+      return
+    }
+
     const executionContext = setSpanInContext(parentContext, span)
 
     if (executionContext === undefined) {
       const pendingEnd = execution.pendingEnd
-      this.removeExecution(execution)
 
       if (pendingEnd !== undefined && isStartedExecutionSpan(execution)) {
         this.finishExecution(execution, pendingEnd)
       } else {
-        callSpan(() => span.end())
+        this.endExecutionSpan(execution, span)
       }
 
       return
@@ -880,15 +899,19 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
   }
 
   private finishExecution(execution: StartedExecutionSpan, event: RuntimeExecutionEndEvent): void {
-    // Finalization callbacks can synchronously re-enter the observer. Remove this span first so
-    // reentrant end or dispose calls cannot finalize it again.
-    this.removeExecution(execution)
+    // Claim map ownership before invoking tracer callbacks so reentrant end or dispose calls cannot
+    // finalize this exact span again.
+    const span = execution.span
+
+    if (!this.claimExecutionSpan(execution, span)) {
+      return
+    }
 
     try {
       const status = executionEventStatus(event)
-      callSpan(() => execution.span.setAttribute(OUTCOME_ATTRIBUTE, status))
+      callSpan(() => span.setAttribute(OUTCOME_ATTRIBUTE, status))
       callSpan(() =>
-        execution.span.setStatus({
+        span.setStatus({
           code: status === 'failure' ? SpanStatusCode.ERROR : SpanStatusCode.OK
         })
       )
@@ -899,11 +922,11 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
         const details = makeFailureDetails(cause, this.options.sanitizeFailure, this.limits)
 
         if (details !== undefined) {
-          addFailureDetails(execution.span, details)
+          addFailureDetails(span, details)
         }
       }
     } finally {
-      callSpan(() => execution.span.end())
+      callSpan(() => span.end())
     }
   }
 

@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 
-import { SpanStatusCode, type Span, type Tracer } from '@opentelemetry/api'
+import {
+  context,
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  type Context,
+  type ContextManager,
+  type Span,
+  type Tracer
+} from '@opentelemetry/api'
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
@@ -622,6 +630,108 @@ describe('OpenTelemetryRuntimeObserver', () => {
     observer.dispose()
     void scope.close()
   })
+
+  for (const contextDisposesObserver of [false, true] as const) {
+    test(
+      contextDisposesObserver
+        ? 'does not re-end when Context.setValue disposes before trace.setSpan throws'
+        : 'ends once when trace.setSpan throws',
+      () => {
+        const scope = Scope.make()
+        const start = {
+          executionId: contextDisposesObserver ? 'context-dispose' : 'context-throw',
+          scope,
+          startedAt: 0
+        }
+        const end = {
+          ...start,
+          durationMs: 1,
+          outcome: { status: 'success' as const }
+        }
+        const contextFailure = new Error('context-set-span-failed')
+        let observer!: OpenTelemetryRuntimeObserver
+        let endCalls = 0
+        const activeContext: Context = {
+          getValue: ROOT_CONTEXT.getValue.bind(ROOT_CONTEXT),
+          setValue: () => {
+            if (contextDisposesObserver) {
+              observer.dispose()
+            }
+
+            throw contextFailure
+          },
+          deleteValue: ROOT_CONTEXT.deleteValue.bind(ROOT_CONTEXT)
+        }
+        const contextManager = {
+          active: (): Context => activeContext,
+          with: <A extends unknown[], F extends (...args: A) => ReturnType<F>>(
+            _context: Context,
+            fn: F,
+            _thisArg: ThisParameterType<F> | undefined,
+            ...args: A
+          ): ReturnType<F> => fn(...args),
+          bind: <T>(_context: Context, target: T): T => target,
+          enable() {
+            return this
+          },
+          disable() {
+            return this
+          }
+        } satisfies ContextManager
+        const span: Span = {
+          spanContext: () => ({
+            traceId: '00000000000000000000000000000000',
+            spanId: '0000000000000000',
+            traceFlags: 0
+          }),
+          setAttribute() {
+            return this
+          },
+          setAttributes() {
+            return this
+          },
+          addEvent() {
+            return this
+          },
+          addLink() {
+            return this
+          },
+          addLinks() {
+            return this
+          },
+          setStatus() {
+            return this
+          },
+          updateName() {
+            return this
+          },
+          end() {
+            endCalls += 1
+          },
+          isRecording: () => true,
+          recordException() {}
+        }
+        const tracer = {
+          startSpan: () => span,
+          // SAFETY: The adapter never calls startActiveSpan.
+          startActiveSpan: (() => undefined) as Tracer['startActiveSpan']
+        } satisfies Tracer
+        observer = OpenTelemetryRuntimeObserver.make({ tracer })
+
+        try {
+          expect(context.setGlobalContextManager(contextManager)).toBe(true)
+          observer.onExecutionStart(start)
+          observer.onExecutionEnd(end)
+          observer.dispose()
+        } finally {
+          context.disable()
+          void scope.close()
+        }
+
+        expect(endCalls).toBe(1)
+      }
+    )
+  }
 
   for (const reentrantOperation of [
     'setAttribute',
