@@ -68,14 +68,13 @@ jobs:
               "",
           )
 
-          source = source.replace(
-              """    assertCondition(
-            packedManifest.devDependencies === undefined,
-            'Packed package must not publish devDependencies'
+          obsolete_dev_dependency_assertion = (
+              "    assertCondition(\n"
+              "      packedManifest.devDependencies === undefined,\n"
+              "      'Packed package must not publish devDependencies'\n"
+              "    )\n"
           )
-""",
-              "",
-          )
+          source = source.replace(obsolete_dev_dependency_assertion, "")
 
           path.write_text(source)
           PY
