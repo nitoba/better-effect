@@ -58,7 +58,8 @@ export function makeBetterAuthSessionApi<Auth extends BetterAuthInstance>(
   }
 
   // SAFETY: BetterAuthInstance requires the raw getSession endpoint and the effectful Proxy maps callable endpoints to BetterAuthOperation.
-  const getSession = candidate as SessionEndpoint<Auth>
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The generic mapped key cannot preserve the concrete session output before Auth substitution.
+  const getSession = candidate as unknown as SessionEndpoint<Auth>
 
   const get = (
     source: BetterAuthSessionSource,
