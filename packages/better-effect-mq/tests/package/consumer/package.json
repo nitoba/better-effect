@@ -1,5 +1,8 @@
 {
   "name": "better-effect-mq-external-consumer",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "better-result": "^3.0.0"
+  }
 }

@@ -20,6 +20,56 @@ const expectedPeers = {
 
 type Entrypoint = 'core' | 'testing'
 
+const expectedCoreRuntimeExports = [
+  'InvalidJobTransitionError',
+  'JobCodecFailure',
+  'JobDefinitionError',
+  'JobId',
+  'JobName',
+  'JobNotCancellableError',
+  'JobNotFoundError',
+  'JobNotPromotableError',
+  'JobNotRetryableError',
+  'JobStoreFailure',
+  'LeaseLostError',
+  'LeaseToken',
+  'QueueName',
+  'UnsupportedJobStoreOperationError',
+  'WorkerId',
+  'cancelJob',
+  'claimJob',
+  'compareJobOrder',
+  'makeJobId',
+  'makeJobName',
+  'makeJobRecord',
+  'makeLeaseToken',
+  'makePersistedBackoff',
+  'makePersistedJobFailure',
+  'makeQueueName',
+  'makeSerializedJobFailure',
+  'makeWorkerId',
+  'orderJobs',
+  'promoteJob',
+  'protocolVersion',
+  'recoverStalledJob',
+  'redriveJob',
+  'reduceJob',
+  'releaseJob',
+  'requestJobCancellation',
+  'settleJob',
+  'sortClaimCandidates',
+  'transitionJob',
+  'validateAttemptRecord',
+  'validateDuration',
+  'validateJobRecord',
+  'validateOptionalDuration',
+  'validateOptionalTimestamp',
+  'validatePersistedBackoff',
+  'validatePositiveDuration',
+  'validateSerializedJobFailure',
+  'validateTimestamp'
+] as const
+
 const allowedExternalImportsByEntrypoint = {
   core: new Set<string>(['better-effect', 'better-result']),
   testing: new Set<string>(['better-effect', 'better-result'])
@@ -532,6 +582,17 @@ const assertBoundarySelfTests = (): void => {
   assertExternalPolicy(coreFixture)
 }
 
+const assertCoreEntrypoint = async (path: string): Promise<void> => {
+  const module = await import(pathToFileURL(path).href)
+  const actual = Object.keys(module).sort()
+  const expected = [...expectedCoreRuntimeExports].sort()
+
+  assertCondition(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `Core entrypoint exports differ: expected ${expected.join(', ')}, got ${actual.join(', ')}`
+  )
+}
+
 const assertInertEntrypoint = async (path: string, label: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
 
@@ -541,7 +602,7 @@ const assertInertEntrypoint = async (path: string, label: string): Promise<void>
 assertBoundarySelfTests()
 await assertManifest()
 await assertGeneratedBoundaries()
-await assertInertEntrypoint(join(distRoot, 'index.mjs'), 'Core entrypoint')
+await assertCoreEntrypoint(join(distRoot, 'index.mjs'))
 await assertInertEntrypoint(join(distRoot, 'testing.mjs'), 'Testing entrypoint')
 
 console.log('better-effect-mq package boundary checks passed')
