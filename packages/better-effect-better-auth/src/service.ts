@@ -2,10 +2,7 @@ import { Layer, Service } from 'better-effect'
 
 import type { ServiceClass, ServiceRequirement } from 'better-effect'
 
-import type {
-  BetterAuthEffectApi,
-  BetterAuthOperation
-} from './effect-api'
+import type { BetterAuthEffectApi, BetterAuthOperation } from './effect-api'
 import { makeBetterAuthEffectApi } from './internal/effect-api'
 import { fromBetterAuthPromise } from './internal/from-better-auth-promise'
 import {
@@ -15,19 +12,13 @@ import {
   type BetterAuthSessionReadOptions,
   type BetterAuthSessionSource
 } from './session'
-import type {
-  BetterAuthErrorCode,
-  BetterAuthFailure,
-  BetterAuthInstance
-} from './types'
+import type { BetterAuthErrorCode, BetterAuthFailure, BetterAuthInstance } from './types'
 
 /** Effectful server-side operations bound to one concrete Better Auth instance. */
 export interface BetterAuthService<Auth extends BetterAuthInstance> {
   readonly api: BetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>
   readonly session: BetterAuthSessionApi<Auth>
-  readonly handle: (
-    request: Request
-  ) => BetterAuthOperation<Response, BetterAuthFailure<Auth>>
+  readonly handle: (request: Request) => BetterAuthOperation<Response, BetterAuthFailure<Auth>>
   readonly raw: Auth
 }
 
@@ -57,10 +48,7 @@ type BetterAuthLiteralTag<Tag extends string> = string extends Tag
     : Tag
 
 /** Adapt an existing Better Auth instance into a normal better-effect Service token. */
-export function betterAuthService<
-  const Tag extends string,
-  Auth extends BetterAuthInstance
->(
+export function betterAuthService<const Tag extends string, Auth extends BetterAuthInstance>(
   tag: BetterAuthLiteralTag<Tag>,
   raw: Auth
 ): BetterAuthServiceToken<Tag, Auth> {
@@ -77,9 +65,7 @@ export function betterAuthService<
 
   const api = makeBetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>(raw.api)
   const session = makeBetterAuthSessionApi<Auth>(api)
-  const handle = (
-    request: Request
-  ): BetterAuthOperation<Response, BetterAuthFailure<Auth>> =>
+  const handle = (request: Request): BetterAuthOperation<Response, BetterAuthFailure<Auth>> =>
     fromBetterAuthPromise<Response, BetterAuthErrorCode<Auth>>(() => raw.handler(request))
 
   const value = AuthService.of(

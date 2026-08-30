@@ -42,9 +42,7 @@ export interface BetterAuthTransportModes<Endpoint, Code extends string> {
     ...args: BetterAuthEndpointArguments<Endpoint>
   ) => BetterAuthOperation<Response, BetterAuthOperationFailure<Code>>
 
-  readonly withHeaders: (
-    ...args: BetterAuthEndpointArguments<Endpoint>
-  ) => BetterAuthOperation<
+  readonly withHeaders: (...args: BetterAuthEndpointArguments<Endpoint>) => BetterAuthOperation<
     {
       readonly headers: Headers
       readonly response: BetterAuthEndpointResult<Endpoint>
@@ -56,17 +54,16 @@ export interface BetterAuthTransportModes<Endpoint, Code extends string> {
 /** One Better Auth server endpoint adapted to the three effectful transport modes. */
 export type BetterAuthEffectEndpoint<Endpoint, Code extends string> = ((
   ...args: BetterAuthEndpointArguments<Endpoint>
-) => BetterAuthOperation<
-  BetterAuthEndpointResult<Endpoint>,
-  BetterAuthOperationFailure<Code>
->) &
+) => BetterAuthOperation<BetterAuthEndpointResult<Endpoint>, BetterAuthOperationFailure<Code>>) &
   BetterAuthTransportModes<Endpoint, Code>
 
 /** Derive an effectful endpoint surface from the concrete Better Auth API, including plugins. */
 export type BetterAuthEffectApi<Api, Code extends string> = {
-  readonly [Key in keyof Api as Api[Key] extends (...args: infer _Arguments) => infer Output
-    ? Output extends PromiseLike<unknown>
-      ? Key
+  readonly [
+    Key in keyof Api as Api[Key] extends (...args: infer _Arguments) => infer Output
+      ? Output extends PromiseLike<unknown>
+        ? Key
+        : never
       : never
-    : never]: BetterAuthEffectEndpoint<Api[Key], Code>
+  ]: BetterAuthEffectEndpoint<Api[Key], Code>
 }

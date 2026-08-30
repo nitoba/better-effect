@@ -2,11 +2,7 @@ import { Result } from 'better-result'
 
 import { Unauthenticated } from './errors'
 import type { BetterAuthEffectApi, BetterAuthOperation } from './effect-api'
-import type {
-  BetterAuthErrorCode,
-  BetterAuthFailure,
-  BetterAuthInstance
-} from './types'
+import type { BetterAuthErrorCode, BetterAuthFailure, BetterAuthInstance } from './types'
 
 /** Session inferred from the concrete Better Auth instance, including plugin fields. */
 export type BetterAuthSessionOf<Auth extends BetterAuthInstance> = Auth['$Infer']['Session']
@@ -30,18 +26,13 @@ export interface BetterAuthSessionApi<Auth extends BetterAuthInstance> {
   readonly require: (
     source: BetterAuthSessionSource,
     options?: BetterAuthSessionReadOptions
-  ) => BetterAuthOperation<
-    BetterAuthSessionOf<Auth>,
-    BetterAuthFailure<Auth> | Unauthenticated
-  >
+  ) => BetterAuthOperation<BetterAuthSessionOf<Auth>, BetterAuthFailure<Auth> | Unauthenticated>
 }
 
-type SessionEndpoint<Auth extends BetterAuthInstance> = (
-  input: {
-    readonly headers: Headers
-    readonly query?: BetterAuthSessionReadOptions
-  }
-) => BetterAuthOperation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>>
+type SessionEndpoint<Auth extends BetterAuthInstance> = (input: {
+  readonly headers: Headers
+  readonly query?: BetterAuthSessionReadOptions
+}) => BetterAuthOperation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>>
 
 const sessionHeaders = (source: BetterAuthSessionSource): Headers =>
   'headers' in source ? source.headers : source
@@ -84,10 +75,7 @@ export function makeBetterAuthSessionApi<Auth extends BetterAuthInstance>(
   const requireSession = async function* (
     source: BetterAuthSessionSource,
     options?: BetterAuthSessionReadOptions
-  ): BetterAuthOperation<
-    BetterAuthSessionOf<Auth>,
-    BetterAuthFailure<Auth> | Unauthenticated
-  > {
+  ): BetterAuthOperation<BetterAuthSessionOf<Auth>, BetterAuthFailure<Auth> | Unauthenticated> {
     const session = yield* get(source, options)
 
     if (session === null) {

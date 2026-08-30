@@ -53,9 +53,7 @@ const program = Effect.fn(async function* () {
     disableCookieCache: true,
     disableRefresh: true
   })
-  const required = yield* auth.session.require(
-    new Request('https://example.test/protected')
-  )
+  const required = yield* auth.session.require(new Request('https://example.test/protected'))
   const response = yield* auth.handle(new Request('https://example.test/api/auth/session'))
 
   expectTypeOf(optional).toEqualTypeOf<Session | null>()

@@ -3,12 +3,7 @@ import { APIError } from 'better-auth/api'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { Result, UnhandledException } from 'better-result'
 
-import {
-  BetterAuth,
-  BetterAuthApiError,
-  Unauthenticated,
-  type BetterAuthOperation
-} from '../src'
+import { BetterAuth, BetterAuthApiError, Unauthenticated, type BetterAuthOperation } from '../src'
 
 type FakeSession = {
   readonly session: {
@@ -459,10 +454,7 @@ describe('Better Auth Web handler', () => {
 
       expect(result.value.status).toBe(401)
       expect(result.value.statusText).toBe('Unauthorized')
-      expect(result.value.headers.getSetCookie()).toEqual([
-        'first=1; Path=/',
-        'second=2; Path=/'
-      ])
+      expect(result.value.headers.getSetCookie()).toEqual(['first=1; Path=/', 'second=2; Path=/'])
       expect(result.value.bodyUsed).toBe(false)
       expect(await result.value.text()).toBe('streamed')
     }

@@ -72,11 +72,12 @@ const normalizeArguments = (args: RuntimeArguments, mode: TransportMode): Runtim
   return [normalizedContext, ...args.slice(1)]
 }
 
-const makeOperation = <Code extends string>(
-  target: object,
-  endpoint: RuntimeEndpoint,
-  mode: TransportMode
-): RuntimeOperation<Code> =>
+const makeOperation =
+  <Code extends string>(
+    target: object,
+    endpoint: RuntimeEndpoint,
+    mode: TransportMode
+  ): RuntimeOperation<Code> =>
   (...args) =>
     fromBetterAuthPromise(() => endpoint.call(target, ...normalizeArguments(args, mode)))
 

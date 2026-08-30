@@ -95,7 +95,10 @@ expectTypeOf(users).toEqualTypeOf<
   BetterAuthOperation<BetterAuthEndpointResult<Auth['api']['listUsers']>, Failure>
 >()
 expectTypeOf(custom).toEqualTypeOf<
-  BetterAuthOperation<{ readonly custom: true }, BetterAuthApiError<'CUSTOM_ERROR'> | UnhandledException>
+  BetterAuthOperation<
+    { readonly custom: true },
+    BetterAuthApiError<'CUSTOM_ERROR'> | UnhandledException
+  >
 >()
 expectTypeOf(customResponse).toEqualTypeOf<
   BetterAuthOperation<Response, BetterAuthApiError<'CUSTOM_ERROR'> | UnhandledException>
