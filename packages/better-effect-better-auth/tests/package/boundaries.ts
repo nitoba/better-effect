@@ -37,11 +37,7 @@ const forbiddenPackagePrefixes = [
   'solid-js'
 ] as const
 
-const forbiddenPeerInternalPrefixes = [
-  'better-auth/',
-  'better-effect/',
-  'better-result/'
-] as const
+const forbiddenPeerInternalPrefixes = ['better-auth/', 'better-effect/', 'better-result/'] as const
 
 const allowedExternalImports = new Set([
   'better-auth/api',
