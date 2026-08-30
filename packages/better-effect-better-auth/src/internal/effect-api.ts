@@ -105,6 +105,24 @@ const makeEndpoint = <Code extends string>(
   return operation as RuntimeEffectEndpoint<Code>
 }
 
+const hasEndpointProperty = (target: object, key: PropertyKey): boolean => {
+  if (key === 'constructor') {
+    return false
+  }
+
+  let current: object | null = target
+
+  while (current !== null && current !== Object.prototype) {
+    if (Object.prototype.hasOwnProperty.call(current, key)) {
+      return true
+    }
+
+    current = Reflect.getPrototypeOf(current)
+  }
+
+  return false
+}
+
 /** Build one cached Proxy over the concrete Better Auth server API. */
 export function makeBetterAuthEffectApi<Api extends object, Code extends string>(
   rawApi: Api
@@ -118,7 +136,7 @@ export function makeBetterAuthEffectApi<Api extends object, Code extends string>
         return cached
       }
 
-      if (!Object.prototype.hasOwnProperty.call(target, key)) {
+      if (!hasEndpointProperty(target, key)) {
         return undefined
       }
 
@@ -136,6 +154,6 @@ export function makeBetterAuthEffectApi<Api extends object, Code extends string>
     }
   })
 
-  // SAFETY: the Proxy maps every callable own member lazily to the public effectful endpoint contract and hides all other members.
+  // SAFETY: the Proxy maps every callable endpoint from the API object or a custom prototype and hides built-in inherited members.
   return effectApi as BetterAuthEffectApi<Api, Code>
 }
