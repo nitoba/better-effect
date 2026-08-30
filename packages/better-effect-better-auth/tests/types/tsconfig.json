@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "files": ["errors.types.ts"]
+  "files": ["errors.types.ts", "effect-api.types.ts"]
 }
