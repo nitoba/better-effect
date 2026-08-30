@@ -1,9 +1,14 @@
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { cp, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
+const corePackageRoot = join(repoRoot, 'packages/better-effect')
+const betterAuthPackageRoot = join(repoRoot, 'packages/better-effect-better-auth')
+const minimumTypeScriptVersion = '5.7.2'
+const currentTypeScriptVersion = '6.0.3'
 
 const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
@@ -28,6 +33,7 @@ const scenarios = [
   'job-registry'
 ] as const
 type Scenario = (typeof scenarios)[number]
+type Compiler = 'current' | 'minimum'
 
 type Metrics = {
   readonly files: number
@@ -39,6 +45,7 @@ type Metrics = {
 }
 
 type Result = Metrics & {
+  readonly compiler: Compiler
   readonly scenario: Scenario
   readonly size: number
   readonly fixture: string
@@ -52,6 +59,92 @@ type Budget = {
   readonly maxInstantiations: number
   readonly maxTypes: number
   readonly maxMemoryMiB: number
+}
+
+const runCommand = async (command: string[], cwd: string): Promise<void> => {
+  const child = Bun.spawn(command, {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe'
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited
+  ])
+  const output = `${stdout}\n${stderr}`
+
+  if (exitCode !== 0) {
+    throw new Error(`${command.join(' ')} failed with exit code ${exitCode}:\n${output}`)
+  }
+}
+
+const packPackage = async (source: string, label: string, stagingRoot: string): Promise<string> => {
+  const destination = join(stagingRoot, 'archives', label)
+  await mkdir(destination, { recursive: true })
+  await runCommand(['bun', 'pm', 'pack', '--destination', destination, '--ignore-scripts'], source)
+
+  const archives = (await readdir(destination)).filter((entry) => entry.endsWith('.tgz'))
+  if (archives.length !== 1) {
+    throw new Error(`Expected one ${label} archive, found ${archives.length}`)
+  }
+
+  return join(destination, archives[0]!)
+}
+
+const stagePublicPackages = async (): Promise<void> => {
+  const stagingRoot = await mkdtemp(join(tmpdir(), 'better-effect-type-system-'))
+
+  try {
+    await runCommand(['bun', 'run', 'build'], corePackageRoot)
+    await runCommand(['bun', 'run', 'build'], betterAuthPackageRoot)
+    const coreArchive = await packPackage(corePackageRoot, 'better-effect', stagingRoot)
+    const betterAuthArchive = await packPackage(
+      betterAuthPackageRoot,
+      'better-effect-better-auth',
+      stagingRoot
+    )
+    const consumerRoot = join(stagingRoot, 'consumer')
+    const archiveReference = (archive: string): string =>
+      `file:./${relative(consumerRoot, archive).split(sep).join('/')}`
+
+    await mkdir(consumerRoot, { recursive: true })
+    await writeFile(
+      join(consumerRoot, 'package.json'),
+      `${JSON.stringify(
+        {
+          private: true,
+          type: 'module',
+          dependencies: {
+            'better-auth': '1.7.2',
+            'better-effect': archiveReference(coreArchive),
+            'better-effect-better-auth': archiveReference(betterAuthArchive),
+            'better-result': '3.0.0'
+          },
+          devDependencies: {
+            '@types/bun': '1.3.14',
+            typescript: currentTypeScriptVersion
+          }
+        },
+        null,
+        2
+      )}\n`
+    )
+    await runCommand(['bun', 'install', '--ignore-scripts'], consumerRoot)
+    await cp(join(consumerRoot, 'node_modules'), join(fixtureRoot, 'node_modules'), {
+      recursive: true,
+      dereference: true
+    })
+  } finally {
+    await rm(stagingRoot, { recursive: true, force: true })
+  }
+
+  for (const packageName of ['better-effect', 'better-effect-better-auth']) {
+    const declaration = join(fixtureRoot, 'node_modules', packageName, 'dist/index.d.mts')
+    if (!(await Bun.file(declaration).exists())) {
+      throw new Error(`Staged ${packageName} package is missing its public declaration`)
+    }
+  }
 }
 
 // These are intentionally generous ceilings for a developer laptop. They are
@@ -168,6 +261,7 @@ const parseBetterAuthSizes = (value: string): BetterAuthSize[] => {
   const values = value.split(',').map((item) => Number(item.trim()))
 
   for (const item of values) {
+    // SAFETY: `item` is checked against the supported Better Auth-count literals before use.
     if (!betterAuthSizes.includes(item as BetterAuthSize)) {
       throw new Error(
         `Unknown Better Auth fixture count '${item}'. Allowed values: ${betterAuthSizes.join(', ')}`
@@ -175,6 +269,7 @@ const parseBetterAuthSizes = (value: string): BetterAuthSize[] => {
     }
   }
 
+  // SAFETY: Every parsed value passed the Better Auth-count membership check above.
   return values as BetterAuthSize[]
 }
 
@@ -550,8 +645,8 @@ const ${name} = BetterAuth.service('@perf/${name}', raw${name})`
   return `import { betterAuth, type BetterAuthPlugin } from 'better-auth'
 import { createAuthEndpoint } from 'better-auth/api'
 import { Effect, Layer } from 'better-effect'
-import { BetterAuth, type BetterAuthEndpointResult } from '../../../packages/better-effect-better-auth/src/index.ts'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
+import { BetterAuth, type BetterAuthEndpointResult } from 'better-effect-better-auth'
+import { Result } from 'better-result'
 
 type Assert<Condition extends true> = Condition
 type Equal<Left, Right> =
@@ -685,16 +780,37 @@ const readMetric = (output: string, label: string): string | undefined => {
   return match ? `${match[1]}${match[2] ?? ''}` : undefined
 }
 
-const runTsc = async (
-  fixture: string
-): Promise<{ readonly metrics: Metrics; readonly error: string | undefined }> => {
+const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string[]> => {
+  if (usePublicDeclarations && process.env.TSC === undefined) {
+    const stagedTsc = join(fixtureRoot, 'node_modules/typescript/bin/tsc')
+    if (await Bun.file(stagedTsc).exists()) {
+      return ['node', stagedTsc]
+    }
+  }
+
   const localTsc = join(repoRoot, 'packages/better-effect/node_modules/.bin/tsc')
   const tsc =
     process.env.TSC ??
     ((await Bun.file(localTsc).exists()) ? localTsc : (Bun.which('tsc') ?? 'tsc'))
+
+  return [tsc]
+}
+
+const runTsc = async (
+  fixture: string,
+  compiler: Compiler,
+  usePublicDeclarations: boolean
+): Promise<{ readonly metrics: Metrics; readonly error: string | undefined }> => {
+  const compilerCommand =
+    compiler === 'minimum'
+      ? ['bunx', '--bun', '--package', `typescript@${minimumTypeScriptVersion}`, 'tsc']
+      : await currentTscCommand(usePublicDeclarations)
+  const typeRoots = usePublicDeclarations
+    ? join(fixtureRoot, 'node_modules/@types')
+    : join(repoRoot, 'packages/better-effect/node_modules/@types')
   const child = Bun.spawn(
     [
-      tsc,
+      ...compilerCommand,
       '--noEmit',
       '--extendedDiagnostics',
       '--pretty',
@@ -716,12 +832,12 @@ const runTsc = async (
       '--lib',
       'DOM,ESNext,ES2023,ESNext.Disposable',
       '--typeRoots',
-      join(repoRoot, 'packages/better-effect/node_modules/@types'),
+      typeRoots,
       '--types',
       'bun',
       fixture
     ],
-    { stdout: 'pipe', stderr: 'pipe' }
+    { cwd: fixtureRoot, stdout: 'pipe', stderr: 'pipe' }
   )
 
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -757,6 +873,7 @@ const runTsc = async (
 }
 
 const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): string[] => {
+  // SAFETY: Each scenario branch indexes the budget table for its validated size tuple.
   const budget =
     scenario === 'hono-mixed'
       ? honoBudgets[size as HonoSize]
@@ -790,7 +907,8 @@ const formatRow = (result: Result): string => {
   const budget = result.budgetExceeded.length === 0 ? 'ok' : result.budgetExceeded.join('; ')
 
   return [
-    result.scenario.padEnd(12),
+    result.scenario.padEnd(16),
+    result.compiler.padEnd(8),
     String(result.size).padStart(4),
     result.status.padEnd(5),
     String(result.files).padStart(5),
@@ -803,22 +921,27 @@ const formatRow = (result: Result): string => {
   ].join(' | ')
 }
 
+const compilersFor = (scenario: Scenario): readonly Compiler[] =>
+  scenario === 'better-auth' ? ['current', 'minimum'] : ['current']
+
 const main = async (): Promise<void> => {
   const options = parseArgs()
 
   await rm(fixtureRoot, { recursive: true, force: true })
   await mkdir(fixtureRoot, { recursive: true })
-  await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true })
-  await symlink(
-    join(repoRoot, 'packages/better-effect-better-auth/node_modules/better-auth'),
-    join(fixtureRoot, 'node_modules/better-auth'),
-    'dir'
-  )
-  await symlink(
-    join(repoRoot, 'packages/better-effect'),
-    join(fixtureRoot, 'node_modules/better-effect'),
-    'dir'
-  )
+  const usePublicDeclarations = options.scenarios.includes('better-auth')
+
+  if (usePublicDeclarations) {
+    await stagePublicPackages()
+  } else {
+    await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true })
+    await symlink(
+      join(repoRoot, 'packages/better-effect-better-auth/node_modules/better-auth'),
+      join(fixtureRoot, 'node_modules/better-auth'),
+      'dir'
+    )
+    await symlink(corePackageRoot, join(fixtureRoot, 'node_modules/better-effect'), 'dir')
+  }
 
   const results: Result[] = []
 
@@ -834,22 +957,25 @@ const main = async (): Promise<void> => {
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)
-      const run = await runTsc(fixture)
-      const budgetExceeded = budgetFailures(scenario, size, run.metrics)
+      for (const compiler of compilersFor(scenario)) {
+        const run = await runTsc(fixture, compiler, usePublicDeclarations)
+        const budgetExceeded = budgetFailures(scenario, size, run.metrics)
 
-      if (run.error) {
-        budgetExceeded.push('compile error')
+        if (run.error) {
+          budgetExceeded.push('compile error')
+        }
+
+        results.push({
+          ...run.metrics,
+          compiler,
+          scenario,
+          size,
+          fixture,
+          status: run.error ? 'error' : 'ok',
+          error: run.error,
+          budgetExceeded
+        })
       }
-
-      results.push({
-        ...run.metrics,
-        scenario,
-        size,
-        fixture,
-        status: run.error ? 'error' : 'ok',
-        error: run.error,
-        budgetExceeded
-      })
     }
   }
 
@@ -857,17 +983,19 @@ const main = async (): Promise<void> => {
     console.log(JSON.stringify(results, null, 2))
   } else {
     console.log(
-      'scenario     | size | status | files |    types | instantiations |  check |    total |  memory | budget'
+      'scenario         | compiler | size | status | files |    types | instantiations |  check |    total |  memory | budget'
     )
     console.log(
-      '-------------|------|--------|-------|----------|----------------|--------|----------|---------|-------'
+      '-----------------|----------|------|--------|-------|----------|----------------|--------|----------|---------|-------'
     )
     console.log(results.map(formatRow).join('\n'))
     console.log(`\nFixtures: ${fixtureRoot}`)
     console.log('Budgets: use --check-budget to enforce the configured ceilings.')
     for (const result of results) {
       if (result.error) {
-        console.log(`\n${result.scenario}-${result.size} compiler error: ${result.error}`)
+        console.log(
+          `\n${result.scenario}-${result.size} (${result.compiler}) compiler error: ${result.error}`
+        )
       }
     }
   }
@@ -880,7 +1008,10 @@ const main = async (): Promise<void> => {
     if (failures.length > 0) {
       throw new Error(
         `Type-system budget exceeded in ${failures.length} fixture(s):\n${failures
-          .map((result) => `${result.scenario}-${result.size}: ${result.budgetExceeded.join(', ')}`)
+          .map(
+            (result) =>
+              `${result.scenario}-${result.size} (${result.compiler}): ${result.budgetExceeded.join(', ')}`
+          )
           .join('\n')}`
       )
     }

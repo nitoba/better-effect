@@ -257,10 +257,22 @@ await testRuntime.dispose()
 void testResult
 ```
 
-The package is server-side and framework-neutral. It does not create Better
-Auth instances, choose database adapters, run migrations, own environment or
-configuration, own Runtime shutdown, provide client hooks, add retries,
-implement a roles or authorization policy engine, or map Better Auth errors
-automatically to application-domain failures. Keep those responsibilities in
-the application and use the package only at the server boundary where Better
-Auth operations enter a typed Program.
+## v0.1 non-goals
+
+- server-side only in v0.1;
+- no client hooks or React/Vue/Svelte/Solid adapters;
+- no framework middleware helpers or framework subpaths;
+- no implicit `CurrentAuthSession` or request-scoped session integration;
+- no roles, policy, or authorization engine;
+- no automatic conversion to application-domain failures;
+- no retry, timeout, or circuit-breaker policies;
+- no database adapter;
+- no database migrations;
+- no environment or configuration ownership;
+- no Runtime or dependency-container ownership;
+- no official Better Auth-maintained integration or compatibility guarantee.
+
+The package adapts an existing Better Auth instance and does not create or own
+Better Auth, database, environment, Runtime, or dependency-container
+lifecycle. Better Auth remains responsible for its public server APIs and
+plugin compatibility.

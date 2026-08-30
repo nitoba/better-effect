@@ -3,8 +3,11 @@
 This benchmark puts an explicit budget around the Layer, Runtime, Hono, and
 MQ registry inference used by the workspace. It generates isolated TypeScript
 fixtures for 10, 25, 50, and 100 Services, Hono middleware tuples of 1, 3, 6,
-and 10 validators, and 10, 50, 100, and 250 versioned Job definitions, then
-runs the project compiler with `--extendedDiagnostics`.
+and 10 validators, and 10, 50, 100, and 250 versioned Job definitions, then runs the project
+compiler with `--extendedDiagnostics`. The Better Auth fixture additionally
+builds and packs `better-effect` and `better-effect-better-auth`, installs those
+archives with public Better Auth and better-result peers in an external staging
+project, and compiles only against the staged package declarations.
 
 Run the complete matrix with:
 
@@ -36,8 +39,11 @@ Each fixture measures:
 - `JobRegistry.make` over exact versioned definition tuples, union extraction,
   and known/unknown identity lookup.
 
-The report includes files, types, instantiations, memory, check time, and total
-time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
+The Better Auth fixture runs with the current TypeScript `6.0.3` and minimum
+supported TypeScript `5.7.2`; its exact custom plugin endpoint, plugin fields,
+and error-code assertions reject `any` and `unknown`. The report includes
+compiler, files, types, instantiations, memory, check time, and total time. Use
+`--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
 `--job-sizes=10,50,100,250 --scenarios=job-registry` to measure only the registry
 fixtures. `--check-budget` enforces
 the current ceilings:

@@ -181,7 +181,7 @@ Better Auth instance. Core and plugin codes remain visible to TypeScript:
 ```ts
 import { betterAuth } from 'better-auth'
 import { admin } from 'better-auth/plugins'
-import type { BetterAuthErrorCode } from 'better-effect-better-auth'
+import { type BetterAuthErrorCode, type BetterAuthFailure } from 'better-effect-better-auth'
 
 const auth = betterAuth({
   plugins: [admin()]
@@ -275,19 +275,25 @@ const failure = new Unauthenticated({
 })
 ```
 
-## Current scope
+## v0.1 non-goals
 
-The package is server-side and framework-neutral. It adapts an existing Better
-Auth instance but does not:
+- server-side only in v0.1;
+- no client hooks or React/Vue/Svelte/Solid adapters;
+- no framework middleware helpers or framework subpaths;
+- no implicit `CurrentAuthSession` or request-scoped session integration;
+- no roles, policy, or authorization engine;
+- no automatic conversion to application-domain failures;
+- no retry, timeout, or circuit-breaker policies;
+- no database adapter;
+- no database migrations;
+- no environment or configuration ownership;
+- no Runtime or dependency-container ownership;
+- no official Better Auth-maintained integration or compatibility guarantee.
 
-- create or configure the Better Auth instance;
-- choose a database adapter or run migrations;
-- read environment variables;
-- own Runtime lifecycle or application dependency configuration;
-- provide React, Vue, Svelte, or Solid client hooks;
-- create a router, roles system, or authorization framework;
-- map Better Auth codes automatically to application-domain failures;
-- add Better Auth or framework dependencies to the `better-effect` core.
+The package adapts an existing Better Auth instance and does not create or own
+Better Auth, database, environment, Runtime, or dependency-container
+lifecycle. Better Auth remains responsible for its public server APIs and
+plugin compatibility.
 
 ## License
 

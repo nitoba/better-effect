@@ -31,6 +31,12 @@ const makeDatabase = (): MemoryDatabase => ({
   verification: []
 })
 
+const cookieHeaderFromSetCookie = (headers: Headers): string =>
+  headers
+    .getSetCookie()
+    .map((setCookie) => setCookie.split(';', 1)[0]!)
+    .join('; ')
+
 const execute = <A, E>(operation: BetterAuthOperation<A, E>) =>
   Result.gen(async function* () {
     const value = yield* operation
@@ -188,7 +194,7 @@ describe('Better Auth v0.1 release gate', () => {
           const signedIn = yield* auth.api.signInEmail.withHeaders(signInInput)
           const cookies = signedIn.headers.getSetCookie()
           const headers = new Headers({
-            cookie: cookies.join('; ')
+            cookie: cookieHeaderFromSetCookie(signedIn.headers)
           })
           const request = new Request(`${baseURL}/protected`, {
             headers,
@@ -253,7 +259,7 @@ describe('Better Auth v0.1 release gate', () => {
               })
             })
           )
-          const signOutResponse = yield* auth.api.signOut.asResponse({ headers })
+          const signOut = yield* auth.api.signOut.withHeaders({ headers })
           const handlerResponse = yield* auth.handle(
             new Request(`${baseURL}/api/auth/get-session`, {
               headers
@@ -282,7 +288,7 @@ describe('Better Auth v0.1 release gate', () => {
             pluginWithHeaders,
             rawHandlerResponse,
             required,
-            signOutResponse,
+            signOut,
             signalRequest,
             signalResult,
             signals,
@@ -330,8 +336,8 @@ describe('Better Auth v0.1 release gate', () => {
       expect(flow.value.invalidHandlerResponse.bodyUsed).toBe(false)
       expect(flow.value.badRequestHandlerResponse.status).toBe(400)
       expect(flow.value.badRequestHandlerResponse.bodyUsed).toBe(false)
-      expect(flow.value.signOutResponse.status).toBe(200)
-      expect(flow.value.signOutResponse.headers.getSetCookie().length).toBeGreaterThan(0)
+      expect(flow.value.signOut.response.success).toBe(true)
+      expect(flow.value.signOut.headers.getSetCookie().length).toBeGreaterThan(0)
       expect(flow.value.handlerResponse.status).toBe(200)
       expect(flow.value.handlerResponse.bodyUsed).toBe(false)
       expect(flow.value.rawHandlerResponse.status).toBe(200)
@@ -345,6 +351,14 @@ describe('Better Auth v0.1 release gate', () => {
       expect(rawAuth.api.signInEmail).not.toHaveProperty('asResponse')
       expect(signals[0]).toBeInstanceOf(AbortSignal)
 
+      const loggedOutHeaders = new Headers({
+        cookie: cookieHeaderFromSetCookie(flow.value.signOut.headers)
+      })
+      const loggedOutRequest = new Request(`${baseURL}/protected`, {
+        headers: loggedOutHeaders
+      })
+      const loggedOut = await execute(flow.value.auth.session.get(loggedOutRequest))
+      const loggedOutRequired = await execute(flow.value.auth.session.require(loggedOutRequest))
       const missing = await execute(flow.value.auth.session.get(new Headers()))
       const requiredMissing = await execute(flow.value.auth.session.require(new Headers()))
       const invalidCredentials = await execute(
@@ -379,6 +393,11 @@ describe('Better Auth v0.1 release gate', () => {
         flow.value.auth.handle(new Request(`${baseURL}/api/auth/not-a-real-endpoint`))
       )
 
+      expect(loggedOut).toEqual(Result.ok(null))
+      expect(Result.isError(loggedOutRequired)).toBe(true)
+      if (Result.isError(loggedOutRequired)) {
+        expect(loggedOutRequired.error).toBeInstanceOf(Unauthenticated)
+      }
       expect(missing).toEqual(Result.ok(null))
       expect(Result.isError(requiredMissing)).toBe(true)
       expect(Result.isError(invalidCredentials)).toBe(true)

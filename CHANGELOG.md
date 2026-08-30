@@ -13,19 +13,38 @@
   Better Auth error codes, with `BetterAuthApiError` and explicit
   `Unauthenticated` failures.
 
-### Compatibility
+### Tested peer matrix
 
-- Tested with Better Auth `1.7.0` and `1.7.2`, better-effect `0.12.0` and
-  `0.13.0`, better-result `3.0.0`, and TypeScript `5.7.2` plus the current
-  monorepo compiler.
-- Peer ranges are Better Auth `^1.7.0`, better-effect `>=0.12.0 <0.14.0`,
-  better-result `^3.0.0`, and TypeScript `>=5.7.0`.
+| Peer            | Minimum tested | Current tested |
+| --------------- | -------------- | -------------- |
+| `better-auth`   | `1.7.0`        | `1.7.2`        |
+| `better-effect` | `0.12.0`       | `0.13.0`       |
+| `better-result` | `3.0.0`        | `3.0.0`        |
+| TypeScript      | `5.7.2`        | `6.0.3`        |
 
-### Limitations
+The release gate also runs the packed consumer on Node.js `24.x` and Bun
+`1.3.14`. The declared peer ranges remain Better Auth `^1.7.0`, better-effect
+`>=0.12.0 <0.14.0`, better-result `^3.0.0`, and TypeScript `>=5.7.0`.
 
-- Server-side and framework-neutral only; the package does not provide a
-  database adapter, migrations, environment/config ownership, client hooks,
-  authorization policy engine, or maintained framework subpath.
+### v0.1 non-goals
+
+- server-side only in v0.1;
+- no client hooks or React/Vue/Svelte/Solid adapters;
+- no framework middleware helpers or framework subpaths;
+- no implicit `CurrentAuthSession` or request-scoped session integration;
+- no roles, policy, or authorization engine;
+- no automatic conversion to application-domain failures;
+- no retry, timeout, or circuit-breaker policies;
+- no database adapter;
+- no database migrations;
+- no environment or configuration ownership;
+- no Runtime or dependency-container ownership;
+- no official Better Auth-maintained integration or compatibility guarantee.
+
+The package adapts an existing Better Auth instance and does not create or own
+Better Auth, database, environment, Runtime, or dependency-container
+lifecycle. Better Auth remains responsible for its public server APIs and
+plugin compatibility.
 
 ## [0.13.0] - 2026-08-30
 

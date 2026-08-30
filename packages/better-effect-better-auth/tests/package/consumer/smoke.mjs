@@ -20,6 +20,12 @@ const makeDatabase = () => ({
   verification: []
 })
 
+const cookieHeaderFromSetCookie = (headers) =>
+  headers
+    .getSetCookie()
+    .map((setCookie) => setCookie.split(';', 1)[0])
+    .join('; ')
+
 const releaseGatePlugin = (signals) => ({
   id: 'release-gate',
   endpoints: {
@@ -150,7 +156,7 @@ try {
       })
       const cookies = signedIn.headers.getSetCookie()
       const headers = new Headers({
-        cookie: cookies.join('; ')
+        cookie: cookieHeaderFromSetCookie(signedIn.headers)
       })
       const request = new Request(`${baseURL}/protected`, { headers })
       const session = yield* auth.session.require(request)
@@ -196,7 +202,7 @@ try {
           headers
         })
       )
-      const signOut = yield* auth.api.signOut.asResponse({ headers })
+      const signOut = yield* auth.api.signOut.withHeaders({ headers })
 
       return Result.ok({
         abortedRequest,
@@ -245,7 +251,7 @@ if (
   result.value.badRequestHandler.bodyUsed ||
   result.value.handler.status !== 200 ||
   result.value.handler.bodyUsed ||
-  result.value.signOut.status !== 200 ||
+  result.value.signOut.response.success !== true ||
   result.value.signOut.headers.getSetCookie().length === 0
 ) {
   throw new Error('External Better Auth Service behavior did not pass')
@@ -269,6 +275,14 @@ if (
   throw new Error('External handler changed the Request AbortSignal identity')
 }
 
+const loggedOutHeaders = new Headers({
+  cookie: cookieHeaderFromSetCookie(result.value.signOut.headers)
+})
+const loggedOutRequest = new Request(`${baseURL}/protected`, {
+  headers: loggedOutHeaders
+})
+const loggedOut = await execute(result.value.auth.session.get(loggedOutRequest))
+const loggedOutRequired = await execute(result.value.auth.session.require(loggedOutRequest))
 const missing = await execute(result.value.auth.session.get(new Headers()))
 const requiredMissing = await execute(result.value.auth.session.require(new Headers()))
 const invalidCredentials = await execute(
@@ -298,6 +312,10 @@ const [slow, fast] = await Promise.all([
 ])
 
 if (
+  !Result.isOk(loggedOut) ||
+  loggedOut.value !== null ||
+  !Result.isError(loggedOutRequired) ||
+  !(loggedOutRequired.error instanceof Unauthenticated) ||
   !Result.isOk(missing) ||
   missing.value !== null ||
   !Result.isError(requiredMissing) ||
