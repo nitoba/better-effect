@@ -139,14 +139,29 @@ literal queue, job name, and positive integer version. Function and class names
 never participate in identity.
 
 At definition time, a codec's `encode` and `decode` methods are captured with a
-new frozen receiver. This preserves ordinary `this`-based class or structural
-codecs without retaining their source instance. Receiver state must use string-keyed data properties whose values are finite
-primitives, `null`, `undefined`, or recursively plain records and arrays.
-Ordinary prototype helper methods are captured as behavior, but callable own
-state other than the codec operations, accessors, symbols, class instances,
-cycles, and oversized or unreadable graphs are rejected as `JobDefinitionError`.
-The copied receiver state is deeply frozen, so later mutation of a source codec
-cannot change a Job descriptor.
+new frozen receiver. For a user-supplied structural or class codec, the Job
+boundary clones and freezes the relevant string-keyed own/prototype data
+properties, including ordinary prototype helpers, without retaining the source
+receiver or prototype graph. Receiver state must use finite primitives,
+`null`, `undefined`, or recursively plain records and arrays; callable state
+other than `encode`/`decode`, accessors, symbols, proxies, class instances,
+cycles, and oversized or unreadable graphs are rejected as
+`JobDefinitionError`.
+
+Because JavaScript has no general way to detach a method's lexical and private
+semantics, user methods are reconstructed only when their source is safely
+recognizable. Reconstruction carries method parameters/locals, `this`,
+`Codec`, `Result`, and a bounded set of standard globals; other lexical
+bindings are rejected rather than retained. Methods containing `super`, private names/brands, or `new.target`,
+methods with non-intrinsic mutable properties, and methods whose source cannot
+be reconstructed are rejected at definition time. The package's `Codec.*`
+constructors provide an operation-level contract without a user receiver and
+remain accepted; that does not make arbitrary callback closures detachable.
+Do not pass an arbitrary class with closure-dependent, private, accessor, proxy,
+or other brand-sensitive behavior as a Job codec; use a portable `Codec.*`
+codec or a structurally safe class instead. The copied receiver state and
+prototype behavior are detached and frozen, so later source mutation cannot
+change a Job descriptor.
 
 ```ts
 import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'

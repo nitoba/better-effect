@@ -106,13 +106,15 @@ test('job definitions snapshot decorated and class codec receivers at definition
     }
   }
 
-  class StatefulCodec implements CodecType<string> {
+  class StatefulCodecBase {
     prefix = 'stateful'
 
     format(value: string) {
       return `${this.prefix}:${value}`
     }
+  }
 
+  class StatefulCodec extends StatefulCodecBase implements CodecType<string> {
     encode(value: string) {
       return Codec.string.encode(this.format(value))
     }
@@ -129,7 +131,8 @@ test('job definitions snapshot decorated and class codec receivers at definition
   decorated.state.prefix = 'mutated'
   decorated.encode = () => Codec.string.encode('mutated')
   statefulCodec.prefix = 'mutated'
-  StatefulCodec.prototype.format = () => 'mutated'
+  StatefulCodecBase.prototype.format = () => 'mutated'
+  StatefulCodec.prototype.encode = () => Codec.string.encode('mutated')
 
   expect(decoratedJob.payload).not.toBe(decorated)
   expect(Object.isFrozen(decoratedJob.payload)).toBe(true)
@@ -146,6 +149,81 @@ test('job definitions snapshot decorated and class codec receivers at definition
   )
   expect(unwrap(await Promise.resolve(classJob.payload.encode('value')))).toBe('stateful:value')
   expect(unwrap(await Promise.resolve(classJob.payload.decode('value')))).toBe('stateful:value')
+})
+
+test('job definitions reject super methods before any codec invocation', () => {
+  const queue = Queue.define('super-codecs')
+  let invocations = 0
+
+  class BaseCodec {
+    format(value: string) {
+      return `base:${value}`
+    }
+  }
+
+  class SuperCodec extends BaseCodec {
+    encode(value: string) {
+      invocations += 1
+      return Codec.string.encode(super.format(value))
+    }
+
+    decode(value: unknown) {
+      invocations += 1
+      return Codec.string.decode(super.format(String(value)))
+    }
+  }
+
+  const codec = new SuperCodec()
+  BaseCodec.prototype.format = () => 'mutated'
+
+  expectDefinitionError(() => queue.job('super', { version: 1, payload: codec }))
+  expect(invocations).toBe(0)
+})
+
+test('job definitions reject private-field codecs at definition time', () => {
+  const queue = Queue.define('private-codecs')
+
+  class PrivateCodec {
+    #brand = true
+
+    encode(value: string) {
+      void this.#brand
+      return Codec.string.encode(value)
+    }
+
+    decode(value: unknown) {
+      return Codec.string.decode(String(value))
+    }
+  }
+
+  let error: unknown
+
+  try {
+    queue.job('private', { version: 1, payload: new PrivateCodec() })
+  } catch (cause) {
+    error = cause
+  }
+
+  expect(JobDefinitionError.is(error)).toBe(true)
+  expect(JSON.stringify(error)).not.toContain('private')
+})
+
+test('job definitions reject closure-dependent codec methods', () => {
+  const queue = Queue.define('closure-codecs')
+  let prefix = 'outside'
+
+  class ClosureCodec {
+    encode(value: string) {
+      return Codec.string.encode(`${prefix}:${value}`)
+    }
+
+    decode(value: unknown) {
+      return Codec.string.decode(`${prefix}:${String(value)}`)
+    }
+  }
+
+  expectDefinitionError(() => queue.job('closure', { version: 1, payload: new ClosureCodec() }))
+  prefix = 'mutated'
 })
 
 test('job definitions reject unsupported and malicious codec receiver state without reading it', () => {
@@ -192,6 +270,26 @@ test('job definitions reject unsupported and malicious codec receiver state with
   }
 
   expectDefinitionError(() => queue.job('cyclic', { version: 1, payload: cyclicCodec }))
+
+  const symbolCodec = {
+    [Symbol('receiver-state')]: 'secret',
+    encode: Codec.string.encode,
+    decode: Codec.string.decode
+  }
+
+  expectDefinitionError(() => queue.job('symbol', { version: 1, payload: symbolCodec }))
+
+  const transparentProxy = new Proxy(
+    {
+      encode: Codec.string.encode,
+      decode: Codec.string.decode
+    },
+    {}
+  )
+
+  expectDefinitionError(() =>
+    queue.job('transparent-proxy', { version: 1, payload: transparentProxy })
+  )
 
   const throwingProxy = new Proxy(
     {

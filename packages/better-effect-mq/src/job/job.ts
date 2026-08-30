@@ -5,9 +5,17 @@
 // oxlint-disable anti-slop/no-chained-type-assertions -- assertions are localized at erased runtime boundaries.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- checked runtime boundaries justify these assertions.
 
+import { types as nodeTypes } from 'node:util'
+
 import { Result, type Result as ResultType } from 'better-result'
 
+import { Codec as CodecValue } from '../codec'
 import type { Codec } from '../codec'
+import {
+  codecSnapshotTypeId,
+  isMarkedCodecOperation,
+  isMarkedCodecSnapshot
+} from '../codec/snapshot'
 import {
   JobDefinitionError,
   makeJobName,
@@ -358,6 +366,7 @@ type ReceiverValueSnapshot = { readonly ok: true; readonly value: unknown } | { 
 type ReceiverSnapshotContext = {
   readonly active: Set<object>
   readonly copies: Map<object, unknown>
+  readonly methods: Map<object, unknown>
   propertyCount: number
 }
 
@@ -373,11 +382,27 @@ const isObjectLikeValue = (value: unknown): boolean => {
   return (typeof value === 'object' && value !== null) || typeof value === 'function'
 }
 
+const isProxyValue = (value: unknown): boolean => {
+  if (!isObjectLikeValue(value)) {
+    return false
+  }
+
+  try {
+    return nodeTypes.isProxy(value)
+  } catch {
+    return true
+  }
+}
+
 const readDataDescriptor = (
   // oxlint-disable-next-line anti-slop/no-object-parameters -- this helper reads an already-classified codec receiver.
   value: object,
   key: PropertyKey
 ): DataDescriptorLookup => {
+  if (isProxyValue(value)) {
+    return { status: 'invalid' }
+  }
+
   try {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
 
@@ -462,6 +487,10 @@ const snapshotReceiverValue = (
 ): ReceiverValueSnapshot => {
   if (isSnapshotPrimitive(value)) {
     return { ok: true, value }
+  }
+
+  if (isProxyValue(value)) {
+    return { ok: false }
   }
 
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- functions and symbols are not snapshot state.
@@ -618,12 +647,621 @@ const isIntrinsicFunctionProperty = (key: string): boolean =>
   key === 'caller' ||
   key === 'prototype'
 
+const readFunctionSource = (value: unknown): string | undefined => {
+  if (!isCallable(value)) {
+    return undefined
+  }
+
+  try {
+    const source = Function.prototype.toString.call(value).trim()
+
+    return source.length === 0 || source.includes('[native code]') ? undefined : source
+  } catch {
+    return undefined
+  }
+}
+
+const hasPrivateSyntax = (source: string): boolean => /#[A-Za-z_$]/u.test(source)
+
+const hasUnsafeMethodSyntax = (source: string): boolean =>
+  /\bsuper\b/u.test(source) ||
+  hasPrivateSyntax(source) ||
+  /\b(?:new\.target|constructor|WeakMap|WeakSet|eval|Function)\b/u.test(source)
+
+const isArrowFunctionSource = (source: string): boolean =>
+  /^(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/u.test(source)
+
+const hasOnlyIntrinsicFunctionProperties = (
+  // oxlint-disable-next-line anti-slop/no-object-parameters -- the value was narrowed to a callable object.
+  value: object
+): boolean => {
+  try {
+    return Reflect.ownKeys(value).every(
+      (key) => typeof key === 'string' && isIntrinsicFunctionProperty(key)
+    )
+  } catch {
+    return false
+  }
+}
+
+type SourceToken = { readonly value: string; readonly identifier: boolean }
+
+const sourceKeywords = new Set([
+  'arguments',
+  'as',
+  'async',
+  'await',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'export',
+  'extends',
+  'finally',
+  'for',
+  'from',
+  'function',
+  'if',
+  'import',
+  'in',
+  'instanceof',
+  'let',
+  'new',
+  'of',
+  'return',
+  'static',
+  'switch',
+  'throw',
+  'try',
+  'this',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
+  'true',
+  'false',
+  'null',
+  'undefined'
+])
+
+const sourceGlobals = new Set([
+  'Array',
+  'ArrayBuffer',
+  'BigInt',
+  'Boolean',
+  'DataView',
+  'Date',
+  'Error',
+  'EvalError',
+  'Float32Array',
+  'Float64Array',
+  'Infinity',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'JSON',
+  'Map',
+  'Math',
+  'NaN',
+  'Number',
+  'Object',
+  'Promise',
+  'RangeError',
+  'ReferenceError',
+  'Reflect',
+  'RegExp',
+  'Set',
+  'String',
+  'SyntaxError',
+  'Symbol',
+  'TypeError',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+  'URIError',
+  'WeakRef',
+  'decodeURIComponent',
+  'decodeURI',
+  'encodeURIComponent',
+  'encodeURI',
+  'globalThis',
+  'isFinite',
+  'isNaN',
+  'parseFloat',
+  'parseInt',
+  'queueMicrotask',
+  'structuredClone'
+])
+
+const isSourceIdentifierStart = (value: string): boolean => /^[A-Za-z_$]$/u.test(value)
+const isSourceIdentifierPart = (value: string): boolean => /^[A-Za-z0-9_$]$/u.test(value)
+
+const regexPrecedingTokens = new Set([
+  '(',
+  '[',
+  '{',
+  '=',
+  ':',
+  ',',
+  ';',
+  '!',
+  '~',
+  '?',
+  '&',
+  '|',
+  '=>',
+  'return',
+  'throw',
+  'case',
+  'delete',
+  'void',
+  'typeof',
+  'yield',
+  'await',
+  'in',
+  'of',
+  'instanceof'
+])
+
+const isRegexStart = (previous: string | undefined): boolean =>
+  previous === undefined || regexPrecedingTokens.has(previous)
+
+const tokenizeFunctionSource = (source: string): readonly SourceToken[] | undefined => {
+  const tokens: SourceToken[] = []
+  let index = 0
+  let scanCode: (stopAtBrace: boolean) => boolean
+
+  const skipQuoted = (quote: string): boolean => {
+    index += 1
+
+    while (index < source.length) {
+      const character = source[index]
+
+      if (character === undefined) {
+        return false
+      }
+
+      if (character.charCodeAt(0) === 92) {
+        index += 2
+        continue
+      }
+
+      index += 1
+
+      if (character === quote) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  const scanTemplate = (): boolean => {
+    index += 1
+
+    while (index < source.length) {
+      const character = source[index]
+
+      if (character === undefined) {
+        return false
+      }
+
+      if (character.charCodeAt(0) === 92) {
+        index += 2
+      } else if (character === '`') {
+        index += 1
+        return true
+      } else if (character === '$' && source[index + 1] === '{') {
+        index += 2
+
+        if (!scanCode(true)) {
+          return false
+        }
+      } else {
+        index += 1
+      }
+    }
+
+    return false
+  }
+
+  const skipRegex = (): boolean => {
+    index += 1
+    let inCharacterClass = false
+
+    while (index < source.length) {
+      const character = source[index]
+
+      if (character === undefined) {
+        return false
+      }
+
+      if (character.charCodeAt(0) === 92) {
+        index += 2
+        continue
+      }
+
+      if (character === '[') {
+        inCharacterClass = true
+      } else if (character === ']') {
+        inCharacterClass = false
+      } else if (character === '/' && !inCharacterClass) {
+        index += 1
+
+        while (index < source.length && isSourceIdentifierPart(source[index] ?? '')) {
+          index += 1
+        }
+
+        return true
+      }
+
+      index += 1
+    }
+
+    return false
+  }
+
+  scanCode = (stopAtBrace: boolean): boolean => {
+    let braceDepth = 0
+
+    while (index < source.length) {
+      const character = source[index]
+      const next = source[index + 1]
+
+      if (character === undefined) {
+        return false
+      }
+
+      if (stopAtBrace && character === '}' && braceDepth === 0) {
+        index += 1
+        return true
+      }
+
+      if (character === '/' && next === '/') {
+        index += 2
+
+        while (index < source.length && source[index]?.charCodeAt(0) !== 10) {
+          index += 1
+        }
+
+        continue
+      }
+
+      if (character === '/' && next === '*') {
+        const end = source.indexOf('*/', index + 2)
+
+        if (end === -1) {
+          return false
+        }
+
+        index = end + 2
+        continue
+      }
+
+      if (character === '/' && isRegexStart(tokens[tokens.length - 1]?.value)) {
+        if (!skipRegex()) {
+          return false
+        }
+
+        continue
+      }
+
+      if (character.charCodeAt(0) === 39 || character.charCodeAt(0) === 34) {
+        if (!skipQuoted(character)) {
+          return false
+        }
+
+        continue
+      }
+
+      if (character === '`') {
+        if (!scanTemplate()) {
+          return false
+        }
+
+        continue
+      }
+
+      if (isSourceIdentifierStart(character)) {
+        const start = index
+        index += 1
+
+        while (index < source.length && isSourceIdentifierPart(source[index] ?? '')) {
+          index += 1
+        }
+
+        tokens.push({ value: source.slice(start, index), identifier: true })
+        continue
+      }
+
+      if (character >= '0' && character <= '9') {
+        index += 1
+
+        while (index < source.length && /[A-Za-z0-9_$.]/u.test(source[index] ?? '')) {
+          index += 1
+        }
+
+        continue
+      }
+
+      if (character === '{') {
+        braceDepth += 1
+      } else if (character === '}' && braceDepth > 0) {
+        braceDepth -= 1
+      }
+
+      const pair = `${character}${next ?? ''}`
+
+      if (pair === '?.' || pair === '=>') {
+        tokens.push({ value: pair, identifier: false })
+        index += 2
+      } else {
+        tokens.push({ value: character, identifier: false })
+        index += 1
+      }
+    }
+
+    return !stopAtBrace
+  }
+
+  return scanCode(false) ? tokens : undefined
+}
+
+const matchingOpenParen = (tokens: readonly SourceToken[], close: number): number | undefined => {
+  let depth = 0
+
+  for (let index = close; index >= 0; index -= 1) {
+    const token = tokens[index]?.value
+
+    if (token === ')') {
+      depth += 1
+    } else if (token === '(') {
+      depth -= 1
+
+      if (depth === 0) {
+        return index
+      }
+    }
+  }
+
+  return undefined
+}
+
+const collectDeclaredSourceNames = (tokens: readonly SourceToken[]): Set<string> => {
+  const declared = new Set<string>()
+  const first = tokens[0]
+  const second = tokens[1]
+
+  if (first?.identifier && (second?.value === '(' || second?.value === '=>')) {
+    declared.add(first.value)
+  }
+
+  if (first?.value === 'async' && second?.identifier && tokens[2]?.value === '(') {
+    declared.add(second.value)
+  }
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    const next = tokens[index + 1]
+
+    if (token?.identifier && (token.value === 'function' || token.value === 'class')) {
+      if (next?.identifier) {
+        declared.add(next.value)
+      }
+    }
+
+    if (
+      token?.identifier &&
+      (token.value === 'const' || token.value === 'let' || token.value === 'var')
+    ) {
+      for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+        const current = tokens[cursor]
+
+        if (
+          current?.value === '=' ||
+          current?.value === ';' ||
+          current?.value === 'of' ||
+          current?.value === 'in'
+        ) {
+          break
+        }
+
+        if (current?.identifier && current.value !== 'of' && current.value !== 'in') {
+          declared.add(current.value)
+        }
+      }
+    }
+
+    if (token?.identifier && token.value === 'catch') {
+      const open = tokens.findIndex(
+        (candidate, candidateIndex) => candidateIndex > index && candidate.value === '('
+      )
+      const close =
+        open === -1
+          ? -1
+          : tokens.findIndex(
+              (candidate, candidateIndex) => candidateIndex > open && candidate.value === ')'
+            )
+
+      if (open !== -1 && close !== -1) {
+        for (let cursor = open + 1; cursor < close; cursor += 1) {
+          const current = tokens[cursor]
+
+          if (current?.identifier) {
+            declared.add(current.value)
+          }
+        }
+      }
+    }
+  }
+
+  const open = tokens.findIndex((token) => token.value === '(')
+  const close = tokens.findIndex((token, index) => index > open && token.value === ')')
+
+  if (open !== -1 && close !== -1) {
+    for (let index = open + 1; index < close; index += 1) {
+      const token = tokens[index]
+
+      if (token?.identifier && tokens[index - 1]?.value !== '=') {
+        declared.add(token.value)
+      }
+    }
+  }
+
+  const arrow = tokens.findIndex((token) => token.value === '=>')
+
+  if (arrow > 0) {
+    const previous = tokens[arrow - 1]
+
+    if (previous?.value === ')') {
+      const openParen = matchingOpenParen(tokens, arrow - 1)
+
+      if (openParen !== undefined) {
+        for (let index = openParen + 1; index < arrow - 1; index += 1) {
+          const token = tokens[index]
+
+          if (token?.identifier && tokens[index - 1]?.value !== '=') {
+            declared.add(token.value)
+          }
+        }
+      }
+    } else if (previous?.identifier) {
+      declared.add(previous.value)
+    }
+  }
+
+  return declared
+}
+
+const hasOnlyDetachableSourceNames = (source: string): boolean => {
+  const tokens = tokenizeFunctionSource(source)
+
+  if (tokens === undefined) {
+    return false
+  }
+
+  const declared = collectDeclaredSourceNames(tokens)
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+
+    if (!token?.identifier) {
+      continue
+    }
+
+    const previous = tokens[index - 1]?.value
+    const next = tokens[index + 1]?.value
+
+    if (
+      declared.has(token.value) ||
+      sourceKeywords.has(token.value) ||
+      sourceGlobals.has(token.value) ||
+      token.value === 'Codec' ||
+      token.value === 'Result' ||
+      previous === '.' ||
+      previous === '?.' ||
+      next === ':'
+    ) {
+      continue
+    }
+
+    return false
+  }
+
+  return true
+}
+
+const cloneFunction = (value: unknown, key: string): CodecMethod | undefined => {
+  if (isProxyValue(value)) {
+    return undefined
+  }
+
+  const source = readFunctionSource(value)
+
+  if (
+    source === undefined ||
+    /^class\b/u.test(source) ||
+    hasUnsafeMethodSyntax(source) ||
+    !hasOnlyDetachableSourceNames(source) ||
+    !isCallable(value) ||
+    !hasOnlyIntrinsicFunctionProperties(value)
+  ) {
+    return undefined
+  }
+
+  if (isArrowFunctionSource(source) && /\b(?:this|arguments)\b/u.test(source)) {
+    return undefined
+  }
+
+  const expressions = [`(${source})`, `({${source}})[${JSON.stringify(key)}]`]
+
+  for (const expression of expressions) {
+    try {
+      // oxlint-disable-next-line no-new-func -- source reconstruction is the explicit boundary for detachable user methods.
+      // oxlint-disable-next-line typescript/no-implied-eval -- source reconstruction is the explicit boundary for detachable user methods.
+      const factory = new Function(
+        'Codec',
+        'Result',
+        `"use strict"; return ${expression}`
+      ) as unknown as (codec: typeof CodecValue, result: typeof Result) => unknown
+      const clone = factory(CodecValue, Result)
+
+      if (isCallable(clone)) {
+        return Object.freeze(clone as CodecMethod)
+      }
+    } catch {
+      // Try the alternate function syntax before rejecting the definition.
+    }
+  }
+
+  return undefined
+}
+
+const snapshotReceiverMethod = (
+  value: unknown,
+  key: string,
+  context: ReceiverSnapshotContext
+): ReceiverValueSnapshot => {
+  if (!isCallable(value)) {
+    return { ok: false }
+  }
+
+  if (isMarkedCodecOperation(value)) {
+    return { ok: true, value }
+  }
+
+  if (context.methods.has(value)) {
+    const method = context.methods.get(value)
+
+    return method === undefined ? { ok: false } : { ok: true, value: method }
+  }
+
+  const method = cloneFunction(value, key)
+  context.methods.set(value, method)
+
+  return method === undefined ? { ok: false } : { ok: true, value: method }
+}
+
 const snapshotReceiverPrototype = (
   // oxlint-disable-next-line anti-slop/no-object-parameters -- the source was checked as a codec before snapshotting.
   source: object,
   shadowed: Set<string>,
   context: ReceiverSnapshotContext
 ): ReceiverPrototypeLevel[] | undefined => {
+  if (isProxyValue(source)) {
+    return undefined
+  }
+
   const levels: ReceiverPrototypeLevel[] = []
   const visited = new Set<object>([source])
   let current: object | null
@@ -647,7 +1285,7 @@ const snapshotReceiverPrototype = (
       return levels
     }
 
-    if (visited.has(current)) {
+    if (visited.has(current) || isProxyValue(current)) {
       return undefined
     }
 
@@ -672,7 +1310,21 @@ const snapshotReceiverPrototype = (
         return undefined
       }
 
-      if (key === 'constructor' || shadowed.has(key)) {
+      if (key === 'constructor') {
+        const constructor = readDataDescriptor(current, key)
+
+        if (
+          constructor.status !== 'found' ||
+          !isCallable(constructor.value) ||
+          (readFunctionSource(constructor.value) ?? '').includes('#')
+        ) {
+          return undefined
+        }
+
+        continue
+      }
+
+      if (shadowed.has(key)) {
         continue
       }
 
@@ -683,7 +1335,7 @@ const snapshotReceiverPrototype = (
       }
 
       const value = isCallable(descriptor.value)
-        ? { ok: true as const, value: descriptor.value }
+        ? snapshotReceiverMethod(descriptor.value, key, context)
         : snapshotReceiverValue(descriptor.value, context, 0)
 
       if (!value.ok) {
@@ -719,9 +1371,16 @@ const snapshotCodecReceiver = (
   const context: ReceiverSnapshotContext = {
     active: new Set<object>(),
     copies: new Map<object, unknown>(),
+    methods: new Map<object, unknown>(),
     propertyCount: 0
   }
   const ownEntries: ReceiverPrototypeEntry[] = []
+  const encodeSnapshot = snapshotReceiverMethod(encode, 'encode', context)
+  const decodeSnapshot = snapshotReceiverMethod(decode, 'decode', context)
+
+  if (!encodeSnapshot.ok || !decodeSnapshot.ok) {
+    return undefined
+  }
   const shadowed = new Set<string>()
   let keys: readonly PropertyKey[]
 
@@ -811,13 +1470,13 @@ const snapshotCodecReceiver = (
     Object.defineProperty(receiver, 'encode', {
       configurable: true,
       enumerable: true,
-      value: encode,
+      value: encodeSnapshot.value,
       writable: true
     })
     Object.defineProperty(receiver, 'decode', {
       configurable: true,
       enumerable: true,
-      value: decode,
+      value: decodeSnapshot.value,
       writable: true
     })
 
@@ -842,10 +1501,50 @@ const makeCodecMethod = (
   return Object.freeze(facade)
 }
 
+const snapshotMarkedCodec = (
+  value: unknown,
+  field: string
+): ResultType<CodecLike, JobDefinitionError> => {
+  if (isProxyValue(value) || !isPlainObject(value) || !isFrozenSafely(value)) {
+    return invalid(field, 'marked codec snapshot is invalid')
+  }
+
+  try {
+    if (
+      Reflect.ownKeys(value).some(
+        (key) => key !== 'encode' && key !== 'decode' && key !== codecSnapshotTypeId
+      )
+    ) {
+      return invalid(field, 'marked codec snapshot is invalid')
+    }
+  } catch {
+    return invalid(field, 'marked codec snapshot is invalid')
+  }
+
+  const encode = readOwnDataProperty(value, 'encode')
+  const decode = readOwnDataProperty(value, 'decode')
+
+  if (
+    !encode.present ||
+    !isCallable(encode.value) ||
+    !decode.present ||
+    !isCallable(decode.value)
+  ) {
+    return invalid(field, 'marked codec snapshot is invalid')
+  }
+
+  // SAFETY: The preceding checks establish the frozen snapshot's callable codec shape.
+  return Result.ok(Object.freeze({ encode: encode.value, decode: decode.value }) as CodecLike)
+}
+
 const snapshotCodec = (
   value: unknown,
   field: string
 ): ResultType<CodecLike, JobDefinitionError> => {
+  if (isMarkedCodecSnapshot(value)) {
+    return snapshotMarkedCodec(value, field)
+  }
+
   const encode = readCodecMethod(value, 'encode')
   const decode = readCodecMethod(value, 'decode')
 
