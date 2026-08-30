@@ -261,7 +261,7 @@ describe('makeBetterAuthEffectApi', () => {
     expect(raw.calls[0]).not.toBe(raw.calls[1])
   })
 
-  test('does not synthesize effectful endpoints for symbols or non-functions', () => {
+  test('does not synthesize effectful endpoints for inherited, symbol, or non-function values', () => {
     const raw = new RawApi()
     const api = makeBetterAuthEffectApi<RawApi, 'AUTH_ERROR'>(raw)
 
@@ -269,6 +269,7 @@ describe('makeBetterAuthEffectApi', () => {
     const runtimeApi = api as unknown as Readonly<Record<PropertyKey, unknown>>
 
     expect(runtimeApi.metadata).toBeUndefined()
+    expect(runtimeApi.toString).toBeUndefined()
     expect(runtimeApi[Symbol.toStringTag]).toBeUndefined()
   })
 })
