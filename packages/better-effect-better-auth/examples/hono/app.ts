@@ -1,34 +1,36 @@
 import { Hono } from 'hono'
-import { Effect, Runtime } from 'better-effect'
+import { Runtime } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
 import { Result } from 'better-result'
 
+import { BetterAuthHono } from 'better-effect-better-auth/hono'
 import { Auth, rawAuth } from './auth'
 
 const runtime = await Runtime.make(Auth.layer)
+const CurrentSession = BetterAuthHono.session('@example/CurrentSession', Auth)
+const http = HonoEffect.make(runtime, {
+  requestLayer: CurrentSession.requestLayer,
+  onFailure: (_error, context) => context.json({ error: 'Internal Server Error' }, 500)
+})
 const app = new Hono()
 
-// Better Auth owns this conventional route; no Better Auth Hono adapter is needed.
+// rawAuth is configured with basePath: '/api/auth'; register it before catch-alls.
 app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+app.use('*', http.middleware())
+app.use('/protected/*', http.guard(CurrentSession.guard))
 
-app.get('/protected', async (context) => {
-  const result = await runtime.run(
-    Effect.fn(async function* () {
-      const auth = yield* Auth
-      return Result.ok(yield* auth.session.get(context.req.raw))
-    })
-  )
-
-  if (Result.isError(result)) {
-    return context.json({ error: 'Internal Server Error' }, 500)
-  }
-
-  return context.json({ data: result.value })
-})
+app.get(
+  '/protected/me',
+  http.gen(async function* () {
+    const session = yield* CurrentSession.require()
+    return Result.ok(session)
+  })
+)
 
 const main = async (): Promise<void> => {
   try {
     const authResponse = await app.request('/api/auth/get-session')
-    const protectedResponse = await app.request('/protected')
+    const protectedResponse = await app.request('/protected/me')
 
     if (authResponse.status !== 200 || protectedResponse.status !== 200) {
       throw new Error('Hono routes did not return the expected responses')

@@ -13,14 +13,19 @@ into a yieldable `better-effect` Service whose operations use `better-result`.
 
 ```bash
 bun add better-effect-better-auth better-auth better-effect better-result
+# Planned v0.2 Hono entry point only:
+bun add hono
 ```
 
-The v0.1 release supports:
+The prepared v0.1 API supports:
 
 - `better-auth` `^1.7.0`
 - `better-effect` `>=0.12.0 <0.14.0`
 - `better-result` `^3.0.0`
 - TypeScript `>=5.7.0`
+
+The optional Hono current-session entry point is planned for v0.2, not part of
+the prepared v0.1 peer matrix.
 
 The adapter has no runtime framework or database dependency. Configure Better
 Auth normally, then adapt the instance at the application composition root:
@@ -34,6 +39,7 @@ import { Result } from 'better-result'
 
 const rawAuth = betterAuth({
   baseURL: 'http://localhost:3000',
+  basePath: '/api/auth',
   database: memoryAdapter({
     account: [],
     session: [],
@@ -143,6 +149,68 @@ const program = Effect.fn(async function* () {
 Keep plugin definitions and configuration in the Better Auth application. Do
 not add plugin-specific behavior to the adapter.
 
+## Planned v0.2: Hono request-scoped sessions
+
+Install Hono when using the optional, unreleased planned v0.2
+`better-effect-better-auth/hono` entry point. `BetterAuthHono.session` creates
+a typed current-session Service linked to one exact Better Auth Service:
+
+```ts
+import { Hono } from 'hono'
+import { Layer, Runtime } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
+import { BetterAuthHono } from 'better-effect-better-auth/hono'
+import { Result } from 'better-result'
+
+const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
+  disableCookieCache: true
+})
+const AppLive = Layer.empty
+const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer))
+const http = HonoEffect.make(runtime, {
+  requestLayer: CurrentSession.requestLayer,
+  onFailure: (_error, context) => context.json({ error: 'Request failed' }, 500)
+})
+const app = new Hono()
+
+// Match basePath and register Better Auth before conflicting catch-all middleware.
+app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+app.use('*', http.middleware())
+app.use('/private/*', http.guard(CurrentSession.guard))
+app.get(
+  '/private/me',
+  http.gen(async function* () {
+    const session = yield* CurrentSession.require()
+    return Result.ok({ userId: session.user.id })
+  })
+)
+```
+
+The request Layer requires `Auth` from the Runtime and provides only the
+request-scoped `CurrentSession` Service. The first `get()` or `require()` is
+lazy. All reads in one request share one settled lookup, including a missing
+session or failure, so guards and handlers do not trigger an implicit retry or
+refresh. `get()` returns the plugin-inferred session or `null`; `require()` maps
+only `null` to `Unauthenticated`. Better Auth API failures remain
+`BetterAuthApiError`, while unexpected throws and rejections become a new
+`UnhandledException` with the original defect only in `.cause`, never as the
+failure itself. A sign-in or sign-out performed after the snapshot's first read
+does not update that snapshot. For a consciously fresh read, use the Auth
+Service with the original request:
+
+```ts
+const readFreshSession = (request: Request) =>
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const fresh = yield* auth.session.get(request)
+    return Result.ok(fresh)
+  })
+```
+
+HonoEffect's `onFailure` callback decides the HTTP response. Keep Better Auth's
+configured `basePath: '/api/auth'` aligned with the raw route and register that
+route before conflicting catch-alls.
+
 ## Handler integration
 
 `auth.handle(request)` adapts Better Auth's Web-standard handler to an Effect
@@ -157,8 +225,9 @@ app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 ```
 
 Use `auth.handle` when the handler itself belongs inside a better-effect
-Program. There is no `better-effect-better-auth/hono` entry point and no Hono
-runtime dependency in this package.
+Program. The planned v0.2 `better-effect-better-auth/hono` entry point adds only
+the request-scoped session helper; it does not replace or wrap Better Auth's Web
+handler, and Hono remains an application-owned optional peer.
 
 ## Failures and boundaries
 

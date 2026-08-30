@@ -104,8 +104,12 @@
         "better-auth": "^1.7.0",
         "better-effect": ">=0.12.0 <0.14.0",
         "better-result": "^3.0.0",
+        "hono": ">=4.0.0",
         "typescript": ">=5.7.0",
       },
+      "optionalPeers": [
+        "hono",
+      ],
     },
     "packages/better-effect-mq": {
       "name": "better-effect-mq",

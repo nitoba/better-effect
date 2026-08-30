@@ -51,7 +51,7 @@ credentials under the supported Bun version.
 
    ```bash
    ./scripts/release.sh better-effect 0.14.0
-   # Initial independent Better Auth release:
+   # Publish the initial independent Better Auth package:
    ./scripts/release.sh better-effect-better-auth 0.1.0
    # Validate a route and archive without changing, tagging, or publishing:
    ./scripts/release.sh better-effect-better-auth 0.1.0 --dry-run

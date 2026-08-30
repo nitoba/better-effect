@@ -13,6 +13,7 @@ const database = {
 export const rawAuth = betterAuth({
   secret: 'example-only-secret-not-for-production-use',
   baseURL: 'http://localhost:3000',
+  basePath: '/api/auth',
   database: memoryAdapter(database),
   emailAndPassword: {
     enabled: true

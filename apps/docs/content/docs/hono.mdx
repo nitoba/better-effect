@@ -276,3 +276,80 @@ const http = HonoEffect.make(runtime, {
 Those providers are closed with the request Scope. Shared infrastructure stays
 in the Runtime's root Layer and is released by `runtime.dispose()` during
 shutdown.
+
+## Planned v0.2: Better Auth current sessions
+
+`better-effect-better-auth` has an optional Hono companion planned for v0.2.
+It is not part of the prepared v0.1 peer matrix. Install both packages and keep
+the Web handler on its normal route:
+
+```bash
+bun add better-effect-better-auth better-auth hono
+```
+
+Configure Better Auth's `basePath` to match the raw Hono route, then create one
+current-session token for the Better Auth Service and pass its request Layer to
+`HonoEffect.make`:
+
+```ts
+import { betterAuth } from 'better-auth'
+import { memoryAdapter } from 'better-auth/adapters/memory'
+import { Hono } from 'hono'
+import { Layer, Runtime, Service } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
+import { BetterAuth } from 'better-effect-better-auth'
+import { BetterAuthHono } from 'better-effect-better-auth/hono'
+import { Result } from 'better-result'
+
+class AppService extends Service<AppService>()('@app/AppService') {}
+const AppLive = Layer.make(AppService)
+const rawAuth = betterAuth({
+  basePath: '/api/auth',
+  database: memoryAdapter({
+    account: [],
+    session: [],
+    user: [],
+    verification: []
+  }),
+  emailAndPassword: { enabled: true },
+  secret: 'replace-this-example-secret'
+})
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
+  disableCookieCache: true
+})
+const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer))
+const http = HonoEffect.make(runtime, {
+  requestLayer: CurrentSession.requestLayer,
+  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)
+})
+const app = new Hono()
+
+// Register Better Auth before the catch-all boundary; it receives the original Web Request.
+app.all('/api/auth/*', (c) => rawAuth.handler(c.req.raw))
+app.use('*', http.middleware())
+app.use('/api/private/*', http.guard(CurrentSession.guard))
+
+app.get(
+  '/api/private/me',
+  http.gen(async function* () {
+    const session = yield* CurrentSession.require()
+    return Result.ok({ userId: session.user.id })
+  })
+)
+```
+
+The request Layer requires the exact `Auth` Service from the Runtime and
+provides only `CurrentSession`. Session lookup is lazy: a request that never
+yields `CurrentSession.get()` or `.require()` does not call Better Auth. The
+first lookup is cached for the request, so `get()`, `require()`, and
+`CurrentSession.guard` share one settlement, including `null`, API failures,
+and defects. A sign-in or sign-out performed after that first lookup leaves the
+request snapshot intentionally stale. To read the changed state deliberately,
+use the Auth Service with the original request: `yield* auth.session.get(request)`.
+`get()` preserves a missing session as `null`; `require()` maps only that absence
+to `Unauthenticated`. Better Auth API failures stay typed, while unexpected
+throws and rejections become a new `UnhandledException` whose `.cause` holds
+the original defect, not the failure itself. HonoEffect's `onFailure` callback
+owns the response policy. The core package and the framework-neutral Better
+Auth entry point do not require Hono.

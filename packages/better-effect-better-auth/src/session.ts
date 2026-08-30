@@ -29,10 +29,15 @@ export interface BetterAuthSessionApi<Auth extends BetterAuthInstance> {
   ) => BetterAuthOperation<BetterAuthSessionOf<Auth>, BetterAuthFailure<Auth> | Unauthenticated>
 }
 
-type SessionEndpoint<Auth extends BetterAuthInstance> = (input: {
+type SessionEndpointContext = {
   readonly headers: Headers
+  readonly request?: Request
   readonly query?: BetterAuthSessionReadOptions
-}) => BetterAuthOperation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>>
+}
+
+type SessionEndpoint<Auth extends BetterAuthInstance> = (
+  input: SessionEndpointContext
+) => BetterAuthOperation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>>
 
 const sessionHeaders = (source: BetterAuthSessionSource): Headers =>
   'headers' in source ? source.headers : source
@@ -56,20 +61,20 @@ export function makeBetterAuthSessionApi<Auth extends BetterAuthInstance>(
     source: BetterAuthSessionSource,
     options?: BetterAuthSessionReadOptions
   ): BetterAuthOperation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>> => {
-    const headers = sessionHeaders(source)
-
-    if (options === undefined) {
-      return getSession({
-        headers
-      })
+    const context: SessionEndpointContext = {
+      headers: sessionHeaders(source)
     }
 
-    return getSession({
-      headers,
-      query: {
-        ...options
-      }
-    })
+    if ('headers' in source) {
+      Object.assign(context, { request: source })
+    }
+
+    if (options !== undefined) {
+      Object.assign(context, { query: options })
+    }
+
+    // SAFETY: SessionEndpointContext preserves the original Request/Headers references while the public Better Auth input hides the internal request bridge.
+    return getSession(context)
   }
 
   const requireSession = async function* (

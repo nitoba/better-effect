@@ -17,6 +17,7 @@ type FakeSession = {
 
 type FakeSessionInput = {
   readonly headers: Headers
+  readonly request?: Request
   readonly query?: {
     readonly disableCookieCache?: boolean
     readonly disableRefresh?: boolean
@@ -329,13 +330,15 @@ describe('Better Auth session helpers', () => {
     expect(Result.isOk(direct)).toBe(true)
     expect(Result.isOk(fromRequest)).toBe(true)
     expect(raw.sessionInputs[0]?.headers).toBe(directHeaders)
-    expect(raw.sessionInputs[0]?.query).toEqual(options)
-    expect(raw.sessionInputs[0]?.query).not.toBe(options)
+    expect(raw.sessionInputs[0]?.query).toBe(options)
     expect(raw.sessionInputs[0]).toMatchObject({
       asResponse: false,
       returnHeaders: false,
       returnStatus: false
     })
+    expect(raw.sessionInputs[1]?.request).toBe(request)
+    expect(raw.sessionInputs[1]?.headers).toBe(request.headers)
+    expect(raw.sessionInputs[1]?.request?.signal).toBe(request.signal)
     expect(raw.sessionInputs[1]?.headers.get('cookie')).toBe('session=request')
 
     await runtime.dispose()

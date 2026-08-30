@@ -98,6 +98,23 @@ const packMinimumCore = async (root: string): Promise<string> => {
   return join(destination, archives[0]!)
 }
 
+const packHono = async (root: string, version: string, label: string): Promise<string> => {
+  const destination = join(root, `pack-hono-${label}`)
+  await mkdir(destination)
+
+  assertSuccess(
+    run(['npm', 'pack', `hono@${version}`, '--pack-destination', destination], packageRoot),
+    `Packing hono@${version} from the registry`
+  )
+
+  const archives = (await readdir(destination)).filter((name) => name.endsWith('.tgz'))
+  assertCondition(
+    archives.length === 1,
+    `Expected one ${label} Hono archive, found ${archives.length}`
+  )
+  return join(destination, archives[0]!)
+}
+
 const archiveEntries = (archive: string): string[] => {
   const result = run(['tar', '-tzf', archive], packageRoot)
   assertSuccess(result, 'Listing the package archive')
@@ -114,17 +131,32 @@ const archiveManifest = (archive: string): JsonObject => {
 }
 
 const assertIntegrationArchive = (entries: string[]): void => {
-  const expected = [
+  const fixedEntries = [
     'package/CHANGELOG.md',
     'package/LICENSE',
     'package/README.md',
+    'package/dist/hono.d.mts',
+    'package/dist/hono.d.mts.map',
+    'package/dist/hono.mjs',
+    'package/dist/hono.mjs.map',
     'package/dist/index.d.mts',
-    'package/dist/index.d.mts.map',
     'package/dist/index.mjs',
     'package/dist/index.mjs.map',
     'package/package.json'
   ]
+  const fixed = new Set(fixedEntries)
+  const hashed = entries.filter((entry) => !fixed.has(entry))
 
+  assertCondition(
+    hashed.length === 4 &&
+      hashed.some((entry) => /^package\/dist\/errors-[^/]+\.mjs$/.test(entry)) &&
+      hashed.some((entry) => /^package\/dist\/errors-[^/]+\.mjs\.map$/.test(entry)) &&
+      hashed.some((entry) => /^package\/dist\/service-[^/]+\.d\.mts$/.test(entry)) &&
+      hashed.some((entry) => /^package\/dist\/service-[^/]+\.d\.mts\.map$/.test(entry)),
+    `The integration archive chunks changed: ${hashed.join(', ')}`
+  )
+
+  const expected = [...fixedEntries, ...hashed].sort()
   assertCondition(
     JSON.stringify([...entries].sort()) === JSON.stringify(expected),
     `The integration archive contents changed: ${entries.join(', ')}`
@@ -136,7 +168,10 @@ const makeFixture = async (
   name: string,
   integrationArchive: string,
   coreArchive: string,
-  coreVersion: string
+  coreVersion: string,
+  honoArchive: string,
+  honoVersion: string,
+  includeHono: boolean
 ): Promise<string> => {
   const fixture = join(root, name)
   await cp(fixtureSource, fixture, { recursive: true })
@@ -148,33 +183,45 @@ const makeFixture = async (
   const artifacts = join(fixture, 'artifacts')
   await mkdir(artifacts)
   await cp(coreArchive, join(artifacts, 'better-effect.tgz'))
+  if (includeHono) await cp(honoArchive, join(artifacts, 'hono.tgz'))
   await cp(integrationArchive, join(artifacts, 'better-effect-better-auth.tgz'))
 
+  const dependencies = {
+    'better-auth': '1.7.0',
+    'better-effect': 'file:./artifacts/better-effect.tgz',
+    'better-effect-better-auth': 'file:./artifacts/better-effect-better-auth.tgz',
+    'better-result': '3.0.0'
+  }
+  const peerDependencies = {
+    'better-auth': '1.7.0',
+    'better-effect': coreVersion,
+    'better-result': '3.0.0',
+    typescript: '6.0.3'
+  }
+  if (includeHono) {
+    Object.assign(dependencies, { hono: 'file:./artifacts/hono.tgz' })
+    Object.assign(peerDependencies, { hono: honoVersion })
+  }
   const manifest = {
     private: true,
     type: 'module',
-    dependencies: {
-      'better-auth': '1.7.0',
-      'better-effect': 'file:./artifacts/better-effect.tgz',
-      'better-effect-better-auth': 'file:./artifacts/better-effect-better-auth.tgz',
-      'better-result': '3.0.0'
-    },
+    dependencies,
     devDependencies: {
       typescript: '6.0.3'
     },
-    peerDependencies: {
-      'better-auth': '1.7.0',
-      'better-effect': coreVersion,
-      'better-result': '3.0.0',
-      typescript: '6.0.3'
-    }
+    peerDependencies
   }
   await writeFile(join(fixture, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 
   return fixture
 }
 
-const assertFixtureManifest = async (fixture: string, coreVersion: string): Promise<void> => {
+const assertFixtureManifest = async (
+  fixture: string,
+  coreVersion: string,
+  honoVersion: string,
+  includeHono: boolean
+): Promise<void> => {
   const manifest = await readJsonObject(join(fixture, 'package.json'), 'Consumer package.json')
   const dependencies = manifest['dependencies']
   const devDependencies = manifest['devDependencies']
@@ -191,6 +238,14 @@ const assertFixtureManifest = async (fixture: string, coreVersion: string): Prom
     dependencies['better-effect-better-auth'] === 'file:./artifacts/better-effect-better-auth.tgz',
     'Consumer must install better-effect-better-auth from the packed file reference'
   )
+  if (includeHono) {
+    assertCondition(
+      dependencies['hono'] === 'file:./artifacts/hono.tgz',
+      'Hono consumer must install Hono from the packed file reference'
+    )
+  } else {
+    assertCondition(dependencies['hono'] === undefined, 'Core consumer must not install Hono')
+  }
 
   const expectedPeers = {
     'better-auth': '1.7.0',
@@ -198,6 +253,7 @@ const assertFixtureManifest = async (fixture: string, coreVersion: string): Prom
     'better-result': '3.0.0',
     typescript: '6.0.3'
   }
+  if (includeHono) Object.assign(expectedPeers, { hono: honoVersion })
   for (const [name, version] of Object.entries(expectedPeers)) {
     assertCondition(peers[name] === version, `Consumer peer ${name} must be pinned to ${version}`)
   }
@@ -224,9 +280,11 @@ const assertInstalledPackage = async (
 const installConsumer = async (
   fixture: string,
   coreVersion: string,
-  integrationVersion: string
+  integrationVersion: string,
+  honoVersion: string,
+  includeHono: boolean
 ): Promise<void> => {
-  await assertFixtureManifest(fixture, coreVersion)
+  await assertFixtureManifest(fixture, coreVersion, honoVersion, includeHono)
   assertSuccess(run(['bun', 'install', '--ignore-scripts'], fixture), 'Installing packed consumer')
   assertSuccess(
     run(['bun', 'install', '--frozen-lockfile', '--ignore-scripts'], fixture),
@@ -234,13 +292,14 @@ const installConsumer = async (
   )
 
   const lockfile = await readFile(join(fixture, 'bun.lock'), 'utf8')
-  for (const name of [
-    'better-auth',
-    'better-effect',
-    'better-effect-better-auth',
-    'better-result'
-  ]) {
+  const lockedNames = ['better-auth', 'better-effect', 'better-effect-better-auth', 'better-result']
+  if (includeHono) lockedNames.push('hono')
+  for (const name of lockedNames) {
     assertCondition(lockfile.includes(name), `Consumer lockfile is missing ${name}`)
+  }
+  if (!includeHono) {
+    const installedEntries = await readdir(join(fixture, 'node_modules'))
+    assertCondition(!installedEntries.includes('hono'), 'Core consumer must not install Hono')
   }
   assertCondition(
     !lockfile.includes('workspace:'),
@@ -249,12 +308,7 @@ const installConsumer = async (
 
   const graph = run(['bun', 'pm', 'ls'], fixture)
   assertSuccess(graph, 'Inspecting the packed consumer dependency graph')
-  for (const name of [
-    'better-auth',
-    'better-effect',
-    'better-effect-better-auth',
-    'better-result'
-  ]) {
+  for (const name of lockedNames) {
     assertCondition(graph.output.includes(name), `Consumer graph is missing ${name}`)
   }
 
@@ -262,6 +316,7 @@ const installConsumer = async (
   await assertInstalledPackage(fixture, 'better-effect', coreVersion)
   await assertInstalledPackage(fixture, 'better-effect-better-auth', integrationVersion)
   await assertInstalledPackage(fixture, 'better-result', '3.0.0')
+  if (includeHono) await assertInstalledPackage(fixture, 'hono', honoVersion)
   await assertInstalledPackage(fixture, 'typescript', '6.0.3')
 }
 
@@ -275,8 +330,9 @@ const hasDeclarationFile = async (directory: string): Promise<boolean> => {
   return false
 }
 
-const declarationCheck = async (fixture: string): Promise<void> => {
-  const tsconfig = join(fixture, 'declaration-tsconfig.json')
+const declarationCheck = async (fixture: string, includeHono: boolean): Promise<void> => {
+  const configName = includeHono ? 'hono-declaration-tsconfig.json' : 'declaration-tsconfig.json'
+  const tsconfig = join(fixture, configName)
   assertSuccess(
     run(['bun', 'x', 'tsc', '-p', tsconfig, '--pretty', 'false'], fixture),
     'External declaration emit with the installed TypeScript'
@@ -302,10 +358,18 @@ const declarationCheck = async (fixture: string): Promise<void> => {
     await hasDeclarationFile(join(fixture, 'declarations')),
     'External declaration emit did not produce a .d.ts file'
   )
+  if (includeHono) {
+    const honoDeclaration = await readFile(join(fixture, 'declarations/hono.d.ts'), 'utf8')
+    assertCondition(
+      honoDeclaration.includes('BetterAuthHonoSessionToken') &&
+        honoDeclaration.includes('BetterAuthHonoSessionValue'),
+      'Hono declarations must retain the named public session aliases'
+    )
+  }
 }
 
 const assertPackedSourceMaps = async (installedPackage: string): Promise<void> => {
-  for (const mapName of ['dist/index.mjs.map', 'dist/index.d.mts.map']) {
+  for (const mapName of ['dist/index.mjs.map', 'dist/hono.mjs.map', 'dist/hono.d.mts.map']) {
     const value = await readJsonObject(join(installedPackage, mapName), mapName)
     const rawSources = value['sources']
     assertCondition(Array.isArray(rawSources), `Source map ${mapName} must list sources`)
@@ -323,8 +387,9 @@ const assertPackedSourceMaps = async (installedPackage: string): Promise<void> =
   }
 }
 
-const typecheckFixture = (fixture: string): void => {
-  const tsconfig = join(fixture, 'tsconfig.json')
+const typecheckFixture = (fixture: string, includeHono: boolean): void => {
+  const configName = includeHono ? 'hono-tsconfig.json' : 'tsconfig.json'
+  const tsconfig = join(fixture, configName)
   assertSuccess(
     run(['bun', 'x', 'tsc', '-p', tsconfig, '--pretty', 'false'], fixture),
     'External fixture typecheck with the installed TypeScript'
@@ -348,8 +413,8 @@ const typecheckFixture = (fixture: string): void => {
   )
 }
 
-const smokeWith = (runtime: 'bun' | 'node', fixture: string): void => {
-  assertSuccess(run([runtime, 'smoke.mjs'], fixture), `External smoke test with ${runtime}`)
+const smokeWith = (runtime: 'bun' | 'node', fixture: string, script = 'smoke.mjs'): void => {
+  assertSuccess(run([runtime, script], fixture), `External ${script} smoke test with ${runtime}`)
 }
 
 const runVanillaExample = (fixture: string, label: string): void => {
@@ -365,15 +430,21 @@ const exerciseFixture = async (
   fixture: string,
   coreVersion: string,
   integrationVersion: string,
-  label: string
+  honoVersion: string,
+  label: string,
+  includeHono: boolean
 ): Promise<void> => {
-  await installConsumer(fixture, coreVersion, integrationVersion)
+  await installConsumer(fixture, coreVersion, integrationVersion, honoVersion, includeHono)
   const installedIntegration = join(fixture, 'node_modules', 'better-effect-better-auth')
   await assertPackedSourceMaps(installedIntegration)
-  typecheckFixture(fixture)
-  await declarationCheck(fixture)
+  typecheckFixture(fixture, includeHono)
+  await declarationCheck(fixture, includeHono)
   smokeWith('bun', fixture)
   smokeWith('node', fixture)
+  if (includeHono) {
+    smokeWith('bun', fixture, 'hono-smoke.mjs')
+    smokeWith('node', fixture, 'hono-smoke.mjs')
+  }
   runVanillaExample(fixture, label)
   console.log(`${label} external consumer checks passed`)
 }
@@ -394,35 +465,101 @@ const main = async (): Promise<void> => {
     const integrationArchive = await pack(root, packageRoot, 'better-effect-better-auth')
     const coreArchive = await pack(root, coreSource, 'better-effect')
     const minimumCoreArchive = await packMinimumCore(root)
+    const currentHonoArchive = await packHono(root, '4.13.3', 'current')
+    const minimumHonoArchive = await packHono(root, '4.0.0', 'minimum')
     assertIntegrationArchive(archiveEntries(integrationArchive))
 
     const integrationManifest = archiveManifest(integrationArchive)
     const coreManifest = archiveManifest(coreArchive)
     const minimumCoreManifest = archiveManifest(minimumCoreArchive)
+    const currentHonoManifest = archiveManifest(currentHonoArchive)
+    const minimumHonoManifest = archiveManifest(minimumHonoArchive)
     const integrationVersion = integrationManifest['version']
     const coreVersion = coreManifest['version']
     const minimumCoreVersion = minimumCoreManifest['version']
+    const currentHonoVersion = currentHonoManifest['version']
+    const minimumHonoVersion = minimumHonoManifest['version']
     assertCondition(isJsonString(integrationVersion), 'Integration archive version is missing')
     assertCondition(isJsonString(coreVersion), 'Core archive version is missing')
     assertCondition(isJsonString(minimumCoreVersion), 'Minimum core archive version is missing')
+    assertCondition(isJsonString(currentHonoVersion), 'Current Hono archive version is missing')
+    assertCondition(isJsonString(minimumHonoVersion), 'Minimum Hono archive version is missing')
 
-    const fixture = await makeFixture(
+    const currentCoreFixture = await makeFixture(
       root,
-      'consumer',
+      'current-core-consumer',
       integrationArchive,
       coreArchive,
-      coreVersion
+      coreVersion,
+      currentHonoArchive,
+      currentHonoVersion,
+      false
     )
-    await exerciseFixture(fixture, coreVersion, integrationVersion, 'current')
+    await exerciseFixture(
+      currentCoreFixture,
+      coreVersion,
+      integrationVersion,
+      currentHonoVersion,
+      'current-core',
+      false
+    )
 
-    const minimumFixture = await makeFixture(
+    const currentHonoFixture = await makeFixture(
       root,
-      'minimum-consumer',
+      'current-hono-consumer',
+      integrationArchive,
+      coreArchive,
+      coreVersion,
+      currentHonoArchive,
+      currentHonoVersion,
+      true
+    )
+    await exerciseFixture(
+      currentHonoFixture,
+      coreVersion,
+      integrationVersion,
+      currentHonoVersion,
+      'current-hono',
+      true
+    )
+
+    const minimumCoreFixture = await makeFixture(
+      root,
+      'minimum-core-consumer',
       integrationArchive,
       minimumCoreArchive,
-      minimumCoreVersion
+      minimumCoreVersion,
+      minimumHonoArchive,
+      minimumHonoVersion,
+      false
     )
-    await exerciseFixture(minimumFixture, minimumCoreVersion, integrationVersion, 'minimum-peer')
+    await exerciseFixture(
+      minimumCoreFixture,
+      minimumCoreVersion,
+      integrationVersion,
+      minimumHonoVersion,
+      'minimum-core',
+      false
+    )
+
+    const minimumHonoFixture = await makeFixture(
+      root,
+      'minimum-hono-consumer',
+      integrationArchive,
+      minimumCoreArchive,
+      minimumCoreVersion,
+      minimumHonoArchive,
+      minimumHonoVersion,
+      true
+    )
+    await exerciseFixture(
+      minimumHonoFixture,
+      minimumCoreVersion,
+      integrationVersion,
+      minimumHonoVersion,
+      'minimum-hono',
+      true
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }
