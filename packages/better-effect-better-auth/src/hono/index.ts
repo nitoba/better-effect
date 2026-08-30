@@ -109,8 +109,6 @@ type CurrentSessionResource<Auth extends BetterAuthInstance> = {
   readonly close: () => void
 }
 
-const sessionClosers = new WeakMap<object, () => void>()
-
 const closedSessionResult = <Auth extends BetterAuthInstance>(): SessionResult<Auth> =>
   Result.err(
     new UnhandledException({
@@ -129,10 +127,6 @@ const toSessionResult = async <Auth extends BetterAuthInstance>(
       return Result.ok(session)
     })
   } catch (cause) {
-    if (cause instanceof UnhandledException) {
-      return Result.err(cause)
-    }
-
     return Result.err(new UnhandledException({ cause }))
   }
 }
@@ -247,22 +241,25 @@ function betterAuthHonoSession<
 
   const requestLayer = (
     context: HonoContext
-  ): BetterAuthHonoSessionRequestLayer<Tag, AuthTag, Auth> =>
-    Layer.scopedGen(
+  ): BetterAuthHonoSessionRequestLayer<Tag, AuthTag, Auth> => {
+    let resource: CurrentSessionResource<Auth> | undefined
+
+    return Layer.scopedGen(
       CurrentAuthSession,
       async function* () {
         const authService = yield* auth
-        const resource = makeCurrentSessionValue(authService, context.req.raw, options)
-        const value = CurrentAuthSession.of(resource.value)
-        sessionClosers.set(value, resource.close)
+        const acquired = makeCurrentSessionValue(authService, context.req.raw, options)
+        const value = CurrentAuthSession.of(acquired.value)
+        resource = acquired
         return value
       },
-      (instance) => {
-        const close = sessionClosers.get(instance)
-        sessionClosers.delete(instance)
-        close?.()
+      () => {
+        const acquired = resource
+        resource = undefined
+        acquired?.close()
       }
     )
+  }
 
   const get = (): Operation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>> =>
     (async function* () {

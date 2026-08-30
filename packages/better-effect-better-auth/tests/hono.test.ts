@@ -310,6 +310,7 @@ describe('BetterAuthHono', () => {
       expect(errors[0]).toBe(errors[1])
       expect(errors[1]).toBe(errors[2])
       if (errors[0] instanceof UnhandledException) {
+        expect(errors[0]).not.toBe(defect)
         expect(errors[0].cause).toBe(defect)
       }
       expect(fixture.calls).toHaveLength(1)
@@ -361,12 +362,63 @@ describe('BetterAuthHono', () => {
         return
       }
 
+      expect(retainedValue).not.toHaveProperty('close')
+      expect(retainedValue).not.toHaveProperty('clear')
+
       const afterDispose = await execute(retainedValue.get())
+      const afterDisposeAgain = await execute(retainedValue.get())
       expect(Result.isError(afterDispose)).toBe(true)
-      if (Result.isError(afterDispose)) {
+      expect(Result.isError(afterDisposeAgain)).toBe(true)
+      if (Result.isError(afterDispose) && Result.isError(afterDisposeAgain)) {
         expect(afterDispose.error).toBeInstanceOf(UnhandledException)
+        expect(afterDisposeAgain.error).toBeInstanceOf(UnhandledException)
       }
       expect(fixture.calls).toHaveLength(1)
+      expect(released).toHaveLength(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('keeps snapshots stale after mutation and supports an explicit fresh read', async () => {
+    let currentSession: Session | null = successSession('before')
+    const fixture = makeAuth(async () => currentSession)
+    const CurrentSession = BetterAuthHono.session('@hono-test/StaleSnapshot', fixture.Auth)
+    const runtime = await Runtime.make(fixture.Auth.layer)
+    const http = HonoEffect.make(runtime, {
+      requestLayer: CurrentSession.requestLayer,
+      onFailure: () => new Response('failure', { status: 500 })
+    })
+    const app = new Hono()
+    app.use('*', http.middleware())
+    app.get(
+      '/session',
+      http.gen(async function* (context) {
+        const snapshot = yield* CurrentSession.get()
+        currentSession = null
+        const auth = yield* fixture.Auth
+        const fresh = yield* auth.session.get(context.req.raw)
+        const cached = yield* CurrentSession.get()
+
+        return Result.ok({
+          cached: cached?.user.id ?? null,
+          fresh: fresh?.user.id ?? null,
+          snapshot: snapshot?.user.id ?? null
+        })
+      })
+    )
+
+    try {
+      const response = await app.request('/session')
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        data: {
+          cached: 'before',
+          fresh: null,
+          snapshot: 'before'
+        }
+      })
+      expect(fixture.calls).toHaveLength(2)
     } finally {
       await runtime.dispose()
     }
@@ -487,6 +539,7 @@ describe('BetterAuthHono', () => {
       const observedDefect = observed.at(-1)
       expect(observedDefect).toBeInstanceOf(UnhandledException)
       if (observedDefect instanceof UnhandledException) {
+        expect(observedDefect).not.toBe(defect)
         expect(observedDefect.cause).toBe(defect)
       }
     } finally {

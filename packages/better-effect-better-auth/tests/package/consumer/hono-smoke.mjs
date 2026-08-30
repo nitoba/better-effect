@@ -21,6 +21,7 @@ const cookieHeaderFromSetCookie = (headers) =>
     .join('; ')
 const rawAuth = betterAuth({
   baseURL,
+  basePath: '/api/auth',
   database: memoryAdapter(makeDatabase()),
   emailAndPassword: { enabled: true },
   secret: 'external-hono-consumer-secret-not-for-production-use'
@@ -57,6 +58,9 @@ const CurrentSession = BetterAuthHono.session('@hono-consumer/CurrentSession', A
 const honoRuntime = await Runtime.make(Auth.layer)
 let response
 let loggedOut
+let sameRequest
+let rawAuthResponse
+let guardedResponse
 try {
   const http = HonoEffect.make(honoRuntime, {
     requestLayer: CurrentSession.requestLayer,
@@ -66,7 +70,10 @@ try {
     }
   })
   const app = new Hono()
+  // Match rawAuth's basePath and register its handler before catch-all middleware.
+  app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
   app.use('*', http.middleware())
+  app.use('/private/*', http.guard(CurrentSession.guard))
   app.get(
     '/hono-session',
     http.gen(async function* () {
@@ -74,15 +81,51 @@ try {
       return Result.ok({ email: session.user.email })
     })
   )
+  app.get(
+    '/private/me',
+    http.gen(async function* () {
+      const session = yield* CurrentSession.require()
+      return Result.ok({ email: session.user.email })
+    })
+  )
+  app.get(
+    '/same-request',
+    http.gen(async function* (context) {
+      const snapshot = yield* CurrentSession.get()
+      const auth = yield* Auth
+      yield* auth.api.signOut({ headers: context.req.raw.headers })
+      const fresh = yield* auth.session.get(context.req.raw)
+      const cached = yield* CurrentSession.get()
+      return Result.ok({
+        cachedEmail: cached?.user.email ?? null,
+        freshEmail: fresh?.user.email ?? null,
+        snapshotEmail: snapshot?.user.email ?? null
+      })
+    })
+  )
   const headers = new Headers({ cookie: cookieHeaderFromSetCookie(signIn.value.headers) })
+  rawAuthResponse = await app.request(new Request(`${baseURL}/api/auth/get-session`, { headers }))
+  guardedResponse = await app.request(new Request(`${baseURL}/private/me`, { headers }))
   response = await app.request(new Request(`${baseURL}/hono-session`, { headers }))
+  sameRequest = await app.request(new Request(`${baseURL}/same-request`, { headers }))
   loggedOut = await app.request(new Request(`${baseURL}/hono-session`))
 } finally {
   await honoRuntime.dispose()
 }
 if (
+  rawAuthResponse.status !== 200 ||
+  guardedResponse.status !== 200 ||
   response.status !== 200 ||
   (await response.json()).data.email !== credentials.email ||
+  sameRequest.status !== 200 ||
+  JSON.stringify(await sameRequest.json()) !==
+    JSON.stringify({
+      data: {
+        cachedEmail: credentials.email,
+        freshEmail: null,
+        snapshotEmail: credentials.email
+      }
+    }) ||
   loggedOut.status !== 500
 ) {
   throw new Error('External Better Auth Hono session behavior did not pass')

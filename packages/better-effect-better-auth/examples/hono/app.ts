@@ -14,14 +14,15 @@ const http = HonoEffect.make(runtime, {
 })
 const app = new Hono()
 
-// Keep Better Auth's Web handler on its conventional route.
+// rawAuth is configured with basePath: '/api/auth'; register it before catch-alls.
 app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 app.use('*', http.middleware())
+app.use('/protected/*', http.guard(CurrentSession.guard))
 
 app.get(
-  '/protected',
+  '/protected/me',
   http.gen(async function* () {
-    const session = yield* CurrentSession.get()
+    const session = yield* CurrentSession.require()
     return Result.ok(session)
   })
 )
@@ -29,7 +30,7 @@ app.get(
 const main = async (): Promise<void> => {
   try {
     const authResponse = await app.request('/api/auth/get-session')
-    const protectedResponse = await app.request('/protected')
+    const protectedResponse = await app.request('/protected/me')
 
     if (authResponse.status !== 200 || protectedResponse.status !== 200) {
       throw new Error('Hono routes did not return the expected responses')

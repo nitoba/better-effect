@@ -18,16 +18,16 @@ retaining the original instance as `auth.raw`.
 
 ```bash
 bun add better-effect-better-auth better-auth better-effect better-result
-# Only for the optional Hono integration:
+# Planned v0.2 Hono entry point only:
 bun add hono
 ```
 
-The package is ESM-only. Its v0.1 peer matrix is `better-auth` `^1.7.0`,
-`better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
-`>=5.7.0`. The optional `better-effect-better-auth/hono` entry point also
-accepts Hono `>=4.0.0`; Hono is an optional peer and is not needed for the
-framework-neutral entry point. These dependencies remain owned by the
-application.
+The package is ESM-only. The released v0.1 peer matrix is `better-auth`
+`^1.7.0`, `better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and
+TypeScript `>=5.7.0`. The optional `better-effect-better-auth/hono` entry point
+is planned for v0.2 and accepts Hono `>=4.0.0`; Hono is not needed for the
+released framework-neutral v0.1 entry point. These dependencies remain owned by
+the application.
 
 ## Effectful Better Auth service
 
@@ -41,6 +41,7 @@ import { BetterAuth } from 'better-effect-better-auth'
 import { Result } from 'better-result'
 
 const rawAuth = betterAuth({
+  basePath: '/api/auth',
   emailAndPassword: { enabled: true }
 })
 const Auth = BetterAuth.service('@app/Auth', rawAuth)
@@ -208,12 +209,12 @@ Known literals improve autocomplete, while `BetterAuthApiError.code` can still
 preserve a future or dynamically supplied runtime string that is not present in
 the configured `$ERROR_CODES` type.
 
-## Hono request-scoped sessions
+## Planned v0.2: Hono request-scoped sessions
 
-The optional `better-effect-better-auth/hono` entry point composes with
-`better-effect/hono`. It creates a typed current-session Service whose request
-Layer is responsible only for that request's session value; the matching Auth
-Service remains in the application Runtime:
+The unreleased, planned v0.2 `better-effect-better-auth/hono` entry point
+composes with `better-effect/hono`. It creates a typed current-session Service
+whose request Layer is responsible only for that request's session value; the
+matching Auth Service remains in the application Runtime:
 
 ```ts
 import { Hono } from 'hono'
@@ -232,10 +233,12 @@ const http = HonoEffect.make(runtime, {
 })
 const app = new Hono()
 
+// Match Better Auth's configured basePath and register it before catch-all middleware.
 app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 app.use('*', http.middleware())
+app.use('/private/*', http.guard(CurrentSession.guard))
 app.get(
-  '/me',
+  '/private/me',
   http.gen(async function* () {
     const session = yield* CurrentSession.require()
     return Result.ok({ userId: session.user.id })
@@ -245,12 +248,27 @@ app.get(
 
 `CurrentSession.get()` returns the plugin-inferred session or `null`.
 `CurrentSession.require()` maps only `null` to `Unauthenticated`; Better Auth
-API failures and unexpected defects retain their original failure types. The
-first read is lazy and each request caches one settlement, so guards and route
-handlers can share a lookup without an implicit retry or refresh. HonoEffect's
-`onFailure` callback owns the HTTP response policy. Keep Better Auth's handler
-on its conventional route so its original Web `Request` and `Response`
-semantics, including cookies and streaming bodies, remain untouched.
+API failures remain `BetterAuthApiError`, while unexpected throws and rejections
+become a new `UnhandledException` whose `.cause` is the original defect (the
+defect itself is not returned as the failure). The first read is lazy and each
+request caches one settlement, so guards and route handlers can share a lookup
+without an implicit retry or refresh. If code signs in or signs out after that
+first read, the request snapshot intentionally remains stale. For a consciously
+fresh read, resolve the Auth Service and use the original request directly:
+
+```ts
+const readFreshSession = (request: Request) =>
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const fresh = yield* auth.session.get(request)
+    return Result.ok(fresh)
+  })
+```
+
+HonoEffect's `onFailure` callback owns the HTTP response policy. Configure
+Better Auth with `basePath: '/api/auth'` when using the route above, and keep
+its handler before conflicting catch-alls so the original Web `Request` and
+`Response` semantics, including cookies and streaming bodies, remain untouched.
 
 ## Handler and testing boundaries
 
@@ -261,9 +279,9 @@ app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 ```
 
 When the handler belongs inside a Program, use `yield* auth.handle(request)`;
-the returned `Response` is not eagerly consumed. The optional Hono adapter is
-available from `better-effect-better-auth/hono`; the framework-neutral package
-entry point still does not require Hono.
+the returned `Response` is not eagerly consumed. The planned v0.2 Hono adapter
+is available from `better-effect-better-auth/hono`; the released v0.1
+framework-neutral package entry point does not require Hono.
 
 For tests, replace only the boundary you want to control with `Auth.of(...)`
 and provide it through a normal `Layer.succeed`. This keeps the replacement
@@ -329,6 +347,8 @@ const failure = new Unauthenticated({
 
 - server-side only in v0.1;
 - no client hooks or React/Vue/Svelte/Solid adapters;
+- no framework middleware helpers or framework subpaths;
+- no implicit `CurrentAuthSession` or request-scoped session integration;
 - no roles, policy, or authorization engine;
 - no automatic conversion to application-domain failures;
 - no retry, timeout, or circuit-breaker policies;
