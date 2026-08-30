@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       tag_name:
-        description: Git tag to validate and publish
+        description: Qualified Git tag to validate and publish
         required: true
         type: string
 permissions:
@@ -17,9 +17,9 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish to npm
+    name: Publish the selected package to npm
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: npm
 
     steps:
@@ -35,11 +35,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "::error::release tag must use a safe v<version> format"
-            exit 1
-          fi
 
           tag_ref="refs/tags/$RELEASE_TAG"
           if git symbolic-ref --quiet HEAD >/dev/null; then
@@ -59,6 +54,36 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve allowlisted package route
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            package_name="better-effect"
+            package_dir="packages/better-effect"
+            changelog="CHANGELOG.md"
+            release_version="${RELEASE_TAG#v}"
+          elif [[ "$RELEASE_TAG" =~ ^better-effect-better-auth-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            package_name="better-effect-better-auth"
+            package_dir="packages/better-effect-better-auth"
+            changelog="$package_dir/CHANGELOG.md"
+            release_version="${RELEASE_TAG#better-effect-better-auth-v}"
+          else
+            echo "::error::tag is not an allowlisted package release tag"
+            exit 1
+          fi
+
+          {
+            echo "package_name=$package_name"
+            echo "package_dir=$package_dir"
+            echo "changelog=$changelog"
+            echo "release_version=$release_version"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -77,143 +102,109 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Validate release version
-        shell: bash
+      - name: Validate selected manifest, tag, and release notes
         env:
           RELEASE_TAG: ${{ inputs.tag_name }}
-        run: |
-          set -euo pipefail
-          PACKAGE_VERSION="$(bun -e "const pkg = await Bun.file('packages/better-effect/package.json').json(); process.stdout.write(String(pkg.version))")"
-
-          if [[ "$RELEASE_TAG" != v* || "$RELEASE_TAG" == vv* ]]; then
-            echo "::error::release tag must use the v<version> format"
-            exit 1
-          fi
-
-          RELEASE_VERSION="${RELEASE_TAG#v}"
-          if ! VERSION_TO_VALIDATE="$RELEASE_VERSION" bun -e '
-            const version = process.env.VERSION_TO_VALIDATE
-            const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
-
-            if (!semver.test(version)) process.exit(1)
-          '; then
-            echo "::error::release tag must contain a valid SemVer version"
-            exit 1
-          fi
-
-          if [ "$PACKAGE_VERSION" != "$RELEASE_VERSION" ]; then
-            echo "::error::package.json version ($PACKAGE_VERSION) does not match release tag ($RELEASE_VERSION)"
-            exit 1
-          fi
-
-      - name: Run quality gates (including fresh packed NodeRuntime child tests)
-        run: bun run check
-
-      - name: Inspect packed package and run consumer smoke test
-        working-directory: packages/better-effect
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
+          CHANGELOG: ${{ steps.release.outputs.changelog }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         shell: bash
         run: |
           set -euo pipefail
-          package_root="$PWD"
+
+          manifest_name="$(bun -e "const pkg = await Bun.file('$PACKAGE_DIR/package.json').json(); process.stdout.write(String(pkg.name))")"
+          manifest_version="$(bun -e "const pkg = await Bun.file('$PACKAGE_DIR/package.json').json(); process.stdout.write(String(pkg.version))")"
+
+          if [[ "$manifest_name" != "$PACKAGE_NAME" ]]; then
+            echo "::error::selected manifest name ($manifest_name) does not match the tag route ($PACKAGE_NAME)"
+            exit 1
+          fi
+          if [[ "$manifest_version" != "$RELEASE_VERSION" ]]; then
+            echo "::error::$PACKAGE_NAME version ($manifest_version) does not match tag $RELEASE_TAG"
+            exit 1
+          fi
+          if [[ ! -f "$CHANGELOG" ]] || ! grep -Eq "^## \[$RELEASE_VERSION\]( |$)" "$CHANGELOG"; then
+            echo "::error::selected package changelog has no exact [$RELEASE_VERSION] heading"
+            exit 1
+          fi
+          if grep -Fq 'workspace:' "$PACKAGE_DIR/package.json" && [[ "$PACKAGE_NAME" != "better-effect-better-auth" ]]; then
+            echo "::error::core release manifest contains a workspace marker"
+            exit 1
+          fi
+
+      - name: Run quality gates
+        run: bun run check
+
+      - name: Validate selected packed artifact
+        env:
+          PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$PACKAGE_DIR" && bun run release:dry)
+
+      - name: Install the selected artifact through Bun in an isolated consumer
+        env:
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$PACKAGE_NAME" == "better-effect-better-auth" ]]; then
+            (cd "$PACKAGE_DIR" && bun run test:package-consumer)
+            exit 0
+          fi
+
           temp_dir="$(mktemp -d)"
           trap 'rm -rf "$temp_dir"' EXIT
-
-          bun pm pack --destination "$temp_dir" --ignore-scripts
-          archive="$(find "$temp_dir" -maxdepth 1 -type f -name 'better-effect-*.tgz' -print -quit)"
+          archive_dir="$temp_dir/archive"
+          consumer_dir="$temp_dir/consumer"
+          mkdir -p "$archive_dir" "$consumer_dir"
+          (cd "$PACKAGE_DIR" && bun pm pack --destination "$archive_dir" --ignore-scripts)
+          archive="$(find "$archive_dir" -maxdepth 1 -type f -name 'better-effect-*.tgz' -print -quit)"
           test -n "$archive"
+          cp "$archive" "$consumer_dir/better-effect.tgz"
 
-          tar -tzf "$archive" | grep -Fx 'package/LICENSE'
-          tar -tzf "$archive" | grep -Fx 'package/README.md'
-          tar -tzf "$archive" | grep -Fx 'package/dist/index.mjs'
-          tar -tzf "$archive" | grep -Fx 'package/dist/node.mjs'
+          cat > "$consumer_dir/package.json" <<'EOF'
+          {
+            "private": true,
+            "type": "module",
+            "dependencies": {
+              "better-effect": "file:./better-effect.tgz",
+              "better-result": "3.0.0",
+              "typescript": "6.0.3"
+            }
+          }
+          EOF
 
-          mkdir -p "$temp_dir/consumer/node_modules"
-          tar -xzf "$archive" -C "$temp_dir/consumer/node_modules"
-          mv "$temp_dir/consumer/node_modules/package" "$temp_dir/consumer/node_modules/better-effect"
-          for dependency in better-result hono iti; do
-            ln -s "$package_root/node_modules/$dependency" "$temp_dir/consumer/node_modules/$dependency"
-          done
-
-          cat > "$temp_dir/consumer/smoke.mjs" <<'EOF'
-          import { Effect, Layer, MapLayerBackend, Runtime, Service } from 'better-effect'
-          import { NodeRuntime } from 'better-effect/node'
-          import 'better-effect/adapters/iti'
-          import 'better-effect/hono'
-          import 'better-effect/runtime/explicit'
-          import 'better-effect/runtime/node'
-          import { IdGenerator, IdGeneratorTest } from 'better-effect/standard-services'
-          import {
-            layerBackendContract,
-            RecordedRuntimeObserver,
-            RuntimeObserver
-          } from 'better-effect/testing'
+          cat > "$consumer_dir/smoke.mjs" <<'EOF'
+          import { Effect, Layer, Runtime, Service } from 'better-effect'
           import { Result } from 'better-result'
 
           class Greeting extends Service()('Greeting') {}
-
-          const recorded = RecordedRuntimeObserver.make()
-          const runtime = await Runtime.make(
-            Layer.merge(Layer.make(Greeting), Layer.make(IdGenerator)),
-            {
-              observers: [RuntimeObserver.compose(recorded)]
-            }
-          )
+          const runtime = await Runtime.make(Layer.make(Greeting))
           const result = await runtime.run(
             Effect.fn(async function* () {
               const greeting = yield* Greeting
-              const ids = yield* IdGenerator
-              return Result.ok({ greeting, id: ids.next() })
+              return Result.ok(greeting instanceof Greeting)
             })
           )
-
-          if (
-            !Result.isOk(result) ||
-            !(result.value.greeting instanceof Greeting) ||
-            typeof result.value.id !== 'string' ||
-            recorded.executionStarts.length !== 1 ||
-            recorded.executionEnds.length !== 1
-          ) {
-            throw new Error('packed consumer smoke test failed')
-          }
-
-          const testIds = new IdGeneratorTest(['packed-test-id'])
-          const testRuntime = await Runtime.make(IdGeneratorTest.layer(testIds))
-          const testResult = await testRuntime.run(
-            Effect.fn(async function* () {
-              const ids = yield* IdGenerator
-              return Result.ok(ids.next())
-            })
-          )
-
-          if (!Result.isOk(testResult) || testResult.value !== 'packed-test-id') {
-            throw new Error('packed IdGenerator test smoke failed')
-          }
-
-          await testRuntime.dispose()
-
-          const mainResult = await NodeRuntime.runMain(
-            Layer.empty,
-            () => Result.ok('packed-main'),
-            { signals: [], onSuccess: (value) => (value === 'packed-main' ? 0 : 1) }
-          )
-
-          if (!Result.isOk(mainResult) || mainResult.value !== 'packed-main') {
-            throw new Error('packed NodeRuntime smoke test failed')
-          }
-          const scenario = layerBackendContract({
-            makeBackend: () => new MapLayerBackend(),
-            acquisitionFailure: 'retry'
-          })[0]
-
-          if (!scenario) {
-            throw new Error('packed conformance scenario was not exported')
-          }
-
-          await scenario.run()
           await runtime.dispose()
+
+          if (!Result.isOk(result) || result.value !== true) {
+            throw new Error('isolated packed core consumer smoke failed')
+          }
           EOF
 
-          (cd "$temp_dir/consumer" && bun smoke.mjs && node smoke.mjs)
+          (
+            cd "$consumer_dir"
+            bun install --ignore-scripts
+            bun install --frozen-lockfile --ignore-scripts
+            bun smoke.mjs
+            node smoke.mjs
+          )
 
       - name: Verify quality gates did not modify the checkout
         shell: bash
@@ -223,17 +214,22 @@ jobs:
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=all)"
 
-      - name: Publish
-        working-directory: packages/better-effect
+      - name: Publish selected package with npm Trusted Publishing
+        env:
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(node -p "require('./package.json').version")"
-          published_version="$(npm view "better-effect@$package_version" version --registry=https://registry.npmjs.org 2>/dev/null || true)"
+          published_version="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --registry=https://registry.npmjs.org 2>/dev/null || true)"
 
-          if [[ "$published_version" == "$package_version" ]]; then
-            echo "better-effect@$package_version is already published; treating this retry as successful"
+          if [[ "$published_version" == "$RELEASE_VERSION" ]]; then
+            echo "$PACKAGE_NAME@$RELEASE_VERSION is already published; treating this retry as successful"
             exit 0
           fi
 
-          npm publish --workspaces=false --access public --ignore-scripts
+          (
+            cd "$PACKAGE_DIR"
+            npm publish --workspaces=false --access public --ignore-scripts
+          )

@@ -83,7 +83,7 @@
     "check:instance-requirements": "bun tests/package/instance-requirements/check.ts",
     "check": "bun run typecheck && bun test && bun run format:check && bun run check:node-runtime && bun run check:opentelemetry && bun run check:web-package && bun run check:hono-package && bun run check:next-package && bun run check:bun-package && bun run check:bun-types && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
     "prepublishOnly": "bun run check",
-    "release:dry": "bun publish --dry-run"
+    "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect"
   },
   "devDependencies": {
     "@opentelemetry/api": "1.9.1",

@@ -331,7 +331,8 @@ const assertPackageManifest = (): void => {
     'The package must declare no import side effects'
   )
   assertCondition(
-    JSON.stringify(packageManifest['files']) === JSON.stringify(['dist', 'LICENSE', 'README.md']),
+    JSON.stringify(packageManifest['files']) ===
+      JSON.stringify(['dist', 'LICENSE', 'README.md', 'CHANGELOG.md']),
     'Package files allowlist changed'
   )
   assertManifestExports(packageManifest)
