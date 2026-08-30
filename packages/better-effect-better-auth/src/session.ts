@@ -50,8 +50,15 @@ const sessionHeaders = (source: BetterAuthSessionSource): Headers =>
 export function makeBetterAuthSessionApi<Auth extends BetterAuthInstance>(
   api: BetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>
 ): BetterAuthSessionApi<Auth> {
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The generic instance constraint proves `getSession`; this focused cast restores its concrete session output after mapped-type adaptation.
-  const getSession = api.getSession as unknown as SessionEndpoint<Auth>
+  // oxlint-disable-next-line anti-slop/no-reflect-get -- Generic mapped types cannot expose the known getSession key until the concrete Auth instance is substituted.
+  const candidate = Reflect.get(api, 'getSession')
+
+  if (!(candidate instanceof Function)) {
+    throw new TypeError('The Better Auth instance does not expose api.getSession')
+  }
+
+  // SAFETY: BetterAuthInstance requires the raw getSession endpoint and the effectful Proxy maps callable endpoints to BetterAuthOperation.
+  const getSession = candidate as SessionEndpoint<Auth>
 
   const get = (
     source: BetterAuthSessionSource,
