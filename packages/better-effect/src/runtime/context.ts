@@ -8,7 +8,10 @@ import { isPromiseLike } from '../utils/runtime'
 export interface RuntimeContext {
   readonly resolver?: ServiceResolver
   readonly scope?: Scope
+  /** Signal supplied by the current caller or execution boundary. */
   readonly signal?: AbortSignal
+  /** Runtime-owned signal used for shutdown coordination. */
+  readonly runtimeSignal?: AbortSignal
   readonly resolutionPath: readonly AnyServiceToken[]
   /** Runtime execution owner, omitted for warmup and Runtime-root activity. */
   readonly executionId?: string
@@ -76,7 +79,8 @@ export function makeRuntimeContext(
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
   parent?: RuntimeContext,
-  executionId?: string
+  executionId?: string,
+  runtimeSignal?: AbortSignal
 ): CompleteRuntimeContext
 export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
@@ -84,7 +88,8 @@ export function makeRuntimeContext(
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
   parent?: RuntimeContext,
-  executionId?: string
+  executionId?: string,
+  runtimeSignal?: AbortSignal
 ): RuntimeContext
 export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
@@ -92,10 +97,12 @@ export function makeRuntimeContext(
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
   parent?: RuntimeContext,
-  executionId?: string
+  executionId?: string,
+  runtimeSignal?: AbortSignal
 ): RuntimeContext {
   const context: RuntimeContext = { resolutionPath }
   const ownerExecutionId = executionId ?? parent?.executionId
+  const ownerRuntimeSignal = runtimeSignal ?? parent?.runtimeSignal
 
   if (resolver !== undefined) {
     Object.assign(context, { resolver })
@@ -107,6 +114,10 @@ export function makeRuntimeContext(
 
   if (signal !== undefined) {
     Object.assign(context, { signal })
+  }
+
+  if (ownerRuntimeSignal !== undefined) {
+    Object.assign(context, { runtimeSignal: ownerRuntimeSignal })
   }
 
   if (ownerExecutionId !== undefined) {

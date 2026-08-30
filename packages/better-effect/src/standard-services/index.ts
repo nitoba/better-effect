@@ -1,8 +1,8 @@
-import { CurrentAbortSignal } from '../runtime'
+import { CurrentAbortSignal, CurrentRuntimeAbortSignal } from '../runtime'
 import { Layer } from '../layer'
 import { Service } from '../service'
 
-export { CurrentAbortSignal }
+export { CurrentAbortSignal, CurrentRuntimeAbortSignal }
 export { CurrentRequest, CurrentRequestLayer } from './current-request'
 
 export { Config, ConfigLive, ConfigSourceError, ConfigValidationError } from './config'

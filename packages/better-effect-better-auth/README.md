@@ -141,9 +141,9 @@ const rawAuth = betterAuth({
 the existing Runtime. Construct the core Runtime before constructing Better Auth,
 and keep hook Programs dependent on core services rather than the Better Auth
 Service itself; this avoids an Auth hook → Runtime → Auth cycle. The bridge does
-not own either Runtime or the Better Auth instance. A hook callback receives the
-exact Better Auth context,
-and deeper Programs can access the same reference through the execution-scoped
+not create, replace, or dispose the caller-owned Runtime, and it does not own the
+Better Auth instance. A hook callback receives the exact Better Auth context, and
+deeper Programs can access the same reference through the execution-scoped
 `AuthHooks.Context` Service:
 
 ```ts
@@ -164,11 +164,38 @@ promise of either. A `Response` keeps its identity, headers, cookies, redirect,
 status, and body; an `APIError` is thrown for Better Auth to process. Program,
 Runtime, and mapper defects are not guessed or converted to auth failures.
 
-The request's `AbortSignal` is forwarded to the `better-effect` execution when
-Better Auth supplies a request, and is available through `CurrentAbortSignal`.
-Cancellation remains cooperative; cleanup still belongs to the execution
-Scope. Direct server-side calls without a request run without an invented
-signal.
+The request's `AbortSignal` is forwarded to the `better-effect` execution
+without replacing it, and is available through `CurrentAbortSignal`. The
+Runtime-owned shutdown signal remains separate and is available through
+`CurrentRuntimeAbortSignal`. Cancellation remains cooperative; cleanup still
+belongs to the execution Scope. Direct server-side calls without a request run
+without an invented signal.
+
+A middleware may also install a typed Layer for one Better Auth invocation. The
+factory runs once per invocation, receives the original context, and its Layer
+is merged with the hook Context Layer. Any scoped resources are owned by that
+execution and released before the middleware completes; the bridge still does
+not own the Runtime:
+
+```ts
+import { Effect, Layer, Service } from 'better-effect'
+import { Result } from 'better-result'
+
+class RequestMetadata extends Service<RequestMetadata>()('@app/RequestMetadata') {
+  readonly path!: string
+}
+
+const requestAware = AuthHooks.middleware(
+  () =>
+    Effect.fn(async function* () {
+      const metadata = yield* RequestMetadata
+      return Result.ok({ context: { path: metadata.path } })
+    }),
+  {
+    layer: (context) => Layer.succeed(RequestMetadata, RequestMetadata.of({ path: context.path }))
+  }
+)
+```
 
 The same middleware value can be used for global `before`/`after` hooks, plugin
 hooks, or plugin `middlewares` without reimplementing matchers:

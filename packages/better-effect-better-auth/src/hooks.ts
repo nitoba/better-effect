@@ -70,22 +70,39 @@ export type BetterAuthHookContextToken<Tag extends string> = Service.Class<
   >
 }
 
+/** A request-local Layer factory evaluated once for each middleware invocation. */
+export type BetterAuthHookLayerFactory<
+  Context = BetterAuthMiddlewareContext,
+  RequestLayer extends Layer.Any = typeof Layer.empty
+> = (context: Context) => RequestLayer
+
 /** Options for a program with no typed failure channel. */
-export type BetterAuthHookNoFailureOptions = {
+export type BetterAuthHookNoFailureOptions<
+  Context = BetterAuthMiddlewareContext,
+  RequestLayer extends Layer.Any = typeof Layer.empty
+> = {
+  readonly layer?: BetterAuthHookLayerFactory<Context, RequestLayer>
   readonly onFailure?: never
 }
 
 /** Options for a program whose typed failure channel must be mapped explicitly. */
-export type BetterAuthHookFailureOptions<Failure, Context = BetterAuthMiddlewareContext> = {
+export type BetterAuthHookFailureOptions<
+  Failure,
+  Context = BetterAuthMiddlewareContext,
+  RequestLayer extends Layer.Any = typeof Layer.empty
+> = {
+  readonly layer?: BetterAuthHookLayerFactory<Context, RequestLayer>
   readonly onFailure: BetterAuthHookFailureMapper<Failure, Context>
 }
 
 /** Public options selected from the program's inferred failure channel. */
-export type BetterAuthHookMiddlewareOptions<Failure, Context = BetterAuthMiddlewareContext> = [
-  Failure
-] extends [never]
-  ? BetterAuthHookNoFailureOptions
-  : BetterAuthHookFailureOptions<Failure, Context>
+export type BetterAuthHookMiddlewareOptions<
+  Failure,
+  Context = BetterAuthMiddlewareContext,
+  RequestLayer extends Layer.Any = typeof Layer.empty
+> = [Failure] extends [never]
+  ? BetterAuthHookNoFailureOptions<Context, RequestLayer>
+  : BetterAuthHookFailureOptions<Failure, Context, RequestLayer>
 
 /** The available environment is constrained while the generic preserves concrete Program channels. */
 // oxlint-disable-next-line anti-slop/no-unknown-returns -- Keep this inference boundary opaque so concrete Program channels remain available to validation.
@@ -151,12 +168,8 @@ type ValidateHookSuccess<Factory extends HookProgramFactory> = [HookSuccess<Fact
   ? unknown
   : InvalidSuccess<HookSuccess<Factory>>
 
-type ValidateHookRequirements<
-  Provided extends AnyService,
-  Factory extends HookProgramFactory,
-  ContextInstance extends AnyService
-> =
-  MissingServices<HookRequirements<Factory>, Provided | ContextInstance> extends infer Missing
+type ValidateMissingServices<Required, Available> =
+  MissingServices<Required, Available> extends infer Missing
     ? [Missing] extends [never]
       ? unknown
       : Missing extends AnyService
@@ -164,15 +177,34 @@ type ValidateHookRequirements<
         : never
     : never
 
-type ValidateHookProgram<
+type ValidateHookRequirements<
   Provided extends AnyService,
   Factory extends HookProgramFactory,
   ContextInstance extends AnyService
-> = ValidateHookSuccess<Factory> & ValidateHookRequirements<Provided, Factory, ContextInstance>
+> = ValidateMissingServices<HookRequirements<Factory>, Provided | ContextInstance>
 
-type HookMiddlewareArguments<Failure, Context> = [Failure] extends [never]
-  ? [options?: BetterAuthHookMiddlewareOptions<Failure, Context>]
-  : [options: BetterAuthHookMiddlewareOptions<Failure, Context>]
+type ValidateHookLayerRequirements<
+  Provided extends AnyService,
+  ContextInstance extends AnyService,
+  RequestLayer extends Layer.Any
+> = ValidateMissingServices<Layer.Required<RequestLayer>, Provided | ContextInstance>
+
+type ValidateHookProgram<
+  Provided extends AnyService,
+  Factory extends HookProgramFactory,
+  ContextInstance extends AnyService,
+  RequestLayer extends Layer.Any
+> = ValidateHookSuccess<Factory> &
+  ValidateHookLayerRequirements<Provided, ContextInstance, RequestLayer> &
+  ValidateHookRequirements<
+    Provided | Extract<Layer.Provided<RequestLayer>, AnyService>,
+    Factory,
+    ContextInstance
+  >
+
+type HookMiddlewareArguments<Failure, Options> = [Failure] extends [never]
+  ? [options?: Options]
+  : [options: Options]
 
 type IsUnknown<Value> =
   IsAny<Value> extends true
@@ -183,23 +215,31 @@ type IsUnknown<Value> =
         : false
       : false
 
-type HookMiddlewareCallArguments<Failure, Context, Validation> =
+type HookMiddlewareCallArguments<Failure, Validation, Options> =
   IsUnknown<Validation> extends true
-    ? HookMiddlewareArguments<Failure, Context>
-    : [validation: Validation, ...HookMiddlewareArguments<Failure, Context>]
+    ? HookMiddlewareArguments<Failure, Options>
+    : [options: Options & Validation]
 
 /** A Better Auth hook bridge bound to one caller-owned Runtime. */
 export interface BetterAuthHooksInstance<Tag extends string, Provided extends AnyService> {
   readonly Context: BetterAuthHookContextToken<Tag>
-  readonly middleware: <Factory extends HookProgramFactory>(
+  readonly middleware: <
+    Factory extends HookProgramFactory,
+    RequestLayer extends Layer.Any = typeof Layer.empty
+  >(
     program: Factory & HookProgramConstraint,
     ...options: HookMiddlewareCallArguments<
       HookFailure<Factory>,
-      BetterAuthMiddlewareContext,
       ValidateHookProgram<
         Provided,
         NoInfer<Factory>,
-        BetterAuthHookContextValue & Service.Identity<Tag>
+        BetterAuthHookContextValue & Service.Identity<Tag>,
+        RequestLayer
+      >,
+      BetterAuthHookMiddlewareOptions<
+        HookFailure<Factory>,
+        BetterAuthMiddlewareContext,
+        RequestLayer
       >
     >
   ) => BetterAuthMiddleware
@@ -225,7 +265,8 @@ const executeHook = async <
   contextService: BetterAuthHookContextToken<Tag>,
   context: BetterAuthMiddlewareContext,
   factory: Factory & HookProgramConstraint,
-  request: Request | undefined
+  request: Request | undefined,
+  requestLayer: Layer.Any | undefined
 ): Promise<HookResult<Factory>> => {
   const contextLayer = Layer.succeed(
     contextService,
@@ -237,8 +278,20 @@ const executeHook = async <
   const generated = factory(context) as Effect.Program<unknown, unknown, AnyService>
   const execute = () => generated()
   const options = request === undefined ? undefined : { signal: request.signal }
-  // SAFETY: Runtime.runWith erases the heterogeneous per-invocation Layer after its public boundary validates the provider.
-  const uncheckedLayer = contextLayer as Layer.Any
+  let executionLayer: Layer.Any
+
+  if (requestLayer === undefined) {
+    // SAFETY: Runtime.runWith erases the heterogeneous Context Layer after its public boundary validates the provider.
+    executionLayer = contextLayer as Layer.Any
+  } else {
+    // SAFETY: Runtime.runWith erases the heterogeneous Context Layer after its public boundary validates the provider.
+    const uncheckedContextLayer = contextLayer as Layer.Any
+    // SAFETY: the public middleware signature validates the per-invocation Layer before it reaches this erased boundary.
+    const uncheckedRequestLayer = requestLayer as Layer.Any
+    executionLayer = Layer.merge(uncheckedContextLayer, uncheckedRequestLayer)
+  }
+
+  const uncheckedLayer = executionLayer
   // SAFETY: the public Program constraint establishes this Result shape; this cast only removes generic implementation erasure.
   const uncheckedExecution = execute as () =>
     | ResultType<unknown, unknown>
@@ -261,20 +314,36 @@ function makeBetterAuthHooks<const Tag extends string, Provided extends AnyServi
   // SAFETY: The factory returns this concrete Service token; the assertion adds its public Context iterator type.
   const Context = abstractContext as BetterAuthHookContextToken<Tag>
 
-  const middleware = <Factory extends HookProgramFactory>(
+  const middleware = <
+    Factory extends HookProgramFactory,
+    RequestLayer extends Layer.Any = typeof Layer.empty
+  >(
     program: Factory & HookProgramConstraint,
     ...options: HookMiddlewareCallArguments<
       HookFailure<Factory>,
-      BetterAuthMiddlewareContext,
-      ValidateHookProgram<Provided, NoInfer<Factory>, ContextInstance>
+      ValidateHookProgram<Provided, NoInfer<Factory>, ContextInstance, RequestLayer>,
+      BetterAuthHookMiddlewareOptions<
+        HookFailure<Factory>,
+        BetterAuthMiddlewareContext,
+        RequestLayer
+      >
     >
   ): BetterAuthMiddleware => {
     const configured = options[0]
     const onFailure =
       configured !== undefined && 'onFailure' in configured ? configured.onFailure : undefined
+    const layerFactory = configured !== undefined ? configured.layer : undefined
 
     return createAuthMiddleware(async (context) => {
-      const result = await executeHook(runtime, Context, context, program, context.request)
+      const requestLayer = layerFactory?.(context)
+      const result = await executeHook(
+        runtime,
+        Context,
+        context,
+        program,
+        context.request,
+        requestLayer
+      )
 
       if (Result.isError(result)) {
         if (onFailure === undefined) {
@@ -318,6 +387,10 @@ export declare namespace BetterAuthHooks {
     Failure,
     ContextType = BetterAuthMiddlewareContext
   > = BetterAuthHookFailureMapper<Failure, ContextType>
+  export type LayerFactory<
+    ContextType = BetterAuthMiddlewareContext,
+    RequestLayer extends Layer.Any = typeof Layer.empty
+  > = BetterAuthHookLayerFactory<ContextType, RequestLayer>
   export type Middleware = BetterAuthMiddleware
   export type Program<
     ContextType = BetterAuthMiddlewareContext,
@@ -327,8 +400,9 @@ export declare namespace BetterAuthHooks {
   > = BetterAuthHookProgramFactory<ContextType, SuccessType, Failure, Requirements>
   export type MiddlewareOptions<
     Failure,
-    ContextType = BetterAuthMiddlewareContext
-  > = BetterAuthHookMiddlewareOptions<Failure, ContextType>
+    ContextType = BetterAuthMiddlewareContext,
+    RequestLayer extends Layer.Any = typeof Layer.empty
+  > = BetterAuthHookMiddlewareOptions<Failure, ContextType, RequestLayer>
   export type ContextToken<Tag extends string> = BetterAuthHookContextToken<Tag>
   export type Instance<Tag extends string, Provided extends AnyService> = BetterAuthHooksInstance<
     Tag,

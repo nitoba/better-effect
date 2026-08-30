@@ -2,7 +2,7 @@ export { Runtime } from './runtime'
 
 export { RuntimeObserver } from './observer'
 
-export { CurrentAbortSignal } from './signal'
+export { CurrentAbortSignal, CurrentRuntimeAbortSignal } from './signal'
 
 export { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from './errors'
 

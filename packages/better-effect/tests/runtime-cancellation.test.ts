@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { CurrentAbortSignal, Effect, Layer, Runtime } from '../src'
+import { CurrentAbortSignal, CurrentRuntimeAbortSignal, Effect, Layer, Runtime } from '../src'
 
 describe('cooperative Runtime cancellation', () => {
-  test('links a run signal and exposes it through CurrentAbortSignal', async () => {
+  test('preserves a run signal identity through CurrentAbortSignal', async () => {
     const runtime = await Runtime.make(Layer.merge())
     const controller = new AbortController()
     let observedSignal: AbortSignal | undefined
@@ -24,10 +24,58 @@ describe('cooperative Runtime cancellation', () => {
       )
 
       expect(Result.isOk(result)).toBe(true)
-      expect(observedSignal).toBeDefined()
+      expect(observedSignal).toBe(controller.signal)
 
       if (Result.isOk(result)) {
         expect(result.value).toBe(true)
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('keeps Runtime shutdown cancellation separate from a caller signal', async () => {
+    const runtime = await Runtime.make(Layer.merge())
+    const caller = new AbortController()
+    let markStarted!: () => void
+
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+
+    const execution = runtime.run(
+      Effect.fn(async function* () {
+        const callerSignal = yield* CurrentAbortSignal
+        const runtimeSignal = yield* CurrentRuntimeAbortSignal
+        expect(callerSignal).toBe(caller.signal)
+        expect(runtimeSignal).not.toBe(callerSignal)
+        markStarted()
+
+        await new Promise<void>((resolve) => {
+          runtimeSignal.addEventListener('abort', () => resolve(), { once: true })
+        })
+
+        return Result.ok({
+          callerAborted: callerSignal.aborted,
+          runtimeAborted: runtimeSignal.aborted
+        })
+      }),
+      { signal: caller.signal }
+    )
+
+    await started
+
+    try {
+      await runtime.dispose({
+        gracePeriod: 0,
+        abortAfterGracePeriod: true
+      })
+
+      const result = await execution
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value).toEqual({ callerAborted: false, runtimeAborted: true })
       }
     } finally {
       await runtime.dispose()

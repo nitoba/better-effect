@@ -76,7 +76,7 @@ export { Runtime } from './runtime'
 
 export { RuntimeObserver } from './runtime'
 
-export { CurrentAbortSignal } from './runtime'
+export { CurrentAbortSignal, CurrentRuntimeAbortSignal } from './runtime'
 
 export { RuntimeContextNotConfiguredError } from './runtime'
 

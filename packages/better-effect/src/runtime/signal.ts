@@ -68,10 +68,25 @@ export const linkAbortSignals = (
 export const currentAbortSignal = (): AbortSignal =>
   currentRuntimeContext().signal ?? neverAbortedSignal
 
-/** Yieldable access to the signal of the current Runtime execution. */
+/** Return the Runtime-owned signal used for shutdown coordination. */
+export const currentRuntimeAbortSignal = (): AbortSignal => {
+  const context = currentRuntimeContext()
+
+  return context.runtimeSignal ?? context.signal ?? neverAbortedSignal
+}
+
+/** Yieldable access to the caller signal of the current Runtime execution. */
 export const CurrentAbortSignal = {
   // oxlint-disable-next-line require-yield
   *[Symbol.iterator](): Generator<never, AbortSignal, unknown> {
     return currentAbortSignal()
+  }
+} as const
+
+/** Yieldable access to the Runtime-owned shutdown signal. */
+export const CurrentRuntimeAbortSignal = {
+  // oxlint-disable-next-line require-yield
+  *[Symbol.iterator](): Generator<never, AbortSignal, unknown> {
+    return currentRuntimeAbortSignal()
   }
 } as const
