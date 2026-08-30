@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "ESNext.Disposable"],
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "files": [
+    "assert.ts",
+    "plugin.ts",
+    "auth.ts",
+    "basic.ts",
+    "transport-modes.ts",
+    "plugin-api.ts",
+    "plugin-session.ts",
+    "errors.ts",
+    "multiple-services.ts",
+    "testing-overrides.ts"
+  ]
+}

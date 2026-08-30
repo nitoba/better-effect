@@ -9,6 +9,8 @@ const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
 const honoSizes = [1, 3, 6, 10] as const
 type HonoSize = (typeof honoSizes)[number]
+const betterAuthSizes = [1] as const
+type BetterAuthSize = (typeof betterAuthSizes)[number]
 
 const scenarios = [
   'merge',
@@ -19,6 +21,7 @@ const scenarios = [
   'methods',
   'program-chain',
   'hono-mixed',
+  'better-auth',
   'program-collections'
 ] as const
 type Scenario = (typeof scenarios)[number]
@@ -61,6 +64,15 @@ const budgets = {
     maxTypes: 800_000
   }
 } satisfies Record<Size, Budget>
+
+const betterAuthBudgets = {
+  1: {
+    maxCheckMs: 8_000,
+    maxInstantiations: 1_000_000,
+    maxMemoryMiB: 1_024,
+    maxTypes: 800_000
+  }
+} satisfies Record<BetterAuthSize, Budget>
 
 const honoBudgets = {
   1: { maxCheckMs: 2_000, maxInstantiations: 400_000, maxMemoryMiB: 512, maxTypes: 100_000 },
@@ -118,9 +130,24 @@ const parseHonoSizes = (value: string): HonoSize[] => {
   return values as HonoSize[]
 }
 
+const parseBetterAuthSizes = (value: string): BetterAuthSize[] => {
+  const values = value.split(',').map((item) => Number(item.trim()))
+
+  for (const item of values) {
+    if (!betterAuthSizes.includes(item as BetterAuthSize)) {
+      throw new Error(
+        `Unknown Better Auth fixture count '${item}'. Allowed values: ${betterAuthSizes.join(', ')}`
+      )
+    }
+  }
+
+  return values as BetterAuthSize[]
+}
+
 type ParsedOptions = {
   readonly sizes: Size[]
   readonly honoSizes: HonoSize[]
+  readonly betterAuthSizes: BetterAuthSize[]
   readonly scenarios: Scenario[]
   readonly checkBudget: boolean
   readonly json: boolean
@@ -129,6 +156,7 @@ type ParsedOptions = {
 const parseArgs = (): ParsedOptions => {
   let selectedSizes: Size[] = [...sizes]
   let selectedHonoSizes: HonoSize[] = [...honoSizes]
+  let selectedBetterAuthSizes: BetterAuthSize[] = [...betterAuthSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
   let checkBudget = false
   let json = false
@@ -142,6 +170,8 @@ const parseArgs = (): ParsedOptions => {
       selectedSizes = parseSizes(argument.slice('--sizes='.length))
     } else if (argument.startsWith('--hono-sizes=')) {
       selectedHonoSizes = parseHonoSizes(argument.slice('--hono-sizes='.length))
+    } else if (argument.startsWith('--better-auth-sizes=')) {
+      selectedBetterAuthSizes = parseBetterAuthSizes(argument.slice('--better-auth-sizes='.length))
     } else if (argument.startsWith('--scenarios=')) {
       selectedScenarios = parseList(argument.slice('--scenarios='.length), scenarios)
     } else if (argument === '--help') {
@@ -151,6 +181,7 @@ const parseArgs = (): ParsedOptions => {
           '',
           `  --sizes=10,25,50,100       Service counts (default: ${sizes.join(',')})`,
           `  --hono-sizes=1,3,6,10       Hono middleware counts (default: ${honoSizes.join(',')})`,
+          `  --better-auth-sizes=1       Better Auth plugin fixtures (default: ${betterAuthSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
           '  --check-budget             Exit non-zero when a configured ceiling is exceeded',
           '  --json                     Print machine-readable results'
@@ -165,6 +196,7 @@ const parseArgs = (): ParsedOptions => {
   return {
     sizes: selectedSizes,
     honoSizes: selectedHonoSizes,
+    betterAuthSizes: selectedBetterAuthSizes,
     scenarios: selectedScenarios,
     checkBudget,
     json
@@ -416,9 +448,66 @@ void generatedHandler
 `
 }
 
+const betterAuthFixtureSource = (size: number): string => {
+  const names = Array.from({ length: size }, (_, index) => `Auth${index + 1}`)
+  const declarations = names
+    .map(
+      (name) => `const raw${name} = betterAuth({ plugins: [performancePlugin] })
+const ${name} = BetterAuth.service('@perf/${name}', raw${name})`
+    )
+    .join('\n')
+  const layers =
+    names.length === 1
+      ? `${names[0]}.layer`
+      : `Layer.merge(\n  ${names.map((name) => `${name}.layer`).join(',\n  ')}\n)`
+  const services = names
+    .map(
+      (name) => `  const service${name} = yield* ${name}
+  const users${name} = yield* service${name}.api.listUsers({ query: { limit: 5 } })`
+    )
+    .join('\n')
+  const results = names.map((name) => `users${name}`).join(', ')
+
+  return `import { betterAuth } from '../../../packages/better-effect-better-auth/node_modules/better-auth'
+import { Effect } from '../../../packages/better-effect/src/index.ts'
+import { BetterAuth } from '../../../packages/better-effect-better-auth/src/index.ts'
+import { Result } from '../../../packages/better-effect/node_modules/better-result'
+
+const performancePlugin = {
+  id: 'performance-plugin',
+  schema: {
+    user: {
+      fields: {
+        plan: { required: false, type: 'string' }
+      }
+    }
+  },
+  $ERROR_CODES: {
+    PERFORMANCE_PLUGIN_ERROR: {
+      code: 'PERFORMANCE_PLUGIN_ERROR',
+      message: 'Performance plugin failure'
+    }
+  }
+} as const
+
+${declarations}
+const AppLive = ${layers}
+const program = Effect.fn(async function* () {
+${services}
+  return Result.ok([${results}])
+})
+
+void AppLive
+void program
+`
+}
+
 const fixtureSource = (scenario: Scenario, size: number): string => {
   if (scenario === 'hono-mixed') {
     return honoFixtureSource(size)
+  }
+  if (scenario === 'better-auth') {
+    return betterAuthFixtureSource(size)
   }
 
   // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
@@ -549,7 +638,12 @@ const runTsc = async (
 }
 
 const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): string[] => {
-  const budget = scenario === 'hono-mixed' ? honoBudgets[size as HonoSize] : budgets[size as Size]
+  const budget =
+    scenario === 'hono-mixed'
+      ? honoBudgets[size as HonoSize]
+      : scenario === 'better-auth'
+        ? betterAuthBudgets[size as BetterAuthSize]
+        : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -597,7 +691,12 @@ const main = async (): Promise<void> => {
   const results: Result[] = []
 
   for (const scenario of options.scenarios) {
-    const scenarioSizes = scenario === 'hono-mixed' ? options.honoSizes : options.sizes
+    const scenarioSizes =
+      scenario === 'hono-mixed'
+        ? options.honoSizes
+        : scenario === 'better-auth'
+          ? options.betterAuthSizes
+          : options.sizes
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)

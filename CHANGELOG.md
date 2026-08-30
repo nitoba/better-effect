@@ -1,5 +1,32 @@
 # Changelog
 
+## [better-effect-better-auth@0.1.0] - 2026-08-30
+
+### Added
+
+- The first independent `better-effect-better-auth` release, adapting an
+  existing Better Auth server to typed `better-effect` Services and Layers.
+- Result-oriented endpoint data, Web `Response`, and `{ response, headers }`
+  transport modes, session `get`/`require` helpers, and the Web-standard
+  handler bridge.
+- Plugin-preserving type inference for endpoints, User/Session fields, and
+  Better Auth error codes, with `BetterAuthApiError` and explicit
+  `Unauthenticated` failures.
+
+### Compatibility
+
+- Tested with Better Auth `1.7.0` and `1.7.2`, better-effect `0.12.0` and
+  `0.13.0`, better-result `3.0.0`, and TypeScript `5.7.2` plus the current
+  monorepo compiler.
+- Peer ranges are Better Auth `^1.7.0`, better-effect `>=0.12.0 <0.14.0`,
+  better-result `^3.0.0`, and TypeScript `>=5.7.0`.
+
+### Limitations
+
+- Server-side and framework-neutral only; the package does not provide a
+  database adapter, migrations, environment/config ownership, client hooks,
+  authorization policy engine, or maintained framework subpath.
+
 ## [0.13.0] - 2026-08-30
 
 ### Added

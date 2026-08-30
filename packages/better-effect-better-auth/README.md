@@ -20,9 +20,9 @@ retaining the original instance as `auth.raw`.
 bun add better-effect-better-auth better-auth better-effect better-result
 ```
 
-The package is ESM-only and follows the Node.js, Bun, and TypeScript support
-matrix of `better-effect`. Better Auth, `better-effect`, `better-result`, and
-TypeScript are peer dependencies and remain owned by the application.
+The package is ESM-only. Its v0.1 peer matrix is `better-auth` `^1.7.0`,
+`better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
+`>=5.7.0`. These dependencies remain owned by the application.
 
 ## Effectful Better Auth service
 
@@ -57,11 +57,42 @@ await runtime.dispose()
 ```
 
 Every endpoint has normal, `.asResponse`, and `.withHeaders` transport modes.
+The normal mode returns endpoint data, `.asResponse` returns the Web `Response`,
+and `.withHeaders` returns `{ response, headers }`. Transport choices are
+methods rather than Better Auth's `asResponse`, `returnHeaders`, or
+`returnStatus` input flags, so the generated input type stays schema-defined.
+Response bodies, status codes, redirects, and repeated `set-cookie` headers are
+preserved.
 The generated `Auth.layer` provides the Service, and `Auth.of` accepts a
 structural replacement for tests or intentional Layer overrides. The original
 Better Auth instance and its unadapted transport options remain available as
 `auth.raw`. `auth.handle(request)` adapts Better Auth's Web-standard handler to
 the same Result-oriented operation boundary.
+
+## Plugins and inferred fields
+
+Create and configure plugins on the Better Auth instance as usual. When
+`BetterAuth.service` receives the concrete instance, plugin endpoints, plugin
+user/session fields, and plugin `$ERROR_CODES` remain visible to TypeScript:
+
+```ts
+import { admin } from 'better-auth/plugins'
+
+const auth = betterAuth({
+  // ...database and normal Better Auth options
+  plugins: [admin()]
+})
+const Auth = BetterAuth.service('@app/Auth', auth)
+
+const listUsers = Effect.fn(async function* () {
+  const service = yield* Auth
+  return Result.ok(yield* service.api.listUsers({ query: { limit: 10 } }))
+})
+```
+
+The adapter does not create plugin configuration or add framework-specific
+helpers. Keep Better Auth's plugins, database adapter, cookies, and handler in
+the application.
 
 ## Typed Better Auth API failures
 
@@ -126,6 +157,24 @@ type AuthFailure = BetterAuthFailure<typeof auth>
 Known literals improve autocomplete, while `BetterAuthApiError.code` can still
 preserve a future or dynamically supplied runtime string that is not present in
 the configured `$ERROR_CODES` type.
+
+## Handler and testing boundaries
+
+Better Auth's Web-standard handler can remain on a conventional framework route:
+
+```ts
+app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+```
+
+When the handler belongs inside a Program, use `yield* auth.handle(request)`;
+the returned `Response` is not eagerly consumed. The package does not publish a
+Hono adapter or require a framework dependency.
+
+For tests, replace the generated Service with `Auth.of(...)` and provide it
+through a normal Layer. This keeps fakes local to the test and does not rely on
+module mocking, singleton resets, or global state. `auth.raw` is an escape hatch
+for Better Auth's `$context`, `$ERROR_CODES`, options, endpoint metadata, or
+other APIs that the adapter intentionally does not reinterpret.
 
 ## Explicit missing-session failure
 

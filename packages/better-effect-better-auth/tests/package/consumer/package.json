@@ -3,6 +3,7 @@
   "type": "module",
   "dependencies": {
     "better-auth": "1.7.0",
-    "better-result": "3.0.0"
+    "better-result": "3.0.0",
+    "typescript": "6.0.3"
   }
 }

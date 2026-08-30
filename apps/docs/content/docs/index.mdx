@@ -40,7 +40,9 @@ release resources through Scope
 
 The library is intentionally small. It gives you a composition root and
 lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
-dependency injection to ordinary TypeScript libraries or adapters.
+dependency injection to ordinary TypeScript libraries or adapters. For a
+server-side Better Auth integration that keeps Better Auth's own plugins,
+cookies, and Web handler, see [Better Auth](/docs/better-auth).
 
 Layers expose a simple `Layer<Provided, Required>` contract. `Provided` and
 `Required` are tagged Service instance unions; after composition, `Required`
