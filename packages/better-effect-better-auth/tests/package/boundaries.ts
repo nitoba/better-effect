@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import * as ts from 'typescript'
 
-const packageRoot = resolve(import.meta.dir, '../..')
+const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const repositoryRoot = resolve(packageRoot, '../..')
 const sourceRoot = join(packageRoot, 'src')
 const distRoot = join(packageRoot, 'dist')
@@ -11,13 +12,25 @@ const packageManifestPath = join(packageRoot, 'package.json')
 const repositoryManifestPath = join(repositoryRoot, 'package.json')
 const repositoryLockfilePath = join(repositoryRoot, 'bun.lock')
 
+const expectedExports = {
+  '.': './dist/index.mjs',
+  './package.json': './package.json'
+} as const satisfies Record<string, string>
+
+const expectedPeers = {
+  'better-auth': '^1.7.0',
+  'better-effect': '^0.12.0',
+  'better-result': '^3.0.0',
+  typescript: '>=5.7.0'
+} as const satisfies Record<string, string>
+
 const forbiddenPackagePrefixes = [
   'effect',
-  '@effect/',
+  '@effect',
   'hono',
   'next',
-  '@hono/',
-  '@prisma/',
+  '@hono',
+  '@prisma',
   'prisma',
   'drizzle-orm',
   'drizzle-kit',
@@ -29,7 +42,7 @@ const forbiddenPackagePrefixes = [
   'mysql2',
   'better-sqlite3',
   'sqlite3',
-  '@libsql/',
+  '@libsql',
   'react',
   'react-dom',
   'vue',
@@ -49,25 +62,9 @@ const allowedExternalImports = new Set([
   'node:url'
 ])
 
-// SAFETY: this boundary test validates each required package manifest field before relying on it.
-const packageManifest = JSON.parse(await readFile(packageManifestPath, 'utf8')) as {
-  readonly name: string
-  readonly version: string
-  readonly type: string
-  readonly sideEffects: boolean
-  readonly files: readonly string[]
-  readonly exports: Readonly<Record<string, string>>
-  readonly scripts: Readonly<Record<string, string>>
-  readonly peerDependencies: Readonly<Record<string, string>>
-  readonly devDependencies: Readonly<Record<string, string>>
-}
-
-// SAFETY: this boundary test validates each required repository field before relying on it.
-const repositoryManifest = JSON.parse(await readFile(repositoryManifestPath, 'utf8')) as {
-  readonly workspaces: readonly string[]
-  readonly scripts: Readonly<Record<string, string>>
-  readonly packageManager: string
-}
+type JsonPrimitive = string | number | boolean | null
+type JsonValue = JsonPrimitive | JsonValue[] | JsonObject
+type JsonObject = { readonly [key: string]: JsonValue }
 
 const assertCondition: (condition: boolean, message: string) => asserts condition = (
   condition,
@@ -77,6 +74,23 @@ const assertCondition: (condition: boolean, message: string) => asserts conditio
     throw new Error(message)
   }
 }
+
+const isJsonObject = (value: JsonValue | undefined): value is JsonObject =>
+  value !== undefined && Object.prototype.toString.call(value) === '[object Object]'
+
+const isJsonString = (value: JsonValue | undefined): value is string =>
+  value !== undefined && Object.prototype.toString.call(value) === '[object String]'
+
+const readJsonRecord = async (path: string): Promise<JsonObject> => {
+  const value: JsonValue = JSON.parse(await readFile(path, 'utf8'))
+
+  assertCondition(isJsonObject(value), `Expected a JSON object in ${path}`)
+
+  return value
+}
+
+const packageManifest = await readJsonRecord(packageManifestPath)
+const repositoryManifest = await readJsonRecord(repositoryManifestPath)
 
 const collectFiles = async (root: string): Promise<string[]> => {
   const files: string[] = []
@@ -101,27 +115,109 @@ const collectFiles = async (root: string): Promise<string[]> => {
   return files.sort()
 }
 
-const collectImportSpecifiers = (source: string): string[] => {
-  const specifiers: string[] = []
-  const patterns = [
-    /(?:import|export)\s+(?:type\s+)?(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g,
-    /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g
-  ]
+const scriptKindFor = (path: string): ts.ScriptKind => {
+  switch (extname(path)) {
+    case '.js':
+    case '.mjs':
+    case '.cjs':
+      return ts.ScriptKind.JS
+    case '.jsx':
+      return ts.ScriptKind.JSX
+    case '.tsx':
+      return ts.ScriptKind.TSX
+    default:
+      return ts.ScriptKind.TS
+  }
+}
 
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      const specifier = match[1]
-      if (specifier !== undefined) {
-        specifiers.push(specifier)
-      }
-    }
+const staticModuleSpecifier = (node: ts.Node | undefined): string | undefined => {
+  if (node === undefined) {
+    return undefined
   }
 
-  return specifiers
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return node.text
+  }
+
+  if (ts.isLiteralTypeNode(node)) {
+    return staticModuleSpecifier(node.literal)
+  }
+
+  if (ts.isParenthesizedExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isAsExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isTypeAssertionExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isSatisfiesExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  if (ts.isNonNullExpression(node)) {
+    return staticModuleSpecifier(node.expression)
+  }
+
+  return undefined
+}
+
+const moduleSpecifiers = (source: string, path: string): string[] => {
+  const sourceFile = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindFor(path)
+  )
+  const specifiers = new Set<string>()
+
+  const addDeclarationSpecifier = (node: ts.Node | undefined, kind: string): void => {
+    const specifier = staticModuleSpecifier(node)
+
+    assertCondition(specifier !== undefined, `Unverifiable ${kind} in ${path}`)
+    specifiers.add(specifier)
+  }
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      addDeclarationSpecifier(node.moduleSpecifier, 'import declaration')
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+      addDeclarationSpecifier(node.moduleSpecifier, 'export declaration')
+    } else if (ts.isImportTypeNode(node)) {
+      addDeclarationSpecifier(node.argument, 'import type')
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      const reference = node.moduleReference
+
+      if (ts.isExternalModuleReference(reference)) {
+        addDeclarationSpecifier(reference.expression, 'import-equals declaration')
+      }
+    } else if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
+      const callName = ts.isIdentifier(node.expression) ? node.expression.text : undefined
+
+      if (isDynamicImport || callName === 'require' || callName === '__require') {
+        const kind = isDynamicImport
+          ? 'dynamic import'
+          : `${callName === '__require' ? 'emitted helper' : 'static'} require`
+        addDeclarationSpecifier(node.arguments[0], kind)
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+
+  return [...specifiers]
 }
 
 const isForbiddenPackage = (specifier: string): boolean =>
+  specifier === 'node:sqlite' ||
   forbiddenPackagePrefixes.some(
     (prefix) => specifier === prefix || specifier.startsWith(`${prefix}/`)
   )
@@ -136,14 +232,14 @@ const isWithinPackageRoot = (path: string): boolean => {
 }
 
 const assertModuleBoundary = (path: string, source: string): void => {
-  for (const specifier of collectImportSpecifiers(source)) {
+  for (const specifier of moduleSpecifiers(source, path)) {
     assertCondition(!isForbiddenPackage(specifier), `Forbidden import ${specifier} in ${path}`)
     assertCondition(
       !isForbiddenPeerInternal(specifier),
       `Forbidden peer internal import ${specifier} in ${path}`
     )
 
-    if (specifier.startsWith('.')) {
+    if (specifier.startsWith('.') || isAbsolute(specifier)) {
       const resolvedPath = resolve(dirname(path), specifier)
       assertCondition(
         isWithinPackageRoot(resolvedPath),
@@ -159,47 +255,103 @@ const assertModuleBoundary = (path: string, source: string): void => {
   }
 }
 
-const assertPackageManifest = (): void => {
-  assertCondition(packageManifest.name === 'better-effect-better-auth', 'Unexpected package name')
-  assertCondition(packageManifest.version === '0.1.0', 'Unexpected initial package version')
-  assertCondition(packageManifest.type === 'module', 'Package must be ESM-only')
-  assertCondition(packageManifest.sideEffects === false, 'Package must declare sideEffects false')
+const assertSameKeys = (
+  actual: JsonObject,
+  expected: Readonly<Record<string, string>>,
+  label: string
+): void => {
+  const actualKeys = Object.keys(actual).sort()
+  const expectedKeys = Object.keys(expected).sort()
+
   assertCondition(
-    JSON.stringify(packageManifest.files) === JSON.stringify(['dist', 'LICENSE', 'README.md']),
+    JSON.stringify(actualKeys) === JSON.stringify(expectedKeys),
+    `${label} keys differ: expected ${expectedKeys.join(', ')}, got ${actualKeys.join(', ')}`
+  )
+}
+
+const assertManifestExports = (manifest: JsonObject): void => {
+  const exports = manifest['exports']
+
+  assertCondition(isJsonObject(exports), 'Package exports must be an object')
+  assertSameKeys(exports, expectedExports, 'Package exports')
+
+  for (const [key, target] of Object.entries(expectedExports)) {
+    assertCondition(exports[key] === target, `Unexpected export target for ${key}`)
+  }
+}
+
+const assertManifestPeers = (manifest: JsonObject): void => {
+  const peers = manifest['peerDependencies']
+
+  assertCondition(isJsonObject(peers), 'Peer dependencies must be an object')
+  assertSameKeys(peers, expectedPeers, 'Peer dependencies')
+
+  for (const [name, range] of Object.entries(expectedPeers)) {
+    assertCondition(peers[name] === range, `Unexpected peer range for ${name}`)
+  }
+}
+
+const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
+  const sections = ['dependencies', 'optionalDependencies', 'devDependencies', 'peerDependencies']
+
+  for (const section of sections) {
+    const value = manifest[section]
+
+    if (!isJsonObject(value)) {
+      continue
+    }
+
+    for (const name of Object.keys(value)) {
+      assertCondition(
+        !isForbiddenPackage(name),
+        `Forbidden dependency ${name} appears in ${section}`
+      )
+    }
+  }
+
+  assertCondition(!('dependencies' in manifest), 'The package must not have runtime dependencies')
+  assertCondition(
+    !('optionalDependencies' in manifest),
+    'The package must not have optional runtime dependencies'
+  )
+}
+
+const assertPackageManifest = (): void => {
+  assertCondition(
+    packageManifest['name'] === 'better-effect-better-auth',
+    'Unexpected package name'
+  )
+  assertCondition(packageManifest['version'] === '0.1.0', 'Unexpected package version')
+  assertCondition(packageManifest['type'] === 'module', 'The package must be ESM')
+  assertCondition(
+    packageManifest['sideEffects'] === false,
+    'The package must declare no import side effects'
+  )
+  assertCondition(
+    JSON.stringify(packageManifest['files']) === JSON.stringify(['dist', 'LICENSE', 'README.md']),
     'Package files allowlist changed'
   )
-  assertCondition(
-    packageManifest.exports['.'] === './dist/index.mjs',
-    'Root export must resolve to the ESM artifact'
-  )
-  assertCondition(
-    packageManifest.exports['./package.json'] === './package.json',
-    'Package manifest export is missing'
-  )
+  assertManifestExports(packageManifest)
+  assertManifestPeers(packageManifest)
+  assertNoForbiddenDependencyNames(packageManifest)
 
-  const expectedPeers = {
-    'better-auth': '^1.7.0',
-    'better-effect': '^0.12.0',
-    'better-result': '^3.0.0',
-    typescript: '>=5.7.0'
-  }
+  const devDependencies = packageManifest['devDependencies']
+  assertCondition(isJsonObject(devDependencies), 'Development dependencies must be an object')
   assertCondition(
-    JSON.stringify(packageManifest.peerDependencies) === JSON.stringify(expectedPeers),
-    'Peer dependency contract changed'
-  )
-  assertCondition(
-    packageManifest.devDependencies['better-effect'] === 'workspace:*',
+    devDependencies['better-effect'] === 'workspace:*',
     'Workspace development dependency on better-effect is missing'
   )
   assertCondition(
-    packageManifest.devDependencies['better-auth'] !== undefined,
+    devDependencies['better-auth'] !== undefined,
     'Better Auth development dependency is missing'
   )
   assertCondition(
-    packageManifest.devDependencies['better-result'] !== undefined,
+    devDependencies['better-result'] !== undefined,
     'better-result development dependency is missing'
   )
 
+  const scripts = packageManifest['scripts']
+  assertCondition(isJsonObject(scripts), 'Package scripts must be an object')
   const requiredScripts = [
     'build',
     'typecheck',
@@ -216,24 +368,26 @@ const assertPackageManifest = (): void => {
   ]
 
   for (const script of requiredScripts) {
-    assertCondition(
-      packageManifest.scripts[script] !== undefined,
-      `Missing package script ${script}`
-    )
+    assertCondition(scripts[script] !== undefined, `Missing package script ${script}`)
   }
 }
 
 const assertRepositoryIntegration = async (): Promise<void> => {
+  const workspaces = repositoryManifest['workspaces']
   assertCondition(
-    repositoryManifest.workspaces.includes('packages/*'),
+    Array.isArray(workspaces) && workspaces.includes('packages/*'),
     'Repository workspaces must include packages/*'
   )
+
+  const scripts = repositoryManifest['scripts']
+  assertCondition(isJsonObject(scripts), 'Repository scripts must be an object')
+  const publintScript = scripts['publint']
   assertCondition(
-    repositoryManifest.scripts.publint?.includes('better-effect-better-auth') === true,
+    isJsonString(publintScript) && publintScript.includes('better-effect-better-auth'),
     'Root publint script must include better-effect-better-auth'
   )
   assertCondition(
-    repositoryManifest.packageManager === 'bun@1.3.14',
+    repositoryManifest['packageManager'] === 'bun@1.3.14',
     'Repository Bun version changed unexpectedly'
   )
 
@@ -298,36 +452,138 @@ const assertThrows = (operation: () => void, expectedMessage: string): void => {
   )
 }
 
-const assertBoundarySelfTests = (): void => {
-  const fixture = join(sourceRoot, '__boundary_fixture__.ts')
+const assertSupportedModuleForms = (coreFixture: string, peerFixture: string): void => {
+  const localImports = `
+    import type { TypeOnly } from './type-only'
+    type ImportedType = import('./import-type').TypeOnly
+    export { value } from './exported'
+    import './side-effect'
+    import Alias = require('./alias')
+    const required = require('./required')
+    const helper = __require('./helper')
+    void import('./dynamic', { with: { type: 'json' } })
+    void import(
+      \`./template\`,
+      { with: { type: 'json' } }
+    )
+    void Alias
+    void required
+    void helper
+    void (0 as unknown as TypeOnly)
+  `
+  const extracted = moduleSpecifiers(localImports, coreFixture).sort()
+  const expected = [
+    './alias',
+    './dynamic',
+    './exported',
+    './helper',
+    './import-type',
+    './required',
+    './side-effect',
+    './template',
+    './type-only'
+  ]
 
-  assertThrows(() => assertModuleBoundary(fixture, "import 'effect'"), 'Forbidden import effect')
-  assertThrows(
-    () => assertModuleBoundary(fixture, "import 'better-auth/internal'"),
-    'Forbidden peer internal import better-auth/internal'
+  assertCondition(
+    JSON.stringify(extracted) === JSON.stringify(expected),
+    `AST module extraction missed a supported form: ${JSON.stringify(extracted)}`
   )
-  assertThrows(
-    () => assertModuleBoundary(fixture, "import 'better-effect/internal/runtime'"),
-    'Forbidden peer internal import better-effect/internal/runtime'
+  assertModuleBoundary(coreFixture, localImports)
+  assertModuleBoundary(
+    peerFixture,
+    "import { Effect } from 'better-effect'\nimport { Result } from 'better-result'"
   )
+}
+
+const assertIgnoresNonModuleText = (coreFixture: string): void => {
+  assertModuleBoundary(coreFixture, `const source = "require('pg')"`)
+  assertModuleBoundary(coreFixture, `/* import 'pg' */\nconst source = "import('pg')"`)
+}
+
+const assertBoundaryPathSafety = (coreFixture: string): void => {
   assertThrows(
-    () => assertModuleBoundary(fixture, "import 'better-result/internal'"),
-    'Forbidden peer internal import better-result/internal'
-  )
-  assertThrows(() => assertModuleBoundary(fixture, "import 'hono'"), 'Forbidden import hono')
-  assertThrows(
-    () => assertModuleBoundary(fixture, "import 'drizzle-orm'"),
-    'Forbidden import drizzle-orm'
-  )
-  assertThrows(() => assertModuleBoundary(fixture, "import 'react'"), 'Forbidden import react')
-  assertThrows(
-    () => assertModuleBoundary(fixture, "import '../../outside'"),
+    () => assertModuleBoundary(coreFixture, "import '../../better-effect/src/index'"),
     'resolves outside the package root'
   )
   assertThrows(
-    () => assertModuleBoundary(fixture, "import 'unapproved-package'"),
-    'Unapproved external import unapproved-package'
+    () =>
+      assertModuleBoundary(
+        coreFixture,
+        "import Unsafe = require('../../better-effect/src/index.ts')"
+      ),
+    'resolves outside the package root'
   )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void __require('../../better-effect/src/index.ts')"),
+    'resolves outside the package root'
+  )
+  assertThrows(
+    () =>
+      assertModuleBoundary(
+        coreFixture,
+        "void import('../../better-effect/src/index.ts', { with: { type: 'module' } })"
+      ),
+    'resolves outside the package root'
+  )
+
+  const outsidePath = join(packageRoot, '..', 'better-effect', 'src', 'index.ts')
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, `void import(${JSON.stringify(outsidePath)})`),
+    'resolves outside the package root'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "import '#outside-package'"),
+    'Unapproved external import #outside-package'
+  )
+}
+
+const assertExternalPolicy = (coreFixture: string): void => {
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('better-auth/internal')"),
+    'Forbidden peer internal import better-auth/internal'
+  )
+  assertThrows(
+    () =>
+      assertModuleBoundary(
+        coreFixture,
+        "void import(`better-effect/internal/runtime`, { with: { type: 'json' } })"
+      ),
+    'Forbidden peer internal import better-effect/internal/runtime'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('better-result/internal')"),
+    'Forbidden peer internal import better-result/internal'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('better-effect/adapters/iti')"),
+    'Forbidden peer internal import better-effect/adapters/iti'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('better-effect/hono')"),
+    'Forbidden peer internal import better-effect/hono'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "const driver = require('pg')"),
+    'Forbidden import pg'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, "void import('node:sqlite')"),
+    'Forbidden import node:sqlite'
+  )
+  assertThrows(
+    () => assertModuleBoundary(coreFixture, 'void import(dynamicSpecifier)'),
+    'Unverifiable dynamic import'
+  )
+}
+
+const assertBoundarySelfTests = (): void => {
+  const coreFixture = join(sourceRoot, '__boundary_fixture__.ts')
+  const peerFixture = join(sourceRoot, '__peer_boundary_fixture__.ts')
+
+  assertSupportedModuleForms(coreFixture, peerFixture)
+  assertIgnoresNonModuleText(coreFixture)
+  assertBoundaryPathSafety(coreFixture)
+  assertExternalPolicy(coreFixture)
 }
 
 const assertPackedManifest = async (): Promise<void> => {
