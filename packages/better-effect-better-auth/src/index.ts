@@ -15,9 +15,23 @@ export type {
   BetterAuthTransportFlag,
   BetterAuthTransportModes
 } from './effect-api'
+export {
+  BetterAuth,
+  betterAuthService,
+  type BetterAuthService,
+  type BetterAuthServiceInstance,
+  type BetterAuthServiceToken
+} from './service'
+export type {
+  BetterAuthSessionApi,
+  BetterAuthSessionOf,
+  BetterAuthSessionReadOptions,
+  BetterAuthSessionSource
+} from './session'
 export type {
   BetterAuthErrorCode,
   BetterAuthErrorCodeSource,
   BetterAuthErrorCodeValue,
-  BetterAuthFailure
+  BetterAuthFailure,
+  BetterAuthInstance
 } from './types'
