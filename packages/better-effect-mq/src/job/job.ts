@@ -42,6 +42,15 @@ type CodecInputOf<Current extends CodecLike> =
 type CodecValueOf<Current extends CodecLike> =
   Current extends Codec<infer _Input, infer Value> ? Value : never
 
+type CodecSnapshot<Current extends CodecLike> = {
+  readonly encode: Current['encode']
+  readonly decode: Current['decode']
+}
+
+type OptionalCodecSnapshot<Current extends CodecLike | undefined> = Current extends CodecLike
+  ? CodecSnapshot<Current>
+  : undefined
+
 type EnsureCodec<Current extends CodecLike> =
   Current extends Codec<infer _Input, infer _Value> ? Current : never
 
@@ -135,9 +144,9 @@ export interface JobDefinition<
   readonly name: Name
   readonly version: Version
   readonly identity: JobIdentity<Queue, Name, Version>
-  readonly payload: PayloadCodec
-  readonly result: ResultCodec
-  readonly failure: FailureCodec
+  readonly payload: CodecSnapshot<PayloadCodec>
+  readonly result: OptionalCodecSnapshot<ResultCodec>
+  readonly failure: OptionalCodecSnapshot<FailureCodec>
   readonly defaults: JobDefaults
   readonly idempotencyKey: IdempotencyKeyCallback<CodecValueOf<PayloadCodec>> | undefined
   readonly metadata: MetadataCallback<CodecValueOf<PayloadCodec>> | undefined
@@ -332,27 +341,93 @@ const normalizeDefaults = (value: unknown): ResultType<JobDefaults, JobDefinitio
   return Result.ok(Object.freeze(defaults))
 }
 
+type CodecMethod = (value: unknown) => unknown
+
+type CodecMethodLookup =
+  | { readonly status: 'missing' }
+  | { readonly status: 'invalid' }
+  | { readonly status: 'found'; readonly method: unknown; readonly receiver: unknown }
+
+const maxCodecPrototypeDepth = 32
+
+const isObjectLikeValue = (value: unknown): boolean => {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- codec values may be objects or callable objects.
+  return (typeof value === 'object' && value !== null) || typeof value === 'function'
+}
+
+const readCodecMethod = (value: unknown, key: 'encode' | 'decode'): CodecMethodLookup => {
+  if (!isObjectLikeValue(value)) {
+    return { status: 'missing' }
+  }
+
+  // SAFETY: `isObjectLikeValue` permits only values accepted by Object.getPrototypeOf.
+  let current = value as object
+  const visited = new Set<object>()
+
+  for (let depth = 0; current !== null && depth <= maxCodecPrototypeDepth; depth += 1) {
+    if (visited.has(current)) {
+      return { status: 'invalid' }
+    }
+
+    visited.add(current)
+
+    let descriptor: PropertyDescriptor | undefined
+
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(current, key)
+    } catch {
+      return { status: 'invalid' }
+    }
+
+    if (descriptor !== undefined) {
+      if (!('value' in descriptor)) {
+        return { status: 'invalid' }
+      }
+
+      return { status: 'found', method: descriptor.value, receiver: value }
+    }
+
+    try {
+      current = Object.getPrototypeOf(current)
+    } catch {
+      return { status: 'invalid' }
+    }
+  }
+
+  return { status: 'invalid' }
+}
+
+// oxlint-disable-next-line typescript/unbound-method -- bind the intrinsic before using it as a receiver-safe dispatcher.
+const callFunction = Function.prototype.call.bind(Function.prototype.call)
+
+const makeCodecMethod = (method: unknown, receiver: unknown): CodecLike['encode'] => {
+  // SAFETY: The caller checks this value with `isCallable` before creating the facade.
+  const callable = method as CodecMethod
+  const facade = (value: unknown): unknown => callFunction(callable, receiver, value)
+
+  return Object.freeze(facade)
+}
+
 const snapshotCodec = (
   value: unknown,
   field: string
 ): ResultType<CodecLike, JobDefinitionError> => {
-  const fields = readDataFields(value, ['encode', 'decode'], field)
+  const encode = readCodecMethod(value, 'encode')
+  const decode = readCodecMethod(value, 'decode')
 
-  if (Result.isError(fields)) {
-    return Result.err(fields.error)
-  }
-
-  const encode = fieldValue(fields.value, 'encode')
-  const decode = fieldValue(fields.value, 'decode')
-
-  if (!isCallable(encode) || !isCallable(decode)) {
+  if (
+    encode.status !== 'found' ||
+    !isCallable(encode.method) ||
+    decode.status !== 'found' ||
+    !isCallable(decode.method)
+  ) {
     return invalid(field, 'must provide callable encode and decode operations')
   }
 
   return Result.ok(
     Object.freeze({
-      encode,
-      decode
+      encode: makeCodecMethod(encode.method, encode.receiver),
+      decode: makeCodecMethod(decode.method, decode.receiver)
     })
   )
 }
@@ -526,6 +601,75 @@ export const normalizeMetadata = (
 const callbackFailure = (field: string): ResultType<never, JobDefinitionError> =>
   invalid(field, 'callback failed')
 
+const isThenable = (value: unknown): boolean => {
+  if (!isObjectLikeValue(value)) {
+    return false
+  }
+
+  // SAFETY: `isObjectLikeValue` permits only values accepted by Object.getPrototypeOf.
+  let current = value as object
+  const visited = new Set<object>()
+
+  for (let depth = 0; current !== null && depth <= maxCodecPrototypeDepth; depth += 1) {
+    if (visited.has(current)) {
+      return false
+    }
+
+    visited.add(current)
+
+    let descriptor: PropertyDescriptor | undefined
+
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(current, 'then')
+    } catch {
+      return false
+    }
+
+    if (descriptor !== undefined) {
+      return 'value' in descriptor && isCallable(descriptor.value)
+    }
+
+    try {
+      current = Object.getPrototypeOf(current)
+    } catch {
+      return false
+    }
+  }
+
+  return false
+}
+
+const observeRejectedRetryableResult = (value: unknown): void => {
+  if (!isThenable(value)) {
+    return
+  }
+
+  try {
+    void Promise.resolve(value).catch(() => undefined)
+  } catch {
+    // A hostile thenable is already normalized to the retryable fallback.
+  }
+}
+
+/**
+ * Normalize a definition-layer retry predicate result. The predicate is synchronous;
+ * thrown errors and untyped rejected Promise results fail open as retryable without
+ * retaining the failure. A thenable is not awaited, and non-boolean non-thenables
+ * remain invalid predicate results.
+ */
+export const normalizeRetryable = (value: unknown): ResultType<boolean, JobDefinitionError> => {
+  if (typeof value === 'boolean') {
+    return Result.ok(value)
+  }
+
+  if (isThenable(value)) {
+    observeRejectedRetryableResult(value)
+    return Result.ok(true)
+  }
+
+  return invalid('retryable', 'callback must return a boolean')
+}
+
 export const runIdempotencyKey = <Definition extends AnyJobDefinition>(
   definition: Definition,
   payload: JobPayload<Definition>
@@ -571,13 +715,9 @@ export const runRetryable = <Definition extends AnyJobDefinition>(
   }
 
   try {
-    const value = callback(failure)
-
-    return typeof value === 'boolean'
-      ? Result.ok(value)
-      : invalid('retryable', 'callback must return a boolean')
+    return normalizeRetryable(callback(failure))
   } catch {
-    return callbackFailure('retryable')
+    return Result.ok(true)
   }
 }
 

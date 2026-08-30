@@ -21,6 +21,7 @@ export {
   makeJobRegistry,
   normalizeIdempotencyKey,
   normalizeMetadata,
+  normalizeRetryable,
   runIdempotencyKey,
   runMetadata,
   runRetryable

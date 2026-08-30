@@ -57,6 +57,7 @@ const expectedCoreRuntimeExports = [
   'makeWorkerId',
   'normalizeIdempotencyKey',
   'normalizeMetadata',
+  'normalizeRetryable',
   'orderJobs',
   'promoteJob',
   'protocolVersion',

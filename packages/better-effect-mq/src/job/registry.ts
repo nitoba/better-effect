@@ -17,10 +17,22 @@ type RegistryMatch<
   Queue extends string,
   Name extends string,
   Version extends number
-> = Extract<
-  Definitions[number],
-  { readonly queue: Queue; readonly name: Name; readonly version: Version }
->
+> = string extends Queue
+  ? Definitions[number]
+  : string extends Name
+    ? Definitions[number]
+    : number extends Version
+      ? Definitions[number]
+      : string extends Definitions[number]['queue']
+        ? Definitions[number]
+        : string extends Definitions[number]['name']
+          ? Definitions[number]
+          : number extends Definitions[number]['version']
+            ? Definitions[number]
+            : Extract<
+                Definitions[number],
+                { readonly queue: Queue; readonly name: Name; readonly version: Version }
+              >
 
 type AcceptedIdentities<Definitions extends readonly AnyJobDefinition[]> = {
   readonly [Index in keyof Definitions]: Job.Identity<Definitions[Index]>
@@ -123,11 +135,13 @@ const readIdentity = (
     return invalid('identity.version', 'must be a positive safe integer')
   }
 
-  return Result.ok({
-    queue: checkedQueue.value,
-    name: checkedName.value,
-    version
-  })
+  return Result.ok(
+    Object.freeze({
+      queue: checkedQueue.value,
+      name: checkedName.value,
+      version
+    })
+  )
 }
 
 const copyDefinitions = (value: unknown): readonly unknown[] => {
@@ -179,7 +193,9 @@ const buildRegistry = (value: unknown): AnyJobRegistry => {
   }
 
   const frozenDefinitions = Object.freeze(definitions)
-  const frozenIdentities = Object.freeze(identities)
+  const frozenIdentities = Object.freeze(
+    identities.map((identity) => Object.freeze({ ...identity }))
+  )
 
   function lookup(
     first: unknown,

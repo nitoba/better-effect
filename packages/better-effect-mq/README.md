@@ -175,6 +175,13 @@ Jobs.acceptedClaimIdentities // both versions, in definition order
 Jobs.lookup({ queue: 'emails', name: 'send-email', version: 1 }) // Result<..., JobDefinitionError>
 ```
 
+`retryable` is a synchronous definition-layer predicate. When a worker-side
+caller evaluates it through `runRetryable`, a thrown predicate is deliberately
+fail-open and becomes `true` (retryable) without retaining the thrown error or
+failure payload. An untyped rejected Promise is also observed and normalized to
+`true`; Promise results are not awaited. Non-boolean, non-Promise results remain
+invalid predicate results.
+
 `Job.define` is optional direct-call sugar over the same `Queue.job` implementation;
 `Queue.define(...).job(...)` is the documented ergonomic form. `Job.PayloadInput`
 is `Codec.Input` (the schema/input side), while `Job.Payload` is `Codec.Value`

@@ -7,7 +7,15 @@ import { Result, type Result as ResultType, type StandardSchemaV1 } from 'better
 
 import { Effect, Service } from 'better-effect'
 
-import { Codec, Job, JobRegistry, Queue, type JobDefinitionError } from '../../src'
+import {
+  Codec,
+  Job,
+  JobRegistry,
+  Queue,
+  type AnyJobDefinition,
+  type AnyJobRegistry,
+  type JobDefinitionError
+} from '../../src'
 
 const payload = Codec.json<{
   readonly messageId: string
@@ -41,6 +49,19 @@ const nonPortableCodec = {
   decode: (_value: unknown) => dependentEffect
 }
 
+class StatefulCodec implements Codec<string> {
+  readonly prefix = 'stateful'
+
+  encode(value: string) {
+    return Codec.string.encode(`${this.prefix}:${value}`)
+  }
+
+  decode(value: unknown) {
+    return Codec.string.decode(`${this.prefix}:${String(value)}`)
+  }
+}
+
+const statefulCodec = new StatefulCodec()
 const emails = Queue.define('emails')
 const sendEmailV1 = emails.job('send-email', {
   version: 1,
@@ -91,6 +112,11 @@ const transformedJob = emails.job('transformed', {
   payload: transformedPayload,
   idempotencyKey: ({ id }) => id
 })
+const statefulJob = emails.job('stateful', { version: 1, payload: statefulCodec })
+expectTypeOf(statefulJob.payload).toMatchTypeOf<Pick<StatefulCodec, 'encode' | 'decode'>>()
+// @ts-expect-error Class-only state is not retained in the public inert descriptor.
+const statefulPrefix = statefulJob.payload.prefix
+void statefulPrefix
 expectTypeOf<Job.PayloadInput<typeof transformedJob>>().toEqualTypeOf<string>()
 expectTypeOf<Job.Payload<typeof transformedJob>>().toEqualTypeOf<{ readonly id: string }>()
 expectTypeOf<Job.Requirements<typeof transformedJob>>().toBeNever()
@@ -153,9 +179,34 @@ expectTypeOf(jobs.acceptedClaimIdentities).toEqualTypeOf(jobs.accepted)
 const known = jobs.lookup({ queue: 'emails', name: 'send-email', version: 1 })
 const knownPositional = jobs.get('emails', 'send-email', 2)
 const unknown = jobs.lookup({ queue: 'emails', name: 'send-email', version: 9 })
+const unknownPositional = jobs.get('emails', 'send-email', 9)
 expectTypeOf(known).toEqualTypeOf<ResultType<typeof sendEmailV1, JobDefinitionError>>()
 expectTypeOf(knownPositional).toEqualTypeOf<ResultType<typeof sendEmailV2, JobDefinitionError>>()
 expectTypeOf(unknown).toEqualTypeOf<ResultType<never, JobDefinitionError>>()
+expectTypeOf(unknownPositional).toEqualTypeOf<ResultType<never, JobDefinitionError>>()
+
+const broadQueue: string = 'emails'
+const broadName: string = 'send-email'
+const broadVersion: number = 1
+const broadIdentity = { queue: broadQueue, name: broadName, version: broadVersion }
+const broadJobIdentity: Job.Identity = broadIdentity
+const broadByParts = jobs.lookup(broadQueue, broadName, broadVersion)
+const broadByVersion = jobs.lookup('emails', 'send-email', broadVersion)
+const broadByIdentity = jobs.lookup(broadIdentity)
+const broadByJobIdentity = jobs.lookup(broadJobIdentity)
+expectTypeOf(broadByParts).toEqualTypeOf<ResultType<JobUnion, JobDefinitionError>>()
+expectTypeOf(broadByVersion).toEqualTypeOf<ResultType<JobUnion, JobDefinitionError>>()
+expectTypeOf(broadByIdentity).toEqualTypeOf<ResultType<JobUnion, JobDefinitionError>>()
+expectTypeOf(broadByJobIdentity).toEqualTypeOf<ResultType<JobUnion, JobDefinitionError>>()
+
+const broadDefinitions: readonly Job.Any[] = [sendEmailV1, sendEmailV2, noOutcomeCodec]
+const erasedJobs = JobRegistry.make(broadDefinitions)
+const erasedKnown = erasedJobs.lookup({ queue: 'emails', name: 'send-email', version: 1 })
+expectTypeOf(erasedKnown).toEqualTypeOf<ResultType<AnyJobDefinition, JobDefinitionError>>()
+
+const anyRegistry: AnyJobRegistry = erasedJobs
+const anyRegistryKnown = anyRegistry.get('emails', 'send-email', 2)
+expectTypeOf(anyRegistryKnown).toEqualTypeOf<ResultType<AnyJobDefinition, JobDefinitionError>>()
 
 const direct = Job.define('direct', { queue: emails, version: 1, payload })
 expectTypeOf<Job.Queue<typeof direct>>().toEqualTypeOf<'emails'>()

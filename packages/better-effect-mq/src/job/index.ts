@@ -3,6 +3,7 @@ export {
   createJob,
   normalizeIdempotencyKey,
   normalizeMetadata,
+  normalizeRetryable,
   runIdempotencyKey,
   runMetadata,
   runRetryable
