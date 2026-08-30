@@ -20,10 +20,18 @@ class DomainFailure extends Error {
   readonly kind = 'domain' as const
 }
 
-test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', async () => {
+const waitForAbort = (signal: AbortSignal): Promise<void> =>
+  signal.aborted
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+
+test('BunEffect handles real concurrent requests and closes request scopes before responses settle', async () => {
   let rootAcquisitions = 0
   let rootReleases = 0
   let requestReleases = 0
+  const releasedPaths: string[] = []
   const requestReleaseOutcomes: ScopeOutcome[] = []
   const successReleaseSnapshots: number[] = []
   const failureReleaseSnapshots: number[] = []
@@ -32,6 +40,20 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
   const requestsReady = new Promise<void>((resolve) => {
     openRequests = resolve
   })
+  let disconnectStarted!: () => void
+  const disconnectRequestStarted = new Promise<void>((resolve) => {
+    disconnectStarted = resolve
+  })
+  let disconnectSeen!: () => void
+  const disconnectObserved = new Promise<void>((resolve) => {
+    disconnectSeen = resolve
+  })
+  let disconnectReleased!: () => void
+  const disconnectCleaned = new Promise<void>((resolve) => {
+    disconnectReleased = resolve
+  })
+  let disconnectSignal: AbortSignal | undefined
+  let disconnectRequestSignal: AbortSignal | undefined
 
   const runtime = await Runtime.make(
     Layer.scoped(
@@ -46,28 +68,40 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
     )
   )
 
-  const makeRequestLayer = (request: Request) =>
-    Layer.scoped(
+  const makeRequestLayer = (request: Request) => {
+    const path = new URL(request.url).pathname
+
+    return Layer.scoped(
       RequestService,
-      () => new RequestService(new URL(request.url).pathname),
+      () => new RequestService(path),
       (_service, outcome) => {
         requestReleases += 1
+        releasedPaths.push(path)
         requestReleaseOutcomes.push(outcome)
+
+        if (path === '/disconnect') {
+          disconnectReleased()
+        }
       }
     )
+  }
   type RequestLayer = ReturnType<typeof makeRequestLayer>
 
   const http = BunEffect.make<RootService, DomainFailure, RequestLayer>(runtime, {
     requestLayer: makeRequestLayer,
     onSuccess: ({ value }, request) => {
       expect(request).toBeInstanceOf(Request)
-      successReleaseSnapshots.push(requestReleases)
+      if (new URL(request.url).pathname !== '/disconnect') {
+        successReleaseSnapshots.push(requestReleases)
+      }
       return Response.json({ data: value })
     },
     onFailure: (error, request) => {
       expect(error).toBeInstanceOf(DomainFailure)
       expect(request).toBeInstanceOf(Request)
-      failureReleaseSnapshots.push(requestReleases)
+      if (new URL(request.url).pathname === '/failure') {
+        failureReleaseSnapshots.push(requestReleases)
+      }
       return Response.json({ error: error.message }, { status: 422 })
     }
   })
@@ -78,6 +112,8 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
       const requestService = yield* RequestService
       const currentRequest = yield* CurrentRequest
       const signal = yield* CurrentAbortSignal
+      // SAFETY: BunEffect supplies the Request object through CurrentRequest.
+      const currentRequestValue = currentRequest.request as Request
 
       if (requestService.path === '/first' || requestService.path === '/second') {
         readyRequests += 1
@@ -87,13 +123,21 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
         await requestsReady
       }
 
+      if (requestService.path === '/disconnect') {
+        disconnectSignal = signal
+        disconnectRequestSignal = currentRequestValue.signal
+        disconnectStarted()
+        await waitForAbort(signal)
+        disconnectSeen()
+        return Result.err(new DomainFailure('client disconnected'))
+      }
+
       if (requestService.path === '/failure') {
         return Result.err(new DomainFailure('private failure'))
       }
 
       return Result.ok({
-        // SAFETY: BunEffect supplies the Request object through CurrentRequest.
-        currentUrl: (currentRequest.request as Request).url,
+        currentUrl: currentRequestValue.url,
         requestUrl: request.url,
         requestPath: requestService.path,
         root: root.value,
@@ -116,7 +160,15 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
     }
 
     const origin = `http://127.0.0.1:${port}`
-    const [first, second] = await Promise.all([fetch(`${origin}/first`), fetch(`${origin}/second`)])
+    const fetchAndCheckCleanup = (path: string): Promise<Response> =>
+      fetch(`${origin}${path}`).then((response) => {
+        expect(releasedPaths).toContain(path)
+        return response
+      })
+    const [first, second] = await Promise.all([
+      fetchAndCheckCleanup('/first'),
+      fetchAndCheckCleanup('/second')
+    ])
 
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
@@ -141,22 +193,44 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
       }
     })
 
-    const failure = await fetch(`${origin}/failure`)
+    const failure = await fetchAndCheckCleanup('/failure')
     expect(failure.status).toBe(422)
     expect(await failure.json()).toEqual({ error: 'private failure' })
+
+    const controller = new AbortController()
+    const disconnectResponse = fetch(`${origin}/disconnect`, { signal: controller.signal }).then(
+      () => 'response' as const,
+      () => 'aborted' as const
+    )
+    await disconnectRequestStarted
+    controller.abort()
+    expect(await disconnectResponse).toBe('aborted')
+    await Promise.all([disconnectObserved, disconnectCleaned])
   } finally {
     await server.stop()
     await runtime.dispose()
   }
 
+  expect(disconnectSignal?.aborted).toBe(true)
+  expect(disconnectSignal?.reason).toBeDefined()
+  expect(disconnectRequestSignal?.aborted).toBe(true)
   expect(successReleaseSnapshots).toEqual([0, 0])
   expect(failureReleaseSnapshots).toEqual([2])
-  expect(requestReleases).toBe(3)
-  expect(requestReleaseOutcomes).toEqual([
-    { status: 'success' },
-    { status: 'success' },
-    { status: 'failure', cause: expect.any(DomainFailure) }
+  expect(requestReleases).toBe(4)
+  expect(releasedPaths).toEqual(
+    expect.arrayContaining(['/first', '/second', '/failure', '/disconnect'])
+  )
+  expect(requestReleaseOutcomes.map(({ status }) => status)).toEqual([
+    'success',
+    'success',
+    'failure',
+    'failure'
   ])
+  expect(
+    requestReleaseOutcomes
+      .filter((outcome) => outcome.status === 'failure')
+      .every((outcome) => outcome.cause instanceof DomainFailure)
+  ).toBe(true)
   expect(rootAcquisitions).toBe(1)
   expect(rootReleases).toBe(1)
   expect(runtime.inspect()).toMatchObject({
@@ -172,7 +246,7 @@ test('BunEffect handles concurrent Bun.serve requests and shuts down cleanly', a
   await replacement.stop()
 })
 
-test('BunEffect preserves WebEffect response defaults and native defects', async () => {
+test('BunEffect keeps defects on Bun.serve error and preserves WebEffect defaults', async () => {
   const runtime = await Runtime.make(Layer.empty)
   const defect = new Error('native defect')
   const http = BunEffect.make(runtime)
@@ -195,25 +269,41 @@ test('BunEffect preserves WebEffect response defaults and native defects', async
       return Result.err({ secret: 'redact me' })
     })
   })
+  let reportedDefect: unknown
+  let reportError!: () => void
+  const errorReported = new Promise<void>((resolve) => {
+    reportError = resolve
+  })
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
-    fetch: handler
+    fetch: handler,
+    error: (error) => {
+      reportedDefect = error
+      reportError()
+      return new Response('server handled defect', { status: 599 })
+    }
   })
 
   try {
-    const passthrough = await handler(new Request('https://example.test/response'), server)
+    if (server.port === undefined) {
+      throw new Error('Bun did not allocate an ephemeral port')
+    }
+
+    const origin = `http://127.0.0.1:${server.port}`
+    const passthrough = await fetch(`${origin}/response`)
     expect(passthrough.status).toBe(201)
     expect(await passthrough.text()).toBe('passthrough')
 
-    const failure = await handler(new Request('https://example.test/failure'), server)
+    const failure = await fetch(`${origin}/failure`)
     expect(failure.status).toBe(500)
     expect(await failure.json()).toEqual({ error: 'Internal Server Error' })
 
-    const rejected = await handler(new Request('https://example.test/defect'), server).catch(
-      (cause) => cause
-    )
-    expect(rejected).toBe(defect)
+    const defectResponse = await fetch(`${origin}/defect`)
+    expect(defectResponse.status).toBe(599)
+    expect(await defectResponse.text()).toBe('server handled defect')
+    await errorReported
+    expect(reportedDefect).toBe(defect)
   } finally {
     await server.stop()
     await runtime.dispose()

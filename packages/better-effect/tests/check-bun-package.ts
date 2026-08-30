@@ -1,10 +1,73 @@
-import { cp, mkdtemp, mkdir, realpath, readdir, rename, rm } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, realpath, readdir, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const packageRoot = resolve(fileURLToPath(new URL('../', import.meta.url)))
 const childSource = join(packageRoot, 'tests/helpers/bun-package-child.mjs')
+
+const localImportPattern = /(?:from\s+|import\s*(?:\(\s*)?)?["']((?:\.{1,2}\/)[^"']+\.mjs)["']/gu
+
+const readGraph = async (entry: string, declaration: boolean): Promise<string> => {
+  const visited = new Set<string>()
+  const sources: string[] = []
+
+  const visit = async (path: string): Promise<void> => {
+    const resolved = resolve(path)
+
+    if (visited.has(resolved)) {
+      return
+    }
+
+    visited.add(resolved)
+    const source = await readFile(resolved, 'utf8')
+    sources.push(source)
+
+    for (const match of source.matchAll(localImportPattern)) {
+      const specifier = match[1]
+
+      if (specifier !== undefined) {
+        const localPath = join(dirname(resolved), specifier)
+        await visit(declaration ? localPath.replace(/\.mjs$/u, '.d.mts') : localPath)
+      }
+    }
+  }
+
+  await visit(entry)
+  return sources.join('\n')
+}
+
+const assertCoreGraphIsolation = async (): Promise<void> => {
+  const forbidden = [/\bBun\s*(?:\.|<)/u, /(?:from|import)\s*(?:type\s+)?["']bun(?::|["'])/iu]
+
+  for (const entry of ['index.mjs', 'web.mjs']) {
+    const runtimeGraph = await readGraph(join(packageRoot, 'dist', entry), false)
+    const declarationGraph = await readGraph(
+      join(packageRoot, 'dist', entry.replace(/\.mjs$/u, '.d.mts')),
+      true
+    )
+
+    for (const pattern of forbidden) {
+      if (pattern.test(runtimeGraph) || pattern.test(declarationGraph)) {
+        throw new Error(`Core ${entry} graph unexpectedly depends on Bun: ${pattern}`)
+      }
+    }
+  }
+
+  const bunDeclarations = await readGraph(join(packageRoot, 'dist/bun.d.mts'), true)
+
+  if (!/\bBun\.Server\b/u.test(bunDeclarations)) {
+    throw new Error('Bun declaration graph does not expose Bun server types')
+  }
+
+  if (
+    !/declare class BunEffect<Provided extends AnyService = never,\s*Failure = unknown,/u.test(
+      bunDeclarations
+    )
+  ) {
+    throw new Error('BunEffect declarations lost the safe never environment default')
+  }
+}
 
 const run = async (
   command: readonly string[],
@@ -60,6 +123,7 @@ const temporaryDirectory = await mkdtemp(join(tmpdir(), 'better-effect-bun-packa
 try {
   await rm(join(packageRoot, 'dist'), { force: true, recursive: true })
   await run([process.execPath, 'run', 'build'])
+  await assertCoreGraphIsolation()
   await run([
     process.execPath,
     'pm',
