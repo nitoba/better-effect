@@ -6,7 +6,7 @@
 
 **Architecture:** Derive a typed API from the concrete `rawAuth.api` object and implement it with one cached runtime Proxy. Build `BetterAuth.service(tag, rawAuth)` on the public `Service` and `Layer` APIs, then layer session and Web-standard handler helpers over the same proxy and error-normalization boundary.
 
-**Tech Stack:** TypeScript 5.7+, Better Auth 1.7, better-effect 0.12, better-result 3, Bun tests, tsdown, oxlint, oxfmt.
+**Tech Stack:** TypeScript 5.7+, Better Auth 1.7, better-effect 0.13, better-result 3, Bun tests, tsdown, oxlint, oxfmt.
 
 **Spec:** GitHub issues #97 and #98.
 

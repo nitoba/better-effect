@@ -158,4 +158,71 @@ describe('BetterAuthHooks with Better Auth', () => {
       await runtime.dispose()
     }
   })
+
+  test('supports direct API dispatch and Better Auth background task hooks', async () => {
+    const runtime = await Runtime.make(Layer.empty)
+    const hooks = BetterAuthHooks.make('@integration/BetterAuthBackgroundHooks', runtime)
+    const backgroundTasks: Promise<unknown>[] = []
+    const observedPaths: string[] = []
+    const backgroundHook = hooks.middleware(() =>
+      Effect.fn(async function* () {
+        const context = yield* hooks.Context
+        observedPaths.push(context.context.path ?? 'unknown')
+        return Result.ok()
+      })
+    )
+    const invokeBackgroundHook = <Context extends { request: Request | undefined }>(
+      context: Context
+    ) => {
+      const { request, ...contextWithoutRequest } = context
+      return request === undefined
+        ? backgroundHook(contextWithoutRequest)
+        : backgroundHook({ ...contextWithoutRequest, request })
+    }
+    const plugin = {
+      id: 'hooks-background-integration',
+      endpoints: {
+        enqueueHook: createAuthEndpoint(
+          '/hooks-background/enqueue',
+          { method: 'GET' },
+          async (context) => {
+            context.context.runInBackground(invokeBackgroundHook(context))
+            return context.json({ queued: true })
+          }
+        ),
+        awaitHook: createAuthEndpoint(
+          '/hooks-background/await',
+          { method: 'GET' },
+          async (context) => {
+            await context.context.runInBackgroundOrAwait(invokeBackgroundHook(context))
+            return context.json({ queued: true })
+          }
+        )
+      }
+    } satisfies BetterAuthPlugin
+    const auth = betterAuth({
+      advanced: {
+        backgroundTasks: {
+          handler: (task) => {
+            backgroundTasks.push(task)
+          }
+        }
+      },
+      baseURL,
+      database: memoryAdapter(makeDatabase()),
+      plugins: [plugin],
+      secret: 'hooks-background-secret-not-for-production-use'
+    })
+
+    try {
+      expect(await auth.api.enqueueHook()).toEqual({ queued: true })
+      expect(await auth.api.awaitHook()).toEqual({ queued: true })
+      expect(backgroundTasks).toHaveLength(2)
+
+      await Promise.all(backgroundTasks)
+      expect(observedPaths).toEqual(['/hooks-background/enqueue', '/hooks-background/await'])
+    } finally {
+      await runtime.dispose()
+    }
+  })
 })

@@ -9,6 +9,7 @@ const coreSource = join(workspaceRoot, 'packages/better-effect')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const vanillaExampleSource = join(packageRoot, 'examples/vanilla-server')
 const decoder = new TextDecoder()
+const minimumBetterEffectVersion = '0.13.0'
 
 const assertCondition: (condition: boolean, message: string) => asserts condition = (
   condition,
@@ -86,8 +87,17 @@ const packMinimumCore = async (root: string): Promise<string> => {
   await mkdir(destination)
 
   assertSuccess(
-    run(['npm', 'pack', 'better-effect@0.12.0', '--pack-destination', destination], packageRoot),
-    'Packing better-effect@0.12.0 from the registry'
+    run(
+      [
+        'npm',
+        'pack',
+        `better-effect@${minimumBetterEffectVersion}`,
+        '--pack-destination',
+        destination
+      ],
+      packageRoot
+    ),
+    `Packing better-effect@${minimumBetterEffectVersion} from the registry`
   )
 
   const archives = (await readdir(destination)).filter((name) => name.endsWith('.tgz'))
@@ -414,6 +424,10 @@ const main = async (): Promise<void> => {
     assertCondition(isJsonString(integrationVersion), 'Integration archive version is missing')
     assertCondition(isJsonString(coreVersion), 'Core archive version is missing')
     assertCondition(isJsonString(minimumCoreVersion), 'Minimum core archive version is missing')
+    assertCondition(
+      minimumCoreVersion === minimumBetterEffectVersion,
+      `Minimum core archive must be better-effect@${minimumBetterEffectVersion}, got ${minimumCoreVersion}`
+    )
 
     const fixture = await makeFixture(
       root,

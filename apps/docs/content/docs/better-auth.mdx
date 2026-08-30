@@ -18,7 +18,7 @@ bun add better-effect-better-auth better-auth better-effect better-result
 The v0.1 release supports:
 
 - `better-auth` `^1.7.0`
-- `better-effect` `>=0.12.0 <0.14.0`
+- `better-effect` `>=0.13.0 <0.14.0`
 - `better-result` `^3.0.0`
 - TypeScript `>=5.7.0`
 
@@ -168,11 +168,16 @@ owned by the application; the bridge never creates a replacement Runtime and
 never disposes the one passed to `BetterAuthHooks.make`:
 
 ```ts
+import { betterAuth } from 'better-auth'
 import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { BetterAuth } from 'better-effect-better-auth'
 import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
 import { Result } from 'better-result'
 
-const coreRuntime = await Runtime.make(CoreLive)
+// Database is an application Service and this live value is application-owned.
+const database = createApplicationDatabase()
+const coreValues = Layer.succeed(Database, database)
+const coreRuntime = await Runtime.make(coreValues)
 const AuthHooks = BetterAuthHooks.make('@app/BetterAuthHookContext', coreRuntime)
 
 class RequestMetadata extends Service<RequestMetadata>()('@app/RequestMetadata') {
@@ -193,8 +198,13 @@ const requestAware = AuthHooks.middleware(
 const rawAuth = betterAuth({
   hooks: { before: requestAware }
 })
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const appRuntime = await Runtime.make(Layer.merge(coreValues, Auth.layer))
 ```
 
+`coreValues` is a value Layer, so both Runtimes receive the same
+application-owned Service instance. Do not pass an acquiring or scoped `CoreLive`
+to multiple Runtimes: each Runtime would acquire and release its own resource.
 The `layer` factory runs once for each Better Auth middleware invocation. Its
 Layer is merged with the execution-scoped `AuthHooks.Context` Layer, so
 services it provides are available to the hook Program and its requirements
@@ -202,6 +212,19 @@ are checked against the core Runtime. Scoped resources in that Layer belong to
 the invocation and are released when the execution closes. Better Auth still
 owns hook matching, plugin configuration, background work, authentication,
 cookies, sessions, adapters, and its Web-standard handler.
+
+Stop accepting requests before shutdown, then dispose the Better Auth Runtime,
+dispose the core Runtime, and close the shared resource last:
+
+```ts
+await appRuntime.dispose()
+await coreRuntime.dispose()
+await database.close()
+```
+
+`Layer.succeed` does not transfer disposal of a value to a Runtime. Hook
+Programs should depend on core services rather than the Better Auth Service
+itself, avoiding an Auth hook → Runtime → Auth cycle.
 
 A hook callback receives the original Better Auth middleware context. The same
 reference is available to deeper Programs through `AuthHooks.Context`:

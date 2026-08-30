@@ -21,7 +21,7 @@ bun add better-effect-better-auth better-auth better-effect better-result
 ```
 
 The package is ESM-only. Its v0.1 peer matrix is `better-auth` `^1.7.0`,
-`better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
+`better-effect` `>=0.13.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
 `>=5.7.0`. These dependencies remain owned by the application.
 
 ## Effectful Better Auth service
@@ -101,8 +101,10 @@ public `createAuthMiddleware` contract to a caller-owned `Runtime`. The bridge
 never creates or disposes that Runtime:
 
 ```ts
+import { betterAuth } from 'better-auth'
 import { APIError } from 'better-auth/api'
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { BetterAuth } from 'better-effect-better-auth'
 import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
 import { Result, TaggedError } from 'better-result'
 
@@ -110,7 +112,15 @@ class RegistrationDenied extends TaggedError('@app/RegistrationDenied')<{
   readonly message: string
 }> {}
 
-const coreRuntime = await Runtime.make(CoreLive)
+// Database and RegistrationPolicy are application Services. These values are
+// created and owned by the application, not acquired by either Runtime.
+const database = createApplicationDatabase()
+const registrationPolicy = createRegistrationPolicy(database)
+const coreValues = Layer.merge(
+  Layer.succeed(Database, database),
+  Layer.succeed(RegistrationPolicy, registrationPolicy)
+)
+const coreRuntime = await Runtime.make(coreValues)
 const AuthHooks = BetterAuthHooks.make('@app/BetterAuthHookContext', coreRuntime)
 
 const rawAuth = betterAuth({
@@ -135,14 +145,18 @@ const rawAuth = betterAuth({
     )
   }
 })
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const appRuntime = await Runtime.make(Layer.merge(coreValues, Auth.layer))
 ```
 
-`CoreLive` and `RegistrationPolicy` above are application services supplied by
-the existing Runtime. Construct the core Runtime before constructing Better Auth,
-and keep hook Programs dependent on core services rather than the Better Auth
-Service itself; this avoids an Auth hook → Runtime → Auth cycle. The bridge does
-not create, replace, or dispose the caller-owned Runtime, and it does not own the
-Better Auth instance. A hook callback receives the exact Better Auth context, and
+`coreValues` is deliberately a value Layer: both Runtimes receive the same
+application-owned Service instances. Do not pass an acquiring or scoped
+`CoreLive` to multiple Runtimes, because each Runtime would own a separate
+acquisition and release. Keep hook Programs dependent on core services rather
+than the Better Auth Service itself; this avoids an Auth hook → Runtime → Auth
+cycle. The bridge does not create, replace, or dispose either caller-owned
+Runtime, and it does not own the Better Auth instance. A hook callback receives
+the exact Better Auth context, and
 deeper Programs can access the same reference through the execution-scoped
 `AuthHooks.Context` Service:
 
@@ -170,6 +184,20 @@ Runtime-owned shutdown signal remains separate and is available through
 `CurrentRuntimeAbortSignal`. Cancellation remains cooperative; cleanup still
 belongs to the execution Scope. Direct server-side calls without a request run
 without an invented signal.
+
+Shutdown ordering is application-owned too: stop accepting requests, then close
+the Runtime that serves Better Auth, close the core Runtime, and only then close
+the shared live resource. `Layer.succeed` does not register a disposer for that
+value:
+
+```ts
+await appRuntime.dispose()
+await coreRuntime.dispose()
+await database.close()
+```
+
+This ordering prevents either Runtime or an in-flight hook from observing a
+closed shared resource.
 
 A middleware may also install a typed Layer for one Better Auth invocation. The
 factory runs once per invocation, receives the original context, and its Layer

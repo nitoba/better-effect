@@ -20,7 +20,7 @@ const expectedExports = {
 
 const expectedPeers = {
   'better-auth': '^1.7.0',
-  'better-effect': '>=0.12.0 <0.14.0',
+  'better-effect': '>=0.13.0 <0.14.0',
   'better-result': '^3.0.0',
   typescript: '>=5.7.0'
 } as const satisfies Record<string, string>

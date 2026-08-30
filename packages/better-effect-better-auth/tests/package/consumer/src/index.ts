@@ -1,9 +1,9 @@
 import { betterAuth, type BetterAuthPlugin } from 'better-auth'
-import { createAuthEndpoint } from 'better-auth/api'
+import { APIError, createAuthEndpoint } from 'better-auth/api'
 import { memoryAdapter } from 'better-auth/adapters/memory'
 import { admin } from 'better-auth/plugins'
-import { Effect, Layer, type Runtime } from 'better-effect'
-import { Result } from 'better-result'
+import { Effect, Layer, Service, type Runtime } from 'better-effect'
+import { Result, TaggedError } from 'better-result'
 import { BetterAuthHooks, type BetterAuthMiddlewareContext } from 'better-effect-better-auth/hooks'
 import {
   BetterAuth,
@@ -17,6 +17,20 @@ type Assert<Condition extends true> = Condition
 type IsAssignable<From, To> = [From] extends [To] ? true : false
 type IsAny<Value> = 0 extends 1 & Value ? true : false
 type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false
+
+class HookPolicy extends Service<HookPolicy>()('@consumer/HookPolicy') {}
+class HookRequest extends Service<HookRequest>()('@consumer/HookRequest') {
+  readonly requestId!: string
+}
+class HookDenied extends TaggedError('@consumer/HookDenied')<{
+  readonly message: string
+}> {}
+
+type HookPolicyInstance = InstanceType<typeof HookPolicy>
+type HookRequestInstance = InstanceType<typeof HookRequest>
+
+type _HookPolicyIsNotAny = Assert<IsAny<HookPolicyInstance> extends false ? true : false>
+type _HookRequestIsNotUnknown = Assert<IsUnknown<HookRequestInstance> extends false ? true : false>
 
 const releaseGatePlugin = () =>
   ({
@@ -113,6 +127,55 @@ const hookMiddleware = Hooks.middleware(() =>
   })
 )
 
+declare const runtimeWithPolicy: Runtime<HookPolicyInstance>
+const HooksWithPolicy = BetterAuthHooks.make('@consumer/HookContextWithPolicy', runtimeWithPolicy)
+const layeredHook = HooksWithPolicy.middleware(
+  (context) =>
+    Effect.fn(async function* () {
+      const policy = yield* HookPolicy
+      const request = yield* HookRequest
+      type _Policy = Assert<IsAssignable<typeof policy, HookPolicyInstance>>
+      type _Request = Assert<IsAssignable<typeof request, HookRequestInstance>>
+      return Result.ok({ context: { path: `${context.path}:${request.requestId}` } })
+    }),
+  {
+    layer: (context) => {
+      type _LayerContext = Assert<IsAssignable<typeof context, BetterAuthMiddlewareContext>>
+      return Layer.succeed(HookRequest, HookRequest.of({ requestId: context.path ?? 'unknown' }))
+    }
+  }
+)
+
+const failedHook = HooksWithPolicy.middleware(
+  () =>
+    Effect.fn(async function* () {
+      yield* HookPolicy
+      return Result.err(new HookDenied({ message: 'denied' }))
+    }),
+  {
+    onFailure: (failure, context) => {
+      type _Failure = Assert<IsAssignable<typeof failure, HookDenied>>
+      type _FailureContext = Assert<IsAssignable<typeof context, BetterAuthMiddlewareContext>>
+      return new APIError('FORBIDDEN', {
+        code: failure._tag,
+        message: failure.message
+      })
+    }
+  }
+)
+
+const missingHookRuntime: Runtime<AuthInstance> = runtime
+const MissingHooks = BetterAuthHooks.make('@consumer/MissingHookContext', missingHookRuntime)
+const needsPolicy = () =>
+  Effect.fn(async function* () {
+    yield* HookPolicy
+    return Result.ok()
+  })
+// @ts-expect-error packed declarations must reject a hook requirement absent from the Runtime.
+MissingHooks.middleware(needsPolicy)
+
 void authLayer
 void runtime.run(program)
 void hookMiddleware
+void layeredHook
+void failedHook

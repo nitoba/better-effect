@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { APIError } from 'better-auth/api'
 import {
   CurrentAbortSignal,
+  CurrentRuntimeAbortSignal,
   Effect,
   Layer,
   Runtime,
@@ -25,6 +26,13 @@ class RequestMetadata extends Service<RequestMetadata>()('@hooks/RequestMetadata
 }
 
 class FailingService extends Service<FailingService>()('@hooks/FailingService') {}
+
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- tests need to inspect arbitrary rejection causes.
+const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
+  promise.then(
+    () => undefined,
+    (cause) => cause
+  )
 describe('BetterAuthHooks', () => {
   test('runs each middleware call in an isolated Context scope without owning the Runtime', async () => {
     const runtime = await Runtime.make(Layer.empty)
@@ -290,6 +298,126 @@ describe('BetterAuthHooks', () => {
     const output = await pending
     expect(output).toEqual({ context: { cancelled: true } })
     await runtime.dispose()
+  })
+
+  test('preserves program and failure-mapper defect identity', async () => {
+    const runtime = await Runtime.make(Layer.empty)
+    const hooks = BetterAuthHooks.make('@test/DefectIdentity', runtime)
+    const programSyncDefect = new Error('program sync defect')
+    const programRejectedDefect = new Error('program rejected defect')
+    const mapperSyncDefect = new Error('mapper sync defect')
+    const mapperRejectedDefect = new Error('mapper rejected defect')
+    const unsafeProgram = (run: () => void | Promise<never>) => {
+      const unchecked: unknown = run
+      // SAFETY: This intentionally models a JavaScript caller supplying a Program whose body defects before Result runs.
+      // oxlint-disable-next-line anti-slop/no-widen-then-assert -- tests intentionally cross the nominal Program boundary.
+      return unchecked as Effect.Program<void, never, never>
+    }
+
+    const programSyncMiddleware = hooks.middleware(() =>
+      unsafeProgram(() => {
+        throw programSyncDefect
+      })
+    )
+    const programRejectedMiddleware = hooks.middleware(() =>
+      unsafeProgram(() => Promise.reject(programRejectedDefect))
+    )
+    const typedFailureProgram = () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.err(new Denied({ message: 'mapper failure' }))
+      })
+    const mapperSyncMiddleware = hooks.middleware(() => typedFailureProgram(), {
+      onFailure: () => {
+        throw mapperSyncDefect
+      }
+    })
+    const mapperRejectedMiddleware = hooks.middleware(() => typedFailureProgram(), {
+      onFailure: () => Promise.reject(mapperRejectedDefect)
+    })
+
+    try {
+      expect(await captureRejection(programSyncMiddleware({}))).toBe(programSyncDefect)
+      expect(await captureRejection(programRejectedMiddleware({}))).toBe(programRejectedDefect)
+      expect(await captureRejection(mapperSyncMiddleware({}))).toBe(mapperSyncDefect)
+      expect(await captureRejection(mapperRejectedMiddleware({}))).toBe(mapperRejectedDefect)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('preserves an already-aborted request signal reason and identity', async () => {
+    const runtime = await Runtime.make(Layer.empty)
+    const hooks = BetterAuthHooks.make('@test/AlreadyAbortedSignal', runtime)
+    const reason = new Error('request already cancelled')
+    const controller = new AbortController()
+    controller.abort(reason)
+    let observedSignal: AbortSignal | undefined
+
+    const middleware = hooks.middleware(() =>
+      Effect.fn(async function* () {
+        const signal = yield* CurrentAbortSignal
+        observedSignal = signal
+        return Result.ok({
+          context: {
+            aborted: signal.aborted,
+            reason: signal.reason
+          }
+        })
+      })
+    )
+    const request = new Request('https://example.test/already-cancelled', {
+      signal: controller.signal
+    })
+
+    try {
+      const output = await middleware({ request })
+      expect(output).toEqual({ context: { aborted: true, reason } })
+      expect(observedSignal).toBe(request.signal)
+      expect(observedSignal?.reason).toBe(reason)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('cancels active hooks on Runtime shutdown and closes their execution Scope', async () => {
+    const runtime = await Runtime.make(Layer.empty)
+    const hooks = BetterAuthHooks.make('@test/ShutdownCancellation', runtime)
+    let resolveStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let releaseStatus: string | undefined
+
+    const middleware = hooks.middleware(
+      () =>
+        Effect.fn(async function* () {
+          yield* RequestMetadata
+          const shutdownSignal = yield* CurrentRuntimeAbortSignal
+          resolveStarted()
+          await new Promise<void>((resolve) => {
+            shutdownSignal.addEventListener('abort', () => resolve(), { once: true })
+          })
+          return Result.ok({ context: { shutdown: shutdownSignal.aborted } })
+        }),
+      {
+        layer: () =>
+          Layer.scoped(
+            RequestMetadata,
+            () => RequestMetadata.of({ id: 'shutdown' }),
+            (_metadata, outcome) => {
+              releaseStatus = outcome.status
+            }
+          )
+      }
+    )
+
+    const pending = middleware({})
+    await started
+    await runtime.dispose({ gracePeriod: 0, abortAfterGracePeriod: true })
+
+    expect(await pending).toEqual({ context: { shutdown: true } })
+    expect(releaseStatus).toBe('success')
   })
 
   test('closes the execution Scope before resolving the middleware', async () => {
