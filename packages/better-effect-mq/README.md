@@ -159,9 +159,11 @@ constructors provide an operation-level contract without a user receiver and
 remain accepted; that does not make arbitrary callback closures detachable.
 Do not pass an arbitrary class with closure-dependent, private, accessor, proxy,
 or other brand-sensitive behavior as a Job codec; use a portable `Codec.*`
-codec or a structurally safe class instead. The copied receiver state and
-prototype behavior are detached and frozen, so later source mutation cannot
-change a Job descriptor.
+codec or a structurally safe class instead. Package-created `Codec.*` values use
+an internal process-local capability; values from another package copy take the
+structural validation route instead. The copied receiver state and prototype
+behavior are detached and frozen, so later source mutation cannot change a Job
+descriptor.
 
 ```ts
 import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'

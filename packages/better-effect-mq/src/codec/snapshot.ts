@@ -1,39 +1,41 @@
-// Internal marker for codec values produced by this package. Job definitions may
+// Internal capability for codec values produced by this package. Job definitions may
 // retain their operation-level contract without treating the operations as
-// user-owned receiver state.
+// user-owned receiver state. The capability is deliberately not represented by a
+// property: a duplicated package copy must take the structural snapshot path.
 
-// oxlint-disable anti-slop/no-runtime-typeof -- this marker crosses an internal JavaScript boundary.
-// oxlint-disable anti-slop/no-unknown-parameters -- marker checks are internal untyped boundaries.
+// oxlint-disable anti-slop/no-runtime-typeof -- this capability crosses an internal JavaScript boundary.
+// oxlint-disable anti-slop/no-unknown-parameters -- capability checks are internal untyped boundaries.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- type assertions follow callable checks.
-
-export const codecSnapshotTypeId = Symbol.for('better-effect-mq/CodecSnapshot')
 
 type CodecOperation = (...arguments_: never[]) => void
 
+type CodecSnapshot = {
+  readonly encode: CodecOperation
+  readonly decode: CodecOperation
+}
+
+const codecSnapshots = new WeakMap<object, CodecSnapshot>()
 const codecSnapshotOperations = new WeakSet<CodecOperation>()
 
 export const markCodecSnapshot = <Value extends object>(value: Value): Value => {
   const encode = Object.getOwnPropertyDescriptor(value, 'encode')?.value
   const decode = Object.getOwnPropertyDescriptor(value, 'decode')?.value
 
-  if (typeof encode === 'function') {
-    // SAFETY: The typeof check establishes the WeakSet key's callable shape.
-    codecSnapshotOperations.add(encode as CodecOperation)
-    Object.freeze(encode)
+  if (typeof encode !== 'function' || typeof decode !== 'function') {
+    throw new TypeError('Codec snapshots require callable encode and decode operations')
   }
 
-  if (typeof decode === 'function') {
-    // SAFETY: The typeof check establishes the WeakSet key's callable shape.
-    codecSnapshotOperations.add(decode as CodecOperation)
-    Object.freeze(decode)
-  }
-
-  Object.defineProperty(value, codecSnapshotTypeId, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false
+  // SAFETY: The typeof checks establish the callable shape at the package constructor boundary.
+  const snapshot = Object.freeze({
+    encode: encode as CodecOperation,
+    decode: decode as CodecOperation
   })
+
+  codecSnapshots.set(value, snapshot)
+  codecSnapshotOperations.add(snapshot.encode)
+  codecSnapshotOperations.add(snapshot.decode)
+  Object.freeze(encode)
+  Object.freeze(decode)
 
   return Object.freeze(value)
 }
@@ -44,8 +46,17 @@ export const isMarkedCodecSnapshot = (value: unknown): boolean => {
     return false
   }
 
+  const snapshot = codecSnapshots.get(value)
+
+  if (snapshot === undefined) {
+    return false
+  }
+
   try {
-    return Object.getOwnPropertyDescriptor(value, codecSnapshotTypeId)?.value === true
+    const encode = Object.getOwnPropertyDescriptor(value, 'encode')?.value
+    const decode = Object.getOwnPropertyDescriptor(value, 'decode')?.value
+
+    return encode === snapshot.encode && decode === snapshot.decode
   } catch {
     return false
   }
