@@ -54,26 +54,33 @@ export function betterAuthService<const Tag extends string, Auth extends BetterA
 ): BetterAuthServiceToken<Tag, Auth> {
   type Instance = BetterAuthServiceInstance<Tag, Auth>
 
-  class AuthService extends Service<Instance>()(tag) {
-    declare readonly api: BetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>
-    declare readonly session: BetterAuthSessionApi<Auth>
-    declare readonly handle: (
-      request: Request
-    ) => BetterAuthOperation<Response, BetterAuthFailure<Auth>>
-    declare readonly raw: Auth
-  }
+  const rawAuth = raw
+  const serviceApi = makeBetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>(rawAuth.api)
+  const serviceSession = makeBetterAuthSessionApi<Auth>(serviceApi)
+  const serviceHandle = (
+    request: Request
+  ): BetterAuthOperation<Response, BetterAuthFailure<Auth>> =>
+    fromBetterAuthPromise<Response, BetterAuthErrorCode<Auth>>(() => rawAuth.handler(request))
 
-  const api = makeBetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>(raw.api)
-  const session = makeBetterAuthSessionApi<Auth>(api)
-  const handle = (request: Request): BetterAuthOperation<Response, BetterAuthFailure<Auth>> =>
-    fromBetterAuthPromise<Response, BetterAuthErrorCode<Auth>>(() => raw.handler(request))
+  class AuthService extends Service<Instance>()(tag) {
+    readonly api: BetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>> = serviceApi
+    readonly session: BetterAuthSessionApi<Auth> = serviceSession
+    readonly handle: (request: Request) => BetterAuthOperation<Response, BetterAuthFailure<Auth>> =
+      serviceHandle
+    readonly raw: Auth = rawAuth
+
+    constructor() {
+      super()
+      Object.freeze(this)
+    }
+  }
 
   const value = AuthService.of(
     Object.freeze({
-      api,
-      session,
-      handle,
-      raw
+      api: serviceApi,
+      session: serviceSession,
+      handle: serviceHandle,
+      raw: rawAuth
     })
   )
   const layer = Layer.succeed(AuthService, value)

@@ -28,6 +28,8 @@ type AuthInstance = BetterAuthServiceInstance<'@app/Auth', typeof rawAuth>
 type OtherAuthInstance = BetterAuthServiceInstance<'@app/OtherAuth', typeof otherRawAuth>
 type Session = typeof rawAuth.$Infer.Session
 
+const constructed = new Auth()
+expectTypeOf(constructed).toEqualTypeOf<AuthInstance>()
 expectTypeOf(Auth.serviceTag).toEqualTypeOf<'@app/Auth'>()
 expectTypeOf(OtherAuth.serviceTag).toEqualTypeOf<'@app/OtherAuth'>()
 expectTypeOf<Layer.Provided<typeof Auth.layer>>().toEqualTypeOf<AuthInstance>()

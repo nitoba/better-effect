@@ -183,6 +183,45 @@ describe('BetterAuth.service', () => {
     await runtime.dispose()
   })
 
+  test('constructs a complete Service implementation usable through core Layers', async () => {
+    const raw = new FakeAuth()
+    const Auth = BetterAuth.service('@test/ConstructedAuth', raw)
+    const constructed = new Auth()
+    const direct = await execute(constructed.api.ping({ value: 'constructed' }))
+
+    expect(constructed.raw).toBe(raw)
+    expect(Object.isFrozen(constructed)).toBe(true)
+    expect(direct).toEqual(Result.ok({ value: 'constructed' }))
+
+    const runtime = await Runtime.make(Layer.succeed(Auth, constructed))
+
+    try {
+      const result = await runtime.run(
+        Effect.fn(async function* () {
+          const auth = yield* Auth
+          const session = yield* auth.session.get(new Headers())
+          const response = yield* auth.handle(new Request('https://example.test/constructed'))
+
+          return Result.ok({ auth, session, response })
+        })
+      )
+
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value.auth).toBe(constructed)
+        expect(result.value.session).toBe(null)
+        expect(raw.lastResponse).toBeDefined()
+
+        if (raw.lastResponse !== undefined) {
+          expect(result.value.response).toBe(raw.lastResponse)
+        }
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('keeps multiple Better Auth instances and Proxy caches isolated', async () => {
     const firstRaw = new FakeAuth()
     const secondRaw = new FakeAuth()
