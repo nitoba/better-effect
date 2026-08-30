@@ -8,6 +8,7 @@ import type {
   CompleteNextProgram,
   NextEffectContext,
   NextEffectOptions,
+  NextEffectRouteOptions,
   NextRouteHandler
 } from '../../src/next/types'
 
@@ -107,6 +108,33 @@ const responseHandler = http.handler(
   }
 )
 expectTypeOf(responseHandler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
+
+const responsePolicy = () => new Response('ok')
+const serializePolicy = () => null
+const conflictingRespondSerialize = {
+  respond: responsePolicy,
+  serialize: serializePolicy
+}
+const conflictingRespondOnSuccess = {
+  respond: responsePolicy,
+  onSuccess: responsePolicy
+}
+const conflictingSerializeOnSuccess = {
+  serialize: serializePolicy,
+  onSuccess: responsePolicy
+}
+// @ts-expect-error Route success policies are mutually exclusive.
+const invalidRespondSerialize: NextEffectRouteOptions<string, RouteContext> =
+  conflictingRespondSerialize
+// @ts-expect-error Route success policies are mutually exclusive.
+const invalidRespondOnSuccess: NextEffectRouteOptions<string, RouteContext> =
+  conflictingRespondOnSuccess
+// @ts-expect-error Route success policies are mutually exclusive.
+const invalidSerializeOnSuccess: NextEffectRouteOptions<string, RouteContext> =
+  conflictingSerializeOnSuccess
+void invalidRespondSerialize
+void invalidRespondOnSuccess
+void invalidSerializeOnSuccess
 
 const generatorHandler = http.gen(async function* (request, context) {
   const { id } = await context.params

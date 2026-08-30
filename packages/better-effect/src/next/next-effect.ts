@@ -26,6 +26,20 @@ import type {
   NextRouteHandler
 } from './types'
 
+const routeSuccessPolicyNames = ['respond', 'serialize', 'onSuccess'] as const
+
+const assertExclusiveRouteSuccessPolicy = (
+  options: NextEffectRouteOptions<unknown, object>
+): void => {
+  const configuredPolicies = routeSuccessPolicyNames.filter((name) => options[name] !== undefined)
+
+  if (configuredPolicies.length > 1) {
+    throw new TypeError(
+      `NextEffect route options must configure at most one success policy; received ${configuredPolicies.join(', ')}`
+    )
+  }
+}
+
 /** Run Result-valued Programs inside one Runtime boundary per Next request. */
 export class NextEffect<
   Provided extends AnyService = AnyService,
@@ -142,12 +156,11 @@ export class NextEffect<
     makeProgram: (request: Request, context: object) => AnyProgram,
     routeOptions: NextEffectRouteOptions<unknown, object>
   ): NextRouteHandler<object> {
+    assertExclusiveRouteSuccessPolicy(routeOptions)
+
     return async (request, context) => {
       const program = makeProgram(request, context)
-      const shouldSerialize =
-        routeOptions.serialize !== undefined &&
-        routeOptions.respond === undefined &&
-        routeOptions.onSuccess === undefined
+      const shouldSerialize = routeOptions.serialize !== undefined
       const effectiveProgram = shouldSerialize
         ? async () => {
             const result = await program()

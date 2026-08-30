@@ -141,18 +141,40 @@ export type NextEffectOptions<
 }
 
 /** Options for one typed route success policy. */
-export type NextEffectRouteOptions<A, Context extends object = NextEffectContext> = {
-  /** Handle the success value directly and return a native Response. */
-  readonly respond?: (value: A, request: Request, context: Context) => ResponseLike
-  /** Convert the success value to the JSON-safe body wrapped by WebEffect. */
-  readonly serialize?: (value: A, request: Request, context: Context) => WebJsonValue
-  /** Replace the shared success policy for this route. */
-  readonly onSuccess?: (
-    result: NextEffectSuccess<A>,
-    request: Request,
-    context: Context
-  ) => ResponseLike
-}
+type NextEffectRouteSuccessPolicy<A, Context extends object> =
+  | {
+      /** Handle the success value directly and return a native Response. */
+      readonly respond: (value: A, request: Request, context: Context) => ResponseLike
+      readonly serialize?: never
+      readonly onSuccess?: never
+    }
+  | {
+      readonly respond?: never
+      /** Convert the success value to the JSON-safe body wrapped by WebEffect. */
+      readonly serialize: (value: A, request: Request, context: Context) => WebJsonValue
+      readonly onSuccess?: never
+    }
+  | {
+      readonly respond?: never
+      readonly serialize?: never
+      /** Replace the shared success policy for this route. */
+      readonly onSuccess: (
+        result: NextEffectSuccess<A>,
+        request: Request,
+        context: Context
+      ) => ResponseLike
+    }
+  | {
+      /** Use the shared or default success policy for this route. */
+      readonly respond?: never
+      readonly serialize?: never
+      readonly onSuccess?: never
+    }
+
+export type NextEffectRouteOptions<
+  A,
+  Context extends object = NextEffectContext
+> = NextEffectRouteSuccessPolicy<A, Context>
 
 /** Service and Failure checks for a generator-created route Program. */
 export type NextGeneratorChecks<

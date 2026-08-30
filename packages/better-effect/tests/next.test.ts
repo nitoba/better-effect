@@ -303,3 +303,28 @@ test('NextEffect inherits WebEffect JSON success and redacted failure policies',
     await runtime.dispose()
   }
 })
+
+test('NextEffect rejects conflicting route success policies at runtime', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const http = NextEffect.make(runtime)
+  const program = Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok('ok')
+  })
+  const conflictingPolicies = [
+    { respond: () => new Response('ok'), serialize: () => null },
+    { respond: () => new Response('ok'), onSuccess: () => new Response('ok') },
+    { serialize: () => null, onSuccess: () => new Response('ok') }
+  ]
+
+  try {
+    for (const options of conflictingPolicies) {
+      // SAFETY: This test deliberately erases the exclusive policy union to model JavaScript input.
+      expect(() => http.handler(() => program, options as never)).toThrow(
+        'at most one success policy'
+      )
+    }
+  } finally {
+    await runtime.dispose()
+  }
+})
