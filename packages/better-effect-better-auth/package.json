@@ -1,7 +1,7 @@
 {
   "name": "better-effect-better-auth",
   "version": "0.1.0",
-  "description": "Typed Better Auth server error and package foundations for better-effect.",
+  "description": "Effect-like server integration between Better Auth and better-effect.",
   "keywords": [
     "auth",
     "better-auth",
