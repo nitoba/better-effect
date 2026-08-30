@@ -208,25 +208,57 @@ test('job definitions reject private-field codecs at definition time', () => {
   expect(JSON.stringify(error)).not.toContain('private')
 })
 
-test('job definitions reject closure-dependent codec methods', () => {
+test('job definitions reject arrow codecs with lexical receivers', () => {
+  const queue = Queue.define('arrow-codecs')
+
+  type ArrowPayload = { readonly value: string }
+
+  class ArrowCodec implements CodecType<ArrowPayload> {
+    readonly prefix = 'prefix'
+    readonly encode = ({ value }: ArrowPayload = { value: 'encoded' }) =>
+      Codec.json<ArrowPayload>().encode({ value: `${this.prefix}:${value}` })
+    readonly decode = (value: unknown) => Codec.json<ArrowPayload>().decode(value)
+  }
+
+  expectDefinitionError(() => queue.job('arrow', { version: 1, payload: new ArrowCodec() }))
+})
+
+test('job definitions preserve codec closures while detaching receiver state', async () => {
   const queue = Queue.define('closure-codecs')
   let prefix = 'outside'
-
-  class ClosureCodec {
-    encode(value: string) {
-      return Codec.string.encode(`${prefix}:${value}`)
-    }
-
-    decode(value: unknown) {
-      return Codec.string.decode(`${prefix}:${String(value)}`)
+  const shadowedCodec = {
+    string: {
+      encode: (value: string) => Codec.string.encode(`shadowed:${value}`),
+      decode: (value: unknown) => Codec.string.decode(`shadowed:${String(value)}`)
     }
   }
 
-  expectDefinitionError(() => queue.job('closure', { version: 1, payload: new ClosureCodec() }))
-  prefix = 'mutated'
+  {
+    const Codec = shadowedCodec
+
+    class ClosureCodec {
+      encode(value: string) {
+        return Codec.string.encode(`${prefix}:${value}`)
+      }
+
+      decode(value: unknown) {
+        return Codec.string.decode(`${prefix}:${String(value)}`)
+      }
+    }
+
+    const definition = queue.job('closure', { version: 1, payload: new ClosureCodec() })
+    prefix = 'mutated'
+
+    expect(unwrap(await Promise.resolve(definition.payload.encode('value')))).toBe(
+      'shadowed:mutated:value'
+    )
+    expect(unwrap(await Promise.resolve(definition.payload.decode('value')))).toBe(
+      'shadowed:mutated:value'
+    )
+  }
 })
 
-test('job definitions reject method default parameters closing over outer encode and decode values', () => {
+test('job definitions preserve default-parameter closures', async () => {
   const queue = Queue.define('default-closure-codecs')
   let encode = 'outer-encode'
   let decode = 'outer-decode'
@@ -247,21 +279,24 @@ test('job definitions reject method default parameters closing over outer encode
       return Codec.string.decode(value)
     }
   }
-  let descriptor: unknown
 
-  expectDefinitionError(() => {
-    descriptor = queue.job('default-closure', { version: 1, payload: codec })
+  const structuralDefinition = queue.job('default-closure', { version: 1, payload: codec })
+  const classDefinition = queue.job('default-closure-class', {
+    version: 1,
+    payload: new ClassCodec()
   })
-  expectDefinitionError(() => {
-    descriptor = queue.job('default-closure-class', {
-      version: 1,
-      payload: new ClassCodec()
-    })
-  })
-  expect(descriptor).toBeUndefined()
 
   encode = 'mutated-encode'
   decode = 'mutated-decode'
+
+  for (const definition of [structuralDefinition, classDefinition]) {
+    expect(
+      unwrap(await Promise.resolve(definition.payload.encode(undefined as unknown as string)))
+    ).toBe('mutated-encode')
+    expect(unwrap(await Promise.resolve(definition.payload.decode(undefined)))).toBe(
+      'mutated-decode'
+    )
+  }
 })
 
 test('job definitions preserve structurally safe method default parameters', async () => {
@@ -284,14 +319,12 @@ test('job definitions preserve structurally safe method default parameters', asy
   )
 })
 
-test('job definitions reject forged global codec snapshot markers and arbitrary closures', () => {
+test('job definitions do not trust forgeable codec snapshot markers', () => {
   const queue = Queue.define('forged-codecs')
 
   expect(Reflect.ownKeys(Codec.string)).toEqual(['encode', 'decode'])
-  let encoded = 'before-encode'
-  let decoded = 'before-decode'
-  const encode = Object.freeze(() => Result.ok(encoded))
-  const decode = Object.freeze(() => Result.ok(decoded))
+  const encode = Object.freeze(() => Result.ok('encoded'))
+  const decode = Object.freeze(() => Result.ok('decoded'))
   const forged = Object.freeze({
     [Symbol.for('better-effect-mq/CodecSnapshot')]: true,
     encode,
@@ -303,9 +336,6 @@ test('job definitions reject forged global codec snapshot markers and arbitrary 
     descriptor = queue.job('forged', { version: 1, payload: forged })
   })
   expect(descriptor).toBeUndefined()
-
-  encoded = 'after-encode'
-  decoded = 'after-decode'
 })
 
 test('job definitions reject unsupported and malicious codec receiver state without reading it', () => {

@@ -140,30 +140,29 @@ never participate in identity.
 
 At definition time, a codec's `encode` and `decode` methods are captured with a
 new frozen receiver. For a user-supplied structural or class codec, the Job
-boundary clones and freezes the relevant string-keyed own/prototype data
-properties, including ordinary prototype helpers, without retaining the source
-receiver or prototype graph. Receiver state must use finite primitives,
-`null`, `undefined`, or recursively plain records and arrays; callable state
-other than `encode`/`decode`, accessors, symbols, proxies, class instances,
-cycles, and oversized or unreadable graphs are rejected as
-`JobDefinitionError`.
+boundary clones and freezes the supported string-keyed own/prototype data graph,
+including ordinary prototype helpers, without retaining the source receiver or
+prototype graph. Receiver state must use finite primitives, `null`, `undefined`,
+or recursively plain records and arrays; callable state other than
+`encode`/`decode`, accessors, symbols, proxies, class instances, cycles, and
+oversized or unreadable graphs are rejected as `JobDefinitionError`.
 
-Because JavaScript has no general way to detach a method's lexical and private
-semantics, user methods are reconstructed only when their source is safely
-recognizable. Reconstruction carries method parameters/locals, `this`,
-`Codec`, `Result`, and a bounded set of standard globals; other lexical
-bindings are rejected rather than retained. Methods containing `super`, private names/brands, or `new.target`,
-methods with non-intrinsic mutable properties, and methods whose source cannot
-be reconstructed are rejected at definition time. The package's `Codec.*`
-constructors provide an operation-level contract without a user receiver and
-remain accepted; that does not make arbitrary callback closures detachable.
-Do not pass an arbitrary class with closure-dependent, private, accessor, proxy,
-or other brand-sensitive behavior as a Job codec; use a portable `Codec.*`
-codec or a structurally safe class instead. Package-created `Codec.*` values use
-an internal process-local capability; values from another package copy take the
-structural validation route instead. The copied receiver state and prototype
-behavior are detached and frozen, so later source mutation cannot change a Job
-descriptor.
+Codec operations themselves remain direct functions. Their lexical closures and
+default-parameter expressions therefore keep normal JavaScript behavior. Job
+does not clone external closure state; callers must treat captured state as
+callback behavior, not descriptor data. A later mutation of captured application
+state may consequently affect codec results, while mutation of the source
+receiver's supported fields or prototype helpers cannot. Methods containing
+`super`, private names/brands, or `new.target`, methods with non-intrinsic
+mutable properties, and methods whose source cannot be inspected are rejected
+because their receiver semantics cannot be safely detached. This is a narrow
+receiver-safety check, not a free-variable or closure restriction.
+
+The package's `Codec.*` constructors provide an operation-level contract without
+a user receiver and use a private process-local capability. Values from another
+package copy and all structural codecs still take the receiver-validation route;
+a forgeable global marker cannot bypass it. Use a portable `Codec.*` codec or a
+structurally safe class when receiver state is needed.
 
 ```ts
 import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'

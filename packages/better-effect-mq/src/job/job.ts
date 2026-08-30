@@ -9,7 +9,6 @@ import { types as nodeTypes } from 'node:util'
 
 import { Result, type Result as ResultType } from 'better-result'
 
-import { Codec as CodecValue } from '../codec'
 import type { Codec } from '../codec'
 import { isMarkedCodecOperation, isMarkedCodecSnapshot } from '../codec/snapshot'
 import {
@@ -657,15 +656,41 @@ const readFunctionSource = (value: unknown): string | undefined => {
   }
 }
 
-const hasPrivateSyntax = (source: string): boolean => /#[A-Za-z_$]/u.test(source)
+/**
+ * Check only syntax whose receiver semantics cannot survive detachment. This is
+ * deliberately not a free-variable or closure analysis: direct user functions
+ * retain their lexical environment when the Job invokes them with the snapshot receiver.
+ */
+const hasUnsafeMethodSyntax = (source: string): boolean => {
+  const tokens = tokenizeFunctionSource(source)
 
-const hasUnsafeMethodSyntax = (source: string): boolean =>
-  /\bsuper\b/u.test(source) ||
-  hasPrivateSyntax(source) ||
-  /\b(?:new\.target|constructor|WeakMap|WeakSet|eval|Function)\b/u.test(source)
+  if (tokens === undefined) {
+    return true
+  }
 
-const isArrowFunctionSource = (source: string): boolean =>
-  /^(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/u.test(source)
+  return (
+    tokens.some((token, index) => {
+      if (token.value === '#' && tokens[index + 1]?.identifier) {
+        return true
+      }
+
+      if (
+        token.value === 'new' &&
+        tokens[index + 1]?.value === '.' &&
+        tokens[index + 2]?.value === 'target'
+      ) {
+        return true
+      }
+
+      if (token.value !== 'super') {
+        return false
+      }
+
+      return tokens[index - 1]?.value !== '.' && tokens[index - 1]?.value !== '?.'
+    }) ||
+    (isArrowFunctionSource(tokens) && tokens.some((token) => token.value === 'this'))
+  )
+}
 
 const hasOnlyIntrinsicFunctionProperties = (
   // oxlint-disable-next-line anti-slop/no-object-parameters -- the value was narrowed to a callable object.
@@ -681,103 +706,6 @@ const hasOnlyIntrinsicFunctionProperties = (
 }
 
 type SourceToken = { readonly value: string; readonly identifier: boolean }
-
-const sourceKeywords = new Set([
-  'arguments',
-  'as',
-  'async',
-  'await',
-  'break',
-  'case',
-  'catch',
-  'class',
-  'const',
-  'continue',
-  'debugger',
-  'default',
-  'delete',
-  'do',
-  'else',
-  'export',
-  'extends',
-  'finally',
-  'for',
-  'from',
-  'function',
-  'if',
-  'import',
-  'in',
-  'instanceof',
-  'let',
-  'new',
-  'of',
-  'return',
-  'static',
-  'switch',
-  'throw',
-  'try',
-  'this',
-  'typeof',
-  'var',
-  'void',
-  'while',
-  'with',
-  'yield',
-  'true',
-  'false',
-  'null',
-  'undefined'
-])
-
-const sourceGlobals = new Set([
-  'Array',
-  'ArrayBuffer',
-  'BigInt',
-  'Boolean',
-  'DataView',
-  'Date',
-  'Error',
-  'EvalError',
-  'Float32Array',
-  'Float64Array',
-  'Infinity',
-  'Int8Array',
-  'Int16Array',
-  'Int32Array',
-  'JSON',
-  'Map',
-  'Math',
-  'NaN',
-  'Number',
-  'Object',
-  'Promise',
-  'RangeError',
-  'ReferenceError',
-  'Reflect',
-  'RegExp',
-  'Set',
-  'String',
-  'SyntaxError',
-  'Symbol',
-  'TypeError',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'Uint16Array',
-  'Uint32Array',
-  'URIError',
-  'WeakRef',
-  'decodeURIComponent',
-  'decodeURI',
-  'encodeURIComponent',
-  'encodeURI',
-  'globalThis',
-  'isFinite',
-  'isNaN',
-  'parseFloat',
-  'parseInt',
-  'queueMicrotask',
-  'structuredClone'
-])
 
 const isSourceIdentifierStart = (value: string): boolean => /^[A-Za-z_$]$/u.test(value)
 const isSourceIdentifierPart = (value: string): boolean => /^[A-Za-z0-9_$]$/u.test(value)
@@ -1013,75 +941,7 @@ const tokenizeFunctionSource = (source: string): readonly SourceToken[] | undefi
   return scanCode(false) ? tokens : undefined
 }
 
-const matchingOpenParen = (tokens: readonly SourceToken[], close: number): number | undefined => {
-  let depth = 0
-
-  for (let index = close; index >= 0; index -= 1) {
-    const token = tokens[index]?.value
-
-    if (token === ')') {
-      depth += 1
-    } else if (token === '(') {
-      depth -= 1
-
-      if (depth === 0) {
-        return index
-      }
-    }
-  }
-
-  return undefined
-}
-
-const matchingCloseParen = (tokens: readonly SourceToken[], open: number): number | undefined => {
-  let depth = 0
-
-  for (let index = open; index < tokens.length; index += 1) {
-    const token = tokens[index]?.value
-
-    if (token === '(') {
-      depth += 1
-    } else if (token === ')') {
-      depth -= 1
-
-      if (depth === 0) {
-        return index
-      }
-    }
-  }
-
-  return undefined
-}
-
-type SourceNameAnalysis = {
-  readonly declared: Set<string>
-  readonly ignored: Set<number>
-}
-
-type DelimiterDepth = {
-  paren: number
-  bracket: number
-  brace: number
-}
-
-const copyDelimiterDepth = (depth: DelimiterDepth): DelimiterDepth => ({ ...depth })
-
-const sameDelimiterDepth = (left: DelimiterDepth, right: DelimiterDepth): boolean =>
-  left.paren === right.paren && left.bracket === right.bracket && left.brace === right.brace
-
-const updateDelimiterDepth = (depth: DelimiterDepth, token: string): void => {
-  if (token === '(') depth.paren += 1
-  if (token === ')') depth.paren -= 1
-  if (token === '[') depth.bracket += 1
-  if (token === ']') depth.bracket -= 1
-  if (token === '{') depth.brace += 1
-  if (token === '}') depth.brace -= 1
-}
-
-const isClosingDelimiter = (token: string): boolean =>
-  token === ')' || token === ']' || token === '}'
-
-const nextSourceToken = (tokens: readonly SourceToken[], start: number): number => {
+const nextSourceTokenIndex = (tokens: readonly SourceToken[], start: number): number => {
   let index = start
 
   while (/^\s$/u.test(tokens[index]?.value ?? '')) {
@@ -1091,261 +951,70 @@ const nextSourceToken = (tokens: readonly SourceToken[], start: number): number 
   return index
 }
 
-const methodNameIndex = (tokens: readonly SourceToken[]): number | undefined => {
-  let index = nextSourceToken(tokens, 0)
+const isArrowFunctionSource = (tokens: readonly SourceToken[]): boolean => {
+  let index = nextSourceTokenIndex(tokens, 0)
 
   if (tokens[index]?.value === 'async') {
-    index = nextSourceToken(tokens, index + 1)
+    const next = nextSourceTokenIndex(tokens, index + 1)
+
+    if (tokens[next]?.value === '=>') {
+      return true
+    }
+
+    index = next
   }
 
-  if (tokens[index]?.value === '*') {
-    index = nextSourceToken(tokens, index + 1)
+  const next = nextSourceTokenIndex(tokens, index + 1)
+
+  if (tokens[index]?.identifier && tokens[next]?.value === '=>') {
+    return true
   }
 
-  const next = nextSourceToken(tokens, index + 1)
-
-  return tokens[index]?.identifier && tokens[next]?.value === '(' ? index : undefined
-}
-
-const functionParameterRange = (
-  tokens: readonly SourceToken[]
-): { readonly start: number; readonly end: number; readonly single?: number } | undefined => {
-  const arrow = tokens.findIndex((token) => token.value === '=>')
-
-  if (arrow !== -1) {
-    const previous = tokens[arrow - 1]
-
-    if (previous?.value === ')') {
-      const open = matchingOpenParen(tokens, arrow - 1)
-
-      return open === undefined ? undefined : { start: open + 1, end: arrow - 1 }
-    }
-
-    return previous?.identifier ? { start: arrow - 1, end: arrow, single: arrow - 1 } : undefined
-  }
-
-  const open = tokens.findIndex((token) => token.value === '(')
-
-  if (open === -1) {
-    return undefined
-  }
-
-  const close = matchingCloseParen(tokens, open)
-
-  return close === undefined ? undefined : { start: open + 1, end: close }
-}
-
-const collectParameterNames = (
-  tokens: readonly SourceToken[],
-  start: number,
-  end: number,
-  declared: Set<string>
-): void => {
-  const depth: DelimiterDepth = { paren: 0, bracket: 0, brace: 0 }
-  let defaultDepth: DelimiterDepth | undefined
-
-  for (let index = start; index < end; index += 1) {
-    const token = tokens[index]
-
-    if (token === undefined) {
-      continue
-    }
-
-    if (defaultDepth !== undefined) {
-      const boundary = token.value === ',' && sameDelimiterDepth(depth, defaultDepth)
-      const closesPattern = isClosingDelimiter(token.value)
-      const nextDepth = copyDelimiterDepth(depth)
-      updateDelimiterDepth(nextDepth, token.value)
-      const leavesPattern =
-        closesPattern &&
-        (nextDepth.paren < defaultDepth.paren ||
-          nextDepth.bracket < defaultDepth.bracket ||
-          nextDepth.brace < defaultDepth.brace)
-
-      if (boundary || leavesPattern) {
-        defaultDepth = undefined
-      } else {
-        Object.assign(depth, nextDepth)
-        continue
-      }
-
-      Object.assign(depth, nextDepth)
-      continue
-    }
-
-    if (token.value === '=') {
-      defaultDepth = copyDelimiterDepth(depth)
-      continue
-    }
-
-    if (token.identifier && tokens[index + 1]?.value !== ':') {
-      declared.add(token.value)
-    }
-
-    updateDelimiterDepth(depth, token.value)
-  }
-}
-
-const collectDeclaredSourceNames = (tokens: readonly SourceToken[]): SourceNameAnalysis => {
-  const declared = new Set<string>()
-  const ignored = new Set<number>()
-  const method = methodNameIndex(tokens)
-
-  if (method !== undefined) {
-    ignored.add(method)
-  }
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]
-    const next = tokens[index + 1]
-
-    if (token?.identifier && (token.value === 'function' || token.value === 'class')) {
-      if (next?.identifier) {
-        declared.add(next.value)
-      }
-    }
-
-    if (
-      token?.identifier &&
-      (token.value === 'const' || token.value === 'let' || token.value === 'var')
-    ) {
-      for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-        const current = tokens[cursor]
-
-        if (
-          current?.value === '=' ||
-          current?.value === ';' ||
-          current?.value === 'of' ||
-          current?.value === 'in'
-        ) {
-          break
-        }
-
-        if (current?.identifier && current.value !== 'of' && current.value !== 'in') {
-          declared.add(current.value)
-        }
-      }
-    }
-
-    if (token?.identifier && token.value === 'catch') {
-      const open = tokens.findIndex(
-        (candidate, candidateIndex) => candidateIndex > index && candidate.value === '('
-      )
-      const close =
-        open === -1
-          ? -1
-          : tokens.findIndex(
-              (candidate, candidateIndex) => candidateIndex > open && candidate.value === ')'
-            )
-
-      if (open !== -1 && close !== -1) {
-        collectParameterNames(tokens, open + 1, close, declared)
-      }
-    }
-  }
-
-  const parameters = functionParameterRange(tokens)
-
-  if (parameters?.single !== undefined) {
-    const parameter = tokens[parameters.single]
-
-    if (parameter?.identifier) {
-      declared.add(parameter.value)
-    }
-  } else if (parameters !== undefined) {
-    collectParameterNames(tokens, parameters.start, parameters.end, declared)
-  }
-
-  return { declared, ignored }
-}
-
-const hasOnlyDetachableSourceNames = (source: string): boolean => {
-  const tokens = tokenizeFunctionSource(source)
-
-  if (tokens === undefined) {
+  if (tokens[index]?.value !== '(') {
     return false
   }
 
-  const names = collectDeclaredSourceNames(tokens)
+  let depth = 0
 
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index]?.value
 
-    if (!token?.identifier || names.ignored.has(index)) {
-      continue
+    if (token === '(') {
+      depth += 1
+    } else if (token === ')') {
+      depth -= 1
+
+      if (depth === 0) {
+        return tokens[nextSourceTokenIndex(tokens, index + 1)]?.value === '=>'
+      }
     }
-
-    const previous = tokens[index - 1]?.value
-    const next = tokens[index + 1]?.value
-
-    if (
-      names.declared.has(token.value) ||
-      sourceKeywords.has(token.value) ||
-      sourceGlobals.has(token.value) ||
-      token.value === 'Codec' ||
-      token.value === 'Result' ||
-      previous === '.' ||
-      previous === '?.' ||
-      next === ':'
-    ) {
-      continue
-    }
-
-    return false
   }
 
-  return true
+  return false
 }
 
-const cloneFunction = (value: unknown, key: string): CodecMethod | undefined => {
-  if (isProxyValue(value)) {
-    return undefined
+/**
+ * Validate only the callable's receiver-sensitive surface. The function itself
+ * is retained so its lexical closures and default expressions keep JavaScript's
+ * normal behavior; only its dynamic `this` is redirected to the detached receiver.
+ */
+const isSafeCodecMethod = (value: unknown): value is CodecMethod => {
+  if (isProxyValue(value) || !isCallable(value)) {
+    return false
   }
 
   const source = readFunctionSource(value)
 
-  if (
-    source === undefined ||
-    /^class\b/u.test(source) ||
-    hasUnsafeMethodSyntax(source) ||
-    !hasOnlyDetachableSourceNames(source) ||
-    !isCallable(value) ||
-    !hasOnlyIntrinsicFunctionProperties(value)
-  ) {
-    return undefined
-  }
-
-  if (isArrowFunctionSource(source) && /\b(?:this|arguments)\b/u.test(source)) {
-    return undefined
-  }
-
-  const expressions = [`(${source})`, `({${source}})[${JSON.stringify(key)}]`]
-
-  for (const expression of expressions) {
-    try {
-      // oxlint-disable-next-line no-new-func -- source reconstruction is the explicit boundary for detachable user methods.
-      // oxlint-disable-next-line typescript/no-implied-eval -- source reconstruction is the explicit boundary for detachable user methods.
-      const factory = new Function(
-        'Codec',
-        'Result',
-        `"use strict"; return ${expression}`
-      ) as unknown as (codec: typeof CodecValue, result: typeof Result) => unknown
-      const clone = factory(CodecValue, Result)
-
-      if (isCallable(clone)) {
-        return Object.freeze(clone as CodecMethod)
-      }
-    } catch {
-      // Try the alternate function syntax before rejecting the definition.
-    }
-  }
-
-  return undefined
+  return (
+    source !== undefined &&
+    !/^class\b/u.test(source) &&
+    !hasUnsafeMethodSyntax(source) &&
+    hasOnlyIntrinsicFunctionProperties(value)
+  )
 }
 
 const snapshotReceiverMethod = (
   value: unknown,
-  key: string,
   context: ReceiverSnapshotContext
 ): ReceiverValueSnapshot => {
   if (!isCallable(value)) {
@@ -1362,7 +1031,7 @@ const snapshotReceiverMethod = (
     return method === undefined ? { ok: false } : { ok: true, value: method }
   }
 
-  const method = cloneFunction(value, key)
+  const method = isSafeCodecMethod(value) ? value : undefined
   context.methods.set(value, method)
 
   return method === undefined ? { ok: false } : { ok: true, value: method }
@@ -1428,11 +1097,13 @@ const snapshotReceiverPrototype = (
 
       if (key === 'constructor') {
         const constructor = readDataDescriptor(current, key)
+        const constructorSource =
+          constructor.status === 'found' ? readFunctionSource(constructor.value) : undefined
 
         if (
           constructor.status !== 'found' ||
           !isCallable(constructor.value) ||
-          (readFunctionSource(constructor.value) ?? '').includes('#')
+          (constructorSource !== undefined && hasUnsafeMethodSyntax(constructorSource))
         ) {
           return undefined
         }
@@ -1451,7 +1122,7 @@ const snapshotReceiverPrototype = (
       }
 
       const value = isCallable(descriptor.value)
-        ? snapshotReceiverMethod(descriptor.value, key, context)
+        ? snapshotReceiverMethod(descriptor.value, context)
         : snapshotReceiverValue(descriptor.value, context, 0)
 
       if (!value.ok) {
@@ -1491,8 +1162,8 @@ const snapshotCodecReceiver = (
     propertyCount: 0
   }
   const ownEntries: ReceiverPrototypeEntry[] = []
-  const encodeSnapshot = snapshotReceiverMethod(encode, 'encode', context)
-  const decodeSnapshot = snapshotReceiverMethod(decode, 'decode', context)
+  const encodeSnapshot = snapshotReceiverMethod(encode, context)
+  const decodeSnapshot = snapshotReceiverMethod(decode, context)
 
   if (!encodeSnapshot.ok || !decodeSnapshot.ok) {
     return undefined
