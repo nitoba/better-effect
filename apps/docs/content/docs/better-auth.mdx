@@ -69,26 +69,23 @@ Every endpoint visible on the concrete Better Auth instance is available under
 `auth.api` with the same inferred input and output types:
 
 ```ts
-const auth = yield * Auth
-
-const data =
-  yield *
-  auth.api.getSession({
+const program = Effect.fn(async function* () {
+  const auth = yield* Auth
+  const data = yield* auth.api.getSession({
     headers: request.headers
   })
-const response =
-  yield *
-  auth.api.getSession.asResponse({
+  const response = yield* auth.api.getSession.asResponse({
     headers: request.headers
   })
-const withHeaders =
-  yield *
-  auth.api.signInEmail.withHeaders({
+  const withHeaders = yield* auth.api.signInEmail.withHeaders({
     body: {
       email: 'ada@example.com',
       password: 'a-password'
     }
   })
+
+  return Result.ok({ data, response, withHeaders })
+})
 ```
 
 The normal mode returns the endpoint's data, `.asResponse` returns the Web
@@ -106,8 +103,20 @@ but fails with `Unauthenticated` when no session is present. Neither helper
 creates a session or changes Better Auth's cookie behavior.
 
 ```ts
-const optional = yield * auth.session.get(request)
-const required = yield * auth.session.require(request)
+const readSessions = (request: Request) =>
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const optional = yield* auth.session.get(request)
+    const required = yield* auth.session.require(request)
+
+    return Result.ok({ optional, required })
+  })
+
+const sessionRuntime = await Runtime.make(Auth.layer)
+const sessionResult = await sessionRuntime.run(
+  readSessions(new Request('http://localhost:3000/api/auth/get-session'))
+)
+await sessionRuntime.dispose()
 ```
 
 Plugin-added user and session fields are preserved when the Service is created
@@ -161,10 +170,45 @@ throws and rejected non-API errors become `better-result`'s
 `UnhandledException`. `Unauthenticated` is reserved for `session.require`.
 
 For explicit application handling, match `BetterAuthApiError` by `_tag`,
-`code`, and `statusCode`, or translate it to a domain failure at your own
-boundary. Do not log `body`, `headers`, or `cause` indiscriminately: those
-fields can contain cookies, tokens, request data, or adapter details even
-though the error's serialized form redacts them.
+`code`, and `statusCode`, then translate it to a domain failure at your own
+boundary:
+
+```ts
+import { BetterAuthApiError, Unauthenticated } from 'better-effect-better-auth'
+
+type DomainFailure =
+  | { readonly _tag: 'LoginRequired' }
+  | { readonly _tag: 'InvalidCredentials' }
+  | {
+      readonly _tag: 'AuthProviderFailure'
+      readonly code: string | undefined
+      readonly statusCode: number
+    }
+
+const toDomainFailure = (failure: BetterAuthApiError | Unauthenticated): DomainFailure => {
+  if (failure._tag === 'Unauthenticated') {
+    return { _tag: 'LoginRequired' }
+  }
+
+  if (
+    failure._tag === 'BetterAuthApiError' &&
+    failure.code === 'INVALID_EMAIL_OR_PASSWORD' &&
+    failure.statusCode === 401
+  ) {
+    return { _tag: 'InvalidCredentials' }
+  }
+
+  return {
+    _tag: 'AuthProviderFailure',
+    code: failure.code,
+    statusCode: failure.statusCode
+  }
+}
+```
+
+Do not log `body`, `headers`, or `cause` indiscriminately: those fields can
+contain cookies, tokens, request data, or adapter details even though the
+error's serialized form redacts them.
 
 `auth.raw` is an escape hatch for Better Auth's `$context`, `$ERROR_CODES`,
 options, endpoint metadata, or another API the adapter intentionally does not
@@ -174,20 +218,43 @@ reinterpret. Normal data, responses, headers, and cookies do not require
 ## Testing and limits
 
 Use ordinary `better-effect` Layers for local replacements rather than module
-mocking or global resets:
+mocking or global resets. This executable example replaces only the handler:
 
 ```ts
 import { Layer } from 'better-effect'
 
+const liveRuntime = await Runtime.make(Auth.layer)
+const liveResult = await liveRuntime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* Auth)
+  })
+)
+await liveRuntime.dispose()
+
+if (Result.isError(liveResult)) throw liveResult.error
+
 const AuthTest = Layer.succeed(
   Auth,
   Auth.of({
-    api: fakeApi,
-    session: fakeSession,
-    handle: fakeHandle,
-    raw: fakeRaw
+    ...liveResult.value,
+    handle: async function* () {
+      return new Response(JSON.stringify({ source: 'test' }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    }
   })
 )
+const testRuntime = await Runtime.make(AuthTest)
+const testResult = await testRuntime.run(
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const response = yield* auth.handle(new Request('https://example.test'))
+    return Result.ok(await response.json())
+  })
+)
+await testRuntime.dispose()
+
+void testResult
 ```
 
 The package is server-side and framework-neutral. It does not create Better

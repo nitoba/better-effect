@@ -138,7 +138,9 @@ const makeReleaseGatePlugin = (signals: AbortSignal[]) =>
     }
   }) satisfies BetterAuthPlugin
 
-const makeReleaseGateAuth = () => {
+const makeReleaseGateAuth = (
+  options: { readonly onAPIError?: { readonly throw?: boolean } } = {}
+) => {
   const signals: AbortSignal[] = []
   const rawAuth = betterAuth({
     baseURL,
@@ -147,7 +149,8 @@ const makeReleaseGateAuth = () => {
       enabled: true
     },
     plugins: [admin({ defaultRole: 'admin' }), makeReleaseGatePlugin(signals)],
-    secret: 'release-gate-secret-not-for-production-use'
+    secret: 'release-gate-secret-not-for-production-use',
+    ...options
   })
 
   return { rawAuth, signals }
@@ -209,6 +212,12 @@ describe('Better Auth v0.1 release gate', () => {
           const signalResult = yield* auth.api.releaseGateSignal({
             request: signalRequest
           })
+          const abortedController = new AbortController()
+          abortedController.abort()
+          const abortedRequest = new Request(`${baseURL}/api/auth/release-gate/signal`, {
+            signal: abortedController.signal
+          })
+          const abortedResponse = yield* auth.handle(abortedRequest)
           const streamResponse = yield* auth.handle(
             new Request(`${baseURL}/api/auth/release-gate/stream`)
           )
@@ -224,6 +233,26 @@ describe('Better Auth v0.1 release gate', () => {
               password: 'not-a-password'
             }
           })
+          const invalidHandlerResponse = yield* auth.handle(
+            new Request(`${baseURL}/api/auth/sign-in/email`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                email: credentials.email,
+                password: 'not-the-password'
+              })
+            })
+          )
+          const badRequestHandlerResponse = yield* auth.handle(
+            new Request(`${baseURL}/api/auth/sign-in/email`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                email: 'not-an-email',
+                password: 'not-a-password'
+              })
+            })
+          )
           const signOutResponse = yield* auth.api.signOut.asResponse({ headers })
           const handlerResponse = yield* auth.handle(
             new Request(`${baseURL}/api/auth/get-session`, {
@@ -237,11 +266,15 @@ describe('Better Auth v0.1 release gate', () => {
           )
 
           return Result.ok({
+            abortedRequest,
+            abortedResponse,
             auth,
+            badRequestHandlerResponse,
             badRequestResponse,
             created,
             cookies,
             handlerResponse,
+            invalidHandlerResponse,
             invalidResponse,
             optional,
             pluginData,
@@ -250,7 +283,9 @@ describe('Better Auth v0.1 release gate', () => {
             rawHandlerResponse,
             required,
             signOutResponse,
+            signalRequest,
             signalResult,
+            signals,
             streamResponse,
             users
           })
@@ -278,14 +313,23 @@ describe('Better Auth v0.1 release gate', () => {
       expect(flow.value.pluginWithHeaders.response).toEqual({ hello: 'release-gate' })
       expect(flow.value.pluginWithHeaders.headers).toBeInstanceOf(Headers)
       expect(flow.value.signalResult).toEqual({ aborted: false })
+      expect(flow.value.abortedResponse.status).toBe(200)
+      expect(flow.value.abortedResponse.bodyUsed).toBe(false)
+      expect(await flow.value.abortedResponse.json()).toEqual({ aborted: true })
       expect(flow.value.streamResponse.status).toBe(200)
       expect(flow.value.streamResponse.bodyUsed).toBe(false)
       expect(await flow.value.streamResponse.text()).toBe('release-gate-stream')
-      expect(signals).toHaveLength(1)
+      expect(signals).toHaveLength(2)
+      expect(signals[0]).toBe(flow.value.signalRequest.signal)
+      expect(signals[1]).toBe(flow.value.abortedRequest.signal)
       expect(flow.value.invalidResponse.status).toBe(401)
       expect(flow.value.invalidResponse.bodyUsed).toBe(false)
       expect(flow.value.badRequestResponse.status).toBe(400)
       expect(flow.value.badRequestResponse.bodyUsed).toBe(false)
+      expect(flow.value.invalidHandlerResponse.status).toBe(401)
+      expect(flow.value.invalidHandlerResponse.bodyUsed).toBe(false)
+      expect(flow.value.badRequestHandlerResponse.status).toBe(400)
+      expect(flow.value.badRequestHandlerResponse.bodyUsed).toBe(false)
       expect(flow.value.signOutResponse.status).toBe(200)
       expect(flow.value.signOutResponse.headers.getSetCookie().length).toBeGreaterThan(0)
       expect(flow.value.handlerResponse.status).toBe(200)
@@ -440,7 +484,7 @@ describe('Better Auth v0.1 release gate', () => {
     expect(afterDispose.status).toBe(200)
   })
 
-  test('normalizes synchronous throws and rejected non-API errors as UnhandledException', async () => {
+  test('normalizes defects and honors public onAPIError.throw configuration', async () => {
     const rawApi = {
       syncThrow: (): Promise<never> => {
         throw new Error('synchronous defect')
@@ -449,34 +493,33 @@ describe('Better Auth v0.1 release gate', () => {
         throw new Error('rejected defect')
       }
     }
-    const handlerError = new APIError('FORBIDDEN', {
-      code: 'EXPLICIT_HANDLER_ERROR',
-      message: 'The handler was configured to throw'
-    })
     type DefectAuthInfer = { readonly Session: never }
     // SAFETY: The fake Better Auth instance intentionally supplies only the minimal public inference contract needed by this boundary test.
     const defectInfer = {} as DefectAuthInfer
-    const Auth = BetterAuth.service('@release-gate/DefectAuth', {
+    const DefectAuth = BetterAuth.service('@release-gate/DefectAuth', {
       $ERROR_CODES: {},
       $Infer: defectInfer,
       api: {
         getSession: async () => null,
         ...rawApi
       },
-      handler: async () => {
-        throw handlerError
-      }
+      handler: async () => new Response(null)
     })
-    const runtime = await Runtime.make(Auth.layer)
+    const { rawAuth: throwingRawAuth } = makeReleaseGateAuth({
+      onAPIError: { throw: true }
+    })
+    const ThrowingAuth = BetterAuth.service('@release-gate/ThrowingAuth', throwingRawAuth)
+    const runtime = await Runtime.make(Layer.merge(DefectAuth.layer, ThrowingAuth.layer))
 
     try {
       const result = await runtime.run(
         Effect.fn(async function* () {
-          const auth = yield* Auth
-          const sync = await execute(auth.api.syncThrow())
-          const rejection = await execute(auth.api.rejection())
-          const handler = await execute(auth.handle(new Request('https://example.test')))
-          return Result.ok({ handler, rejection, sync })
+          const defectAuth = yield* DefectAuth
+          const throwingAuth = yield* ThrowingAuth
+          const sync = await execute(defectAuth.api.syncThrow())
+          const rejection = await execute(defectAuth.api.rejection())
+          const throwingApiError = await execute(throwingAuth.api.releaseGateFailure())
+          return Result.ok({ rejection, sync, throwingApiError })
         })
       )
 
@@ -484,18 +527,18 @@ describe('Better Auth v0.1 release gate', () => {
       if (Result.isOk(result)) {
         expect(Result.isError(result.value.sync)).toBe(true)
         expect(Result.isError(result.value.rejection)).toBe(true)
-        expect(Result.isError(result.value.handler)).toBe(true)
+        expect(Result.isError(result.value.throwingApiError)).toBe(true)
         if (Result.isError(result.value.sync)) {
           expect(result.value.sync.error).toBeInstanceOf(UnhandledException)
         }
         if (Result.isError(result.value.rejection)) {
           expect(result.value.rejection.error).toBeInstanceOf(UnhandledException)
         }
-        if (Result.isError(result.value.handler)) {
-          expect(result.value.handler.error).toBeInstanceOf(BetterAuthApiError)
-          if (result.value.handler.error instanceof BetterAuthApiError) {
-            expect(result.value.handler.error.code?.toString()).toBe('EXPLICIT_HANDLER_ERROR')
-            expect(result.value.handler.error.cause).toBe(handlerError)
+        if (Result.isError(result.value.throwingApiError)) {
+          expect(result.value.throwingApiError.error).toBeInstanceOf(BetterAuthApiError)
+          if (result.value.throwingApiError.error instanceof BetterAuthApiError) {
+            expect(result.value.throwingApiError.error.code).toBe('CUSTOM_PLUGIN_FAILURE')
+            expect(result.value.throwingApiError.error.statusCode).toBe(429)
           }
         }
       }

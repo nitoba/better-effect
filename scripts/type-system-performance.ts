@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -463,22 +463,45 @@ const ${name} = BetterAuth.service('@perf/${name}', raw${name})`
   const services = names
     .map(
       (name) => `  const service${name} = yield* ${name}
-  const users${name} = yield* service${name}.api.listUsers({ query: { limit: 5 } })`
+  const endpoint${name} = yield* service${name}.api.performanceEndpoint()
+  const session${name} = yield* service${name}.session.get(new Headers())`
     )
     .join('\n')
-  const results = names.map((name) => `users${name}`).join(', ')
+  const results = names
+    .map((name) => `{ endpoint: endpoint${name}, session: session${name} }`)
+    .join(', ')
 
-  return `import { betterAuth } from '../../../packages/better-effect-better-auth/node_modules/better-auth'
-import { Effect } from '../../../packages/better-effect/src/index.ts'
-import { BetterAuth } from '../../../packages/better-effect-better-auth/src/index.ts'
+  return `import { betterAuth, type BetterAuthPlugin } from 'better-auth'
+import { createAuthEndpoint } from 'better-auth/api'
+import { Effect, Layer } from 'better-effect'
+import { BetterAuth, type BetterAuthEndpointResult } from '../../../packages/better-effect-better-auth/src/index.ts'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
+
+type Assert<Condition extends true> = Condition
+type Equal<Left, Right> =
+  (<Type>() => Type extends Left ? 1 : 2) extends
+  (<Type>() => Type extends Right ? 1 : 2) ? true : false
+type IsAny<Value> = 0 extends 1 & Value ? true : false
+type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false
 
 const performancePlugin = {
   id: 'performance-plugin',
+  endpoints: {
+    performanceEndpoint: createAuthEndpoint(
+      '/performance-endpoint',
+      { method: 'GET' },
+      async (context) => context.json({ ok: true as const })
+    )
+  },
   schema: {
     user: {
       fields: {
         plan: { required: false, type: 'string' }
+      }
+    },
+    session: {
+      fields: {
+        tenantId: { required: false, type: 'string' }
       }
     }
   },
@@ -488,9 +511,25 @@ const performancePlugin = {
       message: 'Performance plugin failure'
     }
   }
-} as const
+} satisfies BetterAuthPlugin
 
 ${declarations}
+
+type Auth = typeof raw${names[0]}
+type Endpoint = BetterAuthEndpointResult<Auth['api']['performanceEndpoint']>
+type Session = Auth['$Infer']['Session']
+type Codes = BetterAuth.ErrorCode<Auth>
+type _EndpointExact = Assert<Equal<Endpoint, { ok: true }>>
+type _EndpointNotAny = Assert<Equal<IsAny<Endpoint>, false>>
+type _EndpointNotUnknown = Assert<Equal<IsUnknown<Endpoint>, false>>
+type _SessionUserExact = Assert<Equal<Session['user']['plan'], string | null | undefined>>
+type _SessionFieldExact = Assert<Equal<Session['session']['tenantId'], string | null | undefined>>
+type _SessionNotAny = Assert<Equal<IsAny<Session>, false>>
+type _SessionNotUnknown = Assert<Equal<IsUnknown<Session>, false>>
+type _CodePresent = Assert<Extract<'PERFORMANCE_PLUGIN_ERROR', Codes> extends never ? false : true>
+type _CodeNotAny = Assert<Equal<IsAny<Codes>, false>>
+type _CodeNotUnknown = Assert<Equal<IsUnknown<Codes>, false>>
+
 const AppLive = ${layers}
 const program = Effect.fn(async function* () {
 ${services}
@@ -687,6 +726,17 @@ const main = async (): Promise<void> => {
 
   await rm(fixtureRoot, { recursive: true, force: true })
   await mkdir(fixtureRoot, { recursive: true })
+  await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true })
+  await symlink(
+    join(repoRoot, 'packages/better-effect-better-auth/node_modules/better-auth'),
+    join(fixtureRoot, 'node_modules/better-auth'),
+    'dir'
+  )
+  await symlink(
+    join(repoRoot, 'packages/better-effect'),
+    join(fixtureRoot, 'node_modules/better-effect'),
+    'dir'
+  )
 
   const results: Result[] = []
 

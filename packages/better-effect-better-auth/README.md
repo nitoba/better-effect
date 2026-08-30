@@ -94,6 +94,29 @@ The adapter does not create plugin configuration or add framework-specific
 helpers. Keep Better Auth's plugins, database adapter, cookies, and handler in
 the application.
 
+## Sessions
+
+Use the explicit session helpers inside a Program. The optional helper keeps a
+missing session as `null`; the required helper changes only that absence into
+`Unauthenticated`:
+
+```ts
+const readSessions = (request: Request) =>
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const optional = yield* auth.session.get(request)
+    const required = yield* auth.session.require(request)
+
+    return Result.ok({ optional, required })
+  })
+
+const sessionRuntime = await Runtime.make(Auth.layer)
+const sessionResult = await sessionRuntime.run(
+  readSessions(new Request('https://example.test/api/auth/get-session'))
+)
+await sessionRuntime.dispose()
+```
+
 ## Typed Better Auth API failures
 
 Better Auth server APIs report expected failures with its public `APIError`.
@@ -102,7 +125,7 @@ a stable `better-result` tag:
 
 ```ts
 import { APIError } from 'better-auth/api'
-import { BetterAuthApiError } from 'better-effect-better-auth'
+import { BetterAuthApiError, Unauthenticated } from 'better-effect-better-auth'
 
 const source = new APIError('UNAUTHORIZED', {
   code: 'INVALID_EMAIL_OR_PASSWORD',
@@ -116,6 +139,28 @@ failure.status // 'UNAUTHORIZED'
 failure.statusCode // 401
 failure.code // 'INVALID_EMAIL_OR_PASSWORD'
 failure.cause === source // true
+
+const toDomainFailure = (value: BetterAuthApiError | Unauthenticated) => {
+  if (value._tag === 'Unauthenticated') {
+    return { _tag: 'LoginRequired' as const }
+  }
+
+  if (
+    value._tag === 'BetterAuthApiError' &&
+    value.code === 'INVALID_EMAIL_OR_PASSWORD' &&
+    value.statusCode === 401
+  ) {
+    return { _tag: 'InvalidCredentials' as const }
+  }
+
+  return {
+    _tag: 'AuthProviderFailure' as const,
+    code: value.code,
+    statusCode: value.statusCode
+  }
+}
+
+void toDomainFailure(failure)
 ```
 
 The original `headers`, `body`, and `cause` remain available in memory for
@@ -170,11 +215,51 @@ When the handler belongs inside a Program, use `yield* auth.handle(request)`;
 the returned `Response` is not eagerly consumed. The package does not publish a
 Hono adapter or require a framework dependency.
 
-For tests, replace the generated Service with `Auth.of(...)` and provide it
-through a normal Layer. This keeps fakes local to the test and does not rely on
-module mocking, singleton resets, or global state. `auth.raw` is an escape hatch
-for Better Auth's `$context`, `$ERROR_CODES`, options, endpoint metadata, or
-other APIs that the adapter intentionally does not reinterpret.
+For tests, replace only the boundary you want to control with `Auth.of(...)`
+and provide it through a normal `Layer.succeed`. This keeps the replacement
+local to the test and does not rely on module mocking, singleton resets, or
+global state:
+
+```ts
+import { Layer } from 'better-effect'
+
+const liveRuntime = await Runtime.make(Auth.layer)
+const liveResult = await liveRuntime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* Auth)
+  })
+)
+await liveRuntime.dispose()
+
+if (Result.isError(liveResult)) throw liveResult.error
+
+const AuthTest = Layer.succeed(
+  Auth,
+  Auth.of({
+    ...liveResult.value,
+    handle: async function* () {
+      return new Response(JSON.stringify({ source: 'test' }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    }
+  })
+)
+const testRuntime = await Runtime.make(AuthTest)
+const testResult = await testRuntime.run(
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const response = yield* auth.handle(new Request('https://example.test'))
+    return Result.ok(await response.json())
+  })
+)
+await testRuntime.dispose()
+
+void testResult
+```
+
+`auth.raw` is an escape hatch for Better Auth's `$context`, `$ERROR_CODES`,
+options, endpoint metadata, or other APIs that the adapter intentionally does
+not reinterpret.
 
 ## Explicit missing-session failure
 

@@ -3,6 +3,16 @@
   "type": "module",
   "dependencies": {
     "better-auth": "1.7.0",
+    "better-effect": "file:./artifacts/better-effect.tgz",
+    "better-effect-better-auth": "file:./artifacts/better-effect-better-auth.tgz",
+    "better-result": "3.0.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "better-auth": "1.7.0",
+    "better-effect": "0.13.0",
     "better-result": "3.0.0",
     "typescript": "6.0.3"
   }
