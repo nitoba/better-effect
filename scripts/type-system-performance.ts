@@ -7,6 +7,8 @@ const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
 
 const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
+const jobSizes = [10, 50, 100, 250] as const
+type JobSize = (typeof jobSizes)[number]
 const honoSizes = [1, 3, 6, 10] as const
 type HonoSize = (typeof honoSizes)[number]
 
@@ -19,7 +21,8 @@ const scenarios = [
   'methods',
   'program-chain',
   'hono-mixed',
-  'program-collections'
+  'program-collections',
+  'job-registry'
 ] as const
 type Scenario = (typeof scenarios)[number]
 
@@ -62,6 +65,23 @@ const budgets = {
   }
 } satisfies Record<Size, Budget>
 
+const jobBudgets = {
+  10: { maxCheckMs: 2_000, maxInstantiations: 200_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  50: { maxCheckMs: 6_000, maxInstantiations: 750_000, maxMemoryMiB: 768, maxTypes: 400_000 },
+  100: {
+    maxCheckMs: 12_000,
+    maxInstantiations: 2_000_000,
+    maxMemoryMiB: 1_024,
+    maxTypes: 800_000
+  },
+  250: {
+    maxCheckMs: 30_000,
+    maxInstantiations: 6_000_000,
+    maxMemoryMiB: 1_536,
+    maxTypes: 1_500_000
+  }
+} satisfies Record<JobSize, Budget>
+
 const honoBudgets = {
   1: { maxCheckMs: 2_000, maxInstantiations: 400_000, maxMemoryMiB: 512, maxTypes: 100_000 },
   3: { maxCheckMs: 3_000, maxInstantiations: 450_000, maxMemoryMiB: 512, maxTypes: 200_000 },
@@ -102,6 +122,20 @@ const parseSizes = (value: string): Size[] => {
   return values as Size[]
 }
 
+const parseJobSizes = (value: string): JobSize[] => {
+  const values = value.split(',').map((item) => Number(item.trim()))
+
+  for (const item of values) {
+    // SAFETY: `item` is checked against the supported Job-count literals before use.
+    if (!jobSizes.includes(item as JobSize)) {
+      throw new Error(`Unknown Job count '${item}'. Allowed values: ${jobSizes.join(', ')}`)
+    }
+  }
+
+  // SAFETY: Every parsed value passed the literal-tuple membership check above.
+  return values as JobSize[]
+}
+
 const parseHonoSizes = (value: string): HonoSize[] => {
   const values = value.split(',').map((item) => Number(item.trim()))
 
@@ -120,6 +154,7 @@ const parseHonoSizes = (value: string): HonoSize[] => {
 
 type ParsedOptions = {
   readonly sizes: Size[]
+  readonly jobSizes: JobSize[]
   readonly honoSizes: HonoSize[]
   readonly scenarios: Scenario[]
   readonly checkBudget: boolean
@@ -128,6 +163,7 @@ type ParsedOptions = {
 
 const parseArgs = (): ParsedOptions => {
   let selectedSizes: Size[] = [...sizes]
+  let selectedJobSizes: JobSize[] = [...jobSizes]
   let selectedHonoSizes: HonoSize[] = [...honoSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
   let checkBudget = false
@@ -140,6 +176,8 @@ const parseArgs = (): ParsedOptions => {
       json = true
     } else if (argument.startsWith('--sizes=')) {
       selectedSizes = parseSizes(argument.slice('--sizes='.length))
+    } else if (argument.startsWith('--job-sizes=')) {
+      selectedJobSizes = parseJobSizes(argument.slice('--job-sizes='.length))
     } else if (argument.startsWith('--hono-sizes=')) {
       selectedHonoSizes = parseHonoSizes(argument.slice('--hono-sizes='.length))
     } else if (argument.startsWith('--scenarios=')) {
@@ -150,6 +188,7 @@ const parseArgs = (): ParsedOptions => {
           'Usage: bun scripts/type-system-performance.ts [options]',
           '',
           `  --sizes=10,25,50,100       Service counts (default: ${sizes.join(',')})`,
+          `  --job-sizes=10,50,100,250   Job definitions (default: ${jobSizes.join(',')})`,
           `  --hono-sizes=1,3,6,10       Hono middleware counts (default: ${honoSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
           '  --check-budget             Exit non-zero when a configured ceiling is exceeded',
@@ -164,6 +203,7 @@ const parseArgs = (): ParsedOptions => {
 
   return {
     sizes: selectedSizes,
+    jobSizes: selectedJobSizes,
     honoSizes: selectedHonoSizes,
     scenarios: selectedScenarios,
     checkBudget,
@@ -344,6 +384,42 @@ ${body}
 void Runtime.run(AppLive, () => program)`
 }
 
+const jobRegistryFixtureSource = (size: number): string => {
+  const names = Array.from(
+    { length: size },
+    (_, index) => `Job${String(index + 1).padStart(3, '0')}`
+  )
+  const declarations = names
+    .map(
+      (name, index) =>
+        `const ${name} = queue.job('job-${String(index + 1).padStart(3, '0')}', { version: 1, payload })`
+    )
+    .join('\n')
+  const expected = names.map((name) => `typeof ${name}`).join(' | ')
+  const tuple = names.join(', ')
+
+  return `import { Codec, JobRegistry, Queue } from '../../../packages/better-effect-mq/src/index.ts'
+
+const queue = Queue.define('benchmark.jobs')
+const payload = Codec.json<{ readonly id: string }>()
+${declarations}
+
+const registry = JobRegistry.make([${tuple}] as const)
+type ExpectedJobs = ${expected}
+type ActualJobs = JobRegistry.Jobs<typeof registry>
+type ExpectedTuple = readonly [${expected.replaceAll(' | ', ', ')}]
+type ActualTuple = JobRegistry.Definitions<typeof registry>
+const jobs: ExpectedJobs = null as unknown as ActualJobs
+const definitions: ActualTuple = null as unknown as ExpectedTuple
+const known = registry.lookup({ queue: 'benchmark.jobs', name: 'job-001', version: 1 })
+const missing = registry.lookup({ queue: 'benchmark.jobs', name: 'missing', version: 1 })
+void jobs
+void definitions
+void known
+void missing
+`
+}
+
 const honoValidatorTargets = ['param', 'header', 'query', 'cookie', 'json', 'form'] as const
 
 type HonoValidatorTarget = (typeof honoValidatorTargets)[number]
@@ -419,6 +495,10 @@ void generatedHandler
 const fixtureSource = (scenario: Scenario, size: number): string => {
   if (scenario === 'hono-mixed') {
     return honoFixtureSource(size)
+  }
+
+  if (scenario === 'job-registry') {
+    return jobRegistryFixtureSource(size)
   }
 
   // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
@@ -549,7 +629,12 @@ const runTsc = async (
 }
 
 const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): string[] => {
-  const budget = scenario === 'hono-mixed' ? honoBudgets[size as HonoSize] : budgets[size as Size]
+  const budget =
+    scenario === 'hono-mixed'
+      ? honoBudgets[size as HonoSize]
+      : scenario === 'job-registry'
+        ? jobBudgets[size as JobSize]
+        : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -597,7 +682,12 @@ const main = async (): Promise<void> => {
   const results: Result[] = []
 
   for (const scenario of options.scenarios) {
-    const scenarioSizes = scenario === 'hono-mixed' ? options.honoSizes : options.sizes
+    const scenarioSizes =
+      scenario === 'hono-mixed'
+        ? options.honoSizes
+        : scenario === 'job-registry'
+          ? options.jobSizes
+          : options.sizes
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)

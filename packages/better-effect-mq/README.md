@@ -130,6 +130,108 @@ a codec without a version change only for a documented backward-compatible
 wire change. Upcasters, registries, and persisted job definitions are outside
 this issue’s scope.
 
+## Queue and versioned Job definitions
+
+The primary definition API is `Queue.define(...).job(...)`. It creates an inert,
+immutable descriptor; it does not create a worker, resolve a Service, open a
+connection, or register anything globally. The persisted identity is exactly the
+literal queue, job name, and positive integer version. Function and class names
+never participate in identity.
+
+At definition time, a codec's `encode` and `decode` methods are captured with a
+new frozen receiver. For a user-supplied structural or class codec, the Job
+boundary clones and freezes the supported string-keyed own/prototype data graph,
+including ordinary prototype helpers, without retaining the source receiver or
+prototype graph. Receiver state must use finite primitives, `null`, `undefined`,
+or recursively plain records and arrays; callable state other than
+`encode`/`decode`, accessors, symbols, proxies, class instances, cycles, and
+oversized or unreadable graphs are rejected as `JobDefinitionError`.
+
+Codec operations themselves remain direct functions. Their lexical closures and
+default-parameter expressions therefore keep normal JavaScript behavior. Job
+does not clone external closure state; callers must treat captured state as
+callback behavior, not descriptor data. A later mutation of captured application
+state may consequently affect codec results, while mutation of the source
+receiver's supported fields or prototype helpers cannot. Methods containing
+`super`, private names/brands, direct `eval(...)`, or `new.target`, methods with
+non-intrinsic mutable properties, and methods whose source cannot be inspected are rejected
+because their receiver semantics cannot be safely detached. This is a narrow
+receiver-safety check, not a free-variable or closure restriction.
+
+The package's `Codec.*` constructors provide an operation-level contract without
+a user receiver and use a private process-local capability. Values from another
+package copy and all structural codecs still take the receiver-validation route;
+a forgeable global marker cannot bypass it. Use a portable `Codec.*` codec or a
+structurally safe class when receiver state is needed.
+
+```ts
+import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'
+
+const Emails = Queue.define('emails')
+const payload = Codec.json<{
+  readonly messageId: string
+  readonly tenantId: string
+  readonly recipient: string
+}>()
+const failure = Codec.json<{ readonly code: string }>()
+const backoff = makePersistedBackoff({
+  type: 'exponential',
+  delayMs: 1_000,
+  maxDelayMs: 60_000
+}).unwrap()
+
+const SendEmailV1 = Emails.job('send-email', {
+  version: 1,
+  payload,
+  failure,
+  defaults: { attempts: 5, backoff, timeoutMs: 30_000, priority: 0 },
+  idempotencyKey: ({ messageId }) => messageId,
+  metadata: ({ tenantId }) => ({ tenantId }),
+  retryable: ({ code }) => code !== 'recipient-blocked'
+})
+const SendEmailV2 = Job.define('send-email', {
+  queue: Emails,
+  version: 2,
+  payload,
+  failure
+})
+
+const Jobs = JobRegistry.make([SendEmailV1, SendEmailV2] as const)
+Jobs.acceptedClaimIdentities // both versions, in definition order
+Jobs.lookup({ queue: 'emails', name: 'send-email', version: 1 }) // Result<..., JobDefinitionError>
+```
+
+`retryable` is a synchronous definition-layer predicate. When a worker-side
+caller evaluates it through `runRetryable`, a thrown predicate is deliberately
+fail-open and becomes `true` (retryable) without retaining the thrown error or
+failure payload. An untyped rejected Promise is also observed and normalized to
+`true`; Promise results are not awaited. Non-boolean, non-Promise results remain
+invalid predicate results.
+
+`Job.define` is optional direct-call sugar over the same `Queue.job` implementation;
+`Queue.define(...).job(...)` is the documented ergonomic form. `Job.PayloadInput`
+is `Codec.Input` (the schema/input side), while `Job.Payload` is `Codec.Value`
+(the decoded handler value). Idempotency and metadata callbacks receive
+`Job.Payload`, and are not called while defining a job. Their later producer-side
+outputs can be safely normalized with `normalizeIdempotencyKey` and
+`normalizeMetadata`; invalid or throwing callbacks become a redacted
+`JobDefinitionError` rather than exposing payload details.
+
+`defaults.attempts` is a positive safe integer, `defaults.timeoutMs` is an
+optional positive finite safe-integer millisecond duration, `priority` defaults
+to the safe integer `0`, and `backoff` uses the existing `PersistedBackoff`
+shape. Retention fields such as `keep` and `retain` are intentionally not part of
+this v0.1 descriptor. Result and failure codecs are optional; when absent,
+the corresponding `Job.Success` or `Job.Failure` type is `never`, and this
+package performs no result persistence or worker execution.
+
+`Job.is` and `Queue.is` use stable `Symbol.for` TypeIds and bounded, accessor-free
+checks, so descriptors from duplicate package copies can be recognized safely.
+The registry is local and immutable: duplicate queue/name/version identities are
+rejected, unknown lookups return an explicit error Result, and no handlers are
+registered. Enqueue, storage, retry scheduling, and worker execution are
+separate features.
+
 ## State machine
 
 The only v0.1 states are `waiting`, `delayed`, `active`, `completed`, `failed`,

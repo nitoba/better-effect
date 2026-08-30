@@ -1,10 +1,10 @@
 # Type-system performance
 
-This benchmark puts an explicit budget around the Layer, Runtime, and Hono
-inference already used by `better-effect`. It generates isolated TypeScript
-fixtures for 10, 25, 50, and 100 Services, plus Hono middleware tuples of 1, 3,
-6, and 10 validators, then runs the project compiler with
-`--extendedDiagnostics`.
+This benchmark puts an explicit budget around the Layer, Runtime, Hono, and
+MQ registry inference used by the workspace. It generates isolated TypeScript
+fixtures for 10, 25, 50, and 100 Services, Hono middleware tuples of 1, 3, 6,
+and 10 validators, and 10, 50, 100, and 250 versioned Job definitions, then
+runs the project compiler with `--extendedDiagnostics`.
 
 Run the complete matrix with:
 
@@ -32,11 +32,14 @@ Each fixture measures:
 - lazy, metadata-aware `Program.named` transformation, observation,
   continuation, and recovery chains;
 - lazy `Program.all`, `Program.forEach`, and `Program.allResults` collections,
-  including collection names.
+  including collection names;
+- `JobRegistry.make` over exact versioned definition tuples, union extraction,
+  and known/unknown identity lookup.
 
 The report includes files, types, instantiations, memory, check time, and total
 time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
-`--scenarios=hono-mixed` to run only those fixtures. `--check-budget` enforces
+`--job-sizes=10,50,100,250 --scenarios=job-registry` to measure only the registry
+fixtures. `--check-budget` enforces
 the current ceilings:
 
 | Services | Check time |   Types | Instantiations |  Memory |
@@ -54,4 +57,15 @@ The all-at-once `Layer.override` fixtures compile at 50 and 100 Services. The
 override validator now carries the current provided union and reuses a base
 tag map for exact replacements, avoiding repeated full provenance expansion.
 This keeps the full matrix within the configured budgets before adding cycle or
-graph validation.
+graph validation. The MQ fixture similarly checks exact tuple/union preservation
+and known/unknown identity lookups without recursively validating the tuple,
+keeping large registries inside an explicit budget.
+
+Registry ceilings are intentionally generous guardrails rather than CI latency SLAs:
+
+| Jobs | Check time |     Types | Instantiations |  Memory |
+| ---: | ---------: | --------: | -------------: | ------: |
+|   10 |        2 s |   100,000 |        200,000 | 512 MiB |
+|   50 |        6 s |   400,000 |        750,000 | 768 MiB |
+|  100 |       12 s |   800,000 |      2,000,000 |   1 GiB |
+|  250 |       30 s | 1,500,000 |      6,000,000 | 1.5 GiB |

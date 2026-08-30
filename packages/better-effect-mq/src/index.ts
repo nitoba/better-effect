@@ -14,6 +14,35 @@ export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
 
+export {
+  Job,
+  JobRegistry,
+  Queue,
+  makeJobRegistry,
+  normalizeIdempotencyKey,
+  normalizeMetadata,
+  normalizeRetryable,
+  runIdempotencyKey,
+  runMetadata,
+  runRetryable
+} from './job'
+
+export type {
+  AnyJobDefinition,
+  AnyJobRegistry,
+  AnyQueueDefinition,
+  IdempotencyKeyCallback,
+  JobDefaults,
+  JobDefaultsInput,
+  JobDefinition,
+  JobDefinitionOptions,
+  JobIdentity,
+  MetadataCallback,
+  QueueDefinition,
+  RegistryIdentityInput,
+  RetryableCallback
+} from './job'
+
 export type {
   CodecCallbackResult,
   CodecEffect,

@@ -15,6 +15,7 @@ import {
   JobEncodeFailure,
   sanitizeSchemaIssues
 } from './errors'
+import { markCodecSnapshot } from './snapshot'
 import { validateJsonValue } from './json'
 import type { CodecIssue, CodecPath } from './errors'
 
@@ -299,10 +300,10 @@ const primitiveCodec = <Value extends JsonValue>(
       ? okEffect(value)
       : errEffect(makeDecodeFailure(`Value is not a ${label}`, 'invalid-type'))
 
-  return Object.freeze({ encode, decode })
+  return markCodecSnapshot({ encode, decode })
 }
 
-const voidCodec: Codec<void, void> = Object.freeze({
+const voidCodec: Codec<void, void> = markCodecSnapshot({
   encode: (value: void): CodecEffect<JsonValue, JobEncodeFailure> =>
     value === undefined
       ? okEffect(null)
@@ -368,7 +369,7 @@ export function make<Value>(options: CodecMakeOptions<Value>): Codec<Value, Valu
       decodeCustomOutput
     )
 
-  return Object.freeze({ encode, decode })
+  return markCodecSnapshot({ encode, decode })
 }
 
 /** Create an identity JSON codec with iterative, accessor-free boundary validation. */
@@ -395,7 +396,7 @@ export function json<Value extends JsonValue = JsonValue>(): Codec<Value, Value>
     return okEffect(checked.value as Value)
   }
 
-  return Object.freeze({ encode, decode })
+  return markCodecSnapshot({ encode, decode })
 }
 
 type SchemaInput<Schema extends StandardSchemaV1> = StandardSchemaV1.InferInput<Schema>
@@ -554,7 +555,7 @@ export function standardSchema<
   ): CodecOperation<SchemaOutput<Schema>, JobDecodeFailure> =>
     runSchemaValidation(options.schema, value, requireJsonOutput)
 
-  return Object.freeze({ encode, decode })
+  return markCodecSnapshot({ encode, decode })
 }
 
 const stringCodec = primitiveCodec<string>('string', (value): value is string => {
