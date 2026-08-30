@@ -1,6 +1,6 @@
 # better-effect-better-auth
 
-**Server-side Better Auth integration foundations for `better-effect`.**
+**Server-side Better Auth integration for `better-effect`.**
 
 `better-effect-better-auth` is an independent package in the `better-effect`
 monorepo. Better Auth remains responsible for authentication, sessions,
@@ -9,10 +9,10 @@ Web-standard handler. This package adapts those public server APIs to the
 `better-result` and `better-effect` programming model without adding Better
 Auth to the core package.
 
-The current foundation release establishes the package boundary and the typed
-error model used by the upcoming effectful endpoint integration. It does not
-yet expose the `BetterAuth.service(...)`, `auth.api.*`, or session helpers
-planned for subsequent issues.
+The v0.1 API adapts an existing Better Auth instance with
+`BetterAuth.service(...)`. Its generated Service exposes yieldable
+`auth.api.*` endpoints, session helpers, and the Web-standard handler while
+retaining the original instance as `auth.raw`.
 
 ## Installation
 
@@ -23,6 +23,45 @@ bun add better-effect-better-auth better-auth better-effect better-result
 The package is ESM-only and follows the Node.js, Bun, and TypeScript support
 matrix of `better-effect`. Better Auth, `better-effect`, `better-result`, and
 TypeScript are peer dependencies and remain owned by the application.
+
+## Effectful Better Auth service
+
+Create a Service token from an existing Better Auth instance and provide its
+immutable Layer to a `better-effect` Runtime:
+
+```ts
+import { betterAuth } from 'better-auth'
+import { Effect, Runtime } from 'better-effect'
+import { BetterAuth } from 'better-effect-better-auth'
+import { Result } from 'better-result'
+
+const rawAuth = betterAuth({
+  emailAndPassword: { enabled: true }
+})
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const request = new Request('https://example.test/api/auth/session')
+
+const program = Effect.fn(async function* () {
+  const auth = yield* Auth
+  const session = yield* auth.session.get(request)
+  const response = yield* auth.api.getSession.asResponse({
+    headers: request.headers
+  })
+
+  return Result.ok({ session, response })
+})
+
+const runtime = await Runtime.make(Auth.layer)
+const result = await runtime.run(program)
+await runtime.dispose()
+```
+
+Every endpoint has normal, `.asResponse`, and `.withHeaders` transport modes.
+The generated `Auth.layer` provides the Service, and `Auth.of` accepts a
+structural replacement for tests or intentional Layer overrides. The original
+Better Auth instance and its unadapted transport options remain available as
+`auth.raw`. `auth.handle(request)` adapts Better Auth's Web-standard handler to
+the same Result-oriented operation boundary.
 
 ## Typed Better Auth API failures
 
@@ -104,13 +143,13 @@ const failure = new Unauthenticated({
 
 ## Current scope
 
-The initial release is server-side and framework-neutral. It does not:
+The package is server-side and framework-neutral. It adapts an existing Better
+Auth instance but does not:
 
-- create or configure a Better Auth instance;
-- expose the effectful `auth.api.*` Proxy yet;
-- create the `BetterAuth.service(...)` factory yet;
+- create or configure the Better Auth instance;
 - choose a database adapter or run migrations;
 - read environment variables;
+- own Runtime lifecycle or application dependency configuration;
 - provide React, Vue, Svelte, or Solid client hooks;
 - create a router, roles system, or authorization framework;
 - map Better Auth codes automatically to application-domain failures;
