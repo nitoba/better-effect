@@ -1,0 +1,48 @@
+// This fixture mirrors the Better Auth Hono setup documented in apps/docs/content/docs/hono.mdx.
+
+import { betterAuth } from 'better-auth'
+import { memoryAdapter } from 'better-auth/adapters/memory'
+import { Hono } from 'hono'
+import { Layer, Runtime, Service } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
+import { BetterAuth } from '../../src'
+import { BetterAuthHono } from '../../src/hono'
+import { Result } from 'better-result'
+
+class AppService extends Service<AppService>()('@docs/AppService') {}
+const AppLive = Layer.make(AppService)
+const rawAuth = betterAuth({
+  basePath: '/api/auth',
+  database: memoryAdapter({
+    account: [],
+    session: [],
+    user: [],
+    verification: []
+  }),
+  emailAndPassword: { enabled: true },
+  secret: 'replace-this-example-secret'
+})
+const Auth = BetterAuth.service('@docs/Auth', rawAuth)
+const CurrentSession = BetterAuthHono.session('@docs/CurrentSession', Auth, {
+  disableCookieCache: true
+})
+const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer))
+const http = HonoEffect.make(runtime, {
+  requestLayer: CurrentSession.requestLayer,
+  onFailure: (_error, context) => context.json({ error: 'Request failed' }, 500)
+})
+const app = new Hono()
+
+app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+app.use('*', http.middleware())
+app.use('/api/private/*', http.guard(CurrentSession.guard))
+app.get(
+  '/api/private/me',
+  http.gen(async function* () {
+    const session = yield* CurrentSession.require()
+    return Result.ok({ userId: session.user.id })
+  })
+)
+
+void app
+void runtime

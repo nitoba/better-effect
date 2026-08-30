@@ -9,11 +9,9 @@
 - The v0.2 gate covers Hono request snapshots, cleanup ownership, explicit
   Better Auth base-path/route ordering guidance, and external runtime consumers.
 
-## [0.1.0] - 2026-08-30
+### Prepared for v0.1.0 — 2026-08-30 (not published)
 
-### Added
-
-- Initial independent server-side Better Auth integration release.
+- Initial independent server-side Better Auth integration package.
 - Effectful endpoint, session, handler, transport-mode, plugin, and typed error
   adapters for an existing Better Auth instance.
 
@@ -26,7 +24,7 @@
 | `better-result` | `3.0.0`        | `3.0.0`        |
 | TypeScript      | `5.7.2`        | `6.0.3`        |
 
-The release gate also runs the packed consumer on Node.js `24.x` and Bun
+The preparation gate also runs the packed consumer on Node.js `24.x` and Bun
 `1.3.14`. The declared peer ranges remain `better-auth` `^1.7.0`,
 `better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
 `>=5.7.0`.
@@ -51,5 +49,6 @@ own Better Auth, database, environment, Runtime, or dependency-container
 lifecycle. Better Auth remains responsible for its public server APIs and
 plugin compatibility.
 
-This package is released independently from `better-effect` with the qualified
-Git tag `better-effect-better-auth-v0.1.0`.
+This package is prepared independently from `better-effect`. It has not been
+published, and the qualified Git tag `better-effect-better-auth-v0.1.0` does not
+exist yet.

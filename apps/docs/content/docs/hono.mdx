@@ -279,9 +279,9 @@ shutdown.
 
 ## Planned v0.2: Better Auth current sessions
 
-`better-effect-better-auth` provides an optional Hono companion planned for v0.2
-(not part of the released v0.1 peer matrix) for applications that use Better
-Auth. Install both packages and keep the Web handler on its normal route:
+`better-effect-better-auth` has an optional Hono companion planned for v0.2.
+It is not part of the prepared v0.1 peer matrix. Install both packages and keep
+the Web handler on its normal route:
 
 ```bash
 bun add better-effect-better-auth better-auth hono
@@ -293,16 +293,32 @@ current-session token for the Better Auth Service and pass its request Layer to
 
 ```ts
 import { betterAuth } from 'better-auth'
-import { BetterAuth, BetterAuthHono } from 'better-effect-better-auth'
+import { memoryAdapter } from 'better-auth/adapters/memory'
+import { Hono } from 'hono'
+import { Layer, Runtime, Service } from 'better-effect'
+import { HonoEffect } from 'better-effect/hono'
+import { BetterAuth } from 'better-effect-better-auth'
+import { BetterAuthHono } from 'better-effect-better-auth/hono'
+import { Result } from 'better-result'
 
+class AppService extends Service<AppService>()('@app/AppService') {}
+const AppLive = Layer.make(AppService)
 const rawAuth = betterAuth({
-  basePath: '/api/auth'
-  // ...database and the rest of the Better Auth configuration
+  basePath: '/api/auth',
+  database: memoryAdapter({
+    account: [],
+    session: [],
+    user: [],
+    verification: []
+  }),
+  emailAndPassword: { enabled: true },
+  secret: 'replace-this-example-secret'
 })
 const Auth = BetterAuth.service('@app/Auth', rawAuth)
 const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
   disableCookieCache: true
 })
+const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer))
 const http = HonoEffect.make(runtime, {
   requestLayer: CurrentSession.requestLayer,
   onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)

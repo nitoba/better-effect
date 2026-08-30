@@ -17,7 +17,7 @@ bun add better-effect-better-auth better-auth better-effect better-result
 bun add hono
 ```
 
-The released v0.1 API supports:
+The prepared v0.1 API supports:
 
 - `better-auth` `^1.7.0`
 - `better-effect` `>=0.12.0 <0.14.0`
@@ -25,7 +25,7 @@ The released v0.1 API supports:
 - TypeScript `>=5.7.0`
 
 The optional Hono current-session entry point is planned for v0.2, not part of
-this v0.1 peer matrix.
+the prepared v0.1 peer matrix.
 
 The adapter has no runtime framework or database dependency. Configure Better
 Auth normally, then adapt the instance at the application composition root:
@@ -157,7 +157,7 @@ a typed current-session Service linked to one exact Better Auth Service:
 
 ```ts
 import { Hono } from 'hono'
-import { Runtime } from 'better-effect'
+import { Layer, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
 import { Result } from 'better-result'
@@ -165,7 +165,8 @@ import { Result } from 'better-result'
 const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
   disableCookieCache: true
 })
-const runtime = await Runtime.make(Auth.layer)
+const AppLive = Layer.empty
+const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer))
 const http = HonoEffect.make(runtime, {
   requestLayer: CurrentSession.requestLayer,
   onFailure: (_error, context) => context.json({ error: 'Request failed' }, 500)

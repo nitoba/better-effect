@@ -380,6 +380,69 @@ describe('BetterAuthHono', () => {
     }
   })
 
+  test('closes each current-session acquisition when one request Layer is shared concurrently', async () => {
+    const fixture = makeAuth(async () => successSession('shared'))
+    const CurrentSession = BetterAuthHono.session('@hono-test/SharedLayer', fixture.Auth)
+    const runtime = await Runtime.make(fixture.Auth.layer)
+    const retained: BetterAuthHonoSessionValue<typeof fixture.rawAuth>[] = []
+    let sharedLayer: ReturnType<typeof CurrentSession.requestLayer> | undefined
+    let acquiredCount = 0
+    let releasePrograms!: () => void
+    const programsReleased = new Promise<void>((resolve) => {
+      releasePrograms = resolve
+    })
+    let resolveBothAcquired!: () => void
+    const bothAcquired = new Promise<void>((resolve) => {
+      resolveBothAcquired = resolve
+    })
+    const http = HonoEffect.make(runtime, {
+      requestLayer: (context) => {
+        sharedLayer ??= CurrentSession.requestLayer(context)
+        return sharedLayer
+      },
+      onFailure: () => new Response('failure', { status: 500 })
+    })
+    const app = new Hono()
+    app.use('*', http.middleware())
+    app.get(
+      '/session',
+      http.gen(async function* () {
+        retained.push(yield* CurrentSession)
+        acquiredCount += 1
+
+        if (acquiredCount === 2) {
+          resolveBothAcquired()
+        }
+
+        await programsReleased
+        return Result.ok('held')
+      })
+    )
+
+    try {
+      const requests = Promise.all([app.request('/session'), app.request('/session')])
+      await bothAcquired
+      releasePrograms()
+
+      const responses = await requests
+      expect(responses.every((response) => response.status === 200)).toBe(true)
+      expect(retained).toHaveLength(2)
+      expect(fixture.calls).toHaveLength(0)
+
+      const afterDispose = await Promise.all(retained.map((current) => execute(current.get())))
+      for (const result of afterDispose) {
+        expect(Result.isError(result)).toBe(true)
+        if (Result.isError(result)) {
+          expect(result.error).toBeInstanceOf(UnhandledException)
+        }
+      }
+      expect(fixture.calls).toHaveLength(0)
+    } finally {
+      releasePrograms()
+      await runtime.dispose()
+    }
+  })
+
   test('keeps snapshots stale after mutation and supports an explicit fresh read', async () => {
     let currentSession: Session | null = successSession('before')
     const fixture = makeAuth(async () => currentSession)

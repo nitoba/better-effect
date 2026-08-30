@@ -104,11 +104,6 @@ type SessionResult<Auth extends BetterAuthInstance> = ResultType<
   BetterAuthFailure<Auth>
 >
 
-type CurrentSessionResource<Auth extends BetterAuthInstance> = {
-  readonly value: BetterAuthHonoSessionValue<Auth>
-  readonly close: () => void
-}
-
 const closedSessionResult = <Auth extends BetterAuthInstance>(): SessionResult<Auth> =>
   Result.err(
     new UnhandledException({
@@ -131,73 +126,102 @@ const toSessionResult = async <Auth extends BetterAuthInstance>(
   }
 }
 
-const makeCurrentSessionValue = <Auth extends BetterAuthInstance>(
-  auth: BetterAuthService<Auth>,
-  request: Request,
-  options: BetterAuthHonoSessionOptions | undefined
-): CurrentSessionResource<Auth> => {
-  let settlement: Promise<SessionResult<Auth>> | undefined
-  let closed = false
-  let activeAuth: BetterAuthService<Auth> | undefined = auth
-  let activeRequest: Request | undefined = request
-  let activeOptions: BetterAuthHonoSessionOptions | undefined = options
+/**
+ * Keep request cleanup on the acquired value itself. A Layer can be reused by
+ * concurrent scopes, so release must never look up mutable state owned by the
+ * Layer factory.
+ */
+class CurrentSessionValue<
+  Auth extends BetterAuthInstance
+> implements BetterAuthHonoSessionValue<Auth> {
+  #settlement: Promise<SessionResult<Auth>> | undefined
 
-  const read = (): Promise<SessionResult<Auth>> => {
-    if (closed || activeAuth === undefined || activeRequest === undefined) {
+  #closed = false
+
+  #auth: BetterAuthService<Auth> | undefined
+
+  #request: Request | undefined
+
+  #options: BetterAuthHonoSessionOptions | undefined
+
+  constructor(
+    auth: BetterAuthService<Auth>,
+    request: Request,
+    options: BetterAuthHonoSessionOptions | undefined
+  ) {
+    this.#auth = auth
+    this.#request = request
+    this.#options = options
+    Object.freeze(this)
+  }
+
+  #read(): Promise<SessionResult<Auth>> {
+    if (this.#closed || this.#auth === undefined || this.#request === undefined) {
       return Promise.resolve(closedSessionResult())
     }
 
-    settlement ??= toSessionResult(activeAuth, activeRequest, activeOptions)
-    return settlement
+    this.#settlement ??= toSessionResult(this.#auth, this.#request, this.#options)
+    return this.#settlement
   }
 
-  const get = (): BetterAuthOperation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>> =>
-    (async function* () {
-      const result = await read()
+  private async *readSession(): BetterAuthOperation<
+    BetterAuthSessionOf<Auth> | null,
+    BetterAuthFailure<Auth>
+  > {
+    const result = await this.#read()
 
-      if (Result.isError(result)) {
-        return yield* Result.err(result.error)
-      }
+    if (Result.isError(result)) {
+      return yield* Result.err(result.error)
+    }
 
-      return result.value
-    })()
+    return result.value
+  }
 
-  const requireSession = (): BetterAuthOperation<
+  readonly get = (): BetterAuthOperation<
+    BetterAuthSessionOf<Auth> | null,
+    BetterAuthFailure<Auth>
+  > => this.readSession()
+
+  private async *requireSession(): BetterAuthOperation<
     BetterAuthSessionOf<Auth>,
     BetterAuthFailure<Auth> | Unauthenticated
-  > =>
-    (async function* () {
-      const session = yield* get()
+  > {
+    const session = yield* this.get()
 
-      if (session === null) {
-        return yield* Result.err(
-          new Unauthenticated({
-            message: 'Authentication is required'
-          })
-        )
-      }
+    if (session === null) {
+      return yield* Result.err(
+        new Unauthenticated({
+          message: 'Authentication is required'
+        })
+      )
+    }
 
-      return session
-    })()
+    return session
+  }
 
-  const close = (): void => {
-    if (closed) {
+  readonly require = (): BetterAuthOperation<
+    BetterAuthSessionOf<Auth>,
+    BetterAuthFailure<Auth> | Unauthenticated
+  > => this.requireSession()
+
+  #close(): void {
+    if (this.#closed) {
       return
     }
 
-    closed = true
-    settlement = undefined
-    activeAuth = undefined
-    activeRequest = undefined
-    activeOptions = undefined
+    this.#closed = true
+    this.#settlement = undefined
+    this.#auth = undefined
+    this.#request = undefined
+    this.#options = undefined
   }
 
-  return {
-    value: Object.freeze({
-      get,
-      require: requireSession
-    }),
-    close
+  static close<Auth extends BetterAuthInstance>(value: BetterAuthHonoSessionValue<Auth>): void {
+    if (!(value instanceof CurrentSessionValue)) {
+      throw new TypeError('Current Auth Session release received an unexpected value')
+    }
+
+    value.#close()
   }
 }
 
@@ -241,25 +265,17 @@ function betterAuthHonoSession<
 
   const requestLayer = (
     context: HonoContext
-  ): BetterAuthHonoSessionRequestLayer<Tag, AuthTag, Auth> => {
-    let resource: CurrentSessionResource<Auth> | undefined
-
-    return Layer.scopedGen(
+  ): BetterAuthHonoSessionRequestLayer<Tag, AuthTag, Auth> =>
+    Layer.scopedGen(
       CurrentAuthSession,
       async function* () {
         const authService = yield* auth
-        const acquired = makeCurrentSessionValue(authService, context.req.raw, options)
-        const value = CurrentAuthSession.of(acquired.value)
-        resource = acquired
-        return value
+        return CurrentAuthSession.of(new CurrentSessionValue(authService, context.req.raw, options))
       },
-      () => {
-        const acquired = resource
-        resource = undefined
-        acquired?.close()
+      (instance) => {
+        CurrentSessionValue.close(instance)
       }
     )
-  }
 
   const get = (): Operation<BetterAuthSessionOf<Auth> | null, BetterAuthFailure<Auth>> =>
     (async function* () {

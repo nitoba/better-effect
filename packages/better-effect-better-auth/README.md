@@ -22,11 +22,11 @@ bun add better-effect-better-auth better-auth better-effect better-result
 bun add hono
 ```
 
-The package is ESM-only. The released v0.1 peer matrix is `better-auth`
+The package is ESM-only. The prepared v0.1 peer matrix is `better-auth`
 `^1.7.0`, `better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and
 TypeScript `>=5.7.0`. The optional `better-effect-better-auth/hono` entry point
 is planned for v0.2 and accepts Hono `>=4.0.0`; Hono is not needed for the
-released framework-neutral v0.1 entry point. These dependencies remain owned by
+prepared framework-neutral v0.1 entry point. These dependencies remain owned by
 the application.
 
 ## Effectful Better Auth service
@@ -280,7 +280,7 @@ app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 
 When the handler belongs inside a Program, use `yield* auth.handle(request)`;
 the returned `Response` is not eagerly consumed. The planned v0.2 Hono adapter
-is available from `better-effect-better-auth/hono`; the released v0.1
+is available from `better-effect-better-auth/hono`; the prepared v0.1
 framework-neutral package entry point does not require Hono.
 
 For tests, replace only the boundary you want to control with `Auth.of(...)`
