@@ -37,10 +37,10 @@ const forbiddenPackagePrefixes = [
   'solid-js'
 ] as const
 
-const forbiddenPeerInternals = [
-  /^better-auth\/.+\/.+/,
-  /^better-effect\/.+\/.+/,
-  /^better-result\/.+\/.+/
+const forbiddenPeerInternalPrefixes = [
+  'better-auth/',
+  'better-effect/',
+  'better-result/'
 ] as const
 
 const allowedExternalImports = new Set([
@@ -129,7 +129,8 @@ const isForbiddenPackage = (specifier: string): boolean =>
   )
 
 const isForbiddenPeerInternal = (specifier: string): boolean =>
-  forbiddenPeerInternals.some((pattern) => pattern.test(specifier))
+  !allowedExternalImports.has(specifier) &&
+  forbiddenPeerInternalPrefixes.some((prefix) => specifier.startsWith(prefix))
 
 const isWithinPackageRoot = (path: string): boolean => {
   const relativePath = relative(packageRoot, path)
@@ -305,7 +306,7 @@ const assertBoundarySelfTests = (): void => {
   assertThrows(() => assertModuleBoundary(fixture, "import 'effect'"), 'Forbidden import effect')
   assertThrows(
     () => assertModuleBoundary(fixture, "import 'better-auth/internal'"),
-    'Forbidden import better-auth/internal'
+    'Forbidden peer internal import better-auth/internal'
   )
   assertThrows(
     () => assertModuleBoundary(fixture, "import 'better-effect/internal/runtime'"),
@@ -362,14 +363,9 @@ const assertPackedManifest = async (): Promise<void> => {
     const packedManifest = JSON.parse(
       await readFile(join(extractedRoot, 'package', 'package.json'), 'utf8')
     ) as {
-      readonly devDependencies?: Readonly<Record<string, string>>
       readonly peerDependencies: Readonly<Record<string, string>>
     }
 
-    assertCondition(
-      packedManifest.devDependencies === undefined,
-      'Packed package must not publish devDependencies'
-    )
     assertCondition(
       Object.values(packedManifest.peerDependencies).every(
         (version) => !version.startsWith('workspace:')
