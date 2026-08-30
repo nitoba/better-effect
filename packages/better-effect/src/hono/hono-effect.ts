@@ -6,7 +6,12 @@ import type { EffectSuccess, EffectYield, ProgramFromGenerator } from '../effect
 import { Runtime } from '../runtime'
 import type { LayerInput } from '../layer/inference'
 import type { AnyService } from '../service'
-import { makeRequestBoundary, type RequestState } from './request-boundary'
+import {
+  makeRequestBoundary,
+  recordRequestFailure,
+  recordRequestSuccess,
+  type RequestState
+} from './request-boundary'
 import { defaultFailure, defaultSuccess } from './responses'
 import type {
   AnyGeneratorBody,
@@ -25,9 +30,7 @@ import type {
   HonoEffectOptions,
   HonoEffectRouteOptions,
   HonoRequestLayerChecks,
-  HonoEffectSuccess,
   MiddlewareEnvironment,
-  ResponseLike,
   MiddlewareInputs,
   MiddlewarePath
 } from './types'
@@ -35,6 +38,11 @@ import type {
 type HonoRouteArguments<Middlewares extends readonly AnyHonoMiddleware[], Body, Options> =
   | [...middlewares: Middlewares, body: Body]
   | [...middlewares: Middlewares, body: Body, options: Options | undefined]
+
+type HonoInternalHandler = (
+  context: HonoContext,
+  next: () => Promise<void>
+) => Promise<Response | void>
 
 type HonoHandlerFactory<
   ContextType extends object,
@@ -87,10 +95,12 @@ export class HonoEffect<
   }
 
   middleware<E extends Env = Env, Path extends string = string>(): MiddlewareHandler<E, Path> {
-    return makeRequestBoundary<Provided, RequestLayer, E, Path>({
+    return makeRequestBoundary<Provided, RequestLayer, Failure, E, Path>({
       runtime: this.runtime,
       states: this.states,
-      requestLayer: this.requestLayer
+      requestLayer: this.requestLayer,
+      onSuccess: this.onSuccess,
+      onFailure: this.onFailure
     })
   }
 
@@ -145,7 +155,8 @@ export class HonoEffect<
       handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
     }
 
-    return handler
+    // SAFETY: The public overload retains HonoEffect's Promise<Response> source contract; Hono also accepts the internal Promise<void> completion.
+    return handler as Handler<any, any, any, Promise<Response>>
   }
 
   gen<
@@ -205,7 +216,8 @@ export class HonoEffect<
       handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
     }
 
-    return handler
+    // SAFETY: The public overload retains HonoEffect's Promise<Response> source contract; Hono also accepts the internal Promise<void> completion.
+    return handler as Handler<any, any, any, Promise<Response>>
   }
 
   guard<
@@ -225,61 +237,43 @@ export class HonoEffect<
       const result = await program()
 
       if (Result.isError(result)) {
-        return await this.handleFailure(state, result.error, context)
+        this.recordFailure(state, result.error)
+        return
       }
 
       await next()
     }
   }
 
-  private handleFailure(
+  private recordFailure(
     state: RequestState,
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result errors are intentionally opaque at this HTTP boundary.
-    error: unknown,
-    context: HonoContext
-  ): ResponseLike {
-    state.failure ??= { cause: error }
-    // SAFETY: the public handler, gen, and guard constraints validate this error against Failure.
-    return this.onFailure(error as Failure, context)
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result errors are intentionally opaque until the WebEffect policy narrows them.
+    error: unknown
+  ): void {
+    recordRequestFailure(state, error)
   }
 
   private makeHandler(
     makeProgram: (context: HonoContext) => AnyProgram,
     options: HonoEffectRouteOptions<any, any>
-  ): Handler<any, any, any, Promise<Response>> {
+  ): HonoInternalHandler {
     return async (context) => {
       const state = this.getState(context)
-      const program = makeProgram(context)
-      const result = await program()
+      const result = await makeProgram(context)()
 
       if (Result.isError(result)) {
-        return await this.handleFailure(state, result.error, context)
+        this.recordFailure(state, result.error)
+        return
       }
 
-      const value = result.value
-
-      if (options.respond !== undefined) {
-        return await options.respond(value, context)
-      }
-
-      const success: HonoEffectSuccess<any> = { value }
-
-      if (options.status !== undefined) {
-        Object.assign(success, { status: options.status })
-      }
-
-      if (options.serialize !== undefined) {
-        Object.assign(success, { serialize: options.serialize })
-      }
-
-      return await this.onSuccess(success, context)
+      recordRequestSuccess(state, result.value, options)
     }
   }
 
   private composeInputMiddleware(
     inputMiddleware: AnyHonoMiddleware,
-    handler: Handler<any, any, any, Promise<Response>>
-  ): Handler<any, any, any, Promise<Response>> {
+    handler: HonoInternalHandler
+  ): HonoInternalHandler {
     return async (context, next) => {
       let downstreamResponse: Response | undefined
       let nextCalled = false
@@ -291,7 +285,11 @@ export class HonoEffect<
         }
 
         nextCalled = true
-        downstreamResponse = await handler(context, next)
+        const response = await handler(context, next)
+
+        if (response !== undefined) {
+          downstreamResponse = response
+        }
       }
       const middlewareResponse = await inputMiddleware(context, nextOnce)
 
@@ -303,7 +301,9 @@ export class HonoEffect<
         return downstreamResponse
       }
 
-      return context.res
+      if (context.finalized) {
+        return context.res
+      }
     }
   }
 
