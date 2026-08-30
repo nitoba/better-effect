@@ -13,6 +13,17 @@ export interface BetterAuthErrorCodeSource {
   readonly $ERROR_CODES: Readonly<Record<string, BetterAuthErrorCodeValue>>
 }
 
+/** Server-side Better Auth surface adapted by this package. */
+export interface BetterAuthInstance extends BetterAuthErrorCodeSource {
+  readonly api: {
+    readonly getSession: (context: never) => PromiseLike<unknown>
+  }
+  readonly handler: (request: Request) => PromiseLike<Response>
+  readonly $Infer: {
+    readonly Session: unknown
+  }
+}
+
 /** Error-code literals contributed by Better Auth core and configured plugins. */
 export type BetterAuthErrorCode<Auth extends BetterAuthErrorCodeSource> = Extract<
   keyof Auth['$ERROR_CODES'],
