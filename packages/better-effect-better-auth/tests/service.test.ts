@@ -76,8 +76,7 @@ class FakeAuth {
   readonly api = {
     getSession: async (input: FakeSessionInput): Promise<FakeSessionOutput> => {
       this.sessionInputs.push({
-        ...input,
-        query: input.query === undefined ? undefined : { ...input.query }
+        ...input
       })
 
       const authorization = input.headers.get('authorization')
@@ -451,7 +450,13 @@ describe('Better Auth Web handler', () => {
     expect(raw.handlerRequests).toEqual([request])
 
     if (Result.isOk(result)) {
-      expect(result.value).toBe(raw.lastResponse)
+      const expectedResponse = raw.lastResponse
+      expect(expectedResponse).toBeDefined()
+
+      if (expectedResponse !== undefined) {
+        expect(result.value).toBe(expectedResponse)
+      }
+
       expect(result.value.status).toBe(401)
       expect(result.value.statusText).toBe('Unauthorized')
       expect(result.value.headers.getSetCookie()).toEqual([
@@ -492,7 +497,10 @@ describe('Better Auth Web handler', () => {
 
     if (Result.isError(apiError)) {
       expect(apiError.error).toBeInstanceOf(BetterAuthApiError)
-      expect(apiError.error.code).toBe('INVALID_SESSION')
+
+      if (apiError.error instanceof BetterAuthApiError) {
+        expect(apiError.error.code).toBe('INVALID_SESSION')
+      }
     }
 
     if (Result.isError(defect)) {
