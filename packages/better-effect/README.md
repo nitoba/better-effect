@@ -344,9 +344,13 @@ await runtime.warmup()
 Warmup failures include the Service and resolution path, release resources
 already acquired, dispose the backend and reject the Runtime. Optional
 observers expose Service resolution/acquisition, execution and Layer release
-events without coupling the core to an observability SDK. Execution events
-carry one matching `executionId`, the optional Program name, copied readonly
-attributes, and a monotonic `durationMs` measured through execution cleanup:
+events without coupling the core to an observability SDK. Service events carry
+an optional matching `executionId` only when they occur inside an active
+execution; warmup and Runtime-root activity omit it. Execution events carry one
+matching `executionId`, the optional Program name, copied readonly attributes,
+and a monotonic `durationMs` measured through execution cleanup. An end event
+keeps the primary program `outcome` and adds `cleanupFailure` when execution
+Scope cleanup fails:
 
 ```ts
 const runtime = await Runtime.make(AppLive, {
@@ -437,6 +441,80 @@ await runtime.dispose()
 and its ordered `timeline`; call `clear()` to reuse it. Composition invokes
 observers in declaration order and isolates thrown or rejected observer
 failures from the Runtime result.
+
+### Optional OpenTelemetry tracing
+
+Install the OpenTelemetry API only when this subpath is used:
+
+```bash
+bun add better-effect @opentelemetry/api
+```
+
+`better-effect/opentelemetry` accepts either an existing `Tracer` or an existing
+`TracerProvider`. Its supported `@opentelemetry/api` peer range is
+`>=1.9.0 <1.10.0` (tested with 1.9.1). It never installs a global provider, SDK,
+context manager or exporter. The provider form only calls `getTracer`:
+
+```ts
+import { trace } from '@opentelemetry/api'
+import { OpenTelemetryRuntimeObserver } from 'better-effect/opentelemetry'
+
+const observer = OpenTelemetryRuntimeObserver.make({
+  // An existing provider can be passed instead with `provider` and `tracerName`.
+  tracer: trace.getTracer('acme.application'),
+  serviceResolution: 'events',
+  recordFailures: true,
+  executionAttributeAllowlist: ['requestId'],
+  sanitizeFailure: (cause) =>
+    cause instanceof KnownDomainError ? { message: cause.code } : undefined
+})
+
+const runtime = await Runtime.make(AppLive, { observers: [observer] })
+```
+
+The adapter starts one span for each execution, keyed only by the Runtime's
+`executionId`. The Program name is the span name, with
+`better-effect.execution` as the stable fallback. Executions whose program and
+execution cleanup succeed use OpenTelemetry `OK`; typed `Result.err` values,
+thrown defects and execution cleanup failures use `ERROR`. The Runtime observer
+keeps cleanup failure separate from the primary program outcome, so the adapter
+can report the final execution status without turning cleanup into a program
+defect or serializing its cause by default.
+Span timing is supplied by OpenTelemetry's start/end clock; `durationMs` is not
+written as a second duration source.
+
+Service telemetry is explicit and defaults to `off`:
+
+- `off` creates no Service telemetry.
+- `events` adds resolution, acquisition and release events to an execution span
+  only when the Runtime event carries an explicit active execution ID. Warmup,
+  Runtime-root cleanup and other events without an owner use standalone spans.
+- `spans` creates child Service spans only for events with an explicit active
+  execution ID. Warmup and Runtime-root cleanup are represented by standalone
+  service spans (or generic event-carrier spans in `events` mode); ambient
+  OpenTelemetry context is never used to guess ownership.
+
+Service identity is always the logical `serviceTag`; constructor names and
+Service instances are never used. `RuntimeObserver.compose` can combine this
+adapter with recorded, graph and application observers, and a tracer failure is
+isolated from every Runtime result. Call `observer.dispose()` when an observer
+may outlive its Runtime to end state left by malformed or missing end events;
+normal execution spans are ended exactly once by their matching `executionId`.
+
+Telemetry is privacy-preserving by default. The adapter records only bounded
+library, execution ID, Program/outcome, Service-tag and resolution-path data.
+It does not record causes, stacks, requests, arbitrary execution attributes or
+Service instances, and it never stringifies unknown values. Add attributes only
+through `executionAttributeAllowlist` or the explicit
+`sanitizeExecutionAttributes` callback; add failure details only through
+`sanitizeFailure` together with `recordFailures: true`. Unsupported values are
+dropped, strings are bounded, and default limits are 256 characters, 32
+attributes and 16 resolution-path tags (caller limits remain capped). Sanitizer
+callbacks should return only intentional scalar OpenTelemetry attributes.
+
+For distributed tracing, establish the caller's OpenTelemetry context before
+calling `runtime.run`; the adapter does not propagate context or instrument
+HTTP/database libraries automatically.
 
 For a startup view of the graph actually observed by a Runtime, compose the
 small graph observer and warm the Layer before accepting work:
