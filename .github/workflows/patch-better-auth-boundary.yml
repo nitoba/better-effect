@@ -23,6 +23,11 @@ jobs:
         with:
           ref: feat/better-auth-effectful-service
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
       - name: Patch boundary classification
         shell: bash
         run: |
