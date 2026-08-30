@@ -30,7 +30,8 @@ const scenarios = [
   'hono-mixed',
   'better-auth',
   'program-collections',
-  'job-registry'
+  'job-registry',
+  'job-store'
 ] as const
 type Scenario = (typeof scenarios)[number]
 type Compiler = 'current' | 'minimum'
@@ -184,6 +185,23 @@ const jobBudgets = {
     maxInstantiations: 6_000_000,
     maxMemoryMiB: 1_536,
     maxTypes: 1_500_000
+  }
+} satisfies Record<JobSize, Budget>
+
+const jobStoreBudgets = {
+  10: { maxCheckMs: 4_000, maxInstantiations: 400_000, maxMemoryMiB: 768, maxTypes: 200_000 },
+  50: { maxCheckMs: 10_000, maxInstantiations: 1_500_000, maxMemoryMiB: 1_024, maxTypes: 600_000 },
+  100: {
+    maxCheckMs: 20_000,
+    maxInstantiations: 4_000_000,
+    maxMemoryMiB: 1_536,
+    maxTypes: 1_200_000
+  },
+  250: {
+    maxCheckMs: 45_000,
+    maxInstantiations: 12_000_000,
+    maxMemoryMiB: 2_048,
+    maxTypes: 2_500_000
   }
 } satisfies Record<JobSize, Budget>
 
@@ -547,6 +565,48 @@ void missing
 `
 }
 
+const jobStoreFixtureSource = (size: number): string => {
+  const names = Array.from({ length: size }, (_, index) => String(index + 1).padStart(3, '0'))
+  const tokenDeclarations = names
+    .map((name) => `const Store${name} = JobStore.named('benchmark-${name}')`)
+    .join('\n')
+  const jobDeclarations = names
+    .map(
+      (name) =>
+        `const Job${name} = queue.job('job-${name}', { version: 1, payload, store: Store${name} })`
+    )
+    .join('\n')
+  const layers = names
+    .map((name) => `Layer.succeed(Store${name}, Store${name}.of(implementation))`)
+    .join(',\n  ')
+  const jobs = names.map((name) => `Job${name}`).join(', ')
+  const first = names[0]!
+
+  return `import { Effect, Layer, Runtime } from '../../../packages/better-effect/dist/index.mjs'
+import { Result } from '../../../packages/better-effect/node_modules/better-result'
+import { Codec, Job, JobRegistry, JobStore, Queue } from '../../../packages/better-effect-mq/src/index.ts'
+
+const implementation = {} as JobStore.Contract
+const queue = Queue.define('benchmark.store')
+const payload = Codec.json<{ readonly id: string }>()
+${tokenDeclarations}
+${jobDeclarations}
+const registry = JobRegistry.make([${jobs}] as const)
+const AppLive = Layer.merge(
+  ${layers}
+)
+const program = Effect.gen(async function* () {
+  const store = yield* Store${first}
+  const jobToken: typeof Store${first} = null as unknown as Job.StoreToken<typeof Job${first}>
+  void registry
+  void jobToken
+  return Result.ok(store.protocolVersion)
+})
+void Runtime.make(AppLive)
+void Runtime.run(AppLive, () => program)
+`
+}
+
 const honoValidatorTargets = ['param', 'header', 'query', 'cookie', 'json', 'form'] as const
 
 type HonoValidatorTarget = (typeof honoValidatorTargets)[number]
@@ -724,6 +784,10 @@ const fixtureSource = (scenario: Scenario, size: number): string => {
     return jobRegistryFixtureSource(size)
   }
 
+  if (scenario === 'job-store') {
+    return jobStoreFixtureSource(size)
+  }
+
   // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
   const names = serviceNames(size as Size)
   const withMethods = scenario === 'methods'
@@ -879,9 +943,11 @@ const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): str
       ? honoBudgets[size as HonoSize]
       : scenario === 'better-auth'
         ? betterAuthBudgets[size as BetterAuthSize]
-        : scenario === 'job-registry'
-          ? jobBudgets[size as JobSize]
-          : budgets[size as Size]
+        : scenario === 'job-store'
+          ? jobStoreBudgets[size as JobSize]
+          : scenario === 'job-registry'
+            ? jobBudgets[size as JobSize]
+            : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -951,7 +1017,7 @@ const main = async (): Promise<void> => {
         ? options.honoSizes
         : scenario === 'better-auth'
           ? options.betterAuthSizes
-          : scenario === 'job-registry'
+          : scenario === 'job-registry' || scenario === 'job-store'
             ? options.jobSizes
             : options.sizes
 

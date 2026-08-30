@@ -5,12 +5,13 @@
 `better-effect-mq` defines the storage-neutral protocol used by future queue,
 store, and worker packages. Version 0.1 exposes the protocol model and a small
 portable Codec boundary: JSON-safe records, nominal identities, deterministic
-claim ordering, persisted failure envelopes, pure state transitions, and
-explicit JSON/Standard Schema conversion. It does not open connections, start
-workers, or provide a `JobStore`.
+claim ordering, persisted failure envelopes, pure state transitions, explicit
+JSON/Standard Schema conversion, and the storage-neutral `JobStore` Service
+contract. It does not open connections, start workers, or provide an adapter.
 
-The package is built on [`better-result`](https://github.com/nitoba/better-result)
-and is not an Effect dependency.
+The package uses [`better-effect`](https://github.com/nitoba/better-effect)'s
+Service type and [`better-result`](https://github.com/nitoba/better-result)'s
+Result model; it does not depend on the full Effect library.
 
 ## Protocol version and delivery guarantee
 
@@ -229,8 +230,104 @@ package performs no result persistence or worker execution.
 checks, so descriptors from duplicate package copies can be recognized safely.
 The registry is local and immutable: duplicate queue/name/version identities are
 rejected, unknown lookups return an explicit error Result, and no handlers are
-registered. Enqueue, storage, retry scheduling, and worker execution are
-separate features.
+registered. Enqueue, storage, retry scheduling, and worker execution are separate features.
+
+## JobStore Service contract
+
+`JobStore` is the only storage seam in this package. It is a yieldable
+`better-effect` Service, not a CRUD repository, query builder, SQL abstraction,
+or worker. An adapter supplies a structural `JobStore.Contract` through a Layer;
+the core never imports a driver or inspects a backend kind.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { Result } from 'better-result'
+import { Codec, JobStore, Queue } from 'better-effect-mq'
+
+const DurableStore = JobStore.named('durable')
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string }>(),
+  store: DurableStore
+})
+
+const layer = Layer.succeed(DurableStore, DurableStore.of(adapterContract))
+const program = () =>
+  Effect.gen(async function* () {
+    const store = yield* DurableStore
+    return Result.ok(store.capabilities)
+  })
+
+await Runtime.run(layer, program)
+```
+
+The default token is `JobStore` (tag `@better-effect/mq/JobStore`). Named tokens
+are interned by their literal name and use
+`@better-effect/mq/JobStore/<name>`, so multiple stores can be provided in one
+Runtime without resolving the wrong store. A Job defaults to `JobStore`; pass
+`store` in its definition or use `bindJob(job, DurableStore)` / `Job.bind` to
+select a named token. The binding is immutable and does not register the Job or
+create a provider.
+
+A store implements these atomic operations:
+
+- `enqueue` and `enqueueMany`: explicit or idempotency-derived uniqueness is a
+  no-op reported as `{ duplicate: true }`; due jobs are waiting and future jobs
+  are delayed. Batch results retain input order. Batch units are independently
+  replayable rather than an all-or-nothing application transaction.
+- `claim`: atomically promotes due delayed jobs, orders candidates, reserves at
+  most `limit`, creates exclusive fencing leases, increments delivery counts,
+  and returns active snapshots. `ClaimRequestFor<Registry>` narrows accepted
+  versions to a local immutable `JobRegistry`.
+- `settle`: validates the lease, records one attempt, clears the lease, and
+  applies `complete`, `retry`, `fail`, or `cancelled` as one transition.
+- `release`, `heartbeat`, and `recoverStalled`: release returns a job to
+  waiting without consuming an attempt; heartbeat reports every lost lease and
+  cancellation request; stalled recovery never takes a still-valid lease and
+  persists requeue/fail plus its ledger entry atomically.
+- `awaitWake`: waits for a version/token change for the selected queues. It may
+  resolve spuriously, but the token prevents a wake between an empty claim and
+  waiting from being lost. Aborting the signal returns
+  `JobStoreWakeAbortedError`; polling-only stores may wait until abort because a
+  worker also uses a timeout.
+- `getJob`, `getAttempts`, `list`, and `counts` provide inspection. `list` uses
+  the stable `(createdAt, orderingSequence, id)` keyset cursor.
+- `redrive`, `cancel`, `requestCancellation`, `promote`, `remove`, `pause`,
+  `resume`, and `pausedQueues` provide the small administrative surface.
+  Unsupported filter combinations return `UnsupportedJobStoreOperationError`;
+  they never silently trigger a full scan.
+
+The portable inspection support matrix is intentionally fixed:
+
+| Operation               | Supported filters/order                                                                               | Cursor                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------- |
+| `getJob`, `getAttempts` | one `jobId`                                                                                           | none                   |
+| `list`                  | optional `queue`, `name`, and one state or state list; ordered by `(createdAt, orderingSequence, id)` | optional keyset cursor |
+| `counts`                | optional `queue` and `name`; returns every state bucket                                               | none                   |
+| `pausedQueues`          | no filter                                                                                             | none                   |
+
+There is no arbitrary predicate, offset pagination, provider-specific sort, or
+implicit full scan in this contract. An adapter that cannot implement one of
+the listed shapes returns `UnsupportedJobStoreOperationError` explicitly.
+
+An enqueue may supply an explicit `jobId`, an `idempotencyKey`, or neither;
+the store then derives a deterministic key or generates an ID according to its
+adapter policy. Uniqueness is scoped by store, queue, and Job identity
+(name/version), and a key collision is an observable duplicate rather than a
+second job. ID/token collisions must be bounded and reported as
+`JobStoreFailure`, never handled by an unbounded retry loop.
+
+Every operation receives an explicit `now` where time affects state. A
+`JobStoreFailure` describes infrastructure failure and state-specific tagged
+errors describe invalid transitions or lost fencing leases. Store capabilities
+(`notifications`, `batchClaim`, `transactionalEnqueue`, and `changeFeed`) are
+immutable performance hints: false never changes correctness or makes a basic
+operation unavailable. Wake semantics remain on `JobStore` rather than a
+separate notifier so token/version consistency cannot be split across Services.
+
+No adapter, backend, producer, worker, retry scheduler, or generic persistence
+API is included here.
 
 ## State machine
 

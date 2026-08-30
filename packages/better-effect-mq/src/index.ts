@@ -18,6 +18,7 @@ export {
   Job,
   JobRegistry,
   Queue,
+  bindJob,
   makeJobRegistry,
   normalizeIdempotencyKey,
   normalizeMetadata,
@@ -39,6 +40,7 @@ export type {
   JobIdentity,
   MetadataCallback,
   QueueDefinition,
+  RegisteredJobIdentity,
   RegistryIdentityInput,
   RetryableCallback
 } from './job'
@@ -98,6 +100,62 @@ export {
   validateSerializedJobFailure,
   validateTimestamp
 } from './protocol'
+
+export { JobStore, JobStoreWakeAbortedError } from './store'
+
+export type {
+  ActiveJobSnapshot,
+  AnyJobStoreToken,
+  AwaitWakeRequest,
+  CancelRequest,
+  CancelResult,
+  ClaimIdentity,
+  ClaimRequest,
+  ClaimRequestFor,
+  ClaimResult,
+  CountsRequest,
+  DefaultJobStoreToken,
+  EnqueueManyResult,
+  EnqueueRequest,
+  EnqueueResult,
+  GetAttemptsRequest,
+  GetJobRequest,
+  HeartbeatLease,
+  HeartbeatRequest,
+  HeartbeatResult,
+  JobCounts,
+  JobIdRequest,
+  JobListCursor,
+  JobStoreCapabilities,
+  JobStoreContract,
+  JobStoreEffect,
+  JobStoreError,
+  JobStoreInstance,
+  JobStoreNameLiteral,
+  JobStoreTag,
+  JobStoreToken,
+  ListJobsRequest,
+  ListJobsResult,
+  LostLease,
+  PauseQueueRequest,
+  PromoteRequest,
+  PromoteResult,
+  QueuePauseResult,
+  RecoverStalledRequest,
+  RecoverStalledResult,
+  RedriveRequest,
+  RedriveResult,
+  ReleaseRequest,
+  ReleaseResult,
+  RemoveRequest,
+  RemoveResult,
+  RequestCancellationRequest,
+  RequestCancellationResult,
+  SettleRequest,
+  SettlementRequest,
+  SettlementResult,
+  WakeToken
+} from './store'
 
 export type {
   ActiveLease,
