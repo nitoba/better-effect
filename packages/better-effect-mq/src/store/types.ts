@@ -1,4 +1,4 @@
-import type { Effect } from 'better-effect'
+import type { AnyService, Effect } from 'better-effect'
 
 import type { AnyJobRegistry, RegisteredJobIdentity } from '../job'
 import type { JobIdentity } from '../job'
@@ -12,14 +12,53 @@ import type {
   PersistedBackoff,
   SettlementOutcome
 } from '../protocol'
-import type { JobStoreError } from './errors'
+import type {
+  JobStoreCancelError,
+  JobStoreClaimError,
+  JobStoreCountsError,
+  JobStoreEnqueueError,
+  JobStoreEnqueueManyError,
+  JobStoreError,
+  JobStoreGetAttemptsError,
+  JobStoreGetJobError,
+  JobStoreHeartbeatError,
+  JobStoreListError,
+  JobStorePauseError,
+  JobStorePausedQueuesError,
+  JobStorePromoteError,
+  JobStoreRecoverStalledError,
+  JobStoreRedriveError,
+  JobStoreReleaseError,
+  JobStoreRemoveError,
+  JobStoreRequestCancellationError,
+  JobStoreResumeError,
+  JobStoreSettlementError,
+  JobStoreWakeError
+} from './errors'
 
 /** Opaque version returned by a claim and supplied to the wake boundary. */
 declare const WakeTokenBrand: unique symbol
 export type WakeToken = string & { readonly [WakeTokenBrand]: 'WakeToken' }
 
-/** A protocol operation whose failure is represented in the Effect error channel. */
-export type JobStoreEffect<Success> = Effect<Success, JobStoreError>
+/** A completed better-effect Result facade for one JobStore operation. */
+export type JobStoreEffect<
+  Success,
+  Failure extends JobStoreError = JobStoreError,
+  Requirements extends AnyService = never
+> = Effect<Success, Failure, Requirements>
+
+/**
+ * A JobStore operation may complete immediately or after adapter I/O.
+ * `Effect` is a completed Result facade, so the Promise belongs around the
+ * Result rather than inside the Effect type.
+ */
+export type JobStoreOperation<
+  Success,
+  Failure extends JobStoreError = JobStoreError,
+  Requirements extends AnyService = never
+> =
+  | JobStoreEffect<Success, Failure, Requirements>
+  | PromiseLike<JobStoreEffect<Success, Failure, Requirements>>
 
 /**
  * The feature flags exposed by a store. They are immutable hints only: an
@@ -263,28 +302,37 @@ export interface JobStoreContract {
   readonly protocolVersion: import('../protocol').ProtocolVersion
   readonly capabilities: JobStoreCapabilities
 
-  enqueue(request: EnqueueRequest): JobStoreEffect<EnqueueResult>
-  enqueueMany(requests: readonly EnqueueRequest[]): JobStoreEffect<EnqueueManyResult>
-  claim(request: ClaimRequest): JobStoreEffect<ClaimResult>
-  settle(request: SettleRequest): JobStoreEffect<SettlementResult>
-  release(request: ReleaseRequest): JobStoreEffect<ReleaseResult>
-  heartbeat(request: HeartbeatRequest): JobStoreEffect<HeartbeatResult>
-  recoverStalled(request: RecoverStalledRequest): JobStoreEffect<RecoverStalledResult>
-  awaitWake(request: AwaitWakeRequest): JobStoreEffect<void>
+  enqueue(request: EnqueueRequest): JobStoreOperation<EnqueueResult, JobStoreEnqueueError>
+  enqueueMany(
+    requests: readonly EnqueueRequest[]
+  ): JobStoreOperation<EnqueueManyResult, JobStoreEnqueueManyError>
+  claim(request: ClaimRequest): JobStoreOperation<ClaimResult, JobStoreClaimError>
+  settle(request: SettleRequest): JobStoreOperation<SettlementResult, JobStoreSettlementError>
+  release(request: ReleaseRequest): JobStoreOperation<ReleaseResult, JobStoreReleaseError>
+  heartbeat(request: HeartbeatRequest): JobStoreOperation<HeartbeatResult, JobStoreHeartbeatError>
+  recoverStalled(
+    request: RecoverStalledRequest
+  ): JobStoreOperation<RecoverStalledResult, JobStoreRecoverStalledError>
+  awaitWake(request: AwaitWakeRequest): JobStoreOperation<void, JobStoreWakeError>
 
-  getJob(request: GetJobRequest): JobStoreEffect<JobRecord | undefined>
-  getAttempts(request: GetAttemptsRequest): JobStoreEffect<readonly AttemptRecord[]>
-  list(request: ListJobsRequest): JobStoreEffect<ListJobsResult>
-  counts(request?: CountsRequest): JobStoreEffect<JobCounts>
+  getJob(request: GetJobRequest): JobStoreOperation<JobRecord | undefined, JobStoreGetJobError>
+  getAttempts(
+    request: GetAttemptsRequest
+  ): JobStoreOperation<readonly AttemptRecord[], JobStoreGetAttemptsError>
+  list(request: ListJobsRequest): JobStoreOperation<ListJobsResult, JobStoreListError>
+  counts(request?: CountsRequest): JobStoreOperation<JobCounts, JobStoreCountsError>
 
-  redrive(request: RedriveRequest): JobStoreEffect<RedriveResult>
-  cancel(request: CancelRequest): JobStoreEffect<CancelResult>
+  redrive(request: RedriveRequest): JobStoreOperation<RedriveResult, JobStoreRedriveError>
+  cancel(request: CancelRequest): JobStoreOperation<CancelResult, JobStoreCancelError>
   requestCancellation(
     request: RequestCancellationRequest
-  ): JobStoreEffect<RequestCancellationResult>
-  promote(request: PromoteRequest): JobStoreEffect<PromoteResult>
-  remove(request: RemoveRequest): JobStoreEffect<RemoveResult>
-  pause(request: PauseQueueRequest): JobStoreEffect<QueuePauseResult>
-  resume(request: PauseQueueRequest): JobStoreEffect<QueuePauseResult>
-  pausedQueues(): JobStoreEffect<readonly import('../protocol').QueueName[]>
+  ): JobStoreOperation<RequestCancellationResult, JobStoreRequestCancellationError>
+  promote(request: PromoteRequest): JobStoreOperation<PromoteResult, JobStorePromoteError>
+  remove(request: RemoveRequest): JobStoreOperation<RemoveResult, JobStoreRemoveError>
+  pause(request: PauseQueueRequest): JobStoreOperation<QueuePauseResult, JobStorePauseError>
+  resume(request: PauseQueueRequest): JobStoreOperation<QueuePauseResult, JobStoreResumeError>
+  pausedQueues(): JobStoreOperation<
+    readonly import('../protocol').QueueName[],
+    JobStorePausedQueuesError
+  >
 }

@@ -10,7 +10,34 @@ export type {
 } from './store'
 
 export { JobStoreWakeAbortedError } from './errors'
-export type { JobStoreError } from './errors'
+export type {
+  JobStoreCancelError,
+  JobStoreClaimError,
+  JobStoreCountsError,
+  JobStoreEnqueueError,
+  JobStoreEnqueueManyError,
+  JobStoreError,
+  JobStoreGetAttemptsError,
+  JobStoreGetJobError,
+  JobStoreHeartbeatError,
+  JobStoreInfrastructureError,
+  JobStoreLeaseTransitionError,
+  JobStoreListError,
+  JobStorePauseError,
+  JobStorePausedQueuesError,
+  JobStorePromoteError,
+  JobStoreQueryError,
+  JobStoreRecoverStalledError,
+  JobStoreRedriveError,
+  JobStoreReleaseError,
+  JobStoreRemoveError,
+  JobStoreRequestCancellationError,
+  JobStoreResumeError,
+  JobStoreSettlementError,
+  JobStoreTransitionError,
+  JobStoreValidationError,
+  JobStoreWakeError
+} from './errors'
 
 export type {
   ActiveJobSnapshot,
@@ -36,6 +63,7 @@ export type {
   JobListCursor,
   JobStoreCapabilities,
   JobStoreEffect,
+  JobStoreOperation,
   ListJobsRequest,
   ListJobsResult,
   LostLease,

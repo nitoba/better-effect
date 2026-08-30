@@ -7,7 +7,7 @@ import { Service } from 'better-effect'
 
 import type { ServiceRequirement, ServiceToken } from 'better-effect'
 
-import type { JobStoreContract, JobStoreEffect } from './types'
+import type { JobStoreContract, JobStoreEffect, JobStoreOperation } from './types'
 import type { JobStoreError } from './errors'
 
 export const jobStoreTag = '@better-effect/mq/JobStore' as const
@@ -15,7 +15,7 @@ const jobStoreTypeId = Symbol.for('better-effect-mq/JobStore')
 
 /** A non-empty literal accepted by `JobStore.named`. */
 export type JobStoreNameLiteral<Name extends string> = string extends Name
-  ? Name
+  ? never
   : Name extends ''
     ? never
     : Name
@@ -53,8 +53,6 @@ export type AnyJobStoreToken = DefaultJobStoreToken | JobStoreToken<string>
 
 type JobStoreValue = DefaultJobStoreToken
 
-const namedTokens = new Map<string, AnyJobStoreToken>()
-
 const validateName = (value: unknown): string => {
   if (typeof value !== 'string' || value.length === 0) {
     throw new TypeError('JobStore.named requires a non-empty string name')
@@ -82,19 +80,9 @@ const namedJobStore = <const Name extends string>(
   name: JobStoreNameLiteral<Name>
 ): JobStoreToken<Name> => {
   const validated = validateName(name)
-  const tag = `${jobStoreTag}/${validated}`
-  const existing = namedTokens.get(tag)
-
-  if (existing !== undefined) {
-    // SAFETY: the cache key is the complete literal Service tag, so a cached token has the requested named identity.
-    return existing as JobStoreToken<Name>
-  }
 
   // SAFETY: `validated` is the runtime-checked form of the caller's string literal.
-  const token = makeToken(validated as Name)
-  namedTokens.set(tag, token)
-
-  return token
+  return makeToken(validated as Name)
 }
 
 const defaultJobStore = makeToken(undefined)
@@ -110,9 +98,11 @@ Object.defineProperty(defaultJobStore, 'named', {
  * Yieldable storage-neutral queue contract.
  *
  * The default token uses `@better-effect/mq/JobStore`; named tokens use
- * `@better-effect/mq/JobStore/<name>`. Named tokens are interned by that tag,
- * so repeated calls for one logical name are the same constructor and do not
- * create a provider or resource. The cache contains only stateless tokens.
+ * `@better-effect/mq/JobStore/<name>`. Named tokens are lightweight handles,
+ * not mutable registrations: repeated calls for one literal name have the same
+ * type and tag, and resolver backends resolve them by that complete tag. Keep
+ * a token value when referential equality is useful; no process-global name
+ * registry is retained.
  */
 export interface JobStore extends JobStoreInstance<undefined> {}
 
@@ -122,9 +112,18 @@ export declare namespace JobStore {
   export type Contract = JobStoreContract
   export type Instance<Name extends string | undefined = undefined> = JobStoreInstance<Name>
   export type Token<Name extends string | undefined = undefined> = JobStoreToken<Name>
-  export type Name = JobStoreNameLiteral<string>
+  export type Name = string
   export type Tag<Name extends string | undefined = undefined> = JobStoreTag<Name>
-  export type Effect<Success> = JobStoreEffect<Success>
+  export type Effect<
+    Success,
+    Failure extends JobStoreError = JobStoreError,
+    Requirements extends import('better-effect').AnyService = never
+  > = JobStoreEffect<Success, Failure, Requirements>
+  export type Operation<
+    Success,
+    Failure extends JobStoreError = JobStoreError,
+    Requirements extends import('better-effect').AnyService = never
+  > = JobStoreOperation<Success, Failure, Requirements>
   export type Error = JobStoreError
   export type Failure = JobStoreError
   export type Capabilities = import('./types').JobStoreCapabilities

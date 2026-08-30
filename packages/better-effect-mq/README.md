@@ -263,12 +263,21 @@ await Runtime.run(layer, program)
 ```
 
 The default token is `JobStore` (tag `@better-effect/mq/JobStore`). Named tokens
-are interned by their literal name and use
-`@better-effect/mq/JobStore/<name>`, so multiple stores can be provided in one
-Runtime without resolving the wrong store. A Job defaults to `JobStore`; pass
-`store` in its definition or use `bindJob(job, DurableStore)` / `Job.bind` to
-select a named token. The binding is immutable and does not register the Job or
-create a provider.
+are lightweight handles identified by their complete literal tag,
+`@better-effect/mq/JobStore/<name>`. Repeated calls for one name have compatible
+types and tags but are not referentially cached; keep a token value when
+referential equality matters. This avoids a process-global name registry and
+allows multiple stores to be provided in one Runtime without resolving the
+wrong store. A Job defaults to `JobStore`; pass `store` in its definition or
+use `bindJob(job, DurableStore)` / `Job.bind` to select a named token. The
+binding is immutable and does not register the Job or create a provider.
+
+Every operation returns a `JobStoreOperation<Success, Failure>`: a completed
+`better-effect` Result facade or a `PromiseLike` of one. Adapters may therefore
+perform asynchronous I/O without changing the consumer boundary; await the
+operation and feed it to `Result.await` inside an Effect generator. Each method
+uses its own focused failure union, while `JobStoreError` remains the aggregate
+compatibility alias.
 
 A store implements these atomic operations:
 
