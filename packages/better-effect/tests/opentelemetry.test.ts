@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { SpanStatusCode, type Tracer } from '@opentelemetry/api'
+import { SpanStatusCode, type Span, type Tracer } from '@opentelemetry/api'
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
@@ -622,6 +622,102 @@ describe('OpenTelemetryRuntimeObserver', () => {
     observer.dispose()
     void scope.close()
   })
+
+  for (const reentrantOperation of [
+    'setAttribute',
+    'setStatus',
+    'failureSanitizer',
+    'end'
+  ] as const) {
+    test(`finalizes once when ${reentrantOperation} re-enters dispose`, () => {
+      const telemetry = makeTelemetry()
+      const scope = Scope.make()
+      const start = {
+        executionId: `reentrant-${reentrantOperation}`,
+        scope,
+        startedAt: 0
+      }
+      const end = {
+        ...start,
+        durationMs: 1,
+        outcome:
+          reentrantOperation === 'failureSanitizer'
+            ? { status: 'failure' as const, cause: { code: 'failure' } }
+            : { status: 'success' as const }
+      }
+      let observer!: OpenTelemetryRuntimeObserver
+      let reentered = false
+      let endCalls = 0
+      const reenterDispose = () => {
+        if (!reentered) {
+          reentered = true
+          observer.dispose()
+        }
+      }
+      const startSpan: Tracer['startSpan'] = (name, options, parentContext) => {
+        const span = telemetry.tracer.startSpan(name, options, parentContext)
+        const endSpan = span.end.bind(span)
+        Object.defineProperty(span, 'end', {
+          value: () => {
+            endCalls += 1
+
+            if (reentrantOperation === 'end') {
+              reenterDispose()
+            }
+
+            endSpan()
+          }
+        })
+
+        if (reentrantOperation === 'setAttribute') {
+          const setAttribute = span.setAttribute.bind(span)
+          Object.defineProperty(span, 'setAttribute', {
+            value: (...args: Parameters<Span['setAttribute']>) => {
+              reenterDispose()
+              return setAttribute(...args)
+            }
+          })
+        }
+
+        if (reentrantOperation === 'setStatus') {
+          const setStatus = span.setStatus.bind(span)
+          Object.defineProperty(span, 'setStatus', {
+            value: (...args: Parameters<Span['setStatus']>) => {
+              reenterDispose()
+              return setStatus(...args)
+            }
+          })
+        }
+
+        return span
+      }
+      const tracer = {
+        startSpan,
+        startActiveSpan: telemetry.tracer.startActiveSpan.bind(telemetry.tracer)
+      } satisfies Tracer
+      if (reentrantOperation === 'failureSanitizer') {
+        observer = OpenTelemetryRuntimeObserver.make({
+          tracer,
+          recordFailures: true,
+          sanitizeFailure: () => {
+            reenterDispose()
+            return { attributes: { safe: 'value' } }
+          }
+        })
+      } else {
+        observer = OpenTelemetryRuntimeObserver.make({ tracer })
+      }
+
+      observer.onExecutionStart(start)
+      observer.onExecutionEnd(end)
+
+      expect(endCalls).toBe(1)
+      expect(telemetry.exporter.getFinishedSpans()).toHaveLength(1)
+
+      observer.dispose()
+      void scope.close()
+    })
+  }
 
   test('isolates rejecting tracer and span operations from Runtime results', async () => {
     const startFailure = new Error('start-span-rejected')

@@ -880,6 +880,10 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
   }
 
   private finishExecution(execution: StartedExecutionSpan, event: RuntimeExecutionEndEvent): void {
+    // Finalization callbacks can synchronously re-enter the observer. Remove this span first so
+    // reentrant end or dispose calls cannot finalize it again.
+    this.removeExecution(execution)
+
     try {
       const status = executionEventStatus(event)
       callSpan(() => execution.span.setAttribute(OUTCOME_ATTRIBUTE, status))
@@ -900,7 +904,6 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
       }
     } finally {
       callSpan(() => execution.span.end())
-      this.executionSpans.delete(execution.executionId)
     }
   }
 
