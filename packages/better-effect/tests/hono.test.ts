@@ -17,6 +17,8 @@ class HttpService extends Service<HttpService>()('HttpService') {
 
 class HttpFailure extends Error {}
 
+class RequestId extends Service<RequestId>()('HonoRequestIdRuntime') {}
+
 const makeRuntime = () => Runtime.make(Layer.succeed(HttpService, new HttpService()))
 
 test('HonoEffect runs one request Scope and resolves Services lazily', async () => {
@@ -130,6 +132,254 @@ test('HonoEffect guard short-circuits with the central failure policy', async ()
   }
 })
 
+test('HonoEffect guard failure closes the request Scope with the guard cause', async () => {
+  const runtime = await makeRuntime()
+  const failure = new HttpFailure('unauthorized')
+  let observed: ScopeOutcome | undefined
+  let routeCalled = false
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.use(
+    '/private/*',
+    http.guard(async function* () {
+      yield* Effect.acquireRelease(
+        () => ({
+          [Symbol.dispose]: () => {}
+        }),
+        (_resource, outcome) => {
+          observed = outcome
+        }
+      )
+
+      return Result.err(failure)
+    })
+  )
+  app.get('/private/value', () => {
+    routeCalled = true
+    return new Response('unexpected')
+  })
+
+  try {
+    const response = await app.request('/private/value')
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'Internal Server Error' })
+    expect(routeCalled).toBe(false)
+    expect(observed).toEqual({ status: 'failure', cause: failure })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect lets a post-next Response replace its success policy', async () => {
+  const runtime = await makeRuntime()
+  const order: string[] = []
+  let policyCalls = 0
+  const http = HonoEffect.make(runtime, {
+    onSuccess: ({ value }, context) => {
+      order.push('policy')
+      policyCalls += 1
+      return context.text(String(value), 201)
+    }
+  })
+  const app = new Hono()
+  const after: MiddlewareHandler = async (context, next) => {
+    order.push('before')
+    await next()
+    order.push('after')
+    return context.text('after', 202)
+  }
+
+  app.use('*', http.middleware())
+  app.get(
+    '/',
+    http.gen(after, async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      order.push('program')
+      return Result.ok('policy')
+    })
+  )
+
+  try {
+    const response = await app.request('/')
+
+    expect(response.status).toBe(202)
+    expect(await response.text()).toBe('after')
+    expect(policyCalls).toBe(1)
+    expect(order).toEqual(['before', 'program', 'policy', 'after'])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect lets a post-next defect reach app.onError after a Result.err', async () => {
+  const runtime = await makeRuntime()
+  const failure = new HttpFailure('typed failure')
+  const defect = new Error('after defect')
+  let onFailureCalls = 0
+  let observedError: unknown
+  const http = HonoEffect.make(runtime, {
+    onFailure: (error: HttpFailure, context) => {
+      onFailureCalls += 1
+      expect(error).toBe(failure)
+      return context.text('typed failure', 422)
+    }
+  })
+  const app = new Hono()
+  const after: MiddlewareHandler = async (_context, next) => {
+    await next()
+    throw defect
+  }
+
+  app.onError((error, _context) => {
+    observedError = error
+    return new Response('after defect', { status: 599 })
+  })
+  app.use('*', http.middleware())
+  app.get(
+    '/',
+    http.gen(after, async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err(failure)
+    })
+  )
+
+  try {
+    const response = await app.request('/')
+
+    expect(response.status).toBe(599)
+    expect(await response.text()).toBe('after defect')
+    expect(observedError).toBe(defect)
+    expect(onFailureCalls).toBe(1)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect preserves a guard failure when its onFailure policy defects', async () => {
+  const events: string[] = []
+  const failure = new HttpFailure('unauthorized')
+  const policyDefect = new Error('failure policy defect')
+  let observedOutcome: ScopeOutcome | undefined
+  let observedError: unknown
+  let onFailureCalls = 0
+  let routeCalled = false
+  const runtime = await Runtime.make(Layer.succeed(HttpService, new HttpService()), {
+    observers: [
+      {
+        onExecutionStart: () => {
+          events.push('start')
+        },
+        onExecutionEnd: ({ outcome }) => {
+          events.push('end')
+          expect(outcome).toEqual({ status: 'failure', cause: failure })
+        }
+      }
+    ]
+  })
+  const http = HonoEffect.make(runtime, {
+    onFailure: (error: HttpFailure, _context) => {
+      onFailureCalls += 1
+      expect(error).toBe(failure)
+      throw policyDefect
+    }
+  })
+  const app = new Hono()
+
+  app.onError((error, _context) => {
+    observedError = error
+    return new Response('policy defect', { status: 599 })
+  })
+  app.use('*', http.middleware())
+  app.use(
+    '/private/*',
+    http.guard(async function* () {
+      yield* Effect.acquireRelease(
+        () => ({}),
+        (_resource, outcome) => {
+          observedOutcome = outcome
+        }
+      )
+
+      return Result.err(failure)
+    })
+  )
+  app.get('/private/value', () => {
+    routeCalled = true
+    return new Response('unexpected')
+  })
+
+  try {
+    const response = await app.request('/private/value')
+
+    expect(response.status).toBe(599)
+    expect(await response.text()).toBe('policy defect')
+    expect(observedError).toBe(policyDefect)
+    expect(observedOutcome).toEqual({ status: 'failure', cause: failure })
+    expect(onFailureCalls).toBe(1)
+    expect(routeCalled).toBe(false)
+    expect(events).toEqual(['start', 'end'])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect keeps Hono Context in request Layers and success policies', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const requestLayer = Layer.succeed(RequestId, new RequestId())
+  let requestLayerPath: string | undefined
+  let successPath: string | undefined
+  const http = HonoEffect.make(runtime, {
+    requestLayer: (context) => {
+      requestLayerPath = context.req.path
+      return requestLayer
+    },
+    onSuccess: ({ value }, context) => {
+      successPath = context.req.path
+      return context.json({ data: value }, 201)
+    }
+  })
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.get(
+    '/items/:id',
+    http.gen(async function* () {
+      const requestId = yield* RequestId
+      return Result.ok(requestId)
+    })
+  )
+  app.get(
+    '/respond',
+    http.handler(
+      () =>
+        Effect.fn(async function* () {
+          yield* RequestId
+          return Result.ok('responded')
+        }),
+      {
+        respond: (value, context) => context.text(`${value}:${context.req.path}`, 202)
+      }
+    )
+  )
+
+  try {
+    const response = await app.request('/items/1')
+    const responded = await app.request('/respond')
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual({ data: {} })
+    expect(responded.status).toBe(202)
+    expect(await responded.text()).toBe('responded:/respond')
+    expect(requestLayerPath).toBe('/respond')
+    expect(successPath).toBe('/items/1')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('HonoEffect provides CurrentRequest and the request AbortSignal', async () => {
   const runtime = await Runtime.make(Layer.merge())
   const http = HonoEffect.make(runtime)
@@ -164,6 +414,43 @@ test('HonoEffect provides CurrentRequest and the request AbortSignal', async () 
         aborted: true
       }
     })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect emits one Runtime execution pair when installed twice', async () => {
+  const events: string[] = []
+  const runtime = await Runtime.make(Layer.succeed(HttpService, new HttpService()), {
+    observers: [
+      {
+        onExecutionStart: () => {
+          events.push('start')
+        },
+        onExecutionEnd: () => {
+          events.push('end')
+        }
+      }
+    ]
+  })
+  const http = HonoEffect.make(runtime)
+  const app = new Hono()
+
+  app.use('*', http.middleware())
+  app.use('*', http.middleware())
+  app.get(
+    '/',
+    http.gen(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok('ok')
+    })
+  )
+
+  try {
+    const response = await app.request('/')
+
+    expect(response.status).toBe(200)
+    expect(events).toEqual(['start', 'end'])
   } finally {
     await runtime.dispose()
   }

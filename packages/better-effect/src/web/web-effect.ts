@@ -86,9 +86,13 @@ export class WebEffect {
     const onFailure = boundaryOptions?.onFailure ?? defaultFailure
     const requestLayer = combineRequestLayer(request, boundaryOptions?.requestLayer?.(request))
     let response: Response | undefined
+    let failurePolicyFailed = false
+    let failurePolicyCause: unknown
 
     // Return a Result from the execution even after mapping it so Runtime can
     // classify typed failures and give request finalizers the original cause.
+    // A policy defect is rethrown after this Result settles so it cannot replace
+    // the typed failure supplied to the request Scope.
     // SAFETY: Public overloads validate the request Layer before this erased Runtime boundary.
     await runtime.runWith(
       requestLayer as Layer.Any,
@@ -96,7 +100,13 @@ export class WebEffect {
         const result = await program()
 
         if (Result.isError(result)) {
-          response = assertResponse(await onFailure(result.error))
+          try {
+            response = assertResponse(await onFailure(result.error))
+          } catch (cause) {
+            failurePolicyFailed = true
+            failurePolicyCause = cause
+          }
+
           return Result.err(result.error)
         }
 
@@ -109,6 +119,10 @@ export class WebEffect {
       },
       { signal: request.signal }
     )
+
+    if (failurePolicyFailed) {
+      throw failurePolicyCause
+    }
 
     if (response === undefined) {
       throw new Error('WebEffect response policy did not produce a Response')
