@@ -73,9 +73,8 @@ jobs:
         shell: bash
         run: |
           bun install --frozen-lockfile
-          cd packages/better-effect-better-auth
-          bun run build
-          bun run test:package-boundaries
+          (cd packages/better-effect && bun run build)
+          (cd packages/better-effect-better-auth && bun run build && bun run test:package-boundaries)
 
       - name: Commit patch
         shell: bash
