@@ -1,4 +1,13 @@
-import { Codec, JobId, JobRegistry, Queue, protocolVersion } from 'better-effect-mq'
+import {
+  Codec,
+  Job,
+  JobId,
+  JobRegistry,
+  JobStore,
+  Queue,
+  bindJob,
+  protocolVersion
+} from 'better-effect-mq'
 import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
 import packageJson from 'better-effect-mq/package.json' with { type: 'json' }
@@ -15,6 +24,9 @@ const queue = Queue.define('external')
 const job = queue.job('smoke', { version: 1, payload: codec })
 const registry = JobRegistry.make([job] as const)
 const found = registry.lookup(job.identity)
+const namedStore = JobStore.named('external')
+const bound = bindJob(job, namedStore)
+const boundAgain = Job.bind(job, namedStore)
 
 void core
 void testing
@@ -25,3 +37,6 @@ void payload
 void recordState
 void encoded
 void found
+void namedStore
+void bound
+void boundAgain

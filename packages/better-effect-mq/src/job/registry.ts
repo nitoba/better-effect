@@ -12,6 +12,13 @@ import { isPlainObject, readOwnDataProperty } from './internal'
 
 export type RegistryIdentityInput = JobIdentity<string, string, number>
 
+/** An identity constrained to the registry's queue/name/version literals. */
+export type RegisteredJobIdentity<
+  Queue extends string = string,
+  Name extends string = string,
+  Version extends number = number
+> = JobIdentity<Queue, Name, Version>
+
 type RegistryMatch<
   Definitions extends readonly AnyJobDefinition[],
   Queue extends string,
@@ -35,7 +42,11 @@ type RegistryMatch<
               >
 
 type AcceptedIdentities<Definitions extends readonly AnyJobDefinition[]> = {
-  readonly [Index in keyof Definitions]: Job.Identity<Definitions[Index]>
+  readonly [Index in keyof Definitions]: RegisteredJobIdentity<
+    Job.Queue<Definitions[Index]>,
+    Job.Name<Definitions[Index]>,
+    Job.Version<Definitions[Index]>
+  >
 }
 
 type RegistryLookup<Definitions extends readonly AnyJobDefinition[]> = {
@@ -250,6 +261,7 @@ export declare namespace JobRegistry {
   export type Jobs<Current extends Any = Any> = Definition<Current>
   export type Identities<Current extends Any = Any> =
     Current extends JobRegistry<infer Definitions> ? AcceptedIdentities<Definitions> : never
+  export type Identity<Current extends Any = Any> = Identities<Current>[number]
 }
 
 export const JobRegistry = {

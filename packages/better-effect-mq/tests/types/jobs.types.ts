@@ -11,6 +11,7 @@ import {
   Codec,
   Job,
   JobRegistry,
+  JobStore,
   Queue,
   type AnyJobDefinition,
   type AnyJobRegistry,
@@ -100,7 +101,7 @@ expectTypeOf<Job.Payload<typeof sendEmailV1>>().toEqualTypeOf<{
 }>()
 expectTypeOf<Job.Success<typeof sendEmailV1>>().toEqualTypeOf<string>()
 expectTypeOf<Job.Failure<typeof sendEmailV1>>().toEqualTypeOf<{ readonly code: string }>()
-expectTypeOf<Job.Requirements<typeof sendEmailV1>>().toBeNever()
+expectTypeOf<Job.Requirements<typeof sendEmailV1>>().toEqualTypeOf<JobStore.Instance>()
 expectTypeOf<Job.Identity<typeof sendEmailV1>>().toEqualTypeOf<{
   readonly queue: 'emails'
   readonly name: 'send-email'
@@ -119,7 +120,7 @@ const statefulPrefix = statefulJob.payload.prefix
 void statefulPrefix
 expectTypeOf<Job.PayloadInput<typeof transformedJob>>().toEqualTypeOf<string>()
 expectTypeOf<Job.Payload<typeof transformedJob>>().toEqualTypeOf<{ readonly id: string }>()
-expectTypeOf<Job.Requirements<typeof transformedJob>>().toBeNever()
+expectTypeOf<Job.Requirements<typeof transformedJob>>().toEqualTypeOf<JobStore.Instance>()
 
 emails.job('invalid-requirements', {
   version: 1,

@@ -19,6 +19,8 @@ import {
   validatePositiveDuration
 } from '../protocol'
 import type { PersistedBackoff } from '../protocol'
+import { JobStore, isJobStoreToken } from '../store'
+import type { AnyJobStoreToken, DefaultJobStoreToken } from '../store'
 
 import type { QueueDefinition } from './queue'
 import { isQueueDefinition } from './queue'
@@ -115,7 +117,8 @@ export type JobDefinitionOptions<
   Version extends number,
   PayloadCodec extends CodecLike,
   ResultCodec extends CodecLike | undefined = undefined,
-  FailureCodec extends CodecLike | undefined = undefined
+  FailureCodec extends CodecLike | undefined = undefined,
+  Store extends AnyJobStoreToken = DefaultJobStoreToken
 > = {
   readonly version: PositiveIntegerLiteral<Version>
   readonly payload: PayloadCodec & EnsureCodec<PayloadCodec>
@@ -127,6 +130,8 @@ export type JobDefinitionOptions<
   readonly retryable?: FailureCodec extends undefined
     ? never
     : RetryableCallback<FailureValueOf<FailureCodec>>
+  /** The Service token used by future producer and worker operations. */
+  readonly store?: Store
 }
 
 type RetryableFor<FailureCodec extends CodecLike | undefined> = FailureCodec extends CodecLike
@@ -140,7 +145,8 @@ export interface JobDefinition<
   Version extends number = number,
   PayloadCodec extends CodecLike = CodecLike,
   ResultCodec extends CodecLike | undefined = undefined,
-  FailureCodec extends CodecLike | undefined = undefined
+  FailureCodec extends CodecLike | undefined = undefined,
+  Store extends AnyJobStoreToken = DefaultJobStoreToken
 > {
   readonly [JobDefinitionTypeId]: 'JobDefinition'
   readonly queue: Queue
@@ -151,6 +157,7 @@ export interface JobDefinition<
   readonly result: OptionalCodecSnapshot<ResultCodec>
   readonly failure: OptionalCodecSnapshot<FailureCodec>
   readonly defaults: JobDefaults
+  readonly store: Store
   readonly idempotencyKey: IdempotencyKeyCallback<CodecValueOf<PayloadCodec>> | undefined
   readonly metadata: MetadataCallback<CodecValueOf<PayloadCodec>> | undefined
   readonly retryable: RetryableFor<FailureCodec>
@@ -162,7 +169,8 @@ export type AnyJobDefinition = JobDefinition<
   number,
   CodecLike,
   CodecLike | undefined,
-  CodecLike | undefined
+  CodecLike | undefined,
+  AnyJobStoreToken
 >
 
 type RawDefinitionOptions = {
@@ -174,6 +182,7 @@ type RawDefinitionOptions = {
   readonly idempotencyKey: unknown
   readonly metadata: unknown
   readonly retryable: unknown
+  readonly store: unknown
 }
 
 type CanonicalDefinitionOptions = RawDefinitionOptions
@@ -186,7 +195,8 @@ const definitionFields = [
   'defaults',
   'idempotencyKey',
   'metadata',
-  'retryable'
+  'retryable',
+  'store'
 ] as const
 
 const defaultFields = ['attempts', 'backoff', 'timeoutMs', 'priority'] as const
@@ -271,7 +281,8 @@ const readDefinitionOptions = (
     defaults: fieldValue(fields.value, 'defaults'),
     idempotencyKey: fieldValue(fields.value, 'idempotencyKey'),
     metadata: fieldValue(fields.value, 'metadata'),
-    retryable: fieldValue(fields.value, 'retryable')
+    retryable: fieldValue(fields.value, 'retryable'),
+    store: fieldValue(fields.value, 'store')
   })
 }
 
@@ -1470,6 +1481,12 @@ const buildJob = (queue: unknown, name: unknown, options: unknown): AnyJobDefini
     throw callbacks.error
   }
 
+  const store = checkedOptions.value.store === undefined ? JobStore : checkedOptions.value.store
+
+  if (!isJobStoreToken(store)) {
+    throw new JobDefinitionError({ field: 'store', message: 'must be a JobStore token' })
+  }
+
   const identity = Object.freeze({
     queue: checkedQueue.value,
     name: checkedName.value,
@@ -1485,6 +1502,7 @@ const buildJob = (queue: unknown, name: unknown, options: unknown): AnyJobDefini
       result: result.value,
       failure: failure.value,
       defaults: defaults.value,
+      store,
       idempotencyKey: checkedOptions.value.idempotencyKey,
       metadata: checkedOptions.value.metadata,
       retryable: checkedOptions.value.retryable
@@ -1502,15 +1520,36 @@ export function createJob<
   const Version extends number,
   const PayloadCodec extends CodecLike,
   const ResultCodec extends CodecLike | undefined = undefined,
-  const FailureCodec extends CodecLike | undefined = undefined
+  const FailureCodec extends CodecLike | undefined = undefined,
+  const Store extends AnyJobStoreToken = DefaultJobStoreToken
 >(
   queue: NonEmptyStringLiteral<Queue>,
   name: NonEmptyStringLiteral<Name>,
-  options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec>
-): JobDefinition<Queue, Name, Version, PayloadCodec, ResultCodec, FailureCodec>
+  options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec, Store>
+): JobDefinition<Queue, Name, Version, PayloadCodec, ResultCodec, FailureCodec, Store>
 export function createJob(queue: unknown, name: unknown, options: unknown): AnyJobDefinition
 export function createJob(queue: unknown, name: unknown, options: unknown): AnyJobDefinition {
   return buildJob(queue, name, options)
+}
+
+/** Bind an inert Job descriptor to a default or named JobStore token. */
+export const bindJob = <Definition extends AnyJobDefinition, Store extends AnyJobStoreToken>(
+  definition: Definition,
+  store: Store
+): Job.Bound<Definition, Store> => {
+  if (!isJobDefinition(definition)) {
+    throw new JobDefinitionError({ field: 'definition', message: 'must be a Job definition' })
+  }
+
+  if (!isJobStoreToken(store)) {
+    throw new JobDefinitionError({ field: 'store', message: 'must be a JobStore token' })
+  }
+
+  // SAFETY: both values were validated above; binding changes only the declaration-only store selection.
+  return Object.freeze(markDescriptor({ ...definition, store }, jobTypeId)) as unknown as Job.Bound<
+    Definition,
+    Store
+  >
 }
 
 export const normalizeIdempotencyKey = (
@@ -1730,6 +1769,7 @@ const isJobDefinition = (value: unknown): value is AnyJobDefinition => {
   const idempotencyKey = readOwnDataProperty(value, 'idempotencyKey')
   const metadata = readOwnDataProperty(value, 'metadata')
   const retryable = readOwnDataProperty(value, 'retryable')
+  const store = readOwnDataProperty(value, 'store')
 
   if (
     !queue.present ||
@@ -1752,7 +1792,8 @@ const isJobDefinition = (value: unknown): value is AnyJobDefinition => {
     !isPlainObject(defaults.value) ||
     !idempotencyKey.present ||
     !metadata.present ||
-    !retryable.present
+    !retryable.present ||
+    !store.present
   ) {
     return false
   }
@@ -1801,7 +1842,8 @@ const isJobDefinition = (value: unknown): value is AnyJobDefinition => {
     (idempotencyKey.value === undefined || isCallable(idempotencyKey.value)) &&
     (metadata.value === undefined || isCallable(metadata.value)) &&
     (retryable.value === undefined || isCallable(retryable.value)) &&
-    (failure.value !== undefined || retryable.value === undefined)
+    (failure.value !== undefined || retryable.value === undefined) &&
+    isJobStoreToken(store.value)
   )
 }
 
@@ -1814,14 +1856,16 @@ export declare namespace Job {
     Version extends number = number,
     PayloadCodec extends CodecLike = CodecLike,
     ResultCodec extends CodecLike | undefined = undefined,
-    FailureCodec extends CodecLike | undefined = undefined
-  > = JobDefinition<Queue, Name, Version, PayloadCodec, ResultCodec, FailureCodec>
+    FailureCodec extends CodecLike | undefined = undefined,
+    Store extends AnyJobStoreToken = DefaultJobStoreToken
+  > = JobDefinition<Queue, Name, Version, PayloadCodec, ResultCodec, FailureCodec, Store>
   export type Options<
     Version extends number,
     PayloadCodec extends CodecLike,
     ResultCodec extends CodecLike | undefined = undefined,
-    FailureCodec extends CodecLike | undefined = undefined
-  > = JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec>
+    FailureCodec extends CodecLike | undefined = undefined,
+    Store extends AnyJobStoreToken = DefaultJobStoreToken
+  > = JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec, Store>
   export type Defaults = JobDefaults
   export type Identity<Current extends Any = Any> =
     Current extends JobDefinition<
@@ -1830,7 +1874,8 @@ export declare namespace Job {
       infer Version,
       infer _PayloadCodec,
       infer _ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? JobIdentity<Queue, Name, Version>
       : never
@@ -1841,7 +1886,8 @@ export declare namespace Job {
       infer _Version,
       infer _PayloadCodec,
       infer _ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? Queue
       : never
@@ -1852,7 +1898,8 @@ export declare namespace Job {
       infer _Version,
       infer _PayloadCodec,
       infer _ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? Name
       : never
@@ -1863,7 +1910,8 @@ export declare namespace Job {
       infer Version,
       infer _PayloadCodec,
       infer _ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? Version
       : never
@@ -1874,7 +1922,8 @@ export declare namespace Job {
       infer _Version,
       infer PayloadCodec,
       infer _ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? PayloadCodec extends CodecLike
         ? CodecInputOf<PayloadCodec>
@@ -1887,7 +1936,8 @@ export declare namespace Job {
       infer _Version,
       infer PayloadCodec,
       infer _ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? PayloadCodec extends CodecLike
         ? CodecValueOf<PayloadCodec>
@@ -1900,7 +1950,8 @@ export declare namespace Job {
       infer _Version,
       infer _PayloadCodec,
       infer ResultCodec,
-      infer _FailureCodec
+      infer _FailureCodec,
+      infer _Store
     >
       ? ResultCodec extends CodecLike
         ? CodecValueOf<ResultCodec>
@@ -1913,13 +1964,44 @@ export declare namespace Job {
       infer _Version,
       infer _PayloadCodec,
       infer _ResultCodec,
-      infer FailureCodec
+      infer FailureCodec,
+      infer _Store
     >
       ? FailureCodec extends CodecLike
         ? CodecValueOf<FailureCodec>
         : never
       : never
-  export type Requirements<_Current extends Any = Any> = never
+  export type StoreToken<Current extends Any = Any> =
+    Current extends JobDefinition<
+      infer _Queue,
+      infer _Name,
+      infer _Version,
+      infer _PayloadCodec,
+      infer _ResultCodec,
+      infer _FailureCodec,
+      infer Store
+    >
+      ? Store
+      : DefaultJobStoreToken
+  export type Store<Current extends Any = Any> = StoreToken<Current>
+  export type Requirements<Current extends Any = Any> =
+    StoreToken<Current> extends AnyJobStoreToken ? InstanceType<StoreToken<Current>> : never
+  export type Bound<Current extends Any, Store extends AnyJobStoreToken> =
+    Current extends JobDefinition<
+      infer Queue,
+      infer Name,
+      infer Version,
+      infer PayloadCodec,
+      infer ResultCodec,
+      infer FailureCodec,
+      infer _Store
+    >
+      ? JobDefinition<Queue, Name, Version, PayloadCodec, ResultCodec, FailureCodec, Store>
+      : never
+  export type EnqueueRequest<Current extends Any = Any> = import('../store').EnqueueRequest & {
+    readonly identity: Identity<Current>
+    readonly job?: never
+  }
   export type IdempotencyKey<_Current extends Any = Any> = string | undefined
   export type Metadata<_Current extends Any = Any> = Readonly<Record<string, string>>
 }
@@ -1935,10 +2017,11 @@ export const Job = {
     const Version extends number,
     const PayloadCodec extends CodecLike,
     const ResultCodec extends CodecLike | undefined = undefined,
-    const FailureCodec extends CodecLike | undefined = undefined
+    const FailureCodec extends CodecLike | undefined = undefined,
+    const Store extends AnyJobStoreToken = DefaultJobStoreToken
   >(
     name: NonEmptyStringLiteral<Name>,
-    options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec> & {
+    options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec, Store> & {
       readonly queue: Queue
     }
   ): JobDefinition<
@@ -1947,7 +2030,8 @@ export const Job = {
     Version,
     PayloadCodec,
     ResultCodec,
-    FailureCodec
+    FailureCodec,
+    Store
   > => {
     const fields = readDataFields(options, ['queue', ...definitionFields], 'options')
 
@@ -1986,9 +2070,12 @@ export const Job = {
       Version,
       PayloadCodec,
       ResultCodec,
-      FailureCodec
+      FailureCodec,
+      Store
     >
   },
+  bind: bindJob,
+  bindStore: bindJob,
   is: isJobDefinition,
   normalizeIdempotencyKey,
   normalizeMetadata,

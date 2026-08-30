@@ -1,5 +1,6 @@
 export {
   Job,
+  bindJob,
   createJob,
   normalizeIdempotencyKey,
   normalizeMetadata,
@@ -27,4 +28,4 @@ export type {
 } from './job'
 
 export type { AnyQueueDefinition, QueueDefinition } from './queue'
-export type { AnyJobRegistry, RegistryIdentityInput } from './registry'
+export type { AnyJobRegistry, RegisteredJobIdentity, RegistryIdentityInput } from './registry'
