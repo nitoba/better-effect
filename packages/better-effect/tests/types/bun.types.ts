@@ -7,7 +7,14 @@ import { CurrentAbortSignal, Effect, Layer, Runtime, Service } from '../../src'
 import { CurrentRequest } from '../../src/standard-services'
 
 class RootService extends Service<RootService>()('BunTypeRoot') {}
+class IncompatibleRootService extends Service<IncompatibleRootService>()('BunTypeRoot') {
+  readonly incompatible = true
+}
 class RequestService extends Service<RequestService>()('BunTypeRequest') {}
+class OtherRequestService extends Service<OtherRequestService>()('BunTypeOtherRequest') {}
+class IncompatibleCurrentRequest extends Service<IncompatibleCurrentRequest>()('CurrentRequest') {
+  readonly incompatible = true
+}
 class MissingService extends Service<MissingService>()('BunTypeMissing') {}
 class ExpectedFailure extends Error {
   readonly kind = 'expected' as const
@@ -61,6 +68,44 @@ expectTypeOf(handler).toEqualTypeOf<BunFetchHandler>()
 const serveOptions = { fetch: handler } satisfies Bun.Serve.Options<undefined>
 void serveOptions
 
+const incompatibleRootLayer = Layer.succeed(IncompatibleRootService, new IncompatibleRootService())
+// @ts-expect-error A request Layer cannot replace a root Service with an incompatible same-tag contract.
+const invalidRootCollision = BunEffect.make(runtime, {
+  requestLayer: () => incompatibleRootLayer
+})
+void invalidRootCollision
+
+const incompatibleCurrentRequestLayer = Layer.succeed(
+  IncompatibleCurrentRequest,
+  new IncompatibleCurrentRequest()
+)
+// @ts-expect-error A request Layer cannot replace CurrentRequest with an incompatible same-tag contract.
+const invalidCurrentRequestCollision = BunEffect.make(runtime, {
+  requestLayer: () => incompatibleCurrentRequestLayer
+})
+void invalidCurrentRequestCollision
+
+const otherRequestLayer = Layer.succeed(OtherRequestService, new OtherRequestService())
+const requestLayerUnion = Math.random() > 0.5 ? requestLayer : otherRequestLayer
+// @ts-expect-error A concrete request Layer union must be narrowed before the Bun boundary.
+const invalidConcreteUnion = BunEffect.make(runtime, {
+  requestLayer: () => requestLayerUnion
+})
+void invalidConcreteUnion
+
+declare const partialRequestLayer: Layer<RequestService, any>
+// @ts-expect-error A partially erased request Layer is not an unchecked escape hatch.
+const invalidPartialRequestLayer = BunEffect.make(runtime, {
+  requestLayer: () => partialRequestLayer
+})
+void invalidPartialRequestLayer
+
+const erasedRequestLayer: Layer.Any = requestLayer
+const uncheckedHttp = BunEffect.make(runtime, {
+  requestLayer: () => erasedRequestLayer
+})
+void uncheckedHttp
+
 const socketHandler = http.handler<{ readonly id: string }>((request, server) => {
   expectTypeOf(request).toEqualTypeOf<Request>()
   expectTypeOf(server).toEqualTypeOf<Bun.Server<{ readonly id: string }>>()
@@ -81,6 +126,20 @@ const missingProgram = Effect.fn(async function* () {
 // @ts-expect-error Bun handlers must provide every Program Service through the Runtime or request Layer.
 const invalidMissing = http.handler(() => missingProgram)
 void invalidMissing
+
+// A plain BunEffect annotation must remain safe rather than defaulting its Runtime environment to any.
+declare const plainHttp: BunEffect
+// @ts-expect-error A plain BunEffect does not erase unavailable Program Services.
+const invalidPlainMissing = plainHttp.handler(() => missingProgram)
+void invalidPlainMissing
+
+declare const erasedRuntime: Runtime
+const erasedHttp = BunEffect.make(erasedRuntime)
+const explicitlyErased = erasedHttp.handler(() => missingProgram)
+void explicitlyErased
+
+const uncheckedHandler = uncheckedHttp.handler(() => missingProgram)
+void uncheckedHandler
 
 const unexpectedProgram = Effect.fn(async function* () {
   yield* Result.await(Promise.resolve(Result.ok(undefined)))

@@ -40,7 +40,7 @@ type BunHandlerFactory<
 
 /** Bind a Runtime and WebEffect policy to a Bun.serve fetch handler. */
 export class BunEffect<
-  Provided extends AnyService = any,
+  Provided extends AnyService = never,
   Failure = unknown,
   RequestLayer extends LayerInput = DefaultRequestLayer
 > {
