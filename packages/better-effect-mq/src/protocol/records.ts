@@ -447,6 +447,18 @@ const validateJobRecordInternal = (
     return invalidRecord(failure.error.field, failure.error.message)
   }
 
+  if (attemptsMade.value > deliveryCount.value) {
+    return invalidRecord('attemptsMade', 'must not exceed deliveryCount')
+  }
+
+  if (state.value === 'active' && deliveryCount.value === 0) {
+    return invalidRecord('deliveryCount', 'active jobs must have at least one delivery')
+  }
+
+  if (state.value === 'active' && attemptsMade.value >= deliveryCount.value) {
+    return invalidRecord('attemptsMade', 'active jobs must have an unsettled delivery')
+  }
+
   if (attemptsMade.value > attemptsMax.value) {
     return invalidRecord('attemptsMade', 'must not exceed attemptsMax')
   }
@@ -553,6 +565,10 @@ const validateAttemptRecordInternal = (
 
   if (Result.isError(outcome)) {
     return invalidAttempt(outcome.error.field, outcome.error.message)
+  }
+
+  if (attemptNumber.value > delivery.value) {
+    return invalidAttempt('attempt', 'must not exceed delivery')
   }
 
   if (startedAt.value !== undefined && startedAt.value > finishedAt.value) {

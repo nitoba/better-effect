@@ -16,6 +16,7 @@ import {
   makePersistedBackoff,
   makeSerializedJobFailure,
   orderJobs,
+  promoteJob,
   recoverStalledJob,
   redriveJob,
   reduceJob,
@@ -251,6 +252,43 @@ test('counter boundaries reserve execution slots and reject unsafe overflow valu
   expect(Result.isError(saturatedClaim)).toBe(true)
 })
 
+test('canonical validation and reduction reject impossible counter relationships', () => {
+  const attemptsExceedDeliveries = waitingJob({ attemptsMade: 1, deliveryCount: 0 })
+
+  expect(Result.isError(makeJobRecord(attemptsExceedDeliveries))).toBe(true)
+
+  const activeWithoutDelivery = activeJob({ deliveryCount: 0 })
+  expect(Result.isError(validateJobRecord(activeWithoutDelivery))).toBe(true)
+
+  const activeAlreadySettled = activeJob({ attemptsMade: 1, deliveryCount: 1 })
+  expect(Result.isError(validateJobRecord(activeAlreadySettled))).toBe(true)
+
+  const snapshot = structuredClone(activeAlreadySettled)
+  const reduced = reduceJob(activeAlreadySettled, {
+    type: 'release',
+    jobId,
+    leaseToken,
+    now: 150
+  })
+
+  expect(Result.isError(reduced)).toBe(true)
+  expect(activeAlreadySettled).toEqual(snapshot)
+
+  expect(
+    Result.isError(
+      validateAttemptRecord({
+        attempt: 3,
+        delivery: 1,
+        startedAt: undefined,
+        finishedAt: 1,
+        outcome: 'failed',
+        result: undefined,
+        failure: undefined
+      })
+    )
+  ).toBe(true)
+})
+
 test('public DTO boundaries reject extra fields and hostile access', () => {
   const secret = Symbol('secret')
   const extraRecord = {
@@ -469,6 +507,34 @@ test('due delayed jobs become active atomically during claim', () => {
   expect(claimed.leaseToken).toBe(leaseToken)
 })
 
+test('admin promotion overrides a future schedule without claiming the job', () => {
+  const delayed = waitingJob({ state: 'delayed', runAt: 1_000 })
+  const command = { type: 'promote' as const, jobId, now: 100 }
+  const promoted = unwrap(promoteJob(delayed, command))
+  const transition = unwrap(reduceJob(delayed, command))
+
+  expect(promoted.state).toBe('waiting')
+  expect(promoted.runAt).toBe(100)
+  expect(promoted.attemptsMade).toBe(0)
+  expect(promoted.deliveryCount).toBe(0)
+  expect(transition.attempt).toBeUndefined()
+  expect(transition.record).toEqual(promoted)
+
+  const claimed = unwrap(
+    claimJob(promoted, {
+      type: 'claim',
+      jobId,
+      workerId: worker,
+      leaseToken,
+      leaseExpiresAt: 200,
+      now: 100
+    })
+  )
+
+  expect(claimed.state).toBe('active')
+  expect(claimed.deliveryCount).toBe(1)
+})
+
 test('invalid claims and fenced transitions leave the input snapshot untouched', () => {
   const delayed = waitingJob({ state: 'delayed', runAt: 200 })
   const delayedSnapshot = structuredClone(delayed)
@@ -576,11 +642,12 @@ test('settlement records attempts separately from deliveries and releases', () =
   expect(released.record.attemptsMade).toBe(1)
   expect(released.record.deliveryCount).toBe(2)
   expect(released.attempt?.outcome).toBe('released')
+  expect(Result.isOk(validateAttemptRecord(released.attempt))).toBe(true)
 })
 
 test('terminal jobs require explicit redrive and receive a fresh attempt budget', () => {
   const failed = unwrap(
-    settleJob(activeJob({ attemptsMade: 2, deliveryCount: 2 }), {
+    settleJob(activeJob({ attemptsMade: 2, deliveryCount: 3 }), {
       type: 'settle',
       jobId,
       leaseToken,
@@ -621,7 +688,7 @@ test('terminal jobs require explicit redrive and receive a fresh attempt budget'
 
   expect(redriven.state).toBe('delayed')
   expect(redriven.attemptsMade).toBe(0)
-  expect(redriven.deliveryCount).toBe(2)
+  expect(redriven.deliveryCount).toBe(3)
 })
 
 test('cancellation requests do not steal an active lease', () => {
@@ -744,7 +811,7 @@ test('requested cancellation cannot be dropped by release or stalled recovery', 
 
 test('cancelled settlement consumes exactly one attempt and active jobs retain a slot', () => {
   const settled = unwrap(
-    reduceJob(activeJob({ attemptsMade: 2, attemptsMax: 3 }), {
+    reduceJob(activeJob({ attemptsMade: 2, attemptsMax: 3, deliveryCount: 3 }), {
       type: 'settle',
       jobId,
       leaseToken,
@@ -755,27 +822,16 @@ test('cancelled settlement consumes exactly one attempt and active jobs retain a
 
   expect(settled.record.state).toBe('cancelled')
   expect(settled.record.attemptsMade).toBe(3)
+  expect(settled.record.deliveryCount).toBe(3)
   expect(settled.attempt?.attempt).toBe(3)
-
-  const atBudget = activeJob({ attemptsMade: 3, attemptsMax: 3 })
-  const atBudgetSnapshot = structuredClone(atBudget)
-  const rejected = settleJob(atBudget, {
-    type: 'settle',
-    jobId,
-    leaseToken,
-    now: 160,
-    outcome: { type: 'cancelled' }
-  })
-
-  expect(Result.isError(rejected)).toBe(true)
-  expect(Result.isError(validateJobRecord(atBudget))).toBe(true)
-  expect(atBudget).toEqual(atBudgetSnapshot)
+  expect(Result.isOk(validateAttemptRecord(settled.attempt))).toBe(true)
 
   const maximum = unwrap(
     reduceJob(
       activeJob({
         attemptsMade: Number.MAX_SAFE_INTEGER - 1,
-        attemptsMax: Number.MAX_SAFE_INTEGER
+        attemptsMax: Number.MAX_SAFE_INTEGER,
+        deliveryCount: Number.MAX_SAFE_INTEGER
       }),
       {
         type: 'settle',
@@ -809,6 +865,7 @@ test('stalled recovery is visible without consuming an attempt', () => {
   expect(recovered.record.failure?.kind).toBe('stalled')
   expect(recovered.attempt?.outcome).toBe('stalled')
   expect(recovered.attempt?.attempt).toBe(1)
+  expect(Result.isOk(validateAttemptRecord(recovered.attempt))).toBe(true)
   const highStallCount = unwrap(
     recoverStalledJob(activeJob({ stalledCount: 10 }), {
       type: 'recover-stalled',
@@ -832,22 +889,31 @@ test('stalled recovery is visible without consuming an attempt', () => {
   expect(lastRecoverable.stalledCount).toBe(Number.MAX_SAFE_INTEGER)
 
   const saturated = unwrap(
-    reduceJob(activeJob({ stalledCount: Number.MAX_SAFE_INTEGER }), {
-      type: 'recover-stalled',
-      jobId,
-      now: 200
-    })
+    reduceJob(
+      activeJob({
+        attemptsMade: 2,
+        deliveryCount: 3,
+        stalledCount: Number.MAX_SAFE_INTEGER
+      }),
+      {
+        type: 'recover-stalled',
+        jobId,
+        now: 200
+      }
+    )
   )
 
   expect(saturated.record.state).toBe('failed')
   expect(saturated.record.stalledCount).toBe(Number.MAX_SAFE_INTEGER)
-  expect(saturated.record.attemptsMade).toBe(0)
+  expect(saturated.record.attemptsMade).toBe(2)
+  expect(saturated.record.deliveryCount).toBe(3)
   expect(saturated.record.failure).toMatchObject({ kind: 'stalled', retryable: false })
   expect(saturated.attempt).toMatchObject({
-    attempt: 0,
-    delivery: 1,
-    outcome: 'failed'
+    attempt: 2,
+    delivery: 3,
+    outcome: 'stalled'
   })
+  expect(Result.isOk(validateAttemptRecord(saturated.attempt))).toBe(true)
 
   const requestedAtSaturation = unwrap(
     requestJobCancellation(activeJob({ stalledCount: Number.MAX_SAFE_INTEGER }), {
@@ -873,6 +939,7 @@ test('stalled recovery is visible without consuming an attempt', () => {
     delivery: 1,
     outcome: 'cancelled'
   })
+  expect(Result.isOk(validateAttemptRecord(cancelledAtSaturation.attempt))).toBe(true)
 })
 
 test('the v0.1 codec contract exposes one tagged runtime error', () => {

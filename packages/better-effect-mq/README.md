@@ -110,6 +110,11 @@ are:
   when `runAt <= now`.
 - Claim supplies a new non-empty lease token, worker ID, and an expiry strictly
   later than `now`.
+- `promote` is a separate explicit administrative schedule override for a
+  `delayed` job. It is allowed even when the original `runAt` is in the future,
+  sets `runAt` to `now`, and moves the job to `waiting` without claiming it or
+  changing its attempt/delivery counters. It emits no attempt ledger entry;
+  ordinary claim still requires the delayed job's `runAt` to be due.
 - Every transition leaving `active` (`complete`, `retry`, `fail`, `cancelled`,
   and `release`) requires the exact current lease token and `now < leaseExpiresAt`.
   Missing, old, or expired tokens return `LeaseLostError` and leave the snapshot
@@ -120,8 +125,10 @@ are:
   and returns the job to `waiting` without consuming an attempt. At the maximum,
   recovery is still atomic: a pending cancellation terminalizes as `cancelled`
   while preserving the saturated count; otherwise the job terminalizes as
-  `failed` with a non-retryable `stalled` failure and one `failed` ledger entry.
-  It never wraps the counter or leaves a saturated active job waiting forever.
+  `failed` with a non-retryable `stalled` failure and one `stalled` ledger entry.
+  `failed` is the resulting `JobRecord.state`, while `stalled` is the ledger
+  outcome: no handler returned `failed`, and `attemptsMade` is unchanged. It
+  never wraps the counter or leaves a saturated active job waiting forever.
 - Cancelling an active job first records a cancellation request while retaining
   its lease. It does not steal the lease. The next active exit is deterministically
   terminal: a `settle` (including complete, retry, fail, or cancelled) becomes
@@ -148,6 +155,9 @@ it. Storage adapters own the transaction; this package does not implement one.
 These counters are intentionally different, and all use safe integer
 representations:
 
+- Every `JobRecord` satisfies `attemptsMade <= deliveryCount`. An `active`
+  record additionally requires `deliveryCount >= 1` and
+  `attemptsMade < deliveryCount`, representing a claim that has not settled.
 - `attemptsMax` is a positive safe integer. `attemptsMade` counts handler
   executions that settle as `completed`, `retried`, `failed`, or `cancelled`,
   and is compared with `attemptsMax`. `waiting`, `delayed`, and `active` records
@@ -166,10 +176,14 @@ representations:
   saturates at its safe-integer maximum; the saturated recovery behavior is
   defined above.
 
-`AttemptRecord.attempt` and `.delivery` preserve those meanings. `released` and
-`stalled` entries remain visible even when no handler returned an outcome; a
+`AttemptRecord.attempt` and `.delivery` preserve those meanings, and every
+ledger entry satisfies `attempt <= delivery`. `released` and `stalled` entries
+remain visible even when no handler returned an outcome; a
 cancellation terminalized by release or stalled recovery uses the current
-attempt number and records a `cancelled` entry.
+attempt number and records a `cancelled` entry. In particular, saturated stalled
+recovery pairs a terminal `failed` JobRecord with a `stalled` ledger outcome; the
+state and ledger outcome are distinct and adapters must not treat that event as a
+handler failure or consume an attempt.
 
 ## Ordering and time
 

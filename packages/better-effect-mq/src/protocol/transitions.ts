@@ -5,7 +5,7 @@ import { validateOptionalTimestampValue, validateTimestampValue } from '../inter
 
 import { makeJobId, makeLeaseToken, makeWorkerId } from './brands'
 import type { JobId, LeaseToken } from './brands'
-import { validateJobRecord } from './records'
+import { validateAttemptRecord, validateJobRecord } from './records'
 import {
   InvalidJobTransitionError,
   JobDefinitionError,
@@ -119,10 +119,20 @@ const transition = (record: JobRecord, attempt?: AttemptRecord): TransitionResul
     return Result.err(checked.error)
   }
 
+  if (attempt === undefined) {
+    return Result.ok(Object.freeze({ record: checked.value, attempt: undefined }))
+  }
+
+  const checkedAttempt = validateAttemptRecord(attempt)
+
+  if (Result.isError(checkedAttempt)) {
+    return Result.err(checkedAttempt.error)
+  }
+
   return Result.ok(
     Object.freeze({
       record: checked.value,
-      attempt
+      attempt: checkedAttempt.value
     })
   )
 }
@@ -491,7 +501,7 @@ const terminalizeStalledRecovery = (record: JobRecord, now: number): TransitionR
     delivery: record.deliveryCount,
     startedAt: undefined,
     finishedAt: now,
-    outcome: 'failed',
+    outcome: 'stalled',
     result: undefined,
     failure: failure.value
   })
