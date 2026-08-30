@@ -100,7 +100,8 @@ export function betterAuthService<
   })
 
   // SAFETY: the class is the exact Service token created above and the readonly Layer was attached with a locked descriptor.
-  return AuthService as BetterAuthServiceToken<Tag, Auth>
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The static class type cannot observe a property attached through Object.defineProperty.
+  return AuthService as unknown as BetterAuthServiceToken<Tag, Auth>
 }
 
 /** Better Auth integration namespace. */
