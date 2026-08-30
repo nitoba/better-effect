@@ -181,18 +181,22 @@ test('job definitions reject super methods before any codec invocation', () => {
   expect(invocations).toBe(0)
 })
 
-test('job definitions reject direct eval receiver access before mutation can leak', () => {
+test('job definitions reject direct eval hidden behind division before mutation can leak', () => {
   const queue = Queue.define('eval-codecs')
-  const codec = {
-    prefix: 'original',
-    encode(value: string) {
-      return Codec.string.encode(`${eval('this.prefix')}:${value}`)
-    },
-    decode(value: unknown) {
-      return Codec.string.decode(`${eval('this.prefix')}:${String(value)}`)
-    }
-  }
 
+  // Keep the minified division expression in Function#toString so the scanner
+  // cannot classify `/eval(...)` as a regex only because source whitespace is present.
+  // oxlint-disable-next-line no-implied-eval -- this test constructs the exact hostile source.
+  const codec = Function(
+    'Codec',
+    String.raw`return {
+      prefix: 'original',
+      encode(value) { return Codec.number.encode(1/eval("this.prefix")/value) },
+      decode(value) { return Codec.number.decode(value) }
+    }`
+  )(Codec) as unknown as CodecType<number> & { prefix: string }
+
+  expect(Function.prototype.toString.call(codec.encode)).toContain('1/eval("this.prefix")/value')
   codec.prefix = 'mutated'
   expectDefinitionError(() => queue.job('direct-eval', { version: 1, payload: codec }))
 })

@@ -656,12 +656,35 @@ const readFunctionSource = (value: unknown): string | undefined => {
   }
 }
 
+const unicodeEscapePattern = /\\u([0-9a-f]{4}|\{[0-9a-f]{1,6}\})/giu
+
+const decodeUnicodeEscapes = (source: string): string =>
+  source.replace(unicodeEscapePattern, (escape) => {
+    const digits = escape[2] === '{' ? escape.slice(3, -1) : escape.slice(2)
+    const codePoint = Number.parseInt(digits, 16)
+
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : escape
+  })
+
+/**
+ * Check the raw source before tokenization because the scanner may mistake a
+ * division after a numeric literal for a regex and skip an actual direct eval.
+ * This intentionally treats textual and escaped eval spellings as unsafe; this
+ * boundary prefers rejecting harmless text over allowing receiver-sensitive eval.
+ */
+const hasPotentialDirectEval = (source: string): boolean =>
+  source.includes('eval') || decodeUnicodeEscapes(source).includes('eval')
+
 /**
  * Check only syntax whose receiver semantics cannot survive detachment. This is
  * deliberately not a free-variable or closure analysis: direct user functions
  * retain their lexical environment when the Job invokes them with the snapshot receiver.
  */
 const hasUnsafeMethodSyntax = (source: string): boolean => {
+  if (hasPotentialDirectEval(source)) {
+    return true
+  }
+
   const tokens = tokenizeFunctionSource(source)
 
   if (tokens === undefined) {
