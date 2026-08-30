@@ -5,7 +5,8 @@
     "better-auth": "1.7.0",
     "better-effect": "file:./artifacts/better-effect.tgz",
     "better-effect-better-auth": "file:./artifacts/better-effect-better-auth.tgz",
-    "better-result": "3.0.0"
+    "better-result": "3.0.0",
+    "hono": "file:./artifacts/hono.tgz"
   },
   "devDependencies": {
     "typescript": "6.0.3"
@@ -14,6 +15,7 @@
     "better-auth": "1.7.0",
     "better-effect": "0.13.0",
     "better-result": "3.0.0",
+    "hono": "4.0.0",
     "typescript": "6.0.3"
   }
 }

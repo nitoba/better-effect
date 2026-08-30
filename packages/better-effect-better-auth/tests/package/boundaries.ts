@@ -14,6 +14,7 @@ const repositoryLockfilePath = join(repositoryRoot, 'bun.lock')
 
 const expectedExports = {
   '.': './dist/index.mjs',
+  './hono': './dist/hono.mjs',
   './package.json': './package.json'
 } as const satisfies Record<string, string>
 
@@ -21,6 +22,7 @@ const expectedPeers = {
   'better-auth': '^1.7.0',
   'better-effect': '>=0.12.0 <0.14.0',
   'better-result': '^3.0.0',
+  hono: '>=4.0.0',
   typescript: '>=5.7.0'
 } as const satisfies Record<string, string>
 
@@ -52,6 +54,7 @@ const forbiddenPackagePrefixes = [
 
 const forbiddenPeerInternalPrefixes = ['better-auth/', 'better-effect/', 'better-result/'] as const
 const allowedDevelopmentOnlyPackages = new Set(['hono'])
+const allowedOptionalPeerPackages = new Set(['hono'])
 
 const allowedExternalImports = new Set([
   'better-auth/api',
@@ -232,11 +235,25 @@ const isWithinPackageRoot = (path: string): boolean => {
   return relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath)
 }
 
+const isHonoModule = (path: string): boolean => {
+  const relativePath = relative(packageRoot, path)
+
+  return (
+    relativePath === join('src', 'hono', 'index.ts') ||
+    relativePath === join('dist', 'hono.mjs') ||
+    relativePath === join('dist', 'hono.d.mts')
+  )
+}
+
 const assertModuleBoundary = (path: string, source: string): void => {
   for (const specifier of moduleSpecifiers(source, path)) {
-    assertCondition(!isForbiddenPackage(specifier), `Forbidden import ${specifier} in ${path}`)
+    const honoModule = isHonoModule(path)
     assertCondition(
-      !isForbiddenPeerInternal(specifier),
+      !isForbiddenPackage(specifier) || (honoModule && specifier === 'hono'),
+      `Forbidden import ${specifier} in ${path}`
+    )
+    assertCondition(
+      !isForbiddenPeerInternal(specifier) || (honoModule && specifier === 'better-effect/hono'),
       `Forbidden peer internal import ${specifier} in ${path}`
     )
 
@@ -250,7 +267,8 @@ const assertModuleBoundary = (path: string, source: string): void => {
     }
 
     assertCondition(
-      allowedExternalImports.has(specifier),
+      allowedExternalImports.has(specifier) ||
+        (honoModule && (specifier === 'hono' || specifier === 'better-effect/hono')),
       `Unapproved external import ${specifier} in ${path}`
     )
   }
@@ -290,6 +308,12 @@ const assertManifestPeers = (manifest: JsonObject): void => {
   for (const [name, range] of Object.entries(expectedPeers)) {
     assertCondition(peers[name] === range, `Unexpected peer range for ${name}`)
   }
+
+  const peerMetadata = manifest['peerDependenciesMeta']
+  assertCondition(isJsonObject(peerMetadata), 'Peer dependency metadata must be an object')
+  const honoMetadata = peerMetadata['hono']
+  assertCondition(isJsonObject(honoMetadata), 'Hono peer metadata is missing')
+  assertCondition(honoMetadata['optional'] === true, 'Hono must remain an optional peer')
 }
 
 const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
@@ -305,8 +329,10 @@ const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
     for (const name of Object.keys(value)) {
       const allowedDevelopmentOnly =
         section === 'devDependencies' && allowedDevelopmentOnlyPackages.has(name)
+      const allowedOptionalPeer =
+        section === 'peerDependencies' && allowedOptionalPeerPackages.has(name)
       assertCondition(
-        allowedDevelopmentOnly || !isForbiddenPackage(name),
+        allowedDevelopmentOnly || allowedOptionalPeer || !isForbiddenPackage(name),
         `Forbidden dependency ${name} appears in ${section}`
       )
     }
@@ -424,6 +450,8 @@ const assertGeneratedPackage = async (): Promise<void> => {
   assertCondition(sourceFiles.length > 0, 'Expected at least one source module')
   assertCondition(generatedNames.has('index.mjs'), 'Missing generated index.mjs')
   assertCondition(generatedNames.has('index.d.mts'), 'Missing generated index.d.mts')
+  assertCondition(generatedNames.has('hono.mjs'), 'Missing generated hono.mjs')
+  assertCondition(generatedNames.has('hono.d.mts'), 'Missing generated hono.d.mts')
 
   for (const path of [...sourceFiles, ...generatedModules]) {
     assertModuleBoundary(path, await readFile(path, 'utf8'))
@@ -436,6 +464,13 @@ const assertGeneratedPackage = async (): Promise<void> => {
     JSON.stringify(runtimeExports) ===
       JSON.stringify(['BetterAuth', 'BetterAuthApiError', 'Unauthenticated']),
     `Unexpected runtime exports: ${runtimeExports.join(', ')}`
+  )
+
+  const honoEntrypoint = await import(pathToFileURL(join(distRoot, 'hono.mjs')).href)
+  const honoExports = Object.keys(honoEntrypoint).sort()
+  assertCondition(
+    JSON.stringify(honoExports) === JSON.stringify(['BetterAuthHono']),
+    `Unexpected Hono runtime exports: ${honoExports.join(', ')}`
   )
 }
 
@@ -539,6 +574,11 @@ const assertBoundaryPathSafety = (coreFixture: string): void => {
   assertThrows(
     () => assertModuleBoundary(coreFixture, "import '#outside-package'"),
     'Unapproved external import #outside-package'
+  )
+  assertThrows(() => assertModuleBoundary(coreFixture, "import 'hono'"), 'Forbidden import hono')
+  assertModuleBoundary(
+    join(sourceRoot, 'hono', 'index.ts'),
+    "import type { Context } from 'hono'\nimport type { HonoEffect } from 'better-effect/hono'"
   )
 }
 

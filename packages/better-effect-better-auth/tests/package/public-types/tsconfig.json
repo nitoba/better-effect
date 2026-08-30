@@ -18,6 +18,7 @@
     "transport-modes.ts",
     "plugin-api.ts",
     "plugin-session.ts",
+    "hono.ts",
     "errors.ts",
     "multiple-services.ts",
     "testing-overrides.ts"
