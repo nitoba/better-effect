@@ -355,6 +355,27 @@ test('job definitions reject arrow codecs with lexical receivers', () => {
   expectDefinitionError(() => queue.job('arrow', { version: 1, payload: new ArrowCodec() }))
 })
 
+test('job definitions reject minified arrow receiver access before mutation can leak', () => {
+  const queue = Queue.define('arrow-division-codecs')
+
+  // Keep the minified division expression in Function#toString so the scanner
+  // cannot classify `/this.factor/` as a regex after the numeric literal.
+  // oxlint-disable-next-line no-implied-eval -- this test constructs the exact hostile source.
+  const ArrowCodec = Function(
+    'Codec',
+    String.raw`return class ArrowCodec {
+      factor = 2
+      encode = value=>Codec.number.encode(1/this.factor/value)
+      decode = value=>Codec.number.decode(value)
+    }`
+  )(Codec) as unknown as new () => CodecType<number> & { factor: number }
+  const codec = new ArrowCodec()
+
+  expect(Function.prototype.toString.call(codec.encode)).toContain('1/this.factor/value')
+  codec.factor = 4
+  expectDefinitionError(() => queue.job('arrow-division', { version: 1, payload: codec }))
+})
+
 test('job definitions preserve codec closures while detaching receiver state', async () => {
   const queue = Queue.define('closure-codecs')
   let prefix = 'outside'

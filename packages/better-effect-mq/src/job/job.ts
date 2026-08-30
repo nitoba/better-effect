@@ -666,6 +666,19 @@ const decodeUnicodeEscapes = (source: string): string =>
     return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : escape
   })
 
+const arrowFunctionSourcePattern = /^(?:async\b\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>/u
+
+/**
+ * Check the raw source before tokenization because the scanner may mistake a
+ * division after a numeric literal for a regex and skip `this` in an arrow.
+ * The anchored arrow prefix keeps ordinary methods with dynamic `this` safe.
+ */
+const hasPotentialArrowThis = (source: string): boolean => {
+  const decodedSource = decodeUnicodeEscapes(source)
+
+  return arrowFunctionSourcePattern.test(decodedSource) && decodedSource.includes('this')
+}
+
 /**
  * Check the raw source before tokenization because the scanner may mistake a
  * division after a numeric literal for a regex and skip an actual direct eval.
@@ -690,7 +703,11 @@ const hasPotentialSuper = (source: string): boolean =>
  * retain their lexical environment when the Job invokes them with the snapshot receiver.
  */
 const hasUnsafeMethodSyntax = (source: string): boolean => {
-  if (hasPotentialDirectEval(source) || hasPotentialSuper(source)) {
+  if (
+    hasPotentialArrowThis(source) ||
+    hasPotentialDirectEval(source) ||
+    hasPotentialSuper(source)
+  ) {
     return true
   }
 
