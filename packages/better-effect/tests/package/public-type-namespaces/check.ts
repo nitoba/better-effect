@@ -151,6 +151,50 @@ for (const [namespaceName, members] of Object.entries(aliases)) {
   }
 }
 
+const webDeclarations = await readDeclarationGraph(
+  join(distRoot, 'web.mjs').replace(/\.mjs$/, '.d.mts')
+)
+const webEsm = await readFile(join(distRoot, 'web.mjs'), 'utf8')
+const webAliases = [
+  'Options',
+  'Success',
+  'ResponseLike',
+  'Program',
+  'RequestLayer',
+  'Value',
+  'Failure'
+] as const
+const webNamespaceMatch = webDeclarations.match(/declare namespace WebEffect\s*\{([\s\S]*?)\n\}/)
+
+assertCondition(webNamespaceMatch !== null, 'Missing declaration namespace WebEffect')
+const webNamespaceBody = webNamespaceMatch[1]
+assertCondition(webNamespaceBody !== undefined, 'Missing WebEffect namespace body')
+
+for (const member of webAliases) {
+  assertCondition(
+    new RegExp(`\\btype\\s+${member}(?:\\s*<|\\s*=)`).test(webNamespaceBody),
+    `Missing declaration alias WebEffect.${member}`
+  )
+  assertCondition(
+    !new RegExp(`\\bWebEffect\\s*(?:\\.${member}|\\[["']${member}["']\\])\\s*=`).test(webEsm),
+    `Unexpected runtime assignment for WebEffect.${member}`
+  )
+}
+
+assertCondition(
+  !/\(\s*function\s*\(\s*WebEffect\s*\)/.test(webEsm),
+  'Unexpected WebEffect namespace IIFE'
+)
+
+const web = await import(pathToFileURL(join(distRoot, 'web.mjs')).href)
+assertCondition(web.WebEffect !== undefined, 'Missing WebEffect runtime export')
+for (const member of webAliases) {
+  assertCondition(
+    !Object.prototype.hasOwnProperty.call(web.WebEffect, member),
+    `Type alias leaked to runtime as WebEffect.${member}`
+  )
+}
+
 for (const staleName of [
   'EffectResult',
   'AnyEffectResult',

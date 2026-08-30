@@ -596,6 +596,52 @@ with the execution Scope and never change the shared Runtime environment. Its
 external requirements must be provided by the Runtime, and the Hono failure
 handler/request-Layer types are checked at the adapter boundary.
 
+### Framework-neutral Web request boundaries
+
+The `better-effect/web` entrypoint provides a small Request-to-Response
+boundary without depending on Hono or another framework. Use it anywhere a
+framework gives you standard Web `Request` and `Response` values:
+
+```ts
+import { Result } from 'better-result'
+import { CurrentAbortSignal, Effect } from 'better-effect'
+import { CurrentRequest } from 'better-effect/standard-services'
+import { WebEffect } from 'better-effect/web'
+
+const handleRequest = (request: Request) =>
+  WebEffect.handle(
+    runtime,
+    request,
+    Effect.fn(async function* () {
+      const currentRequest = yield* CurrentRequest
+      const signal = yield* CurrentAbortSignal
+      const user = yield* UserService
+      const result = yield* Result.await(user.find())
+
+      return Result.ok({
+        result,
+        url: (currentRequest.request as Request).url,
+        aborted: signal.aborted
+      })
+    })
+  )
+```
+
+`WebEffect.handle` supplies `CurrentRequest`, forwards `request.signal`, and
+runs one lazy Program in a child Scope. Request-local resources are released
+before the returned Promise resolves; Runtime-root resources remain owned by
+the Runtime. A `requestLayer` option can add per-request providers or
+intentionally override a compatible request tag.
+
+The default success policy passes through a `Response`, maps `undefined` to
+204, and wraps every other value as `{ data: value }` JSON. The default failure
+policy passes through a `Response` failure and redacts every other typed
+failure to `{ error: 'Internal Server Error' }` with status 500. Custom
+`onSuccess`/`onFailure` policies may be asynchronous but must return a
+`Response`; thrown defects remain rejected. The Program's Service and failure
+channels, request-Layer requirements, and override compatibility are checked
+at the TypeScript boundary.
+
 ### Hono request boundaries
 
 The optional `better-effect/hono` entrypoint runs one Runtime execution and
