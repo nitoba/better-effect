@@ -18,7 +18,7 @@ bun add better-effect-better-auth better-auth better-effect better-result
 The v0.1 release supports:
 
 - `better-auth` `^1.7.0`
-- `better-effect` `>=0.13.0 <0.14.0`
+- `better-effect` `>=0.12.0 <0.14.0`
 - `better-result` `^3.0.0`
 - TypeScript `>=5.7.0`
 
@@ -230,20 +230,19 @@ A hook callback receives the original Better Auth middleware context. The same
 reference is available to deeper Programs through `AuthHooks.Context`:
 
 ```ts
-import { CurrentAbortSignal, CurrentRuntimeAbortSignal } from 'better-effect'
+import { CurrentAbortSignal } from 'better-effect'
 
 const observe = AuthHooks.middleware((context) =>
   Effect.fn(async function* () {
     const hook = yield* AuthHooks.Context
-    const requestSignal = yield* CurrentAbortSignal
-    const runtimeSignal = yield* CurrentRuntimeAbortSignal
+    const executionSignal = yield* CurrentAbortSignal
 
     // Both contexts refer to the same Better Auth invocation.
-    void context === hook.context
-    // With a request, requestSignal is that exact request.signal.
-    void requestSignal
-    // Runtime shutdown remains separately observable.
-    void runtimeSignal
+    void (context === hook.context)
+    // The original request signal remains available without replacement.
+    void (hook.context.request?.signal === context.request?.signal)
+    // CurrentAbortSignal may be linked to Runtime shutdown as well.
+    void executionSignal
 
     return Result.ok()
   })
@@ -268,6 +267,11 @@ const auditPlugin = {
 `Result.ok(...)` values cross the bridge unchanged. A `Response` or context
 replacement is passed back to Better Auth; typed failures require an explicit
 `onFailure` mapper to an `APIError` or `Response`.
+
+Better Auth's public `rawAuth.api.*` dispatch runs configured global and plugin
+hooks, including for requestless server-side calls. Plugin `middlewares` are
+request-only and run when a request goes through `rawAuth.handler(...)`; they do
+not run for direct API dispatch.
 
 ## Failures and boundaries
 

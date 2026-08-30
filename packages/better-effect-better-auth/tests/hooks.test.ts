@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test'
 import { APIError } from 'better-auth/api'
 import {
   CurrentAbortSignal,
-  CurrentRuntimeAbortSignal,
   Effect,
   Layer,
   Runtime,
@@ -276,8 +275,12 @@ describe('BetterAuthHooks', () => {
     const middleware = hooks.middleware((context) =>
       Effect.fn(async function* () {
         const signal = yield* CurrentAbortSignal
+        const hookContext = yield* hooks.Context
         expect(context.request).toBeDefined()
-        expect(signal).toBe(context.request!.signal)
+        expect(hookContext.context).toBe(context)
+        expect(hookContext.context.request).toBe(context.request)
+        expect(hookContext.context.request?.signal).toBe(context.request?.signal)
+        expect(signal).not.toBe(context.request!.signal)
         resolveStarted()
         await new Promise<void>((resolve) => {
           signal.addEventListener('abort', () => resolve(), { once: true })
@@ -373,7 +376,7 @@ describe('BetterAuthHooks', () => {
     try {
       const output = await middleware({ request })
       expect(output).toEqual({ context: { aborted: true, reason } })
-      expect(observedSignal).toBe(request.signal)
+      expect(observedSignal).not.toBe(request.signal)
       expect(observedSignal?.reason).toBe(reason)
     } finally {
       await runtime.dispose()
@@ -393,7 +396,7 @@ describe('BetterAuthHooks', () => {
       () =>
         Effect.fn(async function* () {
           yield* RequestMetadata
-          const shutdownSignal = yield* CurrentRuntimeAbortSignal
+          const shutdownSignal = yield* CurrentAbortSignal
           resolveStarted()
           await new Promise<void>((resolve) => {
             shutdownSignal.addEventListener('abort', () => resolve(), { once: true })

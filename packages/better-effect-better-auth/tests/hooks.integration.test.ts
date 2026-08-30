@@ -20,20 +20,17 @@ type HookObservation = {
   readonly phase: string
   readonly context: BetterAuthMiddlewareContext
   readonly signal: AbortSignal
+  readonly requestSignal: AbortSignal | undefined
   readonly returned: unknown
   readonly newSession: unknown
   readonly responseHeaders: Headers | undefined
 }
 
 describe('BetterAuthHooks with Better Auth', () => {
-  test('runs global and plugin middleware flows with the original request context', async () => {
+  test('dispatches global and plugin hooks through rawAuth.api while plugin middleware stays request-only', async () => {
     const runtime = await Runtime.make(Layer.empty)
     const hooks = BetterAuthHooks.make('@integration/BetterAuthHookContext', runtime)
     const observations: HookObservation[] = []
-    const pluginResponse = new Response('plugin hook response', {
-      status: 202,
-      headers: { 'x-hook-response': 'yes' }
-    })
 
     const observe = (phase: string) => (context: BetterAuthMiddlewareContext) =>
       Effect.fn(async function* () {
@@ -44,6 +41,7 @@ describe('BetterAuthHooks with Better Auth', () => {
           phase,
           context,
           signal,
+          requestSignal: scoped.context.request?.signal,
           returned: authContext.returned,
           newSession: authContext.newSession,
           responseHeaders: authContext.responseHeaders
@@ -63,19 +61,27 @@ describe('BetterAuthHooks with Better Auth', () => {
           phase: 'plugin-after',
           context: scoped.context,
           signal,
+          requestSignal: scoped.context.request?.signal,
           returned: authContext.returned,
           newSession: authContext.newSession,
           responseHeaders: authContext.responseHeaders
         })
-        return Result.ok(pluginResponse)
+        return Result.ok(
+          new Response('plugin hook response', {
+            status: 202,
+            headers: { 'x-hook-response': 'yes' }
+          })
+        )
       })
     )
 
     const plugin = {
       id: 'hooks-integration',
       endpoints: {
-        echo: createAuthEndpoint('/hooks-integration/echo', { method: 'GET' }, async (context) =>
-          context.json({ source: 'endpoint' })
+        hooksEcho: createAuthEndpoint(
+          '/hooks-integration/echo',
+          { method: 'GET' },
+          async (context) => context.json({ source: 'endpoint' })
         )
       },
       hooks: {
@@ -104,56 +110,79 @@ describe('BetterAuthHooks with Better Auth', () => {
     })
 
     try {
-      const controller = new AbortController()
-      const echoRequest = new Request(`${baseURL}/api/auth/hooks-integration/echo`, {
-        signal: controller.signal
+      const directSignUp = await auth.api.signUpEmail({
+        body: {
+          email: 'hooks-direct@example.com',
+          name: 'Hooks Direct',
+          password: 'a-valid-password-123'
+        }
       })
-      const echoResponse = await auth.handler(echoRequest)
+      expect(directSignUp.user.email).toBe('hooks-direct@example.com')
 
+      const directEcho = await auth.api.hooksEcho({ asResponse: true })
+      expect(directEcho.status).toBe(202)
+      expect(directEcho.headers.get('x-hook-response')).toBe('yes')
+      expect(await directEcho.text()).toBe('plugin hook response')
+
+      const echoRequest = new Request(`${baseURL}/api/auth/hooks-integration/echo`)
+      const echoResponse = await auth.handler(echoRequest)
       expect(echoResponse.status).toBe(202)
       expect(echoResponse.headers.get('x-hook-response')).toBe('yes')
       expect(await echoResponse.text()).toBe('plugin hook response')
 
-      const signUpResponse = await auth.handler(
-        new Request(`${baseURL}/api/auth/sign-up/email`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            email: 'hooks@example.com',
-            name: 'Hooks Integration',
-            password: 'a-valid-password-123'
-          })
-        })
+      const directSignUpObservations = observations.filter(
+        (observation) => observation.context.path === '/sign-up/email'
       )
+      expect(directSignUpObservations.map((observation) => observation.phase)).toEqual([
+        'before',
+        'global-after'
+      ])
+      expect(
+        directSignUpObservations.every((observation) => observation.context.request === undefined)
+      ).toBe(true)
+      expect(
+        directSignUpObservations.every((observation) => observation.requestSignal === undefined)
+      ).toBe(true)
+      expect(directSignUpObservations[1]?.newSession).toBeTruthy()
 
-      expect(signUpResponse.status).toBe(200)
-
-      const echoObservations = observations.filter(
-        (observation) => observation.context.path === '/hooks-integration/echo'
+      const directEchoObservations = observations.filter(
+        (observation) =>
+          observation.context.path === '/hooks-integration/echo' &&
+          observation.requestSignal === undefined
       )
-      expect(echoObservations.map((observation) => observation.phase)).toEqual([
+      expect(directEchoObservations.map((observation) => observation.phase)).toEqual([
+        'before',
+        'global-after',
+        'plugin-after'
+      ])
+      expect(
+        directEchoObservations.every((observation) => observation.context.request === undefined)
+      ).toBe(true)
+
+      const requestEchoObservations = observations.filter(
+        (observation) =>
+          observation.context.path === '/hooks-integration/echo' &&
+          observation.requestSignal !== undefined
+      )
+      expect(requestEchoObservations.map((observation) => observation.phase)).toEqual([
         'plugin-middleware',
         'before',
         'global-after',
         'plugin-after'
       ])
       expect(
-        echoObservations.every((observation) => observation.context.request === echoRequest)
+        requestEchoObservations.every((observation) => observation.context.request === echoRequest)
       ).toBe(true)
       expect(
-        echoObservations.every((observation) => observation.signal === echoRequest.signal)
+        requestEchoObservations.every(
+          (observation) => observation.requestSignal === echoRequest.signal
+        )
       ).toBe(true)
-      expect(echoObservations[2]?.returned).toBeDefined()
-      expect(echoObservations[2]?.responseHeaders).toBeInstanceOf(Headers)
-
-      const signUpObservation = observations.find(
-        (observation) =>
-          observation.context.path === '/sign-up/email' && observation.phase === 'global-after'
-      )
-      expect(signUpObservation).toBeDefined()
-      expect(signUpObservation?.returned).toBeDefined()
-      expect(signUpObservation?.newSession).toBeTruthy()
-      expect(signUpObservation?.responseHeaders).toBeInstanceOf(Headers)
+      expect(
+        requestEchoObservations.every((observation) => observation.signal !== echoRequest.signal)
+      ).toBe(true)
+      expect(requestEchoObservations[2]?.returned).toBeDefined()
+      expect(requestEchoObservations[2]?.responseHeaders).toBeInstanceOf(Headers)
     } finally {
       await runtime.dispose()
     }
@@ -166,40 +195,13 @@ describe('BetterAuthHooks with Better Auth', () => {
     const observedPaths: string[] = []
     const backgroundHook = hooks.middleware(() =>
       Effect.fn(async function* () {
-        const context = yield* hooks.Context
-        observedPaths.push(context.context.path ?? 'unknown')
+        const hook = yield* hooks.Context
+        hook.context.context.runInBackground(
+          Promise.resolve().then(() => observedPaths.push(hook.context.path ?? 'unknown'))
+        )
         return Result.ok()
       })
     )
-    const invokeBackgroundHook = <Context extends { request: Request | undefined }>(
-      context: Context
-    ) => {
-      const { request, ...contextWithoutRequest } = context
-      return request === undefined
-        ? backgroundHook(contextWithoutRequest)
-        : backgroundHook({ ...contextWithoutRequest, request })
-    }
-    const plugin = {
-      id: 'hooks-background-integration',
-      endpoints: {
-        enqueueHook: createAuthEndpoint(
-          '/hooks-background/enqueue',
-          { method: 'GET' },
-          async (context) => {
-            context.context.runInBackground(invokeBackgroundHook(context))
-            return context.json({ queued: true })
-          }
-        ),
-        awaitHook: createAuthEndpoint(
-          '/hooks-background/await',
-          { method: 'GET' },
-          async (context) => {
-            await context.context.runInBackgroundOrAwait(invokeBackgroundHook(context))
-            return context.json({ queued: true })
-          }
-        )
-      }
-    } satisfies BetterAuthPlugin
     const auth = betterAuth({
       advanced: {
         backgroundTasks: {
@@ -210,17 +212,17 @@ describe('BetterAuthHooks with Better Auth', () => {
       },
       baseURL,
       database: memoryAdapter(makeDatabase()),
-      plugins: [plugin],
+      hooks: { after: backgroundHook },
       secret: 'hooks-background-secret-not-for-production-use'
     })
 
     try {
-      expect(await auth.api.enqueueHook()).toEqual({ queued: true })
-      expect(await auth.api.awaitHook()).toEqual({ queued: true })
+      expect(await auth.api.ok()).toEqual({ ok: true })
+      expect(await auth.api.ok()).toEqual({ ok: true })
       expect(backgroundTasks).toHaveLength(2)
 
       await Promise.all(backgroundTasks)
-      expect(observedPaths).toEqual(['/hooks-background/enqueue', '/hooks-background/await'])
+      expect(observedPaths).toEqual(['/ok', '/ok'])
     } finally {
       await runtime.dispose()
     }

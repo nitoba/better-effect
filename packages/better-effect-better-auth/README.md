@@ -21,7 +21,7 @@ bun add better-effect-better-auth better-auth better-effect better-result
 ```
 
 The package is ESM-only. Its v0.1 peer matrix is `better-auth` `^1.7.0`,
-`better-effect` `>=0.13.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
+`better-effect` `>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript
 `>=5.7.0`. These dependencies remain owned by the application.
 
 ## Effectful Better Auth service
@@ -178,12 +178,14 @@ promise of either. A `Response` keeps its identity, headers, cookies, redirect,
 status, and body; an `APIError` is thrown for Better Auth to process. Program,
 Runtime, and mapper defects are not guessed or converted to auth failures.
 
-The request's `AbortSignal` is forwarded to the `better-effect` execution
-without replacing it, and is available through `CurrentAbortSignal`. The
-Runtime-owned shutdown signal remains separate and is available through
-`CurrentRuntimeAbortSignal`. Cancellation remains cooperative; cleanup still
-belongs to the execution Scope. Direct server-side calls without a request run
-without an invented signal.
+The original `context.request.signal` is retained unchanged on
+`hook.context.request.signal` and is passed to the `better-effect` execution as
+its caller signal. `CurrentAbortSignal` exposes the execution signal, which may
+be a Runtime-linked signal when shutdown coordination is also active, so code
+must not rely on that capability having the request signal's object identity.
+Cancellation remains cooperative; cleanup still belongs to the execution
+Scope. Direct server-side calls without a request run without an invented
+request signal.
 
 Shutdown ordering is application-owned too: stop accepting requests, then close
 the Runtime that serves Better Auth, close the core Runtime, and only then close
@@ -234,7 +236,7 @@ import type { BetterAuthPlugin } from 'better-auth'
 const auditMiddleware = AuthHooks.middleware(() =>
   Effect.fn(async function* () {
     const hook = yield* AuthHooks.Context
-    hook.context.runInBackground(Promise.resolve())
+    hook.context.context.runInBackground(Promise.resolve())
     return Result.ok()
   })
 )
@@ -249,8 +251,11 @@ const auditPlugin = {
 ```
 
 Better Auth still decides when hooks and request-only plugin middlewares run,
-and owns background-task semantics. The bridge does not store contexts, create
-a global controller, run detached Runtime work, or provide framework adapters.
+and owns background-task semantics. Its public `auth.api.*` dispatch invokes
+configured global and plugin hooks, including for requestless server-side
+calls; plugin `middlewares` run only through a request handled by
+`auth.handler`. The bridge does not store contexts, create a global controller,
+run detached Runtime work, or provide framework adapters.
 
 ## Sessions
 

@@ -168,8 +168,6 @@ type MutableRuntimeExecutionMetadata = {
 type PreparedExecution = {
   readonly metadata: RuntimeExecutionMetadata
   readonly signalLink: AbortSignalLink
-  readonly signal: AbortSignal
-  readonly runtimeSignal: AbortSignal
 }
 
 const prepareExecution = <ProgramValue>(
@@ -178,19 +176,10 @@ const prepareExecution = <ProgramValue>(
   dependencies: RuntimeExecutionDependencies,
   runtimeSignal: AbortSignal | undefined,
   shutdownSignal: AbortSignal
-): PreparedExecution => {
-  const signalLink = linkAbortSignals(runtimeSignal, shutdownSignal)
-
-  return {
-    metadata: makeExecutionMetadata(program, options?.attributes, dependencies),
-    signalLink,
-    // A request/caller signal is already the caller's cancellation boundary. Keep
-    // its identity observable while retaining the linked Runtime signal for
-    // shutdown coordination through CurrentRuntimeAbortSignal.
-    signal: options?.signal ?? signalLink.signal,
-    runtimeSignal: signalLink.signal
-  }
-}
+): PreparedExecution => ({
+  metadata: makeExecutionMetadata(program, options?.attributes, dependencies),
+  signalLink: linkAbortSignals(runtimeSignal, options?.signal, shutdownSignal)
+})
 
 const makeExecutionMetadata = (
   program: ProgramIdentity,
@@ -491,9 +480,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
         executionScope,
         program,
         this.resolver,
-        prepared.signal,
-        prepared.metadata,
-        prepared.runtimeSignal
+        prepared.signalLink.signal,
+        prepared.metadata
       )
     )
   }
@@ -562,9 +550,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
               return await program()
             },
             resolver,
-            prepared.signal,
-            prepared.metadata,
-            prepared.runtimeSignal
+            prepared.signalLink.signal,
+            prepared.metadata
           )
         } finally {
           await localBackend.disposeAll()
@@ -670,8 +657,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     program: () => A | PromiseLike<A>,
     resolver: ServiceResolver = this.resolver,
     signal: AbortSignal = this.shutdownController.signal,
-    metadata: RuntimeExecutionMetadata,
-    runtimeSignal: AbortSignal = signal
+    metadata: RuntimeExecutionMetadata
   ): Promise<Awaited<A>> {
     let outcome: ScopeOutcome | undefined
     let cleanupFailure: ScopeCloseError | undefined
@@ -736,8 +722,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           [],
           signal,
           undefined,
-          metadata.executionId,
-          runtimeSignal
+          metadata.executionId
         )
       })
     } catch (cause) {

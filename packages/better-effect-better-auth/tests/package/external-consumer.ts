@@ -9,7 +9,7 @@ const coreSource = join(workspaceRoot, 'packages/better-effect')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const vanillaExampleSource = join(packageRoot, 'examples/vanilla-server')
 const decoder = new TextDecoder()
-const minimumBetterEffectVersion = '0.13.0'
+const minimumBetterEffectVersion = '0.12.0'
 
 const assertCondition: (condition: boolean, message: string) => asserts condition = (
   condition,

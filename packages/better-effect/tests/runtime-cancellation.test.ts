@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test'
 
 import { Result } from 'better-result'
 
-import { CurrentAbortSignal, CurrentRuntimeAbortSignal, Effect, Layer, Runtime } from '../src'
+import { CurrentAbortSignal, Effect, Layer, Runtime } from '../src'
 
 describe('cooperative Runtime cancellation', () => {
-  test('preserves a run signal identity through CurrentAbortSignal', async () => {
+  test('links a run signal and exposes it through CurrentAbortSignal', async () => {
     const runtime = await Runtime.make(Layer.merge())
     const controller = new AbortController()
     let observedSignal: AbortSignal | undefined
@@ -24,7 +24,7 @@ describe('cooperative Runtime cancellation', () => {
       )
 
       expect(Result.isOk(result)).toBe(true)
-      expect(observedSignal).toBe(controller.signal)
+      expect(observedSignal).toBeDefined()
 
       if (Result.isOk(result)) {
         expect(result.value).toBe(true)
@@ -34,7 +34,7 @@ describe('cooperative Runtime cancellation', () => {
     }
   })
 
-  test('keeps Runtime shutdown cancellation separate from a caller signal', async () => {
+  test('runtime disposal aborts a caller-linked signal without aborting the caller', async () => {
     const runtime = await Runtime.make(Layer.merge())
     const caller = new AbortController()
     let markStarted!: () => void
@@ -45,20 +45,21 @@ describe('cooperative Runtime cancellation', () => {
 
     const execution = runtime.run(
       Effect.fn(async function* () {
-        const callerSignal = yield* CurrentAbortSignal
-        const runtimeSignal = yield* CurrentRuntimeAbortSignal
-        expect(callerSignal).toBe(caller.signal)
-        expect(runtimeSignal).not.toBe(callerSignal)
+        const signal = yield* CurrentAbortSignal
+        expect(signal).not.toBe(caller.signal)
         markStarted()
 
         await new Promise<void>((resolve) => {
-          runtimeSignal.addEventListener('abort', () => resolve(), { once: true })
+          signal.addEventListener(
+            'abort',
+            () => {
+              resolve()
+            },
+            { once: true }
+          )
         })
 
-        return Result.ok({
-          callerAborted: callerSignal.aborted,
-          runtimeAborted: runtimeSignal.aborted
-        })
+        return Result.ok({ callerAborted: caller.signal.aborted, executionAborted: signal.aborted })
       }),
       { signal: caller.signal }
     )
@@ -66,16 +67,13 @@ describe('cooperative Runtime cancellation', () => {
     await started
 
     try {
-      await runtime.dispose({
-        gracePeriod: 0,
-        abortAfterGracePeriod: true
-      })
+      await runtime.dispose({ gracePeriod: 0, abortAfterGracePeriod: true })
 
       const result = await execution
       expect(Result.isOk(result)).toBe(true)
 
       if (Result.isOk(result)) {
-        expect(result.value).toEqual({ callerAborted: false, runtimeAborted: true })
+        expect(result.value).toEqual({ callerAborted: false, executionAborted: true })
       }
     } finally {
       await runtime.dispose()
