@@ -11,6 +11,7 @@ export {
 } from './job'
 export { Queue } from './queue'
 export { JobRegistry, makeJobRegistry } from './registry'
+export { JobAdmin } from './application'
 
 export type {
   AnyJobDefinition,
@@ -29,3 +30,30 @@ export type {
 
 export type { AnyQueueDefinition, QueueDefinition } from './queue'
 export type { AnyJobRegistry, RegisteredJobIdentity, RegistryIdentityInput } from './registry'
+export type {
+  DecodedJobFailure,
+  JobAdminClient,
+  JobAdminCountError,
+  JobAdminCountOptions,
+  JobAdminListError,
+  JobAdminListOptions,
+  JobAdminPauseError,
+  JobAdminRemoveError,
+  JobAdminRemoveOptions,
+  JobAdminResumeError,
+  JobAttemptsError,
+  JobAttemptView,
+  JobAwaitOptions,
+  JobAwaitResultError,
+  JobBoundOperations,
+  JobEffect,
+  JobEnqueueError,
+  JobEnqueueManyItem,
+  JobEnqueueManyOptions,
+  JobEnqueueOptions,
+  JobExecuteOptions,
+  JobOperation,
+  JobPollError,
+  JobRecordView,
+  JobRetryOptions
+} from './application'

@@ -21,6 +21,8 @@ import {
 import type { PersistedBackoff } from '../protocol'
 import { JobStore, isJobStoreToken } from '../store'
 import type { AnyJobStoreToken, DefaultJobStoreToken } from '../store'
+import { makeJobOperations } from './application'
+import type { JobBoundOperations, JobOperationDescriptor } from './application'
 
 import type { QueueDefinition } from './queue'
 import { isQueueDefinition } from './queue'
@@ -147,6 +149,11 @@ export interface JobDefinition<
   ResultCodec extends CodecLike | undefined = undefined,
   FailureCodec extends CodecLike | undefined = undefined,
   Store extends AnyJobStoreToken = DefaultJobStoreToken
+> extends JobBoundOperations<
+  CodecInputOf<PayloadCodec>,
+  CodecValueOf<NonNullable<ResultCodec>>,
+  FailureValueOf<FailureCodec>,
+  Store
 > {
   readonly [JobDefinitionTypeId]: 'JobDefinition'
   readonly queue: Queue
@@ -1459,11 +1466,16 @@ const buildJob = (queue: unknown, name: unknown, options: unknown): AnyJobDefini
     throw checkedOptions.error
   }
 
-  const version = checkedOptions.value.version
+  const versionValue = checkedOptions.value.version
 
-  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version <= 0) {
+  if (
+    typeof versionValue !== 'number' ||
+    !Number.isSafeInteger(versionValue) ||
+    versionValue <= 0
+  ) {
     throwDefinition(invalid('version', 'must be a positive safe integer'))
   }
+  const version = versionValue as number
 
   const payload = snapshotCodec(checkedOptions.value.payload, 'payload')
   const result = snapshotOptionalCodec(checkedOptions.value.result, 'result')
@@ -1505,7 +1517,17 @@ const buildJob = (queue: unknown, name: unknown, options: unknown): AnyJobDefini
       store,
       idempotencyKey: checkedOptions.value.idempotencyKey,
       metadata: checkedOptions.value.metadata,
-      retryable: checkedOptions.value.retryable
+      retryable: checkedOptions.value.retryable,
+      ...makeJobOperations({
+        identity,
+        payload: payload.value,
+        result: result.value,
+        failure: failure.value,
+        defaults: defaults.value,
+        store,
+        idempotencyKey: checkedOptions.value.idempotencyKey,
+        metadata: checkedOptions.value.metadata
+      } satisfies JobOperationDescriptor)
     },
     jobTypeId
   )
@@ -1545,11 +1567,20 @@ export const bindJob = <Definition extends AnyJobDefinition, Store extends AnyJo
     throw new JobDefinitionError({ field: 'store', message: 'must be a JobStore token' })
   }
 
-  // SAFETY: both values were validated above; binding changes only the declaration-only store selection.
-  return Object.freeze(markDescriptor({ ...definition, store }, jobTypeId)) as unknown as Job.Bound<
-    Definition,
-    Store
-  >
+  // SAFETY: both values were validated above; recreate operations so the runtime token matches the bound type.
+  const operations = makeJobOperations({
+    identity: definition.identity,
+    payload: definition.payload,
+    result: definition.result,
+    failure: definition.failure,
+    defaults: definition.defaults,
+    store,
+    idempotencyKey: definition.idempotencyKey,
+    metadata: definition.metadata
+  } satisfies JobOperationDescriptor)
+  return Object.freeze(
+    markDescriptor({ ...definition, store, ...operations }, jobTypeId)
+  ) as unknown as Job.Bound<Definition, Store>
 }
 
 export const normalizeIdempotencyKey = (
@@ -2004,6 +2035,20 @@ export declare namespace Job {
   }
   export type IdempotencyKey<_Current extends Any = Any> = string | undefined
   export type Metadata<_Current extends Any = Any> = Readonly<Record<string, string>>
+  export type EnqueueOptions<_Current extends Any = Any> = import('./application').JobEnqueueOptions
+  export type EnqueueManyOptions<_Current extends Any = Any> =
+    import('./application').JobEnqueueManyOptions
+  export type AwaitOptions<_Current extends Any = Any> = import('./application').JobAwaitOptions
+  export type ExecuteOptions<_Current extends Any = Any> = import('./application').JobExecuteOptions
+  export type RetryOptions<_Current extends Any = Any> = import('./application').JobRetryOptions
+  export type RecordView<Current extends Any = Any> = import('./application').JobRecordView<
+    Success<Current>,
+    Failure<Current>
+  >
+  export type AttemptView<Current extends Any = Any> = import('./application').JobAttemptView<
+    Success<Current>,
+    Failure<Current>
+  >
 }
 
 export type JobPayload<Current extends AnyJobDefinition> = Job.Payload<Current>

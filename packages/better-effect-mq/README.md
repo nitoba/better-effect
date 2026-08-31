@@ -232,6 +232,55 @@ The registry is local and immutable: duplicate queue/name/version identities are
 rejected, unknown lookups return an explicit error Result, and no handlers are
 registered. Enqueue, storage, retry scheduling, and worker execution are separate features.
 
+## Producer and admin programs
+
+A Job descriptor is also an immutable, typed producer. Its methods yield
+`better-effect` programs and route every request through the descriptor's
+`JobStore` token; they do not create a Runtime or know a storage adapter.
+Enqueue validates/materializes its `Job.PayloadInput` with the payload codec,
+then encodes it; metadata and idempotency callbacks run for each item and the
+method returns a branded `JobId`:
+
+```ts
+import { ClockLive } from 'better-effect/standard-services'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { Result } from 'better-result'
+import { Codec, JobAdmin, MemoryJobStore } from 'better-effect-mq'
+
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string }>(),
+  result: Codec.string
+})
+
+const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
+const program = Effect.gen(async function* () {
+  const id = yield* SendEmail.enqueue({ to: 'ada@example.test' })
+  const snapshot = yield* SendEmail.poll(id)
+  const counts = yield* JobAdmin.for(SendEmail.store).counts('emails')
+  return Result.ok({ id, snapshot, counts })
+})
+await runtime.run(() => program)
+```
+
+The producer surface includes `enqueue`, `enqueueMany`, `poll`, `attempts`,
+`awaitResult`, and `execute`. `delayMs` and `at` are mutually exclusive;
+`execute` is only enqueue followed by polling and is not exactly-once RPC. A
+caller aborting `awaitResult` stops waiting but does not cancel an already
+persisted Job. `awaitResult` uses `Clock.sleep` and `CurrentAbortSignal`, and
+returns typed handler failures separately from persisted defect, timeout,
+decode, cancellation, not-found, identity-mismatch, and store errors.
+
+Generic inspection and queue mutations require explicit routing:
+`JobAdmin.for(store).list`, `.counts`, `.pause`, `.resume`, `.pausedQueues`, and
+`.remove`. Job-bound `cancel`, `promote`, `retry`, and `redrive` verify the
+persisted queue/name/version before mutating it. Listing is encoded-neutral and
+never guesses a codec for heterogeneous Jobs. `enqueueMany` accepts either a
+payload array or `{ payload, options }` entries when one item needs its own
+ID, idempotency key, or schedule. It processes bounded chunks in input order;
+a store failure after an earlier chunk is applied can therefore be partially
+applied. Deterministic IDs or idempotency keys make safe replay possible.
+
 ## JobStore Service contract
 
 `JobStore` is the only storage seam in this package. It is a yieldable

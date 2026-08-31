@@ -13,6 +13,13 @@ export const QueueName = QueueNameFactory
 export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
+export { JobAdmin } from './job/application'
+export {
+  JobAwaitAbortedError,
+  JobExecutionCancelledError,
+  JobExecutionFailureError,
+  JobIdentityMismatchError
+} from './job/application-errors'
 
 export {
   Job,
@@ -44,6 +51,34 @@ export type {
   RegistryIdentityInput,
   RetryableCallback
 } from './job'
+
+export type {
+  DecodedJobFailure,
+  JobAdminClient,
+  JobAdminCountOptions,
+  JobAdminListError,
+  JobAdminListOptions,
+  JobAdminRemoveOptions,
+  JobAdminCountError,
+  JobAdminPauseError,
+  JobAdminRemoveError,
+  JobAdminResumeError,
+  JobAttemptsError,
+  JobAttemptView,
+  JobAwaitOptions,
+  JobAwaitResultError,
+  JobBoundOperations,
+  JobEffect,
+  JobEnqueueError,
+  JobEnqueueManyItem,
+  JobEnqueueManyOptions,
+  JobEnqueueOptions,
+  JobExecuteOptions,
+  JobOperation,
+  JobPollError,
+  JobRecordView,
+  JobRetryOptions
+} from './job/application'
 
 export type {
   CodecCallbackResult,
