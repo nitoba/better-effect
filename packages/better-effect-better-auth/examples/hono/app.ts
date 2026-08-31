@@ -4,8 +4,14 @@ import { HonoEffect } from 'better-effect/hono'
 import { Result } from 'better-result'
 
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
-import { Auth, rawAuth } from './auth'
+import { Auth, credentials, rawAuth } from './auth'
 
+const baseURL = 'http://localhost:3000'
+const cookieHeaderFromSetCookie = (headers: Headers): string =>
+  headers
+    .getSetCookie()
+    .map((setCookie) => setCookie.split(';', 1)[0])
+    .join('; ')
 const runtime = await Runtime.make(Auth.layer)
 const CurrentSession = BetterAuthHono.session('@example/CurrentSession', Auth)
 const http = HonoEffect.make(runtime, {
@@ -29,11 +35,29 @@ app.get(
 
 const main = async (): Promise<void> => {
   try {
-    const authResponse = await app.request('/api/auth/get-session')
-    const protectedResponse = await app.request('/protected/me')
+    await rawAuth.api.signUpEmail({ body: credentials })
+    const signedIn = await rawAuth.api.signInEmail({
+      body: {
+        email: credentials.email,
+        password: credentials.password
+      },
+      returnHeaders: true
+    })
+    const headers = new Headers({
+      cookie: cookieHeaderFromSetCookie(signedIn.headers)
+    })
+    const authResponse = await app.request(
+      new Request(`${baseURL}/api/auth/get-session`, { headers })
+    )
+    const protectedResponse = await app.request(new Request(`${baseURL}/protected/me`, { headers }))
+    const protectedBody = await protectedResponse.json()
 
-    if (authResponse.status !== 200 || protectedResponse.status !== 200) {
-      throw new Error('Hono routes did not return the expected responses')
+    if (
+      authResponse.status !== 200 ||
+      protectedResponse.status !== 200 ||
+      protectedBody.data?.user?.email !== credentials.email
+    ) {
+      throw new Error('Authenticated Hono routes did not return the expected responses')
     }
 
     console.log(

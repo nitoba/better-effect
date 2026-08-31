@@ -9,26 +9,38 @@ Web-standard handler. This package adapts those public server APIs to the
 `better-result` and `better-effect` programming model without adding Better
 Auth to the core package.
 
-The v0.1 API adapts an existing Better Auth instance with
+The framework-neutral API adapts an existing Better Auth instance with
 `BetterAuth.service(...)`. Its generated Service exposes yieldable
 `auth.api.*` endpoints, session helpers, and the Web-standard handler while
 retaining the original instance as `auth.raw`.
 
 ## Installation
 
+> **Package availability:** The public APIs documented here are implemented in
+> this source tree, but the first npm release of `better-effect-better-auth` is
+> pending: the package is not published and `better-effect-better-auth-v0.1.0`
+> has not been tagged. Until the approved package-qualified release is
+> published, use a source checkout/workspace (`bun install` and `bun run build`
+> from the repository root). The `bun add better-effect-better-auth` command
+> below is for after that release.
+
 ```bash
+# From a source checkout/workspace of this repository:
+bun install
+bun run build
+
+# After the approved package-qualified npm release is published:
 bun add better-effect-better-auth better-auth better-effect better-result
-# Only the planned v0.2 Hono entry point also needs Hono:
+# Add Hono only when importing the optional /hono subpath:
 bun add hono
 ```
 
-The package is ESM-only. The prepared v0.1 peer matrix applies to the
-framework-neutral `.` entry point: `better-auth` `^1.7.0`, `better-effect`
-`>=0.12.0 <0.14.0`, `better-result` `^3.0.0`, and TypeScript `>=5.7.0`. The
-optional `/hooks` and `/hono` entry points are planned v0.2 integrations. Hono
-is an optional peer of `better-effect-better-auth/hono` at `>=4.0.0`; it is not
-needed by the main or `/hooks` entry points. These dependencies remain owned by
-the application.
+The package is ESM-only. Its framework-neutral `.` entry point has these peer
+requirements: `better-auth` `^1.7.0`, `better-effect` `>=0.12.0 <0.14.0`,
+`better-result` `^3.0.0`, and TypeScript `>=5.7.0`. The package also exposes
+optional public `/hooks` and `/hono` subpaths. Hono is an optional peer required
+only when importing `/hono` (`>=4.0.0`); it is not needed by `.` or `/hooks`.
+These dependencies remain owned by the application.
 
 ## Effectful Better Auth service
 
@@ -101,9 +113,9 @@ The adapter does not create plugin configuration or add framework-specific
 helpers. Keep Better Auth's plugins, database adapter, cookies, and handler in
 the application.
 
-## Planned v0.2: Effectful hooks and middleware
+## Hooks and plugin middleware
 
-The optional `better-effect-better-auth/hooks` subpath adapts Better Auth's
+The optional public `better-effect-better-auth/hooks` subpath adapts Better Auth's
 public `createAuthMiddleware` contract to a caller-owned `Runtime`. The bridge
 never creates or disposes that Runtime:
 
@@ -373,10 +385,10 @@ Known literals improve autocomplete, while `BetterAuthApiError.code` can still
 preserve a future or dynamically supplied runtime string that is not present in
 the configured `$ERROR_CODES` type.
 
-## Planned v0.2: Hono request-scoped sessions
+## Hono request-scoped sessions
 
-The unreleased, planned v0.2 `better-effect-better-auth/hono` entry point
-composes with `better-effect/hono`. It creates a typed current-session Service
+The optional public `better-effect-better-auth/hono` subpath composes with
+`better-effect/hono`. It creates a typed current-session Service
 whose request Layer is responsible only for that request's session value; the
 matching Auth Service remains in the application Runtime:
 
@@ -443,9 +455,9 @@ app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 ```
 
 When the handler belongs inside a Program, use `yield* auth.handle(request)`;
-the returned `Response` is not eagerly consumed. The planned v0.2 Hono adapter
-is available from `better-effect-better-auth/hono`; the prepared v0.1
-framework-neutral package entry point does not require Hono.
+the returned `Response` is not eagerly consumed. The optional public
+`better-effect-better-auth/hono` subpath provides the Hono integration. Hono is
+not required by the framework-neutral `.` entry point or the `/hooks` subpath.
 
 For tests, replace only the boundary you want to control with `Auth.of(...)`
 and provide it through a normal `Layer.succeed`. This keeps the replacement
@@ -506,26 +518,6 @@ const failure = new Unauthenticated({
   message: 'Authentication is required'
 })
 ```
-
-## v0.1 non-goals
-
-- server-side only in v0.1;
-- no client hooks or React/Vue/Svelte/Solid adapters;
-- no framework middleware helpers or framework subpaths;
-- no implicit `CurrentAuthSession` or request-scoped session integration;
-- no roles, policy, or authorization engine;
-- no automatic conversion to application-domain failures;
-- no retry, timeout, or circuit-breaker policies;
-- no database adapter;
-- no database migrations;
-- no environment or configuration ownership;
-- no Runtime or dependency-container ownership;
-- no official Better Auth-maintained integration or compatibility guarantee.
-
-The package adapts an existing Better Auth instance and does not create or own
-Better Auth, database, environment, Runtime, or dependency-container
-lifecycle. Better Auth remains responsible for its public server APIs and
-plugin compatibility.
 
 ## License
 

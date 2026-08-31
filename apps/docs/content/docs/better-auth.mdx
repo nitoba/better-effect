@@ -11,22 +11,35 @@ into a yieldable `better-effect` Service whose operations use `better-result`.
 
 ## Install
 
+> **Package availability:** The public APIs documented here are implemented in
+> this source tree, but the first npm release of `better-effect-better-auth` is
+> pending: the package is not published and `better-effect-better-auth-v0.1.0`
+> has not been tagged. Until the approved package-qualified release is
+> published, use a source checkout/workspace (`bun install` and `bun run build`
+> from the repository root). The `bun add better-effect-better-auth` command
+> below is for after that release.
+
 ```bash
+# From a source checkout/workspace of this repository:
+bun install
+bun run build
+
+# After the approved package-qualified npm release is published:
 bun add better-effect-better-auth better-auth better-effect better-result
-# Only the planned v0.2 Hono entry point also needs Hono:
+# Add Hono only when importing the optional /hono subpath:
 bun add hono
 ```
 
-The prepared v0.1 peer matrix applies to the framework-neutral `.` entry point:
+The package's framework-neutral `.` entry point has these peer requirements:
 
 - `better-auth` `^1.7.0`
 - `better-effect` `>=0.12.0 <0.14.0`
 - `better-result` `^3.0.0`
 - TypeScript `>=5.7.0`
 
-The optional `/hooks` and `/hono` entry points are planned v0.2 integrations.
-Hono is an optional peer of `/hono` at `>=4.0.0`; it is not needed by the main
-or `/hooks` entry points.
+The package also exposes optional public `/hooks` and `/hono` subpaths. Hono is
+an optional peer required only when importing `/hono` (`>=4.0.0`); it is not
+needed by `.` or `/hooks`.
 
 The adapter has no runtime framework or database dependency. Configure Better
 Auth normally, then adapt the instance at the application composition root:
@@ -150,10 +163,10 @@ const program = Effect.fn(async function* () {
 Keep plugin definitions and configuration in the Better Auth application. Do
 not add plugin-specific behavior to the adapter.
 
-## Planned v0.2: Hono request-scoped sessions
+## Hono request-scoped sessions
 
-Install Hono when using the optional, unreleased planned v0.2
-`better-effect-better-auth/hono` entry point. `BetterAuthHono.session` creates
+The optional public `better-effect-better-auth/hono` subpath requires Hono.
+`BetterAuthHono.session` creates
 a typed current-session Service linked to one exact Better Auth Service:
 
 ```ts
@@ -226,13 +239,13 @@ app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
 ```
 
 Use `auth.handle` when the handler itself belongs inside a better-effect
-Program. The planned v0.2 `better-effect-better-auth/hono` entry point adds only
-the request-scoped session helper; it does not replace or wrap Better Auth's Web
-handler, and Hono remains an application-owned optional peer.
+Program. The optional public `better-effect-better-auth/hono` subpath adds
+only the request-scoped session helper; it does not replace or wrap Better
+Auth's Web handler, and Hono remains an application-owned optional peer.
 
-## Planned v0.2: Hooks and plugin middleware
+## Hooks and plugin middleware
 
-The optional `better-effect-better-auth/hooks` entry point adapts Better Auth's
+The optional public `better-effect-better-auth/hooks` subpath adapts Better Auth's
 public `createAuthMiddleware` contract. It receives a Runtime created and
 owned by the application; the bridge never creates a replacement Runtime and
 never disposes the one passed to `BetterAuthHooks.make`:
@@ -439,23 +452,3 @@ await testRuntime.dispose()
 
 void testResult
 ```
-
-## v0.1 non-goals
-
-- server-side only in v0.1;
-- no client hooks or React/Vue/Svelte/Solid adapters;
-- no framework middleware helpers or framework subpaths;
-- no implicit `CurrentAuthSession` or request-scoped session integration;
-- no roles, policy, or authorization engine;
-- no automatic conversion to application-domain failures;
-- no retry, timeout, or circuit-breaker policies;
-- no database adapter;
-- no database migrations;
-- no environment or configuration ownership;
-- no Runtime or dependency-container ownership;
-- no official Better Auth-maintained integration or compatibility guarantee.
-
-The package adapts an existing Better Auth instance and does not create or own
-Better Auth, database, environment, Runtime, or dependency-container
-lifecycle. Better Auth remains responsible for its public server APIs and
-plugin compatibility.
