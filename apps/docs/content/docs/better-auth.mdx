@@ -13,19 +13,20 @@ into a yieldable `better-effect` Service whose operations use `better-result`.
 
 ```bash
 bun add better-effect-better-auth better-auth better-effect better-result
-# Planned v0.2 Hono entry point only:
+# Only the planned v0.2 Hono entry point also needs Hono:
 bun add hono
 ```
 
-The prepared v0.1 API supports:
+The prepared v0.1 peer matrix applies to the framework-neutral `.` entry point:
 
 - `better-auth` `^1.7.0`
 - `better-effect` `>=0.12.0 <0.14.0`
 - `better-result` `^3.0.0`
 - TypeScript `>=5.7.0`
 
-The optional Hono current-session entry point is planned for v0.2, not part of
-the prepared v0.1 peer matrix.
+The optional `/hooks` and `/hono` entry points are planned v0.2 integrations.
+Hono is an optional peer of `/hono` at `>=4.0.0`; it is not needed by the main
+or `/hooks` entry points.
 
 The adapter has no runtime framework or database dependency. Configure Better
 Auth normally, then adapt the instance at the application composition root:
@@ -228,6 +229,119 @@ Use `auth.handle` when the handler itself belongs inside a better-effect
 Program. The planned v0.2 `better-effect-better-auth/hono` entry point adds only
 the request-scoped session helper; it does not replace or wrap Better Auth's Web
 handler, and Hono remains an application-owned optional peer.
+
+## Planned v0.2: Hooks and plugin middleware
+
+The optional `better-effect-better-auth/hooks` entry point adapts Better Auth's
+public `createAuthMiddleware` contract. It receives a Runtime created and
+owned by the application; the bridge never creates a replacement Runtime and
+never disposes the one passed to `BetterAuthHooks.make`:
+
+```ts
+import { betterAuth } from 'better-auth'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { BetterAuth } from 'better-effect-better-auth'
+import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
+import { Result } from 'better-result'
+
+// Database is an application Service and this live value is application-owned.
+const database = createApplicationDatabase()
+const coreValues = Layer.succeed(Database, database)
+const coreRuntime = await Runtime.make(coreValues)
+const AuthHooks = BetterAuthHooks.make('@app/BetterAuthHookContext', coreRuntime)
+
+class RequestMetadata extends Service<RequestMetadata>()('@app/RequestMetadata') {
+  readonly path!: string
+}
+
+const requestAware = AuthHooks.middleware(
+  () =>
+    Effect.fn(async function* () {
+      const metadata = yield* RequestMetadata
+      return Result.ok({ context: { path: metadata.path } })
+    }),
+  {
+    layer: (context) => Layer.succeed(RequestMetadata, RequestMetadata.of({ path: context.path }))
+  }
+)
+
+const rawAuth = betterAuth({
+  hooks: { before: requestAware }
+})
+const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const appRuntime = await Runtime.make(Layer.merge(coreValues, Auth.layer))
+```
+
+`coreValues` is a value Layer, so both Runtimes receive the same
+application-owned Service instance. Do not pass an acquiring or scoped `CoreLive`
+to multiple Runtimes: each Runtime would acquire and release its own resource.
+The `layer` factory runs once for each Better Auth middleware invocation. Its
+Layer is merged with the execution-scoped `AuthHooks.Context` Layer, so
+services it provides are available to the hook Program and its requirements
+are checked against the core Runtime. Scoped resources in that Layer belong to
+the invocation and are released when the execution closes. Better Auth still
+owns hook matching, plugin configuration, background work, authentication,
+cookies, sessions, adapters, and its Web-standard handler.
+
+Stop accepting requests before shutdown, then dispose the Better Auth Runtime,
+dispose the core Runtime, and close the shared resource last:
+
+```ts
+await appRuntime.dispose()
+await coreRuntime.dispose()
+await database.close()
+```
+
+`Layer.succeed` does not transfer disposal of a value to a Runtime. Hook
+Programs should depend on core services rather than the Better Auth Service
+itself, avoiding an Auth hook → Runtime → Auth cycle.
+
+A hook callback receives the original Better Auth middleware context. The same
+reference is available to deeper Programs through `AuthHooks.Context`:
+
+```ts
+import { CurrentAbortSignal } from 'better-effect'
+
+const observe = AuthHooks.middleware((context) =>
+  Effect.fn(async function* () {
+    const hook = yield* AuthHooks.Context
+    const executionSignal = yield* CurrentAbortSignal
+
+    // Both contexts refer to the same Better Auth invocation.
+    void (context === hook.context)
+    // The original request signal remains available without replacement.
+    void (hook.context.request?.signal === context.request?.signal)
+    // CurrentAbortSignal may be linked to Runtime shutdown as well.
+    void executionSignal
+
+    return Result.ok()
+  })
+)
+```
+
+The same middleware can be installed as a global hook, a plugin `before` or
+`after` hook, or plugin request middleware:
+
+```ts
+import type { BetterAuthPlugin } from 'better-auth'
+
+const auditPlugin = {
+  id: 'audit-plugin',
+  hooks: {
+    after: [{ matcher: (context) => context.path === '/sign-in/email', handler: observe }]
+  },
+  middlewares: [{ path: '/audit/*', middleware: observe }]
+} satisfies BetterAuthPlugin
+```
+
+`Result.ok(...)` values cross the bridge unchanged. A `Response` or context
+replacement is passed back to Better Auth; typed failures require an explicit
+`onFailure` mapper to an `APIError` or `Response`.
+
+Better Auth's public `rawAuth.api.*` dispatch runs configured global and plugin
+hooks, including for requestless server-side calls. Plugin `middlewares` are
+request-only and run when a request goes through `rawAuth.handler(...)`; they do
+not run for direct API dispatch.
 
 ## Failures and boundaries
 

@@ -29,6 +29,7 @@
   "exports": {
     ".": "./dist/index.mjs",
     "./hono": "./dist/hono.mjs",
+    "./hooks": "./dist/hooks.mjs",
     "./package.json": "./package.json"
   },
   "publishConfig": {

@@ -9,6 +9,7 @@ const coreSource = join(workspaceRoot, 'packages/better-effect')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const vanillaExampleSource = join(packageRoot, 'examples/vanilla-server')
 const decoder = new TextDecoder()
+const minimumBetterEffectVersion = '0.12.0'
 
 const assertCondition: (condition: boolean, message: string) => asserts condition = (
   condition,
@@ -86,8 +87,17 @@ const packMinimumCore = async (root: string): Promise<string> => {
   await mkdir(destination)
 
   assertSuccess(
-    run(['npm', 'pack', 'better-effect@0.12.0', '--pack-destination', destination], packageRoot),
-    'Packing better-effect@0.12.0 from the registry'
+    run(
+      [
+        'npm',
+        'pack',
+        `better-effect@${minimumBetterEffectVersion}`,
+        '--pack-destination',
+        destination
+      ],
+      packageRoot
+    ),
+    `Packing better-effect@${minimumBetterEffectVersion} from the registry`
   )
 
   const archives = (await readdir(destination)).filter((name) => name.endsWith('.tgz'))
@@ -139,6 +149,10 @@ const assertIntegrationArchive = (entries: string[]): void => {
     'package/dist/hono.d.mts.map',
     'package/dist/hono.mjs',
     'package/dist/hono.mjs.map',
+    'package/dist/hooks.d.mts',
+    'package/dist/hooks.d.mts.map',
+    'package/dist/hooks.mjs',
+    'package/dist/hooks.mjs.map',
     'package/dist/index.d.mts',
     'package/dist/index.mjs',
     'package/dist/index.mjs.map',
@@ -369,7 +383,13 @@ const declarationCheck = async (fixture: string, includeHono: boolean): Promise<
 }
 
 const assertPackedSourceMaps = async (installedPackage: string): Promise<void> => {
-  for (const mapName of ['dist/index.mjs.map', 'dist/hono.mjs.map', 'dist/hono.d.mts.map']) {
+  for (const mapName of [
+    'dist/hono.mjs.map',
+    'dist/hono.d.mts.map',
+    'dist/hooks.mjs.map',
+    'dist/hooks.d.mts.map',
+    'dist/index.mjs.map'
+  ]) {
     const value = await readJsonObject(join(installedPackage, mapName), mapName)
     const rawSources = value['sources']
     assertCondition(Array.isArray(rawSources), `Source map ${mapName} must list sources`)
@@ -482,6 +502,10 @@ const main = async (): Promise<void> => {
     assertCondition(isJsonString(integrationVersion), 'Integration archive version is missing')
     assertCondition(isJsonString(coreVersion), 'Core archive version is missing')
     assertCondition(isJsonString(minimumCoreVersion), 'Minimum core archive version is missing')
+    assertCondition(
+      minimumCoreVersion === minimumBetterEffectVersion,
+      `Minimum core archive must be better-effect@${minimumBetterEffectVersion}, got ${minimumCoreVersion}`
+    )
     assertCondition(isJsonString(currentHonoVersion), 'Current Hono archive version is missing')
     assertCondition(isJsonString(minimumHonoVersion), 'Minimum Hono archive version is missing')
 

@@ -34,6 +34,52 @@ describe('cooperative Runtime cancellation', () => {
     }
   })
 
+  test('runtime disposal aborts a caller-linked signal without aborting the caller', async () => {
+    const runtime = await Runtime.make(Layer.merge())
+    const caller = new AbortController()
+    let markStarted!: () => void
+
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+
+    const execution = runtime.run(
+      Effect.fn(async function* () {
+        const signal = yield* CurrentAbortSignal
+        expect(signal).not.toBe(caller.signal)
+        markStarted()
+
+        await new Promise<void>((resolve) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              resolve()
+            },
+            { once: true }
+          )
+        })
+
+        return Result.ok({ callerAborted: caller.signal.aborted, executionAborted: signal.aborted })
+      }),
+      { signal: caller.signal }
+    )
+
+    await started
+
+    try {
+      await runtime.dispose({ gracePeriod: 0, abortAfterGracePeriod: true })
+
+      const result = await execution
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value).toEqual({ callerAborted: false, executionAborted: true })
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('aborts active executions after the configured grace period', async () => {
     const runtime = await Runtime.make(Layer.merge())
     let markStarted!: () => void

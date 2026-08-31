@@ -17,9 +17,12 @@
 ### Planned for `better-effect-better-auth` v0.2
 
 - Optional Hono request-scoped current-session integration from the `/hono`
-  entry point; this is planned work and is not part of the prepared v0.1 API.
-- The v0.2 gate will cover the Hono peer, request snapshot lifecycle, route
-  ordering/base-path guidance, and external current/minimum runtime consumers.
+  entry point.
+- Optional Better Auth hooks and plugin middleware bridge from the `/hooks`
+  entry point, using caller-owned Runtimes and explicit failure policies.
+- The v0.2 gate will cover Hono request snapshots, hook execution context and
+  cancellation, lifecycle ownership, route ordering/base-path guidance, and
+  external current/minimum runtime consumers.
 
 ### Tested peer matrix
 

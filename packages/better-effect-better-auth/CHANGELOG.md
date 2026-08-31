@@ -5,9 +5,12 @@
 ### Planned for v0.2
 
 - Optional Hono request-scoped current-session integration from the `/hono`
-  entry point; this remains unreleased planned work.
-- The v0.2 gate covers Hono request snapshots, cleanup ownership, explicit
-  Better Auth base-path/route ordering guidance, and external runtime consumers.
+  entry point.
+- Optional Better Auth hooks and plugin middleware bridge from the `/hooks`
+  entry point, using caller-owned Runtimes and explicit failure policies.
+- The v0.2 gate covers Hono request snapshots, hook context and cancellation,
+  cleanup ownership, explicit Better Auth base-path/route ordering guidance,
+  and external runtime consumers.
 
 ### Prepared for v0.1.0 — 2026-08-30 (not published)
 
