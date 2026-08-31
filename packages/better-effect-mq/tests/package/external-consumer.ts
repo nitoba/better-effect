@@ -92,6 +92,7 @@ const assertArchiveContents = (entries: string[]): void => {
     'package/package.json',
     'package/LICENSE',
     'package/README.md',
+    'package/CHANGELOG.md',
     'package/dist/index.mjs',
     'package/dist/index.d.mts',
     'package/dist/testing.mjs',

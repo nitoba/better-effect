@@ -22,6 +22,48 @@ success() {
   echo "✓ $1"
 }
 
+has_changelog_heading() {
+  local changelog_file="$1"
+  local version="$2"
+
+  awk -v expected="## [$version]" '
+    index($0, expected) == 1 &&
+      (length($0) == length(expected) || substr($0, length(expected) + 1, 1) == " ") {
+      found = 1
+      exit
+    }
+    END { exit found ? 0 : 1 }
+  ' "$changelog_file"
+}
+
+synchronize_development_dependencies() {
+  local core_version="$1"
+  local target_package="$2"
+  local changed_files
+
+  changed_files="$(CORE_VERSION="$core_version" TARGET_PACKAGE="$target_package" bun -e '
+    const version = process.env.CORE_VERSION
+    const target = process.env.TARGET_PACKAGE
+    const config = await Bun.file("scripts/release-packages.json").json()
+
+    for (const route of config.packages) {
+      if (route.name === "better-effect" || (target !== "all" && route.name !== target)) continue
+      const path = `${route.directory}/package.json`
+      const pkg = await Bun.file(path).json()
+      const dependencies = pkg.devDependencies
+      if (!dependencies || typeof dependencies !== "object") continue
+      if (dependencies["better-effect"] === undefined || dependencies["better-effect"] === version) continue
+      dependencies["better-effect"] = version
+      await Bun.write(path, `${JSON.stringify(pkg, null, 2)}\n`)
+      console.log(path)
+    }
+  ')"
+
+  while IFS= read -r changed_file; do
+    [[ -z "$changed_file" ]] || SYNCED_PACKAGE_FILES+=("$changed_file")
+  done <<< "$changed_files"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -31,6 +73,7 @@ Usage:
 Allowlisted packages and tags:
   better-effect             v<version>
   better-effect-better-auth better-effect-better-auth-v<version>
+  better-effect-mq          better-effect-mq-v<version>
 
 The release must be run from a clean maintainer checkout on main. The dry-run
 validates the selected route and packed artifact without changing or publishing
@@ -63,31 +106,31 @@ else
   exit 1
 fi
 
-case "$PACKAGE_NAME" in
-  better-effect)
-    PACKAGE_DIR="packages/better-effect"
-    PACKAGE_FILE="$PACKAGE_DIR/package.json"
-    CHANGELOG_FILE="CHANGELOG.md"
-    TAG_PREFIX="v"
-    INITIAL_RELEASE=false
-    ;;
-  better-effect-better-auth)
-    PACKAGE_DIR="packages/better-effect-better-auth"
-    PACKAGE_FILE="$PACKAGE_DIR/package.json"
-    CHANGELOG_FILE="$PACKAGE_DIR/CHANGELOG.md"
-    TAG_PREFIX="better-effect-better-auth-v"
-    INITIAL_RELEASE=true
-    ;;
-  *)
-    error "Package '$PACKAGE_NAME' is not allowlisted. Refusing to select a release target."
-    ;;
-esac
+command -v git >/dev/null || error "git is not installed"
+command -v bun >/dev/null || error "bun is not installed"
 
+route_output="$(bun scripts/release-route.ts --package "$PACKAGE_NAME")" \
+  || error "Package '$PACKAGE_NAME' is not allowlisted. Refusing to select a release target."
+PACKAGE_DIR=""
+CHANGELOG_FILE=""
+TAG_PREFIX=""
+INITIAL_RELEASE=""
+SYNCED_PACKAGE_FILES=()
+while IFS='=' read -r key value; do
+  case "$key" in
+    package_dir) PACKAGE_DIR="$value" ;;
+    changelog) CHANGELOG_FILE="$value" ;;
+    tag_prefix) TAG_PREFIX="$value" ;;
+    initial_release) INITIAL_RELEASE="$value" ;;
+  esac
+done <<< "$route_output"
+
+[[ -n "$PACKAGE_DIR" && -n "$CHANGELOG_FILE" && -n "$TAG_PREFIX" ]] \
+  || error "Release route for '$PACKAGE_NAME' is incomplete"
+PACKAGE_FILE="$PACKAGE_DIR/package.json"
 VERSION="${VERSION_INPUT#v}"
 TAG="${TAG_PREFIX}${VERSION}"
 
-command -v git >/dev/null || error "git is not installed"
-command -v bun >/dev/null || error "bun is not installed"
 [[ -f "$PACKAGE_FILE" ]] || error "$PACKAGE_FILE not found"
 [[ -f "$LOCK_FILE" ]] || error "$LOCK_FILE not found"
 [[ -f "$CHANGELOG_FILE" ]] || error "$CHANGELOG_FILE not found"
@@ -115,14 +158,14 @@ fi
 read -r MANIFEST_NAME CURRENT_VERSION < <(
   PACKAGE_FILE="$PACKAGE_FILE" bun -e '
     const pkg = await Bun.file(process.env.PACKAGE_FILE).json()
-    process.stdout.write(`${pkg.name} ${pkg.version}`)
+    process.stdout.write(`${pkg.name} ${pkg.version}\n`)
   '
 )
 [[ "$MANIFEST_NAME" == "$PACKAGE_NAME" ]] \
   || error "Expected $PACKAGE_NAME in $PACKAGE_FILE, found $MANIFEST_NAME"
 
 if git show-ref --verify --quiet "refs/tags/$TAG"; then
-  error "Tag '$TAG' already exists locally. Existing core tag v0.1.0 is never reused for Better Auth."
+  error "Tag '$TAG' already exists locally. Package release tags are immutable and cannot be reused."
 fi
 
 remote_tag_status=0
@@ -143,10 +186,10 @@ if ! CURRENT_VERSION="$CURRENT_VERSION" NEXT_VERSION="$VERSION" INITIAL_RELEASE=
 
   if (Bun.semver.order(current, next) >= 0) process.exit(1)
 '; then
-  error "Next version ($VERSION) must be greater than current package version ($CURRENT_VERSION), except for the initial Better Auth 0.1.0 tag"
+  error "Next version ($VERSION) must be greater than current package version ($CURRENT_VERSION), except for an initial package 0.1.0 tag"
 fi
 
-grep -Eq "^## \[$VERSION\]( |$)" "$CHANGELOG_FILE" \
+has_changelog_heading "$CHANGELOG_FILE" "$VERSION" \
   || error "$CHANGELOG_FILE must contain a ## [$VERSION] entry before releasing"
 
 cat <<EOF
@@ -164,8 +207,8 @@ Changelog: $CHANGELOG_FILE
 EOF
 
 if [[ "$DRY_RUN" == true ]]; then
-  info "Validating the selected packed artifact without publishing"
-  (cd "$PACKAGE_DIR" && bun run release:dry)
+  info "Building and validating the selected packed artifact without publishing"
+  (cd "$PACKAGE_DIR" && bun run build && bun run release:dry)
   success "Dry release validation passed"
   exit 0
 fi
@@ -185,6 +228,22 @@ else
   info "Keeping the already selected initial version $VERSION"
 fi
 
+if [[ "$PACKAGE_NAME" == "better-effect" ]]; then
+  info "Synchronizing dependent development dependencies"
+  synchronize_development_dependencies "$VERSION" all
+else
+  info "Synchronizing the better-effect development dependency"
+  CORE_VERSION="$(PACKAGE_FILE="packages/better-effect/package.json" bun -e '
+    const pkg = await Bun.file(process.env.PACKAGE_FILE).json()
+    process.stdout.write(String(pkg.version))
+  ')"
+  synchronize_development_dependencies "$CORE_VERSION" "$PACKAGE_NAME"
+fi
+
+if [[ ${#SYNCED_PACKAGE_FILES[@]} -gt 0 ]]; then
+  success "Synchronized: ${SYNCED_PACKAGE_FILES[*]}"
+fi
+
 info "Running bun install"
 bun install
 success "Dependencies and bun.lock updated"
@@ -196,7 +255,7 @@ success "Checks passed"
 read -r UPDATED_NAME UPDATED_VERSION < <(
   PACKAGE_FILE="$PACKAGE_FILE" bun -e '
     const pkg = await Bun.file(process.env.PACKAGE_FILE).json()
-    process.stdout.write(`${pkg.name} ${pkg.version}`)
+    process.stdout.write(`${pkg.name} ${pkg.version}\n`)
   '
 )
 [[ "$UPDATED_NAME" == "$PACKAGE_NAME" && "$UPDATED_VERSION" == "$VERSION" ]] \
@@ -209,11 +268,17 @@ while IFS= read -r changed_file; do
   [[ -z "$changed_file" ]] && continue
   case "$changed_file" in
     "$PACKAGE_FILE"|"$LOCK_FILE"|"$CHANGELOG_FILE") ;;
-    *) error "Release checks modified unexpected file: $changed_file" ;;
+    *)
+      synced=false
+      for synced_file in "${SYNCED_PACKAGE_FILES[@]}"; do
+        [[ "$changed_file" == "$synced_file" ]] && synced=true && break
+      done
+      [[ "$synced" == true ]] || error "Release checks modified unexpected file: $changed_file"
+      ;;
   esac
 done <<< "$changed_files"
 
-git add "$PACKAGE_FILE" "$LOCK_FILE" "$CHANGELOG_FILE"
+git add "$PACKAGE_FILE" "$LOCK_FILE" "$CHANGELOG_FILE" "${SYNCED_PACKAGE_FILES[@]}"
 if git diff --cached --quiet; then
   info "No version files changed; tagging the prepared initial release commit"
 else

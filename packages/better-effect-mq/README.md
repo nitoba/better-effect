@@ -613,8 +613,9 @@ identity, but they must not change this protocol silently.
 bun add better-effect-mq better-effect better-result
 ```
 
-TypeScript `5.7` or newer is supported, together with the Node.js and Bun
-runtime matrix used by this repository.
+The package requires `better-effect` `>=0.13.0 <0.14.0` and
+`better-result` `^3.0.0`. TypeScript `5.7` or newer is supported, together
+with the Node.js and Bun runtime matrix used by this repository.
 
 ### Repository validation
 
