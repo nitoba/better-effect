@@ -506,24 +506,6 @@ const failure = new Unauthenticated({
 })
 ```
 
-## Scope and non-goals
-
-- server-side only;
-- no client hooks or React/Vue/Svelte/Solid adapters;
-- no roles, policy, or authorization engine;
-- no automatic conversion to application-domain failures;
-- no retry, timeout, or circuit-breaker policies;
-- no database adapter;
-- no database migrations;
-- no environment or configuration ownership;
-- no Runtime or dependency-container ownership;
-- no official Better Auth-maintained integration or compatibility guarantee.
-
-The package adapts an existing Better Auth instance and does not create or own
-Better Auth, database, environment, Runtime, or dependency-container
-lifecycle. Better Auth remains responsible for its public server APIs and
-plugin compatibility.
-
 ## License
 
 MIT
