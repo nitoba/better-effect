@@ -84,10 +84,10 @@ const rawAuth = betterAuth({
   plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin()],
   secret: 'external-consumer-secret-not-for-production-use'
 })
-const Auth = BetterAuth.service('@consumer/Auth', rawAuth)
+export const Auth = BetterAuth.service('@consumer/Auth', rawAuth)
 
-type AuthType = typeof rawAuth
-type AuthInstance = BetterAuthServiceInstance<'@consumer/Auth', AuthType>
+export type AuthType = typeof rawAuth
+export type AuthInstance = BetterAuthServiceInstance<'@consumer/Auth', AuthType>
 type Codes = BetterAuthErrorCode<AuthType>
 type Failure = BetterAuthFailure<AuthType>
 type Session = AuthType['$Infer']['Session']

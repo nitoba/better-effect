@@ -4,6 +4,7 @@
 
 import { makeQueueName } from '../protocol'
 import type { CodecLike, JobDefinition, JobDefinitionOptions, NonEmptyStringLiteral } from './job'
+import type { AnyJobStoreToken, DefaultJobStoreToken } from '../store'
 import { createJob } from './job'
 import {
   isCallable,
@@ -25,11 +26,12 @@ export interface QueueDefinition<Name extends string = string> {
     const Version extends number,
     const PayloadCodec extends CodecLike,
     const ResultCodec extends CodecLike | undefined = undefined,
-    const FailureCodec extends CodecLike | undefined = undefined
+    const FailureCodec extends CodecLike | undefined = undefined,
+    const Store extends AnyJobStoreToken = DefaultJobStoreToken
   >(
     name: NonEmptyStringLiteral<JobName>,
-    options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec>
-  ) => JobDefinition<Name, JobName, Version, PayloadCodec, ResultCodec, FailureCodec>
+    options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec, Store>
+  ) => JobDefinition<Name, JobName, Version, PayloadCodec, ResultCodec, FailureCodec, Store>
 }
 
 export type AnyQueueDefinition = QueueDefinition<string>
@@ -75,11 +77,12 @@ const defineQueue = <const Name extends string>(
           const Version extends number,
           const PayloadCodec extends CodecLike,
           const ResultCodec extends CodecLike | undefined = undefined,
-          const FailureCodec extends CodecLike | undefined = undefined
+          const FailureCodec extends CodecLike | undefined = undefined,
+          const Store extends AnyJobStoreToken = DefaultJobStoreToken
         >(
           jobName: NonEmptyStringLiteral<JobName>,
-          options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec>
-        ): JobDefinition<Name, JobName, Version, PayloadCodec, ResultCodec, FailureCodec> =>
+          options: JobDefinitionOptions<Version, PayloadCodec, ResultCodec, FailureCodec, Store>
+        ): JobDefinition<Name, JobName, Version, PayloadCodec, ResultCodec, FailureCodec, Store> =>
           createJob(name, jobName, options)
       },
       queueTypeId

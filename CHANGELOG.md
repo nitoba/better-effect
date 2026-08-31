@@ -1,17 +1,28 @@
 # Changelog
 
-## [better-effect-better-auth@0.1.0] - 2026-08-30
+## Unreleased
 
-### Added
+### Prepared for `better-effect-better-auth` v0.1.0 — 2026-08-30 (not published)
 
-- The first independent `better-effect-better-auth` release, adapting an
-  existing Better Auth server to typed `better-effect` Services and Layers.
+- The initial independent `better-effect-better-auth` package implementation,
+  adapting an existing Better Auth server to typed `better-effect` Services and
+  Layers.
 - Result-oriented endpoint data, Web `Response`, and `{ response, headers }`
   transport modes, session `get`/`require` helpers, and the Web-standard
   handler bridge.
 - Plugin-preserving type inference for endpoints, User/Session fields, and
   Better Auth error codes, with `BetterAuthApiError` and explicit
   `Unauthenticated` failures.
+
+### Planned for `better-effect-better-auth` v0.2
+
+- Optional Hono request-scoped current-session integration from the `/hono`
+  entry point.
+- Optional Better Auth hooks and plugin middleware bridge from the `/hooks`
+  entry point, using caller-owned Runtimes and explicit failure policies.
+- The v0.2 gate will cover Hono request snapshots, hook execution context and
+  cancellation, lifecycle ownership, route ordering/base-path guidance, and
+  external current/minimum runtime consumers.
 
 ### Tested peer matrix
 
@@ -22,7 +33,7 @@
 | `better-result` | `3.0.0`        | `3.0.0`        |
 | TypeScript      | `5.7.2`        | `6.0.3`        |
 
-The release gate also runs the packed consumer on Node.js `24.x` and Bun
+The preparation gate also runs the packed consumer on Node.js `24.x` and Bun
 `1.3.14`. The declared peer ranges remain Better Auth `^1.7.0`, better-effect
 `>=0.12.0 <0.14.0`, better-result `^3.0.0`, and TypeScript `>=5.7.0`.
 

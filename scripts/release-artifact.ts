@@ -22,17 +22,9 @@ const configs: Record<string, ReleaseConfig> = {
       'package/CHANGELOG.md',
       'package/LICENSE',
       'package/README.md',
-      'package/dist/hooks.d.mts',
-      'package/dist/hooks.d.mts.map',
-      'package/dist/hooks.mjs',
-      'package/dist/hooks.mjs.map',
-      'package/dist/index.d.mts',
-      'package/dist/index.d.mts.map',
-      'package/dist/index.mjs',
-      'package/dist/index.mjs.map',
       'package/package.json'
     ],
-    includeAllDistFiles: false
+    includeAllDistFiles: true
   }
 }
 

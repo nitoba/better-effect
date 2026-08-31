@@ -9,5 +9,12 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "files": ["errors.types.ts", "effect-api.types.ts", "hooks.types.ts", "service.types.ts"]
+  "files": [
+    "errors.types.ts",
+    "effect-api.types.ts",
+    "service.types.ts",
+    "hooks.types.ts",
+    "hono.types.ts",
+    "hono-docs.types.ts"
+  ]
 }
