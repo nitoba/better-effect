@@ -9,12 +9,14 @@ import {
 
 import {
   makeMemoryJobStore,
+  makeMemoryMultiRuntime,
   makeMemoryRuntime,
   type MemoryStoreFault
 } from './helpers/memory-job-store'
 
 const capabilities = {
   notifications: true,
+  queueFilteredNotifications: true,
   batchClaim: true
 } as const
 
@@ -81,11 +83,24 @@ const expectedScenarioMetadata = [
 const makeSuite = (fault?: MemoryStoreFault) =>
   jobStoreContract({
     capabilities,
-    makeRuntime: async () =>
+    makeRuntime: async (context) => {
+      const options = { capabilities, synchronization: context.synchronization }
+      if (fault !== undefined) {
+        return makeMemoryRuntime(makeMemoryJobStore({ ...options, fault }), JobStore)
+      }
+      return makeMemoryRuntime(makeMemoryJobStore(options), JobStore)
+    }
+  })
+
+const makeMultiSuite = (fault?: MemoryStoreFault) =>
+  jobStoreContract({
+    capabilities,
+    makeRuntime: async (context) =>
       makeMemoryRuntime(
-        makeMemoryJobStore(fault === undefined ? { capabilities } : { capabilities, fault }),
+        makeMemoryJobStore({ capabilities, synchronization: context.synchronization }),
         JobStore
-      )
+      ),
+    makeMultiStoreRuntime: async (context) => makeMemoryMultiRuntime(context, fault)
   })
 
 const byId = (suite: readonly JobStoreContractScenario[], id: string): JobStoreContractScenario => {
@@ -113,6 +128,7 @@ test('JobStore contract reports capability coverage and skips', () => {
   expect(report.skipped.some((item) => item.id === 'batch-claim-order')).toBe(true)
   expect(report.capabilitiesNotTested).toEqual([
     'notifications',
+    'queueFilteredNotifications',
     'batchClaim',
     'transactionalEnqueue',
     'changeFeed'
@@ -155,14 +171,19 @@ test('JobStore contract isolates setup, runtimes, and reset per scenario', async
   expect(runtimes).toBe(2)
 })
 
-const expectConformanceFailure = async (scenario: JobStoreContractScenario): Promise<void> => {
+const expectConformanceFailure = async (
+  scenario: JobStoreContractScenario
+): Promise<JobStoreConformanceError> => {
   let cause: unknown
   try {
     await scenario.run()
   } catch (error) {
     cause = error
   }
-  expect(cause).toBeInstanceOf(JobStoreConformanceError)
+  if (!(cause instanceof JobStoreConformanceError)) {
+    throw new Error(`expected a conformance failure, received ${String(cause)}`)
+  }
+  return cause
 }
 
 test('JobStore contract runs reset after setup failure', async () => {
@@ -275,6 +296,40 @@ test('JobStore contract detects broken keyset pagination', async () => {
   await expectConformanceFailure(byId(makeSuite('broken-pagination'), 'list-keyset-pagination'))
 })
 
-test('JobStore contract detects a lost wake without a timer watchdog', async () => {
-  await expectConformanceFailure(byId(makeSuite('lost-wake'), 'wake-token-change'))
+test('JobStore contract detects a lost wake with a focused deterministic failure', async () => {
+  const cause = await expectConformanceFailure(byId(makeSuite('lost-wake'), 'wake-token-change'))
+  expect(cause.invariant).toBe('wake token delivery')
+})
+
+test('JobStore contract accepts an adapter with a delayed wake check', async () => {
+  const suite = makeSuite('delayed-wake-check')
+  await byId(suite, 'wake-token-change').run()
+  expect(suite.report().passed).toContain('wake-token-change')
+})
+
+test('JobStore contract detects a batch replay that drops its suffix', async () => {
+  await expectConformanceFailure(
+    byId(makeSuite('drop-enqueue-many-suffix'), 'enqueue-many-independent-replay')
+  )
+})
+
+test('JobStore contract detects zeroed count channels', async () => {
+  await expectConformanceFailure(byId(makeSuite('zero-count-channels'), 'admin-counts-coherent'))
+})
+
+test('JobStore contract requires declared queue-filtered notifications', async () => {
+  const suite = makeSuite('unfiltered-wake')
+  const cause = await expectConformanceFailure(byId(suite, 'wake-queue-filter'))
+  expect(cause.invariant).toBe('queue-filtered wake')
+})
+
+test('JobStore contract runs the multi-store isolation scenario in one runtime', async () => {
+  const suite = makeMultiSuite()
+  const scenario = byId(suite, 'store-multi-isolation')
+  await scenario.run()
+  expect(suite.report().passed).toContain('store-multi-isolation')
+})
+
+test('JobStore contract detects cross-store state sharing', async () => {
+  await expectConformanceFailure(byId(makeMultiSuite('cross-store'), 'store-multi-isolation'))
 })

@@ -7,10 +7,12 @@ import type {
   JobStoreContractContext,
   JobStoreContractControls,
   JobStoreContractExtension,
+  JobStoreContractMultiStoreRuntime,
   JobStoreContractOptions,
   JobStoreContractReport,
   JobStoreContractRuntime,
-  JobStoreContractSuite
+  JobStoreContractSuite,
+  JobStoreContractSynchronization
 } from '../../src/testing'
 
 const runtime: JobStoreContractRuntime<InstanceType<typeof JobStore>> = {
@@ -37,10 +39,22 @@ const controls: JobStoreContractControls = {
     release: (_name) => {},
     reset: (_name) => {}
   },
+  synchronization: {
+    ready: () => {},
+    observed: () => {},
+    waitUntilReady: async () => {},
+    waitUntilObserved: async () => {},
+    waitForDelivery: async () => {},
+    release: () => {},
+    reset: () => {}
+  },
   hooks: {
     checkpoint: async (_point, _scenario) => {}
   }
 }
+
+const synchronization: JobStoreContractSynchronization = controls.synchronization!
+void synchronization
 
 const extension: JobStoreContractExtension = {
   id: 'extension',
@@ -60,13 +74,30 @@ const options: JobStoreContractOptions = {
     return runtime
   },
   controls: () => controls,
-  capabilities: { notifications: true },
+  capabilities: { notifications: true, queueFilteredNotifications: true },
   extensions: [extension]
 }
 
 const suite: JobStoreContractSuite = jobStoreContract(options)
+const multiRuntime: JobStoreContractMultiStoreRuntime = {
+  run: async <Value>(program: () => Value | PromiseLike<Value>): Promise<Awaited<Value>> =>
+    await program(),
+  dispose: async () => {}
+}
+const multiOptions: JobStoreContractOptions = {
+  ...options,
+  makeMultiStoreRuntime: async (context) => {
+    void context.tokens.default
+    void context.tokens.first
+    void context.tokens.second
+    return multiRuntime
+  }
+}
+const multiSuite: JobStoreContractSuite = jobStoreContract(multiOptions)
 const scenario: ContractScenario = suite[0]!
 const report: JobStoreContractReport = suite.report()
+
+void multiSuite
 
 void scenario
 void report

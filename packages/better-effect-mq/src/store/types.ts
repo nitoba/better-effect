@@ -61,11 +61,13 @@ export type JobStoreOperation<
   | PromiseLike<JobStoreEffect<Success, Failure, Requirements>>
 
 /**
- * The feature flags exposed by a store. They are immutable hints only: an
- * adapter must preserve the operation contracts when every flag is false.
+ * The feature flags exposed by a store. They are immutable hints only: a false
+ * flag must not weaken the operation contracts. `queueFilteredNotifications`
+ * additionally declares that wake delivery honors the requested queue set.
  */
 export interface JobStoreCapabilities {
   readonly notifications: boolean
+  readonly queueFilteredNotifications: boolean
   readonly batchClaim: boolean
   readonly transactionalEnqueue: boolean
   readonly changeFeed: boolean

@@ -330,10 +330,13 @@ second job. ID/token collisions must be bounded and reported as
 Every operation receives an explicit `now` where time affects state. A
 `JobStoreFailure` describes infrastructure failure and state-specific tagged
 errors describe invalid transitions or lost fencing leases. Store capabilities
-(`notifications`, `batchClaim`, `transactionalEnqueue`, and `changeFeed`) are
-immutable performance hints: false never changes correctness or makes a basic
-operation unavailable. Wake semantics remain on `JobStore` rather than a
-separate notifier so token/version consistency cannot be split across Services.
+(`notifications`, `queueFilteredNotifications`, `batchClaim`, `transactionalEnqueue`,
+and `changeFeed`) are immutable performance hints: false never changes
+correctness or makes a basic operation unavailable. The
+`queueFilteredNotifications` flag declares the stronger guarantee that an
+`awaitWake` waiter is not woken by an unrelated queue. Wake semantics remain on
+`JobStore` rather than a separate notifier so token/version consistency cannot
+be split across Services.
 
 No adapter, backend, producer, worker, retry scheduler, or generic persistence
 API is included here.
@@ -365,7 +368,11 @@ const scenarios = jobStoreContract({
   },
   setup: async (context) => createSchema(context.id),
   reset: async (context) => resetDatabase(context.id),
-  capabilities: { notifications: true, batchClaim: true }
+  capabilities: {
+    notifications: true,
+    queueFilteredNotifications: true,
+    batchClaim: true
+  }
 })
 ```
 
@@ -395,8 +402,9 @@ Each scenario gets fresh controls, runs `setup`, then creates its runtime, and
 always disposes every runtime opened by the scenario (including extension
 clients) before `reset`.
 Cleanup is attempted after assertion failures, and the primary scenario error
-is preserved when cleanup also fails. `makeRuntime` is the only adapter-specific
-hook; the kit uses the public `JobStore.Contract` surface and never accesses
+is preserved when cleanup also fails. `makeRuntime` is the normal
+adapter-specific hook; the optional `makeMultiStoreRuntime` adds the named-store
+scenario. The kit uses the public `JobStore.Contract` surface and never accesses
 tables, keys, drivers, or private adapter methods.
 
 Built-in scenarios cover enqueue identity and independent batch replay,
@@ -410,10 +418,18 @@ in `suite.report().skipped`. The report also includes `executed`, `passed`,
 explicit.
 
 The context exposes a deterministic `clock`, `ids`, `barrier`, and checkpoint
-hooks for distributed or crash extensions. Supply a controls factory when each
-scenario needs separate state. Extensions can call `openClient()` to obtain a
-second runtime over the same adapter storage; the kit does not provision
-Testcontainers or require real sleeps. Unsupported list shapes must return
+hooks for distributed or crash extensions. Notification adapters may use the
+runner-neutral `synchronization` handshake: call `ready()` after installing an
+`awaitWake` waiter, call `observed()` after checking the token/event, and use
+`waitForDelivery()`/`release()` to make the lost-wake boundary explicit. The kit
+resets this handshake during cleanup, so tests do not need timers or Promise-turn
+assumptions. Supply a controls factory when each scenario needs separate state.
+Extensions can call `openClient()` to obtain a second runtime over the same
+adapter storage. A `makeMultiStoreRuntime` option can additionally provide the
+default store plus the fixed `contract-store-a` and `contract-store-b` named
+tokens in one Runtime; extensions can inspect the same arrangement through
+`openMultiStore()`. The kit does not provision Testcontainers or require real
+sleeps. Unsupported list shapes must return
 `UnsupportedJobStoreOperationError` according to the fixed support matrix above.
 
 ## State machine

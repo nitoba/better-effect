@@ -8,6 +8,12 @@ export type {
   JobStoreContractContext,
   JobStoreContractControls,
   JobStoreContractExtension,
+  JobStoreContractMultiStoreClient,
+  JobStoreContractMultiStoreContext,
+  JobStoreContractMultiStoreProvided,
+  JobStoreContractMultiStoreRuntime,
+  JobStoreContractMultiStoreRuntimeFactory,
+  JobStoreContractMultiStoreTokens,
   JobStoreContractFixtures,
   JobStoreContractHooks,
   JobStoreContractIds,
@@ -20,5 +26,6 @@ export type {
   JobStoreContractScenarioContext,
   JobStoreContractScenarioInfo,
   JobStoreContractSkippedScenario,
+  JobStoreContractSynchronization,
   JobStoreContractSuite
 } from './job-store-contract'

@@ -29,6 +29,7 @@ const smokeContract = {
   protocolVersion: 1,
   capabilities: {
     notifications: false,
+    queueFilteredNotifications: false,
     batchClaim: false,
     transactionalEnqueue: false,
     changeFeed: false

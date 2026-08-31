@@ -11,6 +11,7 @@ import { Result, type Result as ResultType } from 'better-result'
 
 import {
   Codec,
+  Job,
   JobId,
   JobName,
   JobRegistry,
@@ -79,6 +80,25 @@ export interface JobStoreContractBarrier {
   reset(name?: string): void
 }
 
+/**
+ * Deterministic coordination for notification adapters.
+ *
+ * An adapter calls `ready` after it has observed an `awaitWake` request and
+ * installed its waiter. Test code waits for that acknowledgement, performs the
+ * mutation, calls `release`, and waits for `observed` while the adapter does
+ * its token/event check. This is a handshake, not a timeout or a Promise-turn
+ * heuristic; `reset` is always called by the harness during cleanup.
+ */
+export interface JobStoreContractSynchronization {
+  ready(): void
+  observed(): void
+  waitUntilReady(): Promise<void>
+  waitUntilObserved(): Promise<void>
+  waitForDelivery(): Promise<void>
+  release(): void
+  reset(): void
+}
+
 /** A hook point for failpoints, client barriers, and crash simulations. */
 export interface JobStoreContractHooks {
   checkpoint?(
@@ -92,6 +112,8 @@ export interface JobStoreContractControls {
   readonly clock?: JobStoreContractClock
   readonly ids?: JobStoreContractIds
   readonly barrier?: JobStoreContractBarrier
+  /** Adapter-facing deterministic `awaitWake` handshake. */
+  readonly synchronization?: JobStoreContractSynchronization
   readonly hooks?: JobStoreContractHooks
 }
 
@@ -104,6 +126,7 @@ export interface JobStoreContractContext<
   readonly clock: JobStoreContractClock
   readonly ids: JobStoreContractIds
   readonly barrier: JobStoreContractBarrier
+  readonly synchronization: JobStoreContractSynchronization
   readonly hooks: JobStoreContractHooks
   checkpoint(point: string): Promise<void>
 }
@@ -134,10 +157,49 @@ export interface JobStoreContractRuntime<Provided extends AnyService = AnyServic
   dispose(): PromiseLike<void>
 }
 
+/** The three stable tokens used by the optional multi-store conformance scenario. */
+export interface JobStoreContractMultiStoreTokens {
+  readonly default: DefaultJobStoreToken
+  readonly first: JobStoreNamespace.Token<'contract-store-a'>
+  readonly second: JobStoreNamespace.Token<'contract-store-b'>
+}
+
+/** The environment supplied by a multi-store runtime factory. */
+export type JobStoreContractMultiStoreProvided =
+  | JobStoreNamespace.Instance
+  | JobStoreNamespace.Instance<'contract-store-a'>
+  | JobStoreNamespace.Instance<'contract-store-b'>
+
+/** A runtime that provides the default and both named store tokens together. */
+export interface JobStoreContractMultiStoreRuntime extends JobStoreContractRuntime<JobStoreContractMultiStoreProvided> {}
+
 /** A resolved public JobStore client supplied to extension scenarios. */
 export interface JobStoreContractClient<Token extends AnyJobStoreToken = AnyJobStoreToken> {
   readonly runtime: JobStoreContractRuntime<InstanceType<Token>>
   readonly store: JobStoreNamespace.Contract
+}
+
+/** The stores resolved from one multi-store runtime. */
+export interface JobStoreContractMultiStoreClient {
+  readonly runtime: JobStoreContractMultiStoreRuntime
+  readonly tokens: JobStoreContractMultiStoreTokens
+  readonly stores: {
+    readonly default: JobStoreNamespace.Contract
+    readonly first: JobStoreNamespace.Contract
+    readonly second: JobStoreNamespace.Contract
+  }
+}
+
+/** Context supplied to a multi-store runtime factory. */
+export interface JobStoreContractMultiStoreContext extends JobStoreContractContext<DefaultJobStoreToken> {
+  readonly tokens: JobStoreContractMultiStoreTokens
+}
+
+/** Runtime factory used by the named-store isolation scenario. */
+export interface JobStoreContractMultiStoreRuntimeFactory {
+  (
+    context: JobStoreContractMultiStoreContext
+  ): JobStoreContractMaybePromise<JobStoreContractMultiStoreRuntime>
 }
 
 /** Context supplied to a custom concurrency or crash extension. */
@@ -148,6 +210,7 @@ export interface JobStoreContractScenarioContext<
   readonly store: JobStoreNamespace.Contract
   readonly fixtures: JobStoreContractFixtures
   openClient(): Promise<JobStoreContractClient<Token>>
+  openMultiStore(): Promise<JobStoreContractMultiStoreClient>
 }
 
 /** A custom scenario that shares the same isolated lifecycle as built-ins. */
@@ -210,6 +273,11 @@ export interface JobStoreContractOptions<Token extends AnyJobStoreToken = Defaul
       ) => JobStoreContractMaybePromise<JobStoreContractControls>)
   /** Additional concurrency/crash scenarios, run with harness-owned cleanup. */
   readonly extensions?: readonly JobStoreContractExtension<Token>[]
+  /**
+   * Optional factory for one Runtime containing the default and two named
+   * stores. Supplying it adds the named-store isolation scenario.
+   */
+  readonly makeMultiStoreRuntime?: JobStoreContractMultiStoreRuntimeFactory
 }
 
 /** Error thrown by a scenario with its stable invariant and scenario identity. */
@@ -257,6 +325,7 @@ type ClaimOverrides = Partial<
 
 const capabilityNames = [
   'notifications',
+  'queueFilteredNotifications',
   'batchClaim',
   'transactionalEnqueue',
   'changeFeed'
@@ -264,9 +333,16 @@ const capabilityNames = [
 
 const defaultCapabilities: JobStoreCapabilities = Object.freeze({
   notifications: false,
+  queueFilteredNotifications: false,
   batchClaim: false,
   transactionalEnqueue: false,
   changeFeed: false
+})
+
+const multiStoreTokens: JobStoreContractMultiStoreTokens = Object.freeze({
+  default: JobStore,
+  first: JobStore.named('contract-store-a'),
+  second: JobStore.named('contract-store-b')
 })
 
 const baseTime = 1_700_000_000_000
@@ -303,6 +379,7 @@ const normalizeCapabilities = (
 
   const copy = {
     notifications: value.notifications ?? false,
+    queueFilteredNotifications: value.queueFilteredNotifications ?? false,
     batchClaim: value.batchClaim ?? false,
     transactionalEnqueue: value.transactionalEnqueue ?? false,
     changeFeed: value.changeFeed ?? false
@@ -437,6 +514,67 @@ class DefaultBarrier implements JobStoreContractBarrier {
   reset(_name?: string): void {}
 }
 
+type SynchronizationWaiter = () => void
+
+class DefaultSynchronization implements JobStoreContractSynchronization {
+  private readySignalled = false
+  private observedSignalled = false
+  private deliveryReleased = false
+  private readonly readyWaiters = new Set<SynchronizationWaiter>()
+  private readonly observedWaiters = new Set<SynchronizationWaiter>()
+  private readonly deliveryWaiters = new Set<SynchronizationWaiter>()
+
+  ready(): void {
+    this.readySignalled = true
+    this.resolve(this.readyWaiters)
+  }
+
+  observed(): void {
+    this.observedSignalled = true
+    this.resolve(this.observedWaiters)
+  }
+
+  waitUntilReady(): Promise<void> {
+    return this.waitForSignal(this.readySignalled, this.readyWaiters)
+  }
+
+  waitUntilObserved(): Promise<void> {
+    return this.waitForSignal(this.observedSignalled, this.observedWaiters)
+  }
+
+  waitForDelivery(): Promise<void> {
+    return this.waitForSignal(this.deliveryReleased, this.deliveryWaiters)
+  }
+
+  release(): void {
+    this.deliveryReleased = true
+    this.resolve(this.deliveryWaiters)
+  }
+
+  reset(): void {
+    this.resolve(this.readyWaiters)
+    this.resolve(this.observedWaiters)
+    this.resolve(this.deliveryWaiters)
+    this.readySignalled = false
+    this.observedSignalled = false
+    this.deliveryReleased = false
+  }
+
+  private waitForSignal(signalled: boolean, waiters: Set<SynchronizationWaiter>): Promise<void> {
+    if (signalled) return Promise.resolve()
+    return new Promise((resolve) => waiters.add(resolve))
+  }
+
+  private resolve(waiters: Set<SynchronizationWaiter>): void {
+    for (const waiter of waiters) waiter()
+    waiters.clear()
+  }
+}
+
+/** Create the deterministic notification handshake used by a contract run. */
+const makeJobStoreContractSynchronization = (): JobStoreContractSynchronization =>
+  new DefaultSynchronization()
+
 const defaultHooks: JobStoreContractHooks = Object.freeze({})
 
 const controlsFor = async <Token extends AnyJobStoreToken>(
@@ -458,6 +596,7 @@ const makeContext = async <Token extends AnyJobStoreToken>(
   const clock = controls.clock ?? new DefaultClock()
   const ids = controls.ids ?? new DefaultIds()
   const barrier = controls.barrier ?? new DefaultBarrier()
+  const synchronization = controls.synchronization ?? makeJobStoreContractSynchronization()
   const hooks = controls.hooks ?? defaultHooks
 
   assertFunction(clock.now, 'controls.clock.now')
@@ -468,6 +607,13 @@ const makeContext = async <Token extends AnyJobStoreToken>(
   assertFunction(barrier.wait, 'controls.barrier.wait')
   assertFunction(barrier.release, 'controls.barrier.release')
   assertFunction(barrier.reset, 'controls.barrier.reset')
+  assertFunction(synchronization.ready, 'controls.synchronization.ready')
+  assertFunction(synchronization.observed, 'controls.synchronization.observed')
+  assertFunction(synchronization.waitUntilReady, 'controls.synchronization.waitUntilReady')
+  assertFunction(synchronization.waitUntilObserved, 'controls.synchronization.waitUntilObserved')
+  assertFunction(synchronization.waitForDelivery, 'controls.synchronization.waitForDelivery')
+  assertFunction(synchronization.release, 'controls.synchronization.release')
+  assertFunction(synchronization.reset, 'controls.synchronization.reset')
 
   const context: JobStoreContractContext<Token> = {
     ...scenario,
@@ -476,6 +622,7 @@ const makeContext = async <Token extends AnyJobStoreToken>(
     clock,
     ids,
     barrier,
+    synchronization,
     hooks,
     async checkpoint(point: string): Promise<void> {
       if (typeof point !== 'string' || point.length === 0) {
@@ -570,6 +717,58 @@ const makeClient = async <Token extends AnyJobStoreToken>(
   const store = await resolveStore(runtime, context.token, context)
 
   return Object.freeze({ runtime, store })
+}
+
+const makeMultiStoreClient = async <Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token>,
+  context: JobStoreContractContext<Token>,
+  runtimes: Set<OwnedRuntime>
+): Promise<JobStoreContractMultiStoreClient> => {
+  const factory = options.makeMultiStoreRuntime
+  if (factory === undefined) {
+    throw makeScenarioError(
+      context,
+      'multi-store factory',
+      'makeMultiStoreRuntime was not supplied'
+    )
+  }
+  const makeRuntime = factory
+
+  const multiContext: JobStoreContractMultiStoreContext = Object.freeze({
+    ...context,
+    token: multiStoreTokens.default,
+    scenario: context,
+    synchronization: context.synchronization,
+    tokens: multiStoreTokens
+  })
+  let runtime: JobStoreContractMultiStoreRuntime
+
+  try {
+    runtime = await makeRuntime(multiContext)
+  } catch (cause) {
+    throw makeScenarioError(context, 'multi-store lifecycle', 'makeMultiStoreRuntime failed', cause)
+  }
+
+  if (
+    !isRecord(runtime) ||
+    typeof runtime.run !== 'function' ||
+    typeof runtime.dispose !== 'function'
+  ) {
+    throw makeScenarioError(
+      context,
+      'multi-store lifecycle',
+      'makeMultiStoreRuntime must return { run, dispose } functions'
+    )
+  }
+
+  runtimes.add(runtime)
+  const stores = {
+    default: await resolveStore(runtime, multiStoreTokens.default, context),
+    first: await resolveStore(runtime, multiStoreTokens.first, context),
+    second: await resolveStore(runtime, multiStoreTokens.second, context)
+  }
+
+  return Object.freeze({ runtime, tokens: multiStoreTokens, stores: Object.freeze(stores) })
 }
 
 const resolveOperation = async <Value>(
@@ -778,12 +977,15 @@ const makeScenario = <Token extends AnyJobStoreToken>(
       const fixtures = makeFixtures(token)
       const openClient = async (): Promise<JobStoreContractClient<Token>> =>
         makeClient(options, baseContext, runtimes)
+      const openMultiStore = async (): Promise<JobStoreContractMultiStoreClient> =>
+        makeMultiStoreClient(options, baseContext, runtimes)
       const scenarioContext: JobStoreContractScenarioContext<Token> = Object.freeze({
         ...baseContext,
         client,
         store: client.store,
         fixtures,
-        openClient
+        openClient,
+        openMultiStore
       })
       await definition.body(scenarioContext)
       report.passed.add(definition.id)
@@ -803,6 +1005,11 @@ const makeScenario = <Token extends AnyJobStoreToken>(
       }
 
       if (context !== undefined) {
+        try {
+          context.synchronization.reset()
+        } catch (cause) {
+          cleanupFailures.push(cause)
+        }
         try {
           await options.reset?.(context)
         } catch (cause) {
@@ -916,6 +1123,77 @@ const enqueueMany = async (
     context,
     'enqueueMany'
   )
+
+const synchronizeWake = async (
+  context: JobStoreContractScenarioContext,
+  waiting: Promise<AnyResult<void>>
+): Promise<void> => {
+  const phase = await Promise.race([
+    context.synchronization.waitUntilReady().then(() => 'ready' as const),
+    waiting.then(() => 'complete' as const)
+  ])
+
+  if (phase === 'ready') {
+    context.synchronization.release()
+    await context.synchronization.waitUntilObserved()
+  }
+}
+
+const countStates = [
+  'waiting',
+  'delayed',
+  'active',
+  'completed',
+  'failed',
+  'cancelled'
+] as const satisfies readonly (keyof JobStoreNamespace.JobCounts)[]
+
+const assertCounts = async (
+  context: JobStoreContractScenarioContext,
+  request: JobStoreNamespace.CountsRequest | undefined,
+  expected: Partial<JobStoreNamespace.JobCounts>,
+  detail: string,
+  store: JobStoreNamespace.Contract = context.store
+): Promise<JobStoreNamespace.JobCounts> => {
+  const counts = await succeed(
+    operation(() => store.counts(request)),
+    context,
+    'counts'
+  )
+
+  ensure(
+    Number.isSafeInteger(counts.total) && counts.total >= 0,
+    context,
+    'counts coherence',
+    `${detail}: total must be a non-negative safe integer`
+  )
+  for (const state of countStates) {
+    ensure(
+      Number.isSafeInteger(counts[state]) && counts[state] >= 0,
+      context,
+      'counts coherence',
+      `${detail}: ${state} must be a non-negative safe integer`
+    )
+    const expectedValue = expected[state]
+    if (expectedValue !== undefined) {
+      ensure(
+        counts[state] === expectedValue,
+        context,
+        'counts coherence',
+        `${detail}: expected ${state}=${expectedValue}, received ${counts[state]}`
+      )
+    }
+  }
+
+  const stateTotal = countStates.reduce((total, state) => total + counts[state], 0)
+  ensure(
+    stateTotal === counts.total,
+    context,
+    'counts coherence',
+    `${detail}: state buckets sum to ${stateTotal}, total is ${counts.total}`
+  )
+  return counts
+}
 
 const builtInScenarios = (): readonly ScenarioDefinition[] => [
   definition(
@@ -1134,39 +1412,79 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     'enqueueMany keeps independently replayable duplicate units',
     'enqueue',
     async (context) => {
-      const first = enqueueRequest(context, context.fixtures.job, 'batch-duplicate', {
-        id: context.ids.jobId('batch-duplicate')
-      })
-      const requests = [
-        first,
-        first,
-        enqueueRequest(context, context.fixtures.jobV2, 'batch-fresh')
+      const prefix = [
+        enqueueRequest(context, context.fixtures.job, 'batch-prefix-a', {
+          id: context.ids.jobId('batch-prefix-a')
+        }),
+        enqueueRequest(context, context.fixtures.jobV2, 'batch-prefix-b', {
+          id: context.ids.jobId('batch-prefix-b')
+        })
       ]
-      const results = await enqueueMany(context, requests)
+      const committed = await enqueueMany(context, prefix)
       ensure(
-        results.length === 3,
+        committed.length === prefix.length && committed.every((result) => !result.duplicate),
         context,
         'batch partial semantics',
-        'batch did not return one result per input'
+        'the independently committed prefix was not persisted'
       )
+
+      const suffix = [
+        enqueueRequest(context, context.fixtures.job, 'batch-suffix-a'),
+        enqueueRequest(context, context.fixtures.otherNameJob, 'batch-suffix-b')
+      ]
+      const requests = [...prefix, ...suffix]
+      const replayed = await enqueueMany(context, requests)
       ensure(
-        results[0]?.duplicate === false,
+        replayed.length === requests.length,
         context,
         'batch partial semantics',
-        'first unit was not inserted'
+        'replay did not return one result per input'
       )
-      ensure(
-        results[1]?.duplicate === true,
-        context,
-        'batch partial semantics',
-        'replayed unit was not a duplicate'
+
+      prefix.forEach((request, index) => {
+        const result = replayed[index]
+        ensure(
+          result?.duplicate === true &&
+            result.job.id === committed[index]?.job.id &&
+            result.job.name === (request.job?.name ?? request.identity?.name),
+          context,
+          'batch partial semantics',
+          `replayed prefix unit ${index} was not an aligned duplicate`
+        )
+      })
+
+      suffix.forEach((request, index) => {
+        const result = replayed[prefix.length + index]
+        ensure(
+          result?.duplicate === false &&
+            result.job.name === (request.job?.name ?? request.identity?.name) &&
+            payloadValue(result.job) === `batch-suffix-${index === 0 ? 'a' : 'b'}`,
+          context,
+          'batch partial semantics',
+          `suffix unit ${index} was not persisted in input order`
+        )
+      })
+
+      const suffixRecords = await Promise.all(
+        suffix.map(async (_request, index) => {
+          const result = replayed[prefix.length + index]
+          if (result === undefined) return undefined
+          return succeed(
+            operation(() => context.store.getJob({ jobId: result.job.id })),
+            context,
+            'getJob'
+          )
+        })
       )
-      ensure(
-        results[2]?.duplicate === false,
-        context,
-        'batch partial semantics',
-        'later independent unit was lost'
-      )
+      suffixRecords.forEach((record, index) => {
+        ensure(
+          record !== undefined &&
+            payloadValue(record) === `batch-suffix-${index === 0 ? 'a' : 'b'}`,
+          context,
+          'batch partial semantics',
+          `suffix unit ${index} was not observable after replay`
+        )
+      })
     }
   ),
   definition(
@@ -2430,17 +2748,24 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     'counts remain coherent across state transitions',
     'admin',
     async (context) => {
-      const waiting = await succeed(
+      await succeed(
         operation(() =>
-          context.store.enqueue(enqueueRequest(context, context.fixtures.job, 'count-complete'))
+          context.store.enqueue(enqueueRequest(context, context.fixtures.job, 'count-waiting'))
         ),
         context,
         'enqueue'
       )
-      const cancelled = await succeed(
+      await assertCounts(
+        context,
+        undefined,
+        { total: 1, waiting: 1, delayed: 0, active: 0, failed: 0, completed: 0, cancelled: 0 },
+        'waiting transition'
+      )
+
+      await succeed(
         operation(() =>
           context.store.enqueue(
-            enqueueRequest(context, context.fixtures.jobV2, 'count-cancel', {
+            enqueueRequest(context, context.fixtures.jobV2, 'count-delayed', {
               runAt: now(context) + 100
             })
           )
@@ -2448,48 +2773,167 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'enqueue'
       )
+      await assertCounts(
+        context,
+        undefined,
+        { total: 2, waiting: 1, delayed: 1, active: 0, failed: 0, completed: 0, cancelled: 0 },
+        'delayed transition'
+      )
+
+      const activeCandidate = await succeed(
+        operation(() =>
+          context.store.enqueue(
+            enqueueRequest(context, context.fixtures.otherNameJob, 'count-failed')
+          )
+        ),
+        context,
+        'enqueue'
+      )
       const claimed = await succeed(
-        operation(() => context.store.claim(claimRequest(context, context.fixtures))),
+        operation(() =>
+          context.store.claim(
+            claimRequest(context, context.fixtures, {
+              accepted: [context.fixtures.otherNameJob.identity],
+              limit: 1
+            })
+          )
+        ),
         context,
         'claim'
       )
-      const job = claimed.jobs[0]
-      if (job === undefined) fail(context, 'counts', 'count fixture did not claim waiting job')
-      const claimedJob = job!
+      const active = claimed.jobs[0]
+      ensure(
+        active !== undefined && active.id === activeCandidate.job.id,
+        context,
+        'counts transitions',
+        'the active count fixture was not claimed'
+      )
+      if (active === undefined) return
+      await assertCounts(
+        context,
+        undefined,
+        { total: 3, waiting: 1, delayed: 1, active: 1, failed: 0, completed: 0, cancelled: 0 },
+        'active transition'
+      )
+
       await succeed(
         operation(() =>
           context.store.settle({
-            jobId: claimedJob.id,
-            leaseToken: claimedJob.leaseToken,
+            jobId: active.id,
+            leaseToken: active.leaseToken,
             now: now(context),
-            outcome: { type: 'complete' }
+            outcome: { type: 'fail', failure: failure(context, 'COUNT-FAILED') }
           })
         ),
         context,
         'settle'
+      )
+      await assertCounts(
+        context,
+        undefined,
+        { total: 3, waiting: 1, delayed: 1, active: 0, failed: 1, completed: 0, cancelled: 0 },
+        'failed transition'
+      )
+
+      const completedCandidate = await succeed(
+        operation(() =>
+          context.store.enqueue(
+            enqueueRequest(context, context.fixtures.otherNameJob, 'count-completed')
+          )
+        ),
+        context,
+        'enqueue'
+      )
+      const completedClaim = await succeed(
+        operation(() =>
+          context.store.claim(
+            claimRequest(context, context.fixtures, {
+              accepted: [context.fixtures.otherNameJob.identity],
+              limit: 1
+            })
+          )
+        ),
+        context,
+        'claim'
+      )
+      const completedActive = completedClaim.jobs[0]
+      ensure(
+        completedActive !== undefined && completedActive.id === completedCandidate.job.id,
+        context,
+        'counts transitions',
+        'the completed count fixture was not claimed'
+      )
+      if (completedActive === undefined) return
+      await assertCounts(
+        context,
+        undefined,
+        { total: 4, waiting: 1, delayed: 1, active: 1, failed: 1, completed: 0, cancelled: 0 },
+        'second active transition'
+      )
+
+      await succeed(
+        operation(() =>
+          context.store.settle({
+            jobId: completedActive.id,
+            leaseToken: completedActive.leaseToken,
+            now: now(context),
+            outcome: { type: 'complete', result: { value: 'counted' } }
+          })
+        ),
+        context,
+        'settle'
+      )
+      await assertCounts(
+        context,
+        undefined,
+        { total: 4, waiting: 1, delayed: 1, active: 0, failed: 1, completed: 1, cancelled: 0 },
+        'completed transition'
+      )
+
+      const cancelled = await succeed(
+        operation(() =>
+          context.store.enqueue(
+            enqueueRequest(context, context.fixtures.otherQueueJob, 'count-cancelled')
+          )
+        ),
+        context,
+        'enqueue'
       )
       await succeed(
         operation(() => context.store.cancel({ jobId: cancelled.job.id, now: now(context) })),
         context,
         'cancel'
       )
-      const counts = await succeed(
-        operation(() => context.store.counts()),
+      await assertCounts(
         context,
-        'counts'
+        undefined,
+        { total: 5, waiting: 1, delayed: 1, active: 0, failed: 1, completed: 1, cancelled: 1 },
+        'all-state transition'
       )
-      ensure(
-        counts.total === 2 &&
-          counts.completed === 1 &&
-          counts.cancelled === 1 &&
-          counts.waiting === 0 &&
-          counts.delayed === 0 &&
-          counts.active === 0,
+      await assertCounts(
         context,
-        'counts coherence',
-        JSON.stringify(counts)
+        { queue: context.fixtures.queueName },
+        { total: 4, waiting: 1, delayed: 1, active: 0, failed: 1, completed: 1, cancelled: 0 },
+        'main queue filter'
       )
-      void waiting
+      await assertCounts(
+        context,
+        { queue: context.fixtures.queueName, name: context.fixtures.jobName },
+        { total: 2, waiting: 1, delayed: 1, active: 0, failed: 0, completed: 0, cancelled: 0 },
+        'job name filter'
+      )
+      await assertCounts(
+        context,
+        { name: unwrapBrand(JobName.make(context.fixtures.otherNameJob.name)) },
+        { total: 2, waiting: 0, delayed: 0, active: 0, failed: 1, completed: 1, cancelled: 0 },
+        'other name filter'
+      )
+      await assertCounts(
+        context,
+        { queue: context.fixtures.otherQueueName },
+        { total: 1, waiting: 0, delayed: 0, active: 0, failed: 0, completed: 0, cancelled: 1 },
+        'other queue filter'
+      )
     }
   ),
   definition(
@@ -2830,14 +3274,20 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'awaitWake'
       )
-      queueMicrotask(() => controller.abort())
-      const result = await waiting
-      if (isErrorResult(result)) {
-        fail(
-          context,
-          'wake token change',
-          'awaitWake did not observe the already-recorded wake before cancellation'
-        )
+
+      try {
+        await synchronizeWake(context, waiting)
+        controller.abort()
+        const result = await waiting
+        if (isErrorResult(result)) {
+          fail(
+            context,
+            'wake token delivery',
+            'awaitWake did not resolve the stale wake after its observed check'
+          )
+        }
+      } finally {
+        controller.abort()
       }
     },
     'notifications'
@@ -2852,28 +3302,37 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'claim'
       )
-      let resolved = false
+      const controller = new AbortController()
       const waiting = resolveOperation(
         context.store.awaitWake({
           queues: [context.fixtures.queueName],
           wakeToken: empty.wakeToken,
-          signal: new AbortController().signal
+          signal: controller.signal
         }),
         context,
         'awaitWake'
-      ).then(() => {
-        resolved = true
-      })
-      await Promise.resolve()
-      await succeed(
-        operation(() =>
-          context.store.enqueue(enqueueRequest(context, context.fixtures.job, 'wake-waiter'))
-        ),
-        context,
-        'enqueue'
       )
-      await waiting
-      ensure(resolved, context, 'wake notification', 'enqueue did not resolve the queue waiter')
+
+      try {
+        await context.synchronization.waitUntilReady()
+        await succeed(
+          operation(() =>
+            context.store.enqueue(enqueueRequest(context, context.fixtures.job, 'wake-waiter'))
+          ),
+          context,
+          'enqueue'
+        )
+        await context.synchronization.waitUntilObserved()
+        const result = await waiting
+        ensure(
+          !isErrorResult(result),
+          context,
+          'wake notification',
+          'enqueue did not resolve the queue waiter'
+        )
+      } finally {
+        controller.abort()
+      }
     },
     'notifications'
   ),
@@ -2888,30 +3347,37 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'claim'
       )
       let resolved = false
+      const controller = new AbortController()
       const waiting = resolveOperation(
         context.store.awaitWake({
           queues: [context.fixtures.queueName],
           wakeToken: empty.wakeToken,
-          signal: new AbortController().signal
+          signal: controller.signal
         }),
         context,
         'awaitWake'
-      ).then(() => {
+      ).then((result) => {
         resolved = true
+        return result
       })
-      await Promise.resolve()
-      await succeed(
-        operation(() =>
-          context.store.enqueue(
-            enqueueRequest(context, context.fixtures.otherQueueJob, 'other-queue-wake')
-          )
-        ),
-        context,
-        'enqueue'
-      )
-      await Promise.resolve()
-      // Spurious wakes are allowed; require a relevant enqueue only when the waiter is still pending.
-      if (!resolved) {
+
+      try {
+        await context.synchronization.waitUntilReady()
+        await succeed(
+          operation(() =>
+            context.store.enqueue(
+              enqueueRequest(context, context.fixtures.otherQueueJob, 'other-queue-wake')
+            )
+          ),
+          context,
+          'enqueue'
+        )
+        ensure(
+          !resolved,
+          context,
+          'queue-filtered wake',
+          'an unrelated queue completed the waiter before a relevant enqueue'
+        )
         await succeed(
           operation(() =>
             context.store.enqueue(enqueueRequest(context, context.fixtures.job, 'main-queue-wake'))
@@ -2919,10 +3385,19 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
           context,
           'enqueue'
         )
+        await context.synchronization.waitUntilObserved()
+        const result = await waiting
+        ensure(
+          !isErrorResult(result),
+          context,
+          'queue-filtered wake',
+          'the relevant queue did not complete the waiter'
+        )
+      } finally {
+        controller.abort()
       }
-      await waiting
     },
-    'notifications'
+    'queueFilteredNotifications'
   ),
   definition(
     'wake-occurs-before-wait',
@@ -2941,17 +3416,29 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'enqueue'
       )
-      await succeed(
-        operation(() =>
-          context.store.awaitWake({
-            queues: [context.fixtures.queueName],
-            wakeToken: empty.wakeToken,
-            signal: new AbortController().signal
-          })
-        ),
+      const controller = new AbortController()
+      const waiting = resolveOperation(
+        context.store.awaitWake({
+          queues: [context.fixtures.queueName],
+          wakeToken: empty.wakeToken,
+          signal: controller.signal
+        }),
         context,
         'awaitWake'
       )
+
+      try {
+        await synchronizeWake(context, waiting)
+        const result = await waiting
+        ensure(
+          !isErrorResult(result),
+          context,
+          'wake token delivery',
+          'awaitWake did not observe the wake that preceded waiter registration'
+        )
+      } finally {
+        controller.abort()
+      }
     },
     'notifications'
   ),
@@ -2979,6 +3466,189 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     'batchClaim'
   )
 ]
+
+const multiStoreScenario = (): ScenarioDefinition =>
+  definition(
+    'store-multi-isolation',
+    'default and named stores isolate state in one runtime',
+    'stores',
+    async (context) => {
+      const client = await context.openMultiStore()
+      const { stores, tokens } = client
+      const repeatedToken = JobStore.named('contract-store-a')
+      const repeatedStore = await client.runtime.run(
+        async () => await ServiceRuntime.resolve(repeatedToken)
+      )
+      ensure(
+        repeatedToken.serviceTag === tokens.first.serviceTag && repeatedStore === stores.first,
+        context,
+        'named store identity',
+        'repeated named token did not resolve the original store'
+      )
+
+      const firstBound = Job.bind(context.fixtures.job, tokens.first)
+      const firstOnlyBound = Job.bind(context.fixtures.jobV2, tokens.first)
+      const secondBound = Job.bind(context.fixtures.job, tokens.second)
+      const rebound = Job.bind(firstBound, repeatedToken)
+      ensure(
+        firstBound.store === tokens.first &&
+          firstOnlyBound.store === tokens.first &&
+          secondBound.store === tokens.second,
+        context,
+        'named store binding',
+        'a job binding selected the wrong named store'
+      )
+      ensure(
+        rebound.store.serviceTag === tokens.first.serviceTag,
+        context,
+        'named store binding',
+        'repeated named binding changed the logical store'
+      )
+
+      const sharedId = context.ids.jobId('multi-store-shared-id')
+      const requestFor = (
+        definition: AnyJobDefinition,
+        label: string,
+        id = sharedId
+      ): EnqueueRequest => enqueueRequest(context, definition, label, { id })
+      const inserted = await Promise.all([
+        succeed(
+          operation(() => stores.default.enqueue(requestFor(context.fixtures.job, 'default'))),
+          context,
+          'enqueue'
+        ),
+        succeed(
+          operation(() => stores.first.enqueue(requestFor(firstBound, 'first'))),
+          context,
+          'enqueue'
+        ),
+        succeed(
+          operation(() => stores.second.enqueue(requestFor(secondBound, 'second'))),
+          context,
+          'enqueue'
+        )
+      ])
+      const defaultOnly = await succeed(
+        operation(() =>
+          stores.default.enqueue(
+            requestFor(
+              context.fixtures.job,
+              'default-only',
+              context.ids.jobId('multi-store-default-only')
+            )
+          )
+        ),
+        context,
+        'enqueue'
+      )
+      const firstOnly = await succeed(
+        operation(() =>
+          stores.first.enqueue(
+            requestFor(firstOnlyBound, 'first-only', context.ids.jobId('multi-store-first-only'))
+          )
+        ),
+        context,
+        'enqueue'
+      )
+      ensure(
+        !defaultOnly.duplicate &&
+          !firstOnly.duplicate &&
+          inserted.every((result) => !result.duplicate),
+        context,
+        'named store isolation',
+        'the same ID was treated as a duplicate across stores'
+      )
+
+      await Promise.all([
+        assertCounts(
+          context,
+          undefined,
+          { total: 2, waiting: 2 },
+          'default store count',
+          stores.default
+        ),
+        assertCounts(
+          context,
+          undefined,
+          { total: 2, waiting: 2 },
+          'first named store count',
+          stores.first
+        ),
+        assertCounts(
+          context,
+          undefined,
+          { total: 1, waiting: 1 },
+          'second named store count',
+          stores.second
+        )
+      ])
+
+      const foreign = await succeed(
+        operation(() => stores.second.getJob({ jobId: defaultOnly.job.id })),
+        context,
+        'getJob'
+      )
+      ensure(
+        foreign === undefined,
+        context,
+        'named store isolation',
+        'a job from the default store was visible in a named store'
+      )
+
+      const foreignClaim = await succeed(
+        operation(() =>
+          stores.second.claim(
+            claimRequest(context, context.fixtures, {
+              accepted: [firstOnlyBound.identity],
+              limit: 1
+            })
+          )
+        ),
+        context,
+        'claim'
+      )
+      ensure(
+        foreignClaim.jobs.length === 0,
+        context,
+        'named store claims',
+        'a job bound to one named store was claimable from another store'
+      )
+
+      const claim = async (store: JobStoreNamespace.Contract) =>
+        succeed(
+          operation(() =>
+            store.claim(
+              claimRequest(context, context.fixtures, {
+                accepted: [context.fixtures.job.identity],
+                limit: 2
+              })
+            )
+          ),
+          context,
+          'claim'
+        )
+      const claimed = await Promise.all([
+        claim(stores.default),
+        claim(stores.first),
+        claim(stores.second)
+      ])
+      ensure(
+        claimed[0]?.jobs.length === 2 &&
+          claimed[1]?.jobs.length === 1 &&
+          claimed[2]?.jobs.length === 1,
+        context,
+        'named store claims',
+        'a store could not claim its own isolated job set'
+      )
+      ensure(
+        claimed.map((result) => result.jobs.map((job) => payloadValue(job)).join(',')).join('|') ===
+          'default,default-only|first|second',
+        context,
+        'named store claims',
+        'claims crossed store boundaries or changed payload alignment'
+      )
+    }
+  )
 
 const extensionDefinitions = <Token extends AnyJobStoreToken>(
   extensions: readonly JobStoreContractExtension<Token>[] | undefined
@@ -3029,6 +3699,9 @@ const validateOptions = <Token extends AnyJobStoreToken>(
   }
 
   assertFunction(options.makeRuntime, 'makeRuntime')
+  if (options.makeMultiStoreRuntime !== undefined) {
+    assertFunction(options.makeMultiStoreRuntime, 'makeMultiStoreRuntime')
+  }
 
   if (options.setup !== undefined) assertFunction(options.setup, 'setup')
   if (options.reset !== undefined) assertFunction(options.reset, 'reset')
@@ -3078,6 +3751,7 @@ export function jobStoreContract<Token extends AnyJobStoreToken>(
   const capabilities = normalizeCapabilities(options.capabilities)
   const definitions: readonly ScenarioDefinition<Token>[] = [
     ...builtInScenarios(),
+    ...(options.makeMultiStoreRuntime === undefined ? [] : [multiStoreScenario()]),
     ...extensionDefinitions(options.extensions)
   ]
   const seen = new Set<string>()

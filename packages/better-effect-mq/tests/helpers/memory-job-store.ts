@@ -7,7 +7,12 @@ import { Layer, Runtime } from 'better-effect'
 import type { ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
-import type { JobStoreContractRuntime } from '../../src/testing'
+import type {
+  JobStoreContractRuntime,
+  JobStoreContractSynchronization,
+  JobStoreContractMultiStoreContext,
+  JobStoreContractMultiStoreRuntime
+} from '../../src/testing'
 
 import {
   InvalidJobTransitionError,
@@ -46,8 +51,13 @@ export type MemoryStoreFault =
   | 'no-fencing'
   | 'wrong-ordering'
   | 'lost-wake'
+  | 'delayed-wake-check'
+  | 'unfiltered-wake'
   | 'duplicate-claim'
   | 'broken-pagination'
+  | 'drop-enqueue-many-suffix'
+  | 'zero-count-channels'
+  | 'cross-store'
 
 type Operation<Value> = ResultType<Value, JobStoreError>
 type StoredWakeEvent = {
@@ -66,6 +76,7 @@ type StoredWaiter = {
 type MemoryStoreOptions = {
   readonly capabilities?: Partial<JobStoreCapabilities>
   readonly fault?: MemoryStoreFault
+  readonly synchronization?: JobStoreContractSynchronization
 }
 
 const ok = <Value>(value: Value): Operation<Value> =>
@@ -122,6 +133,7 @@ const freezeCapabilities = (
 ): JobStoreCapabilities =>
   Object.freeze({
     notifications: capabilities?.notifications ?? false,
+    queueFilteredNotifications: capabilities?.queueFilteredNotifications ?? false,
     batchClaim: capabilities?.batchClaim ?? false,
     transactionalEnqueue: capabilities?.transactionalEnqueue ?? false,
     changeFeed: capabilities?.changeFeed ?? false
@@ -151,10 +163,12 @@ class MemoryStore {
   private readonly wakeEvents: StoredWakeEvent[] = []
   private sequence = 0
   private wakeVersion = 0
+  private enqueueManyCalls = 0
 
   constructor(
     private readonly fault: MemoryStoreFault | undefined,
-    capabilities?: Partial<JobStoreCapabilities>
+    capabilities?: Partial<JobStoreCapabilities>,
+    private readonly synchronization?: JobStoreContractSynchronization
   ) {
     this.capabilities = freezeCapabilities(capabilities)
   }
@@ -210,12 +224,14 @@ class MemoryStore {
   }
 
   enqueueMany(requests: readonly EnqueueRequest[]): Operation<JobStoreType.EnqueueManyResult> {
+    this.enqueueManyCalls += 1
     const results: JobStoreType.EnqueueResult[] = []
 
     for (const request of requests) {
       const result = this.enqueue(request)
       if (result.isErr()) return error(result.error)
       results.push(result.value)
+      if (this.fault === 'drop-enqueue-many-suffix' && this.enqueueManyCalls === 2) break
     }
 
     return ok(Object.freeze(results))
@@ -410,17 +426,15 @@ class MemoryStore {
 
   awaitWake(request: JobStoreType.AwaitWakeRequest): Operation<void> {
     if (request.signal.aborted) return error(new JobStoreWakeAbortedError())
-    if (this.fault === 'lost-wake') {
-      return new Promise((resolve) => {
-        const onAbort = (): void => {
-          request.signal.removeEventListener('abort', onAbort)
-          resolve(error<void>(new JobStoreWakeAbortedError()))
-        }
-        request.signal.addEventListener('abort', onAbort, { once: true })
-      }) as unknown as Operation<void>
-    }
+    if (this.fault === 'lost-wake') return this.lostWake(request)
+
     const token = tokenNumber(request.wakeToken)
-    if (this.hasRelevantEvent(token, request.queues)) return ok(undefined)
+    if (this.hasRelevantEvent(token, request.queues)) {
+      if (this.fault === 'delayed-wake-check') return this.delayedWakeCheck(request)
+      this.synchronization?.ready()
+      this.synchronization?.observed()
+      return ok(undefined)
+    }
 
     return new Promise((resolve) => {
       const onAbort = (): void => {
@@ -430,12 +444,56 @@ class MemoryStore {
       const waiter: StoredWaiter = {
         queues: request.queues,
         token,
-        resolve: () => resolve(ok(undefined)),
+        resolve: () => {
+          resolve(ok(undefined))
+          this.synchronization?.observed()
+        },
         signal: request.signal,
         onAbort
       }
       this.waiters.add(waiter)
       request.signal.addEventListener('abort', onAbort, { once: true })
+      this.synchronization?.ready()
+    }) as unknown as Operation<void>
+  }
+
+  private delayedWakeCheck(request: JobStoreType.AwaitWakeRequest): Operation<void> {
+    return new Promise((resolve) => {
+      let settled = false
+      const onAbort = (): void => {
+        if (settled) return
+        settled = true
+        request.signal.removeEventListener('abort', onAbort)
+        resolve(error<void>(new JobStoreWakeAbortedError()))
+      }
+      request.signal.addEventListener('abort', onAbort, { once: true })
+      this.synchronization?.ready()
+      const delivery = this.synchronization?.waitForDelivery() ?? Promise.resolve()
+      void delivery.then(() => {
+        if (settled) return
+        settled = true
+        request.signal.removeEventListener('abort', onAbort)
+        resolve(ok(undefined))
+        this.synchronization?.observed()
+      })
+    }) as unknown as Operation<void>
+  }
+
+  private lostWake(request: JobStoreType.AwaitWakeRequest): Operation<void> {
+    return new Promise((resolve) => {
+      let aborted = false
+      const onAbort = (): void => {
+        if (aborted) return
+        aborted = true
+        request.signal.removeEventListener('abort', onAbort)
+        resolve(error<void>(new JobStoreWakeAbortedError()))
+      }
+      request.signal.addEventListener('abort', onAbort, { once: true })
+      this.synchronization?.ready()
+      const delivery = this.synchronization?.waitForDelivery() ?? Promise.resolve()
+      void delivery.then(() => {
+        if (!aborted) this.synchronization?.observed()
+      })
     }) as unknown as Operation<void>
   }
 
@@ -502,7 +560,7 @@ class MemoryStore {
         (request?.queue === undefined || job.queue === request.queue) &&
         (request?.name === undefined || job.name === request.name)
     )
-    return ok({
+    const counts = {
       total: selected.length,
       waiting: selected.filter((job) => job.state === 'waiting').length,
       delayed: selected.filter((job) => job.state === 'delayed').length,
@@ -510,7 +568,19 @@ class MemoryStore {
       completed: selected.filter((job) => job.state === 'completed').length,
       failed: selected.filter((job) => job.state === 'failed').length,
       cancelled: selected.filter((job) => job.state === 'cancelled').length
-    })
+    }
+    if (this.fault === 'zero-count-channels') {
+      return ok({
+        ...counts,
+        waiting: 0,
+        delayed: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0
+      })
+    }
+    return ok(counts)
   }
 
   redrive(request: JobStoreType.RedriveRequest): Operation<JobStoreType.RedriveResult> {
@@ -646,8 +716,15 @@ class MemoryStore {
     this.wakeVersion += 1
     this.wakeEvents.push({ version: this.wakeVersion, queue })
     for (const waiter of this.waiters) {
-      if (queue !== undefined && waiter.queues.length > 0 && !waiter.queues.includes(queue))
+      if (
+        this.fault !== 'unfiltered-wake' &&
+        queue !== undefined &&
+        waiter.queues.length > 0 &&
+        !waiter.queues.includes(queue)
+      ) {
+        this.synchronization?.observed()
         continue
+      }
       this.waiters.delete(waiter)
       waiter.signal.removeEventListener('abort', waiter.onAbort)
       waiter.resolve()
@@ -671,7 +748,9 @@ class MemoryStore {
 export const makeMemoryJobStore = (options: MemoryStoreOptions = {}): JobStoreType.Contract =>
   // SAFETY: this test fixture implements every JobStore operation; the focused error aliases are
   // restored by JobStore.of at the fixture boundary.
-  JobStore.of(new MemoryStore(options.fault, options.capabilities) as never)
+  JobStore.of(
+    new MemoryStore(options.fault, options.capabilities, options.synchronization) as never
+  )
 
 export const makeMemoryRuntime = async <Name extends string | undefined>(
   store: ServiceContract<InstanceType<JobStoreToken<Name>>>,
@@ -679,6 +758,30 @@ export const makeMemoryRuntime = async <Name extends string | undefined>(
 ): Promise<JobStoreContractRuntime<InstanceType<JobStoreToken<Name>>>> => {
   const layer = Layer.succeed(token, store)
   const runtime = await Runtime.make(layer)
+  return {
+    run: (program, options) => runtime.run(program, options),
+    dispose: () => runtime.dispose()
+  }
+}
+
+export const makeMemoryMultiRuntime = async (
+  context: JobStoreContractMultiStoreContext,
+  fault?: MemoryStoreFault
+): Promise<JobStoreContractMultiStoreRuntime> => {
+  const makeStore = (): JobStoreType.Contract =>
+    makeMemoryJobStore({ synchronization: context.synchronization })
+  const defaultStore = makeStore()
+  const firstStore = fault === 'cross-store' ? defaultStore : makeStore()
+  const secondStore = fault === 'cross-store' ? defaultStore : makeStore()
+  const layer = Layer.merge(
+    Layer.merge(
+      Layer.succeed(context.tokens.default, defaultStore),
+      Layer.succeed(context.tokens.first, firstStore)
+    ),
+    Layer.succeed(context.tokens.second, secondStore)
+  )
+  const runtime = await Runtime.make(layer)
+
   return {
     run: (program, options) => runtime.run(program, options),
     dispose: () => runtime.dispose()
