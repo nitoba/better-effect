@@ -338,6 +338,82 @@ separate notifier so token/version consistency cannot be split across Services.
 No adapter, backend, producer, worker, retry scheduler, or generic persistence
 API is included here.
 
+## Runner-agnostic JobStore conformance
+
+The `better-effect-mq/testing` entrypoint publishes stable JobStore scenarios,
+without importing Bun, Vitest, Jest, or any other test runner. The adapter owns
+the runtime and storage setup:
+
+```ts
+import { Runtime } from 'better-effect'
+import { jobStoreContract } from 'better-effect-mq/testing'
+
+const scenarios = jobStoreContract({
+  makeRuntime: async (context) => {
+    const runtime = await Runtime.make(
+      MyStore.layer({
+        database: databaseFor(context.id)
+      })
+    )
+
+    return {
+      run: (program) => runtime.run(program),
+      dispose: () => runtime.dispose()
+    }
+  },
+  setup: async (context) => createSchema(context.id),
+  reset: async (context) => resetDatabase(context.id),
+  capabilities: { notifications: true, batchClaim: true }
+})
+```
+
+Register the same scenarios with any runner. For Bun:
+
+```ts
+import { test } from 'bun:test'
+
+for (const scenario of scenarios) {
+  test(scenario.name, scenario.run)
+}
+```
+
+For Vitest:
+
+```ts
+import { describe, it } from 'vitest'
+
+describe('MyStore JobStore contract', () => {
+  for (const scenario of scenarios) {
+    it(scenario.name, scenario.run)
+  }
+})
+```
+
+Each scenario gets fresh controls, runs `setup`, then creates its runtime, and
+always disposes every runtime opened by the scenario (including extension
+clients) before `reset`.
+Cleanup is attempted after assertion failures, and the primary scenario error
+is preserved when cleanup also fails. `makeRuntime` is the only adapter-specific
+hook; the kit uses the public `JobStore.Contract` surface and never accesses
+tables, keys, drivers, or private adapter methods.
+
+Built-in scenarios cover enqueue identity and independent batch replay,
+ordering and atomic claims, leases/fencing/stalls, settlement ledgers,
+administration, keyset listing, controlled time, and wake-up abort/token
+semantics. `capabilities` is immutable metadata: false never skips a basic
+correctness scenario. Optional notification and batch-claim scenarios are
+returned only when their capability is declared; unsupported scenarios appear
+in `suite.report().skipped`. The report also includes `executed`, `passed`,
+`failed`, and `capabilitiesNotTested` so CI can make capability coverage
+explicit.
+
+The context exposes a deterministic `clock`, `ids`, `barrier`, and checkpoint
+hooks for distributed or crash extensions. Supply a controls factory when each
+scenario needs separate state. Extensions can call `openClient()` to obtain a
+second runtime over the same adapter storage; the kit does not provision
+Testcontainers or require real sleeps. Unsupported list shapes must return
+`UnsupportedJobStoreOperationError` according to the fixed support matrix above.
+
 ## State machine
 
 The only v0.1 states are `waiting`, `delayed`, `active`, `completed`, `failed`,

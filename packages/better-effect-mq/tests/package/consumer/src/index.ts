@@ -12,6 +12,7 @@ import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
 import packageJson from 'better-effect-mq/package.json' with { type: 'json' }
 import type { JobRecord, JsonValue } from 'better-effect-mq'
+import type { JobStoreContractRuntime } from 'better-effect-mq/testing'
 
 const packageName: string = packageJson.name
 const version: 1 = protocolVersion
@@ -27,6 +28,14 @@ const found = registry.lookup(job.identity)
 const namedStore = JobStore.named('external')
 const bound = bindJob(job, namedStore)
 const boundAgain = Job.bind(job, namedStore)
+const runtime: JobStoreContractRuntime = {
+  run: async <Value>(program: () => Value | PromiseLike<Value>): Promise<Awaited<Value>> =>
+    await program(),
+  dispose: async () => {}
+}
+const suite = testing.jobStoreContract({ makeRuntime: async () => runtime })
+const scenario = suite[0]
+const report = suite.report()
 
 void core
 void testing
@@ -40,3 +49,5 @@ void found
 void namedStore
 void bound
 void boundAgain
+void scenario
+void report
