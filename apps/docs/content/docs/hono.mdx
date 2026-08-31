@@ -282,10 +282,25 @@ shutdown.
 The optional public `better-effect-better-auth/hono` subpath provides
 request-scoped Better Auth sessions. Hono is an optional peer required only by
 this subpath (`>=4.0.0`); it is not needed by the framework-neutral `.` or
-`/hooks` subpaths. Install both packages and keep the Web handler on its normal
+`/hooks` subpaths.
+
+> **Package availability:** The public Better Auth APIs documented here are
+> implemented in this source tree, but the first `better-effect-better-auth`
+> npm release is pending and `better-effect-better-auth-v0.1.0` has not been
+> tagged. Until the approved package-qualified release is published, use a
+> source checkout/workspace:
+
+```bash
+# From the repository root:
+bun install
+bun run build
+```
+
+After that release, install the package and keep the Web handler on its normal
 route:
 
 ```bash
+# After the approved package-qualified npm release is published:
 bun add better-effect-better-auth better-auth hono
 ```
 

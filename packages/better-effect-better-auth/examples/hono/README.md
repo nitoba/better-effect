@@ -36,13 +36,32 @@ read. `require()` converts only a missing session into `Unauthenticated`; thrown
 or rejected defects become `UnhandledException` with the original value only in
 its `cause`, and the HonoEffect `onFailure` policy decides the response.
 
-Install Hono in the application when using this `/hono` example; it is not
-needed by the framework-neutral `.` entry point or the `/hooks` subpath. Run the
-example from this package with:
+`better-effect-better-auth` is implemented in this source tree, but its first
+npm release is pending: it is not published and
+`better-effect-better-auth-v0.1.0` has not been tagged. Until the approved
+package-qualified release is published, run this example from a source
+checkout/workspace. From the repository root:
 
 ```bash
-bun add hono
+bun install
+bun run build
+cd packages/better-effect-better-auth
 bun examples/hono/app.ts
+```
+
+The authenticated smoke test prints:
+
+```text
+{"authStatus":200,"protectedStatus":200}
+```
+
+Hono is an optional peer required only by the `/hono` subpath; the repository
+workspace installs it for this example. After the package-qualified npm release,
+a standalone application can install the package with:
+
+```bash
+# After the approved package-qualified npm release is published:
+bun add better-effect-better-auth better-auth better-effect better-result hono
 ```
 
 Better Auth's configuration must use the same base path as its conventional

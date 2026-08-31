@@ -11,7 +11,20 @@ into a yieldable `better-effect` Service whose operations use `better-result`.
 
 ## Install
 
+> **Package availability:** The public APIs documented here are implemented in
+> this source tree, but the first npm release of `better-effect-better-auth` is
+> pending: the package is not published and `better-effect-better-auth-v0.1.0`
+> has not been tagged. Until the approved package-qualified release is
+> published, use a source checkout/workspace (`bun install` and `bun run build`
+> from the repository root). The `bun add better-effect-better-auth` command
+> below is for after that release.
+
 ```bash
+# From a source checkout/workspace of this repository:
+bun install
+bun run build
+
+# After the approved package-qualified npm release is published:
 bun add better-effect-better-auth better-auth better-effect better-result
 # Add Hono only when importing the optional /hono subpath:
 bun add hono

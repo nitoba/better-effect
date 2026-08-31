@@ -8,6 +8,7 @@ const workspaceRoot = resolve(packageRoot, '../..')
 const coreSource = join(workspaceRoot, 'packages/better-effect')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const vanillaExampleSource = join(packageRoot, 'examples/vanilla-server')
+const honoExampleSource = join(packageRoot, 'examples/hono')
 const decoder = new TextDecoder()
 const minimumBetterEffectVersion = '0.12.0'
 
@@ -193,6 +194,11 @@ const makeFixture = async (
   await cp(vanillaExampleSource, join(fixture, 'examples/vanilla-server'), {
     recursive: true
   })
+  if (includeHono) {
+    await cp(honoExampleSource, join(fixture, 'examples/hono'), {
+      recursive: true
+    })
+  }
 
   const artifacts = join(fixture, 'artifacts')
   await mkdir(artifacts)
@@ -446,6 +452,15 @@ const runVanillaExample = (fixture: string, label: string): void => {
   )
 }
 
+const runHonoExample = (fixture: string, label: string): void => {
+  const result = run(['bun', 'examples/hono/app.ts'], fixture)
+  assertSuccess(result, `Running the Hono example in the ${label} fixture`)
+  assertCondition(
+    result.output.includes('{"authStatus":200,"protectedStatus":200}'),
+    `The Hono example produced an unexpected result in the ${label} fixture:\n${result.output}`
+  )
+}
+
 const exerciseFixture = async (
   fixture: string,
   coreVersion: string,
@@ -464,6 +479,7 @@ const exerciseFixture = async (
   if (includeHono) {
     smokeWith('bun', fixture, 'hono-smoke.mjs')
     smokeWith('node', fixture, 'hono-smoke.mjs')
+    runHonoExample(fixture, label)
   }
   runVanillaExample(fixture, label)
   console.log(`${label} external consumer checks passed`)
