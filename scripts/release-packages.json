@@ -1,0 +1,25 @@
+{
+  "packages": [
+    {
+      "name": "better-effect",
+      "directory": "packages/better-effect",
+      "changelog": "CHANGELOG.md",
+      "tagPrefix": "v",
+      "initialRelease": false
+    },
+    {
+      "name": "better-effect-better-auth",
+      "directory": "packages/better-effect-better-auth",
+      "changelog": "packages/better-effect-better-auth/CHANGELOG.md",
+      "tagPrefix": "better-effect-better-auth-v",
+      "initialRelease": true
+    },
+    {
+      "name": "better-effect-mq",
+      "directory": "packages/better-effect-mq",
+      "changelog": "packages/better-effect-mq/CHANGELOG.md",
+      "tagPrefix": "better-effect-mq-v",
+      "initialRelease": true
+    }
+  ]
+}

@@ -567,29 +567,38 @@ The npm release workflow uses Trusted Publishing/OIDC.
 
 Do not add a long-lived `NPM_TOKEN` secret when Trusted Publishing is available.
 
-Release routes are package-qualified and allowlisted:
+Release routes are package-qualified and allowlisted in
+`scripts/release-packages.json`:
 
 ```text
 better-effect             -> v<package-version>
 better-effect-better-auth -> better-effect-better-auth-v<package-version>
+better-effect-mq          -> better-effect-mq-v<package-version>
 ```
 
 The existing core `v0.1.0` tag is owned by `better-effect` and must never be
-reused for the Better Auth package. The integration has its own package-local
-`CHANGELOG.md` and qualified tag.
+reused for another package. Every non-core package has its own package-local
+`CHANGELOG.md` and qualified tag. Use `bun run release:plan -- --base <tag>`
+to inspect changed packages and reverse workspace dependents before a hybrid
+release. A core release synchronizes explicit development pins in configured
+workspace dependents so the workspace remains installable while their public
+peer ranges are released separately when needed.
 
 Use the release script with an explicit package for new releases:
 
 ```bash
 ./scripts/release.sh better-effect 0.14.0
 ./scripts/release.sh better-effect-better-auth 0.1.0
+./scripts/release.sh better-effect-mq 0.1.0
 ```
 
-The artifact dry gate uses `bun pm pack --ignore-scripts`; it is local and
-registry-auth-free, and checks the selected package name, version, archive
-allowlist, declarations, source maps, and absence of workspace/file
-references. It must not be replaced with `bun publish --dry-run`. Real npm
-publication remains exclusively in the Trusted Publishing/OIDC workflow.
+The artifact dry gate uses both `bun pm pack --ignore-scripts` and
+`npm pack --ignore-scripts`; it is local and registry-auth-free, and checks the
+selected package name, version, archive allowlist, declarations, source maps,
+and absence of workspace/file/link references. It must not be replaced with
+`bun publish --dry-run`. Except for the one-time local bootstrap of a new npm
+package, real publication remains exclusively in the Trusted Publishing/OIDC
+workflow.
 
 The publish workflow must reject mismatched package, tag, and release-note
 paths and must publish only the package selected by the qualified tag. The

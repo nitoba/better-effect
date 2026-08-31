@@ -2,21 +2,15 @@
 
 ## Unreleased
 
-### Planned for v0.2
+## [0.1.0] - 2026-08-31
 
-- Optional Hono request-scoped current-session integration from the `/hono`
-  entry point.
-- Optional Better Auth hooks and plugin middleware bridge from the `/hooks`
-  entry point, using caller-owned Runtimes and explicit failure policies.
-- The v0.2 gate covers Hono request snapshots, hook context and cancellation,
-  cleanup ownership, explicit Better Auth base-path/route ordering guidance,
-  and external runtime consumers.
-
-### Prepared for v0.1.0 — 2026-08-30 (not published)
+### Added
 
 - Initial independent server-side Better Auth integration package.
 - Effectful endpoint, session, handler, transport-mode, plugin, and typed error
   adapters for an existing Better Auth instance.
+- Optional Hono request-scoped session and Better Auth hooks integrations using
+  caller-owned Runtimes and explicit failure policies.
 
 ### Tested peer matrix
 
@@ -36,8 +30,8 @@ The preparation gate also runs the packed consumer on Node.js `24.x` and Bun
 
 - server-side only in v0.1;
 - no client hooks or React/Vue/Svelte/Solid adapters;
-- no framework middleware helpers or framework subpaths;
-- no implicit `CurrentAuthSession` or request-scoped session integration;
+- no implicit/global `CurrentAuthSession`; request-scoped sessions must be
+  created explicitly with the optional Hono entry point;
 - no roles, policy, or authorization engine;
 - no automatic conversion to application-domain failures;
 - no retry, timeout, or circuit-breaker policies;
@@ -52,6 +46,5 @@ own Better Auth, database, environment, Runtime, or dependency-container
 lifecycle. Better Auth remains responsible for its public server APIs and
 plugin compatibility.
 
-This package is prepared independently from `better-effect`. It has not been
-published, and the qualified Git tag `better-effect-better-auth-v0.1.0` does not
-exist yet.
+This package is released independently from `better-effect` through the
+qualified `better-effect-better-auth-v<version>` tag route.

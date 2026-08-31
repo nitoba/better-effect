@@ -13,7 +13,7 @@ const expectedExports = {
 } as const satisfies Record<string, string>
 
 const expectedPeers = {
-  'better-effect': '^0.11.0',
+  'better-effect': '>=0.13.0 <0.14.0',
   'better-result': '^3.0.0',
   typescript: '>=5.7.0'
 } as const satisfies Record<string, string>
@@ -141,6 +141,9 @@ const assertCondition: (condition: boolean, message: string) => asserts conditio
 const isJsonObject = (value: JsonValue | undefined): value is JsonObject =>
   value !== undefined && Object.prototype.toString.call(value) === '[object Object]'
 
+const isJsonString = (value: JsonValue | undefined): value is string =>
+  value !== undefined && Object.prototype.toString.call(value) === '[object String]'
+
 const readJsonRecord = async (path: string): Promise<JsonObject> => {
   const value: JsonValue = JSON.parse(await readFile(path, 'utf8'))
 
@@ -238,9 +241,12 @@ const assertNoForbiddenDependencyNames = (manifest: JsonObject): void => {
 
 const assertManifest = async (): Promise<void> => {
   const manifest = await readJsonRecord(join(packageRoot, 'package.json'))
-
+  const coreManifest = await readJsonRecord(join(packageRoot, '../better-effect/package.json'))
   assertCondition(manifest['name'] === 'better-effect-mq', 'Unexpected package name')
-  assertCondition(manifest['version'] === '0.1.0', 'Unexpected package version')
+  assertCondition(
+    isJsonString(manifest['version']) && manifest['version'].length > 0,
+    'Package version is missing'
+  )
   assertCondition(manifest['type'] === 'module', 'The package must be ESM')
   assertCondition(
     manifest['sideEffects'] === false,
@@ -249,6 +255,13 @@ const assertManifest = async (): Promise<void> => {
   assertManifestExports(manifest)
   assertManifestPeers(manifest)
   assertNoForbiddenDependencyNames(manifest)
+
+  const devDependencies = manifest['devDependencies']
+  assertCondition(isJsonObject(devDependencies), 'Development dependencies must be an object')
+  assertCondition(
+    devDependencies['better-effect'] === coreManifest['version'],
+    'Pinned development dependency on better-effect is missing or stale'
+  )
 }
 
 const scriptKindFor = (path: string): ts.ScriptKind => {

@@ -81,7 +81,7 @@
     "check:standard-services": "bun run test:package-standard-services && bun run test:package-standard-services:minimum",
     "check:public-type-variance": "bun run test:package-variance && bun run test:package-variance:minimum && bun tests/package/public-type-variance/check.ts",
     "check:instance-requirements": "bun tests/package/instance-requirements/check.ts",
-    "check": "bun run typecheck && bun test && bun run format:check && bun run check:node-runtime && bun run check:opentelemetry && bun run check:web-package && bun run check:hono-package && bun run check:next-package && bun run check:bun-package && bun run check:bun-types && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run lint",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run check:node-runtime && bun run check:opentelemetry && bun run check:web-package && bun run check:hono-package && bun run check:next-package && bun run check:bun-package && bun run check:bun-types && bun run check:public-type-namespaces && bun run check:standard-services && bun run check:public-type-variance && bun run check:instance-requirements && bun run publint && bun run release:dry && bun run lint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect"
   },

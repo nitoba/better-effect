@@ -54,6 +54,11 @@ jobs:
             exit 1
           fi
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
       - name: Resolve allowlisted package route
         id: release
         env:
@@ -61,33 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            package_name="better-effect"
-            package_dir="packages/better-effect"
-            changelog="CHANGELOG.md"
-            release_version="${RELEASE_TAG#v}"
-          elif [[ "$RELEASE_TAG" =~ ^better-effect-better-auth-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            package_name="better-effect-better-auth"
-            package_dir="packages/better-effect-better-auth"
-            changelog="$package_dir/CHANGELOG.md"
-            release_version="${RELEASE_TAG#better-effect-better-auth-v}"
-          else
-            echo "::error::tag is not an allowlisted package release tag"
-            exit 1
-          fi
-
-          {
-            echo "package_name=$package_name"
-            echo "package_dir=$package_dir"
-            echo "changelog=$changelog"
-            echo "release_version=$release_version"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
+          bun scripts/release-route.ts --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@v5
@@ -124,17 +103,29 @@ jobs:
             echo "::error::$PACKAGE_NAME version ($manifest_version) does not match tag $RELEASE_TAG"
             exit 1
           fi
-          if [[ ! -f "$CHANGELOG" ]] || ! grep -Eq "^## \[$RELEASE_VERSION\]( |$)" "$CHANGELOG"; then
+          if [[ ! -f "$CHANGELOG" ]] || ! awk -v expected="## [$RELEASE_VERSION]" '
+            index($0, expected) == 1 &&
+              (length($0) == length(expected) || substr($0, length(expected) + 1, 1) == " ") {
+              found = 1
+              exit
+            }
+            END { exit found ? 0 : 1 }
+          ' "$CHANGELOG"; then
             echo "::error::selected package changelog has no exact [$RELEASE_VERSION] heading"
             exit 1
           fi
-          if grep -Fq 'workspace:' "$PACKAGE_DIR/package.json" && [[ "$PACKAGE_NAME" != "better-effect-better-auth" ]]; then
+          if [[ "$PACKAGE_NAME" == "better-effect" ]] && grep -Fq 'workspace:' "$PACKAGE_DIR/package.json"; then
             echo "::error::core release manifest contains a workspace marker"
             exit 1
           fi
 
-      - name: Run quality gates
-        run: bun run check
+      - name: Run selected package quality gates
+        env:
+          PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$PACKAGE_DIR" && bun run check)
 
       - name: Validate selected packed artifact
         env:
@@ -152,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$PACKAGE_NAME" == "better-effect-better-auth" ]]; then
+          if [[ "$PACKAGE_NAME" != "better-effect" ]]; then
             (cd "$PACKAGE_DIR" && bun run test:package-consumer)
             exit 0
           fi
@@ -219,17 +210,43 @@ jobs:
           PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
           PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          INITIAL_RELEASE: ${{ steps.release.outputs.initial_release }}
         shell: bash
         run: |
           set -euo pipefail
           published_version="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --registry=https://registry.npmjs.org 2>/dev/null || true)"
 
           if [[ "$published_version" == "$RELEASE_VERSION" ]]; then
-            echo "$PACKAGE_NAME@$RELEASE_VERSION is already published; treating this retry as successful"
+            temp_dir="$(mktemp -d)"
+            trap 'rm -rf "$temp_dir"' EXIT
+            mkdir -p "$temp_dir/local" "$temp_dir/registry" "$temp_dir/local-unpacked" "$temp_dir/registry-unpacked"
+            (
+              cd "$PACKAGE_DIR"
+              npm pack --workspaces=false --pack-destination "$temp_dir/local" --ignore-scripts >/dev/null
+            )
+            npm pack "$PACKAGE_NAME@$RELEASE_VERSION" \
+              --registry=https://registry.npmjs.org \
+              --pack-destination "$temp_dir/registry" \
+              --ignore-scripts >/dev/null
+            local_archive="$(find "$temp_dir/local" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+            registry_archive="$(find "$temp_dir/registry" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+            test -n "$local_archive" && test -n "$registry_archive"
+            tar -xzf "$local_archive" -C "$temp_dir/local-unpacked"
+            tar -xzf "$registry_archive" -C "$temp_dir/registry-unpacked"
+            if ! diff -rq "$temp_dir/local-unpacked/package" "$temp_dir/registry-unpacked/package"; then
+              echo "::error::published $PACKAGE_NAME@$RELEASE_VERSION does not match the selected tag artifact"
+              exit 1
+            fi
+            echo "$PACKAGE_NAME@$RELEASE_VERSION is already published and matches the selected artifact"
             exit 0
+          fi
+
+          if [[ "$INITIAL_RELEASE" == "true" && "$RELEASE_VERSION" == "0.1.0" ]]; then
+            echo "::error::$PACKAGE_NAME@$RELEASE_VERSION must be bootstrapped manually before its first qualified tag; see docs/release-process.md"
+            exit 1
           fi
 
           (
             cd "$PACKAGE_DIR"
-            npm publish --workspaces=false --access public --ignore-scripts
+            npm publish --workspaces=false --access public --registry=https://registry.npmjs.org --ignore-scripts
           )

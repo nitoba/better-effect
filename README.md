@@ -55,3 +55,7 @@ bun run check
 Turborepo runs each command only in the workspaces that define it and caches
 compatible tasks between runs. The root `bun.lock` is the canonical lockfile
 for every workspace.
+
+Package releases use qualified tags and publish only the selected package. See
+[`docs/release-process.md`](./docs/release-process.md) for the release planner,
+initial Better Auth/MQ release commands, and npm Trusted Publishing setup.

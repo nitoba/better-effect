@@ -96,6 +96,9 @@ const readJsonRecord = async (path: string): Promise<JsonObject> => {
 
 const packageManifest = await readJsonRecord(packageManifestPath)
 const repositoryManifest = await readJsonRecord(repositoryManifestPath)
+const coreManifest = await readJsonRecord(
+  join(repositoryRoot, 'packages/better-effect/package.json')
+)
 
 const collectFiles = async (root: string): Promise<string[]> => {
   const files: string[] = []
@@ -351,7 +354,10 @@ const assertPackageManifest = (): void => {
     packageManifest['name'] === 'better-effect-better-auth',
     'Unexpected package name'
   )
-  assertCondition(packageManifest['version'] === '0.1.0', 'Unexpected package version')
+  assertCondition(
+    isJsonString(packageManifest['version']) && packageManifest['version'].length > 0,
+    'Package version is missing'
+  )
   assertCondition(packageManifest['type'] === 'module', 'The package must be ESM')
   assertCondition(
     packageManifest['sideEffects'] === false,
@@ -369,8 +375,8 @@ const assertPackageManifest = (): void => {
   const devDependencies = packageManifest['devDependencies']
   assertCondition(isJsonObject(devDependencies), 'Development dependencies must be an object')
   assertCondition(
-    devDependencies['better-effect'] === 'workspace:*',
-    'Workspace development dependency on better-effect is missing'
+    devDependencies['better-effect'] === coreManifest['version'],
+    'Pinned development dependency on better-effect is missing or stale'
   )
   assertCondition(
     devDependencies['better-auth'] !== undefined,

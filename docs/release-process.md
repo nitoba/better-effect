@@ -3,24 +3,30 @@
 Merging a pull request into `main` runs CI only. Releases are selected by an
 allowlisted package tag:
 
-| Package | Package directory | Tag | Release notes |
-| --- | --- | --- | --- |
-| `better-effect` | `packages/better-effect` | `v<version>` | root `CHANGELOG.md` |
+| Package                     | Package directory                    | Tag                                    | Release notes          |
+| --------------------------- | ------------------------------------ | -------------------------------------- | ---------------------- |
+| `better-effect`             | `packages/better-effect`             | `v<version>`                           | root `CHANGELOG.md`    |
 | `better-effect-better-auth` | `packages/better-effect-better-auth` | `better-effect-better-auth-v<version>` | package `CHANGELOG.md` |
+| `better-effect-mq`          | `packages/better-effect-mq`          | `better-effect-mq-v<version>`          | package `CHANGELOG.md` |
 
-The existing `v0.1.0` tag is a core `better-effect` tag. It is not a valid
-alias for the Better Auth package and must never be moved, deleted, or reused.
+The route table is centralized in `scripts/release-packages.json`; both the
+local release script and GitHub Actions resolve tags through
+`scripts/release-route.ts`. The existing `v0.1.0` tag is a core `better-effect`
+tag. It is not a valid alias for another package and must never be moved,
+deleted, or reused.
 
 ```text
 Pull request merge
         ↓
 CI on main
         ↓
-Select one allowlisted package and its local release notes
+Inspect direct changes and workspace dependents
         ↓
-Update that package version and bun.lock when needed
+Select each affected package and its local release notes
         ↓
-Push the qualified tag
+Update the selected version, dependent development pins, and bun.lock
+        ↓
+Push its qualified tag
         ↓
 Validate exact tag, package name/version, notes, and packed artifact
         ↓
@@ -35,11 +41,56 @@ Pull requests and pushes to `main` never publish a package. Do not edit
 `bun.lock` by hand; the release script refreshes it with `bun install` after
 the package version is selected.
 
-The release artifact gate is deliberately auth-free. It runs
-`bun pm pack --ignore-scripts` and inspects the selected archive, manifest,
-declarations, source maps, and file allowlist. It does not call
-`bun publish --dry-run`, because that command can require registry
-credentials under the supported Bun version.
+The release artifact gate is deliberately auth-free. It runs both
+`bun pm pack --ignore-scripts` and `npm pack --ignore-scripts`, then inspects
+the selected archives, manifests, declarations, source maps, and file
+allowlist. Checking both packers keeps the gate aligned with the npm command
+used for publication. It does not call `bun publish --dry-run`, because that
+command can require registry credentials under the supported Bun version.
+
+## Bootstrapping a new npm package
+
+npm Trusted Publishers can only be configured after the package name exists on
+npm. Before creating the first qualified tag for `better-effect-better-auth`
+or `better-effect-mq`, perform this one-time maintainer bootstrap:
+
+1. Merge the package preparation change and check out the resulting `main`
+   commit with a clean tree.
+2. Run the package dry gate, which builds the package and validates both packers:
+
+   ```bash
+   ./scripts/release.sh better-effect-better-auth 0.1.0 --dry-run
+   # or:
+   ./scripts/release.sh better-effect-mq 0.1.0 --dry-run
+   ```
+
+3. Authenticate locally with `npm login` (or another short-lived maintainer
+   credential). Never add an npm token to the repository or GitHub secrets.
+4. Publish the npm archive produced from the same checked-out commit that
+   passed the dry gate:
+
+   ```bash
+   package_name=better-effect-better-auth
+   package_dir=packages/better-effect-better-auth
+   temp_dir="$(mktemp -d)"
+   trap 'rm -rf "$temp_dir"' EXIT
+   (cd "$package_dir" && npm pack --ignore-scripts --pack-destination "$temp_dir")
+   archive="$(find "$temp_dir" -maxdepth 1 -type f -name "$package_name-0.1.0.tgz" -print -quit)"
+   test -n "$archive"
+   npm publish "$archive" --access public --registry=https://registry.npmjs.org --ignore-scripts
+   ```
+
+   Use the same commands with `package_name=better-effect-mq` and
+   `package_dir=packages/better-effect-mq` for MQ.
+
+5. Configure npm Trusted Publishing for that package using the workflow details
+   in [Release administration](#release-administration).
+6. Run the normal package release command below. The workflow verifies that
+   the already-published tarball exactly matches the selected tag before it
+   creates the GitHub Release.
+
+This exception is only for the first version of a new npm package. All later
+versions are published by GitHub Actions with Trusted Publishing/OIDC.
 
 ## Publishing a release
 
@@ -47,12 +98,26 @@ credentials under the supported Bun version.
    selected package's intended changelog edit present. Ensure the selected
    package-local/root changelog contains a matching heading such as
    `## [0.1.0] - YYYY-MM-DD`.
-2. Run the explicit package route:
+2. For a hybrid release, inspect the reverse workspace dependency closure
+   before choosing the tags. For example:
+
+   ```bash
+   bun run release:plan -- --base v0.13.0
+   ```
+
+   The planner reports packages changed in the range and their workspace
+   dependents. Release a dependent as well when the core/API change affects its
+   public contract; otherwise keep the release limited to the directly changed
+   package.
+
+3. Run the explicit package route:
 
    ```bash
    ./scripts/release.sh better-effect 0.14.0
    # Publish the initial independent Better Auth package:
    ./scripts/release.sh better-effect-better-auth 0.1.0
+   # Publish the initial independent MQ package:
+   ./scripts/release.sh better-effect-mq 0.1.0
    # Validate a route and archive without changing, tagging, or publishing:
    ./scripts/release.sh better-effect-better-auth 0.1.0 --dry-run
    ```
@@ -60,11 +125,18 @@ credentials under the supported Bun version.
    A bare version remains a compatibility spelling for the core package only.
    The script rejects packages outside the allowlist, mismatched manifest
    names, reused local/remote tags, missing local release notes, non-`main`
-   checkouts, and changes outside the selected package, `bun.lock`, and its
-   changelog. The initial `better-effect-better-auth@0.1.0` route tags the
-   already selected manifest version; later releases require an increasing
-   version and create a version commit.
-3. Review the local commit and tag before the final atomic push. Never run the
+   checkouts, and unexpected changes outside the selected package, `bun.lock`,
+   and its changelog. A core release may also synchronize the
+   `better-effect` development pin in configured dependent package manifests;
+   those metadata-only changes are included in the core release commit. The
+   initial `better-effect-better-auth@0.1.0` and
+   `better-effect-mq@0.1.0` routes tag their already selected manifest versions;
+   later releases require an increasing version and create a version commit.
+   Run the command once for each package that the release planner identifies;
+   each command creates a package-qualified tag, so GitHub Actions publishes
+   the packages independently without publishing unrelated packages.
+
+4. Review the local commit and tag before the final atomic push. Never run the
    mutating script from an agent worktree:
 
    ```bash
@@ -76,16 +148,18 @@ credentials under the supported Bun version.
    checks. The commands above document the exact package-qualified shape and
    are not a substitute for reviewing the tag.
 
-The package release workflow accepts only `v<version>` for the core or
-`better-effect-better-auth-v<version>` for the integration. It checks out the
-exact tag, verifies the corresponding manifest name/version and package-local
-release notes, runs the quality gates and selected archive validation, and
-publishes from the selected package directory. It never publishes the core for
-an integration tag or the integration for a core tag.
+The package release workflow accepts only `v<version>` for the core,
+`better-effect-better-auth-v<version>` for the integration, or
+`better-effect-mq-v<version>` for the MQ package. It checks out the exact tag,
+verifies the corresponding manifest name/version and package-local release
+notes, runs the quality gates and selected archive validation, and publishes
+from the selected package directory. It never publishes an unrelated package
+for a package-qualified tag.
 
-Real publication is performed only by the reusable GitHub Actions workflow
-with npm Trusted Publishing/OIDC (`id-token: write`). Local dry validation and
-review never perform a real publish.
+Except for the one-time local bootstrap described above, real publication is
+performed only by the reusable GitHub Actions workflow with npm Trusted
+Publishing/OIDC (`id-token: write`). Local dry validation and review never
+perform a real publish.
 
 ## Manual recovery
 
@@ -100,15 +174,15 @@ creation also checks for an existing release before creating one.
 
 ## Release administration
 
-- Protect `v*` and `better-effect-better-auth-v*` tags from force-push and
-  deletion.
+- Protect `v*`, `better-effect-better-auth-v*`, and `better-effect-mq-v*` tags
+  from force-push and deletion.
 - The workflow file keeps the `release-please.yml` name for npm Trusted
   Publishing compatibility; it does not run Release Please.
-- Configure npm Trusted Publishing with workflow filename
-  `release-please.yml`, repository `nitoba/better-effect`, and environment
-  `npm`.
+- Configure npm Trusted Publishing for each published package with workflow
+  filename `release-please.yml`, repository `nitoba/better-effect`, and
+  environment `npm`.
 - Keep `id-token: write` in both the caller and reusable publish workflows.
-- Do not enable a second release tool for either package.
+- Do not enable a second release tool for these packages.
 
 ## References
 
