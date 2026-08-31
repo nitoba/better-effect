@@ -1,7 +1,7 @@
 # Hono example
 
-This development-only example exercises the planned v0.2
-`better-effect-better-auth/hono` entry point. Better Auth still owns its Web
+This development-only example exercises the optional public
+`better-effect-better-auth/hono` subpath. Better Auth still owns its Web
 handler, while `BetterAuthHono.session(...)` provides a lazy,
 request-scoped current session to `HonoEffect`:
 
@@ -36,7 +36,9 @@ read. `require()` converts only a missing session into `Unauthenticated`; thrown
 or rejected defects become `UnhandledException` with the original value only in
 its `cause`, and the HonoEffect `onFailure` policy decides the response.
 
-Install Hono in the application and run the example from this package with:
+Install Hono in the application when using this `/hono` example; it is not
+needed by the framework-neutral `.` entry point or the `/hooks` subpath. Run the
+example from this package with:
 
 ```bash
 bun add hono

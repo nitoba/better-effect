@@ -277,11 +277,13 @@ Those providers are closed with the request Scope. Shared infrastructure stays
 in the Runtime's root Layer and is released by `runtime.dispose()` during
 shutdown.
 
-## Planned v0.2: Better Auth current sessions
+## Hono request-scoped sessions
 
-`better-effect-better-auth` has an optional Hono companion planned for v0.2.
-It is not part of the prepared v0.1 peer matrix. Install both packages and keep
-the Web handler on its normal route:
+The optional public `better-effect-better-auth/hono` subpath provides
+request-scoped Better Auth sessions. Hono is an optional peer required only by
+this subpath (`>=4.0.0`); it is not needed by the framework-neutral `.` or
+`/hooks` subpaths. Install both packages and keep the Web handler on its normal
+route:
 
 ```bash
 bun add better-effect-better-auth better-auth hono
