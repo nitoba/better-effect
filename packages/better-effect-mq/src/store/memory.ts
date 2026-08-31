@@ -5,13 +5,13 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- internal erasure restores checked protocol types.
 
 import { Layer } from 'better-effect'
+import type { ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
 import {
   InvalidJobTransitionError,
   JobDefinitionError,
   JobNotFoundError,
-  JobNotRetryableError,
   JobStoreFailure,
   LeaseLostError,
   UnsupportedJobStoreOperationError,
@@ -126,6 +126,9 @@ type NormalizedLease = {
 
 const maxGenerationAttempts = 32
 const maxSafeInteger = Number.MAX_SAFE_INTEGER
+const cursorVersion = 1 as const
+const cursorOrdering = 'createdAt,orderingSequence,id' as const
+const cursorDirection = 'asc' as const
 const validationId = makeJobId('memory-validation-id').unwrap()
 const memoryCapabilities: JobStoreCapabilities = Object.freeze({
   notifications: true,
@@ -359,8 +362,6 @@ class MemoryJobStoreImplementation {
   private readonly waiters = new Set<WakeWaiter>()
   private readonly queueWakeVersions = new Map<string, number>()
   private readonly queueWakeGlobals = new Map<string, number>()
-  private readonly cursorScopes = new Map<string, string>()
-  private readonly cursorObjects = new WeakMap<object, string>()
   private sequence = 0
   private defaultIdSequence = 0
   private defaultLeaseSequence = 0
@@ -370,6 +371,7 @@ class MemoryJobStoreImplementation {
 
   private readonly clock: MemoryJobStoreOptions['clock']
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
+  private claimInProgress = false
 
   constructor(options: MemoryJobStoreOptions = {}) {
     this.clock = options.clock
@@ -431,6 +433,13 @@ class MemoryJobStoreImplementation {
   }
 
   claim(request: ClaimRequest): Operation<JobStoreNamespace.ClaimResult> {
+    if (this.claimInProgress) {
+      return fail(
+        jobStoreFailure('claim', 'claim cannot be re-enter while an ID is being generated')
+      )
+    }
+
+    this.claimInProgress = true
     try {
       const fields = readDto(
         request,
@@ -505,6 +514,8 @@ class MemoryJobStoreImplementation {
       return fail(
         new JobDefinitionError({ field: 'request', message: 'could not read claim request' })
       )
+    } finally {
+      this.claimInProgress = false
     }
   }
 
@@ -757,15 +768,11 @@ class MemoryJobStoreImplementation {
           continue
         }
 
-        const input =
-          current.stalledCount >= maximum.value
-            ? makeJobRecord({ ...current, stalledCount: maxSafeInteger })
-            : Result.ok(current)
-        if (Result.isError(input)) return fail(input.error)
-        const transition = reduceJob(input.value, {
+        const transition = reduceJob(current, {
           type: 'recover-stalled',
           jobId: current.id,
-          now: now.value
+          now: now.value,
+          terminal: current.stalledCount >= maximum.value
         })
         if (Result.isError(transition)) return fail(transition.error)
         const prepared = this.prepareTransitionAt(transition.value, current, nextSequence)
@@ -887,18 +894,12 @@ class MemoryJobStoreImplementation {
       if (Result.isError(cursor)) return fail(cursor.error)
 
       const signature = this.listSignature(queue.value, name.value, states.value)
-      if (cursor.value !== undefined) {
-        const objectSignature = this.cursorObjects.get(cursor.value.source)
-        const knownSignature = objectSignature ?? this.cursorScopes.get(cursor.value.key)
-        if (knownSignature !== undefined && knownSignature !== signature) {
-          return fail(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
-        }
-        this.cursorScopes.set(cursor.value.key, signature)
-        this.cursorObjects.set(cursor.value.source, signature)
+      if (cursor.value !== undefined && cursor.value.filterSignature !== signature) {
+        return fail(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
       }
 
       const ordered = this.getListOrder()
-      const start = this.findCursorStart(ordered, cursor.value?.cursor)
+      const start = this.findCursorStart(ordered, cursor.value)
       const matched: JobRecord[] = []
       let hasMore = false
       for (let index = start; index < ordered.length; index += 1) {
@@ -918,18 +919,7 @@ class MemoryJobStoreImplementation {
 
       const last = matched[matched.length - 1]
       const nextCursor =
-        hasMore && last !== undefined
-          ? Object.freeze({
-              createdAt: last.createdAt,
-              orderingSequence: last.orderingSequence,
-              id: last.id
-            })
-          : undefined
-      if (nextCursor !== undefined) {
-        const key = this.cursorKey(nextCursor)
-        this.cursorScopes.set(key, signature)
-        this.cursorObjects.set(nextCursor, signature)
-      }
+        hasMore && last !== undefined ? this.makeCursor(last, signature) : undefined
       return ok({ jobs: Object.freeze(matched), nextCursor })
     } catch {
       return fail(
@@ -1001,9 +991,6 @@ class MemoryJobStoreImplementation {
       if (Result.isError(runAt)) return fail(runAt.error)
       const current = this.jobs.get(jobId.value)
       if (current === undefined) return fail(new JobNotFoundError({ jobId: jobId.value }))
-      if (current.failure?.retryable !== true) {
-        return fail(new JobNotRetryableError({ jobId: current.id, state: current.state }))
-      }
       return this.transitionById(current, {
         type: 'redrive',
         jobId: current.id,
@@ -1607,31 +1594,61 @@ class MemoryJobStoreImplementation {
     return Result.ok(states)
   }
 
-  private normalizeCursor(
-    value: unknown
-  ): ResultType<
-    { readonly cursor: JobListCursor; readonly key: string; readonly source: object } | undefined,
-    JobStoreError
-  > {
+  private normalizeCursor(value: unknown): ResultType<JobListCursor | undefined, JobStoreError> {
     if (value === undefined) return Result.ok(undefined)
-    const fields = readDto(value, ['createdAt', 'orderingSequence', 'id'], 'cursor')
+    const fields = readDto(
+      value,
+      [
+        'version',
+        'ordering',
+        'direction',
+        'filterSignature',
+        'createdAt',
+        'orderingSequence',
+        'id'
+      ],
+      'cursor'
+    )
     if (Result.isError(fields)) return fields
+    if (
+      fields.value.version !== cursorVersion ||
+      fields.value.ordering !== cursorOrdering ||
+      fields.value.direction !== cursorDirection
+    ) {
+      return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
+    }
+    if (typeof fields.value.filterSignature !== 'string') {
+      return definitionFailure('cursor.filterSignature', 'must be a string')
+    }
     const createdAt = validateTimestamp(fields.value.createdAt, 'cursor.createdAt')
     const sequence = validateDuration(fields.value.orderingSequence, 'cursor.orderingSequence')
     const id = makeJobId(fields.value.id)
     if (Result.isError(createdAt)) return createdAt
     if (Result.isError(sequence)) return sequence
     if (Result.isError(id)) return id
-    const cursor = Object.freeze({
-      createdAt: createdAt.value,
-      orderingSequence: sequence.value,
-      id: id.value
-    })
-    return Result.ok({ cursor, key: this.cursorKey(cursor), source: value as object })
+    return Result.ok(
+      Object.freeze({
+        version: cursorVersion,
+        ordering: cursorOrdering,
+        direction: cursorDirection,
+        filterSignature: fields.value.filterSignature,
+        createdAt: createdAt.value,
+        orderingSequence: sequence.value,
+        id: id.value
+      })
+    )
   }
 
-  private cursorKey(cursor: JobListCursor): string {
-    return `${cursor.createdAt}:${cursor.orderingSequence}:${cursor.id}`
+  private makeCursor(record: JobRecord, filterSignature: string): JobListCursor {
+    return Object.freeze({
+      version: cursorVersion,
+      ordering: cursorOrdering,
+      direction: cursorDirection,
+      filterSignature,
+      createdAt: record.createdAt,
+      orderingSequence: record.orderingSequence,
+      id: record.id
+    })
   }
 
   private listSignature(
@@ -1767,13 +1784,12 @@ const makeMemoryJobStore = (options?: MemoryJobStoreOptions): JobStoreNamespace.
 const makeMemoryLayer = <Token extends AnyJobStoreToken>(
   token: Token,
   options?: MemoryJobStoreOptions
-): Layer<InstanceType<Token>, never> => {
-  // SAFETY: the token's structural contract is the same store implementation; named identity is declaration-only.
-  const implementation = makeMemoryJobStore(options)
-  // SAFETY: Service.of erases only the declaration-only identity marker; the runtime contract is shared by default and named tokens.
-  const service = (token.of as unknown as (value: never) => never)(implementation as never)
-  return Layer.succeed(token, service)
-}
+): Layer<InstanceType<Token>, never> =>
+  // Layer.make defers construction until each Runtime resolves the provider, so a reused Layer never shares mutable store state.
+  Layer.make(
+    token,
+    () => makeMemoryJobStore(options) as ServiceContract<InstanceType<Token>>
+  ) as Layer<InstanceType<Token>, never>
 
 const memoryJobStoreApi = {
   get layer() {

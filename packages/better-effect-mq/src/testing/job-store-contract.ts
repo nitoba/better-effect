@@ -2133,6 +2133,13 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'stall policy',
         'terminal stall was not marked stalled'
       )
+      ensure(
+        second.transitions[0]?.record.stalledCount === 1 &&
+          second.transitions[0]?.attempt?.outcome === 'stalled',
+        context,
+        'stall policy',
+        'terminal stall did not retain the bounded recovery count'
+      )
     }
   ),
   definition(
@@ -2630,7 +2637,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
   ),
   definition(
     'admin-redrive-failed-only',
-    'redrive is available only for terminal retryable states',
+    'redrive accepts allowed terminal states',
     'admin',
     async (context) => {
       const failed = await activeJob(context, context.fixtures.job, 'redrive-failed')
@@ -2640,7 +2647,10 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
             jobId: failed.id,
             leaseToken: failed.leaseToken,
             now: now(context),
-            outcome: { type: 'fail', failure: failure(context, 'REDRIVE-ONLY') }
+            outcome: {
+              type: 'fail',
+              failure: { ...failure(context, 'REDRIVE-NON-RETRYABLE'), retryable: false }
+            }
           })
         ),
         context,
@@ -2659,6 +2669,46 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'redrive precondition',
         'failed job was not redriven to a delayed state'
       )
+
+      const cancelled = await succeed(
+        operation(() =>
+          context.store.enqueue(
+            enqueueRequest(context, context.fixtures.jobV2, 'redrive-cancelled')
+          )
+        ),
+        context,
+        'enqueue'
+      )
+      await succeed(
+        operation(() => context.store.cancel({ jobId: cancelled.job.id, now: now(context) })),
+        context,
+        'cancel'
+      )
+      const redrivenCancelled = await succeed(
+        operation(() =>
+          context.store.redrive({ jobId: cancelled.job.id, runAt: now(context), now: now(context) })
+        ),
+        context,
+        'redrive'
+      )
+      ensure(
+        redrivenCancelled.record.state === 'waiting',
+        context,
+        'redrive precondition',
+        'cancelled job was not redriven to waiting'
+      )
+      await succeed(
+        operation(() =>
+          context.store.remove({
+            jobId: cancelled.job.id,
+            now: now(context),
+            expectedState: 'waiting'
+          })
+        ),
+        context,
+        'remove'
+      )
+
       const completed = await activeJob(context, context.fixtures.jobV2, 'redrive-completed')
       await succeed(
         operation(() =>

@@ -473,7 +473,11 @@ const terminalCancelWithoutHandler = (
   return transition(next, attempt)
 }
 
-const terminalizeStalledRecovery = (record: JobRecord, now: number): TransitionResult => {
+const terminalizeStalledRecovery = (
+  record: JobRecord,
+  now: number,
+  stalledCount = record.stalledCount
+): TransitionResult => {
   const failure = makeSerializedJobFailure({
     kind: 'stalled',
     message: 'Lease expired after stalledCount reached its maximum',
@@ -488,6 +492,7 @@ const terminalizeStalledRecovery = (record: JobRecord, now: number): TransitionR
   const next: JobRecord = {
     ...record,
     state: 'failed',
+    stalledCount,
     updatedAt: now,
     processedAt: now,
     finishedAt: now,
@@ -862,16 +867,18 @@ const recoverStalled = (record: JobRecord, command: RecoverStalledCommand): Tran
     )
   }
 
+  const terminal = command.terminal === true
+
   if (prepared.value.cancellationRequestedAt !== undefined) {
     const stalledCount =
-      prepared.value.stalledCount === Number.MAX_SAFE_INTEGER
+      terminal || prepared.value.stalledCount === Number.MAX_SAFE_INTEGER
         ? prepared.value.stalledCount
         : prepared.value.stalledCount + 1
 
     return terminalCancelWithoutHandler(prepared.value, command.now, stalledCount)
   }
 
-  if (prepared.value.stalledCount === Number.MAX_SAFE_INTEGER) {
+  if (terminal || prepared.value.stalledCount === Number.MAX_SAFE_INTEGER) {
     return terminalizeStalledRecovery(prepared.value, command.now)
   }
 

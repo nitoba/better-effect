@@ -301,7 +301,9 @@ A store implements these atomic operations:
   `JobStoreWakeAbortedError`; polling-only stores may wait until abort because a
   worker also uses a timeout.
 - `getJob`, `getAttempts`, `list`, and `counts` provide inspection. `list` uses
-  the stable `(createdAt, orderingSequence, id)` keyset cursor.
+  a self-contained, serializable keyset cursor over `(createdAt, orderingSequence, id)`;
+  cursors carry their version, ordering, direction, and normalized filter binding, and
+  reuse with incompatible filters is rejected.
 - `redrive`, `cancel`, `requestCancellation`, `promote`, `remove`, `pause`,
   `resume`, and `pausedQueues` provide the small administrative surface.
   Unsupported filter combinations return `UnsupportedJobStoreOperationError`;

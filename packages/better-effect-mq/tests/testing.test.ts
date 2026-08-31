@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test'
 
+import { Layer, Runtime } from 'better-effect'
+
 import { JobStore, MemoryJobStore } from '../src'
 import {
   JobStoreConformanceError,
@@ -11,6 +13,7 @@ import {
   makeMemoryJobStore,
   makeMemoryMultiRuntime,
   makeMemoryRuntime,
+  synchronizeMemoryJobStore,
   type MemoryStoreFault
 } from './helpers/memory-job-store'
 
@@ -59,7 +62,7 @@ const expectedScenarioMetadata = [
   'admin-cancel-terminal-rejected|admin|administrative cancel rejects terminal jobs',
   'admin-promote-delayed|admin|promote makes delayed work waiting without claiming it',
   'admin-promote-state-rejected|admin|promote rejects non-delayed jobs',
-  'admin-redrive-failed-only|admin|redrive is available only for terminal retryable states',
+  'admin-redrive-failed-only|admin|redrive accepts allowed terminal states',
   'admin-pause-resume|admin|pause and resume are durable store state',
   'admin-remove-active-rejected|admin|remove refuses active jobs',
   'admin-counts-coherent|admin|counts remain coherent across state transitions',
@@ -92,21 +95,26 @@ const makeSuite = (fault?: MemoryStoreFault) =>
     }
   })
 
-const publicSynchronization = {
-  ready: () => {},
-  observed: () => {},
-  waitUntilReady: async () => {},
-  waitUntilObserved: async () => {},
-  waitForDelivery: async () => {},
-  release: () => {},
-  reset: () => {}
-} as const
-
 const makePublicSuite = () =>
   jobStoreContract({
     capabilities,
-    controls: { synchronization: publicSynchronization },
-    makeRuntime: async () => makeMemoryRuntime(MemoryJobStore.make(), JobStore)
+    makeRuntime: async (context) =>
+      makeMemoryRuntime(
+        synchronizeMemoryJobStore(MemoryJobStore.make(), context.synchronization),
+        JobStore
+      ),
+    makeMultiStoreRuntime: async (context) => {
+      const layer = Layer.merge(
+        MemoryJobStore.layer,
+        MemoryJobStore.layerFor(context.tokens.first),
+        MemoryJobStore.layerFor(context.tokens.second)
+      )
+      const runtime = await Runtime.make(layer)
+      return {
+        run: (program, options) => runtime.run(program, options),
+        dispose: () => runtime.dispose()
+      }
+    }
   })
 
 const makeMultiSuite = (fault?: MemoryStoreFault) =>
