@@ -101,7 +101,7 @@ export {
   validateTimestamp
 } from './protocol'
 
-export { JobStore, JobStoreWakeAbortedError } from './store'
+export { JobStore, JobStoreWakeAbortedError, MemoryJobStore } from './store'
 
 export type {
   ActiveJobSnapshot,
@@ -161,6 +161,9 @@ export type {
   JobStoreValidationError,
   JobStoreWakeError,
   ListJobsRequest,
+  MemoryJobStoreClock,
+  MemoryJobStoreIdGenerator,
+  MemoryJobStoreOptions,
   ListJobsResult,
   LostLease,
   PauseQueueRequest,

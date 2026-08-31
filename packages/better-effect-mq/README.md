@@ -341,6 +341,37 @@ be split across Services.
 No adapter, backend, producer, worker, retry scheduler, or generic persistence
 API is included here.
 
+## MemoryJobStore reference driver
+
+`MemoryJobStore` is the complete in-process reference driver for tests, demos,
+and disposable processes. Every call creates a fresh isolated store; it keeps
+all protocol state in memory and is not durable, shared across processes, or a
+distributed coordination mechanism. Restarting the process loses every job,
+lease, attempt, pause, and wake version.
+
+```ts
+import { Effect, Runtime } from 'better-effect'
+import { Result } from 'better-result'
+import { JobStore, MemoryJobStore } from 'better-effect-mq'
+
+const runtime = await Runtime.make(MemoryJobStore.layer)
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const store = yield* JobStore
+    return Result.ok(store.capabilities)
+  })
+)
+await runtime.dispose()
+```
+
+Use `MemoryJobStore.layerWith({ clock, idGenerator })` or
+`MemoryJobStore.make({ clock, idGenerator })` when a deterministic
+`Clock`/`IdGenerator` test double is useful. `MemoryJobStore.layerFor(token,
+options)` provides the same reference semantics under a named `JobStore` token.
+The driver uses the same ordering, fencing, settlement, ledger, admin,
+listing, cursor, and wake behavior as the storage-neutral contract, but makes
+no persistence or cross-instance visibility guarantees.
+
 ## Runner-agnostic JobStore conformance
 
 The `better-effect-mq/testing` entrypoint publishes stable JobStore scenarios,

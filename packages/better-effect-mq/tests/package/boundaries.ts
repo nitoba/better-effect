@@ -27,6 +27,7 @@ const expectedCoreRuntimeExports = [
   'JobRegistry',
   'JobStore',
   'JobStoreWakeAbortedError',
+  'MemoryJobStore',
   'JobCodecFailure',
   'JobDecodeFailure',
   'JobDefinitionError',

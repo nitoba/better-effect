@@ -10,6 +10,12 @@ export type {
 } from './store'
 
 export { JobStoreWakeAbortedError } from './errors'
+export { MemoryJobStore } from './memory'
+export type {
+  MemoryJobStoreClock,
+  MemoryJobStoreIdGenerator,
+  MemoryJobStoreOptions
+} from './memory'
 export type {
   JobStoreCancelError,
   JobStoreClaimError,

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 
-import { JobStore } from '../src'
+import { JobStore, MemoryJobStore } from '../src'
 import {
   JobStoreConformanceError,
   jobStoreContract,
@@ -92,6 +92,23 @@ const makeSuite = (fault?: MemoryStoreFault) =>
     }
   })
 
+const publicSynchronization = {
+  ready: () => {},
+  observed: () => {},
+  waitUntilReady: async () => {},
+  waitUntilObserved: async () => {},
+  waitForDelivery: async () => {},
+  release: () => {},
+  reset: () => {}
+} as const
+
+const makePublicSuite = () =>
+  jobStoreContract({
+    capabilities,
+    controls: { synchronization: publicSynchronization },
+    makeRuntime: async () => makeMemoryRuntime(MemoryJobStore.make(), JobStore)
+  })
+
 const makeMultiSuite = (fault?: MemoryStoreFault) =>
   jobStoreContract({
     capabilities,
@@ -116,6 +133,10 @@ test('JobStore contract pins scenario metadata', () => {
 
 for (const scenario of makeSuite()) {
   test(`JobStore contract: ${scenario.id}`, scenario.run)
+}
+
+for (const scenario of makePublicSuite()) {
+  test(`MemoryJobStore public contract: ${scenario.id}`, scenario.run)
 }
 
 test('JobStore contract reports capability coverage and skips', () => {
