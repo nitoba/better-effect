@@ -9,5 +9,12 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "files": ["protocol.types.ts", "codec.types.ts", "jobs.types.ts", "store.types.ts"]
+  "files": [
+    "protocol.types.ts",
+    "codec.types.ts",
+    "jobs.types.ts",
+    "store.types.ts",
+    "testing.types.ts",
+    "runtime-spike.types.ts"
+  ]
 }

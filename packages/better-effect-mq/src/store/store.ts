@@ -5,7 +5,7 @@
 
 import { Service } from 'better-effect'
 
-import type { ServiceRequirement, ServiceToken } from 'better-effect'
+import type { ServiceClass, ServiceRequirement } from 'better-effect'
 
 import type { JobStoreContract, JobStoreEffect, JobStoreOperation } from './types'
 import type { JobStoreError } from './errors'
@@ -21,16 +21,16 @@ export type JobStoreNameLiteral<Name extends string> = string extends Name
     : Name
 
 /** The stable Service tag used by the default and named stores. */
-export type JobStoreTag<Name extends string | undefined = undefined> = Name extends undefined
+export type JobStoreTag<Name extends string | undefined = undefined> = [Name] extends [undefined]
   ? typeof jobStoreTag
-  : `${typeof jobStoreTag}/${Name}`
+  : `${typeof jobStoreTag}/${Extract<Name, string>}`
 
 /** The branded Service instance for a default or named store. */
 export type JobStoreInstance<Name extends string | undefined = undefined> = JobStoreContract &
   Service.Identity<JobStoreTag<Name>>
 
 /** A constructible, yieldable Service token for a default or named store. */
-export type JobStoreToken<Name extends string | undefined = undefined> = ServiceToken<
+export type JobStoreToken<Name extends string | undefined = undefined> = ServiceClass<
   JobStoreTag<Name>,
   JobStoreInstance<Name>
 > &
@@ -40,15 +40,13 @@ export type JobStoreToken<Name extends string | undefined = undefined> = Service
       JobStoreInstance<Name>,
       unknown
     >
-  } & (Name extends undefined
-    ? {
-        readonly named: <const Named extends string>(
-          name: JobStoreNameLiteral<Named>
-        ) => JobStoreToken<Named>
-      }
-    : unknown)
+  }
 
-export type DefaultJobStoreToken = JobStoreToken<undefined>
+export type DefaultJobStoreToken = JobStoreToken<undefined> & {
+  readonly named: <const Named extends string>(
+    name: JobStoreNameLiteral<Named>
+  ) => JobStoreToken<Named>
+}
 export type AnyJobStoreToken = DefaultJobStoreToken | JobStoreToken<string>
 
 type JobStoreValue = DefaultJobStoreToken
@@ -111,7 +109,9 @@ export declare namespace JobStore {
   export type Any = JobStoreInstance<undefined> | JobStoreInstance<string>
   export type Contract = JobStoreContract
   export type Instance<Name extends string | undefined = undefined> = JobStoreInstance<Name>
-  export type Token<Name extends string | undefined = undefined> = JobStoreToken<Name>
+  export type Token<Name extends string | undefined = undefined> = [Name] extends [undefined]
+    ? DefaultJobStoreToken
+    : JobStoreToken<Name>
   export type Name = string
   export type Tag<Name extends string | undefined = undefined> = JobStoreTag<Name>
   export type Effect<

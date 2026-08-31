@@ -609,16 +609,21 @@ const assertCoreEntrypoint = async (path: string): Promise<void> => {
   )
 }
 
-const assertInertEntrypoint = async (path: string, label: string): Promise<void> => {
+const assertTestingEntrypoint = async (path: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
+  const actual = Object.keys(module).sort()
+  const expected = ['JobStoreConformanceError', 'jobStoreContract']
 
-  assertCondition(Object.keys(module).length === 0, `${label} exposes provisional runtime APIs`)
+  assertCondition(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `Testing entrypoint exports differ: expected ${expected.join(', ')}, got ${actual.join(', ')}`
+  )
 }
 
 assertBoundarySelfTests()
 await assertManifest()
 await assertGeneratedBoundaries()
 await assertCoreEntrypoint(join(distRoot, 'index.mjs'))
-await assertInertEntrypoint(join(distRoot, 'testing.mjs'), 'Testing entrypoint')
+await assertTestingEntrypoint(join(distRoot, 'testing.mjs'))
 
 console.log('better-effect-mq package boundary checks passed')
