@@ -223,8 +223,16 @@ export interface GetAttemptsRequest {
   readonly jobId: import('../protocol').JobId
 }
 
-/** Keyset cursor for the stable `(createdAt, orderingSequence, id)` order. */
+/**
+ * Self-contained keyset cursor for the stable `(createdAt, orderingSequence, id)` order.
+ * The binding fields make cursors portable across equivalent store instances and
+ * reject reuse with a different query.
+ */
 export interface JobListCursor {
+  readonly version: 1
+  readonly ordering: 'createdAt,orderingSequence,id'
+  readonly direction: 'asc'
+  readonly filterSignature: string
   readonly createdAt: number
   readonly orderingSequence: number
   readonly id: import('../protocol').JobId

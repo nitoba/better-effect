@@ -7,6 +7,8 @@ import { Layer, Runtime } from 'better-effect'
 import type { ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
+import { recoverStalledWithPolicy } from '../../src/protocol/transitions'
+
 import type {
   JobStoreContractRuntime,
   JobStoreContractSynchronization,
@@ -102,8 +104,10 @@ const tokenNumber = (token: WakeToken): number => {
   return Number.isSafeInteger(value) && value >= 0 ? value : -1
 }
 
-const cursorKey = (cursor: ListJobsRequest['cursor']): string =>
-  cursor === undefined ? '' : `${cursor.createdAt}:${cursor.orderingSequence}:${cursor.id}`
+const cursorVersion = 1 as const
+const cursorOrdering = 'createdAt,orderingSequence,id' as const
+const cursorDirection = 'asc' as const
+const listStateOrder = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const
 
 const identityFrom = (request: EnqueueRequest): JobIdentity => request.job ?? request.identity!
 
@@ -157,7 +161,6 @@ class MemoryStore {
   private readonly jobs = new Map<string, JobRecord>()
   private readonly attempts = new Map<string, AttemptRecord[]>()
   private readonly idempotency = new Map<string, string>()
-  private readonly cursorScopes = new Map<string, string>()
   private readonly paused = new Set<string>()
   private readonly waiters = new Set<StoredWaiter>()
   private readonly wakeEvents: StoredWakeEvent[] = []
@@ -406,16 +409,15 @@ class MemoryStore {
         request.now < current.leaseExpiresAt
       )
         continue
-      const input =
+      const transition = recoverStalledWithPolicy(
+        current,
+        {
+          type: 'recover-stalled',
+          jobId: current.id,
+          now: request.now
+        },
         current.stalledCount >= request.maxStalledCount
-          ? { ...current, stalledCount: Number.MAX_SAFE_INTEGER }
-          : current
-      const checked = input === current ? Result.ok(current) : makeJobRecord(input)
-      const transition = checked.match({
-        ok: (value) =>
-          reduceJob(value, { type: 'recover-stalled', jobId: current.id, now: request.now }),
-        err: (cause) => Result.err(cause)
-      })
+      )
       const applied = this.applyTransition(transition)
       if (applied.isErr()) return error(applied.error)
       transitions.push(applied.value)
@@ -514,18 +516,22 @@ class MemoryStore {
     if (!Number.isSafeInteger(request.limit) || request.limit <= 0)
       return error(jobStoreError('limit', 'must be a positive safe integer'))
 
-    const filterKey = `${request.queue ?? ''}|${request.name ?? ''}|${JSON.stringify(request.state ?? '')}`
-    const key = cursorKey(request.cursor)
-    const previousFilter = key === '' ? undefined : this.cursorScopes.get(key)
-    if (previousFilter !== undefined && previousFilter !== filterKey) {
-      return error(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
-    }
-    if (key !== '') this.cursorScopes.set(key, filterKey)
-
     const states =
       request.state === undefined
         ? undefined
         : new Set(Array.isArray(request.state) ? request.state : [request.state])
+    const stateSignature =
+      states === undefined ? '*' : listStateOrder.filter((state) => states.has(state)).join(',')
+    const filterKey = JSON.stringify([request.queue ?? null, request.name ?? null, stateSignature])
+    if (
+      request.cursor !== undefined &&
+      (request.cursor.version !== cursorVersion ||
+        request.cursor.ordering !== cursorOrdering ||
+        request.cursor.direction !== cursorDirection ||
+        request.cursor.filterSignature !== filterKey)
+    ) {
+      return error(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
+    }
     const filtered = [...this.jobs.values()]
       .filter(
         (job) =>
@@ -544,13 +550,20 @@ class MemoryStore {
     const hasMore = offset + jobs.length < filtered.length
     const nextCursor =
       hasMore && last !== undefined
-        ? { createdAt: last.createdAt, orderingSequence: last.orderingSequence, id: last.id }
+        ? {
+            version: cursorVersion,
+            ordering: cursorOrdering,
+            direction: cursorDirection,
+            filterSignature: filterKey,
+            createdAt: last.createdAt,
+            orderingSequence: last.orderingSequence,
+            id: last.id
+          }
         : undefined
     const outputCursor =
       this.fault === 'broken-pagination' && nextCursor !== undefined
         ? (request.cursor ?? nextCursor)
         : nextCursor
-    if (outputCursor !== undefined) this.cursorScopes.set(cursorKey(outputCursor), filterKey)
     return ok({ jobs: Object.freeze(jobs), nextCursor: outputCursor })
   }
 
@@ -751,6 +764,29 @@ export const makeMemoryJobStore = (options: MemoryStoreOptions = {}): JobStoreTy
   JobStore.of(
     new MemoryStore(options.fault, options.capabilities, options.synchronization) as never
   )
+
+/** Keep the real MemoryJobStore wake operation while exposing deterministic test handshakes. */
+export const synchronizeMemoryJobStore = (
+  store: JobStoreType.Contract,
+  synchronization: JobStoreContractSynchronization
+): JobStoreType.Contract => {
+  const originalAwaitWake = store.awaitWake.bind(store)
+  Object.defineProperty(store, 'awaitWake', {
+    configurable: true,
+    enumerable: false,
+    value: (request: JobStoreType.AwaitWakeRequest) => {
+      const waiting = originalAwaitWake(request)
+      synchronization.ready()
+      return Promise.resolve(waiting).then((result) => {
+        synchronization.observed()
+        return result
+      })
+    },
+    writable: true
+  })
+
+  return store
+}
 
 export const makeMemoryRuntime = async <Name extends string | undefined>(
   store: ServiceContract<InstanceType<JobStoreToken<Name>>>,

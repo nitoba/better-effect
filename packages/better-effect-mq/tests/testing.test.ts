@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test'
 
-import { JobStore } from '../src'
+import { Layer, Runtime } from 'better-effect'
+
+import { JobStore, MemoryJobStore } from '../src'
 import {
   JobStoreConformanceError,
   jobStoreContract,
@@ -11,6 +13,7 @@ import {
   makeMemoryJobStore,
   makeMemoryMultiRuntime,
   makeMemoryRuntime,
+  synchronizeMemoryJobStore,
   type MemoryStoreFault
 } from './helpers/memory-job-store'
 
@@ -46,6 +49,7 @@ const expectedScenarioMetadata = [
   'lease-recover-expired|lease|expired leases are recovered and recorded as stalled',
   'lease-does-not-recover-valid|lease|valid leases are not recovered',
   'lease-stall-policy|lease|repeated stalls eventually terminalize according to maxStalledCount',
+  'lease-stalled-cancellation-ledger|lease|terminal stalled cancellation increments count and records its ledger entry',
   'lease-cancellation-request|lease|active cancellation requests retain the lease until the next exit',
   'settle-complete-ledger|settlement|complete persists result and one completed attempt',
   'settle-retry-ledger|settlement|retry persists failure and a future runAt',
@@ -59,7 +63,7 @@ const expectedScenarioMetadata = [
   'admin-cancel-terminal-rejected|admin|administrative cancel rejects terminal jobs',
   'admin-promote-delayed|admin|promote makes delayed work waiting without claiming it',
   'admin-promote-state-rejected|admin|promote rejects non-delayed jobs',
-  'admin-redrive-failed-only|admin|redrive is available only for terminal retryable states',
+  'admin-redrive-failed-only|admin|redrive accepts allowed terminal states',
   'admin-pause-resume|admin|pause and resume are durable store state',
   'admin-remove-active-rejected|admin|remove refuses active jobs',
   'admin-counts-coherent|admin|counts remain coherent across state transitions',
@@ -92,6 +96,28 @@ const makeSuite = (fault?: MemoryStoreFault) =>
     }
   })
 
+const makePublicSuite = () =>
+  jobStoreContract({
+    capabilities,
+    makeRuntime: async (context) =>
+      makeMemoryRuntime(
+        synchronizeMemoryJobStore(MemoryJobStore.make(), context.synchronization),
+        JobStore
+      ),
+    makeMultiStoreRuntime: async (context) => {
+      const layer = Layer.merge(
+        MemoryJobStore.layer,
+        MemoryJobStore.layerFor(context.tokens.first),
+        MemoryJobStore.layerFor(context.tokens.second)
+      )
+      const runtime = await Runtime.make(layer)
+      return {
+        run: (program, options) => runtime.run(program, options),
+        dispose: () => runtime.dispose()
+      }
+    }
+  })
+
 const makeMultiSuite = (fault?: MemoryStoreFault) =>
   jobStoreContract({
     capabilities,
@@ -116,6 +142,10 @@ test('JobStore contract pins scenario metadata', () => {
 
 for (const scenario of makeSuite()) {
   test(`JobStore contract: ${scenario.id}`, scenario.run)
+}
+
+for (const scenario of makePublicSuite()) {
+  test(`MemoryJobStore public contract: ${scenario.id}`, scenario.run)
 }
 
 test('JobStore contract reports capability coverage and skips', () => {

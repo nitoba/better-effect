@@ -301,7 +301,9 @@ A store implements these atomic operations:
   `JobStoreWakeAbortedError`; polling-only stores may wait until abort because a
   worker also uses a timeout.
 - `getJob`, `getAttempts`, `list`, and `counts` provide inspection. `list` uses
-  the stable `(createdAt, orderingSequence, id)` keyset cursor.
+  a self-contained, serializable keyset cursor over `(createdAt, orderingSequence, id)`;
+  cursors carry their version, ordering, direction, and normalized filter binding, and
+  reuse with incompatible filters is rejected.
 - `redrive`, `cancel`, `requestCancellation`, `promote`, `remove`, `pause`,
   `resume`, and `pausedQueues` provide the small administrative surface.
   Unsupported filter combinations return `UnsupportedJobStoreOperationError`;
@@ -340,6 +342,37 @@ be split across Services.
 
 No adapter, backend, producer, worker, retry scheduler, or generic persistence
 API is included here.
+
+## MemoryJobStore reference driver
+
+`MemoryJobStore` is the complete in-process reference driver for tests, demos,
+and disposable processes. Every call creates a fresh isolated store; it keeps
+all protocol state in memory and is not durable, shared across processes, or a
+distributed coordination mechanism. Restarting the process loses every job,
+lease, attempt, pause, and wake version.
+
+```ts
+import { Effect, Runtime } from 'better-effect'
+import { Result } from 'better-result'
+import { JobStore, MemoryJobStore } from 'better-effect-mq'
+
+const runtime = await Runtime.make(MemoryJobStore.layer)
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const store = yield* JobStore
+    return Result.ok(store.capabilities)
+  })
+)
+await runtime.dispose()
+```
+
+Use `MemoryJobStore.layerWith({ clock, idGenerator })` or
+`MemoryJobStore.make({ clock, idGenerator })` when a deterministic
+`Clock`/`IdGenerator` test double is useful. `MemoryJobStore.layerFor(token,
+options)` provides the same reference semantics under a named `JobStore` token.
+The driver uses the same ordering, fencing, settlement, ledger, admin,
+listing, cursor, and wake behavior as the storage-neutral contract, but makes
+no persistence or cross-instance visibility guarantees.
 
 ## Runner-agnostic JobStore conformance
 
@@ -475,15 +508,17 @@ are:
   Missing, old, or expired tokens return `LeaseLostError` and leave the snapshot
   unchanged.
 - `recover-stalled` is the administrative, unfenced path for an active lease
-  whose expiry is reached. While `stalledCount` is below its non-negative safe
-  integer maximum, it increments the counter, records a `stalled` ledger entry,
-  and returns the job to `waiting` without consuming an attempt. At the maximum,
-  recovery is still atomic: a pending cancellation terminalizes as `cancelled`
-  while preserving the saturated count; otherwise the job terminalizes as
-  `failed` with a non-retryable `stalled` failure and one `stalled` ledger entry.
-  `failed` is the resulting `JobRecord.state`, while `stalled` is the ledger
-  outcome: no handler returned `failed`, and `attemptsMade` is unchanged. It
-  never wraps the counter or leaves a saturated active job waiting forever.
+  whose expiry is reached. Every recovery increments `stalledCount`, saturating
+  at its non-negative safe integer maximum. When the current count has reached
+  the store's configured `maxStalledCount` policy, that same recovery
+  terminalizes instead of requeueing and still persists the incremented count;
+  callers cannot force this policy through the protocol command. A pending
+  cancellation terminalizes as `cancelled` with a `cancelled` ledger entry;
+  otherwise the job terminalizes as `failed` with a non-retryable `stalled`
+  failure and one `stalled` ledger entry. `failed` is the resulting
+  `JobRecord.state`, while `stalled` is the ledger outcome: no handler returned
+  `failed`, and `attemptsMade` is unchanged. It never wraps the counter or
+  leaves a saturated active job waiting forever.
 - Cancelling an active job first records a cancellation request while retaining
   its lease. It does not steal the lease. The next active exit is deterministically
   terminal: a `settle` (including complete, retry, fail, or cancelled) becomes

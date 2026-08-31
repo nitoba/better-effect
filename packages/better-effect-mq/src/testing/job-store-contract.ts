@@ -2133,6 +2133,76 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'stall policy',
         'terminal stall was not marked stalled'
       )
+      ensure(
+        second.transitions[0]?.record.stalledCount === 2 &&
+          second.transitions[0]?.attempt?.outcome === 'stalled',
+        context,
+        'stall policy',
+        'terminal stall did not count the recovery'
+      )
+    }
+  ),
+  definition(
+    'lease-stalled-cancellation-ledger',
+    'terminal stalled cancellation increments count and records its ledger entry',
+    'lease',
+    async (context) => {
+      const job = await activeJob(context, context.fixtures.job, 'stalled-cancellation')
+      context.clock.advance(100)
+      const first = await succeed(
+        operation(() => context.store.recoverStalled({ maxStalledCount: 1, now: now(context) })),
+        context,
+        'recoverStalled'
+      )
+      const claimed = await succeed(
+        operation(() => context.store.claim(claimRequest(context, context.fixtures))),
+        context,
+        'claim'
+      )
+      const redelivered = claimed.jobs[0]
+      if (redelivered === undefined)
+        fail(context, 'stalled cancellation ledger', 'job disappeared after first stall')
+      const requested = await succeed(
+        operation(() => context.store.requestCancellation({ jobId: job.id, now: now(context) })),
+        context,
+        'requestCancellation'
+      )
+      context.clock.advance(100)
+      const second = await succeed(
+        operation(() => context.store.recoverStalled({ maxStalledCount: 1, now: now(context) })),
+        context,
+        'recoverStalled'
+      )
+      const attempts = await succeed(
+        operation(() => context.store.getAttempts({ jobId: job.id })),
+        context,
+        'getAttempts'
+      )
+      ensure(
+        first.transitions[0]?.record.stalledCount === 1 &&
+          requested.record.state === 'active' &&
+          second.transitions[0]?.record.state === 'cancelled' &&
+          second.transitions[0]?.record.stalledCount === 2 &&
+          second.transitions[0]?.record.attemptsMade === 0 &&
+          second.transitions[0]?.record.deliveryCount === 2 &&
+          second.transitions[0]?.attempt?.outcome === 'cancelled' &&
+          second.transitions[0]?.attempt?.attempt === 0 &&
+          second.transitions[0]?.attempt?.delivery === 2,
+        context,
+        'stalled cancellation ledger',
+        'terminal stalled cancellation did not count or record the recovery'
+      )
+      ensure(
+        attempts.length === 2 &&
+          attempts[0]?.outcome === 'stalled' &&
+          attempts[1]?.outcome === 'cancelled' &&
+          attempts[1]?.attempt === 0 &&
+          attempts[1]?.delivery === 2,
+        context,
+        'stalled cancellation ledger',
+        'terminal cancellation ledger did not preserve non-handler history'
+      )
+      void redelivered
     }
   ),
   definition(
@@ -2630,7 +2700,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
   ),
   definition(
     'admin-redrive-failed-only',
-    'redrive is available only for terminal retryable states',
+    'redrive accepts allowed terminal states',
     'admin',
     async (context) => {
       const failed = await activeJob(context, context.fixtures.job, 'redrive-failed')
@@ -2640,7 +2710,10 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
             jobId: failed.id,
             leaseToken: failed.leaseToken,
             now: now(context),
-            outcome: { type: 'fail', failure: failure(context, 'REDRIVE-ONLY') }
+            outcome: {
+              type: 'fail',
+              failure: { ...failure(context, 'REDRIVE-NON-RETRYABLE'), retryable: false }
+            }
           })
         ),
         context,
@@ -2659,6 +2732,46 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'redrive precondition',
         'failed job was not redriven to a delayed state'
       )
+
+      const cancelled = await succeed(
+        operation(() =>
+          context.store.enqueue(
+            enqueueRequest(context, context.fixtures.jobV2, 'redrive-cancelled')
+          )
+        ),
+        context,
+        'enqueue'
+      )
+      await succeed(
+        operation(() => context.store.cancel({ jobId: cancelled.job.id, now: now(context) })),
+        context,
+        'cancel'
+      )
+      const redrivenCancelled = await succeed(
+        operation(() =>
+          context.store.redrive({ jobId: cancelled.job.id, runAt: now(context), now: now(context) })
+        ),
+        context,
+        'redrive'
+      )
+      ensure(
+        redrivenCancelled.record.state === 'waiting',
+        context,
+        'redrive precondition',
+        'cancelled job was not redriven to waiting'
+      )
+      await succeed(
+        operation(() =>
+          context.store.remove({
+            jobId: cancelled.job.id,
+            now: now(context),
+            expectedState: 'waiting'
+          })
+        ),
+        context,
+        'remove'
+      )
+
       const completed = await activeJob(context, context.fixtures.jobV2, 'redrive-completed')
       await succeed(
         operation(() =>
