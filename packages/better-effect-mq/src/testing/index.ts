@@ -15,6 +15,7 @@ export type {
   JobStoreContractOptions,
   JobStoreContractReport,
   JobStoreContractRuntime,
+  JobStoreContractRuntimeFactory,
   JobStoreContractScenario,
   JobStoreContractScenarioContext,
   JobStoreContractScenarioInfo,

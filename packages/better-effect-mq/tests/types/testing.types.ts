@@ -1,3 +1,4 @@
+import { JobStore } from '../../src'
 import { jobStoreContract } from '../../src/testing'
 
 import type {
@@ -12,7 +13,7 @@ import type {
   JobStoreContractSuite
 } from '../../src/testing'
 
-const runtime: JobStoreContractRuntime = {
+const runtime: JobStoreContractRuntime<InstanceType<typeof JobStore>> = {
   run: async <Value>(program: () => Value | PromiseLike<Value>): Promise<Awaited<Value>> =>
     await program(),
   dispose: async () => {}

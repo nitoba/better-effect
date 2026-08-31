@@ -6,6 +6,7 @@
 // oxlint-disable typescript/unbound-method -- methods are checked for callability and invoked through their owners.
 
 import { ServiceRuntime } from 'better-effect'
+import type { AnyService, Runtime } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
 import {
@@ -25,6 +26,7 @@ import type {
   AnyJobDefinition,
   AnyJobRegistry,
   AnyJobStoreToken,
+  DefaultJobStoreToken,
   AnyQueueDefinition,
   EnqueueRequest,
   JobIdentity,
@@ -94,9 +96,11 @@ export interface JobStoreContractControls {
 }
 
 /** Context passed to setup, runtime factories, reset, and extension clients. */
-export interface JobStoreContractContext extends JobStoreContractScenarioInfo {
+export interface JobStoreContractContext<
+  Token extends AnyJobStoreToken = AnyJobStoreToken
+> extends JobStoreContractScenarioInfo {
   readonly scenario: JobStoreContractScenarioInfo
-  readonly token: AnyJobStoreToken
+  readonly token: Token
   readonly clock: JobStoreContractClock
   readonly ids: JobStoreContractIds
   readonly barrier: JobStoreContractBarrier
@@ -118,30 +122,42 @@ export interface JobStoreContractFixtures {
   readonly registry: AnyJobRegistry
 }
 
-/** One runtime/client owned by the conformance harness. */
-export interface JobStoreContractRuntime {
-  run<A>(program: () => A | PromiseLike<A>): PromiseLike<Awaited<A>>
+/** One runtime/client owned by the conformance harness.
+ *
+ * The run signature is the public Runtime signature for the supplied
+ * environment. Keeping it tied to `Runtime<Provided>` preserves the same
+ * Effect requirement checks for adapter wrappers instead of asking consumers
+ * to erase programs with `as never`.
+ */
+export interface JobStoreContractRuntime<Provided extends AnyService = AnyService> {
+  readonly run: Runtime<Provided>['run']
   dispose(): PromiseLike<void>
 }
 
 /** A resolved public JobStore client supplied to extension scenarios. */
-export interface JobStoreContractClient {
-  readonly runtime: JobStoreContractRuntime
+export interface JobStoreContractClient<Token extends AnyJobStoreToken = AnyJobStoreToken> {
+  readonly runtime: JobStoreContractRuntime<InstanceType<Token>>
   readonly store: JobStoreNamespace.Contract
 }
 
 /** Context supplied to a custom concurrency or crash extension. */
-export interface JobStoreContractScenarioContext extends JobStoreContractContext {
-  readonly client: JobStoreContractClient
+export interface JobStoreContractScenarioContext<
+  Token extends AnyJobStoreToken = AnyJobStoreToken
+> extends JobStoreContractContext<Token> {
+  readonly client: JobStoreContractClient<Token>
   readonly store: JobStoreNamespace.Contract
   readonly fixtures: JobStoreContractFixtures
-  openClient(): Promise<JobStoreContractClient>
+  openClient(): Promise<JobStoreContractClient<Token>>
 }
 
 /** A custom scenario that shares the same isolated lifecycle as built-ins. */
-export interface JobStoreContractExtension extends JobStoreContractScenarioInfo {
+export interface JobStoreContractExtension<
+  Token extends AnyJobStoreToken = AnyJobStoreToken
+> extends JobStoreContractScenarioInfo {
   readonly requires?: keyof JobStoreCapabilities
-  readonly run: (context: JobStoreContractScenarioContext) => JobStoreContractMaybePromise<void>
+  readonly run: (
+    context: JobStoreContractScenarioContext<Token>
+  ) => JobStoreContractMaybePromise<void>
 }
 
 /** A capability-gated scenario omitted from the returned list when unsupported. */
@@ -165,18 +181,25 @@ export type JobStoreContractSuite = readonly JobStoreContractScenario[] & {
   readonly report: () => JobStoreContractReport
 }
 
+/** Runtime factory that preserves the token-to-environment relationship. */
+export interface JobStoreContractRuntimeFactory<
+  Token extends AnyJobStoreToken = DefaultJobStoreToken
+> {
+  (
+    context: JobStoreContractContext<Token>
+  ): JobStoreContractMaybePromise<JobStoreContractRuntime<InstanceType<Token>>>
+}
+
 /** Factory options for the runner-agnostic JobStore contract. */
-export interface JobStoreContractOptions {
-  /** Create a fresh runtime and its real adapter resources for one scenario. */
-  readonly makeRuntime: (
-    context: JobStoreContractContext
-  ) => JobStoreContractMaybePromise<JobStoreContractRuntime>
+export interface JobStoreContractOptions<Token extends AnyJobStoreToken = DefaultJobStoreToken> {
+  /** Create a fresh runtime and its real adapter resources for the context token. */
+  readonly makeRuntime: JobStoreContractRuntimeFactory<Token>
   /** Optional schema/fixture setup, called once before each scenario runtime. */
-  readonly setup?: (context: JobStoreContractContext) => JobStoreContractMaybePromise<void>
+  readonly setup?: (context: JobStoreContractContext<Token>) => JobStoreContractMaybePromise<void>
   /** Optional storage reset, called after runtime disposal even when a scenario fails. */
-  readonly reset?: (context: JobStoreContractContext) => JobStoreContractMaybePromise<void>
+  readonly reset?: (context: JobStoreContractContext<Token>) => JobStoreContractMaybePromise<void>
   /** The token provided by the runtime; defaults to the public JobStore token. */
-  readonly token?: AnyJobStoreToken
+  readonly token?: Token
   /** Declared immutable capability flags. Omitted flags are false. */
   readonly capabilities?: Partial<JobStoreCapabilities>
   /** Per-scenario control factory or a deliberately shared control object. */
@@ -186,7 +209,7 @@ export interface JobStoreContractOptions {
         scenario: JobStoreContractScenarioInfo
       ) => JobStoreContractMaybePromise<JobStoreContractControls>)
   /** Additional concurrency/crash scenarios, run with harness-owned cleanup. */
-  readonly extensions?: readonly JobStoreContractExtension[]
+  readonly extensions?: readonly JobStoreContractExtension<Token>[]
 }
 
 /** Error thrown by a scenario with its stable invariant and scenario identity. */
@@ -214,11 +237,14 @@ export class JobStoreConformanceError extends Error {
 type AnyResult<Value> = ResultType<Value, JobStoreError>
 type ErrorResult<Value> = Extract<AnyResult<Value>, { readonly status: 'error' }>
 
-type ScenarioBody = (context: JobStoreContractScenarioContext) => Promise<void>
-type ScenarioDefinition = JobStoreContractScenarioInfo & {
-  readonly requires?: keyof JobStoreCapabilities
-  readonly body: ScenarioBody
-}
+type ScenarioBody<Token extends AnyJobStoreToken = AnyJobStoreToken> = (
+  context: JobStoreContractScenarioContext<Token>
+) => Promise<void>
+type ScenarioDefinition<Token extends AnyJobStoreToken = AnyJobStoreToken> =
+  JobStoreContractScenarioInfo & {
+    readonly requires?: keyof JobStoreCapabilities
+    readonly body: ScenarioBody<Token>
+  }
 type EnqueueOverrides = Partial<
   Pick<EnqueueRequest, 'id' | 'idempotencyKey' | 'priority' | 'runAt' | 'attemptsMax'>
 >
@@ -413,8 +439,8 @@ class DefaultBarrier implements JobStoreContractBarrier {
 
 const defaultHooks: JobStoreContractHooks = Object.freeze({})
 
-const controlsFor = async (
-  options: JobStoreContractOptions,
+const controlsFor = async <Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token>,
   scenario: JobStoreContractScenarioInfo
 ): Promise<JobStoreContractControls> => {
   const controls = options.controls
@@ -423,11 +449,11 @@ const controlsFor = async (
   return value ?? {}
 }
 
-const makeContext = async (
-  options: JobStoreContractOptions,
+const makeContext = async <Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token>,
   scenario: JobStoreContractScenarioInfo,
-  token: AnyJobStoreToken
-): Promise<JobStoreContractContext> => {
+  token: Token
+): Promise<JobStoreContractContext<Token>> => {
   const controls = await controlsFor(options, scenario)
   const clock = controls.clock ?? new DefaultClock()
   const ids = controls.ids ?? new DefaultIds()
@@ -443,7 +469,7 @@ const makeContext = async (
   assertFunction(barrier.release, 'controls.barrier.release')
   assertFunction(barrier.reset, 'controls.barrier.reset')
 
-  const context: JobStoreContractContext = {
+  const context: JobStoreContractContext<Token> = {
     ...scenario,
     scenario,
     token,
@@ -492,16 +518,17 @@ const makeFixtures = (token: AnyJobStoreToken): JobStoreContractFixtures => {
   })
 }
 
-const resolveStore = async (
-  runtime: JobStoreContractRuntime,
-  token: AnyJobStoreToken,
+const resolveStore = async <Token extends AnyJobStoreToken>(
+  runtime: JobStoreContractRuntime<InstanceType<Token>>,
+  token: Token,
   scenario: JobStoreContractScenarioInfo
 ): Promise<JobStoreNamespace.Contract> => {
   try {
-    const store = await runtime.run(() => ServiceRuntime.resolve(token))
+    const program = async (): Promise<JobStoreNamespace.Contract> =>
+      await ServiceRuntime.resolve(token)
+    const store = await runtime.run<JobStoreNamespace.Contract>(program)
 
-    // SAFETY: the runtime resolves the public JobStore token supplied to this factory.
-    return store as JobStoreNamespace.Contract
+    return store
   } catch (cause) {
     throw makeScenarioError(
       scenario,
@@ -512,12 +539,14 @@ const resolveStore = async (
   }
 }
 
-const makeClient = async (
-  options: JobStoreContractOptions,
-  context: JobStoreContractContext,
-  runtimes: Set<JobStoreContractRuntime>
-): Promise<JobStoreContractClient> => {
-  let runtime: JobStoreContractRuntime
+type OwnedRuntime = Pick<JobStoreContractRuntime, 'dispose'>
+
+const makeClient = async <Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token>,
+  context: JobStoreContractContext<Token>,
+  runtimes: Set<OwnedRuntime>
+): Promise<JobStoreContractClient<Token>> => {
+  let runtime: JobStoreContractRuntime<InstanceType<Token>>
 
   try {
     runtime = await options.makeRuntime(context)
@@ -728,16 +757,16 @@ const sameIdentity = (left: JobRecord, right: JobRecord): boolean =>
   left.name === right.name &&
   left.version === right.version
 
-const makeScenario = (
-  definition: ScenarioDefinition,
-  options: JobStoreContractOptions,
-  token: AnyJobStoreToken,
+const makeScenario = <Token extends AnyJobStoreToken>(
+  definition: ScenarioDefinition<Token>,
+  options: JobStoreContractOptions<Token>,
+  token: Token,
   report: ReportState
 ): JobStoreContractScenario => {
   const run = async (): Promise<void> => {
     report.executed.add(definition.id)
-    const runtimes = new Set<JobStoreContractRuntime>()
-    let context: JobStoreContractContext | undefined
+    const runtimes = new Set<OwnedRuntime>()
+    let context: JobStoreContractContext<Token> | undefined
     let primary: unknown
     let hasPrimary = false
 
@@ -747,14 +776,14 @@ const makeScenario = (
       await options.setup?.(baseContext)
       const client = await makeClient(options, baseContext, runtimes)
       const fixtures = makeFixtures(token)
-      const scenarioContext: JobStoreContractScenarioContext = Object.freeze({
+      const openClient = async (): Promise<JobStoreContractClient<Token>> =>
+        makeClient(options, baseContext, runtimes)
+      const scenarioContext: JobStoreContractScenarioContext<Token> = Object.freeze({
         ...baseContext,
         client,
         store: client.store,
         fixtures,
-        async openClient(): Promise<JobStoreContractClient> {
-          return makeClient(options, baseContext, runtimes)
-        }
+        openClient
       })
       await definition.body(scenarioContext)
       report.passed.add(definition.id)
@@ -1515,6 +1544,60 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'heartbeat fencing',
         'current lease was reported lost'
       )
+      await succeed(
+        operation(() =>
+          context.store.release({ jobId: job.id, leaseToken: job.leaseToken, now: now(context) })
+        ),
+        context,
+        'release'
+      )
+      const redelivered = await succeed(
+        operation(() =>
+          context.store.claim(
+            claimRequest(context, context.fixtures, { workerId: context.ids.workerId('second') })
+          )
+        ),
+        context,
+        'claim'
+      )
+      const current = redelivered.jobs[0]
+      if (current === undefined)
+        fail(context, 'heartbeat fencing', 'redelivery did not claim the job')
+      const before = await succeed(
+        operation(() => context.store.getJob({ jobId: current!.id })),
+        context,
+        'getJob'
+      )
+      const stale = await succeed(
+        operation(() =>
+          context.store.heartbeat({
+            leases: [{ jobId: current!.id, leaseToken: job.leaseToken }],
+            leaseDurationMs: 500,
+            now: now(context)
+          })
+        ),
+        context,
+        'heartbeat'
+      )
+      ensure(
+        stale.renewed.length === 0 && stale.lost.length === 1,
+        context,
+        'heartbeat fencing',
+        'an old lease token was renewed'
+      )
+      const after = await succeed(
+        operation(() => context.store.getJob({ jobId: current!.id })),
+        context,
+        'getJob'
+      )
+      ensure(
+        before !== undefined &&
+          after !== undefined &&
+          JSON.stringify(before) === JSON.stringify(after),
+        context,
+        'heartbeat fencing',
+        'an old heartbeat changed the current lease'
+      )
     }
   ),
   definition(
@@ -1927,7 +2010,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     'settlement',
     async (context) => {
       const job = await activeJob(context)
-      await succeed(
+      const first = await succeed(
         operation(() =>
           context.store.settle({
             jobId: job.id,
@@ -1967,6 +2050,17 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'duplicate settlement',
         `duplicate settlement created ${attempts.length} attempts`
+      )
+      const after = await succeed(
+        operation(() => context.store.getJob({ jobId: job.id })),
+        context,
+        'getJob'
+      )
+      ensure(
+        after !== undefined && JSON.stringify(after) === JSON.stringify(first.record),
+        context,
+        'duplicate settlement',
+        'duplicate settlement mutated the completed record'
       )
     }
   ),
@@ -2726,17 +2820,25 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'enqueue'
       )
-      await succeed(
-        operation(() =>
-          context.store.awaitWake({
-            queues: [context.fixtures.queueName],
-            wakeToken: empty.wakeToken,
-            signal: new AbortController().signal
-          })
-        ),
+      const controller = new AbortController()
+      const waiting = resolveOperation(
+        context.store.awaitWake({
+          queues: [context.fixtures.queueName],
+          wakeToken: empty.wakeToken,
+          signal: controller.signal
+        }),
         context,
         'awaitWake'
       )
+      queueMicrotask(() => controller.abort())
+      const result = await waiting
+      if (isErrorResult(result)) {
+        fail(
+          context,
+          'wake token change',
+          'awaitWake did not observe the already-recorded wake before cancellation'
+        )
+      }
     },
     'notifications'
   ),
@@ -2878,9 +2980,9 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
   )
 ]
 
-const extensionDefinitions = (
-  extensions: readonly JobStoreContractExtension[] | undefined
-): readonly ScenarioDefinition[] =>
+const extensionDefinitions = <Token extends AnyJobStoreToken>(
+  extensions: readonly JobStoreContractExtension<Token>[] | undefined
+): readonly ScenarioDefinition<Token>[] =>
   (extensions ?? []).map((extension) => {
     assertScenarioInfo(extension)
     assertFunction(extension.run, `extension ${extension.id}.run`)
@@ -2890,7 +2992,7 @@ const extensionDefinitions = (
             id: extension.id,
             name: extension.name,
             category: extension.category,
-            body: async (context: JobStoreContractScenarioContext): Promise<void> => {
+            body: async (context: JobStoreContractScenarioContext<Token>): Promise<void> => {
               await extension.run(context)
             }
           }
@@ -2899,7 +3001,7 @@ const extensionDefinitions = (
             name: extension.name,
             category: extension.category,
             requires: extension.requires,
-            body: async (context: JobStoreContractScenarioContext): Promise<void> => {
+            body: async (context: JobStoreContractScenarioContext<Token>): Promise<void> => {
               await extension.run(context)
             }
           }
@@ -2907,7 +3009,7 @@ const extensionDefinitions = (
   })
 
 const makeSkipped = (
-  definition: ScenarioDefinition,
+  definition: JobStoreContractScenarioInfo,
   capability: keyof JobStoreCapabilities
 ): JobStoreContractSkippedScenario =>
   Object.freeze({
@@ -2918,7 +3020,10 @@ const makeSkipped = (
     reason: `requires declared capability ${capability}`
   })
 
-const validateOptions = (options: JobStoreContractOptions, token: AnyJobStoreToken): void => {
+const validateOptions = <Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token>,
+  token: Token
+): void => {
   if (!isRecord(options)) {
     throw new TypeError('jobStoreContract options must be an object')
   }
@@ -2954,15 +3059,27 @@ const validateOptions = (options: JobStoreContractOptions, token: AnyJobStoreTok
  * scenario itself succeeded. Basic scenarios are always returned. Capability
  * flags add scenarios and never remove basic correctness checks.
  */
-export const jobStoreContract = (options: JobStoreContractOptions): JobStoreContractSuite => {
+export function jobStoreContract(
+  options: JobStoreContractOptions<DefaultJobStoreToken>
+): JobStoreContractSuite
+export function jobStoreContract<Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token> & { readonly token: Token }
+): JobStoreContractSuite
+export function jobStoreContract<Token extends AnyJobStoreToken>(
+  options: JobStoreContractOptions<Token>
+): JobStoreContractSuite {
   if (!isRecord(options)) {
     throw new TypeError('jobStoreContract options must be an object')
   }
 
-  const token = options.token ?? JobStore
+  // SAFETY: the overloads pair an omitted token with the default token and an explicit token with Token.
+  const token = (options.token ?? JobStore) as Token
   validateOptions(options, token)
   const capabilities = normalizeCapabilities(options.capabilities)
-  const definitions = [...builtInScenarios(), ...extensionDefinitions(options.extensions)]
+  const definitions: readonly ScenarioDefinition<Token>[] = [
+    ...builtInScenarios(),
+    ...extensionDefinitions(options.extensions)
+  ]
   const seen = new Set<string>()
 
   for (const item of definitions) {

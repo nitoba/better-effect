@@ -18,12 +18,73 @@ const capabilities = {
   batchClaim: true
 } as const
 
+const expectedScenarioMetadata = [
+  'enqueue-immediate-waiting|enqueue|immediate enqueue enters waiting',
+  'enqueue-future-delayed|enqueue|future enqueue enters delayed',
+  'enqueue-explicit-id-duplicate|enqueue|duplicate explicit IDs are idempotent no-ops',
+  'enqueue-idempotency-concurrent|enqueue|concurrent idempotency keys create one job',
+  'enqueue-generated-id-unique|enqueue|generated IDs do not collide with explicit IDs',
+  'enqueue-many-order|enqueue|enqueueMany preserves input order and result alignment',
+  'enqueue-many-independent-replay|enqueue|enqueueMany keeps independently replayable duplicate units',
+  'enqueue-round-trip|enqueue|metadata and identity version round-trip through getJob',
+  'claim-priority-order|claim|claim orders higher priority first',
+  'claim-fifo-tiebreak|claim|claim preserves FIFO within equal priority and runAt',
+  'claim-queue-isolation|claim|claim isolates queues',
+  'claim-accepted-identity-filter|claim|claim filters by accepted job identity',
+  'claim-respects-limit|claim|claim never exceeds its limit',
+  'claim-concurrent-exclusive|claim|concurrent claims do not share a current lease',
+  'claim-promotes-due-delayed|claim|claim promotes delayed work when its runAt is due',
+  'claim-empty-wake-token|claim|empty claim returns coherent nextRunAt and wakeToken',
+  'claim-paused-queue|claim|paused queues do not deliver work',
+  'lease-claim-fields|lease|claim creates owner, token, expiry, and delivery fields',
+  'lease-heartbeat-current-token|lease|heartbeat renews only the current lease token',
+  'lease-fencing-rejects-old-token|lease|old settlement tokens fail without mutation',
+  'lease-release-no-attempt|lease|current release returns waiting without consuming a handler attempt',
+  'lease-release-old-token|lease|an old release token fails after redelivery',
+  'lease-recover-expired|lease|expired leases are recovered and recorded as stalled',
+  'lease-does-not-recover-valid|lease|valid leases are not recovered',
+  'lease-stall-policy|lease|repeated stalls eventually terminalize according to maxStalledCount',
+  'lease-cancellation-request|lease|active cancellation requests retain the lease until the next exit',
+  'settle-complete-ledger|settlement|complete persists result and one completed attempt',
+  'settle-retry-ledger|settlement|retry persists failure and a future runAt',
+  'settle-fail-terminal|settlement|fail is terminal and records a failed attempt',
+  'settle-cancelled-terminal|settlement|cancelled settlement is terminal and consumes one attempt',
+  'settle-duplicate-no-reapply|settlement|duplicate settlement does not apply a second transition',
+  'settle-attempt-once|settlement|settlement increments attemptsMade exactly once',
+  'redrive-preserves-ledger|settlement|administrative redrive preserves prior delivery and attempt history',
+  'release-stalled-ledger|settlement|release and stalled recovery do not fake handler attempts',
+  'admin-cancel-waiting-delayed|admin|administrative cancel handles waiting and delayed jobs',
+  'admin-cancel-terminal-rejected|admin|administrative cancel rejects terminal jobs',
+  'admin-promote-delayed|admin|promote makes delayed work waiting without claiming it',
+  'admin-promote-state-rejected|admin|promote rejects non-delayed jobs',
+  'admin-redrive-failed-only|admin|redrive is available only for terminal retryable states',
+  'admin-pause-resume|admin|pause and resume are durable store state',
+  'admin-remove-active-rejected|admin|remove refuses active jobs',
+  'admin-counts-coherent|admin|counts remain coherent across state transitions',
+  'list-filters|listing|list supports the portable queue, name, and state filters',
+  'list-empty|listing|empty list states return no jobs and no cursor',
+  'list-keyset-pagination|listing|keyset pagination has no overlap or loss',
+  'list-timestamp-tie|listing|equal timestamps use a deterministic insertion tiebreaker',
+  'list-get-fields|listing|getJob and list expose the same public record fields',
+  'list-cursor-options|listing|cursor reuse with incompatible filters fails explicitly',
+  'list-support-matrix|listing|unsupported list filters fail instead of triggering a hidden scan',
+  'validation-rejects-invalid-duration|validation|invalid durations fail at the public request boundary',
+  'clock-controlled-delay|time|clock advancement reproduces delayed claim behavior',
+  'wake-abort|wake|awaitWake respects AbortSignal and returns its typed error',
+  'wake-token-change|wake|a token change wakes a notification-capable store',
+  'wake-enqueue-notifies-waiter|wake|enqueue wakes a waiter registered on the same queue',
+  'wake-queue-filter|wake|wake notifications do not cross queue boundaries',
+  'wake-occurs-before-wait|wake|a wake between empty claim and wait is observed by its token',
+  'batch-claim-order|claim|declared batch claiming returns one ordered batch'
+] as const
+
 const makeSuite = (fault?: MemoryStoreFault) =>
   jobStoreContract({
     capabilities,
     makeRuntime: async () =>
       makeMemoryRuntime(
-        makeMemoryJobStore(fault === undefined ? { capabilities } : { capabilities, fault })
+        makeMemoryJobStore(fault === undefined ? { capabilities } : { capabilities, fault }),
+        JobStore
       )
   })
 
@@ -33,13 +94,18 @@ const byId = (suite: readonly JobStoreContractScenario[], id: string): JobStoreC
   return scenario
 }
 
+test('JobStore contract pins scenario metadata', () => {
+  const metadata = makeSuite().map(({ id, category, name }) => `${id}|${category}|${name}`)
+  expect(metadata).toEqual([...expectedScenarioMetadata])
+})
+
 for (const scenario of makeSuite()) {
   test(`JobStore contract: ${scenario.id}`, scenario.run)
 }
 
 test('JobStore contract reports capability coverage and skips', () => {
   const suite = jobStoreContract({
-    makeRuntime: async () => makeMemoryRuntime(makeMemoryJobStore())
+    makeRuntime: async () => makeMemoryRuntime(makeMemoryJobStore(), JobStore)
   })
   const report = suite.report()
 
@@ -77,7 +143,7 @@ test('JobStore contract isolates setup, runtimes, and reset per scenario', async
     },
     makeRuntime: async () => {
       runtimes += 1
-      return makeMemoryRuntime(makeMemoryJobStore())
+      return makeMemoryRuntime(makeMemoryJobStore(), JobStore)
     }
   })
 
@@ -112,7 +178,7 @@ test('JobStore contract runs reset after setup failure', async () => {
     },
     makeRuntime: async () => {
       runtimeCreated += 1
-      return makeMemoryRuntime(makeMemoryJobStore())
+      return makeMemoryRuntime(makeMemoryJobStore(), JobStore)
     }
   })
 
@@ -132,7 +198,10 @@ test('JobStore contract runs reset after setup failure', async () => {
 test('JobStore contract preserves primary failures over cleanup failures', async () => {
   const suite = jobStoreContract({
     makeRuntime: async () => {
-      const runtime = await makeMemoryRuntime(makeMemoryJobStore({ fault: 'wrong-ordering' }))
+      const runtime = await makeMemoryRuntime(
+        makeMemoryJobStore({ fault: 'wrong-ordering' }),
+        JobStore
+      )
       return {
         run: runtime.run,
         dispose: async () => {
@@ -162,7 +231,7 @@ test('JobStore contract disposes extension clients in the same scenario', async 
   const suite = jobStoreContract({
     makeRuntime: async () => {
       created += 1
-      const runtime = await makeMemoryRuntime(makeMemoryJobStore())
+      const runtime = await makeMemoryRuntime(makeMemoryJobStore(), JobStore)
       return {
         run: runtime.run,
         dispose: async () => {
@@ -206,15 +275,6 @@ test('JobStore contract detects broken keyset pagination', async () => {
   await expectConformanceFailure(byId(makeSuite('broken-pagination'), 'list-keyset-pagination'))
 })
 
-test('JobStore contract detects a lost wake with a bounded harness watchdog', async () => {
-  const scenario = byId(makeSuite('lost-wake'), 'wake-token-change')
-  const outcome = await Promise.race([
-    scenario.run().then(
-      () => 'passed' as const,
-      () => 'failed' as const
-    ),
-    new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50))
-  ])
-
-  expect(outcome).toBe('timeout')
+test('JobStore contract detects a lost wake without a timer watchdog', async () => {
+  await expectConformanceFailure(byId(makeSuite('lost-wake'), 'wake-token-change'))
 })

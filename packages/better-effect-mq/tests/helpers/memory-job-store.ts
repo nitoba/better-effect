@@ -4,7 +4,10 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- all assertions are test fixture erasure boundaries.
 
 import { Layer, Runtime } from 'better-effect'
+import type { ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
+
+import type { JobStoreContractRuntime } from '../../src/testing'
 
 import {
   InvalidJobTransitionError,
@@ -22,7 +25,6 @@ import {
   makeQueueName,
   reduceJob,
   type ActiveJobSnapshot,
-  type AnyJobStoreToken,
   type AttemptRecord,
   type EnqueueRequest,
   type JobId,
@@ -30,6 +32,7 @@ import {
   type JobRecord,
   type JobStore as JobStoreType,
   type JobStoreError,
+  type JobStoreToken,
   type JobTransition,
   type JobStoreCapabilities,
   type LeaseLossReason,
@@ -407,7 +410,15 @@ class MemoryStore {
 
   awaitWake(request: JobStoreType.AwaitWakeRequest): Operation<void> {
     if (request.signal.aborted) return error(new JobStoreWakeAbortedError())
-    if (this.fault === 'lost-wake') return new Promise(() => {}) as unknown as Operation<void>
+    if (this.fault === 'lost-wake') {
+      return new Promise((resolve) => {
+        const onAbort = (): void => {
+          request.signal.removeEventListener('abort', onAbort)
+          resolve(error<void>(new JobStoreWakeAbortedError()))
+        }
+        request.signal.addEventListener('abort', onAbort, { once: true })
+      }) as unknown as Operation<void>
+    }
     const token = tokenNumber(request.wakeToken)
     if (this.hasRelevantEvent(token, request.queues)) return ok(undefined)
 
@@ -658,25 +669,18 @@ class MemoryStore {
 }
 
 export const makeMemoryJobStore = (options: MemoryStoreOptions = {}): JobStoreType.Contract =>
+  // SAFETY: this test fixture implements every JobStore operation; the focused error aliases are
+  // restored by JobStore.of at the fixture boundary.
   JobStore.of(new MemoryStore(options.fault, options.capabilities) as never)
 
-export const makeMemoryRuntime = async (
-  store: JobStoreType.Contract,
-  token: AnyJobStoreToken = JobStore
-): Promise<{
-  run: JobStoreContractRuntime['run']
-  dispose: JobStoreContractRuntime['dispose']
-}> => {
-  // SAFETY: this test fixture deliberately erases the named-token union at the Layer boundary.
-  const layer = Layer.succeed(token as never, token.of(store) as never)
-  const runtime = await Runtime.make(layer as never)
+export const makeMemoryRuntime = async <Name extends string | undefined>(
+  store: ServiceContract<InstanceType<JobStoreToken<Name>>>,
+  token: JobStoreToken<Name>
+): Promise<JobStoreContractRuntime<InstanceType<JobStoreToken<Name>>>> => {
+  const layer = Layer.succeed(token, store)
+  const runtime = await Runtime.make(layer)
   return {
-    run: (program) => runtime.run(program as never),
+    run: (program, options) => runtime.run(program, options),
     dispose: () => runtime.dispose()
   }
-}
-
-export type JobStoreContractRuntime = {
-  run<A>(program: () => A | PromiseLike<A>): PromiseLike<Awaited<A>>
-  dispose(): PromiseLike<void>
 }

@@ -347,6 +347,7 @@ the runtime and storage setup:
 ```ts
 import { Runtime } from 'better-effect'
 import { jobStoreContract } from 'better-effect-mq/testing'
+import type { JobStoreContractRuntime } from 'better-effect-mq/testing'
 
 const scenarios = jobStoreContract({
   makeRuntime: async (context) => {
@@ -356,10 +357,11 @@ const scenarios = jobStoreContract({
       })
     )
 
-    return {
-      run: (program) => runtime.run(program),
+    const adapter: JobStoreContractRuntime<InstanceType<typeof context.token>> = {
+      run: (program, options) => runtime.run(program, options),
       dispose: () => runtime.dispose()
     }
+    return adapter
   },
   setup: async (context) => createSchema(context.id),
   reset: async (context) => resetDatabase(context.id),

@@ -28,7 +28,7 @@ const found = registry.lookup(job.identity)
 const namedStore = JobStore.named('external')
 const bound = bindJob(job, namedStore)
 const boundAgain = Job.bind(job, namedStore)
-const runtime: JobStoreContractRuntime = {
+const runtime: JobStoreContractRuntime<InstanceType<typeof JobStore>> = {
   run: async <Value>(program: () => Value | PromiseLike<Value>): Promise<Awaited<Value>> =>
     await program(),
   dispose: async () => {}
