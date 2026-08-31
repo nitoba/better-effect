@@ -160,8 +160,6 @@ export interface RecoverStalledCommand {
   readonly type: 'recover-stalled'
   readonly jobId: JobId
   readonly now: number
-  /** Internal store policy marker for terminal recovery without a sentinel count. */
-  readonly terminal?: boolean
 }
 
 export type JobTransitionCommand =

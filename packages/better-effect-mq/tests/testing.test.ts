@@ -49,6 +49,7 @@ const expectedScenarioMetadata = [
   'lease-recover-expired|lease|expired leases are recovered and recorded as stalled',
   'lease-does-not-recover-valid|lease|valid leases are not recovered',
   'lease-stall-policy|lease|repeated stalls eventually terminalize according to maxStalledCount',
+  'lease-stalled-cancellation-ledger|lease|terminal stalled cancellation increments count and records its ledger entry',
   'lease-cancellation-request|lease|active cancellation requests retain the lease until the next exit',
   'settle-complete-ledger|settlement|complete persists result and one completed attempt',
   'settle-retry-ledger|settlement|retry persists failure and a future runAt',

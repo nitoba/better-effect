@@ -21,6 +21,7 @@ import type {
   JobRecord,
   JobState,
   JobTransition,
+  RecoverStalledCommand,
   JobTransitionFailure,
   JsonValue,
   PersistedBackoff,
@@ -67,6 +68,26 @@ expectTypeOf(claimJob(record, command)).toEqualTypeOf<ResultType<JobRecord, JobT
 expectTypeOf(reduceJob(record, command)).toEqualTypeOf<
   ResultType<JobTransition, JobTransitionFailure>
 >()
+
+const recoverStalledCommand: RecoverStalledCommand = {
+  type: 'recover-stalled',
+  jobId,
+  now: 1
+}
+type RecoverStalledCommandHasTerminal = 'terminal' extends keyof RecoverStalledCommand
+  ? true
+  : false
+expectTypeOf<RecoverStalledCommandHasTerminal>().toEqualTypeOf<false>()
+
+const forcedTerminalRecovery: RecoverStalledCommand = {
+  type: 'recover-stalled',
+  jobId,
+  now: 1,
+  // @ts-expect-error Terminal recovery policy is private to the store.
+  terminal: true
+}
+void recoverStalledCommand
+void forcedTerminalRecovery
 
 declare const outcome: SettlementOutcome
 const settleCommand: SettleCommand = {

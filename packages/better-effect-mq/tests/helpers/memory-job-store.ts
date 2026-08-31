@@ -7,6 +7,8 @@ import { Layer, Runtime } from 'better-effect'
 import type { ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
+import { recoverStalledWithPolicy } from '../../src/protocol/transitions'
+
 import type {
   JobStoreContractRuntime,
   JobStoreContractSynchronization,
@@ -407,12 +409,15 @@ class MemoryStore {
         request.now < current.leaseExpiresAt
       )
         continue
-      const transition = reduceJob(current, {
-        type: 'recover-stalled',
-        jobId: current.id,
-        now: request.now,
-        terminal: current.stalledCount >= request.maxStalledCount
-      })
+      const transition = recoverStalledWithPolicy(
+        current,
+        {
+          type: 'recover-stalled',
+          jobId: current.id,
+          now: request.now
+        },
+        current.stalledCount >= request.maxStalledCount
+      )
       const applied = this.applyTransition(transition)
       if (applied.isErr()) return error(applied.error)
       transitions.push(applied.value)

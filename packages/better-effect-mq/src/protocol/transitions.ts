@@ -476,7 +476,7 @@ const terminalCancelWithoutHandler = (
 const terminalizeStalledRecovery = (
   record: JobRecord,
   now: number,
-  stalledCount = record.stalledCount
+  stalledCount: number
 ): TransitionResult => {
   const failure = makeSerializedJobFailure({
     kind: 'stalled',
@@ -844,7 +844,15 @@ const redrive = (record: JobRecord, command: RedriveCommand): TransitionResult =
   })
 }
 
-const recoverStalled = (record: JobRecord, command: RecoverStalledCommand): TransitionResult => {
+const incrementStalledCount = (stalledCount: number): number =>
+  stalledCount === Number.MAX_SAFE_INTEGER ? stalledCount : stalledCount + 1
+
+/** @internal Apply a store-selected terminal policy without exposing it in the protocol command. */
+export const recoverStalledWithPolicy = (
+  record: JobRecord,
+  command: RecoverStalledCommand,
+  terminal: boolean
+): TransitionResult => {
   const prepared = prepareNow(record, command.jobId, command.now)
 
   if (Result.isError(prepared)) {
@@ -867,22 +875,16 @@ const recoverStalled = (record: JobRecord, command: RecoverStalledCommand): Tran
     )
   }
 
-  const terminal = command.terminal === true
+  const stalledCount = incrementStalledCount(prepared.value.stalledCount)
 
   if (prepared.value.cancellationRequestedAt !== undefined) {
-    const stalledCount =
-      terminal || prepared.value.stalledCount === Number.MAX_SAFE_INTEGER
-        ? prepared.value.stalledCount
-        : prepared.value.stalledCount + 1
-
     return terminalCancelWithoutHandler(prepared.value, command.now, stalledCount)
   }
 
   if (terminal || prepared.value.stalledCount === Number.MAX_SAFE_INTEGER) {
-    return terminalizeStalledRecovery(prepared.value, command.now)
+    return terminalizeStalledRecovery(prepared.value, command.now, stalledCount)
   }
 
-  const stalledCount = prepared.value.stalledCount + 1
   const failure = makeSerializedJobFailure({
     kind: 'stalled',
     message: 'Lease expired before settlement',
@@ -940,7 +942,7 @@ export const reduceJob = (record: JobRecord, command: JobTransitionCommand): Tra
       case 'redrive':
         return redrive(record, command)
       case 'recover-stalled':
-        return recoverStalled(record, command)
+        return recoverStalledWithPolicy(record, command, false)
       default:
         return Result.err(
           new JobDefinitionError({ field: 'command', message: 'unsupported transition command' })

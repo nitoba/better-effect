@@ -210,7 +210,7 @@ test('MemoryJobStore rejects reentrant claim generation without overwriting a le
   expect(attempts).toHaveLength(0)
 })
 
-test('MemoryJobStore records the bounded stalled count at the terminal threshold', async () => {
+test('MemoryJobStore counts the terminal stalled recovery', async () => {
   const store = MemoryJobStore.make()
   const created = await resolve(
     store.enqueue(enqueueRequest('stalled', 1, { id: makeJobId('stalled-job').unwrap() }))
@@ -244,12 +244,67 @@ test('MemoryJobStore records the bounded stalled count at the terminal threshold
   expect(firstRecovery.transitions[0]?.record.stalledCount).toBe(1)
   expect(secondClaim.jobs).toHaveLength(1)
   expect(terminalRecovery.transitions[0]?.record.state).toBe('failed')
-  expect(terminalRecovery.transitions[0]?.record.stalledCount).toBe(1)
+  expect(terminalRecovery.transitions[0]?.record.stalledCount).toBe(2)
   expect(terminalRecovery.transitions[0]?.attempt?.outcome).toBe('stalled')
-  expect(current?.stalledCount).toBe(1)
+  expect(current?.stalledCount).toBe(2)
   expect(attempts).toHaveLength(2)
   expect(attempts[1]?.outcome).toBe('stalled')
   expect(attempts[1]?.attempt).toBe(0)
+})
+
+test('MemoryJobStore counts terminal stalled cancellation in the ledger', async () => {
+  const store = MemoryJobStore.make()
+  const created = await resolve(
+    store.enqueue(
+      enqueueRequest('stalled-cancellation', 1, {
+        id: makeJobId('stalled-cancellation-job').unwrap()
+      })
+    )
+  )
+  const firstClaim = await resolve(
+    store.claim({
+      queue: QueueName.make('jobs').unwrap(),
+      accepted: [identity()],
+      limit: 1,
+      workerId: WorkerId.make('worker-one').unwrap(),
+      leaseDurationMs: 10,
+      now: 1
+    })
+  )
+  const firstRecovery = await resolve(store.recoverStalled({ maxStalledCount: 1, now: 11 }))
+  const secondClaim = await resolve(
+    store.claim({
+      queue: QueueName.make('jobs').unwrap(),
+      accepted: [identity()],
+      limit: 1,
+      workerId: WorkerId.make('worker-two').unwrap(),
+      leaseDurationMs: 10,
+      now: 11
+    })
+  )
+  const requested = await resolve(store.requestCancellation({ jobId: created.job.id, now: 11 }))
+  const terminalRecovery = await resolve(store.recoverStalled({ maxStalledCount: 1, now: 21 }))
+  const current = await resolve(store.getJob({ jobId: created.job.id }))
+  const attempts = await resolve(store.getAttempts({ jobId: created.job.id }))
+
+  expect(firstClaim.jobs).toHaveLength(1)
+  expect(firstRecovery.transitions[0]?.record.stalledCount).toBe(1)
+  expect(secondClaim.jobs).toHaveLength(1)
+  expect(requested.record.state).toBe('active')
+  expect(terminalRecovery.transitions[0]?.record.state).toBe('cancelled')
+  expect(terminalRecovery.transitions[0]?.record.stalledCount).toBe(2)
+  expect(terminalRecovery.transitions[0]?.record.attemptsMade).toBe(0)
+  expect(terminalRecovery.transitions[0]?.record.deliveryCount).toBe(2)
+  expect(terminalRecovery.transitions[0]?.attempt).toMatchObject({
+    attempt: 0,
+    delivery: 2,
+    outcome: 'cancelled'
+  })
+  expect(current?.stalledCount).toBe(2)
+  expect(attempts).toHaveLength(2)
+  expect(attempts.map((attempt) => attempt.outcome)).toEqual(['stalled', 'cancelled'])
+  expect(attempts[1]?.attempt).toBe(0)
+  expect(attempts[1]?.delivery).toBe(2)
 })
 
 test('MemoryJobStore redrive accepts cancelled and non-retryable failed jobs', async () => {

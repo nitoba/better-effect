@@ -28,6 +28,7 @@ import {
   validateOptionalDuration,
   validateTimestamp
 } from '../protocol'
+import { recoverStalledWithPolicy } from '../protocol/transitions'
 
 import type { JobId, LeaseToken, QueueName } from '../protocol'
 
@@ -768,12 +769,15 @@ class MemoryJobStoreImplementation {
           continue
         }
 
-        const transition = reduceJob(current, {
-          type: 'recover-stalled',
-          jobId: current.id,
-          now: now.value,
-          terminal: current.stalledCount >= maximum.value
-        })
+        const transition = recoverStalledWithPolicy(
+          current,
+          {
+            type: 'recover-stalled',
+            jobId: current.id,
+            now: now.value
+          },
+          current.stalledCount >= maximum.value
+        )
         if (Result.isError(transition)) return fail(transition.error)
         const prepared = this.prepareTransitionAt(transition.value, current, nextSequence)
         if (Result.isError(prepared)) return fail(prepared.error)

@@ -508,15 +508,17 @@ are:
   Missing, old, or expired tokens return `LeaseLostError` and leave the snapshot
   unchanged.
 - `recover-stalled` is the administrative, unfenced path for an active lease
-  whose expiry is reached. While `stalledCount` is below its non-negative safe
-  integer maximum, it increments the counter, records a `stalled` ledger entry,
-  and returns the job to `waiting` without consuming an attempt. At the maximum,
-  recovery is still atomic: a pending cancellation terminalizes as `cancelled`
-  while preserving the saturated count; otherwise the job terminalizes as
-  `failed` with a non-retryable `stalled` failure and one `stalled` ledger entry.
-  `failed` is the resulting `JobRecord.state`, while `stalled` is the ledger
-  outcome: no handler returned `failed`, and `attemptsMade` is unchanged. It
-  never wraps the counter or leaves a saturated active job waiting forever.
+  whose expiry is reached. Every recovery increments `stalledCount`, saturating
+  at its non-negative safe integer maximum. When the current count has reached
+  the store's configured `maxStalledCount` policy, that same recovery
+  terminalizes instead of requeueing and still persists the incremented count;
+  callers cannot force this policy through the protocol command. A pending
+  cancellation terminalizes as `cancelled` with a `cancelled` ledger entry;
+  otherwise the job terminalizes as `failed` with a non-retryable `stalled`
+  failure and one `stalled` ledger entry. `failed` is the resulting
+  `JobRecord.state`, while `stalled` is the ledger outcome: no handler returned
+  `failed`, and `attemptsMade` is unchanged. It never wraps the counter or
+  leaves a saturated active job waiting forever.
 - Cancelling an active job first records a cancellation request while retaining
   its lease. It does not steal the lease. The next active exit is deterministically
   terminal: a `settle` (including complete, retry, fail, or cancelled) becomes
