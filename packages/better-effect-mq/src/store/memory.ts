@@ -395,6 +395,9 @@ class MemoryJobStoreImplementation {
 
   private readonly jobs = new Map<string, JobRecord>()
   private readonly attempts = new Map<string, AttemptRecord[]>()
+  // Terminal records clear active lease fields; retain the fencing token so a
+  // lost settlement response can be safely acknowledged on retry.
+  private readonly settledTokens = new Map<string, LeaseToken>()
   private readonly idempotency = new Map<string, string>()
   private readonly generatedJobIds = new Set<string>()
   private readonly issuedLeaseTokens = new Set<string>()
@@ -578,6 +581,15 @@ class MemoryJobStoreImplementation {
       const current = this.jobs.get(jobId.value)
       if (current === undefined) return fail(new JobNotFoundError({ jobId: jobId.value }))
       if (current.state !== 'active') {
+        const settledToken = this.settledTokens.get(jobId.value)
+        const previousAttempt = this.attempts.get(jobId.value)?.at(-1)
+        if (settledToken === leaseToken.value && previousAttempt !== undefined) {
+          return ok({
+            record: cloneRecord(current),
+            attempt: cloneAttempt(previousAttempt),
+            alreadySettled: true
+          })
+        }
         return fail(
           new LeaseLostError({
             jobId: jobId.value,
@@ -618,6 +630,7 @@ class MemoryJobStoreImplementation {
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
       this.commitPrepared([prepared.value], true)
+      this.settledTokens.set(jobId.value, leaseToken.value)
       return ok({
         record: cloneRecord(prepared.value.transition.record),
         attempt: cloneAttempt(attempt)
@@ -1619,6 +1632,7 @@ class MemoryJobStoreImplementation {
     if (Result.isError(prepared)) return fail(prepared.error)
     const notify = command.type === 'promote' || command.type === 'retry'
     this.commitPrepared([prepared.value], notify)
+    if (command.type === 'retry') this.settledTokens.delete(current.id)
     return ok(snapshotTransition(prepared.value.transition))
   }
 

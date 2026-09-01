@@ -12,6 +12,7 @@ import {
   Worker,
   JobContext,
   JobName,
+  makeJobId,
   WorkerAwaitIdleError,
   type JobRecord,
   type WorkerHandle
@@ -694,6 +695,141 @@ test('Workers for named stores share one Runtime without cross-store claims', as
     expect((await resolve(secondStore.getJob({ jobId: secondRecord.id })))?.result).toBe('run')
   } finally {
     await Promise.all([firstWorker.stop(), secondWorker.stop()])
+    await runtime.dispose()
+  }
+})
+
+test('Worker scopes heartbeat loss by store, job ID, and lease token', async () => {
+  const firstStore = MemoryJobStore.make()
+  const secondStore = MemoryJobStore.make()
+  const firstToken = JobStore.named('heartbeat-store-a')
+  const secondToken = JobStore.named('heartbeat-store-b')
+  let firstHeartbeat!: () => void
+  const firstHeartbeatSeen = new Promise<void>((resolve) => {
+    firstHeartbeat = resolve
+  })
+  let releaseHeartbeat!: () => void
+  const heartbeatResponseGate = new Promise<void>((resolve) => {
+    releaseHeartbeat = resolve
+  })
+  const originalHeartbeat = firstStore.heartbeat.bind(firstStore)
+  let secondSettledResolve!: () => void
+  const secondSettled = new Promise<void>((resolveSettled) => {
+    secondSettledResolve = resolveSettled
+  })
+  const originalSecondSettle = secondStore.settle.bind(secondStore)
+  Object.defineProperty(secondStore, 'settle', {
+    value: async (request: Parameters<typeof secondStore.settle>[0]) => {
+      const result = await originalSecondSettle(request)
+      secondSettledResolve()
+      return result
+    }
+  })
+  Object.defineProperty(firstStore, 'heartbeat', {
+    value: async (request: Parameters<typeof firstStore.heartbeat>[0]) => {
+      const result = await originalHeartbeat(request)
+      firstHeartbeat()
+      await heartbeatResponseGate
+      if (Result.isError(result)) return result
+      const lease = request.leases[0]
+      return Result.ok({
+        renewed: [],
+        lost:
+          lease === undefined
+            ? []
+            : [
+                {
+                  jobId: lease.jobId,
+                  leaseToken: lease.leaseToken,
+                  reason: 'mismatched-token' as const
+                }
+              ],
+        cancellationRequested: []
+      })
+    }
+  })
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(firstToken, firstToken.of(firstStore)),
+      Layer.succeed(secondToken, secondToken.of(secondStore))
+    )
+  )
+  const firstJob = Queue.define('heartbeat-a').job('same-id-a', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: firstToken
+  })
+  const secondJob = Queue.define('heartbeat-b').job('same-id-b', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: secondToken
+  })
+  const sameId = makeJobId('heartbeat-same-id').unwrap()
+  await Promise.all([
+    resolve(
+      firstStore.enqueue({
+        id: sameId,
+        job: firstJob.identity,
+        payload: { value: 1 },
+        runAt: Date.now(),
+        attemptsMax: 1,
+        now: Date.now()
+      })
+    ),
+    resolve(
+      secondStore.enqueue({
+        id: sameId,
+        job: secondJob.identity,
+        payload: { value: 2 },
+        runAt: Date.now(),
+        attemptsMax: 1,
+        now: Date.now()
+      })
+    )
+  ])
+  let entered = 0
+  let enteredResolve!: () => void
+  const enteredBoth = new Promise<void>((resolveEntered) => {
+    enteredResolve = resolveEntered
+  })
+  let release!: () => void
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate
+  })
+  const makeHandler = (job: typeof firstJob | typeof secondJob) =>
+    Worker.handle(job, () =>
+      Effect.fn(async function* () {
+        const signal = yield* CurrentAbortSignal
+        signal.addEventListener('abort', () => {})
+        entered += 1
+        if (entered === 2) enteredResolve()
+        await gate
+        return Result.ok(undefined)
+      })
+    )
+  const worker = await Worker.start(runtime, {
+    handlers: [makeHandler(firstJob), makeHandler(secondJob)],
+    concurrency: 2,
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 10,
+    stalledIntervalMs: 1_000,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await enteredBoth
+    await firstHeartbeatSeen
+    releaseHeartbeat()
+    await Promise.resolve()
+    release()
+    await secondSettled
+  } finally {
+    release()
+    await worker.stop()
+    expect((await resolve(firstStore.getAttempts({ jobId: sameId }))).length).toBeGreaterThan(0)
+    expect((await resolve(secondStore.getAttempts({ jobId: sameId }))).length).toBeGreaterThan(0)
     await runtime.dispose()
   }
 })

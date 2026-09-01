@@ -6,6 +6,16 @@ export type WorkerAwaitIdleErrorReason =
   | 'aborted'
   | 'timeout'
 
+/** A store call could not converge because its owning Runtime was disposed first. */
+export class WorkerRuntimeOwnershipError extends Error {
+  constructor(cause?: unknown) {
+    super('Worker Runtime was disposed before the Worker could converge its in-flight jobs', {
+      cause
+    })
+    this.name = 'WorkerRuntimeOwnershipError'
+  }
+}
+
 /** A focused failure from WorkerHandle.awaitIdle validation or cancellation. */
 export class WorkerAwaitIdleError extends Error {
   constructor(

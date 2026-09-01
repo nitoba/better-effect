@@ -11,6 +11,7 @@ import { type AnyJobDefinition, type CodecLike } from '../job'
 import { parseJsonValue } from '../internal/json'
 import {
   JobDefinitionError,
+  JobStoreFailure,
   LeaseLostError,
   makeSerializedJobFailure,
   makeWorkerId,
@@ -29,7 +30,7 @@ import type {
 } from '../store'
 
 import { JobContext } from './context'
-import { WorkerAwaitIdleError } from './errors'
+import { WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 import type {
   AnyWorkerHandler,
   WorkerAwaitIdleOptions,
@@ -98,6 +99,9 @@ const defaultLeaseDurationMs = 30_000
 const defaultPollIntervalMs = 100
 const defaultMaxStalledCount = 1
 const minimumTimerMs = 1
+const minimumLeaseDurationMs = 10
+const minimumStalledIntervalMs = 10
+const maximumStoreRetries = 3
 
 export class WorkerSupervisor implements WorkerHandle {
   private readonly workerId: NormalizedWorkerOptions['id']
@@ -175,8 +179,9 @@ export class WorkerSupervisor implements WorkerHandle {
 
     const normalizedOptions = normalizeStopOptions(options)
     this.currentState = 'stopping'
+    // Stop claiming immediately, but keep lease supervision alive while local
+    // handlers and their cleanup are still able to settle.
     this.claimController.abort()
-    this.supervisionController.abort()
 
     if (normalizedOptions.abortActive === true) this.abortActiveAttempts()
 
@@ -225,6 +230,7 @@ export class WorkerSupervisor implements WorkerHandle {
       this.abortActiveAttempts()
     }
     await attempts
+    this.supervisionController.abort()
     await Promise.allSettled(this.supervisionTasks)
     this.currentState = 'stopped'
     this.notifySlots()
@@ -378,8 +384,12 @@ export class WorkerSupervisor implements WorkerHandle {
       now
     }
 
-    return runStoreOperation<ClaimResult>(this.runtime, plan.group.store, (store) =>
-      store.claim(request)
+    return runStoreOperation<ClaimResult>(
+      this.runtime,
+      plan.group.store,
+      (store) => store.claim(request),
+      this.claimController.signal,
+      this.workerOptions.pollIntervalMs
     )
   }
 
@@ -550,14 +560,19 @@ export class WorkerSupervisor implements WorkerHandle {
     const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     if (attempt?.state === 'lost') return
     if (attempt !== undefined) attempt.state = 'settling'
-    const result = await runStoreOperation(this.runtime, group.store, (store) =>
-      store.settle({
-        jobId: job.id,
-        leaseToken: job.leaseToken,
-        outcome,
-        now: this.readNow(),
-        startedAt
-      })
+    const result = await runStoreOperation(
+      this.runtime,
+      group.store,
+      (store) =>
+        store.settle({
+          jobId: job.id,
+          leaseToken: job.leaseToken,
+          outcome,
+          now: this.readNow(),
+          startedAt
+        }),
+      undefined,
+      this.workerOptions.pollIntervalMs
     )
 
     if (Result.isError(result)) {
@@ -566,8 +581,12 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async releaseJob(group: ClaimGroup, job: ActiveJobSnapshot): Promise<void> {
-    const result = await runStoreOperation(this.runtime, group.store, (store) =>
-      store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() })
+    const result = await runStoreOperation(
+      this.runtime,
+      group.store,
+      (store) => store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() }),
+      undefined,
+      this.workerOptions.pollIntervalMs
     )
 
     if (Result.isError(result)) {
@@ -627,30 +646,47 @@ export class WorkerSupervisor implements WorkerHandle {
       .filter((attempt) => attempt.state !== 'lost' && attempt.state !== 'settling')
       .map((attempt) => ({ jobId: attempt.job.id, leaseToken: attempt.job.leaseToken! }))
     if (leases.length === 0) return
-    const result = await runStoreOperation<HeartbeatResult>(this.runtime, store, (client) =>
-      client.heartbeat({
-        leases,
-        leaseDurationMs: this.workerOptions.leaseDurationMs,
-        now: this.readNow()
-      })
+    const snapshot = new Map(
+      [...this.activeAttempts.values()]
+        .filter((attempt) =>
+          leases.some(
+            (lease) => lease.jobId === attempt.job.id && lease.leaseToken === attempt.job.leaseToken
+          )
+        )
+        .map((attempt) => [heartbeatKey(store, attempt.job.id, attempt.job.leaseToken), attempt])
+    )
+    const result = await runStoreOperation<HeartbeatResult>(
+      this.runtime,
+      store,
+      (client) =>
+        client.heartbeat({
+          leases,
+          leaseDurationMs: this.workerOptions.leaseDurationMs,
+          now: this.readNow()
+        }),
+      this.supervisionController.signal,
+      this.workerOptions.pollIntervalMs
     )
     if (Result.isError(result)) {
       this.report(result.error)
       return
     }
-    const byId = new Map(
-      [...this.activeAttempts.values()].map((attempt) => [attempt.job.id, attempt])
-    )
     for (const lost of result.value.lost) {
-      const attempt = byId.get(lost.jobId)
-      if (attempt === undefined || attempt.state === 'lost') continue
+      const attempt = snapshot.get(heartbeatKey(store, lost.jobId, lost.leaseToken))
+      if (
+        attempt === undefined ||
+        attempt.state === 'lost' ||
+        attempt.job.leaseToken !== lost.leaseToken ||
+        attempt.job.leaseOwner !== this.id
+      )
+        continue
       attempt.state = 'lost'
       attempt.controller.abort(
         new LeaseLostError({ jobId: lost.jobId, leaseToken: lost.leaseToken, reason: lost.reason })
       )
     }
     for (const jobId of result.value.cancellationRequested) {
-      const attempt = byId.get(jobId)
+      const attempt = [...snapshot.values()].find((candidate) => candidate.job.id === jobId)
       if (attempt === undefined || attempt.state !== 'running') continue
       attempt.state = 'cancelling'
       attempt.controller.abort(new Error('Job cancellation requested'))
@@ -658,11 +694,16 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async recoverStalled(store: AnyJobStoreToken): Promise<void> {
-    const result = await runStoreOperation<RecoverStalledResult>(this.runtime, store, (client) =>
-      client.recoverStalled({
-        maxStalledCount: this.workerOptions.maxStalledCount,
-        now: this.readNow()
-      })
+    const result = await runStoreOperation<RecoverStalledResult>(
+      this.runtime,
+      store,
+      (client) =>
+        client.recoverStalled({
+          maxStalledCount: this.workerOptions.maxStalledCount,
+          now: this.readNow()
+        }),
+      this.supervisionController.signal,
+      this.workerOptions.pollIntervalMs
     )
     if (Result.isError(result)) this.report(result.error)
   }
@@ -857,6 +898,12 @@ export const normalizeWorkerOptions = (
     readOption(options, 'leaseDurationMs') ?? defaultLeaseDurationMs,
     'leaseDurationMs'
   )
+  if (leaseDurationMs < minimumLeaseDurationMs) {
+    throw new JobDefinitionError({
+      field: 'leaseDurationMs',
+      message: `must be at least ${minimumLeaseDurationMs}ms`
+    })
+  }
   const heartbeatIntervalMs = positiveDuration(
     readOption(options, 'heartbeatIntervalMs') ??
       Math.max(minimumTimerMs, Math.floor(leaseDurationMs / 3)),
@@ -872,6 +919,12 @@ export const normalizeWorkerOptions = (
     readOption(options, 'stalledIntervalMs') ?? leaseDurationMs,
     'stalledIntervalMs'
   )
+  if (stalledIntervalMs < minimumStalledIntervalMs) {
+    throw new JobDefinitionError({
+      field: 'stalledIntervalMs',
+      message: `must be at least ${minimumStalledIntervalMs}ms`
+    })
+  }
   const maxStalledCount = nonNegativeInteger(
     readOption(options, 'maxStalledCount') ?? defaultMaxStalledCount,
     'maxStalledCount'
@@ -1116,16 +1169,56 @@ const safeCauseMessage = (cause: unknown): string => {
 const runStoreOperation = async <Value>(
   runtime: AnyRuntime,
   token: AnyJobStoreToken,
-  operation: (store: JobStoreContract) => StoreOperation<Value>
-): Promise<ResultType<Value, unknown>> =>
-  runtime.run(
-    () =>
-      Effect.gen(async function* () {
-        const store = yield* token
-        const value = yield* Result.await(Promise.resolve(operation(store)))
-        return Result.ok(value)
-      }) as never
-  ) as Promise<ResultType<Value, unknown>>
+  operation: (store: JobStoreContract) => StoreOperation<Value>,
+  signal?: AbortSignal,
+  retryDelayMs = 1
+): Promise<ResultType<Value, unknown>> => {
+  let retries = 0
+  while (true) {
+    let result: ResultType<Value, unknown>
+    try {
+      result = (await runtime.run(
+        () =>
+          Effect.gen(async function* () {
+            const store = yield* token
+            const value = yield* Result.await(Promise.resolve(operation(store)))
+            return Result.ok(value)
+          }) as never
+      )) as ResultType<Value, unknown>
+    } catch (cause) {
+      return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<Value, unknown>
+    }
+    if (
+      !Result.isError(result) ||
+      !JobStoreFailure.is(result.error) ||
+      !result.error.retryable ||
+      retries >= maximumStoreRetries ||
+      signal?.aborted
+    )
+      return result
+    retries += 1
+    await cancellableDelay(Math.min(100, retryDelayMs * 2 ** (retries - 1)), signal)
+    if (signal?.aborted) return result
+  }
+}
+
+const cancellableDelay = (delay: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const done = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, delay)
+    signal?.addEventListener('abort', done, { once: true })
+  })
+
+const heartbeatKey = (
+  store: AnyJobStoreToken,
+  jobId: JobRecord['id'],
+  leaseToken: NonNullable<JobRecord['leaseToken']>
+): string => JSON.stringify([store.serviceTag, jobId, leaseToken])
 
 const isResultLike = (value: unknown): value is UnknownResult => {
   if (typeof value !== 'object' || value === null) {

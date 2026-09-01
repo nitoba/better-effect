@@ -456,8 +456,11 @@ available slots, and the claim `limit` never exceeds the global concurrency,
 queue cap, or the sum of available handler caps. The most restrictive of
 `concurrency`, `queueConcurrency`, and a handler's `concurrency` applies. Empty
 claims use `awaitWake` plus the poll interval and are interruptible by shutdown.
-A handler error is reported through `onError` and does not terminate other
-claim loops.
+Claim, heartbeat, settlement, release, and stalled-recovery calls retry only
+`JobStoreFailure` values marked `retryable`, with at most three retries and
+cancelable bounded backoff. Lease/state/not-found errors are never retried as
+infrastructure failures. A handler error is reported through `onError` and does
+not terminate other claim loops.
 
 Use `Worker.use` when one owner should always stop the supervisor:
 
@@ -481,9 +484,11 @@ continues to receive only the Jobs bound to its token.
 `WorkerReliabilityOptions` adds lease supervision without changing the handler
 API. `leaseDurationMs` defaults to 30 seconds, `heartbeatIntervalMs` to one
 third of the lease, `stalledIntervalMs` to the lease, `maxStalledCount` to one,
-and `pollIntervalMs` to 100ms (a zero poll value is clamped to 1ms). Durations
-must be finite positive safe integers, heartbeat must be shorter than the lease,
-and `maxStalledCount` is a non-negative integer. `shutdown.gracePeriodMs`
+and `pollIntervalMs` to 100ms (a zero poll value is clamped to 1ms).
+Durations must be finite positive safe integers. `leaseDurationMs` must be at
+least 10ms, `stalledIntervalMs` at least 10ms, and heartbeat must be shorter
+than the lease. `maxStalledCount`
+is a non-negative integer. `shutdown.gracePeriodMs`
 defaults to zero and `abortAfterGracePeriod` defaults to false. Top-level
 options override these defaults; malformed options are rejected before any
 claim or supervision loop starts.
@@ -497,10 +502,14 @@ idempotent and fenced with the job ID or an application idempotency key.
 
 Expired leases are recovered through the public `recoverStalled` operation. The
 store's atomic transition and stalled ledger are the source of truth, so late
-completion is fenced. If a settlement response is lost after the store may have
-applied it, the worker does not manufacture a second attempt; the persisted job
-record is authoritative and a backend must make same-token settlement idempotent
-(or report fencing safely).
+completion is fenced. If a settlement response is lost after the store may
+have applied it, the worker retries infrastructure failures with bounded
+exponential backoff using
+the exact same job ID and lease token. The persisted terminal record is the
+source of truth: stores that can prove same-token application return an
+`alreadySettled` acknowledgment without a second ledger entry; otherwise they
+must return `LeaseLost`/an infrastructure failure and the worker reports the
+uncertainty without manufacturing another handler attempt.
 
 `WorkerHandle.stop()` transitions to stopping before awaiting anything, stops new
 claims, keeps supervision active for in-flight attempts, applies the configured

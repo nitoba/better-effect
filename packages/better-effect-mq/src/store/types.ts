@@ -156,6 +156,8 @@ export type SettlementRequest = SettleRequest
 /** Settlement always persists one handler attempt with the new snapshot. */
 export type SettlementResult = Omit<JobTransition, 'attempt'> & {
   readonly attempt: AttemptRecord
+  /** True when the same lease/token already applied this terminal settlement. */
+  readonly alreadySettled?: boolean
 }
 
 /** A fenced release request; release does not consume an attempt budget. */
