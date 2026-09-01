@@ -7,6 +7,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
 const corePackageRoot = join(repoRoot, 'packages/better-effect')
 const betterAuthPackageRoot = join(repoRoot, 'packages/better-effect-better-auth')
+const kyselyPackageRoot = join(repoRoot, 'packages/better-effect-kysely')
 const mqPackageRoot = join(repoRoot, 'packages/better-effect-mq')
 const minimumTypeScriptVersion = '5.7.2'
 const currentTypeScriptVersion = '6.0.3'
@@ -101,18 +102,27 @@ const packPackage = async (source: string, label: string, stagingRoot: string): 
   return join(destination, archives[0]!)
 }
 
-const stagePublicPackages = async (): Promise<void> => {
+const stagePublicPackages = async (
+  includeBetterAuth: boolean,
+  includeKysely: boolean
+): Promise<void> => {
   const stagingRoot = await mkdtemp(join(tmpdir(), 'better-effect-type-system-'))
 
   try {
     await runCommand(['bun', 'run', 'build'], corePackageRoot)
-    await runCommand(['bun', 'run', 'build'], betterAuthPackageRoot)
+    if (includeBetterAuth) {
+      await runCommand(['bun', 'run', 'build'], betterAuthPackageRoot)
+    }
+    if (includeKysely) {
+      await runCommand(['bun', 'run', 'build'], kyselyPackageRoot)
+    }
     const coreArchive = await packPackage(corePackageRoot, 'better-effect', stagingRoot)
-    const betterAuthArchive = await packPackage(
-      betterAuthPackageRoot,
-      'better-effect-better-auth',
-      stagingRoot
-    )
+    const betterAuthArchive = includeBetterAuth
+      ? await packPackage(betterAuthPackageRoot, 'better-effect-better-auth', stagingRoot)
+      : undefined
+    const kyselyArchive = includeKysely
+      ? await packPackage(kyselyPackageRoot, 'better-effect-kysely', stagingRoot)
+      : undefined
     const consumerRoot = join(stagingRoot, 'consumer')
     const archiveReference = (archive: string): string =>
       `file:./${relative(consumerRoot, archive).split(sep).join('/')}`
@@ -125,10 +135,20 @@ const stagePublicPackages = async (): Promise<void> => {
           private: true,
           type: 'module',
           dependencies: {
-            'better-auth': '1.7.2',
             'better-effect': archiveReference(coreArchive),
-            'better-effect-better-auth': archiveReference(betterAuthArchive),
-            'better-result': '3.0.0'
+            'better-result': '3.0.0',
+            ...(includeBetterAuth && betterAuthArchive
+              ? {
+                  'better-auth': '1.7.2',
+                  'better-effect-better-auth': archiveReference(betterAuthArchive)
+                }
+              : {}),
+            ...(includeKysely && kyselyArchive
+              ? {
+                  'better-effect-kysely': archiveReference(kyselyArchive),
+                  kysely: '0.29.5'
+                }
+              : {})
           },
           devDependencies: {
             '@types/bun': '1.3.14',
@@ -148,7 +168,11 @@ const stagePublicPackages = async (): Promise<void> => {
     await rm(stagingRoot, { recursive: true, force: true })
   }
 
-  for (const packageName of ['better-effect', 'better-effect-better-auth']) {
+  for (const packageName of [
+    'better-effect',
+    ...(includeBetterAuth ? ['better-effect-better-auth'] : []),
+    ...(includeKysely ? ['better-effect-kysely'] : [])
+  ]) {
     const declaration = join(fixtureRoot, 'node_modules', packageName, 'dist/index.d.mts')
     if (!(await Bun.file(declaration).exists())) {
       throw new Error(`Staged ${packageName} package is missing its public declaration`)
@@ -950,8 +974,8 @@ const kyselyFixtureSource = (size: number): string => {
     .join(' | ')
 
   return `import { Layer } from 'better-effect'
-import { KyselyEffect } from '../../../packages/better-effect-kysely/src/index.ts'
-import type { KyselyService, KyselyServiceInstance } from '../../../packages/better-effect-kysely/src/index.ts'
+import { KyselyEffect } from 'better-effect-kysely'
+import type { KyselyService, KyselyServiceInstance } from 'better-effect-kysely'
 
 type Assert<Condition extends true> = Condition
 type Equal<Left, Right> =
@@ -1349,12 +1373,16 @@ const main = async (): Promise<void> => {
     ])
   }
   await mkdir(fixtureRoot, { recursive: true })
-  const usePublicDeclarations = options.scenarios.includes('better-auth')
+  const usePublicDeclarations =
+    options.scenarios.includes('better-auth') || options.scenarios.includes('kysely')
 
   await prepareScenarioDependencies(options.scenarios)
 
   if (usePublicDeclarations) {
-    await stagePublicPackages()
+    await stagePublicPackages(
+      options.scenarios.includes('better-auth'),
+      options.scenarios.includes('kysely')
+    )
   } else {
     await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true })
     await symlink(
