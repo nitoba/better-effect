@@ -1,0 +1,14 @@
+{
+  "name": "better-effect-kysely-external-consumer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "better-effect": "^0.13.0",
+    "better-effect-kysely": "file:./artifacts/better-effect-kysely.tgz",
+    "better-result": "^3.0.0",
+    "kysely": "0.29.5"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

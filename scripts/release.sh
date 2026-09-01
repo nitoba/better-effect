@@ -74,6 +74,7 @@ Allowlisted packages and tags:
   better-effect             v<version>
   better-effect-better-auth better-effect-better-auth-v<version>
   better-effect-mq          better-effect-mq-v<version>
+  better-effect-kysely      better-effect-kysely-v<version>
 
 The release must be run from a clean maintainer checkout on main. The dry-run
 validates the selected route and packed artifact without changing or publishing

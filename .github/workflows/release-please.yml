@@ -6,6 +6,7 @@ on:
       - 'v*'
       - 'better-effect-better-auth-v*'
       - 'better-effect-mq-v*'
+      - 'better-effect-kysely-v*'
   workflow_dispatch:
     inputs:
       tag_name:

@@ -10,6 +10,7 @@ working with the library. The tested runtime matrix is Node.js 24 and Bun
 - [`packages/better-effect`](./packages/better-effect) — the published TypeScript library
 - [`packages/better-effect-better-auth`](./packages/better-effect-better-auth) — the independent server-side Better Auth integration
 - [`packages/better-effect-mq`](./packages/better-effect-mq) — the experimental message-queue foundation
+- [`packages/better-effect-kysely`](./packages/better-effect-kysely) — the experimental Kysely integration foundation
 - [`apps/docs`](./apps/docs) — the Next.js documentation application powered by Fumadocs
 - [`skills/better-effect`](./skills/better-effect) — the official Agent Skill for implementing, reviewing, debugging, and refactoring `better-effect` applications
 
@@ -58,4 +59,4 @@ for every workspace.
 
 Package releases use qualified tags and publish only the selected package. See
 [`docs/release-process.md`](./docs/release-process.md) for the release planner,
-initial Better Auth/MQ release commands, and npm Trusted Publishing setup.
+initial Better Auth/MQ/Kysely release commands, and npm Trusted Publishing setup.

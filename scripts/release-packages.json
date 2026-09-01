@@ -20,6 +20,13 @@
       "changelog": "packages/better-effect-mq/CHANGELOG.md",
       "tagPrefix": "better-effect-mq-v",
       "initialRelease": true
+    },
+    {
+      "name": "better-effect-kysely",
+      "directory": "packages/better-effect-kysely",
+      "changelog": "packages/better-effect-kysely/CHANGELOG.md",
+      "tagPrefix": "better-effect-kysely-v",
+      "initialRelease": true
     }
   ]
 }
