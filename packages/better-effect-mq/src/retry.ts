@@ -1,0 +1,208 @@
+// oxlint-disable anti-slop/no-runtime-typeof -- Retry validates public configuration at its boundary.
+// oxlint-disable anti-slop/no-unknown-parameters -- policy factories accept untrusted JavaScript options.
+// oxlint-disable anti-slop/no-known-value-widening -- callback decisions are normalized at the boundary.
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts follow explicit runtime checks.
+
+import { Result, type Result as ResultType } from 'better-result'
+
+import { makePersistedBackoff } from './protocol/backoff'
+import type { PersistedBackoff } from './protocol/types'
+import { JobDefinitionError } from './protocol/errors'
+
+export type RetryJitter = number
+export type RetryContext = { readonly attempt: number; readonly attemptsMax: number }
+export type RetryDecision = {
+  readonly retry: boolean
+  readonly delayMs?: number
+}
+export type RetryDecide<Failure = unknown> = (
+  failure: Failure,
+  context: RetryContext
+) => RetryDecision | boolean
+
+export type RetryPolicy =
+  | { readonly type: 'never'; readonly maxAttempts: 1 }
+  | { readonly type: 'fixed'; readonly backoff: PersistedBackoff; readonly maxAttempts?: number }
+  | { readonly type: 'linear'; readonly backoff: PersistedBackoff; readonly maxAttempts?: number }
+  | {
+      readonly type: 'exponential'
+      readonly backoff: PersistedBackoff
+      readonly maxAttempts?: number
+    }
+  | { readonly type: 'custom'; readonly maxAttempts?: number; readonly decide: RetryDecide<never> }
+
+const invalid = (message: string): never => {
+  throw new JobDefinitionError({ field: 'retry', message })
+}
+
+const integer = (value: unknown, field: string, minimum = 0): number => {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+    return invalid(`${field} must be a finite safe integer >= ${minimum}`)
+  }
+  return value
+}
+
+const attempts = (value: unknown): number | undefined =>
+  value === undefined ? undefined : integer(value, 'maxAttempts', 1)
+
+const jitter = (value: unknown): number | undefined => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    return invalid('jitter must be a finite number between 0 and 1')
+  }
+  return value
+}
+
+const staticPolicy = (
+  type: 'constant' | 'linear' | 'exponential',
+  options: {
+    readonly delayMs?: unknown
+    readonly initialDelayMs?: unknown
+    readonly incrementMs?: unknown
+    readonly maxDelayMs?: unknown
+    readonly factor?: unknown
+    readonly jitter?: unknown
+    readonly maxAttempts?: unknown
+  }
+): RetryPolicy => {
+  const delay = integer(options.delayMs ?? options.initialDelayMs, 'delayMs')
+  const maxDelayMs =
+    options.maxDelayMs === undefined ? undefined : integer(options.maxDelayMs, 'maxDelayMs')
+  if (maxDelayMs !== undefined && maxDelayMs < delay) invalid('maxDelayMs must be >= initial delay')
+  const incrementMs =
+    options.incrementMs === undefined ? undefined : integer(options.incrementMs, 'incrementMs')
+  const factor = options.factor === undefined ? undefined : options.factor
+  if (
+    factor !== undefined &&
+    (typeof factor !== 'number' || !Number.isFinite(factor) || factor <= 0)
+  )
+    invalid('factor must be finite and > 0')
+  const safeJitter = jitter(options.jitter)
+  const persisted = makePersistedBackoff({
+    type,
+    delayMs: delay,
+    maxDelayMs,
+    incrementMs,
+    factor,
+    jitter: safeJitter
+  }).unwrap()
+  return Object.freeze({
+    type: type === 'constant' ? 'fixed' : type,
+    backoff: persisted,
+    maxAttempts: attempts(options.maxAttempts)
+  }) as RetryPolicy
+}
+
+export const Retry = {
+  never: (): RetryPolicy => Object.freeze({ type: 'never', maxAttempts: 1 }),
+  fixed: (options: {
+    readonly delayMs: number
+    readonly maxAttempts?: number
+  }): Extract<RetryPolicy, { readonly type: 'fixed' }> =>
+    staticPolicy('constant', options) as Extract<RetryPolicy, { readonly type: 'fixed' }>,
+  linear: (options: {
+    readonly initialDelayMs: number
+    readonly incrementMs: number
+    readonly maxDelayMs?: number
+    readonly maxAttempts?: number
+    readonly jitter?: number
+  }): Extract<RetryPolicy, { readonly type: 'linear' }> =>
+    staticPolicy('linear', options) as Extract<RetryPolicy, { readonly type: 'linear' }>,
+  exponential: (options: {
+    readonly initialDelayMs: number
+    readonly factor?: number
+    readonly maxDelayMs?: number
+    readonly maxAttempts?: number
+    readonly jitter?: number
+  }): Extract<RetryPolicy, { readonly type: 'exponential' }> =>
+    staticPolicy('exponential', options) as Extract<RetryPolicy, { readonly type: 'exponential' }>,
+  custom: <Failure = unknown>(options: {
+    readonly maxAttempts?: number
+    readonly decide: RetryDecide<Failure>
+  }): RetryPolicy => {
+    if (typeof options?.decide !== 'function') invalid('decide must be callable')
+    const maxAttempts = attempts(options.maxAttempts)
+    const policy: { type: 'custom'; maxAttempts?: number; decide: RetryDecide<Failure> } = {
+      type: 'custom',
+      decide: options.decide
+    }
+    if (maxAttempts !== undefined) policy.maxAttempts = maxAttempts
+    return Object.freeze(policy)
+  },
+  delay: (backoff: PersistedBackoff, attempt: number, random = 0.5): number => {
+    const n = integer(attempt, 'attempt', 1)
+    const base =
+      backoff.type === 'linear'
+        ? backoff.delayMs + (backoff.incrementMs ?? backoff.delayMs) * (n - 1)
+        : backoff.type === 'exponential'
+          ? backoff.delayMs * Math.pow(backoff.factor ?? 2, n - 1)
+          : backoff.delayMs
+    const spread = backoff.jitter ?? 0
+    const jittered = base * (1 - spread + 2 * spread * Math.min(1, Math.max(0, random)))
+    const capped = Math.min(jittered, backoff.maxDelayMs ?? Number.MAX_SAFE_INTEGER)
+    return Math.min(
+      Number.MAX_SAFE_INTEGER,
+      Math.max(
+        0,
+        Math.floor(
+          Number.isFinite(capped) ? capped : (backoff.maxDelayMs ?? Number.MAX_SAFE_INTEGER)
+        )
+      )
+    )
+  }
+}
+
+export const normalizeRetryPolicy = (
+  value: unknown
+): ResultType<RetryPolicy | undefined, JobDefinitionError> => {
+  if (value === undefined) return Result.ok(undefined)
+  if (typeof value !== 'object' || value === null)
+    return Result.err(
+      new JobDefinitionError({
+        field: 'defaults.backoff',
+        message: 'must be a Retry policy or persisted backoff'
+      })
+    )
+  const candidate = value as {
+    readonly type?: unknown
+    readonly backoff?: unknown
+    readonly maxAttempts?: unknown
+    readonly decide?: unknown
+  }
+  try {
+    if (candidate.type === 'never') return Result.ok(Retry.never())
+    if (candidate.type === 'custom') {
+      const customOptions: { decide: RetryDecide; maxAttempts?: number } = {
+        decide: candidate.decide as RetryDecide
+      }
+      if (candidate.maxAttempts !== undefined)
+        customOptions.maxAttempts = candidate.maxAttempts as number
+      return Result.ok(Retry.custom(customOptions))
+    }
+    if (candidate.backoff !== undefined) return Result.ok(value as RetryPolicy)
+    if (candidate.type === 'constant') return Result.ok(staticPolicy('constant', value as never))
+    if (candidate.type === 'linear' || candidate.type === 'exponential')
+      return Result.ok(staticPolicy(candidate.type, value as never))
+  } catch (error) {
+    return Result.err(
+      error instanceof JobDefinitionError
+        ? error
+        : new JobDefinitionError({ field: 'defaults.backoff', message: 'invalid retry policy' })
+    )
+  }
+  return Result.err(
+    new JobDefinitionError({ field: 'defaults.backoff', message: 'unsupported retry policy' })
+  )
+}
+
+export type PersistedRetryPolicy = Exclude<
+  RetryPolicy,
+  { readonly type: 'custom' } | { readonly type: 'never' }
+>
+
+export declare namespace Retry {
+  export type Policy = RetryPolicy
+  export type Decision = RetryDecision
+  export type Context = RetryContext
+  export type Decide<Failure = unknown> = RetryDecide<Failure>
+}

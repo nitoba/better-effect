@@ -80,6 +80,36 @@ failure data are recursively copied and frozen; functions, live errors, symbols,
 accessor failures, and other non-JSON values are rejected as
 `JobDefinitionError` without mutating the input.
 
+## Retry, failure, and timeout policies
+
+Retry policies are immutable, callback-free values for durable schedules:
+
+```ts
+const policy = Retry.exponential({
+  initialDelayMs: 1_000,
+  factor: 2,
+  maxDelayMs: 60_000,
+  maxAttempts: 5
+})
+```
+
+`Retry.fixed`, `Retry.linear`, and `Retry.exponential` persist only validated
+backoff data; `Retry.custom` remains in the worker definition and is evaluated
+synchronously, never by a store. `maxAttempts` includes the first execution and
+must agree with `defaults.attempts` when both are supplied. Jitter is symmetric
+multiplicative jitter in `[1-jitter, 1+jitter]`, with a deterministic random input
+for `Retry.delay`; final delays are integer milliseconds clamped to `maxDelayMs`
+and `Number.MAX_SAFE_INTEGER`. `Retry.never()` means exactly one execution.
+
+Typed failures are retried only when `retryable` returns true. Use
+`Job.unrecoverable(failure)` for object failures that must not retry; primitive
+failures cannot carry this process-local identity marker. Defects retry by
+default (`retryDefects: false` disables that), while decode and encode failures
+are terminal. `timeoutMs` aborts the attempt cooperatively and is persisted per
+job; the exported `JobTimeoutError` is used as the abort reason. `onJobFailure`
+is a best-effort callback invoked only after an applied terminal or retry
+settlement.
+
 ## Portable codecs and trust boundaries
 
 `Codec` is deliberately storage-neutral and requirement-free in v0.1: its
@@ -166,7 +196,7 @@ a forgeable global marker cannot bypass it. Use a portable `Codec.*` codec or a
 structurally safe class when receiver state is needed.
 
 ```ts
-import { Codec, Job, JobRegistry, Queue, makePersistedBackoff } from 'better-effect-mq'
+import { Codec, Job, JobRegistry, Queue, Retry, makePersistedBackoff } from 'better-effect-mq'
 
 const Emails = Queue.define('emails')
 const payload = Codec.json<{

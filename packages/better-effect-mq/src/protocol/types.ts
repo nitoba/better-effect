@@ -24,14 +24,25 @@ export type AttemptOutcome =
   | 'stalled'
   | 'released'
 
-export type JobFailureKind = 'typed' | 'defect' | 'timeout' | 'decode' | 'stalled' | 'cancelled'
+export type JobFailureKind =
+  | 'typed'
+  | 'defect'
+  | 'encode'
+  | 'timeout'
+  | 'decode'
+  | 'stalled'
+  | 'cancelled'
 
 export type BackoffKind = 'constant' | 'linear' | 'exponential'
 
 export interface PersistedBackoff {
   readonly type: BackoffKind
   readonly delayMs: number
+  readonly incrementMs?: number
+  readonly factor?: number
   readonly maxDelayMs?: number
+  /** Symmetric multiplicative jitter range, from 0 to 1. */
+  readonly jitter?: number
 }
 
 export interface SerializedJobFailure {

@@ -1,4 +1,5 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- Worker validates handler, clock, and store results at JavaScript boundaries.
+// oxlint-disable anti-slop/no-known-value-widening -- hostile callback results are normalized explicitly.
 // oxlint-disable anti-slop/no-unknown-parameters -- store and handler adapters are intentionally untyped at this erased boundary.
 // oxlint-disable anti-slop/no-unknown-returns -- Result and codec values are normalized immediately after crossing a boundary.
 // oxlint-disable anti-slop/no-chained-type-assertions -- heterogeneous handlers and store operations are erased in one module.
@@ -7,7 +8,14 @@
 import { Runtime, ServiceRuntime } from 'better-effect'
 import { Result, UnhandledException, type Result as ResultType } from 'better-result'
 
-import { type AnyJobDefinition, type CodecLike } from '../job'
+import {
+  isUnrecoverableFailure,
+  runRetryable,
+  type AnyJobDefinition,
+  type CodecLike,
+  type JobFailure
+} from '../job'
+import { Retry } from '../retry'
 import { parseJsonValue } from '../internal/json'
 import {
   JobDefinitionError,
@@ -31,13 +39,16 @@ import type {
 } from '../store'
 
 import { JobContext } from './context'
-import { WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
+import { JobTimeoutError, WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 import type {
   AnyWorkerHandler,
   WorkerAwaitIdleOptions,
   WorkerErrorHandler,
+  JobFailureEvent,
+  JobFailureHandler,
   WorkerHandle,
   WorkerOptions,
+  WorkerRandom,
   WorkerStopOptions
 } from './types'
 
@@ -83,6 +94,8 @@ type AttemptState = {
   readonly startedAt: number
   promise: Promise<void>
   state: 'running' | 'cancelling' | 'settling' | 'lost'
+  timeoutTimer?: ReturnType<typeof setTimeout>
+  timedOut?: boolean
 }
 
 type CodecOutcome =
@@ -585,6 +598,12 @@ export class WorkerSupervisor implements WorkerHandle {
     this.active += 1
     increment(this.activeByHandler, entry.identityKey)
     this.activeAttempts.set(key, attempt)
+    if (job.timeoutMs !== undefined) {
+      attempt.timeoutTimer = setTimeout(() => {
+        attempt.timedOut = true
+        attempt.controller.abort(new JobTimeoutError(String(job.id)))
+      }, job.timeoutMs)
+    }
 
     const promise = this.executeAttempt(group, attempt, context)
       .catch((cause) => {
@@ -611,7 +630,15 @@ export class WorkerSupervisor implements WorkerHandle {
         await this.releaseJob(group, attempt.job)
         return
       }
-      outcome = await this.makeOutcome(attempt.entry.definition, result)
+      outcome = attempt.timedOut
+        ? timeoutOutcome(
+            new JobTimeoutError(String(attempt.job.id)),
+            this.readNow(),
+            attempt.job,
+            attempt.entry.definition.retryPolicy?.type !== 'never',
+            this.workerOptions.random
+          )
+        : await this.makeOutcome(attempt, result)
     } catch (cause) {
       if (attempt.state === 'lost') return
       if (this.shutdownAborts.has(attempt.key)) {
@@ -622,7 +649,22 @@ export class WorkerSupervisor implements WorkerHandle {
       outcome =
         attempt.state === 'cancelling'
           ? { type: 'cancelled' }
-          : failOutcome(safeCauseMessage(cause), this.readNow())
+          : attempt.timedOut
+            ? timeoutOutcome(
+                cause,
+                this.readNow(),
+                attempt.job,
+                attempt.entry.definition.retryPolicy?.type !== 'never',
+                this.workerOptions.random
+              )
+            : defectOutcome(
+                safeCauseMessage(cause),
+                this.readNow(),
+                this.workerOptions.retryDefects &&
+                  attempt.entry.definition.retryPolicy?.type !== 'never',
+                attempt.job,
+                this.workerOptions.random
+              )
     }
 
     // Encoding a result/failure is an async boundary. Cancellation may have been
@@ -663,10 +705,8 @@ export class WorkerSupervisor implements WorkerHandle {
     )
   }
 
-  private async makeOutcome(
-    definition: AnyJobDefinition,
-    result: unknown
-  ): Promise<SettlementOutcome> {
+  private async makeOutcome(attempt: AttemptState, result: unknown): Promise<SettlementOutcome> {
+    const definition = attempt.entry.definition
     const recordedAt = this.readNow()
 
     if (!isResultLike(result)) {
@@ -678,7 +718,13 @@ export class WorkerSupervisor implements WorkerHandle {
         return decodeOutcome(result.error.cause, recordedAt)
       }
 
-      return typedFailureOutcome(definition, result.error, recordedAt)
+      return typedFailureOutcome(
+        definition,
+        result.error,
+        recordedAt,
+        attempt.job,
+        this.workerOptions.random
+      )
     }
 
     return completeOutcome(definition, result.value, recordedAt)
@@ -716,6 +762,38 @@ export class WorkerSupervisor implements WorkerHandle {
       // A lost ACK is not a second settlement; the store's idempotent
       // acknowledgment is the terminal result for this local attempt.
       return
+    } else if (result.value.status === 'applied' && outcome.type === 'fail') {
+      await this.notifyFailure(job, result.value.attempt.attempt, outcome.failure, outcome)
+    }
+  }
+
+  private async notifyFailure(
+    job: ActiveJobSnapshot,
+    attempt: number,
+    failure: SerializedJobFailure,
+    outcome: SettlementOutcome
+  ): Promise<void> {
+    const hook = this.workerOptions.onJobFailure
+    if (hook === undefined) return
+    const event: JobFailureEvent = {
+      job: { id: job.id, queue: job.queue, name: job.name, version: job.version },
+      attempt,
+      attemptsMax: job.attemptsMax,
+      kind: failure.kind,
+      cause: failure.kind === 'typed' ? failure.data : failure.message,
+      failure,
+      willRetry: outcome.type === 'retry'
+    }
+    if (outcome.type === 'retry') {
+      Object.assign(event, {
+        retryAt: outcome.runAt,
+        retryDelayMs: outcome.runAt - failure.recordedAt
+      })
+    }
+    try {
+      await hook(event)
+    } catch (cause) {
+      this.report(cause)
     }
   }
 
@@ -736,6 +814,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private finishAttempt(attempt: AttemptState): void {
+    if (attempt.timeoutTimer !== undefined) clearTimeout(attempt.timeoutTimer)
     this.active -= 1
     decrement(this.activeByHandler, attempt.entry.identityKey)
     this.activeAttempts.delete(attempt.key)
@@ -1026,7 +1105,10 @@ export type NormalizedWorkerOptions = {
   readonly pollIntervalMs: number
   readonly storeOperationTimeoutMs: number
   readonly now: () => number
+  readonly random: WorkerRandom
   readonly onError: WorkerErrorHandler | undefined
+  readonly onJobFailure: JobFailureHandler | undefined
+  readonly retryDefects: boolean
   readonly shutdown: { readonly gracePeriodMs: number; readonly abortAfterGracePeriod: boolean }
 }
 
@@ -1102,10 +1184,23 @@ export const normalizeWorkerOptions = (
   const id = normalizeWorkerId(readOption(options, 'id'), readOption(options, 'workerId'))
   const queueLimits = normalizeQueueLimits(readOption(options, 'queueConcurrency'), concurrency)
   const now = normalizeClock(readOption(options, 'now'))
+  const randomValue = readOption(options, 'random')
+  if (randomValue !== undefined && typeof randomValue !== 'function') {
+    throw new JobDefinitionError({ field: 'random', message: 'must be callable' })
+  }
+  const random = (randomValue ?? Math.random) as WorkerRandom
   const onError = readOption(options, 'onError')
+  const onJobFailure = readOption(options, 'onJobFailure')
+  const retryDefects = readOption(options, 'retryDefects') ?? true
 
   if (onError !== undefined && typeof onError !== 'function') {
     throw new JobDefinitionError({ field: 'onError', message: 'must be callable' })
+  }
+  if (onJobFailure !== undefined && typeof onJobFailure !== 'function') {
+    throw new JobDefinitionError({ field: 'onJobFailure', message: 'must be callable' })
+  }
+  if (typeof retryDefects !== 'boolean') {
+    throw new JobDefinitionError({ field: 'retryDefects', message: 'must be boolean' })
   }
 
   return {
@@ -1122,8 +1217,11 @@ export const normalizeWorkerOptions = (
       Math.min(leaseDurationMs, heartbeatIntervalMs * 2)
     ),
     now,
+    random,
     shutdown,
-    onError: onError as WorkerErrorHandler | undefined
+    onError: onError as WorkerErrorHandler | undefined,
+    onJobFailure: onJobFailure as JobFailureHandler | undefined,
+    retryDefects
   }
 }
 
@@ -1226,19 +1324,21 @@ const completeOutcome = async (
   if (definition.result === undefined) {
     return value === undefined
       ? { type: 'complete' }
-      : failOutcome('Result codec is not configured', recordedAt)
+      : encodeFailureOutcome('Result codec is not configured', recordedAt)
   }
 
   const encoded = await encodeCodec(definition.result, value)
   return encoded.ok
     ? { type: 'complete', result: encoded.value }
-    : failOutcome(safeCauseMessage(encoded.cause), recordedAt)
+    : encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt)
 }
 
 const typedFailureOutcome = async (
   definition: AnyJobDefinition,
   failure: unknown,
-  recordedAt: number
+  recordedAt: number,
+  job: ActiveJobSnapshot,
+  random: WorkerRandom
 ): Promise<SettlementOutcome> => {
   if (definition.failure === undefined) {
     return failOutcome('Failure codec is not configured', recordedAt)
@@ -1246,21 +1346,34 @@ const typedFailureOutcome = async (
 
   const encoded = await encodeCodec(definition.failure, failure)
 
-  if (!encoded.ok) {
-    return failOutcome(safeCauseMessage(encoded.cause), recordedAt)
-  }
+  if (!encoded.ok) return encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt)
 
-  return {
-    type: 'fail',
-    failure: makeFailure({
-      kind: 'typed',
-      code: 'handler-failure',
-      message: 'Handler returned a typed failure',
-      data: encoded.value,
-      retryable: false,
-      recordedAt
-    })
-  }
+  const retryableResult = runRetryable(definition, failure as JobFailure<typeof definition>)
+  const predicateRetryable = !Result.isError(retryableResult) && retryableResult.value === true
+  const policy = definition.retryPolicy
+  const retryable =
+    !isUnrecoverableFailure(failure) && (policy?.type === 'custom' || predicateRetryable)
+  const allowed = retryable && policy?.type !== 'never' && job.attemptsMade + 1 < job.attemptsMax
+  const failureEnvelope = makeFailure({
+    kind: 'typed',
+    code: 'handler-failure',
+    message: 'Handler returned a typed failure',
+    data: encoded.value,
+    retryable,
+    recordedAt
+  })
+  if (!allowed) return { type: 'fail', failure: failureEnvelope }
+  const decision =
+    policy?.type === 'custom'
+      ? safeCustomDecision(policy, failure, job.attemptsMade + 1, job.attemptsMax)
+      : { retry: true }
+  if (!decision.retry) return { type: 'fail', failure: failureEnvelope }
+  const delay =
+    decision.delayMs ??
+    (policy?.type === 'fixed' || policy?.type === 'linear' || policy?.type === 'exponential'
+      ? Retry.delay(policy.backoff, job.attemptsMade + 1, random())
+      : 0)
+  return { type: 'retry', runAt: recordedAt + delay, failure: failureEnvelope }
 }
 
 const decodeOutcome = (cause: unknown, recordedAt: number): SettlementOutcome => ({
@@ -1284,6 +1397,98 @@ const failOutcome = (message: string, recordedAt: number): SettlementOutcome => 
     recordedAt
   })
 })
+
+const retryOrFail = (
+  failure: SerializedJobFailure,
+  recordedAt: number,
+  retryable: boolean,
+  job: ActiveJobSnapshot,
+  random: WorkerRandom
+): SettlementOutcome => {
+  if (!retryable || job.attemptsMade + 1 >= job.attemptsMax) return { type: 'fail', failure }
+  const delay =
+    job.backoff === undefined ? 0 : Retry.delay(job.backoff, job.attemptsMade + 1, random())
+  return { type: 'retry', runAt: Math.min(Number.MAX_SAFE_INTEGER, recordedAt + delay), failure }
+}
+
+const defectOutcome = (
+  message: string,
+  recordedAt: number,
+  retryable: boolean,
+  job: ActiveJobSnapshot,
+  random: WorkerRandom
+): SettlementOutcome =>
+  retryOrFail(
+    makeFailure({ kind: 'defect', code: 'handler-defect', message, retryable, recordedAt }),
+    recordedAt,
+    retryable,
+    job,
+    random
+  )
+
+const timeoutOutcome = (
+  cause: unknown,
+  recordedAt: number,
+  job: ActiveJobSnapshot,
+  enabled = true,
+  random: WorkerRandom = Math.random
+): SettlementOutcome =>
+  retryOrFail(
+    makeFailure({
+      kind: 'timeout',
+      code: 'job-timeout',
+      message: safeCauseMessage(cause),
+      retryable: true,
+      recordedAt
+    }),
+    recordedAt,
+    enabled,
+    job,
+    random
+  )
+
+const encodeFailureOutcome = (message: string, recordedAt: number): SettlementOutcome => ({
+  type: 'fail',
+  failure: makeFailure({
+    kind: 'encode',
+    code: 'codec-encode',
+    message,
+    retryable: false,
+    recordedAt
+  })
+})
+
+const safeCustomDecision = (
+  policy: {
+    readonly decide: (
+      failure: never,
+      context: { readonly attempt: number; readonly attemptsMax: number }
+    ) => unknown
+  },
+  failure: unknown,
+  attempt: number,
+  attemptsMax: number
+): { retry: boolean; delayMs?: number } => {
+  try {
+    const decision = policy.decide(failure as never, { attempt, attemptsMax })
+    if (decision === true) return { retry: true }
+    if (decision === false || decision === undefined || decision === null) return { retry: false }
+    if (
+      typeof decision !== 'object' ||
+      decision === null ||
+      typeof (decision as { retry?: unknown }).retry !== 'boolean'
+    )
+      return { retry: false }
+    const delay = (decision as { delayMs?: unknown }).delayMs
+    return delay === undefined
+      ? { retry: (decision as { retry: boolean }).retry }
+      : typeof delay === 'number' && Number.isSafeInteger(delay) && delay >= 0
+        ? { retry: (decision as { retry: boolean }).retry, delayMs: delay }
+        : { retry: false }
+  } catch {
+    return { retry: false }
+  }
+}
 
 const makeFailure = (failure: {
   readonly kind: SerializedJobFailure['kind']

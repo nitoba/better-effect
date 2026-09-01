@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Retry policies with durable backoff normalization, typed failure handling,
+  cooperative job timeouts, and best-effort failure notifications.
+
 ## [0.1.0] - 2026-08-31
 
 ### Added

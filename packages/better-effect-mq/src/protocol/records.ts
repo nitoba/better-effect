@@ -73,7 +73,10 @@ const attemptRecordFields = [
 type MutableBackoffCopy = {
   type: PersistedBackoff['type']
   delayMs: number
+  incrementMs?: number
+  factor?: number
   maxDelayMs?: number
+  jitter?: number
 }
 
 type MutableFailureCopy = {
@@ -169,9 +172,10 @@ const cloneBackoff = (backoff: PersistedBackoff | undefined): PersistedBackoff |
     delayMs: backoff.delayMs
   }
 
-  if (backoff.maxDelayMs !== undefined) {
-    copy.maxDelayMs = backoff.maxDelayMs
-  }
+  if (backoff.incrementMs !== undefined) copy.incrementMs = backoff.incrementMs
+  if (backoff.factor !== undefined) copy.factor = backoff.factor
+  if (backoff.maxDelayMs !== undefined) copy.maxDelayMs = backoff.maxDelayMs
+  if (backoff.jitter !== undefined) copy.jitter = backoff.jitter
 
   return Object.freeze(copy)
 }
