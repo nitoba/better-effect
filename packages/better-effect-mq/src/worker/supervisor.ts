@@ -72,8 +72,7 @@ type ClaimLease = {
   readonly generation: number
   readonly plan: ClaimPlan
   readonly store: JobStoreContract
-  abandoned: boolean
-  adopted: boolean
+  lifecycle: 'pending' | 'abandoned' | 'adopted' | 'compensation-scheduled'
 }
 
 type AttemptState = {
@@ -203,7 +202,9 @@ export class WorkerSupervisor implements WorkerHandle {
     this.currentState = 'stopping'
     // A store cannot be required to observe our AbortSignal. Fence every claim
     // before waking its caller; a later successful result is compensated below.
-    for (const lease of this.claimLeases) lease.abandoned = true
+    for (const lease of this.claimLeases) {
+      if (lease.lifecycle === 'pending') lease.lifecycle = 'abandoned'
+    }
     // Stop claiming immediately, but keep lease supervision alive while local
     // handlers and their cleanup are still able to settle.
     this.claimController.abort()
@@ -452,8 +453,7 @@ export class WorkerSupervisor implements WorkerHandle {
       generation: ++this.nextClaimGeneration,
       plan,
       store,
-      abandoned: false,
-      adopted: false
+      lifecycle: 'pending'
     }
     this.claimLeases.add(lease)
     const pending = Promise.resolve().then(() => store.claim(request)) as Promise<
@@ -461,10 +461,8 @@ export class WorkerSupervisor implements WorkerHandle {
     >
     void pending.then(
       (result) => {
-        this.claimLeases.delete(lease)
-        if (lease.abandoned && !lease.adopted && Result.isOk(result)) {
-          this.compensateClaim(lease, result.value.jobs)
-        }
+        if (Result.isOk(result)) this.scheduleClaimCompensation(lease, result.value.jobs)
+        else this.claimLeases.delete(lease)
       },
       () => {
         this.claimLeases.delete(lease)
@@ -480,23 +478,27 @@ export class WorkerSupervisor implements WorkerHandle {
     if (Result.isError(result)) {
       // This write happens before returning to the group loop, establishing the
       // generation fence even when the adapter ignores cancellation.
-      lease.abandoned = true
+      if (lease.lifecycle === 'pending') lease.lifecycle = 'abandoned'
       return result
     }
-    if (lease.abandoned) {
-      this.compensateClaim(lease, result.value.jobs)
+    if (lease.lifecycle === 'abandoned') {
+      this.scheduleClaimCompensation(lease, result.value.jobs)
       return Result.err(new StoreOperationTimeoutError('claim')) as ResultType<ClaimResult, unknown>
     }
-    lease.adopted = true
+    if (lease.lifecycle !== 'pending') {
+      return Result.err(new StoreOperationTimeoutError('claim')) as ResultType<ClaimResult, unknown>
+    }
+    lease.lifecycle = 'adopted'
     this.claimLeases.delete(lease)
     return result
   }
 
-  private compensateClaim(lease: ClaimLease, jobs: readonly ActiveJobSnapshot[]): void {
-    if (jobs.length === 0) {
-      this.claimLeases.delete(lease)
-      return
-    }
+  private scheduleClaimCompensation(lease: ClaimLease, jobs: readonly ActiveJobSnapshot[]): void {
+    if (lease.lifecycle !== 'abandoned') return
+    lease.lifecycle = 'compensation-scheduled'
+    this.claimLeases.delete(lease)
+    if (jobs.length === 0) return
+
     const task = Promise.allSettled(jobs.map((job) => this.releaseClaimSnapshot(lease, job))).then(
       () => undefined
     )
@@ -508,14 +510,15 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async releaseClaimSnapshot(lease: ClaimLease, job: ActiveJobSnapshot): Promise<void> {
-    const pending = Promise.resolve().then(() =>
-      lease.store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() })
-    ) as Promise<ResultType<import('../store').ReleaseResult, unknown>>
-    void pending.catch(() => undefined)
-    const result = await raceStoreOperation(
-      pending,
-      `${lease.plan.group.store.serviceTag}:release-abandoned-claim-${lease.generation}`,
-      this.workerOptions.storeOperationTimeoutMs
+    const result = await runStoreOperation<import('../store').ReleaseResult>(
+      this.runtime,
+      lease.plan.group.store,
+      (store) => store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() }),
+      undefined,
+      this.workerOptions.pollIntervalMs,
+      this.workerOptions.storeOperationTimeoutMs,
+      this.shutdownController.signal,
+      lease.store
     )
     // Late compensation is deliberately best effort. Its rejection is contained
     // and the lease remains fenced for adapters that cannot release immediately.
@@ -1340,7 +1343,8 @@ const runStoreOperation = async <Value>(
   signal?: AbortSignal,
   retryDelayMs = 1,
   timeoutMs = Math.max(minimumTimerMs, retryDelayMs),
-  retrySignal: AbortSignal | undefined = signal
+  retrySignal: AbortSignal | undefined = signal,
+  resolvedStore?: JobStoreContract
 ): Promise<ResultType<Value, unknown>> => {
   let retries = 0
   while (true) {
@@ -1349,7 +1353,7 @@ const runStoreOperation = async <Value>(
       // Resolve only the token inside a completed Runtime execution. An arbitrary adapter
       // Promise is then invoked outside Runtime: Runtime cannot preempt it and must retain
       // its scope until settlement, so owning a hung adapter call would leak execution.
-      const store = await runtime.run(() => ServiceRuntime.resolve(token))
+      const store = resolvedStore ?? (await runtime.run(() => ServiceRuntime.resolve(token)))
       const pending = Promise.resolve().then(() => operation(store))
       // A timed-out adapter may reject later, but its late result cannot mutate Worker state.
       void pending.catch(() => undefined)

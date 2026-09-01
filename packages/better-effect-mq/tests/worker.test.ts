@@ -1,3 +1,6 @@
+// oxlint-disable unicorn/no-thenable -- These tests deliberately model PromiseLike adapter races.
+// oxlint-disable anti-slop/no-unknown-parameters -- Thenable callbacks are intentionally erased test boundaries.
+
 import { expect, test } from 'bun:test'
 
 import { CurrentAbortSignal, Effect, Layer, Runtime, Scope, Service } from 'better-effect'
@@ -6,6 +9,7 @@ import { Result } from 'better-result'
 import {
   Codec,
   JobStore,
+  JobStoreFailure,
   type JobStoreError,
   MemoryJobStore,
   Queue,
@@ -772,6 +776,151 @@ test('Worker compensates a late claim after stop without starting a handler', as
     expect(releases).toBe(1)
   } finally {
     releaseClaim()
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker compensates a reentrant late claim exactly once', async () => {
+  const base = MemoryJobStore.make()
+  const originalClaim = base.claim.bind(base)
+  const originalRelease = base.release.bind(base)
+  let claimEntered!: () => void
+  const claimStarted = new Promise<void>((resolveClaim) => {
+    claimEntered = resolveClaim
+  })
+  let worker!: WorkerHandle
+  let releases = 0
+  let releaseObserved!: () => void
+  const released = new Promise<void>((resolveRelease) => {
+    releaseObserved = resolveRelease
+  })
+  Object.defineProperty(base, 'claim', {
+    value: (request: Parameters<typeof base.claim>[0]) => {
+      claimEntered()
+      return {
+        then(resolve: (value: unknown) => void) {
+          resolve(originalClaim(request))
+          void worker.stop()
+        }
+      }
+    }
+  })
+  Object.defineProperty(base, 'release', {
+    value: async (request: Parameters<typeof base.release>[0]) => {
+      releases += 1
+      releaseObserved()
+      return originalRelease(request)
+    }
+  })
+  const runtime = await runtimeFor(base)
+  await enqueue(base, voidJob, 1)
+  let handlerRuns = 0
+  worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(voidJob, () =>
+        // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+        Effect.fn(async function* () {
+          handlerRuns += 1
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await claimStarted
+    await released
+    await worker.stop()
+    expect(releases).toBe(1)
+    expect(handlerRuns).toBe(0)
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker retries abandoned claim compensation with the bounded release policy', async () => {
+  const base = MemoryJobStore.make()
+  const originalClaim = base.claim.bind(base)
+  const originalRelease = base.release.bind(base)
+  let claimCalls = 0
+  let releaseClaim!: () => void
+  let lateClaim!: ReturnType<typeof originalClaim>
+  let claimStarted!: () => void
+  const firstClaimStarted = new Promise<void>((resolveClaim) => {
+    claimStarted = resolveClaim
+  })
+  let secondClaim!: () => void
+  const timedOut = new Promise<void>((resolveClaim) => {
+    secondClaim = resolveClaim
+  })
+  Object.defineProperty(base, 'claim', {
+    value: (request: Parameters<typeof base.claim>[0]) => {
+      claimCalls += 1
+      if (claimCalls === 1) {
+        claimStarted()
+        lateClaim = originalClaim(request)
+        return {
+          then(resolve: (value: unknown) => void) {
+            releaseClaim = () => resolve(lateClaim)
+          }
+        }
+      }
+      secondClaim()
+      return originalClaim(request)
+    }
+  })
+  let releases = 0
+  let releaseObserved!: () => void
+  const compensated = new Promise<void>((resolveRelease) => {
+    releaseObserved = resolveRelease
+  })
+  Object.defineProperty(base, 'release', {
+    value: async (request: Parameters<typeof base.release>[0]) => {
+      releases += 1
+      if (releases < 3) {
+        return Result.err(
+          new JobStoreFailure({
+            operation: 'release',
+            retryable: true,
+            message: 'temporary release failure'
+          })
+        )
+      }
+      const result = await originalRelease(request)
+      releaseObserved()
+      return result
+    }
+  })
+  const runtime = await runtimeFor(base)
+  const created = await enqueue(base, voidJob, 1)
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(voidJob, () =>
+        // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+        Effect.fn(async function* () {
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    pollIntervalMs: 1,
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 10
+  })
+
+  try {
+    await firstClaimStarted
+    await timedOut
+    releaseClaim()
+    await compensated
+    expect(releases).toBe(3)
+    const record = await resolve(base.getJob({ jobId: created.id }))
+    if (record === undefined) throw new Error('compensated job disappeared')
+    expect(record.state).toBe('waiting')
+    expect(record.leaseToken).toBeUndefined()
+  } finally {
     await worker.stop()
     await runtime.dispose()
   }
