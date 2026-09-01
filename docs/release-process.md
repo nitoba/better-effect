@@ -8,6 +8,7 @@ allowlisted package tag:
 | `better-effect`             | `packages/better-effect`             | `v<version>`                           | root `CHANGELOG.md`    |
 | `better-effect-better-auth` | `packages/better-effect-better-auth` | `better-effect-better-auth-v<version>` | package `CHANGELOG.md` |
 | `better-effect-mq`          | `packages/better-effect-mq`          | `better-effect-mq-v<version>`          | package `CHANGELOG.md` |
+| `better-effect-kysely`      | `packages/better-effect-kysely`      | `better-effect-kysely-v<version>`      | package `CHANGELOG.md` |
 
 The route table is centralized in `scripts/release-packages.json`; both the
 local release script and GitHub Actions resolve tags through
@@ -51,8 +52,8 @@ command can require registry credentials under the supported Bun version.
 ## Bootstrapping a new npm package
 
 npm Trusted Publishers can only be configured after the package name exists on
-npm. Before creating the first qualified tag for `better-effect-better-auth`
-or `better-effect-mq`, perform this one-time maintainer bootstrap:
+npm. Before creating the first qualified tag for `better-effect-better-auth`,
+`better-effect-mq`, or `better-effect-kysely`, perform this one-time maintainer bootstrap:
 
 1. Merge the package preparation change and check out the resulting `main`
    commit with a clean tree.
@@ -62,6 +63,8 @@ or `better-effect-mq`, perform this one-time maintainer bootstrap:
    ./scripts/release.sh better-effect-better-auth 0.1.0 --dry-run
    # or:
    ./scripts/release.sh better-effect-mq 0.1.0 --dry-run
+   # or:
+   ./scripts/release.sh better-effect-kysely 0.1.0 --dry-run
    ```
 
 3. Authenticate locally with `npm login` (or another short-lived maintainer
@@ -81,7 +84,9 @@ or `better-effect-mq`, perform this one-time maintainer bootstrap:
    ```
 
    Use the same commands with `package_name=better-effect-mq` and
-   `package_dir=packages/better-effect-mq` for MQ.
+   `package_dir=packages/better-effect-mq` for MQ, or with
+   `package_name=better-effect-kysely` and
+   `package_dir=packages/better-effect-kysely` for Kysely.
 
 5. Configure npm Trusted Publishing for that package using the workflow details
    in [Release administration](#release-administration).
@@ -118,6 +123,8 @@ versions are published by GitHub Actions with Trusted Publishing/OIDC.
    ./scripts/release.sh better-effect-better-auth 0.1.0
    # Publish the initial independent MQ package:
    ./scripts/release.sh better-effect-mq 0.1.0
+   # Publish the initial independent Kysely package:
+   ./scripts/release.sh better-effect-kysely 0.1.0
    # Validate a route and archive without changing, tagging, or publishing:
    ./scripts/release.sh better-effect-better-auth 0.1.0 --dry-run
    ```
@@ -129,8 +136,8 @@ versions are published by GitHub Actions with Trusted Publishing/OIDC.
    and its changelog. A core release may also synchronize the
    `better-effect` development pin in configured dependent package manifests;
    those metadata-only changes are included in the core release commit. The
-   initial `better-effect-better-auth@0.1.0` and
-   `better-effect-mq@0.1.0` routes tag their already selected manifest versions;
+   initial `better-effect-better-auth@0.1.0`, `better-effect-mq@0.1.0`, and
+   `better-effect-kysely@0.1.0` routes tag their already selected manifest versions;
    later releases require an increasing version and create a version commit.
    Run the command once for each package that the release planner identifies;
    each command creates a package-qualified tag, so GitHub Actions publishes
@@ -149,8 +156,9 @@ versions are published by GitHub Actions with Trusted Publishing/OIDC.
    are not a substitute for reviewing the tag.
 
 The package release workflow accepts only `v<version>` for the core,
-`better-effect-better-auth-v<version>` for the integration, or
-`better-effect-mq-v<version>` for the MQ package. It checks out the exact tag,
+`better-effect-better-auth-v<version>` for the integration,
+`better-effect-mq-v<version>` for the MQ package, or
+`better-effect-kysely-v<version>` for the Kysely package. It checks out the exact tag,
 verifies the corresponding manifest name/version and package-local release
 notes, runs the quality gates and selected archive validation, and publishes
 from the selected package directory. It never publishes an unrelated package
@@ -174,8 +182,8 @@ creation also checks for an existing release before creating one.
 
 ## Release administration
 
-- Protect `v*`, `better-effect-better-auth-v*`, and `better-effect-mq-v*` tags
-  from force-push and deletion.
+- Protect `v*`, `better-effect-better-auth-v*`, and `better-effect-mq-v*`,
+  `better-effect-kysely-v*` tags from force-push and deletion.
 - The workflow file keeps the `release-please.yml` name for npm Trusted
   Publishing compatibility; it does not run Release Please.
 - Configure npm Trusted Publishing for each published package with workflow

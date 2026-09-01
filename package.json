@@ -17,7 +17,7 @@
     "lint": "turbo run lint && bun run lint:release",
     "format": "turbo run format",
     "format:check": "turbo run format:check",
-    "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq --filter=better-effect-better-auth",
+    "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq --filter=better-effect-better-auth --filter=better-effect-kysely",
     "check": "turbo run check && bun run test:release && bun run lint:release",
     "lint:release": "packages/better-effect/node_modules/.bin/oxlint --type-aware scripts/release-artifact.ts scripts/release-plan.ts scripts/release-route.ts scripts/release-route.test.ts",
     "release:plan": "bun scripts/release-plan.ts",

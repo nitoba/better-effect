@@ -1,0 +1,79 @@
+{
+  "name": "better-effect-kysely",
+  "version": "0.1.0",
+  "description": "Effect-like server integration between better-effect and Kysely.",
+  "keywords": [
+    "better-effect",
+    "better-result",
+    "kysely",
+    "sql",
+    "typescript"
+  ],
+  "homepage": "https://github.com/nitoba/better-effect#readme",
+  "bugs": {
+    "url": "https://github.com/nitoba/better-effect/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nitoba/better-effect.git"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit && bun run typecheck:examples",
+    "typecheck:examples": "tsc --noEmit -p examples/tsconfig.json",
+    "test:types": "tsc -p tests/types/tsconfig.json --pretty false",
+    "test:types:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/types/tsconfig.json --pretty false && bunx --bun --package typescript@5.7.2 tsc -p examples/tsconfig.json --pretty false",
+    "test:public-types": "tsc -p tests/package/public-types/tsconfig.json --pretty false",
+    "test:public-types:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/package/public-types/tsconfig.json --pretty false",
+    "test:public-types:invalid": "bun tests/package/public-types/check-invalid.ts",
+    "test:types:performance": "cd ../.. && bun scripts/type-system-performance.ts --scenarios=kysely --check-budget",
+    "test": "bun test",
+    "test:package-boundaries": "bun tests/package/boundaries.ts",
+    "test:package-consumer": "bun tests/package/external-consumer.ts",
+    "lint": "oxlint --type-aware .",
+    "lint:fix": "oxlint --type-aware --fix .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "publint": "publint",
+    "check": "bun run typecheck && bun run test:types && bun run test:types:minimum && bun test && bun run format:check && bun run build && bun run test:public-types && bun run test:public-types:minimum && bun run test:public-types:invalid && bun run test:types:performance && bun run test:package-boundaries && bun run test:package-consumer && bun run publint && bun run release:dry && bun run lint",
+    "prepublishOnly": "bun run check",
+    "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-kysely"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "better-effect": "0.13.0",
+    "better-result": "^3.0.0",
+    "kysely": "0.29.5",
+    "lefthook": "^2.1.10",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "publint": "^0.3.23",
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "better-effect": ">=0.13.0 <0.14.0",
+    "better-result": "^3.0.0",
+    "kysely": ">=0.29.5 <0.30.0",
+    "typescript": ">=5.7.0"
+  }
+}

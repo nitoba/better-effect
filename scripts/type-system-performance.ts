@@ -38,7 +38,8 @@ const scenarios = [
   'job-registry',
   'job-store',
   'job-producer',
-  'worker-handlers'
+  'worker-handlers',
+  'kysely'
 ] as const
 type Scenario = (typeof scenarios)[number]
 type Compiler = 'current' | 'minimum'
@@ -924,6 +925,28 @@ void generatedHandler
 `
 }
 
+const kyselyFixtureSource = (size: number): string => {
+  const imports = Array.from(
+    { length: size },
+    (_, index) =>
+      `import * as KyselyEffect${String(index + 1).padStart(3, '0')} from '../../../packages/better-effect-kysely/src/index.ts'`
+  ).join('\n')
+  const namespaces = Array.from(
+    { length: size },
+    (_, index) => `KyselyEffect${String(index + 1).padStart(3, '0')}`
+  ).join(', ')
+
+  return `${imports}
+
+type FoundationExports = keyof typeof KyselyEffect001
+const namespaces = [${namespaces}] as const
+type FoundationHasNoExports = FoundationExports extends never ? true : false
+const foundationCheck: FoundationHasNoExports = true
+void namespaces
+void foundationCheck
+`
+}
+
 const betterAuthFixtureSource = (size: number): string => {
   const names = Array.from({ length: size }, (_, index) => `Auth${index + 1}`)
   const declarations = names
@@ -1039,6 +1062,10 @@ const fixtureSource = (scenario: Scenario, size: number): string => {
 
   if (scenario === 'worker-handlers') {
     return workerFixtureSource(size)
+  }
+
+  if (scenario === 'kysely') {
+    return kyselyFixtureSource(size)
   }
 
   // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
