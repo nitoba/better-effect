@@ -77,6 +77,27 @@ There are deliberately no prototype patches, recursive Proxies, global module
 augmentations, driver choices, connection creation, or import-time database
 side effects.
 
+## Operations, cancellation, and errors
+
+The package's internal Promise boundary is represented publicly by
+`KyselyOperation<A, E, R>`. Query operations use the default `R = never`; the
+third channel lets a future transaction operation retain the Services required
+by its lazy body without creating a nested Runtime.
+
+`KyselyExecutionOptions` exposes Kysely's
+`inflightQueryAbortStrategy` (`ignore query`, `cancel query`, or `kill session`)
+but intentionally does not accept a `signal`. The active Runtime supplies the
+signal at operation execution time, so callers do not create a second
+controller or listener graph. Cancellation behavior remains dialect-dependent:
+stopping the caller from waiting does not necessarily stop a server-side query,
+and writes may already have been applied.
+
+Promise and native transaction failures are represented by `KyselyQueryError`
+and `KyselyTransactionError`. Both preserve the original `cause` in memory
+while keeping it out of normal enumeration and JSON serialization. Their
+messages contain no SQL, parameters, credentials, or driver-specific details;
+explicit application code can inspect `cause` when that is appropriate.
+
 ## Public type aliases
 
 The package exports `KyselyServiceInstance<Tag, DB>` and
@@ -84,6 +105,11 @@ The package exports `KyselyServiceInstance<Tag, DB>` and
 `KyselyEffect` namespace as `KyselyEffect.ServiceInstance<Tag, DB>` and
 `KyselyEffect.ServiceToken<Tag, DB>`; `KyselyEffect.Service<DB>` is the native
 `Kysely<DB>` contract.
+
+`KyselyOperation<A, E, R>` and `KyselyExecutionOptions` are also exported,
+with the corresponding `KyselyEffect.Operation<A, E, R>` and
+`KyselyEffect.ExecutionOptions` namespace aliases. `KyselyQueryOperation` is
+the closed union of supported query boundary names.
 
 ## License
 

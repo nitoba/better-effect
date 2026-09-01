@@ -5,6 +5,9 @@ import { Layer, Service } from 'better-effect'
 
 import type { ServiceClass } from 'better-effect'
 
+import type { KyselyExecutionOptions } from './options'
+import type { KyselyOperation } from './operation'
+
 import type {
   KyselyService,
   KyselyServiceInstance,
@@ -83,4 +86,6 @@ export declare namespace KyselyEffect {
   export type Service<DB> = KyselyService<DB>
   export type ServiceInstance<Tag extends string, DB> = KyselyServiceInstance<Tag, DB>
   export type ServiceToken<Tag extends string, DB> = KyselyServiceToken<Tag, DB>
+  export type Operation<A, E, R extends Service.Any = never> = KyselyOperation<A, E, R>
+  export type ExecutionOptions = KyselyExecutionOptions
 }

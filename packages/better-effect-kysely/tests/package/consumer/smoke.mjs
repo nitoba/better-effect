@@ -25,6 +25,13 @@ if (resolved !== raw) {
 }
 
 await runtime.dispose()
+
+const cause = new Error('consumer driver failure with secret SQL')
+const queryError = new KyselyEffect.KyselyQueryError({ cause, operation: 'execute' })
+if (queryError.cause !== cause || JSON.stringify(queryError).includes('secret SQL')) {
+  throw new Error('The packed Kysely query error did not preserve safe error semantics')
+}
+
 if (packageJson.name !== 'better-effect-kysely' || packageJson.version !== '0.1.0') {
   throw new Error('The packed Kysely package metadata is incorrect')
 }

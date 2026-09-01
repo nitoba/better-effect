@@ -1,7 +1,13 @@
 import { Layer } from 'better-effect'
 import type { Kysely } from 'kysely'
-import { KyselyEffect } from 'better-effect-kysely'
-import type { KyselyServiceInstance, KyselyServiceToken } from 'better-effect-kysely'
+import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from 'better-effect-kysely'
+import type {
+  KyselyExecutionOptions,
+  KyselyOperation,
+  KyselyQueryOperation,
+  KyselyServiceInstance,
+  KyselyServiceToken
+} from 'better-effect-kysely'
 
 type Assert<Condition extends true> = Condition
 type Equal<Left, Right> =
@@ -40,6 +46,46 @@ type _BorrowedRequired = Assert<Equal<Layer.Required<ReturnType<typeof Database.
 const query = database.selectFrom('users').select(['id', 'email'])
 type Rows = Awaited<ReturnType<typeof query.execute>>
 type _Rows = Assert<Equal<Rows, Array<{ id: number; email: string }>>>
+type _Operation = Assert<
+  Equal<KyselyEffect.Operation<number, KyselyQueryError>, KyselyOperation<number, KyselyQueryError>>
+>
+type _Strategy = Assert<
+  Equal<
+    NonNullable<KyselyExecutionOptions['inflightQueryAbortStrategy']>,
+    'ignore query' | 'cancel query' | 'kill session'
+  >
+>
+type _QueryOperation = Assert<
+  Equal<KyselyQueryOperation, 'execute' | 'executeTakeFirst' | 'executeQuery'>
+>
+
+const queryError = new KyselyQueryError({
+  cause: new Error('driver failure'),
+  operation: 'execute'
+})
+const transactionError = new KyselyTransactionError({ cause: new Error('native failure') })
+
+type _QueryErrorJson = Assert<
+  Equal<
+    ReturnType<typeof queryError.toJSON>,
+    {
+      readonly _tag: 'KyselyQueryError'
+      readonly name: 'KyselyQueryError'
+      readonly message: string
+      readonly operation: KyselyQueryOperation
+    }
+  >
+>
+type _TransactionErrorJson = Assert<
+  Equal<
+    ReturnType<typeof transactionError.toJSON>,
+    {
+      readonly _tag: 'KyselyTransactionError'
+      readonly name: 'KyselyTransactionError'
+      readonly message: string
+    }
+  >
+>
 
 // @ts-expect-error the generated token has no public constructor
 new Database()
