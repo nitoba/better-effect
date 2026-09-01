@@ -18,7 +18,7 @@ import {
   orderJobs,
   promoteJob,
   recoverStalledJob,
-  redriveJob,
+  retryJob,
   reduceJob,
   releaseJob,
   requestJobCancellation,
@@ -645,7 +645,7 @@ test('settlement records attempts separately from deliveries and releases', () =
   expect(Result.isOk(validateAttemptRecord(released.attempt))).toBe(true)
 })
 
-test('terminal jobs require explicit redrive and receive a fresh attempt budget', () => {
+test('terminal jobs require explicit retry and receive a fresh attempt budget', () => {
   const failed = unwrap(
     settleJob(activeJob({ attemptsMade: 2, deliveryCount: 3 }), {
       type: 'settle',
@@ -677,18 +677,18 @@ test('terminal jobs require explicit redrive and receive a fresh attempt budget'
     )
   ).toBe(true)
 
-  const redriven = unwrap(
-    redriveJob(failed, {
-      type: 'redrive',
+  const retried = unwrap(
+    retryJob(failed, {
+      type: 'retry',
       jobId,
       runAt: 300,
       now: 200
     })
   )
 
-  expect(redriven.state).toBe('delayed')
-  expect(redriven.attemptsMade).toBe(0)
-  expect(redriven.deliveryCount).toBe(3)
+  expect(retried.state).toBe('delayed')
+  expect(retried.attemptsMade).toBe(0)
+  expect(retried.deliveryCount).toBe(3)
 })
 
 test('cancellation requests do not steal an active lease', () => {

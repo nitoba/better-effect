@@ -2360,7 +2360,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         claimed.jobs.length === 0,
         context,
         'terminal failure',
-        'failed job was claimed without redrive'
+        'failed job was claimed without retry'
       )
     }
   ),
@@ -2479,8 +2479,8 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     }
   ),
   definition(
-    'redrive-preserves-ledger',
-    'administrative redrive preserves prior delivery and attempt history',
+    'retry-preserves-ledger',
+    'administrative retry preserves prior delivery and attempt history',
     'settlement',
     async (context) => {
       const job = await activeJob(context)
@@ -2490,7 +2490,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
             jobId: job.id,
             leaseToken: job.leaseToken,
             now: now(context),
-            outcome: { type: 'fail', failure: failure(context, 'REDRIVE') }
+            outcome: { type: 'fail', failure: failure(context, 'RETRY') }
           })
         ),
         context,
@@ -2501,24 +2501,24 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'getAttempts'
       )
-      const redriven = await succeed(
+      const retried = await succeed(
         operation(() =>
-          context.store.redrive({ jobId: job.id, runAt: now(context), now: now(context) })
+          context.store.retry({ jobId: job.id, runAt: now(context), now: now(context) })
         ),
         context,
-        'redrive'
+        'retry'
       )
       ensure(
-        redriven.record.state === 'waiting',
+        retried.record.state === 'waiting',
         context,
-        'redrive',
-        'failed job was not redriven to waiting'
+        'retry',
+        'failed job was not retried to waiting'
       )
       ensure(
-        redriven.record.deliveryCount === 1,
+        retried.record.deliveryCount === 1,
         context,
-        'redrive history',
-        'redrive reset delivery history'
+        'retry history',
+        'retry reset delivery history'
       )
       const after = await succeed(
         operation(() => context.store.getAttempts({ jobId: job.id })),
@@ -2528,8 +2528,8 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
       ensure(
         after.length === before.length,
         context,
-        'redrive history',
-        'redrive discarded the attempt ledger'
+        'retry history',
+        'retry discarded the attempt ledger'
       )
     }
   ),
@@ -2699,11 +2699,11 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     }
   ),
   definition(
-    'admin-redrive-failed-only',
-    'redrive accepts allowed terminal states',
+    'admin-retry-failed-only',
+    'retry accepts allowed terminal states',
     'admin',
     async (context) => {
-      const failed = await activeJob(context, context.fixtures.job, 'redrive-failed')
+      const failed = await activeJob(context, context.fixtures.job, 'retry-failed')
       await succeed(
         operation(() =>
           context.store.settle({
@@ -2712,32 +2712,30 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
             now: now(context),
             outcome: {
               type: 'fail',
-              failure: { ...failure(context, 'REDRIVE-NON-RETRYABLE'), retryable: false }
+              failure: { ...failure(context, 'RETRY-NON-RETRYABLE'), retryable: false }
             }
           })
         ),
         context,
         'settle'
       )
-      const redriven = await succeed(
+      const retried = await succeed(
         operation(() =>
-          context.store.redrive({ jobId: failed.id, runAt: now(context) + 100, now: now(context) })
+          context.store.retry({ jobId: failed.id, runAt: now(context) + 100, now: now(context) })
         ),
         context,
-        'redrive'
+        'retry'
       )
       ensure(
-        redriven.record.state === 'delayed',
+        retried.record.state === 'delayed',
         context,
-        'redrive precondition',
-        'failed job was not redriven to a delayed state'
+        'retry precondition',
+        'failed job was not retried to a delayed state'
       )
 
       const cancelled = await succeed(
         operation(() =>
-          context.store.enqueue(
-            enqueueRequest(context, context.fixtures.jobV2, 'redrive-cancelled')
-          )
+          context.store.enqueue(enqueueRequest(context, context.fixtures.jobV2, 'retry-cancelled'))
         ),
         context,
         'enqueue'
@@ -2747,18 +2745,18 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'cancel'
       )
-      const redrivenCancelled = await succeed(
+      const retriedCancelled = await succeed(
         operation(() =>
-          context.store.redrive({ jobId: cancelled.job.id, runAt: now(context), now: now(context) })
+          context.store.retry({ jobId: cancelled.job.id, runAt: now(context), now: now(context) })
         ),
         context,
-        'redrive'
+        'retry'
       )
       ensure(
-        redrivenCancelled.record.state === 'waiting',
+        retriedCancelled.record.state === 'waiting',
         context,
-        'redrive precondition',
-        'cancelled job was not redriven to waiting'
+        'retry precondition',
+        'cancelled job was not retried to waiting'
       )
       await succeed(
         operation(() =>
@@ -2772,7 +2770,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'remove'
       )
 
-      const completed = await activeJob(context, context.fixtures.jobV2, 'redrive-completed')
+      const completed = await activeJob(context, context.fixtures.jobV2, 'retry-completed')
       await succeed(
         operation(() =>
           context.store.settle({
@@ -2787,11 +2785,11 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
       )
       await reject(
         operation(() =>
-          context.store.redrive({ jobId: completed.id, runAt: now(context), now: now(context) })
+          context.store.retry({ jobId: completed.id, runAt: now(context), now: now(context) })
         ),
         context,
-        'redrive',
-        'redrive precondition',
+        'retry',
+        'retry precondition',
         'JobNotRetryableError'
       )
     }
@@ -3259,7 +3257,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
       const request = {
         queue: context.fixtures.queueName,
         limit: 10,
-        metadata: { label: 'unsupported' }
+        predicate: () => true
       } as unknown as ListJobsRequest
       await reject(
         operation(() => context.store.list(request)),

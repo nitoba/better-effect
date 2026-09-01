@@ -42,6 +42,8 @@ import {
   type JobStoreToken,
   type JobTransition,
   type JobStoreCapabilities,
+  type JobListOrder,
+  type JobListOrderBy,
   type LeaseLossReason,
   type ListJobsRequest,
   type LostLease,
@@ -105,32 +107,54 @@ const tokenNumber = (token: WakeToken): number => {
 }
 
 const cursorVersion = 1 as const
-const cursorOrdering = 'createdAt,orderingSequence,id' as const
-const cursorDirection = 'asc' as const
 const listStateOrder = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const
 
 const identityFrom = (request: EnqueueRequest): JobIdentity => request.job ?? request.identity!
 
-const compareListOrder = (left: JobRecord, right: JobRecord): number => {
-  if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt
+const primaryValue = (record: JobRecord, orderBy: JobListOrderBy): number | null =>
+  orderBy === 'enqueuedAt'
+    ? record.createdAt
+    : orderBy === 'runAt'
+      ? record.runAt
+      : (record.finishedAt ?? null)
+
+const compareListOrder = (
+  left: JobRecord,
+  right: JobRecord,
+  orderBy: JobListOrderBy,
+  order: JobListOrder
+): number => {
+  const direction = order === 'asc' ? 1 : -1
+  const leftValue = primaryValue(left, orderBy)
+  const rightValue = primaryValue(right, orderBy)
+  const primary =
+    leftValue === null
+      ? rightValue === null
+        ? 0
+        : 1
+      : rightValue === null
+        ? -1
+        : leftValue < rightValue
+          ? -1
+          : leftValue > rightValue
+            ? 1
+            : 0
+  if (primary !== 0) return primary * direction
   if (left.orderingSequence !== right.orderingSequence) {
-    return left.orderingSequence - right.orderingSequence
+    return (left.orderingSequence < right.orderingSequence ? -1 : 1) * direction
   }
-  const leftBytes = new TextEncoder().encode(left.id)
-  const rightBytes = new TextEncoder().encode(right.id)
-  const length = Math.min(leftBytes.length, rightBytes.length)
-
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) {
-      return (leftBytes[index] ?? 0) - (rightBytes[index] ?? 0)
-    }
-  }
-
-  return leftBytes.length - rightBytes.length
+  return (left.id === right.id ? 0 : left.id < right.id ? -1 : 1) * direction
 }
 
+const cursorOrderingFor = (
+  orderBy: JobListOrderBy
+): NonNullable<ListJobsRequest['cursor']>['ordering'] =>
+  orderBy === 'enqueuedAt' ? 'createdAt,orderingSequence,id' : `${orderBy},orderingSequence,id`
+
 const isKnownListField = (field: string): boolean =>
-  ['queue', 'name', 'state', 'limit', 'cursor'].includes(field)
+  ['queue', 'name', 'version', 'state', 'metadata', 'orderBy', 'order', 'limit', 'cursor'].includes(
+    field
+  )
 
 const freezeCapabilities = (
   capabilities: Partial<JobStoreCapabilities> | undefined
@@ -147,11 +171,25 @@ const activeSnapshot = (record: JobRecord): ActiveJobSnapshot => record as Activ
 
 const compareRecordToCursor = (record: JobRecord, cursor: ListJobsRequest['cursor']): number => {
   if (cursor === undefined) return 1
-  if (record.createdAt !== cursor.createdAt) return record.createdAt - cursor.createdAt
+  const direction = cursor.order === 'asc' ? 1 : -1
+  const recordValue = primaryValue(record, cursor.orderBy)
+  const primary =
+    recordValue === null
+      ? cursor.value === null
+        ? 0
+        : 1
+      : cursor.value === null
+        ? -1
+        : recordValue < cursor.value
+          ? -1
+          : recordValue > cursor.value
+            ? 1
+            : 0
+  if (primary !== 0) return primary * direction
   if (record.orderingSequence !== cursor.orderingSequence) {
-    return record.orderingSequence - cursor.orderingSequence
+    return (record.orderingSequence < cursor.orderingSequence ? -1 : 1) * direction
   }
-  return record.id === cursor.id ? 0 : record.id < cursor.id ? -1 : 1
+  return (record.id === cursor.id ? 0 : record.id < cursor.id ? -1 : 1) * direction
 }
 
 class MemoryStore {
@@ -516,18 +554,34 @@ class MemoryStore {
     if (!Number.isSafeInteger(request.limit) || request.limit <= 0)
       return error(jobStoreError('limit', 'must be a positive safe integer'))
 
+    const orderBy = request.orderBy ?? 'enqueuedAt'
+    const order = request.order ?? 'asc'
     const states =
       request.state === undefined
         ? undefined
         : new Set(Array.isArray(request.state) ? request.state : [request.state])
     const stateSignature =
       states === undefined ? '*' : listStateOrder.filter((state) => states.has(state)).join(',')
-    const filterKey = JSON.stringify([request.queue ?? null, request.name ?? null, stateSignature])
+    const metadataSignature =
+      request.metadata === undefined
+        ? null
+        : Object.entries(request.metadata)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, value]) => [key, value])
+    const filterKey = JSON.stringify([
+      request.queue ?? null,
+      request.name ?? null,
+      request.version ?? null,
+      stateSignature,
+      metadataSignature,
+      orderBy,
+      order
+    ])
     if (
       request.cursor !== undefined &&
       (request.cursor.version !== cursorVersion ||
-        request.cursor.ordering !== cursorOrdering ||
-        request.cursor.direction !== cursorDirection ||
+        request.cursor.orderBy !== orderBy ||
+        request.cursor.order !== order ||
         request.cursor.filterSignature !== filterKey)
     ) {
       return error(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
@@ -537,9 +591,15 @@ class MemoryStore {
         (job) =>
           (request.queue === undefined || job.queue === request.queue) &&
           (request.name === undefined || job.name === request.name) &&
-          (states === undefined || states.has(job.state))
+          (request.version === undefined || job.version === request.version) &&
+          (states === undefined || states.has(job.state)) &&
+          (request.metadata === undefined ||
+            (Object.keys(request.metadata).length === Object.keys(job.metadata).length &&
+              Object.entries(request.metadata).every(
+                ([key, value]) => job.metadata[key] === value
+              )))
       )
-      .sort(compareListOrder)
+      .sort((left, right) => compareListOrder(left, right, orderBy, order))
     const start =
       request.cursor === undefined
         ? 0
@@ -552,9 +612,12 @@ class MemoryStore {
       hasMore && last !== undefined
         ? {
             version: cursorVersion,
-            ordering: cursorOrdering,
-            direction: cursorDirection,
+            orderBy,
+            order,
+            ordering: cursorOrderingFor(orderBy),
+            direction: order,
             filterSignature: filterKey,
+            value: primaryValue(last, orderBy),
             createdAt: last.createdAt,
             orderingSequence: last.orderingSequence,
             id: last.id
@@ -596,9 +659,9 @@ class MemoryStore {
     return ok(counts)
   }
 
-  redrive(request: JobStoreType.RedriveRequest): Operation<JobStoreType.RedriveResult> {
+  retry(request: JobStoreType.RetryRequest): Operation<JobStoreType.RetryResult> {
     return this.transition(request.jobId, {
-      type: 'redrive',
+      type: 'retry',
       jobId: request.jobId,
       runAt: request.runAt,
       now: request.now

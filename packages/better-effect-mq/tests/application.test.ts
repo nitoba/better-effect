@@ -60,6 +60,20 @@ const IdempotencyFailure = queue.job('idempotency-failure', {
     throw new Error('idempotency secret')
   }
 })
+const VoidResult = queue.job('void-result', {
+  version: 1,
+  payload: Codec.string,
+  result: Codec.void
+})
+let explicitIdCallbackCalls = 0
+const ExplicitId = queue.job('explicit-id', {
+  version: 1,
+  payload: Codec.string,
+  idempotencyKey: () => {
+    explicitIdCallbackCalls += 1
+    return 'should-not-run'
+  }
+})
 
 const makeTestRuntime = async () => {
   const clock = new ClockTest(0)
@@ -92,8 +106,26 @@ describe('Job producer and admin programs', () => {
           const scheduledId = scheduled[0]
           if (scheduledId === undefined) return Result.err(new Error('missing scheduled Job'))
           const scheduledView = yield* Send.poll(scheduledId)
+          explicitIdCallbackCalls = 0
+          const explicit = yield* ExplicitId.enqueue('first', {
+            jobId: 'explicit-job',
+            idempotencyKey: 'shared-key'
+          })
+          const explicitDuplicate = yield* ExplicitId.enqueue('second', {
+            jobId: 'explicit-job',
+            idempotencyKey: 'different-key'
+          })
           const listed = yield* JobAdmin.for(JobStore).list({ queue: 'application-tests' })
-          return Result.ok({ first, duplicate, batch, scheduled, scheduledView, listed })
+          return Result.ok({
+            first,
+            duplicate,
+            batch,
+            scheduled,
+            scheduledView,
+            explicit,
+            explicitDuplicate,
+            listed
+          })
         })
       )
 
@@ -104,7 +136,10 @@ describe('Job producer and admin programs', () => {
       expect(result.value.batch.map(String)).toEqual(['application-1', 'application-2'])
       expect(result.value.scheduled.map(String)).toEqual(['application-3'])
       expect(result.value.scheduledView?.runAt).toBe(25)
-      expect(result.value.listed.jobs).toHaveLength(4)
+      expect(String(result.value.explicit)).toBe('explicit-job')
+      expect(result.value.explicitDuplicate).toBe(result.value.explicit)
+      expect(explicitIdCallbackCalls).toBe(0)
+      expect(result.value.listed.jobs).toHaveLength(5)
       expect(result.value.listed.jobs[0]?.metadata).toEqual({ source: 'call' })
       expect(result.value.listed.jobs[0]?.runAt).toBe(10)
     } finally {
@@ -186,6 +221,24 @@ describe('Job producer and admin programs', () => {
       expect(Result.isError(batch)).toBe(true)
       if (Result.isOk(batch)) return
       expect(JobDecodeFailure.is(batch.error)).toBe(true)
+
+      const invalidScheduleBatch = await runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(
+            yield* BatchString.enqueueMany(
+              [
+                { payload: 'first' },
+                // SAFETY: intentionally violate the compile-time schedule type to exercise runtime validation.
+                { payload: 'second', options: { delayMs: 1, at: 2 } as never }
+              ],
+              { chunkSize: 1 }
+            )
+          )
+        })
+      )
+      expect(Result.isError(invalidScheduleBatch)).toBe(true)
+      if (Result.isOk(invalidScheduleBatch)) return
+      expect(JobDefinitionError.is(invalidScheduleBatch.error)).toBe(true)
 
       const counts = await runtime.run(() =>
         Effect.gen(async function* () {
@@ -323,6 +376,44 @@ describe('Job producer and admin programs', () => {
       if (Result.isError(completed)) return
       expect(completed.value).toBe('done')
 
+      const missingResult = await runtime.run(() =>
+        Effect.gen(async function* () {
+          const id = yield* Send.enqueue({ id: 'missing-result' })
+          const store = yield* JobStore
+          const claimed = yield* Result.await(
+            Promise.resolve(
+              store.claim({
+                queue: QueueName.make(queue.queue).unwrap(),
+                accepted: [Send.identity],
+                limit: 1,
+                workerId: makeWorkerId('missing-result-worker').unwrap(),
+                leaseDurationMs: 100,
+                now: 0
+              })
+            )
+          )
+          const active = claimed.jobs[0]
+          if (active === undefined)
+            return Result.err(new Error('missing-result Job was not claimed'))
+          yield* Result.await(
+            Promise.resolve(
+              store.settle({
+                jobId: id,
+                leaseToken: active.leaseToken,
+                outcome: { type: 'complete' },
+                now: 0
+              })
+            )
+          )
+          return Result.ok(yield* Send.awaitResult(id))
+        })
+      )
+      expect(Result.isError(missingResult)).toBe(true)
+      if (Result.isOk(missingResult)) return
+      expect(JobDecodeFailure.is(missingResult.error)).toBe(true)
+      if (!JobDecodeFailure.is(missingResult.error)) return
+      expect(missingResult.error.code).toBe('missing-result')
+
       const missing = await runtime.run(() =>
         Effect.gen(async function* () {
           return Result.ok(yield* Send.awaitResult('missing'))
@@ -331,6 +422,50 @@ describe('Job producer and admin programs', () => {
       expect(Result.isError(missing)).toBe(true)
       if (Result.isOk(missing)) return
       expect(JobNotFoundError.is(missing.error)).toBe(true)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('completed void Jobs accept a missing persisted result', async () => {
+    const { runtime } = await makeTestRuntime()
+
+    try {
+      const result = await runtime.run(() =>
+        Effect.gen(async function* () {
+          const id = yield* VoidResult.enqueue('payload')
+          const store = yield* JobStore
+          const claimed = yield* Result.await(
+            Promise.resolve(
+              store.claim({
+                queue: QueueName.make('application-tests').unwrap(),
+                accepted: [{ queue: 'application-tests', name: 'void-result', version: 1 }],
+                limit: 1,
+                workerId: makeWorkerId('void-worker').unwrap(),
+                leaseDurationMs: 100,
+                now: 0
+              })
+            )
+          )
+          const active = claimed.jobs[0]
+          if (active?.leaseToken === undefined) return Result.err(new Error('missing active Job'))
+          yield* Result.await(
+            Promise.resolve(
+              store.settle({
+                jobId: active.id,
+                leaseToken: active.leaseToken,
+                now: 0,
+                outcome: { type: 'complete' }
+              })
+            )
+          )
+          return Result.ok(yield* VoidResult.awaitResult(id))
+        })
+      )
+
+      expect(Result.isOk(result)).toBe(true)
+      if (Result.isError(result)) return
+      expect(result.value).toBeUndefined()
     } finally {
       await runtime.dispose()
     }
@@ -529,8 +664,12 @@ describe('Job producer and admin programs', () => {
       const pages = await runtime.run(() =>
         Effect.gen(async function* () {
           const admin = JobAdmin.for(JobStore)
-          yield* Send.enqueue({ id: 'page-one' })
+          yield* Send.enqueue(
+            { id: 'page-one' },
+            { jobId: 'page-one', metadata: { source: 'page-one' } }
+          )
           yield* Send.enqueue({ id: 'page-two' })
+          yield* Send.enqueue({ id: 'scheduled-page' }, { delayMs: 20 })
           const first = yield* admin.list({ limit: 1 })
           if (first.nextCursor === undefined) return Result.err(new Error('missing page cursor'))
           const second = yield* admin.list({ limit: 1, cursor: first.nextCursor })
@@ -560,9 +699,43 @@ describe('Job producer and admin programs', () => {
       if (Result.isOk(invalidFilter)) return
       expect(UnsupportedJobStoreOperationError.is(invalidFilter.error)).toBe(true)
 
-      const unsupported = await runtime.run(() =>
+      const byVersion = await runtime.run(() =>
         Effect.gen(async function* () {
           return Result.ok(yield* JobAdmin.for(JobStore).list({ version: 1 }))
+        })
+      )
+      expect(Result.isOk(byVersion)).toBe(true)
+      if (Result.isError(byVersion)) return
+      expect(byVersion.value.jobs).toHaveLength(3)
+
+      const byMetadata = await runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(yield* JobAdmin.for(JobStore).list({ metadata: { source: 'page-one' } }))
+        })
+      )
+      expect(Result.isOk(byMetadata)).toBe(true)
+      if (Result.isError(byMetadata)) return
+      expect(byMetadata.value.jobs.map((job) => String(job.id))).toEqual(['page-one'])
+
+      const byRunAt = await runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(
+            yield* JobAdmin.for(JobStore).list({ orderBy: 'runAt', order: 'desc', limit: 1 })
+          )
+        })
+      )
+      expect(Result.isOk(byRunAt)).toBe(true)
+      if (Result.isError(byRunAt)) return
+      expect(byRunAt.value.jobs[0]?.runAt).toBe(20)
+
+      const unsupported = await runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(
+            yield* JobAdmin.for(JobStore).list({
+              // @ts-expect-error arbitrary predicates are not part of the list contract.
+              predicate: () => true
+            })
+          )
         })
       )
       expect(Result.isError(unsupported)).toBe(true)
@@ -621,7 +794,7 @@ describe('Job producer and admin programs', () => {
       const ids = await runtime.run(() =>
         Effect.gen(async function* () {
           const retriedId = yield* Send.enqueue({ id: 'retry' })
-          const redrivenId = yield* Send.enqueue({ id: 'redrive' })
+          const retriedAgainId = yield* Send.enqueue({ id: 'retry-again' })
           const store = yield* JobStore
           const claimed = yield* Result.await(
             Promise.resolve(
@@ -635,7 +808,7 @@ describe('Job producer and admin programs', () => {
               })
             )
           )
-          for (const id of [retriedId, redrivenId]) {
+          for (const id of [retriedId, retriedAgainId]) {
             const active = claimed.jobs.find((job) => job.id === id)
             if (active === undefined) return Result.err(new Error(`missing active Job ${id}`))
             yield* Result.await(
@@ -651,7 +824,7 @@ describe('Job producer and admin programs', () => {
           }
           const delayedId = yield* Send.enqueue({ id: 'promote' }, { delayMs: 10 })
           const cancelledId = yield* Send.enqueue({ id: 'cancel' })
-          return Result.ok({ delayedId, cancelledId, retriedId, redrivenId })
+          return Result.ok({ delayedId, cancelledId, retriedId, retriedAgainId })
         })
       )
       if (Result.isError(ids)) throw ids.error
@@ -685,15 +858,15 @@ describe('Job producer and admin programs', () => {
       expect(retried.value.state).toBe('delayed')
       expect(retried.value.runAt).toBe(10)
 
-      const redriven = await runtime.run(() =>
+      const retriedAgain = await runtime.run(() =>
         Effect.gen(async function* () {
-          return Result.ok(yield* Send.redrive(ids.value.redrivenId, { at: 20 }))
+          return Result.ok(yield* Send.retry(ids.value.retriedAgainId, { at: 20 }))
         })
       )
-      expect(Result.isOk(redriven)).toBe(true)
-      if (Result.isError(redriven)) return
-      expect(redriven.value.state).toBe('delayed')
-      expect(redriven.value.runAt).toBe(20)
+      expect(Result.isOk(retriedAgain)).toBe(true)
+      if (Result.isError(retriedAgain)) return
+      expect(retriedAgain.value.state).toBe('delayed')
+      expect(retriedAgain.value.runAt).toBe(20)
 
       const invalidRetry = await runtime.run(() =>
         Effect.gen(async function* () {

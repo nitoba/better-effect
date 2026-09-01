@@ -16,14 +16,11 @@ import { Result, UnhandledException } from 'better-result'
 import type { Err, Result as ResultType } from 'better-result'
 
 import { JobDecodeFailure, JobEncodeFailure } from '../codec'
+import { isMarkedVoidCodec } from '../codec/snapshot'
 import { validateJsonValue } from '../codec/json'
 import {
   JobDefinitionError,
   JobNotFoundError,
-  JobNotRetryableError,
-  InvalidJobTransitionError,
-  JobNotCancellableError,
-  JobNotPromotableError,
   UnsupportedJobStoreOperationError,
   makeJobId,
   makeJobName,
@@ -57,8 +54,10 @@ import type {
   JobStoreResumeError,
   JobStoreRemoveError,
   JobListCursor,
+  JobListOrder,
+  JobListOrderBy,
   JobStorePromoteError,
-  JobStoreRedriveError
+  JobStoreRetryError
 } from '../store'
 
 import type { CodecLike, JobDefaults, JobIdentity } from './job'
@@ -155,7 +154,7 @@ export type JobAwaitOptions = {
 /** Enqueue options plus caller-owned waiting controls for `execute`. */
 export type JobExecuteOptions = JobEnqueueOptions & JobAwaitOptions
 
-/** Explicit redrive/retry schedule controls. */
+/** Explicit retry schedule controls. */
 export type JobRetryOptions = JobScheduleFields
 
 export type JobEnqueueError =
@@ -179,19 +178,25 @@ export type JobAttemptsError =
   | JobDecodeFailure
   | UnhandledException
 
-type JobTransitionApplicationError =
+export type JobCancelError =
   | JobStoreGetJobError
   | JobIdentityMismatchError
-  | JobNotFoundError
-  | JobDefinitionError
-  | InvalidJobTransitionError
-  | JobNotCancellableError
-  | JobNotPromotableError
-  | JobNotRetryableError
   | JobStoreCancelError
-  | JobStorePromoteError
-  | JobStoreRedriveError
   | UnhandledException
+
+export type JobPromoteError =
+  | JobStoreGetJobError
+  | JobIdentityMismatchError
+  | JobStorePromoteError
+  | UnhandledException
+
+export type JobRetryError =
+  | JobStoreGetJobError
+  | JobIdentityMismatchError
+  | JobStoreRetryError
+  | UnhandledException
+
+type JobTransitionApplicationError = JobCancelError | JobPromoteError | JobRetryError
 
 /** An encoded failure view with typed `data` only for the `typed` kind. */
 export type DecodedJobFailure<Failure> =
@@ -346,20 +351,12 @@ export interface JobBoundOperations<
     Store,
     true
   >
-  readonly cancel: (
-    jobId: string
-  ) => JobOperation<JobRecord, JobTransitionApplicationError, Store, true>
-  readonly promote: (
-    jobId: string
-  ) => JobOperation<JobRecord, JobTransitionApplicationError, Store, true>
+  readonly cancel: (jobId: string) => JobOperation<JobRecord, JobCancelError, Store, true>
+  readonly promote: (jobId: string) => JobOperation<JobRecord, JobPromoteError, Store, true>
   readonly retry: (
     jobId: string,
     options?: JobRetryOptions
-  ) => JobOperation<JobRecord, JobTransitionApplicationError, Store, true>
-  readonly redrive: (
-    jobId: string,
-    options?: JobRetryOptions
-  ) => JobOperation<JobRecord, JobTransitionApplicationError, Store, true>
+  ) => JobOperation<JobRecord, JobRetryError, Store, true>
 }
 
 /** `undefined` is the runtime result of a completed Job without a result codec. */
@@ -395,15 +392,28 @@ const batchFields = [
 ] as const
 const awaitFields = ['pollIntervalMs', 'signal'] as const
 const executeFields = [...enqueueFields, ...awaitFields] as const
-const listFields = ['queue', 'name', 'state', 'states', 'limit', 'cursor'] as const
-const listUnsupportedFields = ['version', 'metadata', 'orderBy', 'order'] as const
+const listFields = [
+  'queue',
+  'name',
+  'version',
+  'state',
+  'states',
+  'metadata',
+  'orderBy',
+  'order',
+  'limit',
+  'cursor'
+] as const
 const countFields = ['queue', 'name'] as const
 const removeFields = ['expectedState'] as const
 const cursorFields = [
   'version',
+  'orderBy',
+  'order',
   'ordering',
   'direction',
   'filterSignature',
+  'value',
   'createdAt',
   'orderingSequence',
   'id'
@@ -411,9 +421,9 @@ const cursorFields = [
 
 const defaultBatchChunkSize = 32
 const defaultPollIntervalMs = 100
-const cursorOrdering = 'createdAt,orderingSequence,id' as const
-const cursorDirection = 'asc' as const
 const cursorVersion = 1 as const
+const defaultListOrderBy: JobListOrderBy = 'enqueuedAt'
+const defaultListOrder: JobListOrder = 'asc'
 
 const hasOwn = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key)
@@ -791,13 +801,26 @@ const makeEnqueueRequest = (
   if (Result.isError(overrideMetadata)) return overrideMetadata
 
   const metadata = mergeMetadata(derivedMetadata.value, overrideMetadata.value)
-  const idempotency = hasOwn(fields, 'idempotencyKey')
-    ? normalizeIdempotencyValue(fields.idempotencyKey)
-    : definition.idempotencyKey === undefined
+  const explicitJobId =
+    fields.jobId === undefined
+      ? Result.ok<JobId | undefined>(undefined)
+      : normalizeJobId(fields.jobId)
+  if (Result.isError(explicitJobId)) return explicitJobId
+
+  // An explicit ID is the stronger identity choice. Do not evaluate or forward
+  // an idempotency key that could make the store return another Job.
+  const idempotency =
+    explicitJobId.value !== undefined
       ? Result.ok<string | undefined>(undefined)
-      : invokeDefinitionCallback(definition.idempotencyKey, materialized, 'idempotencyKey').andThen(
-          normalizeIdempotencyValue
-        )
+      : hasOwn(fields, 'idempotencyKey')
+        ? normalizeIdempotencyValue(fields.idempotencyKey)
+        : definition.idempotencyKey === undefined
+          ? Result.ok<string | undefined>(undefined)
+          : invokeDefinitionCallback(
+              definition.idempotencyKey,
+              materialized,
+              'idempotencyKey'
+            ).andThen(normalizeIdempotencyValue)
   if (Result.isError(idempotency)) return idempotency
 
   const request: MutableRecord = {
@@ -810,11 +833,7 @@ const makeEnqueueRequest = (
     now
   }
 
-  if (fields.jobId !== undefined) {
-    const jobId = normalizeJobId(fields.jobId)
-    if (Result.isError(jobId)) return jobId
-    request.id = jobId.value
-  }
+  if (explicitJobId.value !== undefined) request.id = explicitJobId.value
 
   if (backoff.value !== undefined) request.backoff = backoff.value
   if (timeout.value !== undefined) request.timeoutMs = timeout.value
@@ -862,19 +881,23 @@ const normalizeBatchItem = (
   }
 
   try {
-    if (!hasOwn(value, 'payload') || !hasOwn(value, 'options')) {
+    // The options member is optional, so the payload marker alone identifies a
+    // batch wrapper. This prevents `{ payload }` from being encoded as a Job payload.
+    if (!hasOwn(value, 'payload')) {
       return { payload: value, options: undefined }
     }
 
     const payload = Object.getOwnPropertyDescriptor(value, 'payload')
-    const options = Object.getOwnPropertyDescriptor(value, 'options')
+    if (payload === undefined || !('value' in payload)) {
+      return { payload: value, options: undefined }
+    }
 
-    if (
-      payload === undefined ||
-      !('value' in payload) ||
-      options === undefined ||
-      !('value' in options)
-    ) {
+    if (!hasOwn(value, 'options')) {
+      return { payload: payload.value, options: undefined }
+    }
+
+    const options = Object.getOwnPropertyDescriptor(value, 'options')
+    if (options === undefined || !('value' in options)) {
       return { payload: value, options: undefined }
     }
 
@@ -938,15 +961,31 @@ const runEnqueueMany = async function* (
   const ids: JobId[] = []
   const sharedOptions = copyKnownFields(checkedFields, enqueueFields)
 
-  for (let start = 0; start < values.length; start += chunkSize) {
+  // Validate every schedule before the first chunk can reach the store. In
+  // particular, do not let option merging delete one side of a per-item
+  // delay/at conflict and leave a partially inserted batch.
+  yield* Result.await(Promise.resolve(normalizeSchedule(checkedFields, now)))
+  const items: Array<{
+    readonly payload: unknown
+    readonly options: Readonly<Record<string, unknown>>
+  }> = []
+  for (let index = 0; index < values.length; index += 1) {
+    const item = normalizeBatchItem(values[index])
+    const itemFields = yield* Result.await(
+      Promise.resolve(readFields(item.options, enqueueFields, `items[${index}].options`))
+    )
+    yield* Result.await(Promise.resolve(normalizeSchedule(itemFields, now)))
+    items.push({ payload: item.payload, options: itemFields })
+  }
+
+  for (let start = 0; start < items.length; start += chunkSize) {
     const requests: import('../store').EnqueueRequest[] = []
-    const end = Math.min(values.length, start + chunkSize)
+    const end = Math.min(items.length, start + chunkSize)
 
     for (let index = start; index < end; index += 1) {
-      const item = normalizeBatchItem(values[index])
-      const itemFields = readFields(item.options, enqueueFields, `items[${index}].options`)
-      const itemOptions = yield* Result.await(Promise.resolve(itemFields))
-      const mergedOptions = mergeBatchOptions(sharedOptions, itemOptions)
+      const item = items[index]
+      if (item === undefined) continue
+      const mergedOptions = mergeBatchOptions(sharedOptions, item.options)
       const request = yield* Result.await(
         Promise.resolve(prepareEnqueue(definition, item.payload, mergedOptions, now))
       )
@@ -1039,9 +1078,21 @@ const decodeFailure = async (
 
 const decodeResult = async (
   definition: JobOperationDescriptor,
-  value: JsonValue | undefined
+  value: JsonValue | undefined,
+  requireValue: boolean
 ): Promise<ResultType<unknown, JobDecodeFailure>> => {
-  if (value === undefined) return Result.ok(undefined)
+  if (value === undefined) {
+    if (!requireValue || definition.result === undefined || isMarkedVoidCodec(definition.result)) {
+      return Result.ok(undefined)
+    }
+
+    return Result.err(
+      new JobDecodeFailure({
+        message: 'Completed Job record has no result for its result codec',
+        code: 'missing-result'
+      })
+    )
+  }
   if (definition.result === undefined) {
     return Result.err(
       new JobDecodeFailure({
@@ -1058,7 +1109,7 @@ const decodeRecord = async (
   definition: JobOperationDescriptor,
   record: JobRecord
 ): Promise<ResultType<ErasedView, JobDecodeFailure>> => {
-  const result = await decodeResult(definition, record.result)
+  const result = await decodeResult(definition, record.result, record.state === 'completed')
   if (Result.isError(result)) return result
 
   const failure =
@@ -1074,7 +1125,7 @@ const decodeAttempt = async (
   definition: JobOperationDescriptor,
   attempt: AttemptRecord
 ): Promise<ResultType<ErasedAttemptView, JobDecodeFailure>> => {
-  const result = await decodeResult(definition, attempt.result)
+  const result = await decodeResult(definition, attempt.result, attempt.outcome === 'completed')
   if (Result.isError(result)) return result
 
   const failure =
@@ -1137,7 +1188,7 @@ const awaitTerminal = async (
   record: JobRecord
 ): Promise<ResultType<unknown, ErasedAwaitError>> => {
   if (record.state === 'completed') {
-    return decodeResult(definition, record.result)
+    return decodeResult(definition, record.result, true)
   }
 
   if (record.state === 'cancelled') {
@@ -1301,7 +1352,7 @@ const runAwaitResult = async function* (
 const makeTransition = async function* (
   definition: JobOperationDescriptor,
   value: unknown,
-  type: 'cancel' | 'promote' | 'redrive',
+  type: 'cancel' | 'promote' | 'retry',
   options: unknown
 ): ErasedOperation<JobRecord, JobTransitionApplicationError, true> {
   const checkedId = yield* Result.await(Promise.resolve(normalizeJobId(value)))
@@ -1322,13 +1373,13 @@ const makeTransition = async function* (
   const clock = yield* Clock
   const now = yield* Result.await(Promise.resolve(clockNow(clock)))
 
-  if (type === 'redrive') {
+  if (type === 'retry') {
     const fields = yield* Result.await(
       Promise.resolve(readFields(options, ['delayMs', 'at'], 'options'))
     )
     const runAt = yield* Result.await(Promise.resolve(normalizeSchedule(fields, now)))
     const transition = yield* Result.await(
-      Promise.resolve(resolveStoreOperation(store.redrive({ jobId: checkedId, runAt, now })))
+      Promise.resolve(resolveStoreOperation(store.retry({ jobId: checkedId, runAt, now })))
     )
     return transition.record
   }
@@ -1400,6 +1451,36 @@ const normalizeListState = (
   return Result.ok(Array.isArray(value) ? Object.freeze(states) : states[0])
 }
 
+const normalizeListOrderBy = (
+  value: unknown
+): ResultType<JobListOrderBy, JobDefinitionError | UnsupportedJobStoreOperationError> => {
+  if (value === 'enqueuedAt' || value === 'runAt' || value === 'finishedAt') {
+    return Result.ok(value)
+  }
+  return invalid('orderBy', 'must be enqueuedAt, runAt, or finishedAt')
+}
+
+const normalizeListOrder = (value: unknown): ResultType<JobListOrder, JobDefinitionError> => {
+  if (value === 'asc' || value === 'desc') return Result.ok(value)
+  return invalid('order', 'must be asc or desc')
+}
+
+const cursorOrderingFor = (orderBy: JobListOrderBy): JobListCursor['ordering'] =>
+  orderBy === 'enqueuedAt'
+    ? 'createdAt,orderingSequence,id'
+    : orderBy === 'runAt'
+      ? 'runAt,orderingSequence,id'
+      : 'finishedAt,orderingSequence,id'
+
+const cursorOrderByFromLegacy = (
+  value: unknown
+): ResultType<JobListOrderBy, JobDefinitionError | UnsupportedJobStoreOperationError> => {
+  if (value === 'createdAt,orderingSequence,id') return Result.ok('enqueuedAt')
+  if (value === 'runAt,orderingSequence,id') return Result.ok('runAt')
+  if (value === 'finishedAt,orderingSequence,id') return Result.ok('finishedAt')
+  return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
+}
+
 const normalizeCursor = (
   value: unknown
 ): ResultType<
@@ -1409,28 +1490,57 @@ const normalizeCursor = (
   if (value === undefined) return Result.ok(undefined)
   const fields = readFields(value, cursorFields, 'cursor')
   if (Result.isError(fields)) return fields
+  if (fields.value.version !== cursorVersion) {
+    return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
+  }
+
+  const orderBy =
+    fields.value.orderBy === undefined
+      ? cursorOrderByFromLegacy(fields.value.ordering)
+      : normalizeListOrderBy(fields.value.orderBy)
+  const order =
+    fields.value.order === undefined
+      ? normalizeListOrder(fields.value.direction)
+      : normalizeListOrder(fields.value.order)
+  if (Result.isError(orderBy)) return orderBy
+  if (Result.isError(order)) return order
   if (
-    fields.value.version !== cursorVersion ||
-    fields.value.ordering !== cursorOrdering ||
-    fields.value.direction !== cursorDirection
+    (fields.value.ordering !== undefined &&
+      fields.value.ordering !== cursorOrderingFor(orderBy.value)) ||
+    (fields.value.direction !== undefined && fields.value.direction !== order.value)
   ) {
     return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
   }
-  if (typeof fields.value.filterSignature !== 'string')
+
+  if (typeof fields.value.filterSignature !== 'string') {
     return invalid('cursor.filterSignature', 'must be a string')
+  }
   const createdAt = validateTimestamp(fields.value.createdAt, 'cursor.createdAt')
   const sequence = validateDuration(fields.value.orderingSequence, 'cursor.orderingSequence')
   const id = makeJobId(fields.value.id)
+  const rawValue =
+    fields.value.value === undefined && orderBy.value === 'enqueuedAt'
+      ? fields.value.createdAt
+      : fields.value.value
+  const primaryValue =
+    rawValue === null ? Result.ok<number | null>(null) : validateTimestamp(rawValue, 'cursor.value')
   if (Result.isError(createdAt)) return createdAt
   if (Result.isError(sequence)) return sequence
   if (Result.isError(id)) return id
+  if (Result.isError(primaryValue)) return primaryValue
+  if (primaryValue.value === null && orderBy.value !== 'finishedAt') {
+    return invalid('cursor.value', 'null is only valid for finishedAt ordering')
+  }
 
   return Result.ok(
     Object.freeze({
       version: cursorVersion,
-      ordering: cursorOrdering,
-      direction: cursorDirection,
+      orderBy: orderBy.value,
+      order: order.value,
+      ordering: cursorOrderingFor(orderBy.value),
+      direction: order.value,
       filterSignature: fields.value.filterSignature,
+      value: primaryValue.value,
       createdAt: createdAt.value,
       orderingSequence: sequence.value,
       id: id.value
@@ -1438,21 +1548,31 @@ const normalizeCursor = (
   )
 }
 
+const firstUnsupportedListField = (value: unknown): string | undefined => {
+  if (!isPlainObject(value)) return undefined
+
+  try {
+    const allowed = new Set<string>(listFields)
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || !allowed.has(key)) {
+        return typeof key === 'string' ? key : 'symbol'
+      }
+    }
+  } catch {
+    return 'options'
+  }
+
+  return undefined
+}
+
 const normalizeListOptions = (
   value: unknown
 ): ResultType<import('../store').ListJobsRequest, JobAdminListError> => {
-  const allFields = [...listFields, ...listUnsupportedFields]
-  if (isPlainObject(value)) {
-    for (const key of Reflect.ownKeys(value)) {
-      if (
-        typeof key === 'string' &&
-        listUnsupportedFields.includes(key as (typeof listUnsupportedFields)[number])
-      ) {
-        return Result.err(new UnsupportedJobStoreOperationError({ operation: `list.${key}` }))
-      }
-    }
+  const unsupported = firstUnsupportedListField(value)
+  if (unsupported !== undefined) {
+    return Result.err(new UnsupportedJobStoreOperationError({ operation: `list.${unsupported}` }))
   }
-  const fields = readFields(value, allFields, 'options')
+  const fields = readFields(value, listFields, 'options')
   if (Result.isError(fields)) return fields
   if (hasOwn(fields.value, 'state') && hasOwn(fields.value, 'states')) {
     return invalid('state', 'state and states are mutually exclusive')
@@ -1465,6 +1585,22 @@ const normalizeListOptions = (
     fields.value.name === undefined
       ? Result.ok<string | undefined>(undefined)
       : makeJobName(fields.value.name)
+  const version =
+    fields.value.version === undefined
+      ? Result.ok<number | undefined>(undefined)
+      : normalizePositiveInteger(fields.value.version, 'version')
+  const metadata =
+    fields.value.metadata === undefined
+      ? Result.ok<Readonly<Record<string, string>> | undefined>(undefined)
+      : normalizeMetadataValue(fields.value.metadata).map((value) => value)
+  const orderBy =
+    fields.value.orderBy === undefined
+      ? Result.ok(defaultListOrderBy)
+      : normalizeListOrderBy(fields.value.orderBy)
+  const order =
+    fields.value.order === undefined
+      ? Result.ok(defaultListOrder)
+      : normalizeListOrder(fields.value.order)
   const state = normalizeListState(fields.value.states ?? fields.value.state)
   const cursor = normalizeCursor(fields.value.cursor)
   const limit =
@@ -1473,13 +1609,29 @@ const normalizeListOptions = (
       : normalizePositiveInteger(fields.value.limit, 'limit')
   if (Result.isError(queue)) return queue
   if (Result.isError(name)) return name
+  if (Result.isError(version)) return version
+  if (Result.isError(metadata)) return metadata
+  if (Result.isError(orderBy)) return orderBy
+  if (Result.isError(order)) return order
   if (Result.isError(state)) return state
   if (Result.isError(cursor)) return cursor
   if (Result.isError(limit)) return limit
+  if (
+    cursor.value !== undefined &&
+    (cursor.value.orderBy !== orderBy.value || cursor.value.order !== order.value)
+  ) {
+    return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
+  }
 
-  const request: MutableRecord = { limit: limit.value }
+  const request: MutableRecord = {
+    limit: limit.value,
+    orderBy: orderBy.value,
+    order: order.value
+  }
   if (queue.value !== undefined) request.queue = queue.value
   if (name.value !== undefined) request.name = name.value
+  if (version.value !== undefined) request.version = version.value
+  if (metadata.value !== undefined) request.metadata = metadata.value
   if (state.value !== undefined) request.state = state.value
   if (cursor.value !== undefined) request.cursor = cursor.value
   return Result.ok(request as unknown as import('../store').ListJobsRequest)
@@ -1660,10 +1812,27 @@ const makeOperations = (definition: JobOperationDescriptor): ErasedOperations =>
     attempts: (jobId) => runAttempts(definition, jobId),
     awaitResult: (jobId, options) => runAwaitResult(definition, jobId, options),
     execute: (payload, options) => runExecute(definition, payload, options),
-    cancel: (jobId) => makeTransition(definition, jobId, 'cancel', undefined),
-    promote: (jobId) => makeTransition(definition, jobId, 'promote', undefined),
-    retry: (jobId, options) => makeTransition(definition, jobId, 'redrive', options),
-    redrive: (jobId, options) => makeTransition(definition, jobId, 'redrive', options)
+    cancel: (jobId) =>
+      makeTransition(definition, jobId, 'cancel', undefined) as unknown as JobOperation<
+        JobRecord,
+        JobCancelError,
+        AnyJobStoreToken,
+        true
+      >,
+    promote: (jobId) =>
+      makeTransition(definition, jobId, 'promote', undefined) as unknown as JobOperation<
+        JobRecord,
+        JobPromoteError,
+        AnyJobStoreToken,
+        true
+      >,
+    retry: (jobId, options) =>
+      makeTransition(definition, jobId, 'retry', options) as unknown as JobOperation<
+        JobRecord,
+        JobRetryError,
+        AnyJobStoreToken,
+        true
+      >
   }
 
   return Object.freeze(operations)

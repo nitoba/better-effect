@@ -10,9 +10,15 @@ import {
   JobStore,
   MemoryJobStore,
   Queue,
+  type JobAdminListError,
   type JobAwaitOptions,
+  type JobCancelError,
   type JobEnqueueOptions,
-  type JobRecordView
+  type JobOperation,
+  type JobPromoteError,
+  type JobRecord,
+  type JobRecordView,
+  type JobRetryError
 } from '../../src'
 
 const Emails = Queue.define('application-types')
@@ -35,8 +41,18 @@ const enqueue = Send.enqueue({ to: 'a' }, options)
 const poll = Send.poll('job')
 const awaitResult = Send.awaitResult('job', awaitOptions)
 const execute = Send.execute({ to: 'a' })
-const adminList = JobAdmin.for(JobStore).list({ queue: 'application-types', states: ['waiting'] })
+const adminList = JobAdmin.for(JobStore).list({
+  queue: 'application-types',
+  version: 1,
+  metadata: { source: 'type-test' },
+  orderBy: 'finishedAt',
+  order: 'desc',
+  states: ['waiting']
+})
 const adminCounts = JobAdmin.for(JobStore).counts('application-types')
+const cancel = Send.cancel('job')
+const promote = Send.promote('job')
+const retry = Send.retry('job', { delayMs: 10 })
 
 expectTypeOf(enqueue).toMatchTypeOf<AsyncGenerator<unknown, string, unknown>>()
 expectTypeOf(poll).toMatchTypeOf<
@@ -44,8 +60,15 @@ expectTypeOf(poll).toMatchTypeOf<
 >()
 expectTypeOf(awaitResult).toMatchTypeOf<AsyncGenerator<unknown, string, unknown>>()
 expectTypeOf(execute).toMatchTypeOf<AsyncGenerator<unknown, string, unknown>>()
-expectTypeOf(adminList).toMatchTypeOf<AsyncGenerator<unknown, unknown, unknown>>()
+expectTypeOf(adminList).toEqualTypeOf<
+  JobOperation<JobStore.ListJobsResult, JobAdminListError, typeof JobStore>
+>()
 expectTypeOf(adminCounts).toMatchTypeOf<AsyncGenerator<unknown, unknown, unknown>>()
+expectTypeOf(cancel).toEqualTypeOf<JobOperation<JobRecord, JobCancelError, typeof JobStore, true>>()
+expectTypeOf(promote).toEqualTypeOf<
+  JobOperation<JobRecord, JobPromoteError, typeof JobStore, true>
+>()
+expectTypeOf(retry).toEqualTypeOf<JobOperation<JobRecord, JobRetryError, typeof JobStore, true>>()
 
 const program = Effect.gen(async function* () {
   const id = yield* Send.enqueue({ to: 'a' })

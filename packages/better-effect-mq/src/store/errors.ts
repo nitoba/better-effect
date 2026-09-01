@@ -84,7 +84,7 @@ export type JobStoreListError = JobStoreQueryError
 export type JobStoreCountsError = JobStoreQueryError
 export type JobStorePausedQueuesError = JobStoreFailure
 
-export type JobStoreRedriveError =
+export type JobStoreRetryError =
   | JobStoreFailure
   | JobDefinitionError
   | JobNotFoundError

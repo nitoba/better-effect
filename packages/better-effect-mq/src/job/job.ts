@@ -10,7 +10,12 @@ import { types as nodeTypes } from 'node:util'
 import { Result, type Result as ResultType } from 'better-result'
 
 import type { Codec } from '../codec'
-import { isMarkedCodecOperation, isMarkedCodecSnapshot } from '../codec/snapshot'
+import {
+  isMarkedCodecOperation,
+  isMarkedCodecSnapshot,
+  isMarkedVoidCodec,
+  markVoidCodecSnapshot
+} from '../codec/snapshot'
 import {
   JobDefinitionError,
   makeJobName,
@@ -1381,7 +1386,10 @@ const snapshotTrustedCodec = (
   }
 
   // SAFETY: The private capability check and callable checks establish this codec shape.
-  return Result.ok(Object.freeze({ encode: encode.value, decode: decode.value }) as CodecLike)
+  const snapshot = Object.freeze({ encode: encode.value, decode: decode.value })
+  return Result.ok(
+    (isMarkedVoidCodec(value) ? markVoidCodecSnapshot(snapshot) : snapshot) as CodecLike
+  )
 }
 
 const snapshotCodec = (

@@ -16,6 +16,7 @@ type CodecSnapshot = {
 
 const codecSnapshots = new WeakMap<object, CodecSnapshot>()
 const codecSnapshotOperations = new WeakSet<CodecOperation>()
+const voidCodecSnapshots = new WeakSet<object>()
 
 export const markCodecSnapshot = <Value extends object>(value: Value): Value => {
   const encode = Object.getOwnPropertyDescriptor(value, 'encode')?.value
@@ -38,6 +39,24 @@ export const markCodecSnapshot = <Value extends object>(value: Value): Value => 
   Object.freeze(decode)
 
   return Object.freeze(value)
+}
+
+/** Mark a codec whose missing persisted result intentionally represents `void`. */
+export const markVoidCodecSnapshot = <Value extends object>(value: Value): Value => {
+  const marked = markCodecSnapshot(value)
+  voidCodecSnapshots.add(marked)
+  const snapshot = codecSnapshots.get(marked)
+  if (snapshot !== undefined) voidCodecSnapshots.add(snapshot)
+  return marked
+}
+
+export const isMarkedVoidCodec = (value: unknown): boolean => {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- codec values cross an untyped descriptor boundary.
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {
+    return false
+  }
+
+  return voidCodecSnapshots.has(value)
 }
 
 export const isMarkedCodecSnapshot = (value: unknown): boolean => {

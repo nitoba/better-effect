@@ -273,10 +273,12 @@ decode, cancellation, not-found, identity-mismatch, and store errors.
 
 Generic inspection and queue mutations require explicit routing:
 `JobAdmin.for(store).list`, `.counts`, `.pause`, `.resume`, `.pausedQueues`, and
-`.remove`. Job-bound `cancel`, `promote`, `retry`, and `redrive` verify the
-persisted queue/name/version before mutating it. Listing is encoded-neutral and
+`.remove`. Job-bound `cancel`, `promote`, and `retry` verify the persisted
+queue/name/version before mutating it. `retry` reuses the same Job ID and
+preserves the attempt ledger; retrying by creating a new Job is not part of
+this protocol version. Listing is encoded-neutral and
 never guesses a codec for heterogeneous Jobs. `enqueueMany` accepts either a
-payload array or `{ payload, options }` entries when one item needs its own
+payload array or `{ payload, options? }` entries when one item needs its own
 ID, idempotency key, or schedule. It processes bounded chunks in input order;
 a store failure after an earlier chunk is applied can therefore be partially
 applied. Deterministic IDs or idempotency keys make safe replay possible.
@@ -349,11 +351,13 @@ A store implements these atomic operations:
   waiting from being lost. Aborting the signal returns
   `JobStoreWakeAbortedError`; polling-only stores may wait until abort because a
   worker also uses a timeout.
-- `getJob`, `getAttempts`, `list`, and `counts` provide inspection. `list` uses
-  a self-contained, serializable keyset cursor over `(createdAt, orderingSequence, id)`;
-  cursors carry their version, ordering, direction, and normalized filter binding, and
-  reuse with incompatible filters is rejected.
-- `redrive`, `cancel`, `requestCancellation`, `promote`, `remove`, `pause`,
+- `getJob`, `getAttempts`, `list`, and `counts` provide inspection. `list` supports
+  optional queue, name, version, exact metadata, and state filters, plus
+  `orderBy: 'enqueuedAt' | 'runAt' | 'finishedAt'`, `order: 'asc' | 'desc'`,
+  and a limit. Its self-contained keyset cursor carries the primary value,
+  `(orderingSequence, id)` tie-break, ordering, direction, and normalized filter
+  binding; reuse with incompatible options is rejected.
+- `retry`, `cancel`, `requestCancellation`, `promote`, `remove`, `pause`,
   `resume`, and `pausedQueues` provide the small administrative surface.
   Unsupported filter combinations return `UnsupportedJobStoreOperationError`;
   they never silently trigger a full scan.
@@ -363,7 +367,7 @@ The portable inspection support matrix is intentionally fixed:
 | Operation               | Supported filters/order                                                                               | Cursor                 |
 | ----------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------- |
 | `getJob`, `getAttempts` | one `jobId`                                                                                           | none                   |
-| `list`                  | optional `queue`, `name`, and one state or state list; ordered by `(createdAt, orderingSequence, id)` | optional keyset cursor |
+| `list`                  | optional `queue`, `name`, `version`, exact `metadata`, one state or state list, and `orderBy`/`order` | optional keyset cursor |
 | `counts`                | optional `queue` and `name`; returns every state bucket                                               | none                   |
 | `pausedQueues`          | no filter                                                                                             | none                   |
 
@@ -536,7 +540,7 @@ and `cancelled`.
                  |  | admin cancel                 +-- expired recoverStalled --> waiting (or terminal failed/cancelled at counter edge)
                  +-> cancelled
 
-             failed/cancelled -- explicit admin redrive --> waiting or delayed
+             failed/cancelled -- explicit admin retry --> waiting or delayed
 ```
 
 A claim promotes a due delayed job directly to `active`; there is no public
@@ -579,9 +583,9 @@ are:
   handler settled. Waiting and delayed jobs can be cancelled
   by an administrative cancel command.
 - `completed`, `failed`, and `cancelled` are terminal. They never silently
-  revive. `redrive` is the explicit administrative transition for a failed or
+  revive. `retry` is the explicit administrative transition for a failed or
   cancelled job; it preserves delivery and attempt history in the external
-  attempt ledger. If the retry budget was exhausted, redrive starts a fresh
+  attempt ledger. If the retry budget was exhausted, retry starts a fresh
   budget; otherwise it preserves the current attempt counter.
 - Future states such as `waiting-children` require a protocol revision.
 
@@ -605,7 +609,7 @@ representations:
   `attemptsMade` exactly once, including when that slot reaches `attemptsMax`;
   it never overflows or creates an `attemptsMax + 1` record. Release during
   shutdown and stalled recovery do not consume this retry budget. A record at
-  the budget edge must be terminal or explicitly redriven before it can run
+  the budget edge must be terminal or explicitly retried before it can run
   again.
 - `deliveryCount` counts every successful claim/reservation, including
   redelivery after a release or stalled recovery. A claim at its safe-integer

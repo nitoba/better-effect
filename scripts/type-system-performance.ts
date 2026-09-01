@@ -7,6 +7,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
 const corePackageRoot = join(repoRoot, 'packages/better-effect')
 const betterAuthPackageRoot = join(repoRoot, 'packages/better-effect-better-auth')
+const mqPackageRoot = join(repoRoot, 'packages/better-effect-mq')
 const minimumTypeScriptVersion = '5.7.2'
 const currentTypeScriptVersion = '6.0.3'
 
@@ -14,6 +15,8 @@ const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
 const jobSizes = [10, 50, 100, 250] as const
 type JobSize = (typeof jobSizes)[number]
+const producerSizes = [10, 50, 100] as const
+type ProducerSize = (typeof producerSizes)[number]
 const honoSizes = [1, 3, 6, 10] as const
 type HonoSize = (typeof honoSizes)[number]
 const betterAuthSizes = [1] as const
@@ -31,7 +34,8 @@ const scenarios = [
   'better-auth',
   'program-collections',
   'job-registry',
-  'job-store'
+  'job-store',
+  'job-producer'
 ] as const
 type Scenario = (typeof scenarios)[number]
 type Compiler = 'current' | 'minimum'
@@ -188,6 +192,17 @@ const jobBudgets = {
   }
 } satisfies Record<JobSize, Budget>
 
+const producerBudgets = {
+  10: { maxCheckMs: 4_000, maxInstantiations: 400_000, maxMemoryMiB: 768, maxTypes: 200_000 },
+  50: { maxCheckMs: 10_000, maxInstantiations: 1_500_000, maxMemoryMiB: 1_024, maxTypes: 600_000 },
+  100: {
+    maxCheckMs: 20_000,
+    maxInstantiations: 4_000_000,
+    maxMemoryMiB: 1_536,
+    maxTypes: 1_200_000
+  }
+} satisfies Record<ProducerSize, Budget>
+
 const jobStoreBudgets = {
   10: { maxCheckMs: 4_000, maxInstantiations: 400_000, maxMemoryMiB: 768, maxTypes: 200_000 },
   50: { maxCheckMs: 10_000, maxInstantiations: 1_500_000, maxMemoryMiB: 1_024, maxTypes: 600_000 },
@@ -294,6 +309,7 @@ const parseBetterAuthSizes = (value: string): BetterAuthSize[] => {
 type ParsedOptions = {
   readonly sizes: Size[]
   readonly jobSizes: JobSize[]
+  readonly producerSizes: ProducerSize[]
   readonly honoSizes: HonoSize[]
   readonly betterAuthSizes: BetterAuthSize[]
   readonly scenarios: Scenario[]
@@ -304,6 +320,7 @@ type ParsedOptions = {
 const parseArgs = (): ParsedOptions => {
   let selectedSizes: Size[] = [...sizes]
   let selectedJobSizes: JobSize[] = [...jobSizes]
+  let selectedProducerSizes: ProducerSize[] = [...producerSizes]
   let selectedHonoSizes: HonoSize[] = [...honoSizes]
   let selectedBetterAuthSizes: BetterAuthSize[] = [...betterAuthSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
@@ -319,6 +336,19 @@ const parseArgs = (): ParsedOptions => {
       selectedSizes = parseSizes(argument.slice('--sizes='.length))
     } else if (argument.startsWith('--job-sizes=')) {
       selectedJobSizes = parseJobSizes(argument.slice('--job-sizes='.length))
+    } else if (argument.startsWith('--producer-sizes=')) {
+      const parsed = argument
+        .slice('--producer-sizes='.length)
+        .split(',')
+        .map((item) => Number(item.trim()))
+      for (const item of parsed) {
+        if (!producerSizes.includes(item as ProducerSize)) {
+          throw new Error(
+            `Unknown producer count '${item}'. Allowed values: ${producerSizes.join(', ')}`
+          )
+        }
+      }
+      selectedProducerSizes = parsed as ProducerSize[]
     } else if (argument.startsWith('--hono-sizes=')) {
       selectedHonoSizes = parseHonoSizes(argument.slice('--hono-sizes='.length))
     } else if (argument.startsWith('--better-auth-sizes=')) {
@@ -332,6 +362,7 @@ const parseArgs = (): ParsedOptions => {
           '',
           `  --sizes=10,25,50,100       Service counts (default: ${sizes.join(',')})`,
           `  --job-sizes=10,50,100,250   Job definitions (default: ${jobSizes.join(',')})`,
+          `  --producer-sizes=10,50,100  Producer pipeline size (default: ${producerSizes.join(',')})`,
           `  --hono-sizes=1,3,6,10       Hono middleware counts (default: ${honoSizes.join(',')})`,
           `  --better-auth-sizes=1       Better Auth plugin fixtures (default: ${betterAuthSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
@@ -348,6 +379,7 @@ const parseArgs = (): ParsedOptions => {
   return {
     sizes: selectedSizes,
     jobSizes: selectedJobSizes,
+    producerSizes: selectedProducerSizes,
     honoSizes: selectedHonoSizes,
     betterAuthSizes: selectedBetterAuthSizes,
     scenarios: selectedScenarios,
@@ -607,6 +639,56 @@ void Runtime.run(AppLive, () => program)
 `
 }
 
+const jobProducerFixtureSource = (size: number): string => {
+  const names = Array.from(
+    { length: size },
+    (_, index) => `Job${String(index + 1).padStart(3, '0')}`
+  )
+  const declarations = names
+    .map(
+      (name, index) =>
+        `const ${name} = queue.job('job-${String(index + 1).padStart(3, '0')}', { version: 1, payload, store: JobStore })`
+    )
+    .join('\n')
+  const enqueues = names
+    .map(
+      (name, index) =>
+        `  const id${String(index + 1).padStart(3, '0')} = yield* ${name}.enqueue({ id: '${index + 1}' })`
+    )
+    .join('\n')
+  const ids = names.map((_, index) => `id${String(index + 1).padStart(3, '0')}`).join(', ')
+
+  return `import { Effect, Layer, Runtime, type EffectRequirements } from '../../../packages/better-effect/dist/index.mjs'
+import { Clock, ClockLive } from '../../../packages/better-effect/dist/standard-services.mjs'
+import { Result } from '../../../packages/better-effect/node_modules/better-result'
+import { Codec, JobStore, Queue } from '../../../packages/better-effect-mq/dist/index.mjs'
+
+type Assert<T extends true> = T
+type Equal<Left, Right> =
+  (<Type>() => Type extends Left ? 1 : 2) extends
+  (<Type>() => Type extends Right ? 1 : 2) ? true : false
+
+const implementation = {} as JobStore.Contract
+const queue = Queue.define('benchmark.producer')
+const payload = Codec.json<{ readonly id: string }>()
+${declarations}
+
+const program = Effect.gen(async function* () {
+${enqueues}
+  return Result.ok([${ids}])
+})
+type Requirements = EffectRequirements<typeof program>
+type ExpectedRequirements = JobStore.Instance | InstanceType<typeof Clock>
+type _RequirementsExact = Assert<Equal<Requirements, ExpectedRequirements>>
+
+const AppLive = Layer.merge(
+  Layer.succeed(JobStore, JobStore.of(implementation)),
+  ClockLive
+)
+void Runtime.run(AppLive, () => program)
+`
+}
+
 const honoValidatorTargets = ['param', 'header', 'query', 'cookie', 'json', 'form'] as const
 
 type HonoValidatorTarget = (typeof honoValidatorTargets)[number]
@@ -788,6 +870,10 @@ const fixtureSource = (scenario: Scenario, size: number): string => {
     return jobStoreFixtureSource(size)
   }
 
+  if (scenario === 'job-producer') {
+    return jobProducerFixtureSource(size)
+  }
+
   // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
   const names = serviceNames(size as Size)
   const withMethods = scenario === 'methods'
@@ -945,9 +1031,11 @@ const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): str
         ? betterAuthBudgets[size as BetterAuthSize]
         : scenario === 'job-store'
           ? jobStoreBudgets[size as JobSize]
-          : scenario === 'job-registry'
-            ? jobBudgets[size as JobSize]
-            : budgets[size as Size]
+          : scenario === 'job-producer'
+            ? producerBudgets[size as ProducerSize]
+            : scenario === 'job-registry'
+              ? jobBudgets[size as JobSize]
+              : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -997,6 +1085,10 @@ const main = async (): Promise<void> => {
   await mkdir(fixtureRoot, { recursive: true })
   const usePublicDeclarations = options.scenarios.includes('better-auth')
 
+  if (options.scenarios.includes('job-producer')) {
+    await runCommand(['bun', 'run', 'build'], mqPackageRoot)
+  }
+
   if (usePublicDeclarations) {
     await stagePublicPackages()
   } else {
@@ -1019,7 +1111,9 @@ const main = async (): Promise<void> => {
           ? options.betterAuthSizes
           : scenario === 'job-registry' || scenario === 'job-store'
             ? options.jobSizes
-            : options.sizes
+            : scenario === 'job-producer'
+              ? options.producerSizes
+              : options.sizes
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)

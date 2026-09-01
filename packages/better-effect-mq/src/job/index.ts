@@ -41,6 +41,7 @@ export type {
   JobAdminRemoveError,
   JobAdminRemoveOptions,
   JobAdminResumeError,
+  JobCancelError,
   JobAttemptsError,
   JobAttemptView,
   JobAwaitOptions,
@@ -54,6 +55,8 @@ export type {
   JobExecuteOptions,
   JobOperation,
   JobPollError,
+  JobPromoteError,
   JobRecordView,
+  JobRetryError,
   JobRetryOptions
 } from './application'
