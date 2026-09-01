@@ -662,11 +662,12 @@ test('Repeated named store handles share one queue concurrency group', async () 
   await Promise.all([enqueue(store, firstJob, 1), enqueue(store, secondJob, 2)])
   let active = 0
   let maximum = 0
-  let enteredResolve!: () => void
-  const entered = new Promise<void>((resolveEntered) => {
-    enteredResolve = resolveEntered
+  let firstEnteredResolve!: () => void
+  const firstEntered = new Promise<void>((resolveEntered) => {
+    firstEnteredResolve = resolveEntered
   })
-  let enteredCount = 0
+  let firstEnteredCount = 0
+  let secondEnteredCount = 0
   let release!: () => void
   const gate = new Promise<void>((resolveGate) => {
     release = resolveGate
@@ -677,9 +678,13 @@ test('Repeated named store handles share one queue concurrency group', async () 
       Effect.fn(async function* () {
         active += 1
         maximum = Math.max(maximum, active)
-        enteredCount += 1
-        if (enteredCount === 1) enteredResolve()
-        await gate
+        if (job === firstJob) {
+          firstEnteredCount += 1
+          firstEnteredResolve()
+          await gate
+        } else {
+          secondEnteredCount += 1
+        }
         active -= 1
         return Result.ok(undefined)
       })
@@ -692,13 +697,87 @@ test('Repeated named store handles share one queue concurrency group', async () 
   })
 
   try {
-    await entered
+    await firstEntered
+    expect(firstEnteredCount).toBe(1)
+    expect(secondEnteredCount).toBe(0)
     expect(maximum).toBe(1)
     release()
     await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect(firstEnteredCount).toBe(1)
+    expect(secondEnteredCount).toBe(1)
     expect((await resolve(store.counts())).completed).toBe(2)
   } finally {
     release()
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
+test('Worker cancellation wins while result encoding is pending', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  let encodeStarted!: () => void
+  const encoding = new Promise<void>((resolveEncoding) => {
+    encodeStarted = resolveEncoding
+  })
+  let releaseEncoding!: () => void
+  const encodingGate = new Promise<void>((resolveEncoding) => {
+    releaseEncoding = resolveEncoding
+  })
+  const gatedResult = Codec.make<number>({
+    encode: async (value) => {
+      encodeStarted()
+      await encodingGate
+      return Result.ok(value)
+    },
+    // SAFETY: the test payload is the numeric result produced by this handler.
+    decode: (value) => Result.ok(value as number)
+  })
+  const job = queue.job('cancel-during-encode', { version: 1, payload, result: gatedResult })
+  const created = await enqueue(store, job, 1)
+  const originalHeartbeat = store.heartbeat.bind(store)
+  let cancellationHeartbeat!: () => void
+  const heartbeatObserved = new Promise<void>((resolveHeartbeat) => {
+    cancellationHeartbeat = resolveHeartbeat
+  })
+  Object.defineProperty(store, 'heartbeat', {
+    value: async (request: Parameters<typeof store.heartbeat>[0]) => {
+      const result = await originalHeartbeat(request)
+      if (!Result.isError(result) && result.value.cancellationRequested.length > 0) {
+        cancellationHeartbeat()
+      }
+      return result
+    }
+  })
+  const handler = Worker.handle(job, () =>
+    Effect.fn(async function* () {
+      yield* CurrentAbortSignal
+      return Result.ok(7)
+    })
+  )
+  const worker = await Worker.start(runtime, {
+    handlers: [handler],
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 1,
+    stalledIntervalMs: 1_000,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await encoding
+    await resolve(store.requestCancellation({ jobId: created.id, now: Date.now() }))
+    await heartbeatObserved
+    releaseEncoding()
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    const record = await resolve(store.getJob({ jobId: created.id }))
+    const attempts = await resolve(store.getAttempts({ jobId: created.id }))
+    const counts = await resolve(store.counts())
+    expect(record?.state).toBe('cancelled')
+    expect(counts).toMatchObject({ completed: 0, cancelled: 1 })
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.outcome).toBe('cancelled')
+  } finally {
+    releaseEncoding()
     await worker.stop({ abortActive: true })
     await runtime.dispose()
   }

@@ -491,10 +491,7 @@ export class WorkerSupervisor implements WorkerHandle {
         await this.releaseJob(group, attempt.job)
         return
       }
-      outcome =
-        attempt.state === 'cancelling'
-          ? { type: 'cancelled' }
-          : await this.makeOutcome(attempt.entry.definition, result)
+      outcome = await this.makeOutcome(attempt.entry.definition, result)
     } catch (cause) {
       if (attempt.state === 'lost') return
       if (this.shutdownAborts.has(attempt.key)) {
@@ -508,10 +505,14 @@ export class WorkerSupervisor implements WorkerHandle {
           : failOutcome(safeCauseMessage(cause), this.readNow())
     }
 
+    // Encoding a result/failure is an async boundary. Cancellation may have been
+    // observed while it was pending, so it must win before settlement begins.
+    if (this.isLost(attempt)) return
     if (this.shutdownAborts.has(attempt.key)) {
       await this.releaseJob(group, attempt.job)
       return
     }
+    if (attempt.state === 'cancelling') outcome = { type: 'cancelled' }
     await this.settleJob(group, attempt.job, outcome, startedAt)
   }
 
@@ -722,6 +723,10 @@ export class WorkerSupervisor implements WorkerHandle {
       attempt.state = 'cancelling'
       attempt.controller.abort(new Error('Job cancellation requested'))
     }
+  }
+
+  private isLost(attempt: AttemptState): boolean {
+    return attempt.state === 'lost'
   }
 
   private markLost(attempt: AttemptState, cause: unknown): void {
