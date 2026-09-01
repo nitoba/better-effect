@@ -1,5 +1,15 @@
-import { Codec, JobId, JobRegistry, JobStore, Queue, protocolVersion } from 'better-effect-mq'
-import { Layer, Runtime } from 'better-effect'
+import {
+  Codec,
+  JobId,
+  JobContext,
+  JobRegistry,
+  JobStore,
+  MemoryJobStore,
+  Queue,
+  Worker,
+  protocolVersion
+} from 'better-effect-mq'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { Result } from 'better-result'
 import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
@@ -20,9 +30,178 @@ if (decoded.status !== 'ok' || decoded.value !== 'external') {
 
 const queue = Queue.define('external')
 const job = queue.job('smoke', { version: 1, payload: Codec.string })
+const workerPayload = Codec.json()
+const workerJob = queue.job('worker', {
+  version: 1,
+  payload: workerPayload,
+  result: Codec.void
+})
 const registry = JobRegistry.make([job])
 if (registry.lookup(job.identity).status !== 'ok') {
   throw new Error('the better-effect-mq job registry did not resolve')
+}
+
+const store = MemoryJobStore.make()
+const workerRuntime = await Runtime.make(Layer.succeed(JobStore, JobStore.of(store)))
+const now = 1_700_000_000_000
+const jobs = []
+for (let index = 0; index < 8; index += 1) {
+  const enqueued = store.enqueue({
+    job: workerJob.identity,
+    payload: { value: index },
+    runAt: now,
+    attemptsMax: 1,
+    metadata: { jobIndex: String(index) },
+    now
+  })
+  if (enqueued.status !== 'ok') {
+    throw enqueued.error
+  }
+  jobs.push(enqueued.value.job)
+}
+
+let active = 0
+let maximum = 0
+let entered = 0
+const contexts = []
+let releaseGate
+const gate = new Promise((resolve) => {
+  releaseGate = resolve
+})
+let resolveOverlap
+const overlap = new Promise((resolve) => {
+  resolveOverlap = resolve
+})
+const workerHandler = Worker.handle(workerJob, (input) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    active += 1
+    maximum = Math.max(maximum, active)
+    contexts.push({ context, input })
+    entered += 1
+    if (entered === 2) {
+      resolveOverlap()
+    }
+    if (entered <= 2) {
+      await gate
+    }
+    active -= 1
+    return Result.ok(undefined)
+  })
+)
+const worker = await Worker.start(workerRuntime, {
+  handlers: [workerHandler],
+  concurrency: 2,
+  pollIntervalMs: 1
+})
+let stopWasIdempotent = false
+
+try {
+  if (worker.state !== 'running') {
+    throw new Error('the packed Worker did not start')
+  }
+
+  await overlap
+  if (contexts.length !== 2 || contexts[0].context === contexts[1].context) {
+    throw new Error('the packed Worker did not overlap isolated JobContexts')
+  }
+  if (new Set(contexts.map(({ context }) => context.jobId)).size !== 2) {
+    throw new Error('the packed Worker reused a JobContext job id')
+  }
+
+  const normalAbort = new AbortController()
+  const normalWait = worker.awaitIdle({ signal: normalAbort.signal, timeoutMs: 1_000 })
+  normalAbort.abort(new Error('normal signal abort'))
+  try {
+    await normalWait
+    throw new Error('the packed Worker did not reject an aborted native signal')
+  } catch (cause) {
+    if (cause?.name !== 'WorkerAwaitIdleError' || cause.reason !== 'aborted') {
+      throw cause
+    }
+  }
+
+  const unhandledRejections = []
+  const onUnhandledRejection = (reason) => {
+    unhandledRejections.push(reason)
+  }
+  process.on('unhandledRejection', onUnhandledRejection)
+  let addCalls = 0
+  let removeCalls = 0
+  const rejectingSignal = {
+    aborted: false,
+    addEventListener() {
+      addCalls += 1
+      return Promise.reject(new Error('add listener rejected'))
+    },
+    removeEventListener() {
+      removeCalls += 1
+      return Promise.reject(new Error('remove listener rejected'))
+    }
+  }
+
+  try {
+    let failure
+    try {
+      await worker.awaitIdle({ signal: rejectingSignal, timeoutMs: 1_000 })
+    } catch (cause) {
+      failure = cause
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    if (failure?.name !== 'WorkerAwaitIdleError' || failure.reason !== 'invalid-signal') {
+      throw new Error('the packed Worker did not reject a non-void signal listener result')
+    }
+    if (addCalls !== 1 || removeCalls !== 1) {
+      throw new Error('the packed Worker did not synchronously clean its malformed signal waiter')
+    }
+    if (unhandledRejections.length !== 0) {
+      throw new Error(
+        `the packed Worker leaked ${unhandledRejections.length} unhandled signal rejection(s)`
+      )
+    }
+  } finally {
+    process.off('unhandledRejection', onUnhandledRejection)
+  }
+
+  releaseGate()
+  await worker.awaitIdle()
+  if (worker.activeCount !== 0) {
+    throw new Error('the packed Worker remained active after awaitIdle')
+  }
+  if (maximum > 2) {
+    throw new Error(`the packed Worker exceeded concurrency: ${maximum}`)
+  }
+  if (contexts.length !== jobs.length) {
+    throw new Error(`the packed Worker processed ${contexts.length} of ${jobs.length} jobs`)
+  }
+  if (new Set(contexts.map(({ context }) => context.jobId)).size !== jobs.length) {
+    throw new Error('the packed Worker did not isolate every JobContext')
+  }
+  for (const { context, input } of contexts) {
+    if (context.metadata.jobIndex !== String(input.value)) {
+      throw new Error('the packed Worker mixed JobContext metadata between attempts')
+    }
+  }
+  const counts = store.counts()
+  if (counts.status !== 'ok' || counts.value.completed !== jobs.length) {
+    throw new Error('the packed Worker did not complete every enqueued job')
+  }
+} finally {
+  releaseGate()
+  const firstStop = worker.stop()
+  const secondStop = worker.stop()
+  stopWasIdempotent = firstStop === secondStop
+  await firstStop
+  await worker[Symbol.asyncDispose]()
+  await workerRuntime.dispose()
+}
+
+if (!stopWasIdempotent) {
+  throw new Error('the packed Worker stop handle was not idempotent')
+}
+if (worker.state !== 'stopped' || worker.activeCount !== 0) {
+  throw new Error('the packed Worker did not clean up its handle')
 }
 
 const smokeContract = {

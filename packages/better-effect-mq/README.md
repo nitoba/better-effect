@@ -2,12 +2,12 @@
 
 **Experimental durable message-queue protocol foundations for `better-effect`.**
 
-`better-effect-mq` defines the storage-neutral protocol used by future queue,
-store, and worker packages. Version 0.1 exposes the protocol model and a small
-portable Codec boundary: JSON-safe records, nominal identities, deterministic
-claim ordering, persisted failure envelopes, pure state transitions, explicit
-JSON/Standard Schema conversion, and the storage-neutral `JobStore` Service
-contract. It does not open connections, start workers, or provide an adapter.
+`better-effect-mq` defines a storage-neutral durable queue protocol and a small
+Worker supervisor for `better-effect`. Version 0.1 exposes JSON-safe records,
+nominal identities, deterministic claim ordering, persisted failure envelopes,
+pure state transitions, explicit JSON/Standard Schema conversion, the
+storage-neutral `JobStore` Service contract, and `Worker.start`/`Worker.use`.
+It does not open connections or provide a storage adapter.
 
 The package uses [`better-effect`](https://github.com/nitoba/better-effect)'s
 Service type and [`better-result`](https://github.com/nitoba/better-result)'s
@@ -224,13 +224,15 @@ to the safe integer `0`, and `backoff` uses the existing `PersistedBackoff`
 shape. Retention fields such as `keep` and `retain` are intentionally not part of
 this v0.1 descriptor. Result and failure codecs are optional; when absent,
 the corresponding `Job.Success` or `Job.Failure` type is `never`, and this
-package performs no result persistence or worker execution.
+package performs no result persistence. Worker execution is provided separately
+through the explicit Runtime boundary documented below.
 
 `Job.is` and `Queue.is` use stable `Symbol.for` TypeIds and bounded, accessor-free
 checks, so descriptors from duplicate package copies can be recognized safely.
 The registry is local and immutable: duplicate queue/name/version identities are
 rejected, unknown lookups return an explicit error Result, and no handlers are
-registered. Enqueue, storage, retry scheduling, and worker execution are separate features.
+registered. Enqueue, storage, retry scheduling, and worker execution remain
+separate features.
 
 ## Producer and admin programs
 
@@ -393,8 +395,88 @@ correctness or makes a basic operation unavailable. The
 `JobStore` rather than a separate notifier so token/version consistency cannot
 be split across Services.
 
-No adapter, backend, producer, worker, retry scheduler, or generic persistence
-API is included here.
+Adapters still own persistence and backend-specific behavior; the Worker only
+consumes the public `JobStore.Contract`.
+
+## Worker supervisor
+
+`Worker` runs handlers over an already configured `better-effect` `Runtime`.
+The application owns the Runtime and its Layer resources; the Worker never
+configures global Service state, creates a parallel container, or exposes a
+`Worker.layer`. An explicit Runtime handle is required so every store operation
+and every handler attempt uses the same environment and lifecycle boundary.
+
+```ts
+import { CurrentAbortSignal, Effect, Runtime } from 'better-effect'
+import { Result } from 'better-result'
+import { JobContext, Worker } from 'better-effect-mq'
+
+const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const mailer = yield* Mailer
+    const context = yield* JobContext
+    const signal = yield* CurrentAbortSignal
+    const sent = yield* Result.await(
+      mailer.send(payload, { idempotencyKey: context.jobId, signal })
+    )
+    return Result.ok(sent)
+  })
+)
+
+await using runtime = await Runtime.make(AppLive)
+await using worker = await Worker.start(runtime, {
+  handlers: [SendEmailHandler],
+  concurrency: 8
+})
+
+await worker.awaitIdle()
+```
+
+`WorkerHandle.awaitIdle()` validates its timeout and AbortSignal before it
+registers a waiter. Invalid options throw `WorkerAwaitIdleError`; an abort or
+timeout rejects with the same focused error, and completed waits remove their
+listeners and timers immediately.
+
+`Worker.handle` receives the decoded Job payload and returns an
+`Effect.Program<Success, Failure, Requirements>`. Its requirements are checked
+against the Runtime at `Worker.start`: `JobContext` is supplied per attempt and
+removed from the external requirement set, while the handler's root Services
+and the Job's bound `JobStore` must be provided by the Runtime. Handler
+registration and the returned inspectable handle are immutable.
+
+Each claimed Job runs through `runtime.runWith(JobContext.layer(context), ...)`
+with a fresh child Scope and attempt-local `AbortSignal`. Root Services remain
+shared, but contexts and Scope finalizers do not leak between overlapping
+attempts. A nominal `Result.err` becomes a typed failed settlement; a thrown or
+rejected handler becomes a defect settlement. Result and failure values are
+encoded through the Job's codecs before persistence.
+
+Claims are grouped by store and queue. The supervisor reserves only currently
+available slots, and the claim `limit` never exceeds the global concurrency,
+queue cap, or the sum of available handler caps. The most restrictive of
+`concurrency`, `queueConcurrency`, and a handler's `concurrency` applies. Empty
+claims use `awaitWake` plus the poll interval and are interruptible by shutdown.
+A handler error is reported through `onError` and does not terminate other
+claim loops.
+
+Use `Worker.use` when one owner should always stop the supervisor:
+
+```ts
+await Worker.use(runtime, { handlers: [SendEmailHandler] }, async (worker) => {
+  await worker.awaitIdle()
+})
+```
+
+`WorkerHandle.stop()` is idempotent; it marks the Worker as stopping before
+aborting claim waits, prevents new claims, waits for active attempts according
+to the selected policy, and removes its local timers/listeners. Pass
+`{ abortActive: true }` to cooperatively signal active attempts. The handle also
+implements `Symbol.asyncDispose`.
+
+Workers for named `JobStore` tokens can share one Runtime, while each store
+continues to receive only the Jobs bound to its token. Heartbeats, retry policy,
+stalled recovery, dynamic registration, process signals, and worker layers are
+outside this v0.1 supervisor API.
 
 ## MemoryJobStore reference driver
 

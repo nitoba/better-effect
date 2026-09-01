@@ -17,6 +17,7 @@
     "store.types.ts",
     "testing.types.ts",
     "runtime-spike.types.ts",
-    "memory-job-store.types.ts"
+    "memory-job-store.types.ts",
+    "worker.types.ts"
   ]
 }
