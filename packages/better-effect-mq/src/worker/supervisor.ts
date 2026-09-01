@@ -4,7 +4,7 @@
 // oxlint-disable anti-slop/no-chained-type-assertions -- heterogeneous handlers and store operations are erased in one module.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are localized to checked runtime boundaries.
 
-import { Effect, Runtime } from 'better-effect'
+import { Runtime, ServiceRuntime } from 'better-effect'
 import { Result, UnhandledException, type Result as ResultType } from 'better-result'
 
 import { type AnyJobDefinition, type CodecLike } from '../job'
@@ -126,6 +126,9 @@ export class WorkerSupervisor implements WorkerHandle {
   private readonly slotWaiters = new Set<() => void>()
   private readonly idleWaiters = new Set<Waiter>()
   private readonly claimController = new AbortController()
+  // Only cancels retry backoff. The first release/settle call must still be attempted
+  // after a handler finishes, even when shutdown has begun.
+  private readonly shutdownController = new AbortController()
   private readonly groups: readonly ClaimGroup[]
   private readonly runtime: AnyRuntime
   private readonly workerOptions: NormalizedWorkerOptions
@@ -156,9 +159,9 @@ export class WorkerSupervisor implements WorkerHandle {
       )
     }
 
-    const stores = new Set<AnyJobStoreToken>()
-    for (const group of this.groups) stores.add(group.store)
-    for (const store of stores) {
+    const stores = new Map<string, AnyJobStoreToken>()
+    for (const group of this.groups) stores.set(group.store.serviceTag, group.store)
+    for (const store of stores.values()) {
       this.startSupervisionLoop(store, 'heartbeat')
       this.startSupervisionLoop(store, 'stalled')
     }
@@ -190,6 +193,7 @@ export class WorkerSupervisor implements WorkerHandle {
     // Stop claiming immediately, but keep lease supervision alive while local
     // handlers and their cleanup are still able to settle.
     this.claimController.abort()
+    this.shutdownController.abort(new Error('Worker is stopping'))
 
     if (normalizedOptions.abortActive === true) this.abortActiveAttempts()
 
@@ -342,7 +346,10 @@ export class WorkerSupervisor implements WorkerHandle {
     let count = 0
 
     for (const attempt of this.activeAttempts.values()) {
-      if (attempt.entry.queue === group.queue && attempt.entry.store === group.store) {
+      if (
+        attempt.entry.queue === group.queue &&
+        attempt.entry.store.serviceTag === group.store.serviceTag
+      ) {
         count += 1
       }
     }
@@ -578,7 +585,8 @@ export class WorkerSupervisor implements WorkerHandle {
         }),
       undefined,
       this.workerOptions.pollIntervalMs,
-      this.workerOptions.storeOperationTimeoutMs
+      this.workerOptions.storeOperationTimeoutMs,
+      this.shutdownController.signal
     )
 
     if (Result.isError(result)) {
@@ -597,7 +605,8 @@ export class WorkerSupervisor implements WorkerHandle {
       (store) => store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() }),
       undefined,
       this.workerOptions.pollIntervalMs,
-      this.workerOptions.storeOperationTimeoutMs
+      this.workerOptions.storeOperationTimeoutMs,
+      this.shutdownController.signal
     )
 
     if (Result.isError(result)) {
@@ -652,7 +661,7 @@ export class WorkerSupervisor implements WorkerHandle {
         (attempt) =>
           attempt.job.leaseOwner === this.id &&
           attempt.job.leaseToken !== undefined &&
-          attempt.entry.store === store
+          attempt.entry.store.serviceTag === store.serviceTag
       )
       .filter((attempt) => attempt.state !== 'lost' && attempt.state !== 'settling')
       .map((attempt) => ({ jobId: attempt.job.id, leaseToken: attempt.job.leaseToken! }))
@@ -661,7 +670,7 @@ export class WorkerSupervisor implements WorkerHandle {
       [...this.activeAttempts.values()]
         .filter(
           (attempt) =>
-            attempt.entry.store === store &&
+            attempt.entry.store.serviceTag === store.serviceTag &&
             leases.some(
               (lease) =>
                 lease.jobId === attempt.job.id && lease.leaseToken === attempt.job.leaseToken
@@ -706,7 +715,8 @@ export class WorkerSupervisor implements WorkerHandle {
     }
     for (const jobId of result.value.cancellationRequested) {
       const attempt = [...snapshot.values()].find(
-        (candidate) => candidate.job.id === jobId && candidate.entry.store === store
+        (candidate) =>
+          candidate.job.id === jobId && candidate.entry.store.serviceTag === store.serviceTag
       )
       if (attempt === undefined || attempt.state !== 'running') continue
       attempt.state = 'cancelling'
@@ -1019,8 +1029,12 @@ const makeGroups = (
       store: definition.store,
       concurrency: handler.concurrency ?? options.concurrency
     }
+    // Repeated named handles share a logical group by stable tag. Different tags are
+    // the explicit identity boundary for separate storage backends.
     const group = groups.find(
-      (candidate) => candidate.store === definition.store && candidate.queue === queue.value
+      (candidate) =>
+        candidate.store.serviceTag === definition.store.serviceTag &&
+        candidate.queue === queue.value
     )
 
     if (group === undefined) {
@@ -1203,24 +1217,26 @@ const runStoreOperation = async <Value>(
   operation: (store: JobStoreContract) => StoreOperation<Value>,
   signal?: AbortSignal,
   retryDelayMs = 1,
-  timeoutMs = Math.max(minimumTimerMs, retryDelayMs)
+  timeoutMs = Math.max(minimumTimerMs, retryDelayMs),
+  retrySignal: AbortSignal | undefined = signal
 ): Promise<ResultType<Value, unknown>> => {
   let retries = 0
   while (true) {
     let result: ResultType<Value, unknown>
     try {
-      const pending = runtime.run(
-        () =>
-          Effect.gen(async function* () {
-            const store = yield* token
-            const value = yield* Result.await(Promise.resolve(operation(store)))
-            return Result.ok(value)
-          }) as never
-      ) as Promise<ResultType<Value, unknown>>
-      // A store cannot be cancelled by JavaScript; contain both late rejection and
-      // the supervisor's wait so a broken backend cannot block shutdown.
+      // Resolve only the token inside a completed Runtime execution. An arbitrary adapter
+      // Promise is then invoked outside Runtime: Runtime cannot preempt it and must retain
+      // its scope until settlement, so owning a hung adapter call would leak execution.
+      const store = await runtime.run(() => ServiceRuntime.resolve(token))
+      const pending = Promise.resolve().then(() => operation(store))
+      // A timed-out adapter may reject later, but its late result cannot mutate Worker state.
       void pending.catch(() => undefined)
-      result = await raceStoreOperation(pending, token.serviceTag, timeoutMs, signal)
+      result = await raceStoreOperation(
+        pending as Promise<ResultType<Value, unknown>>,
+        token.serviceTag,
+        timeoutMs,
+        signal
+      )
     } catch (cause) {
       return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<Value, unknown>
     }
@@ -1229,12 +1245,12 @@ const runStoreOperation = async <Value>(
       !JobStoreFailure.is(result.error) ||
       !result.error.retryable ||
       retries >= maximumStoreRetries ||
-      signal?.aborted
+      retrySignal?.aborted
     )
       return result
     retries += 1
-    await cancellableDelay(Math.min(100, retryDelayMs * 2 ** (retries - 1)), signal)
-    if (signal?.aborted) return result
+    await cancellableDelay(Math.min(100, retryDelayMs * 2 ** (retries - 1)), retrySignal)
+    if (retrySignal?.aborted) return result
   }
 }
 
