@@ -31,6 +31,24 @@ export type AnyWorkerHandler = WorkerHandler<any, any>
 /** A source of epoch milliseconds used by store requests. */
 export type WorkerClock = (() => number | Date) | { readonly now: () => number | Date }
 
+/** Reliability and lease-supervision controls for a Worker. */
+export interface WorkerReliabilityOptions {
+  /** How long a claimed lease remains valid. Defaults to 30 seconds. */
+  readonly leaseDurationMs?: number
+  /** Lease renewal cadence. Defaults to one third of leaseDurationMs. */
+  readonly heartbeatIntervalMs?: number
+  /** Expired-lease recovery cadence. Defaults to leaseDurationMs. */
+  readonly stalledIntervalMs?: number
+  /** Recoveries permitted before a stalled job is terminally failed. Defaults to 1. */
+  readonly maxStalledCount?: number
+  /** Bounded claim/wake polling cadence. Defaults to 100ms. */
+  readonly pollIntervalMs?: number
+  readonly shutdown?: {
+    readonly gracePeriodMs?: number
+    readonly abortAfterGracePeriod?: boolean
+  }
+}
+
 /** Basic supervisor shutdown controls. */
 export interface WorkerStopOptions {
   /** Cooperatively abort attempts already executing before waiting for them. */
@@ -49,13 +67,11 @@ export type WorkerErrorHandler = (cause: unknown) => void | PromiseLike<void>
 /** Options shared by the Worker start and use entrypoints. */
 export interface WorkerOptions<
   Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]
-> {
+> extends WorkerReliabilityOptions {
   readonly handlers: Handlers
   readonly concurrency?: number
   /** Optional per-queue cap; the most restrictive global, queue, and handler cap wins. */
   readonly queueConcurrency?: number | Readonly<Record<string, number>>
-  readonly leaseDurationMs?: number
-  readonly pollIntervalMs?: number
   readonly workerId?: WorkerId
   readonly id?: WorkerId
   readonly now?: WorkerClock

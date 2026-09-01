@@ -1,3 +1,6 @@
+// oxlint-disable unicorn/no-thenable -- These tests deliberately model PromiseLike adapter races.
+// oxlint-disable anti-slop/no-unknown-parameters -- Thenable callbacks are intentionally erased test boundaries.
+
 import { expect, test } from 'bun:test'
 
 import { CurrentAbortSignal, Effect, Layer, Runtime, Scope, Service } from 'better-effect'
@@ -6,12 +9,14 @@ import { Result } from 'better-result'
 import {
   Codec,
   JobStore,
+  JobStoreFailure,
   type JobStoreError,
   MemoryJobStore,
   Queue,
   Worker,
   JobContext,
   JobName,
+  makeJobId,
   WorkerAwaitIdleError,
   type JobRecord,
   type WorkerHandle
@@ -510,6 +515,39 @@ test('Worker settles success, typed Err, and defects after per-attempt cleanup',
   }
 })
 
+test('Worker validates reliability options before starting supervision', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const handler = Worker.handle(voidJob, () =>
+    Effect.fn(async function* () {
+      yield* JobContext
+      return Result.ok(undefined)
+    })
+  )
+
+  // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+  await expect(
+    Promise.resolve(
+      Worker.start(runtime, {
+        handlers: [handler],
+        leaseDurationMs: 10,
+        heartbeatIntervalMs: 10
+      })
+    )
+  ).rejects.toThrow(/less than leaseDurationMs/)
+
+  const worker = await Worker.start(runtime, {
+    handlers: [handler],
+    leaseDurationMs: 10,
+    heartbeatIntervalMs: 1,
+    stalledIntervalMs: 10,
+    maxStalledCount: 0,
+    pollIntervalMs: 0
+  })
+  await worker.stop()
+  await runtime.dispose()
+})
+
 test('Worker validates duplicate handlers and repeated disposal', async () => {
   const store = MemoryJobStore.make()
   const runtime = await runtimeFor(store)
@@ -607,6 +645,357 @@ test('Worker bounds multi-handler claims by actually startable slots', async () 
   }
 })
 
+test('Repeated named store handles share one queue concurrency group', async () => {
+  const store = MemoryJobStore.make()
+  const firstToken = JobStore.named('repeated-worker-store')
+  const secondToken = JobStore.named('repeated-worker-store')
+  const runtime = await Runtime.make(Layer.succeed(firstToken, firstToken.of(store)))
+  const groupedQueue = Queue.define('repeated-worker-queue')
+  const firstJob = groupedQueue.job('first', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: firstToken
+  })
+  const secondJob = groupedQueue.job('second', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: secondToken
+  })
+  await Promise.all([enqueue(store, firstJob, 1), enqueue(store, secondJob, 2)])
+  let active = 0
+  let maximum = 0
+  let firstEnteredResolve!: () => void
+  const firstEntered = new Promise<void>((resolveEntered) => {
+    firstEnteredResolve = resolveEntered
+  })
+  let firstEnteredCount = 0
+  let secondEnteredCount = 0
+  let release!: () => void
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate
+  })
+  const makeHandler = (job: typeof firstJob | typeof secondJob) =>
+    Worker.handle(job, () =>
+      // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+      Effect.fn(async function* () {
+        active += 1
+        maximum = Math.max(maximum, active)
+        if (job === firstJob) {
+          firstEnteredCount += 1
+          firstEnteredResolve()
+          await gate
+        } else {
+          secondEnteredCount += 1
+        }
+        active -= 1
+        return Result.ok(undefined)
+      })
+    )
+  const worker = await Worker.start(runtime, {
+    handlers: [makeHandler(firstJob), makeHandler(secondJob)],
+    concurrency: 2,
+    queueConcurrency: 1,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await firstEntered
+    expect(firstEnteredCount).toBe(1)
+    expect(secondEnteredCount).toBe(0)
+    expect(maximum).toBe(1)
+    release()
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect(firstEnteredCount).toBe(1)
+    expect(secondEnteredCount).toBe(1)
+    expect((await resolve(store.counts())).completed).toBe(2)
+  } finally {
+    release()
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
+test('Worker compensates a late claim after stop without starting a handler', async () => {
+  const base = MemoryJobStore.make()
+  const originalClaim = base.claim.bind(base)
+  const originalRelease = base.release.bind(base)
+  let releaseClaim!: () => void
+  const claimGate = new Promise<void>((resolveClaim) => {
+    releaseClaim = resolveClaim
+  })
+  let claimEntered!: () => void
+  const claimStarted = new Promise<void>((resolveClaim) => {
+    claimEntered = resolveClaim
+  })
+  let releases = 0
+  let releaseObserved!: () => void
+  const released = new Promise<void>((resolveRelease) => {
+    releaseObserved = resolveRelease
+  })
+  Object.defineProperty(base, 'claim', {
+    value: async (request: Parameters<typeof base.claim>[0]) => {
+      claimEntered()
+      await claimGate
+      return originalClaim(request)
+    }
+  })
+  Object.defineProperty(base, 'release', {
+    value: async (request: Parameters<typeof base.release>[0]) => {
+      releases += 1
+      releaseObserved()
+      return originalRelease(request)
+    }
+  })
+  const runtime = await runtimeFor(base)
+  const created = await enqueue(base, voidJob, 1)
+  let handlerRuns = 0
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(voidJob, () =>
+        // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+        Effect.fn(async function* () {
+          handlerRuns += 1
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await claimStarted
+    await worker.stop()
+    releaseClaim()
+    await released
+    const record = await resolve(base.getJob({ jobId: created.id }))
+    expect(record?.state).toBe('waiting')
+    expect(record?.leaseToken).toBeUndefined()
+    expect(handlerRuns).toBe(0)
+    expect(releases).toBe(1)
+  } finally {
+    releaseClaim()
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker compensates a reentrant late claim exactly once', async () => {
+  const base = MemoryJobStore.make()
+  const originalClaim = base.claim.bind(base)
+  const originalRelease = base.release.bind(base)
+  let claimEntered!: () => void
+  const claimStarted = new Promise<void>((resolveClaim) => {
+    claimEntered = resolveClaim
+  })
+  let worker!: WorkerHandle
+  let releases = 0
+  let releaseObserved!: () => void
+  const released = new Promise<void>((resolveRelease) => {
+    releaseObserved = resolveRelease
+  })
+  Object.defineProperty(base, 'claim', {
+    value: (request: Parameters<typeof base.claim>[0]) => {
+      claimEntered()
+      return {
+        then(resolve: (value: unknown) => void) {
+          resolve(originalClaim(request))
+          void worker.stop()
+        }
+      }
+    }
+  })
+  Object.defineProperty(base, 'release', {
+    value: async (request: Parameters<typeof base.release>[0]) => {
+      releases += 1
+      releaseObserved()
+      return originalRelease(request)
+    }
+  })
+  const runtime = await runtimeFor(base)
+  await enqueue(base, voidJob, 1)
+  let handlerRuns = 0
+  worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(voidJob, () =>
+        // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+        Effect.fn(async function* () {
+          handlerRuns += 1
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await claimStarted
+    await released
+    await worker.stop()
+    expect(releases).toBe(1)
+    expect(handlerRuns).toBe(0)
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker retries abandoned claim compensation with the bounded release policy', async () => {
+  const base = MemoryJobStore.make()
+  const originalClaim = base.claim.bind(base)
+  const originalRelease = base.release.bind(base)
+  let claimCalls = 0
+  let releaseClaim!: () => void
+  let lateClaim!: ReturnType<typeof originalClaim>
+  let claimStarted!: () => void
+  const firstClaimStarted = new Promise<void>((resolveClaim) => {
+    claimStarted = resolveClaim
+  })
+  let secondClaim!: () => void
+  const timedOut = new Promise<void>((resolveClaim) => {
+    secondClaim = resolveClaim
+  })
+  Object.defineProperty(base, 'claim', {
+    value: (request: Parameters<typeof base.claim>[0]) => {
+      claimCalls += 1
+      if (claimCalls === 1) {
+        claimStarted()
+        lateClaim = originalClaim(request)
+        return {
+          then(resolve: (value: unknown) => void) {
+            releaseClaim = () => resolve(lateClaim)
+          }
+        }
+      }
+      secondClaim()
+      return originalClaim(request)
+    }
+  })
+  let releases = 0
+  let releaseObserved!: () => void
+  const compensated = new Promise<void>((resolveRelease) => {
+    releaseObserved = resolveRelease
+  })
+  Object.defineProperty(base, 'release', {
+    value: async (request: Parameters<typeof base.release>[0]) => {
+      releases += 1
+      if (releases < 3) {
+        return Result.err(
+          new JobStoreFailure({
+            operation: 'release',
+            retryable: true,
+            message: 'temporary release failure'
+          })
+        )
+      }
+      const result = await originalRelease(request)
+      releaseObserved()
+      return result
+    }
+  })
+  const runtime = await runtimeFor(base)
+  const created = await enqueue(base, voidJob, 1)
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(voidJob, () =>
+        // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+        Effect.fn(async function* () {
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    pollIntervalMs: 1,
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 10
+  })
+
+  try {
+    await firstClaimStarted
+    await timedOut
+    releaseClaim()
+    await compensated
+    expect(releases).toBe(3)
+    const record = await resolve(base.getJob({ jobId: created.id }))
+    if (record === undefined) throw new Error('compensated job disappeared')
+    expect(record.state).toBe('waiting')
+    expect(record.leaseToken).toBeUndefined()
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker cancellation wins while result encoding is pending', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  let encodeStarted!: () => void
+  const encoding = new Promise<void>((resolveEncoding) => {
+    encodeStarted = resolveEncoding
+  })
+  let releaseEncoding!: () => void
+  const encodingGate = new Promise<void>((resolveEncoding) => {
+    releaseEncoding = resolveEncoding
+  })
+  const gatedResult = Codec.make<number>({
+    encode: async (value) => {
+      encodeStarted()
+      await encodingGate
+      return Result.ok(value)
+    },
+    // SAFETY: the test payload is the numeric result produced by this handler.
+    decode: (value) => Result.ok(value as number)
+  })
+  const job = queue.job('cancel-during-encode', { version: 1, payload, result: gatedResult })
+  const created = await enqueue(store, job, 1)
+  const originalHeartbeat = store.heartbeat.bind(store)
+  let cancellationHeartbeat!: () => void
+  const heartbeatObserved = new Promise<void>((resolveHeartbeat) => {
+    cancellationHeartbeat = resolveHeartbeat
+  })
+  Object.defineProperty(store, 'heartbeat', {
+    value: async (request: Parameters<typeof store.heartbeat>[0]) => {
+      const result = await originalHeartbeat(request)
+      if (!Result.isError(result) && result.value.cancellationRequested.length > 0) {
+        cancellationHeartbeat()
+      }
+      return result
+    }
+  })
+  const handler = Worker.handle(job, () =>
+    Effect.fn(async function* () {
+      yield* CurrentAbortSignal
+      return Result.ok(7)
+    })
+  )
+  const worker = await Worker.start(runtime, {
+    handlers: [handler],
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 1,
+    stalledIntervalMs: 1_000,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await encoding
+    await resolve(store.requestCancellation({ jobId: created.id, now: Date.now() }))
+    await heartbeatObserved
+    releaseEncoding()
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    const record = await resolve(store.getJob({ jobId: created.id }))
+    const attempts = await resolve(store.getAttempts({ jobId: created.id }))
+    const counts = await resolve(store.counts())
+    expect(record?.state).toBe('cancelled')
+    expect(counts).toMatchObject({ completed: 0, cancelled: 1 })
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.outcome).toBe('cancelled')
+  } finally {
+    releaseEncoding()
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
 test('Workers for named stores share one Runtime without cross-store claims', async () => {
   const firstStore = MemoryJobStore.make()
   const secondStore = MemoryJobStore.make()
@@ -661,6 +1050,141 @@ test('Workers for named stores share one Runtime without cross-store claims', as
     expect((await resolve(secondStore.getJob({ jobId: secondRecord.id })))?.result).toBe('run')
   } finally {
     await Promise.all([firstWorker.stop(), secondWorker.stop()])
+    await runtime.dispose()
+  }
+})
+
+test('Worker scopes heartbeat loss by store, job ID, and lease token', async () => {
+  const firstStore = MemoryJobStore.make({ idGenerator: { next: () => 'shared-lease-token' } })
+  const secondStore = MemoryJobStore.make({ idGenerator: { next: () => 'shared-lease-token' } })
+  const firstToken = JobStore.named('heartbeat-store-a')
+  const secondToken = JobStore.named('heartbeat-store-b')
+  let firstHeartbeat!: () => void
+  const firstHeartbeatSeen = new Promise<void>((resolve) => {
+    firstHeartbeat = resolve
+  })
+  let releaseHeartbeat!: () => void
+  const heartbeatResponseGate = new Promise<void>((resolve) => {
+    releaseHeartbeat = resolve
+  })
+  const originalHeartbeat = firstStore.heartbeat.bind(firstStore)
+  let secondSettledResolve!: () => void
+  const secondSettled = new Promise<void>((resolveSettled) => {
+    secondSettledResolve = resolveSettled
+  })
+  const originalSecondSettle = secondStore.settle.bind(secondStore)
+  Object.defineProperty(secondStore, 'settle', {
+    value: async (request: Parameters<typeof secondStore.settle>[0]) => {
+      const result = await originalSecondSettle(request)
+      secondSettledResolve()
+      return result
+    }
+  })
+  Object.defineProperty(firstStore, 'heartbeat', {
+    value: async (request: Parameters<typeof firstStore.heartbeat>[0]) => {
+      const result = await originalHeartbeat(request)
+      firstHeartbeat()
+      await heartbeatResponseGate
+      if (Result.isError(result)) return result
+      const lease = request.leases[0]
+      return Result.ok({
+        renewed: [],
+        lost:
+          lease === undefined
+            ? []
+            : [
+                {
+                  jobId: lease.jobId,
+                  leaseToken: lease.leaseToken,
+                  reason: 'mismatched-token' as const
+                }
+              ],
+        cancellationRequested: []
+      })
+    }
+  })
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(firstToken, firstToken.of(firstStore)),
+      Layer.succeed(secondToken, secondToken.of(secondStore))
+    )
+  )
+  const firstJob = Queue.define('heartbeat-a').job('same-id-a', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: firstToken
+  })
+  const secondJob = Queue.define('heartbeat-b').job('same-id-b', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: secondToken
+  })
+  const sameId = makeJobId('heartbeat-same-id').unwrap()
+  await Promise.all([
+    resolve(
+      firstStore.enqueue({
+        id: sameId,
+        job: firstJob.identity,
+        payload: { value: 1 },
+        runAt: Date.now(),
+        attemptsMax: 1,
+        now: Date.now()
+      })
+    ),
+    resolve(
+      secondStore.enqueue({
+        id: sameId,
+        job: secondJob.identity,
+        payload: { value: 2 },
+        runAt: Date.now(),
+        attemptsMax: 1,
+        now: Date.now()
+      })
+    )
+  ])
+  let entered = 0
+  let enteredResolve!: () => void
+  const enteredBoth = new Promise<void>((resolveEntered) => {
+    enteredResolve = resolveEntered
+  })
+  let release!: () => void
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate
+  })
+  const makeHandler = (job: typeof firstJob | typeof secondJob) =>
+    Worker.handle(job, () =>
+      Effect.fn(async function* () {
+        const signal = yield* CurrentAbortSignal
+        signal.addEventListener('abort', () => {})
+        entered += 1
+        if (entered === 2) enteredResolve()
+        await gate
+        return Result.ok(undefined)
+      })
+    )
+  const worker = await Worker.start(runtime, {
+    handlers: [makeHandler(firstJob), makeHandler(secondJob)],
+    concurrency: 2,
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 10,
+    stalledIntervalMs: 1_000,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await enteredBoth
+    await firstHeartbeatSeen
+    releaseHeartbeat()
+    await Promise.resolve()
+    release()
+    await secondSettled
+  } finally {
+    release()
+    await worker.stop()
+    expect((await resolve(firstStore.getAttempts({ jobId: sameId }))).length).toBe(0)
+    expect((await resolve(secondStore.getAttempts({ jobId: sameId }))).length).toBe(1)
     await runtime.dispose()
   }
 })

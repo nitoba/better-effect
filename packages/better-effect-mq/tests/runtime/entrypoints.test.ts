@@ -35,6 +35,7 @@ const expectedCoreRuntimeExports = [
   'UnsupportedJobStoreOperationError',
   'Worker',
   'WorkerAwaitIdleError',
+  'WorkerRuntimeOwnershipError',
   'WorkerId',
   'cancelJob',
   'claimJob',

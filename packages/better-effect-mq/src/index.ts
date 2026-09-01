@@ -141,7 +141,7 @@ export {
 
 export { JobStore, JobStoreWakeAbortedError, MemoryJobStore } from './store'
 
-export { JobContext, Worker, WorkerAwaitIdleError } from './worker'
+export { JobContext, Worker, WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './worker'
 
 export type {
   AnyWorkerHandler,
@@ -154,6 +154,7 @@ export type {
   WorkerHandler,
   WorkerHandlerOptions,
   WorkerHandle,
+  WorkerReliabilityOptions,
   WorkerOptions,
   WorkerRequirements,
   WorkerStopOptions

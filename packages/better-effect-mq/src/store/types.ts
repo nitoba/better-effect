@@ -153,10 +153,18 @@ export interface SettleRequest {
 
 export type SettlementRequest = SettleRequest
 
-/** Settlement always persists one handler attempt with the new snapshot. */
-export type SettlementResult = Omit<JobTransition, 'attempt'> & {
-  readonly attempt: AttemptRecord
-}
+/** Settlement explicitly distinguishes a first application from an idempotent acknowledgment. */
+export type SettlementResult = Omit<JobTransition, 'attempt'> &
+  (
+    | {
+        readonly status: 'applied'
+        readonly attempt: AttemptRecord
+      }
+    | {
+        readonly status: 'already-applied'
+        readonly attempt: AttemptRecord
+      }
+  )
 
 /** A fenced release request; release does not consume an attempt budget. */
 export interface ReleaseRequest {
