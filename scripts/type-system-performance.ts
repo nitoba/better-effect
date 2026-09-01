@@ -926,24 +926,50 @@ void generatedHandler
 }
 
 const kyselyFixtureSource = (size: number): string => {
-  const imports = Array.from(
+  const serviceNames = Array.from(
     { length: size },
-    (_, index) =>
-      `import * as KyselyEffect${String(index + 1).padStart(3, '0')} from '../../../packages/better-effect-kysely/src/index.ts'`
-  ).join('\n')
-  const namespaces = Array.from(
-    { length: size },
-    (_, index) => `KyselyEffect${String(index + 1).padStart(3, '0')}`
-  ).join(', ')
+    (_, index) => `Database${String(index + 1).padStart(3, '0')}`
+  )
+  const schemas = serviceNames
+    .map(
+      (_, index) =>
+        `type Schema${String(index + 1).padStart(3, '0')} = {\n  table${String(index + 1).padStart(3, '0')}: { id: number; value: string }\n}`
+    )
+    .join('\n\n')
+  const declarations = serviceNames
+    .map((name, index) => {
+      const suffix = String(index + 1).padStart(3, '0')
+      return `const ${name} = KyselyEffect.service<Schema${suffix}>()('@perf/${name}')\ndeclare const raw${suffix}: KyselyService<Schema${suffix}>\nconst layer${suffix} = ${name}.layer(() => raw${suffix})\nconst borrowed${suffix} = ${name}.succeed(raw${suffix})\ntype Expected${suffix} = KyselyServiceInstance<'@perf/${name}', Schema${suffix}>\ntype Provided${suffix} = Layer.Provided<typeof layer${suffix}>\ntype BorrowedProvided${suffix} = Layer.Provided<typeof borrowed${suffix}>\ntype Required${suffix} = Layer.Required<typeof layer${suffix}>\ntype Check${suffix} = Assert<Equal<Provided${suffix}, Expected${suffix}>>\ntype BorrowedCheck${suffix} = Assert<Equal<BorrowedProvided${suffix}, Expected${suffix}>>\ntype RequiredCheck${suffix} = Assert<Equal<Required${suffix}, never>>`
+    })
+    .join('\n\n')
+  const layers = serviceNames
+    .map((_, index) => `layer${String(index + 1).padStart(3, '0')}`)
+    .join(',\n  ')
+  const expected = serviceNames
+    .map((name, index) => `Expected${String(index + 1).padStart(3, '0')}`)
+    .join(' | ')
 
-  return `${imports}
+  return `import { Layer } from 'better-effect'
+import { KyselyEffect } from '../../../packages/better-effect-kysely/src/index.ts'
+import type { KyselyService, KyselyServiceInstance } from '../../../packages/better-effect-kysely/src/index.ts'
 
-type FoundationExports = keyof typeof KyselyEffect001
-const namespaces = [${namespaces}] as const
-type FoundationHasNoExports = FoundationExports extends never ? true : false
-const foundationCheck: FoundationHasNoExports = true
-void namespaces
-void foundationCheck
+type Assert<Condition extends true> = Condition
+type Equal<Left, Right> =
+  (<Type>() => Type extends Left ? 1 : 2) extends <Type>() => Type extends Right ? 1 : 2
+    ? true
+    : false
+
+${schemas}
+
+${declarations}
+
+const AppLive = Layer.merge(
+  ${layers}
+)
+type AppProvided = Layer.Provided<typeof AppLive>
+type ExpectedProvided = ${expected}
+type AppCheck = Assert<Equal<AppProvided, ExpectedProvided>>
+void AppLive
 `
 }
 

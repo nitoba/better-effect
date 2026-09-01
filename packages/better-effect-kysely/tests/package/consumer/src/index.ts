@@ -1,16 +1,36 @@
-import * as KyselyEffect from 'better-effect-kysely'
-import packageJson from 'better-effect-kysely/package.json' with { type: 'json' }
+import { Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { Kysely } from 'kysely'
+import { KyselyEffect } from 'better-effect-kysely'
+import type { KyselyServiceInstance, KyselyServiceToken } from 'better-effect-kysely'
 
-type Assert<Condition extends true> = Condition
-type Equal<Left, Right> =
-  (<Type>() => Type extends Left ? 1 : 2) extends <Type>() => Type extends Right ? 1 : 2
-    ? true
-    : false
+interface DatabaseSchema {
+  users: {
+    id: number
+    email: string
+  }
+}
 
-type _NoFunctionalPlaceholder = Assert<Equal<keyof typeof KyselyEffect, never>>
-const packageName: string = packageJson.name
-const packageVersion: string = packageJson.version
+const Database = KyselyEffect.service<DatabaseSchema>()('@external/Database')
+declare const database: Kysely<DatabaseSchema>
 
-void KyselyEffect
-void packageName
-void packageVersion
+type ExpectedInstance = KyselyServiceInstance<'@external/Database', DatabaseSchema>
+expectToken(Database)
+expectInstance(Database.of(database))
+expectLayer(Database.layer(() => database))
+expectLayer(Database.succeed(database))
+void KyselyEffect.service
+
+function expectToken(token: KyselyServiceToken<'@external/Database', DatabaseSchema>): void {
+  void token
+}
+
+function expectInstance(instance: ExpectedInstance): void {
+  void instance
+}
+
+function expectLayer(layer: Layer<ExpectedInstance, never>): void {
+  void layer
+}
+
+const program = async () => ServiceRuntime.resolve(Database)
+void Runtime.make(Database.succeed(database)).then((runtime) => runtime.run(program))
