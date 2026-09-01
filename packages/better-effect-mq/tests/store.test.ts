@@ -60,7 +60,7 @@ const contract: JobStoreType.Contract = {
       failed: 0,
       cancelled: 0
     }),
-  redrive: () => success<StoreOperation<'redrive'>>({} as JobStoreType.RedriveResult),
+  retry: () => success<StoreOperation<'retry'>>({} as JobStoreType.RetryResult),
   cancel: () => success<StoreOperation<'cancel'>>({} as JobStoreType.CancelResult),
   requestCancellation: () =>
     success<StoreOperation<'requestCancellation'>>({} as JobStoreType.RequestCancellationResult),

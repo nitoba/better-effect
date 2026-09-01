@@ -10,6 +10,7 @@ import {
   JobStoreFailure,
   JobStoreWakeAbortedError,
   MemoryJobStore,
+  UnsupportedJobStoreOperationError,
   QueueName,
   WorkerId,
   makeJobId,
@@ -36,7 +37,9 @@ const identity = (queue = 'jobs', name = 'work', version = 1) => ({
 const enqueueRequest = (
   label: string,
   now = 1,
-  overrides: Partial<Pick<EnqueueRequest, 'id' | 'runAt' | 'priority'>> = {}
+  overrides: Partial<
+    Pick<EnqueueRequest, 'id' | 'idempotencyKey' | 'runAt' | 'priority' | 'metadata' | 'job'>
+  > = {}
 ): EnqueueRequest => ({
   job: identity(),
   payload: { label },
@@ -64,6 +67,28 @@ test('MemoryJobStore instances and snapshots are isolated and detached', async (
   expect(Object.isFrozen(created.job.payload)).toBe(true)
   expect((await resolve(second.counts())).total).toBe(0)
   expect((await resolve(first.counts())).total).toBe(1)
+})
+
+test('MemoryJobStore gives explicit IDs precedence over idempotency keys', async () => {
+  const store = MemoryJobStore.make()
+  const keyed = await resolve(
+    store.enqueue(enqueueRequest('keyed', 1, { idempotencyKey: 'shared-key' }))
+  )
+  const explicitId = makeJobId('explicit-precedence').unwrap()
+  const explicit = await resolve(
+    store.enqueue(enqueueRequest('explicit', 1, { id: explicitId, idempotencyKey: 'shared-key' }))
+  )
+
+  expect(explicit.job.id).toBe(explicitId)
+  expect(explicit.job.id).not.toBe(keyed.job.id)
+
+  const explicitSecond = await resolve(
+    store.enqueue(
+      enqueueRequest('explicit-second', 1, { id: explicitId, idempotencyKey: 'other-key' })
+    )
+  )
+  expect(explicitSecond.duplicate).toBe(true)
+  expect(explicitSecond.job.id).toBe(explicitId)
 })
 
 test('MemoryJobStore accepts deterministic Clock and IdGenerator sources', async () => {
@@ -307,7 +332,7 @@ test('MemoryJobStore counts terminal stalled cancellation in the ledger', async 
   expect(attempts[1]?.delivery).toBe(2)
 })
 
-test('MemoryJobStore redrive accepts cancelled and non-retryable failed jobs', async () => {
+test('MemoryJobStore retry accepts cancelled and non-retryable failed jobs', async () => {
   const store = MemoryJobStore.make()
   const failed = await resolve(
     store.enqueue(enqueueRequest('failed', 1, { id: makeJobId('failed-job').unwrap() }))
@@ -341,18 +366,16 @@ test('MemoryJobStore redrive accepts cancelled and non-retryable failed jobs', a
       }
     })
   )
-  const redrivenFailed = await resolve(store.redrive({ jobId: failed.job.id, runAt: 1, now: 1 }))
+  const retriedFailed = await resolve(store.retry({ jobId: failed.job.id, runAt: 1, now: 1 }))
 
   const cancelled = await resolve(
     store.enqueue(enqueueRequest('cancelled', 1, { id: makeJobId('cancelled-job').unwrap() }))
   )
   await resolve(store.cancel({ jobId: cancelled.job.id, now: 1 }))
-  const redrivenCancelled = await resolve(
-    store.redrive({ jobId: cancelled.job.id, runAt: 1, now: 1 })
-  )
+  const retriedCancelled = await resolve(store.retry({ jobId: cancelled.job.id, runAt: 1, now: 1 }))
 
-  expect(redrivenFailed.record.state).toBe('waiting')
-  expect(redrivenCancelled.record.state).toBe('waiting')
+  expect(retriedFailed.record.state).toBe('waiting')
+  expect(retriedCancelled.record.state).toBe('waiting')
 })
 
 test('MemoryJobStore cursors carry their binding across collisions and stores', async () => {
@@ -392,6 +415,148 @@ test('MemoryJobStore cursors carry their binding across collisions and stores', 
   })
   expect(resumed.jobs[0]?.id).toBe(secondJobId)
   expect(resumedInFreshStore.jobs[0]?.id).toBe(secondJobId)
+})
+
+test('MemoryJobStore lists supported filters and orderings with null cursors', async () => {
+  const store = MemoryJobStore.make()
+  const queue = QueueName.make('jobs').unwrap()
+  const work = JobName.make('work').unwrap()
+  const acceptedIdentity = { queue, name: work, version: 1 }
+
+  const finished = await resolve(
+    store.enqueue(
+      enqueueRequest('finished', 1, {
+        id: makeJobId('finished').unwrap(),
+        job: acceptedIdentity,
+        metadata: { group: 'done' },
+        priority: 10,
+        runAt: 1
+      })
+    )
+  )
+  const unfinished = await resolve(
+    store.enqueue(
+      enqueueRequest('unfinished', 2, {
+        id: makeJobId('unfinished').unwrap(),
+        job: acceptedIdentity,
+        metadata: { group: 'open' },
+        runAt: 1
+      })
+    )
+  )
+  const versionTwo = await resolve(
+    store.enqueue(
+      enqueueRequest('version-two', 3, {
+        id: makeJobId('version-two').unwrap(),
+        job: { queue, name: work, version: 2 },
+        metadata: { group: 'two' },
+        runAt: 3
+      })
+    )
+  )
+  const otherQueue = await resolve(
+    store.enqueue(
+      enqueueRequest('other-queue', 4, {
+        id: makeJobId('other-queue').unwrap(),
+        job: {
+          queue: QueueName.make('other').unwrap(),
+          name: JobName.make('alt').unwrap(),
+          version: 1
+        },
+        metadata: { group: 'other' },
+        runAt: 4
+      })
+    )
+  )
+
+  const claimed = await resolve(
+    store.claim({
+      queue,
+      accepted: [acceptedIdentity],
+      limit: 1,
+      workerId: WorkerId.make('list-worker').unwrap(),
+      leaseDurationMs: 100,
+      now: 5
+    })
+  )
+  const active = claimed.jobs[0]
+  if (active?.leaseToken === undefined) throw new Error('finished fixture was not claimed')
+  await resolve(
+    store.settle({
+      jobId: active.id,
+      leaseToken: active.leaseToken,
+      now: 10,
+      outcome: { type: 'complete', result: { done: true } }
+    })
+  )
+
+  const listIds = async (request: Parameters<typeof store.list>[0]): Promise<string[]> =>
+    (await resolve(store.list(request))).jobs.map((job) => String(job.id))
+  const allAscending = await listIds({ limit: 10 })
+  expect(allAscending).toEqual([
+    String(finished.job.id),
+    String(unfinished.job.id),
+    String(versionTwo.job.id),
+    String(otherQueue.job.id)
+  ])
+  expect(await listIds({ limit: 10, order: 'desc' })).toEqual([...allAscending].reverse())
+  expect(await listIds({ limit: 10, orderBy: 'runAt' })).toEqual([
+    String(finished.job.id),
+    String(unfinished.job.id),
+    String(versionTwo.job.id),
+    String(otherQueue.job.id)
+  ])
+  expect(await listIds({ limit: 10, orderBy: 'runAt', order: 'desc' })).toEqual([
+    String(otherQueue.job.id),
+    String(versionTwo.job.id),
+    String(unfinished.job.id),
+    String(finished.job.id)
+  ])
+  expect(await listIds({ limit: 10, orderBy: 'finishedAt' })).toEqual([
+    String(finished.job.id),
+    String(unfinished.job.id),
+    String(versionTwo.job.id),
+    String(otherQueue.job.id)
+  ])
+
+  const finishedDescending = await resolve(
+    store.list({ limit: 1, orderBy: 'finishedAt', order: 'desc' })
+  )
+  expect(finishedDescending.jobs[0]?.id).toBe(otherQueue.job.id)
+  expect(finishedDescending.nextCursor?.value).toBeNull()
+  if (finishedDescending.nextCursor === undefined) throw new Error('missing finishedAt cursor')
+  const finishedDescendingPageTwo = await resolve(
+    store.list({
+      limit: 1,
+      orderBy: 'finishedAt',
+      order: 'desc',
+      cursor: finishedDescending.nextCursor
+    })
+  )
+  expect(finishedDescendingPageTwo.jobs[0]?.id).toBe(versionTwo.job.id)
+
+  expect(await listIds({ queue, limit: 10 })).toEqual([
+    String(finished.job.id),
+    String(unfinished.job.id),
+    String(versionTwo.job.id)
+  ])
+  expect(await listIds({ name: work, limit: 10 })).toHaveLength(3)
+  expect(await listIds({ version: 2, limit: 10 })).toEqual([String(versionTwo.job.id)])
+  expect(await listIds({ state: 'completed', limit: 10 })).toEqual([String(finished.job.id)])
+  expect(await listIds({ metadata: { group: 'done' }, limit: 10 })).toEqual([
+    String(finished.job.id)
+  ])
+  expect(await listIds({ metadata: { group: 'done', extra: 'nope' }, limit: 10 })).toEqual([])
+
+  const mismatchedOrder = await store.list({
+    limit: 1,
+    orderBy: 'runAt',
+    cursor: finishedDescending.nextCursor
+  })
+  expect(Result.isError(mismatchedOrder)).toBe(true)
+  if (Result.isError(mismatchedOrder)) {
+    expect(UnsupportedJobStoreOperationError.is(mismatchedOrder.error)).toBe(true)
+  }
 })
 
 test('MemoryJobStore rejects a cursor with a mismatched binding', async () => {

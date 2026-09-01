@@ -149,8 +149,8 @@ export interface PromoteCommand {
   readonly now: number
 }
 
-export interface RedriveCommand {
-  readonly type: 'redrive'
+export interface RetryCommand {
+  readonly type: 'retry'
   readonly jobId: JobId
   readonly runAt: number
   readonly now: number
@@ -169,7 +169,7 @@ export type JobTransitionCommand =
   | RequestCancellationCommand
   | CancelCommand
   | PromoteCommand
-  | RedriveCommand
+  | RetryCommand
   | RecoverStalledCommand
 
 export interface JobTransition {

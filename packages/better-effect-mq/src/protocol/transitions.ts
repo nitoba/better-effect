@@ -26,7 +26,7 @@ import type {
   JsonValue,
   PromoteCommand,
   RecoverStalledCommand,
-  RedriveCommand,
+  RetryCommand,
   ReleaseCommand,
   RequestCancellationCommand,
   SettleCommand,
@@ -806,7 +806,7 @@ const promote = (record: JobRecord, command: PromoteCommand): TransitionResult =
   })
 }
 
-const redrive = (record: JobRecord, command: RedriveCommand): TransitionResult => {
+const retry = (record: JobRecord, command: RetryCommand): TransitionResult => {
   const prepared = prepareNow(record, command.jobId, command.now)
 
   if (Result.isError(prepared)) {
@@ -824,7 +824,7 @@ const redrive = (record: JobRecord, command: RedriveCommand): TransitionResult =
       new JobNotRetryableError({
         jobId: prepared.value.id,
         state: prepared.value.state,
-        message: 'only failed or cancelled jobs may be explicitly redriven'
+        message: 'only failed or cancelled jobs may be explicitly retried'
       })
     )
   }
@@ -939,8 +939,8 @@ export const reduceJob = (record: JobRecord, command: JobTransitionCommand): Tra
         return cancel(record, command)
       case 'promote':
         return promote(record, command)
-      case 'redrive':
-        return redrive(record, command)
+      case 'retry':
+        return retry(record, command)
       case 'recover-stalled':
         return recoverStalledWithPolicy(record, command, false)
       default:
@@ -979,7 +979,7 @@ export const cancelJob = (record: JobRecord, command: CancelCommand): RecordResu
 export const promoteJob = (record: JobRecord, command: PromoteCommand): RecordResult =>
   recordOnly(reduceJob(record, command))
 
-export const redriveJob = (record: JobRecord, command: RedriveCommand): RecordResult =>
+export const retryJob = (record: JobRecord, command: RetryCommand): RecordResult =>
   recordOnly(reduceJob(record, command))
 
 export const recoverStalledJob = (

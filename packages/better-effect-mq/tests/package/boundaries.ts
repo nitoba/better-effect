@@ -28,10 +28,15 @@ const expectedCoreRuntimeExports = [
   'JobStore',
   'JobStoreWakeAbortedError',
   'MemoryJobStore',
+  'JobAdmin',
+  'JobAwaitAbortedError',
   'JobCodecFailure',
   'JobDecodeFailure',
   'JobDefinitionError',
   'JobEncodeFailure',
+  'JobExecutionCancelledError',
+  'JobExecutionFailureError',
+  'JobIdentityMismatchError',
   'JobId',
   'JobName',
   'JobNotCancellableError',
@@ -66,7 +71,7 @@ const expectedCoreRuntimeExports = [
   'promoteJob',
   'protocolVersion',
   'recoverStalledJob',
-  'redriveJob',
+  'retryJob',
   'reduceJob',
   'releaseJob',
   'requestJobCancellation',
@@ -88,8 +93,8 @@ const expectedCoreRuntimeExports = [
 ] as const
 
 const allowedExternalImportsByEntrypoint = {
-  core: new Set<string>(['better-effect', 'better-result']),
-  testing: new Set<string>(['better-effect', 'better-result'])
+  core: new Set<string>(['better-effect', 'better-effect/standard-services', 'better-result']),
+  testing: new Set<string>(['better-effect', 'better-effect/standard-services', 'better-result'])
 } satisfies Record<Entrypoint, ReadonlySet<string>>
 
 const forbiddenPackagePrefixes = [
@@ -121,7 +126,6 @@ const forbiddenBetterEffectEntrypoints = [
   'better-effect/adapters',
   'better-effect/hono',
   'better-effect/runtime',
-  'better-effect/standard-services',
   'better-effect/testing'
 ]
 

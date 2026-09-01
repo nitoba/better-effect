@@ -27,7 +27,7 @@ import type {
   JobStorePausedQueuesError,
   JobStorePromoteError,
   JobStoreRecoverStalledError,
-  JobStoreRedriveError,
+  JobStoreRetryError,
   JobStoreReleaseError,
   JobStoreRemoveError,
   JobStoreRequestCancellationError,
@@ -223,29 +223,42 @@ export interface GetAttemptsRequest {
   readonly jobId: import('../protocol').JobId
 }
 
+/** The public primary fields supported by encoded-neutral Job listing. */
+export type JobListOrderBy = 'enqueuedAt' | 'runAt' | 'finishedAt'
+export type JobListOrder = 'asc' | 'desc'
+export type JobListOrdering = `${'createdAt' | 'runAt' | 'finishedAt'},orderingSequence,id`
+
 /**
- * Self-contained keyset cursor for the stable `(createdAt, orderingSequence, id)` order.
- * The binding fields make cursors portable across equivalent store instances and
- * reject reuse with a different query.
+ * Self-contained keyset cursor for a list order. `value` is the primary sort
+ * value; `null` represents an unfinished Job when ordering by `finishedAt`.
+ * The legacy `createdAt`/`direction` fields remain in the wire shape so older
+ * cursors can be diagnosed without silently changing their meaning.
  */
 export interface JobListCursor {
   readonly version: 1
-  readonly ordering: 'createdAt,orderingSequence,id'
-  readonly direction: 'asc'
+  readonly orderBy: JobListOrderBy
+  readonly order: JobListOrder
+  readonly ordering: JobListOrdering
+  readonly direction: JobListOrder
   readonly filterSignature: string
+  readonly value: number | null
   readonly createdAt: number
   readonly orderingSequence: number
   readonly id: import('../protocol').JobId
 }
 
 /**
- * Deliberately small, portable inspection query. Unsupported combinations
- * return `UnsupportedJobStoreOperationError`; they never imply a hidden scan.
+ * Portable encoded-neutral inspection query. Unsupported combinations return
+ * `UnsupportedJobStoreOperationError`; they never imply a hidden scan.
  */
 export interface ListJobsRequest {
   readonly queue?: import('../protocol').QueueName
   readonly name?: import('../protocol').JobName
+  readonly version?: number
   readonly state?: JobState | readonly JobState[]
+  readonly metadata?: Readonly<Record<string, string>>
+  readonly orderBy?: JobListOrderBy
+  readonly order?: JobListOrder
   readonly limit: number
   readonly cursor?: JobListCursor
 }
@@ -275,11 +288,11 @@ export interface JobIdRequest {
   readonly now: number
 }
 
-export interface RedriveRequest extends JobIdRequest {
+export interface RetryRequest extends JobIdRequest {
   readonly runAt: number
 }
 
-export type RedriveResult = JobTransition
+export type RetryResult = JobTransition
 export type CancelRequest = JobIdRequest
 export type CancelResult = JobTransition
 export type RequestCancellationRequest = JobIdRequest
@@ -332,7 +345,7 @@ export interface JobStoreContract {
   list(request: ListJobsRequest): JobStoreOperation<ListJobsResult, JobStoreListError>
   counts(request?: CountsRequest): JobStoreOperation<JobCounts, JobStoreCountsError>
 
-  redrive(request: RedriveRequest): JobStoreOperation<RedriveResult, JobStoreRedriveError>
+  retry(request: RetryRequest): JobStoreOperation<RetryResult, JobStoreRetryError>
   cancel(request: CancelRequest): JobStoreOperation<CancelResult, JobStoreCancelError>
   requestCancellation(
     request: RequestCancellationRequest

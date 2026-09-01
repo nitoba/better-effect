@@ -151,12 +151,15 @@ export declare namespace JobStore {
   export type GetJobRequest = import('./types').GetJobRequest
   export type GetAttemptsRequest = import('./types').GetAttemptsRequest
   export type JobListCursor = import('./types').JobListCursor
+  export type JobListOrder = import('./types').JobListOrder
+  export type JobListOrderBy = import('./types').JobListOrderBy
+  export type JobListOrdering = import('./types').JobListOrdering
   export type ListJobsRequest = import('./types').ListJobsRequest
   export type ListJobsResult = import('./types').ListJobsResult
   export type CountsRequest = import('./types').CountsRequest
   export type JobCounts = import('./types').JobCounts
-  export type RedriveRequest = import('./types').RedriveRequest
-  export type RedriveResult = import('./types').RedriveResult
+  export type RetryRequest = import('./types').RetryRequest
+  export type RetryResult = import('./types').RetryResult
   export type CancelRequest = import('./types').CancelRequest
   export type CancelResult = import('./types').CancelResult
   export type RequestCancellationRequest = import('./types').RequestCancellationRequest

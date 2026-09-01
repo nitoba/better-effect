@@ -13,6 +13,13 @@ export const QueueName = QueueNameFactory
 export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
+export { JobAdmin } from './job/application'
+export {
+  JobAwaitAbortedError,
+  JobExecutionCancelledError,
+  JobExecutionFailureError,
+  JobIdentityMismatchError
+} from './job/application-errors'
 
 export {
   Job,
@@ -44,6 +51,37 @@ export type {
   RegistryIdentityInput,
   RetryableCallback
 } from './job'
+
+export type {
+  DecodedJobFailure,
+  JobAdminClient,
+  JobAdminCountOptions,
+  JobAdminListError,
+  JobAdminListOptions,
+  JobAdminRemoveOptions,
+  JobAdminCountError,
+  JobCancelError,
+  JobAdminPauseError,
+  JobAdminRemoveError,
+  JobAdminResumeError,
+  JobAttemptsError,
+  JobAttemptView,
+  JobAwaitOptions,
+  JobAwaitResultError,
+  JobBoundOperations,
+  JobEffect,
+  JobEnqueueError,
+  JobEnqueueManyItem,
+  JobEnqueueManyOptions,
+  JobEnqueueOptions,
+  JobExecuteOptions,
+  JobOperation,
+  JobPollError,
+  JobPromoteError,
+  JobRecordView,
+  JobRetryError,
+  JobRetryOptions
+} from './job/application'
 
 export type {
   CodecCallbackResult,
@@ -83,7 +121,7 @@ export {
   promoteJob,
   protocolVersion,
   recoverStalledJob,
-  redriveJob,
+  retryJob,
   reduceJob,
   releaseJob,
   requestJobCancellation,
@@ -126,6 +164,9 @@ export type {
   JobCounts,
   JobIdRequest,
   JobListCursor,
+  JobListOrder,
+  JobListOrderBy,
+  JobListOrdering,
   JobStoreCapabilities,
   JobStoreCancelError,
   JobStoreClaimError,
@@ -149,7 +190,7 @@ export type {
   JobStorePromoteError,
   JobStoreQueryError,
   JobStoreRecoverStalledError,
-  JobStoreRedriveError,
+  JobStoreRetryError,
   JobStoreReleaseError,
   JobStoreRemoveError,
   JobStoreRequestCancellationError,
@@ -172,8 +213,8 @@ export type {
   QueuePauseResult,
   RecoverStalledRequest,
   RecoverStalledResult,
-  RedriveRequest,
-  RedriveResult,
+  RetryRequest,
+  RetryResult,
   ReleaseRequest,
   ReleaseResult,
   RemoveRequest,
@@ -207,7 +248,7 @@ export type {
   PromoteCommand,
   ProtocolVersion,
   RecoverStalledCommand,
-  RedriveCommand,
+  RetryCommand,
   ReleaseCommand,
   RequestCancellationCommand,
   RetryOutcome,

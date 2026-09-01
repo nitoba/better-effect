@@ -35,7 +35,7 @@ import {
   type JobStorePausedQueuesError,
   type JobStorePromoteError,
   type JobStoreRecoverStalledError,
-  type JobStoreRedriveError,
+  type JobStoreRetryError,
   type JobStoreReleaseError,
   type JobStoreRemoveError,
   type JobStoreRequestCancellationError,
@@ -83,7 +83,7 @@ const implementation = {
       failed: 0,
       cancelled: 0
     }),
-  redrive: () => ok<StoreOperation<'redrive'>>({} as JobStore.RedriveResult),
+  retry: () => ok<StoreOperation<'retry'>>({} as JobStore.RetryResult),
   cancel: () => ok<StoreOperation<'cancel'>>({} as JobStore.CancelResult),
   requestCancellation: () =>
     ok<StoreOperation<'requestCancellation'>>({} as JobStore.RequestCancellationResult),
@@ -130,8 +130,8 @@ expectTypeOf<StoreOperation<'list'>>().toEqualTypeOf<
 expectTypeOf<StoreOperation<'counts'>>().toEqualTypeOf<
   JobStoreOperation<JobStore.JobCounts, JobStoreCountsError>
 >()
-expectTypeOf<StoreOperation<'redrive'>>().toEqualTypeOf<
-  JobStoreOperation<JobStore.RedriveResult, JobStoreRedriveError>
+expectTypeOf<StoreOperation<'retry'>>().toEqualTypeOf<
+  JobStoreOperation<JobStore.RetryResult, JobStoreRetryError>
 >()
 expectTypeOf<StoreOperation<'cancel'>>().toEqualTypeOf<
   JobStoreOperation<JobStore.CancelResult, JobStoreCancelError>

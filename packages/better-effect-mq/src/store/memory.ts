@@ -42,6 +42,8 @@ import type {
   HeartbeatRequest,
   JobCounts,
   JobListCursor,
+  JobListOrder,
+  JobListOrderBy,
   JobStoreCapabilities,
   JobStoreOperation,
   JobIdRequest,
@@ -128,8 +130,8 @@ type NormalizedLease = {
 const maxGenerationAttempts = 32
 const maxSafeInteger = Number.MAX_SAFE_INTEGER
 const cursorVersion = 1 as const
-const cursorOrdering = 'createdAt,orderingSequence,id' as const
-const cursorDirection = 'asc' as const
+const defaultListOrderBy: JobListOrderBy = 'enqueuedAt'
+const defaultListOrder: JobListOrder = 'asc'
 const validationId = makeJobId('memory-validation-id').unwrap()
 const memoryCapabilities: JobStoreCapabilities = Object.freeze({
   notifications: true,
@@ -247,21 +249,58 @@ const compareText = (left: string, right: string): number => {
   return 0
 }
 
-const compareListRecords = (left: JobRecord, right: JobRecord): number => {
-  if (left.createdAt < right.createdAt) return -1
-  if (left.createdAt > right.createdAt) return 1
-  if (left.orderingSequence < right.orderingSequence) return -1
-  if (left.orderingSequence > right.orderingSequence) return 1
-  return compareText(left.id, right.id)
+const listPrimaryValue = (record: JobRecord, orderBy: JobListOrderBy): number | null => {
+  if (orderBy === 'enqueuedAt') return record.createdAt
+  if (orderBy === 'runAt') return record.runAt
+  return record.finishedAt ?? null
+}
+
+const compareNumbers = (left: number, right: number): number => {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
+
+const comparePrimaryValues = (left: number | null, right: number | null): number => {
+  if (left === null) return right === null ? 0 : 1
+  if (right === null) return -1
+  return compareNumbers(left, right)
+}
+
+const compareListRecords = (
+  left: JobRecord,
+  right: JobRecord,
+  orderBy: JobListOrderBy,
+  order: JobListOrder
+): number => {
+  const direction = order === 'asc' ? 1 : -1
+  const primary = comparePrimaryValues(
+    listPrimaryValue(left, orderBy),
+    listPrimaryValue(right, orderBy)
+  )
+  if (primary !== 0) return primary * direction
+
+  const sequence = compareNumbers(left.orderingSequence, right.orderingSequence)
+  if (sequence !== 0) return sequence * direction
+  return compareText(left.id, right.id) * direction
 }
 
 const compareRecordCursor = (record: JobRecord, cursor: JobListCursor): number => {
-  if (record.createdAt < cursor.createdAt) return -1
-  if (record.createdAt > cursor.createdAt) return 1
-  if (record.orderingSequence < cursor.orderingSequence) return -1
-  if (record.orderingSequence > cursor.orderingSequence) return 1
-  return compareText(record.id, cursor.id)
+  const direction = cursor.order === 'asc' ? 1 : -1
+  const primary = comparePrimaryValues(listPrimaryValue(record, cursor.orderBy), cursor.value)
+  if (primary !== 0) return primary * direction
+
+  const sequence = compareNumbers(record.orderingSequence, cursor.orderingSequence)
+  if (sequence !== 0) return sequence * direction
+  return compareText(record.id, cursor.id) * direction
 }
+
+const cursorOrderingFor = (orderBy: JobListOrderBy): JobListCursor['ordering'] =>
+  orderBy === 'enqueuedAt'
+    ? 'createdAt,orderingSequence,id'
+    : orderBy === 'runAt'
+      ? 'runAt,orderingSequence,id'
+      : 'finishedAt,orderingSequence,id'
 
 const cloneRecord = (record: JobRecord): JobRecord => {
   const checked = makeJobRecord(record)
@@ -368,7 +407,7 @@ class MemoryJobStoreImplementation {
   private defaultLeaseSequence = 0
   private wakeGlobal = 0
   private wakeBroadcast = 0
-  private listOrder: readonly JobRecord[] | undefined
+  private readonly listOrders = new Map<string, readonly JobRecord[]>()
 
   private readonly clock: MemoryJobStoreOptions['clock']
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
@@ -872,16 +911,23 @@ class MemoryJobStoreImplementation {
       const unknown = this.firstUnsupportedField(request, [
         'queue',
         'name',
+        'version',
         'state',
+        'metadata',
+        'orderBy',
+        'order',
         'limit',
         'cursor'
       ])
       if (unknown !== undefined)
         return fail(new UnsupportedJobStoreOperationError({ operation: `list.${unknown}` }))
-      const fields = readDto(request, ['queue', 'name', 'state', 'limit', 'cursor'], 'request')
+      const fields = readDto(
+        request,
+        ['queue', 'name', 'version', 'state', 'metadata', 'orderBy', 'order', 'limit', 'cursor'],
+        'request'
+      )
       if (Result.isError(fields)) return fail(fields.error)
       const limit = this.positiveInteger(fields.value.limit, 'limit')
-      if (Result.isError(limit)) return fail(limit.error)
       const queue =
         fields.value.queue === undefined
           ? Result.ok<string | undefined>(undefined)
@@ -890,19 +936,44 @@ class MemoryJobStoreImplementation {
         fields.value.name === undefined
           ? Result.ok<string | undefined>(undefined)
           : makeJobName(fields.value.name)
+      const version =
+        fields.value.version === undefined
+          ? Result.ok<number | undefined>(undefined)
+          : this.positiveInteger(fields.value.version, 'version')
       const states = this.normalizeStates(fields.value.state)
+      const metadata = this.normalizeMetadataFilter(fields.value.metadata)
+      const orderBy = this.normalizeListOrderBy(fields.value.orderBy)
+      const order = this.normalizeListOrder(fields.value.order)
+      if (Result.isError(limit)) return fail(limit.error)
       if (Result.isError(queue)) return fail(queue.error)
       if (Result.isError(name)) return fail(name.error)
+      if (Result.isError(version)) return fail(version.error)
       if (Result.isError(states)) return fail(states.error)
+      if (Result.isError(metadata)) return fail(metadata.error)
+      if (Result.isError(orderBy)) return fail(orderBy.error)
+      if (Result.isError(order)) return fail(order.error)
       const cursor = this.normalizeCursor(fields.value.cursor)
       if (Result.isError(cursor)) return fail(cursor.error)
 
-      const signature = this.listSignature(queue.value, name.value, states.value)
-      if (cursor.value !== undefined && cursor.value.filterSignature !== signature) {
+      const signature = this.listSignature(
+        queue.value,
+        name.value,
+        version.value,
+        states.value,
+        metadata.value,
+        orderBy.value,
+        order.value
+      )
+      if (
+        cursor.value !== undefined &&
+        (cursor.value.filterSignature !== signature ||
+          cursor.value.orderBy !== orderBy.value ||
+          cursor.value.order !== order.value)
+      ) {
         return fail(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
       }
 
-      const ordered = this.getListOrder()
+      const ordered = this.getListOrder(orderBy.value, order.value)
       const start = this.findCursorStart(ordered, cursor.value)
       const matched: JobRecord[] = []
       let hasMore = false
@@ -910,7 +981,14 @@ class MemoryJobStoreImplementation {
         const record = ordered[index]
         if (
           record === undefined ||
-          !this.matchesList(record, queue.value, name.value, states.value)
+          !this.matchesList(
+            record,
+            queue.value,
+            name.value,
+            version.value,
+            states.value,
+            metadata.value
+          )
         )
           continue
         if (matched.length < limit.value) {
@@ -923,7 +1001,9 @@ class MemoryJobStoreImplementation {
 
       const last = matched[matched.length - 1]
       const nextCursor =
-        hasMore && last !== undefined ? this.makeCursor(last, signature) : undefined
+        hasMore && last !== undefined
+          ? this.makeCursor(last, signature, orderBy.value, order.value)
+          : undefined
       return ok({ jobs: Object.freeze(matched), nextCursor })
     } catch {
       return fail(
@@ -981,7 +1061,7 @@ class MemoryJobStoreImplementation {
     }
   }
 
-  redrive(request: JobStoreNamespace.RedriveRequest): Operation<JobStoreNamespace.RedriveResult> {
+  retry(request: JobStoreNamespace.RetryRequest): Operation<JobStoreNamespace.RetryResult> {
     try {
       const fields = readDto(request, ['jobId', 'runAt', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
@@ -996,14 +1076,14 @@ class MemoryJobStoreImplementation {
       const current = this.jobs.get(jobId.value)
       if (current === undefined) return fail(new JobNotFoundError({ jobId: jobId.value }))
       return this.transitionById(current, {
-        type: 'redrive',
+        type: 'retry',
         jobId: current.id,
         runAt: runAt.value,
         now: now.value
-      }) as Operation<JobStoreNamespace.RedriveResult>
+      }) as Operation<JobStoreNamespace.RetryResult>
     } catch {
       return fail(
-        new JobDefinitionError({ field: 'request', message: 'could not read redrive request' })
+        new JobDefinitionError({ field: 'request', message: 'could not read retry request' })
       )
     }
   }
@@ -1240,8 +1320,15 @@ class MemoryJobStoreImplementation {
     input: NormalizedEnqueue,
     reservedIds: Set<string>
   ): ResultType<JobStoreNamespace.EnqueueResult, JobStoreError> {
+    // Explicit IDs are the primary identity. Check them before idempotency and
+    // never let a secondary key return a different existing Job.
+    if (input.explicitId) {
+      const existing = this.jobs.get(input.id)
+      if (existing !== undefined) return Result.ok({ job: cloneRecord(existing), duplicate: true })
+    }
+
     const dedupe =
-      input.idempotencyKey === undefined
+      input.explicitId || input.idempotencyKey === undefined
         ? undefined
         : `${identityKey(input.identity)}\u0000${input.idempotencyKey}`
     if (dedupe !== undefined) {
@@ -1252,11 +1339,6 @@ class MemoryJobStoreImplementation {
           return Result.ok({ job: cloneRecord(existing), duplicate: true })
         this.idempotency.delete(dedupe)
       }
-    }
-
-    if (input.explicitId) {
-      const existing = this.jobs.get(input.id)
-      if (existing !== undefined) return Result.ok({ job: cloneRecord(existing), duplicate: true })
     }
 
     const id = input.explicitId ? Result.ok(input.id) : this.generateJobId(reservedIds)
@@ -1528,7 +1610,7 @@ class MemoryJobStoreImplementation {
     if (Result.isError(transition)) return fail(transition.error)
     const prepared = this.prepareTransition(transition.value, current)
     if (Result.isError(prepared)) return fail(prepared.error)
-    const notify = command.type === 'promote' || command.type === 'redrive'
+    const notify = command.type === 'promote' || command.type === 'retry'
     this.commitPrepared([prepared.value], notify)
     return ok(snapshotTransition(prepared.value.transition))
   }
@@ -1598,15 +1680,69 @@ class MemoryJobStoreImplementation {
     return Result.ok(states)
   }
 
+  private normalizeMetadataFilter(
+    value: unknown
+  ): ResultType<Readonly<Record<string, string>> | undefined, JobStoreError> {
+    if (value === undefined) return Result.ok(undefined)
+    if (!isObject(value)) return definitionFailure('metadata', 'must be an object')
+
+    try {
+      const metadata: Record<string, string> = {}
+      for (const key of Reflect.ownKeys(value)) {
+        if (typeof key !== 'string') return definitionFailure('metadata', 'keys must be strings')
+        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        if (descriptor === undefined || !('value' in descriptor)) {
+          return definitionFailure('metadata', 'must contain only data properties')
+        }
+        if (typeof descriptor.value !== 'string') {
+          return definitionFailure('metadata', 'values must be strings')
+        }
+        Object.defineProperty(metadata, key, {
+          configurable: true,
+          enumerable: true,
+          value: descriptor.value,
+          writable: true
+        })
+      }
+      return Result.ok(Object.freeze(metadata))
+    } catch {
+      return definitionFailure('metadata', 'could not read metadata')
+    }
+  }
+
+  private normalizeListOrderBy(value: unknown): ResultType<JobListOrderBy, JobStoreError> {
+    if (value === undefined) return Result.ok(defaultListOrderBy)
+    if (value === 'enqueuedAt' || value === 'runAt' || value === 'finishedAt') {
+      return Result.ok(value)
+    }
+    return definitionFailure('orderBy', 'must be enqueuedAt, runAt, or finishedAt')
+  }
+
+  private normalizeListOrder(value: unknown): ResultType<JobListOrder, JobStoreError> {
+    if (value === undefined) return Result.ok(defaultListOrder)
+    if (value === 'asc' || value === 'desc') return Result.ok(value)
+    return definitionFailure('order', 'must be asc or desc')
+  }
+
+  private normalizeLegacyOrderBy(value: unknown): ResultType<JobListOrderBy, JobStoreError> {
+    if (value === 'createdAt,orderingSequence,id') return Result.ok('enqueuedAt')
+    if (value === 'runAt,orderingSequence,id') return Result.ok('runAt')
+    if (value === 'finishedAt,orderingSequence,id') return Result.ok('finishedAt')
+    return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
+  }
+
   private normalizeCursor(value: unknown): ResultType<JobListCursor | undefined, JobStoreError> {
     if (value === undefined) return Result.ok(undefined)
     const fields = readDto(
       value,
       [
         'version',
+        'orderBy',
+        'order',
         'ordering',
         'direction',
         'filterSignature',
+        'value',
         'createdAt',
         'orderingSequence',
         'id'
@@ -1614,28 +1750,59 @@ class MemoryJobStoreImplementation {
       'cursor'
     )
     if (Result.isError(fields)) return fields
+    if (fields.value.version !== cursorVersion) {
+      return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
+    }
+
+    const orderBy =
+      fields.value.orderBy === undefined
+        ? this.normalizeLegacyOrderBy(fields.value.ordering)
+        : this.normalizeListOrderBy(fields.value.orderBy)
+    const order =
+      fields.value.order === undefined
+        ? this.normalizeListOrder(fields.value.direction)
+        : this.normalizeListOrder(fields.value.order)
+    if (Result.isError(orderBy)) return orderBy
+    if (Result.isError(order)) return order
     if (
-      fields.value.version !== cursorVersion ||
-      fields.value.ordering !== cursorOrdering ||
-      fields.value.direction !== cursorDirection
+      (fields.value.ordering !== undefined &&
+        fields.value.ordering !== cursorOrderingFor(orderBy.value)) ||
+      (fields.value.direction !== undefined && fields.value.direction !== order.value)
     ) {
       return Result.err(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-version' }))
     }
     if (typeof fields.value.filterSignature !== 'string') {
       return definitionFailure('cursor.filterSignature', 'must be a string')
     }
+
     const createdAt = validateTimestamp(fields.value.createdAt, 'cursor.createdAt')
     const sequence = validateDuration(fields.value.orderingSequence, 'cursor.orderingSequence')
     const id = makeJobId(fields.value.id)
+    const rawValue =
+      fields.value.value === undefined && orderBy.value === 'enqueuedAt'
+        ? fields.value.createdAt
+        : fields.value.value
+    const primaryValue =
+      rawValue === null
+        ? Result.ok<number | null>(null)
+        : validateTimestamp(rawValue, 'cursor.value')
     if (Result.isError(createdAt)) return createdAt
     if (Result.isError(sequence)) return sequence
     if (Result.isError(id)) return id
+    if (Result.isError(primaryValue)) return primaryValue
+    if (primaryValue.value === null && orderBy.value !== 'finishedAt') {
+      return definitionFailure('cursor.value', 'null is only valid for finishedAt ordering')
+    }
+
     return Result.ok(
       Object.freeze({
         version: cursorVersion,
-        ordering: cursorOrdering,
-        direction: cursorDirection,
+        orderBy: orderBy.value,
+        order: order.value,
+        ordering: cursorOrderingFor(orderBy.value),
+        direction: order.value,
         filterSignature: fields.value.filterSignature,
+        value: primaryValue.value,
         createdAt: createdAt.value,
         orderingSequence: sequence.value,
         id: id.value
@@ -1643,12 +1810,20 @@ class MemoryJobStoreImplementation {
     )
   }
 
-  private makeCursor(record: JobRecord, filterSignature: string): JobListCursor {
+  private makeCursor(
+    record: JobRecord,
+    filterSignature: string,
+    orderBy: JobListOrderBy,
+    order: JobListOrder
+  ): JobListCursor {
     return Object.freeze({
       version: cursorVersion,
-      ordering: cursorOrdering,
-      direction: cursorDirection,
+      orderBy,
+      order,
+      ordering: cursorOrderingFor(orderBy),
+      direction: order,
       filterSignature,
+      value: listPrimaryValue(record, orderBy),
       createdAt: record.createdAt,
       orderingSequence: record.orderingSequence,
       id: record.id
@@ -1658,11 +1833,29 @@ class MemoryJobStoreImplementation {
   private listSignature(
     queue: string | undefined,
     name: string | undefined,
-    states: ReadonlySet<JobRecord['state']> | undefined
+    version: number | undefined,
+    states: ReadonlySet<JobRecord['state']> | undefined,
+    metadata: Readonly<Record<string, string>> | undefined,
+    orderBy: JobListOrderBy,
+    order: JobListOrder
   ): string {
     const stateSignature =
       states === undefined ? '*' : listStateOrder.filter((state) => states.has(state)).join(',')
-    return JSON.stringify([queue ?? null, name ?? null, stateSignature])
+    const metadataSignature =
+      metadata === undefined
+        ? null
+        : Object.entries(metadata)
+            .sort(([left], [right]) => compareText(left, right))
+            .map(([key, value]) => [key, value])
+    return JSON.stringify([
+      queue ?? null,
+      name ?? null,
+      version ?? null,
+      stateSignature,
+      metadataSignature,
+      orderBy,
+      order
+    ])
   }
 
   private firstUnsupportedField(value: unknown, fields: readonly string[]): string | undefined {
@@ -1683,22 +1876,35 @@ class MemoryJobStoreImplementation {
     record: JobRecord,
     queue: string | undefined,
     name: string | undefined,
-    states: ReadonlySet<JobRecord['state']> | undefined
+    version: number | undefined,
+    states: ReadonlySet<JobRecord['state']> | undefined,
+    metadata: Readonly<Record<string, string>> | undefined
   ): boolean {
+    if (
+      (queue !== undefined && record.queue !== queue) ||
+      (name !== undefined && record.name !== name) ||
+      (version !== undefined && record.version !== version) ||
+      (states !== undefined && !states.has(record.state))
+    ) {
+      return false
+    }
+    if (metadata === undefined) return true
+    const keys = Object.keys(metadata)
     return (
-      (queue === undefined || record.queue === queue) &&
-      (name === undefined || record.name === name) &&
-      (states === undefined || states.has(record.state))
+      keys.length === Object.keys(record.metadata).length &&
+      keys.every((key) => record.metadata[key] === metadata[key])
     )
   }
 
-  private getListOrder(): readonly JobRecord[] {
-    if (this.listOrder !== undefined) return this.listOrder
+  private getListOrder(orderBy: JobListOrderBy, order: JobListOrder): readonly JobRecord[] {
+    const key = `${orderBy}:${order}`
+    const cached = this.listOrders.get(key)
+    if (cached !== undefined) return cached
     const records = [...this.jobs.values()]
-    records.sort(compareListRecords)
-    const order = Object.freeze(records)
-    this.listOrder = order
-    return order
+    records.sort((left, right) => compareListRecords(left, right, orderBy, order))
+    const result = Object.freeze(records)
+    this.listOrders.set(key, result)
+    return result
   }
 
   private findCursorStart(
@@ -1718,7 +1924,7 @@ class MemoryJobStoreImplementation {
   }
 
   private invalidateListOrder(_queue: string): void {
-    this.listOrder = undefined
+    this.listOrders.clear()
   }
 
   private removeIdempotency(record: JobRecord): void {

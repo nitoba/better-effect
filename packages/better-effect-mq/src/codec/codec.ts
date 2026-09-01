@@ -15,7 +15,7 @@ import {
   JobEncodeFailure,
   sanitizeSchemaIssues
 } from './errors'
-import { markCodecSnapshot } from './snapshot'
+import { markCodecSnapshot, markVoidCodecSnapshot } from './snapshot'
 import { validateJsonValue } from './json'
 import type { CodecIssue, CodecPath } from './errors'
 
@@ -303,7 +303,7 @@ const primitiveCodec = <Value extends JsonValue>(
   return markCodecSnapshot({ encode, decode })
 }
 
-const voidCodec: Codec<void, void> = markCodecSnapshot({
+const voidCodec: Codec<void, void> = markVoidCodecSnapshot({
   encode: (value: void): CodecEffect<JsonValue, JobEncodeFailure> =>
     value === undefined
       ? okEffect(null)
