@@ -5,10 +5,10 @@ MQ registry, producer, and Worker inference used by the workspace. It generates
 isolated TypeScript fixtures for 10, 25, 50, and 100 Services, Hono middleware
 tuples of 1, 3, 6, and 10 validators, 10, 50, 100, and 250 versioned Job
 definitions, and producer and Worker handler tuples of 10, 50, and 100 entries,
-then runs the project compiler with `--extendedDiagnostics`. The Better Auth fixture additionally
-builds and packs `better-effect` and `better-effect-better-auth`, installs those
-archives with public Better Auth and better-result peers in an external staging
-project, and compiles only against the staged package declarations.
+then runs the project compiler with `--extendedDiagnostics`. The Better Auth and Kysely fixtures additionally
+build and pack their public packages with `better-effect`, install those archives
+with their public peers in an external staging project, and compile only against
+the staged package declarations.
 
 Run the complete matrix with:
 
@@ -58,7 +58,8 @@ total time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
 fixtures. Use `--producer-sizes=10,50,100 --scenarios=job-producer` for the
 producer matrix, or `--worker-sizes=10,50,100 --scenarios=worker-handlers` for
 the Worker matrix. Use `--clean-dist` to remove generated, core, and MQ
-artifacts before dependency preparation. `--check-budget` enforces the current
+artifacts before dependency preparation; producer dependencies are rebuilt in
+isolated temporary package roots. `--check-budget` enforces the current
 ceilings:
 
 | Services | Check time |   Types | Instantiations |  Memory |
