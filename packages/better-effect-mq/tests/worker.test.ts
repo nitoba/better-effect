@@ -641,6 +641,69 @@ test('Worker bounds multi-handler claims by actually startable slots', async () 
   }
 })
 
+test('Repeated named store handles share one queue concurrency group', async () => {
+  const store = MemoryJobStore.make()
+  const firstToken = JobStore.named('repeated-worker-store')
+  const secondToken = JobStore.named('repeated-worker-store')
+  const runtime = await Runtime.make(Layer.succeed(firstToken, firstToken.of(store)))
+  const groupedQueue = Queue.define('repeated-worker-queue')
+  const firstJob = groupedQueue.job('first', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: firstToken
+  })
+  const secondJob = groupedQueue.job('second', {
+    version: 1,
+    payload,
+    result: voidResult,
+    store: secondToken
+  })
+  await Promise.all([enqueue(store, firstJob, 1), enqueue(store, secondJob, 2)])
+  let active = 0
+  let maximum = 0
+  let enteredResolve!: () => void
+  const entered = new Promise<void>((resolveEntered) => {
+    enteredResolve = resolveEntered
+  })
+  let enteredCount = 0
+  let release!: () => void
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate
+  })
+  const makeHandler = (job: typeof firstJob | typeof secondJob) =>
+    Worker.handle(job, () =>
+      // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+      Effect.fn(async function* () {
+        active += 1
+        maximum = Math.max(maximum, active)
+        enteredCount += 1
+        if (enteredCount === 1) enteredResolve()
+        await gate
+        active -= 1
+        return Result.ok(undefined)
+      })
+    )
+  const worker = await Worker.start(runtime, {
+    handlers: [makeHandler(firstJob), makeHandler(secondJob)],
+    concurrency: 2,
+    queueConcurrency: 1,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await entered
+    expect(maximum).toBe(1)
+    release()
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect((await resolve(store.counts())).completed).toBe(2)
+  } finally {
+    release()
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
 test('Workers for named stores share one Runtime without cross-store claims', async () => {
   const firstStore = MemoryJobStore.make()
   const secondStore = MemoryJobStore.make()
