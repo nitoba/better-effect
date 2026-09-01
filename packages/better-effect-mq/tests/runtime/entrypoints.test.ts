@@ -34,6 +34,7 @@ const expectedCoreRuntimeExports = [
   'QueueName',
   'UnsupportedJobStoreOperationError',
   'Worker',
+  'WorkerAwaitIdleError',
   'WorkerId',
   'cancelJob',
   'claimJob',

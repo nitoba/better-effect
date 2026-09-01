@@ -26,6 +26,7 @@ import type {
 } from '../store'
 
 import { JobContext } from './context'
+import { WorkerAwaitIdleError } from './errors'
 import type {
   AnyWorkerHandler,
   WorkerAwaitIdleOptions,
@@ -174,14 +175,21 @@ export class WorkerSupervisor implements WorkerHandle {
       return Promise.resolve()
     }
 
+    if (normalizedOptions.signal !== undefined && readSignalAborted(normalizedOptions.signal)) {
+      return Promise.reject(makeAwaitIdleAbortedError(normalizedOptions.signal))
+    }
+
     return new Promise<void>((resolve, reject) => {
-      const waiter = makeWaiter(resolve, reject, normalizedOptions)
+      let waiter: Waiter
+      waiter = makeWaiter(resolve, reject, normalizedOptions, () => {
+        this.idleWaiters.delete(waiter)
+      })
+      this.idleWaiters.add(waiter)
+      installWaiter(waiter, normalizedOptions)
 
       if (!waiter.settled) {
-        this.idleWaiters.add(waiter)
+        this.notifyIdle()
       }
-
-      this.notifyIdle()
     })
   }
 
@@ -621,7 +629,6 @@ export class WorkerSupervisor implements WorkerHandle {
     }
 
     for (const waiter of this.idleWaiters) {
-      cleanupWaiter(waiter)
       waiter.resolve()
     }
 
@@ -1123,38 +1130,200 @@ type NormalizedAwaitIdleOptions = {
   readonly timeoutMs: number | undefined
 }
 
+const isAwaitIdleObject = (value: unknown): value is object => {
+  if (value === null || typeof value !== 'object') {
+    return false
+  }
+
+  try {
+    return !Array.isArray(value)
+  } catch {
+    return false
+  }
+}
+
 const normalizeAwaitIdleOptions = (options: unknown): NormalizedAwaitIdleOptions => {
-  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
-    throw new JobDefinitionError({ field: 'awaitIdle.options', message: 'must be an object' })
+  if (!isAwaitIdleObject(options)) {
+    throw new WorkerAwaitIdleError('invalid-options', 'Worker awaitIdle options must be an object')
   }
 
-  const timeoutValue = readOption(options, 'timeoutMs', 'awaitIdle.timeoutMs')
-  const signalValue = readOption(options, 'signal', 'awaitIdle.signal')
-  const timeoutMs =
-    timeoutValue === undefined ? undefined : nonNegativeInteger(timeoutValue, 'awaitIdle.timeoutMs')
+  let timeoutValue: unknown
+  let signalValue: unknown
 
-  if (signalValue !== undefined && (signalValue === null || typeof signalValue !== 'object')) {
-    throw new JobDefinitionError({
-      field: 'awaitIdle.signal',
-      message: 'must be an AbortSignal-like object'
-    })
+  try {
+    timeoutValue = readOption(options, 'timeoutMs', 'awaitIdle.timeoutMs')
+    signalValue = readOption(options, 'signal', 'awaitIdle.signal')
+  } catch (cause) {
+    throw new WorkerAwaitIdleError(
+      'invalid-options',
+      'Worker awaitIdle options could not be read',
+      cause
+    )
   }
 
-  return {
-    signal: signalValue as AbortSignal | undefined,
-    timeoutMs
+  const timeoutMs = timeoutValue === undefined ? undefined : normalizeAwaitIdleTimeout(timeoutValue)
+  const signal = signalValue === undefined ? undefined : normalizeAwaitIdleSignal(signalValue)
+
+  return { signal, timeoutMs }
+}
+
+const normalizeAwaitIdleTimeout = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new WorkerAwaitIdleError(
+      'invalid-timeout',
+      'Worker awaitIdle timeoutMs must be a non-negative safe integer'
+    )
+  }
+
+  return value
+}
+
+const normalizeAwaitIdleSignal = (value: unknown): AbortSignal => {
+  if (!isAwaitIdleObject(value)) {
+    throw new WorkerAwaitIdleError(
+      'invalid-signal',
+      'Worker awaitIdle signal must expose a boolean aborted property and callable add/removeEventListener methods'
+    )
+  }
+
+  let aborted: unknown
+  let addEventListener: unknown
+  let removeEventListener: unknown
+
+  try {
+    const candidate = value as {
+      readonly aborted?: unknown
+      readonly addEventListener?: unknown
+      readonly removeEventListener?: unknown
+    }
+    aborted = candidate.aborted
+    addEventListener = candidate.addEventListener
+    removeEventListener = candidate.removeEventListener
+  } catch (cause) {
+    throw new WorkerAwaitIdleError(
+      'invalid-signal',
+      'Worker awaitIdle signal could not be read',
+      cause
+    )
+  }
+
+  if (
+    typeof aborted !== 'boolean' ||
+    typeof addEventListener !== 'function' ||
+    typeof removeEventListener !== 'function'
+  ) {
+    throw new WorkerAwaitIdleError(
+      'invalid-signal',
+      'Worker awaitIdle signal must expose a boolean aborted property and callable add/removeEventListener methods'
+    )
+  }
+
+  return value as AbortSignal
+}
+
+const readSignalAborted = (signal: AbortSignal): boolean => {
+  let aborted: unknown
+
+  try {
+    aborted = signal.aborted
+  } catch (cause) {
+    throw new WorkerAwaitIdleError(
+      'invalid-signal',
+      'Worker awaitIdle signal.aborted could not be read',
+      cause
+    )
+  }
+
+  if (typeof aborted !== 'boolean') {
+    throw new WorkerAwaitIdleError(
+      'invalid-signal',
+      'Worker awaitIdle signal.aborted must be a boolean'
+    )
+  }
+
+  return aborted
+}
+
+const makeAwaitIdleAbortedError = (signal: AbortSignal): WorkerAwaitIdleError => {
+  let reason: unknown
+
+  try {
+    reason = signal.reason
+  } catch (cause) {
+    return new WorkerAwaitIdleError('aborted', 'Worker awaitIdle was aborted', cause)
+  }
+
+  return new WorkerAwaitIdleError(
+    'aborted',
+    'Worker awaitIdle was aborted',
+    reason === undefined ? undefined : reason
+  )
+}
+
+const installWaiter = (waiter: Waiter, options: NormalizedAwaitIdleOptions): void => {
+  const signal = options.signal
+
+  if (signal !== undefined) {
+    waiter.onAbort = () => waiter.reject(makeAwaitIdleAbortedError(signal))
+
+    try {
+      signal.addEventListener('abort', waiter.onAbort, { once: true })
+    } catch (cause) {
+      waiter.reject(
+        new WorkerAwaitIdleError(
+          'invalid-signal',
+          'Worker awaitIdle could not register the abort listener',
+          cause
+        )
+      )
+      return
+    }
+
+    if (waiter.settled) {
+      return
+    }
+  }
+
+  if (options.timeoutMs !== undefined) {
+    try {
+      waiter.timer = setTimeout(
+        () => waiter.reject(new WorkerAwaitIdleError('timeout', 'Worker awaitIdle timed out')),
+        options.timeoutMs
+      )
+    } catch (cause) {
+      waiter.reject(
+        new WorkerAwaitIdleError(
+          'invalid-timeout',
+          'Worker awaitIdle could not install its timeout',
+          cause
+        )
+      )
+      return
+    }
+  }
+
+  if (signal !== undefined) {
+    try {
+      if (readSignalAborted(signal)) {
+        waiter.reject(makeAwaitIdleAbortedError(signal))
+      }
+    } catch (cause) {
+      waiter.reject(cause)
+    }
   }
 }
 
 const makeWaiter = (
   resolve: () => void,
   reject: (cause: unknown) => void,
-  options: NormalizedAwaitIdleOptions
+  options: NormalizedAwaitIdleOptions,
+  onSettled: () => void
 ): Waiter => {
   const waiter: Waiter = {
     resolve: () => {
       if (!waiter.settled) {
         waiter.settled = true
+        onSettled()
         cleanupWaiter(waiter)
         resolve()
       }
@@ -1162,6 +1331,7 @@ const makeWaiter = (
     reject: (cause) => {
       if (!waiter.settled) {
         waiter.settled = true
+        onSettled()
         cleanupWaiter(waiter)
         reject(cause)
       }
@@ -1172,33 +1342,25 @@ const makeWaiter = (
     settled: false
   }
 
-  if (options.timeoutMs !== undefined) {
-    waiter.timer = setTimeout(
-      () => waiter.reject(new Error('Worker awaitIdle timed out')),
-      options.timeoutMs
-    )
-  }
-
-  if (options.signal !== undefined) {
-    waiter.onAbort = () =>
-      waiter.reject(options.signal?.reason ?? new Error('Worker awaitIdle was aborted'))
-    options.signal.addEventListener('abort', waiter.onAbort, { once: true })
-
-    if (options.signal.aborted) {
-      waiter.reject(options.signal.reason ?? new Error('Worker awaitIdle was aborted'))
-    }
-  }
-
   return waiter
 }
 
 const cleanupWaiter = (waiter: Waiter): void => {
   if (waiter.timer !== undefined) {
     clearTimeout(waiter.timer)
+    waiter.timer = undefined
   }
 
-  if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
-    waiter.signal.removeEventListener('abort', waiter.onAbort)
+  const signal = waiter.signal
+  const onAbort = waiter.onAbort
+  waiter.onAbort = undefined
+
+  if (signal !== undefined && onAbort !== undefined) {
+    try {
+      signal.removeEventListener('abort', onAbort)
+    } catch {
+      // A malformed signal cannot retain this waiter's local references.
+    }
   }
 }
 

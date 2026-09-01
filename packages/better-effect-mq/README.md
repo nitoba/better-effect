@@ -432,6 +432,11 @@ await using worker = await Worker.start(runtime, {
 await worker.awaitIdle()
 ```
 
+`WorkerHandle.awaitIdle()` validates its timeout and AbortSignal before it
+registers a waiter. Invalid options throw `WorkerAwaitIdleError`; an abort or
+timeout rejects with the same focused error, and completed waits remove their
+listeners and timers immediately.
+
 `Worker.handle` receives the decoded Job payload and returns an
 `Effect.Program<Success, Failure, Requirements>`. Its requirements are checked
 against the Runtime at `Worker.start`: `JobContext` is supplied per attempt and

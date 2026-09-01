@@ -141,12 +141,13 @@ export {
 
 export { JobStore, JobStoreWakeAbortedError, MemoryJobStore } from './store'
 
-export { JobContext, Worker } from './worker'
+export { JobContext, Worker, WorkerAwaitIdleError } from './worker'
 
 export type {
   AnyWorkerHandler,
   CompleteWorkerOptions,
   JobContextInput,
+  WorkerAwaitIdleErrorReason,
   WorkerAwaitIdleOptions,
   WorkerClock,
   WorkerErrorHandler,

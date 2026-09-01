@@ -12,6 +12,7 @@ import {
   Worker,
   JobContext,
   JobName,
+  WorkerAwaitIdleError,
   type JobRecord,
   type WorkerHandle
 } from '../src'
@@ -74,6 +75,55 @@ const enqueue = async (
 const runtimeFor = async (store: ReturnType<typeof MemoryJobStore.make>): Promise<Runtime<any>> =>
   Runtime.make(Layer.succeed(JobStore, JobStore.of(store)))
 
+const idleWaiterCount = (worker: WorkerHandle): number => {
+  // SAFETY: tests inspect the supervisor's private waiter set to verify prompt cleanup.
+  const supervisor = worker as WorkerHandle & { readonly idleWaiters: Set<unknown> }
+  return supervisor.idleWaiters.size
+}
+
+const makeTrackedSignal = (initialAborted = false) => {
+  let aborted = initialAborted
+  let reason: unknown
+  const listeners = new Set<() => void>()
+  let additions = 0
+  let removals = 0
+
+  const signal = {
+    get aborted() {
+      return aborted
+    },
+    get reason() {
+      return reason
+    },
+    addEventListener(_type: string, listener: () => void) {
+      additions += 1
+      listeners.add(listener)
+    },
+    removeEventListener(_type: string, listener: () => void) {
+      removals += 1
+      listeners.delete(listener)
+    }
+  }
+
+  return {
+    // SAFETY: this object implements the AbortSignal members used by awaitIdle.
+    signal: signal as AbortSignal,
+    get additions() {
+      return additions
+    },
+    get removals() {
+      return removals
+    },
+    abort(nextReason: Error = new Error('tracked abort')) {
+      reason = nextReason
+      aborted = true
+      for (const listener of listeners) {
+        listener()
+      }
+    }
+  }
+}
+
 test('Worker executes a handler with root Services, JobContext, and CurrentAbortSignal', async () => {
   const store = MemoryJobStore.make()
   const runtime = await Runtime.make(
@@ -131,6 +181,109 @@ test('Worker executes a handler with root Services, JobContext, and CurrentAbort
     })
     expect(observed?.signal).toBeInstanceOf(AbortSignal)
   } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker.awaitIdle validates options before installing wait resources', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  await enqueue(store, voidJob, 1)
+  let started!: () => void
+  const entered = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const handler = Worker.handle(voidJob, () =>
+    // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+    Effect.fn(async function* () {
+      started()
+      await gate
+      return Result.ok(undefined)
+    })
+  )
+  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+
+  try {
+    await entered
+    // SAFETY: this intentionally malformed value tests the runtime validation boundary.
+    expect(() => worker.awaitIdle({ signal: {} as AbortSignal })).toThrow(WorkerAwaitIdleError)
+    expect(() => worker.awaitIdle({ timeoutMs: -1 })).toThrow(WorkerAwaitIdleError)
+    expect(idleWaiterCount(worker)).toBe(0)
+
+    const alreadyAborted = makeTrackedSignal(true)
+    // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+    await expect(worker.awaitIdle({ signal: alreadyAborted.signal })).rejects.toBeInstanceOf(
+      WorkerAwaitIdleError
+    )
+    expect(alreadyAborted.additions).toBe(0)
+    expect(alreadyAborted.removals).toBe(0)
+    expect(idleWaiterCount(worker)).toBe(0)
+
+    const aborting = makeTrackedSignal()
+    const aborted = worker.awaitIdle({ signal: aborting.signal })
+    expect(aborting.additions).toBe(1)
+    aborting.abort()
+    // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+    await expect(aborted).rejects.toBeInstanceOf(WorkerAwaitIdleError)
+    expect(aborting.removals).toBe(1)
+    expect(idleWaiterCount(worker)).toBe(0)
+  } finally {
+    release()
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
+test('Worker.awaitIdle cleans timed-out and successful waiters', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  await enqueue(store, voidJob, 1)
+  let started!: () => void
+  const entered = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const handler = Worker.handle(voidJob, () =>
+    // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+    Effect.fn(async function* () {
+      started()
+      await gate
+      return Result.ok(undefined)
+    })
+  )
+  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+
+  try {
+    await entered
+    const timedOutSignal = makeTrackedSignal()
+    const timedOut = worker.awaitIdle({ signal: timedOutSignal.signal, timeoutMs: 0 })
+    // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+    await expect(timedOut).rejects.toMatchObject({
+      name: 'WorkerAwaitIdleError',
+      reason: 'timeout'
+    })
+    expect(timedOutSignal.additions).toBe(1)
+    expect(timedOutSignal.removals).toBe(1)
+    expect(idleWaiterCount(worker)).toBe(0)
+
+    const successfulSignal = makeTrackedSignal()
+    const idle = worker.awaitIdle({ signal: successfulSignal.signal, timeoutMs: 2_000 })
+    release()
+    await idle
+    expect(successfulSignal.additions).toBe(1)
+    expect(successfulSignal.removals).toBe(1)
+    expect(idleWaiterCount(worker)).toBe(0)
+    expect(worker.activeCount).toBe(0)
+  } finally {
+    release()
     await worker.stop()
     await runtime.dispose()
   }
