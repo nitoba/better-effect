@@ -113,6 +113,7 @@ export namespace Worker {
   export type AnyHandler = AnyWorkerHandler
   export type Options<Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]> =
     WorkerOptions<Handlers>
+  export type ReliabilityOptions = import('./types').WorkerReliabilityOptions
   export type CompleteOptions<
     Provided extends import('better-effect').AnyService,
     Handlers extends readonly AnyWorkerHandler[]

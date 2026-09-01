@@ -11,6 +11,7 @@ import { type AnyJobDefinition, type CodecLike } from '../job'
 import { parseJsonValue } from '../internal/json'
 import {
   JobDefinitionError,
+  LeaseLostError,
   makeSerializedJobFailure,
   makeWorkerId,
   makeQueueName
@@ -21,6 +22,8 @@ import type {
   ActiveJobSnapshot,
   AnyJobStoreToken,
   ClaimResult,
+  HeartbeatResult,
+  RecoverStalledResult,
   JobStoreContract,
   JobStoreOperation
 } from '../store'
@@ -68,7 +71,9 @@ type AttemptState = {
   readonly entry: HandlerEntry
   readonly job: ActiveJobSnapshot
   readonly controller: AbortController
+  readonly startedAt: number
   promise: Promise<void>
+  state: 'running' | 'cancelling' | 'settling' | 'lost'
 }
 
 type CodecOutcome =
@@ -91,6 +96,8 @@ class DecodeOutcome {
 const defaultConcurrency = 1
 const defaultLeaseDurationMs = 30_000
 const defaultPollIntervalMs = 100
+const defaultMaxStalledCount = 1
+const minimumTimerMs = 1
 
 export class WorkerSupervisor implements WorkerHandle {
   private readonly workerId: NormalizedWorkerOptions['id']
@@ -102,6 +109,7 @@ export class WorkerSupervisor implements WorkerHandle {
   private readonly reservedByQueue = new Map<string, number>()
   private readonly activeByHandler = new Map<string, number>()
   private readonly activeAttempts = new Map<string, AttemptState>()
+  private readonly shutdownAborts = new Set<string>()
   private readonly groupTasks = new Set<Promise<void>>()
   private readonly slotWaiters = new Set<() => void>()
   private readonly idleWaiters = new Set<Waiter>()
@@ -109,6 +117,8 @@ export class WorkerSupervisor implements WorkerHandle {
   private readonly groups: readonly ClaimGroup[]
   private readonly runtime: AnyRuntime
   private readonly workerOptions: NormalizedWorkerOptions
+  private readonly supervisionTasks = new Set<Promise<void>>()
+  private readonly supervisionController = new AbortController()
 
   constructor(
     runtime: AnyRuntime,
@@ -132,6 +142,13 @@ export class WorkerSupervisor implements WorkerHandle {
           this.groupTasks.delete(task)
         }
       )
+    }
+
+    const stores = new Map<string, AnyJobStoreToken>()
+    for (const group of this.groups) stores.set(group.store.serviceTag, group.store)
+    for (const store of stores.values()) {
+      this.startSupervisionLoop(store, 'heartbeat')
+      this.startSupervisionLoop(store, 'stalled')
     }
   }
 
@@ -159,12 +176,11 @@ export class WorkerSupervisor implements WorkerHandle {
     const normalizedOptions = normalizeStopOptions(options)
     this.currentState = 'stopping'
     this.claimController.abort()
+    this.supervisionController.abort()
 
-    if (normalizedOptions.abortActive === true) {
-      this.abortActiveAttempts()
-    }
+    if (normalizedOptions.abortActive === true) this.abortActiveAttempts()
 
-    this.stopPromise = this.finishStop()
+    this.stopPromise = this.finishStop(normalizedOptions)
     return this.stopPromise
   }
 
@@ -193,9 +209,23 @@ export class WorkerSupervisor implements WorkerHandle {
     })
   }
 
-  private async finishStop(): Promise<void> {
+  private async finishStop(options: NormalizedStopOptions): Promise<void> {
     await Promise.allSettled(this.groupTasks)
-    await Promise.allSettled([...this.activeAttempts.values()].map((attempt) => attempt.promise))
+    const attempts = Promise.allSettled(
+      [...this.activeAttempts.values()].map((attempt) => attempt.promise)
+    )
+    const grace = this.workerOptions.shutdown.gracePeriodMs
+    if (grace > 0 && this.activeAttempts.size > 0) {
+      await Promise.race([attempts, this.sleep(grace, new AbortController().signal)])
+    }
+    if (
+      this.activeAttempts.size > 0 &&
+      (options.abortActive || this.workerOptions.shutdown.abortAfterGracePeriod)
+    ) {
+      this.abortActiveAttempts()
+    }
+    await attempts
+    await Promise.allSettled(this.supervisionTasks)
     this.currentState = 'stopped'
     this.notifySlots()
     this.notifyIdle()
@@ -203,6 +233,8 @@ export class WorkerSupervisor implements WorkerHandle {
 
   private abortActiveAttempts(): void {
     for (const attempt of this.activeAttempts.values()) {
+      if (attempt.state === 'running') attempt.state = 'cancelling'
+      this.shutdownAborts.add(attempt.key)
       attempt.controller.abort(new Error('Worker is stopping'))
     }
   }
@@ -403,7 +435,9 @@ export class WorkerSupervisor implements WorkerHandle {
       entry,
       job,
       controller,
-      promise: Promise.resolve()
+      startedAt: this.readNow(),
+      promise: Promise.resolve(),
+      state: 'running'
     }
 
     this.active += 1
@@ -425,17 +459,37 @@ export class WorkerSupervisor implements WorkerHandle {
     attempt: AttemptState,
     context: JobContext
   ): Promise<void> {
-    const startedAt = this.readNow()
+    const startedAt = attempt.startedAt
     let outcome: SettlementOutcome
 
     try {
       const result = await this.executeProgram(attempt, context)
-      outcome = await this.makeOutcome(attempt.entry.definition, result)
+      if (attempt.state === 'lost') return
+      if (this.shutdownAborts.has(attempt.key)) {
+        await this.releaseJob(group, attempt.job)
+        return
+      }
+      outcome =
+        attempt.state === 'cancelling'
+          ? { type: 'cancelled' }
+          : await this.makeOutcome(attempt.entry.definition, result)
     } catch (cause) {
+      if (attempt.state === 'lost') return
+      if (this.shutdownAborts.has(attempt.key)) {
+        await this.releaseJob(group, attempt.job)
+        return
+      }
       this.report(cause)
-      outcome = failOutcome(safeCauseMessage(cause), this.readNow())
+      outcome =
+        attempt.state === 'cancelling'
+          ? { type: 'cancelled' }
+          : failOutcome(safeCauseMessage(cause), this.readNow())
     }
 
+    if (this.shutdownAborts.has(attempt.key)) {
+      await this.releaseJob(group, attempt.job)
+      return
+    }
     await this.settleJob(group, attempt.job, outcome, startedAt)
   }
 
@@ -493,6 +547,9 @@ export class WorkerSupervisor implements WorkerHandle {
     outcome: SettlementOutcome,
     startedAt: number
   ): Promise<void> {
+    const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
+    if (attempt?.state === 'lost') return
+    if (attempt !== undefined) attempt.state = 'settling'
     const result = await runStoreOperation(this.runtime, group.store, (store) =>
       store.settle({
         jobId: job.id,
@@ -522,8 +579,92 @@ export class WorkerSupervisor implements WorkerHandle {
     this.active -= 1
     decrement(this.activeByHandler, attempt.entry.identityKey)
     this.activeAttempts.delete(attempt.key)
+    this.shutdownAborts.delete(attempt.key)
     this.notifySlots()
     this.notifyIdle()
+  }
+
+  private startSupervisionLoop(store: AnyJobStoreToken, kind: 'heartbeat' | 'stalled'): void {
+    const task = this.superviseStore(store, kind)
+    this.supervisionTasks.add(task)
+    void task.then(
+      () => this.supervisionTasks.delete(task),
+      (cause) => {
+        this.supervisionTasks.delete(task)
+        this.report(cause)
+      }
+    )
+  }
+
+  private async superviseStore(
+    store: AnyJobStoreToken,
+    kind: 'heartbeat' | 'stalled'
+  ): Promise<void> {
+    const interval =
+      kind === 'heartbeat'
+        ? this.workerOptions.heartbeatIntervalMs
+        : this.workerOptions.stalledIntervalMs
+    while (!this.supervisionController.signal.aborted) {
+      await this.sleep(interval, this.supervisionController.signal)
+      if (this.supervisionController.signal.aborted) return
+      try {
+        if (kind === 'heartbeat') await this.heartbeat(store)
+        else await this.recoverStalled(store)
+      } catch (cause) {
+        this.report(cause)
+      }
+    }
+  }
+
+  private async heartbeat(store: AnyJobStoreToken): Promise<void> {
+    const leases = [...this.activeAttempts.values()]
+      .filter(
+        (attempt) =>
+          attempt.job.leaseOwner === this.id &&
+          attempt.job.leaseToken !== undefined &&
+          attempt.entry.store.serviceTag === store.serviceTag
+      )
+      .filter((attempt) => attempt.state !== 'lost' && attempt.state !== 'settling')
+      .map((attempt) => ({ jobId: attempt.job.id, leaseToken: attempt.job.leaseToken! }))
+    if (leases.length === 0) return
+    const result = await runStoreOperation<HeartbeatResult>(this.runtime, store, (client) =>
+      client.heartbeat({
+        leases,
+        leaseDurationMs: this.workerOptions.leaseDurationMs,
+        now: this.readNow()
+      })
+    )
+    if (Result.isError(result)) {
+      this.report(result.error)
+      return
+    }
+    const byId = new Map(
+      [...this.activeAttempts.values()].map((attempt) => [attempt.job.id, attempt])
+    )
+    for (const lost of result.value.lost) {
+      const attempt = byId.get(lost.jobId)
+      if (attempt === undefined || attempt.state === 'lost') continue
+      attempt.state = 'lost'
+      attempt.controller.abort(
+        new LeaseLostError({ jobId: lost.jobId, leaseToken: lost.leaseToken, reason: lost.reason })
+      )
+    }
+    for (const jobId of result.value.cancellationRequested) {
+      const attempt = byId.get(jobId)
+      if (attempt === undefined || attempt.state !== 'running') continue
+      attempt.state = 'cancelling'
+      attempt.controller.abort(new Error('Job cancellation requested'))
+    }
+  }
+
+  private async recoverStalled(store: AnyJobStoreToken): Promise<void> {
+    const result = await runStoreOperation<RecoverStalledResult>(this.runtime, store, (client) =>
+      client.recoverStalled({
+        maxStalledCount: this.workerOptions.maxStalledCount,
+        now: this.readNow()
+      })
+    )
+    if (Result.isError(result)) this.report(result.error)
   }
 
   private async waitForWork(group: ClaimGroup, claim: ClaimResult): Promise<void> {
@@ -675,9 +816,13 @@ export type NormalizedWorkerOptions = {
   readonly concurrency: number
   readonly queueLimit: (queue: string) => number
   readonly leaseDurationMs: number
+  readonly heartbeatIntervalMs: number
+  readonly stalledIntervalMs: number
+  readonly maxStalledCount: number
   readonly pollIntervalMs: number
   readonly now: () => number
   readonly onError: WorkerErrorHandler | undefined
+  readonly shutdown: { readonly gracePeriodMs: number; readonly abortAfterGracePeriod: boolean }
 }
 
 // oxlint-disable-next-line anti-slop/no-object-parameters -- fields are read only after public boundary validation.
@@ -708,14 +853,35 @@ export const normalizeWorkerOptions = (
     readOption(options, 'concurrency') ?? defaultConcurrency,
     'concurrency'
   )
-  const leaseDurationMs = positiveInteger(
+  const leaseDurationMs = positiveDuration(
     readOption(options, 'leaseDurationMs') ?? defaultLeaseDurationMs,
     'leaseDurationMs'
   )
-  const pollIntervalMs = nonNegativeInteger(
+  const heartbeatIntervalMs = positiveDuration(
+    readOption(options, 'heartbeatIntervalMs') ??
+      Math.max(minimumTimerMs, Math.floor(leaseDurationMs / 3)),
+    'heartbeatIntervalMs'
+  )
+  if (heartbeatIntervalMs >= leaseDurationMs) {
+    throw new JobDefinitionError({
+      field: 'heartbeatIntervalMs',
+      message: 'must be less than leaseDurationMs'
+    })
+  }
+  const stalledIntervalMs = positiveDuration(
+    readOption(options, 'stalledIntervalMs') ?? leaseDurationMs,
+    'stalledIntervalMs'
+  )
+  const maxStalledCount = nonNegativeInteger(
+    readOption(options, 'maxStalledCount') ?? defaultMaxStalledCount,
+    'maxStalledCount'
+  )
+  const pollIntervalMs = boundedPollInterval(
     readOption(options, 'pollIntervalMs') ?? defaultPollIntervalMs,
     'pollIntervalMs'
   )
+  const shutdownValue = readOption(options, 'shutdown')
+  const shutdown = normalizeShutdown(shutdownValue)
   const id = normalizeWorkerId(readOption(options, 'id'), readOption(options, 'workerId'))
   const queueLimits = normalizeQueueLimits(readOption(options, 'queueConcurrency'), concurrency)
   const now = normalizeClock(readOption(options, 'now'))
@@ -730,8 +896,12 @@ export const normalizeWorkerOptions = (
     concurrency,
     queueLimit: (queue) => queueLimits.named.get(queue) ?? queueLimits.defaultLimit,
     leaseDurationMs,
+    heartbeatIntervalMs,
+    stalledIntervalMs,
+    maxStalledCount,
     pollIntervalMs,
     now,
+    shutdown,
     onError: onError as WorkerErrorHandler | undefined
   }
 }
@@ -1107,6 +1277,65 @@ const normalizeClock = (clock: unknown): (() => number) => {
 
     return timestamp
   }
+}
+
+const positiveDuration = (value: unknown, field: string): number => {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    !Number.isSafeInteger(value)
+  ) {
+    throw new JobDefinitionError({
+      field,
+      message: 'must be a positive finite safe-integer duration'
+    })
+  }
+  return value
+}
+
+const boundedPollInterval = (value: unknown, field: string): number => {
+  const interval = nonNegativeInteger(value, field)
+  return Math.max(minimumTimerMs, interval)
+}
+
+type NormalizedShutdown = {
+  readonly gracePeriodMs: number
+  readonly abortAfterGracePeriod: boolean
+}
+
+const normalizeShutdown = (value: unknown): NormalizedShutdown => {
+  if (value === undefined) return { gracePeriodMs: 0, abortAfterGracePeriod: false }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new JobDefinitionError({ field: 'shutdown', message: 'must be an object' })
+  }
+  const gracePeriodMs = positiveOrZeroDuration(
+    readOption(value, 'gracePeriodMs', 'shutdown.gracePeriodMs') ?? 0,
+    'shutdown.gracePeriodMs'
+  )
+  const abort =
+    readOption(value, 'abortAfterGracePeriod', 'shutdown.abortAfterGracePeriod') ?? false
+  if (typeof abort !== 'boolean')
+    throw new JobDefinitionError({
+      field: 'shutdown.abortAfterGracePeriod',
+      message: 'must be a boolean'
+    })
+  return { gracePeriodMs, abortAfterGracePeriod: abort }
+}
+
+const positiveOrZeroDuration = (value: unknown, field: string): number => {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    !Number.isSafeInteger(value)
+  ) {
+    throw new JobDefinitionError({
+      field,
+      message: 'must be a finite non-negative safe-integer duration'
+    })
+  }
+  return value
 }
 
 const positiveInteger = (value: unknown, field: string): number => {

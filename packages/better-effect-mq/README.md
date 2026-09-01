@@ -474,9 +474,44 @@ to the selected policy, and removes its local timers/listeners. Pass
 implements `Symbol.asyncDispose`.
 
 Workers for named `JobStore` tokens can share one Runtime, while each store
-continues to receive only the Jobs bound to its token. Heartbeats, retry policy,
-stalled recovery, dynamic registration, process signals, and worker layers are
-outside this v0.1 supervisor API.
+continues to receive only the Jobs bound to its token.
+
+### Reliability and shutdown
+
+`WorkerReliabilityOptions` adds lease supervision without changing the handler
+API. `leaseDurationMs` defaults to 30 seconds, `heartbeatIntervalMs` to one
+third of the lease, `stalledIntervalMs` to the lease, `maxStalledCount` to one,
+and `pollIntervalMs` to 100ms (a zero poll value is clamped to 1ms). Durations
+must be finite positive safe integers, heartbeat must be shorter than the lease,
+and `maxStalledCount` is a non-negative integer. `shutdown.gracePeriodMs`
+defaults to zero and `abortAfterGracePeriod` defaults to false. Top-level
+options override these defaults; malformed options are rejected before any
+claim or supervision loop starts.
+
+Heartbeats are batched independently per store. Lost leases abort the attempt
+cooperatively with `LeaseLostError`; a late handler result is discarded and
+cannot settle with the stale token. Active cancellation is likewise cooperative:
+the worker waits for the child Scope and then records `cancelled`. A Promise that
+ignores its signal cannot be killed; external side effects must therefore be
+idempotent and fenced with the job ID or an application idempotency key.
+
+Expired leases are recovered through the public `recoverStalled` operation. The
+store's atomic transition and stalled ledger are the source of truth, so late
+completion is fenced. If a settlement response is lost after the store may have
+applied it, the worker does not manufacture a second attempt; the persisted job
+record is authoritative and a backend must make same-token settlement idempotent
+(or report fencing safely).
+
+`WorkerHandle.stop()` transitions to stopping before awaiting anything, stops new
+claims, keeps supervision active for in-flight attempts, applies the configured
+grace period, and cleans its waits and supervision timers. `Worker.use` always
+stops the Worker before returning. When using a long-lived Runtime, the owner
+must use the order `await worker.stop(); await runtime.dispose()`; disposal of
+the Runtime first can reject Worker store calls and only permits best-effort
+convergence. There is no exactly-once guarantee.
+
+A handler error is reported through `onError` and does not terminate other claim
+loops.
 
 ## MemoryJobStore reference driver
 

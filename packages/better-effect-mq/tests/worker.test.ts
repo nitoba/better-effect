@@ -510,6 +510,39 @@ test('Worker settles success, typed Err, and defects after per-attempt cleanup',
   }
 })
 
+test('Worker validates reliability options before starting supervision', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const handler = Worker.handle(voidJob, () =>
+    Effect.fn(async function* () {
+      yield* JobContext
+      return Result.ok(undefined)
+    })
+  )
+
+  // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+  await expect(
+    Promise.resolve(
+      Worker.start(runtime, {
+        handlers: [handler],
+        leaseDurationMs: 10,
+        heartbeatIntervalMs: 10
+      })
+    )
+  ).rejects.toThrow(/less than leaseDurationMs/)
+
+  const worker = await Worker.start(runtime, {
+    handlers: [handler],
+    leaseDurationMs: 10,
+    heartbeatIntervalMs: 1,
+    stalledIntervalMs: 10,
+    maxStalledCount: 0,
+    pollIntervalMs: 0
+  })
+  await worker.stop()
+  await runtime.dispose()
+})
+
 test('Worker validates duplicate handlers and repeated disposal', async () => {
   const store = MemoryJobStore.make()
   const runtime = await runtimeFor(store)

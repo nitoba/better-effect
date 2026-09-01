@@ -14,6 +14,7 @@ export type {
   WorkerHandler,
   WorkerHandlerOptions,
   WorkerHandle,
+  WorkerReliabilityOptions,
   WorkerOptions,
   WorkerStopOptions,
   WorkerRequirements

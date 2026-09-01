@@ -788,7 +788,7 @@ class MemoryJobStoreImplementation {
       if (Result.isError(clock)) return fail(clock.error)
       const now = this.readOperationNow(fields.value.now, clock.value)
       if (Result.isError(now)) return fail(now.error)
-      const maximum = this.positiveInteger(fields.value.maxStalledCount, 'maxStalledCount')
+      const maximum = this.nonNegativeInteger(fields.value.maxStalledCount, 'maxStalledCount')
       const limit =
         fields.value.limit === undefined
           ? Result.ok(maxSafeInteger)
@@ -1458,6 +1458,13 @@ class MemoryJobStoreImplementation {
   private positiveInteger(value: unknown, field: string): ResultType<number, JobStoreError> {
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
       return definitionFailure(field, 'must be a positive safe integer')
+    }
+    return Result.ok(value)
+  }
+
+  private nonNegativeInteger(value: unknown, field: string): ResultType<number, JobStoreError> {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      return definitionFailure(field, 'must be a non-negative safe integer')
     }
     return Result.ok(value)
   }
