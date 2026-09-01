@@ -9,6 +9,10 @@ const corePackageRoot = join(repoRoot, 'packages/better-effect')
 const betterAuthPackageRoot = join(repoRoot, 'packages/better-effect-better-auth')
 const kyselyPackageRoot = join(repoRoot, 'packages/better-effect-kysely')
 const mqPackageRoot = join(repoRoot, 'packages/better-effect-mq')
+const performanceLock = join(
+  tmpdir(),
+  `better-effect-type-system-${repoRoot.replace(/[^a-zA-Z0-9]/g, '-')}.lock`
+)
 const minimumTypeScriptVersion = '5.7.2'
 const currentTypeScriptVersion = '6.0.3'
 
@@ -100,6 +104,27 @@ const packPackage = async (source: string, label: string, stagingRoot: string): 
   }
 
   return join(destination, archives[0]!)
+}
+
+const acquirePerformanceLock = async (): Promise<() => Promise<void>> => {
+  while (true) {
+    try {
+      await mkdir(performanceLock)
+      return async () => {
+        await rm(performanceLock, { recursive: true, force: true })
+      }
+    } catch (cause) {
+      if (
+        typeof cause !== 'object' ||
+        cause === null ||
+        !('code' in cause) ||
+        cause.code !== 'EEXIST'
+      ) {
+        throw cause
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    }
+  }
 }
 
 const stagePublicPackages = async (
@@ -1362,9 +1387,7 @@ const prepareScenarioDependencies = async (
   }
 }
 
-const main = async (): Promise<void> => {
-  const options = parseArgs()
-
+const runPerformance = async (options: ParsedOptions): Promise<void> => {
   await rm(fixtureRoot, { recursive: true, force: true })
   if (options.cleanDist) {
     await Promise.all([
@@ -1469,6 +1492,17 @@ const main = async (): Promise<void> => {
           .join('\n')}`
       )
     }
+  }
+}
+
+const main = async (): Promise<void> => {
+  const options = parseArgs()
+  const releasePerformanceLock = await acquirePerformanceLock()
+
+  try {
+    await runPerformance(options)
+  } finally {
+    await releasePerformanceLock()
   }
 }
 
