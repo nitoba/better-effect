@@ -68,6 +68,14 @@ type ClaimPlan = {
   readonly limit: number
 }
 
+type ClaimLease = {
+  readonly generation: number
+  readonly plan: ClaimPlan
+  readonly store: JobStoreContract
+  abandoned: boolean
+  adopted: boolean
+}
+
 type AttemptState = {
   readonly key: string
   readonly entry: HandlerEntry
@@ -134,6 +142,9 @@ export class WorkerSupervisor implements WorkerHandle {
   private readonly workerOptions: NormalizedWorkerOptions
   private readonly supervisionTasks = new Set<Promise<void>>()
   private readonly supervisionController = new AbortController()
+  private readonly claimLeases = new Set<ClaimLease>()
+  private readonly claimCleanupTasks = new Set<Promise<void>>()
+  private nextClaimGeneration = 0
 
   constructor(
     runtime: AnyRuntime,
@@ -190,6 +201,9 @@ export class WorkerSupervisor implements WorkerHandle {
 
     const normalizedOptions = normalizeStopOptions(options)
     this.currentState = 'stopping'
+    // A store cannot be required to observe our AbortSignal. Fence every claim
+    // before waking its caller; a later successful result is compensated below.
+    for (const lease of this.claimLeases) lease.abandoned = true
     // Stop claiming immediately, but keep lease supervision alive while local
     // handlers and their cleanup are still able to settle.
     this.claimController.abort()
@@ -244,6 +258,7 @@ export class WorkerSupervisor implements WorkerHandle {
     await attempts
     this.supervisionController.abort()
     await Promise.allSettled(this.supervisionTasks)
+    await Promise.allSettled(this.claimCleanupTasks)
     this.currentState = 'stopped'
     this.notifySlots()
     this.notifyIdle()
@@ -386,23 +401,125 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async claim(plan: ClaimPlan): Promise<ResultType<ClaimResult, unknown>> {
-    const now = this.readNow()
     const request = {
       queue: plan.group.queue,
       accepted: plan.handlers.map((entry) => entry.definition.identity),
       limit: plan.limit,
       workerId: this.id,
       leaseDurationMs: this.workerOptions.leaseDurationMs,
-      now
+      now: this.readNow()
     }
 
-    return runStoreOperation<ClaimResult>(
-      this.runtime,
-      plan.group.store,
-      (store) => store.claim(request),
-      this.claimController.signal,
-      this.workerOptions.pollIntervalMs
+    let retries = 0
+    while (true) {
+      const result = await this.claimOnce(plan, request)
+      if (
+        !Result.isError(result) ||
+        !JobStoreFailure.is(result.error) ||
+        !result.error.retryable ||
+        retries >= maximumStoreRetries ||
+        this.claimController.signal.aborted
+      ) {
+        return result
+      }
+      retries += 1
+      await cancellableDelay(
+        Math.min(100, this.workerOptions.pollIntervalMs * 2 ** (retries - 1)),
+        this.claimController.signal
+      )
+      if (this.claimController.signal.aborted) return result
+    }
+  }
+
+  private async claimOnce(
+    plan: ClaimPlan,
+    request: Omit<import('../store').ClaimRequest, 'now'> & { readonly now: number }
+  ): Promise<ResultType<ClaimResult, unknown>> {
+    let store: JobStoreContract
+    try {
+      // Keep the Runtime boundary limited to token resolution. The exact client
+      // is retained by the lease so compensation cannot resolve a disposed or
+      // otherwise different provider.
+      store = await this.runtime.run(() => ServiceRuntime.resolve(plan.group.store))
+    } catch (cause) {
+      return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<ClaimResult, unknown>
+    }
+    if (this.currentState !== 'running' || this.claimController.signal.aborted) {
+      return Result.err(new StoreOperationTimeoutError('claim')) as ResultType<ClaimResult, unknown>
+    }
+
+    const lease: ClaimLease = {
+      generation: ++this.nextClaimGeneration,
+      plan,
+      store,
+      abandoned: false,
+      adopted: false
+    }
+    this.claimLeases.add(lease)
+    const pending = Promise.resolve().then(() => store.claim(request)) as Promise<
+      ResultType<ClaimResult, unknown>
+    >
+    void pending.then(
+      (result) => {
+        this.claimLeases.delete(lease)
+        if (lease.abandoned && !lease.adopted && Result.isOk(result)) {
+          this.compensateClaim(lease, result.value.jobs)
+        }
+      },
+      () => {
+        this.claimLeases.delete(lease)
+      }
     )
+
+    const result = await raceStoreOperation(
+      pending,
+      plan.group.store.serviceTag,
+      this.workerOptions.storeOperationTimeoutMs,
+      this.claimController.signal
+    )
+    if (Result.isError(result)) {
+      // This write happens before returning to the group loop, establishing the
+      // generation fence even when the adapter ignores cancellation.
+      lease.abandoned = true
+      return result
+    }
+    if (lease.abandoned) {
+      this.compensateClaim(lease, result.value.jobs)
+      return Result.err(new StoreOperationTimeoutError('claim')) as ResultType<ClaimResult, unknown>
+    }
+    lease.adopted = true
+    this.claimLeases.delete(lease)
+    return result
+  }
+
+  private compensateClaim(lease: ClaimLease, jobs: readonly ActiveJobSnapshot[]): void {
+    if (jobs.length === 0) {
+      this.claimLeases.delete(lease)
+      return
+    }
+    const task = Promise.allSettled(jobs.map((job) => this.releaseClaimSnapshot(lease, job))).then(
+      () => undefined
+    )
+    this.claimCleanupTasks.add(task)
+    void task.then(
+      () => this.claimCleanupTasks.delete(task),
+      () => this.claimCleanupTasks.delete(task)
+    )
+  }
+
+  private async releaseClaimSnapshot(lease: ClaimLease, job: ActiveJobSnapshot): Promise<void> {
+    const pending = Promise.resolve().then(() =>
+      lease.store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() })
+    ) as Promise<ResultType<import('../store').ReleaseResult, unknown>>
+    void pending.catch(() => undefined)
+    const result = await raceStoreOperation(
+      pending,
+      `${lease.plan.group.store.serviceTag}:release-abandoned-claim-${lease.generation}`,
+      this.workerOptions.storeOperationTimeoutMs
+    )
+    // Late compensation is deliberately best effort. Its rejection is contained
+    // and the lease remains fenced for adapters that cannot release immediately.
+    if (Result.isError(result)) this.report(result.error)
   }
 
   private async dispatchJobs(group: ClaimGroup, jobs: readonly ActiveJobSnapshot[]): Promise<void> {

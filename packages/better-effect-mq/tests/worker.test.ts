@@ -713,6 +713,70 @@ test('Repeated named store handles share one queue concurrency group', async () 
   }
 })
 
+test('Worker compensates a late claim after stop without starting a handler', async () => {
+  const base = MemoryJobStore.make()
+  const originalClaim = base.claim.bind(base)
+  const originalRelease = base.release.bind(base)
+  let releaseClaim!: () => void
+  const claimGate = new Promise<void>((resolveClaim) => {
+    releaseClaim = resolveClaim
+  })
+  let claimEntered!: () => void
+  const claimStarted = new Promise<void>((resolveClaim) => {
+    claimEntered = resolveClaim
+  })
+  let releases = 0
+  let releaseObserved!: () => void
+  const released = new Promise<void>((resolveRelease) => {
+    releaseObserved = resolveRelease
+  })
+  Object.defineProperty(base, 'claim', {
+    value: async (request: Parameters<typeof base.claim>[0]) => {
+      claimEntered()
+      await claimGate
+      return originalClaim(request)
+    }
+  })
+  Object.defineProperty(base, 'release', {
+    value: async (request: Parameters<typeof base.release>[0]) => {
+      releases += 1
+      releaseObserved()
+      return originalRelease(request)
+    }
+  })
+  const runtime = await runtimeFor(base)
+  const created = await enqueue(base, voidJob, 1)
+  let handlerRuns = 0
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(voidJob, () =>
+        // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+        Effect.fn(async function* () {
+          handlerRuns += 1
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await claimStarted
+    await worker.stop()
+    releaseClaim()
+    await released
+    const record = await resolve(base.getJob({ jobId: created.id }))
+    expect(record?.state).toBe('waiting')
+    expect(record?.leaseToken).toBeUndefined()
+    expect(handlerRuns).toBe(0)
+    expect(releases).toBe(1)
+  } finally {
+    releaseClaim()
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
 test('Worker cancellation wins while result encoding is pending', async () => {
   const store = MemoryJobStore.make()
   const runtime = await runtimeFor(store)

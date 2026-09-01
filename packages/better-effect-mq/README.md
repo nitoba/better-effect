@@ -456,7 +456,12 @@ available slots, and the claim `limit` never exceeds the global concurrency,
 queue cap, or the sum of available handler caps. The most restrictive of
 `concurrency`, `queueConcurrency`, and a handler's `concurrency` applies. Empty
 claims use `awaitWake` plus the poll interval and are interruptible by shutdown.
-Claim, heartbeat, settlement, release, and stalled-recovery calls retry only
+Every claim has a Worker-owned generation lease. If timeout or shutdown wins but
+an adapter later returns active snapshots, the Worker never dispatches them and
+best-effort releases each snapshot through the exact resolved store client and
+lease token, with a bounded operation timeout. Adapters without cancellation may
+mutate briefly before compensation runs; fencing and eventual lease expiry remain
+the last resort. Claim, heartbeat, settlement, release, and stalled-recovery calls retry only
 `JobStoreFailure` values marked `retryable`, with at most three retries and
 cancelable bounded backoff. Lease/state/not-found errors are never retried as
 infrastructure failures. A handler error is reported through `onError` and does
