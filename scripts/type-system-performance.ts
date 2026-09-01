@@ -1,4 +1,16 @@
-import { cp, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -7,9 +19,17 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fixtureRoot = join(repoRoot, 'benchmarks/type-system/generated')
 const corePackageRoot = join(repoRoot, 'packages/better-effect')
 const betterAuthPackageRoot = join(repoRoot, 'packages/better-effect-better-auth')
+const kyselyPackageRoot = join(repoRoot, 'packages/better-effect-kysely')
 const mqPackageRoot = join(repoRoot, 'packages/better-effect-mq')
+const performanceLock = join(
+  tmpdir(),
+  `better-effect-type-system-${repoRoot.replace(/[^a-zA-Z0-9]/g, '-')}.lock`
+)
+let fixtureCorePackageRoot = corePackageRoot
+let fixtureMqPackageRoot = mqPackageRoot
 const minimumTypeScriptVersion = '5.7.2'
 const currentTypeScriptVersion = '6.0.3'
+const performanceLockStaleAfterMs = 60_000
 
 const sizes = [10, 25, 50, 100] as const
 type Size = (typeof sizes)[number]
@@ -51,6 +71,12 @@ type Metrics = {
   readonly memoryKiB: number
   readonly checkMs: number
   readonly totalMs: number
+}
+
+type PreparedDependencies = {
+  readonly corePackageRoot: string
+  readonly mqPackageRoot: string
+  readonly cleanup: () => Promise<void>
 }
 
 type Result = Metrics & {
@@ -101,21 +127,194 @@ const packPackage = async (source: string, label: string, stagingRoot: string): 
   return join(destination, archives[0]!)
 }
 
-const stagePublicPackages = async (): Promise<void> => {
+type PerformanceLockOwner = {
+  readonly pid: number
+  readonly token: string
+  readonly createdAt: number
+}
+
+const hasErrorCode = (cause: unknown, code: string): boolean =>
+  cause instanceof Error && 'code' in cause && cause.code === code
+
+const isAlreadyExistsError = (cause: unknown): boolean => hasErrorCode(cause, 'EEXIST')
+
+const isProcessAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ESRCH')) {
+      return false
+    }
+    if (hasErrorCode(cause, 'EPERM')) {
+      return true
+    }
+    throw cause
+  }
+}
+
+const readPerformanceLockOwner = async (): Promise<PerformanceLockOwner | undefined> => {
+  let contents: string
+  try {
+    contents = await readFile(join(performanceLock, 'owner.json'), 'utf8')
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT')) {
+      return undefined
+    }
+    throw cause
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(contents)
+  } catch (cause) {
+    if (cause instanceof SyntaxError) {
+      return undefined
+    }
+    throw cause
+  }
+
+  if (
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Lock metadata crosses a process boundary and must be validated before use.
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !('pid' in parsed) ||
+    !('token' in parsed) ||
+    !('createdAt' in parsed) ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Lock metadata crosses a process boundary and must be validated before use.
+    typeof parsed.pid !== 'number' ||
+    !Number.isInteger(parsed.pid) ||
+    parsed.pid <= 0 ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Lock metadata crosses a process boundary and must be validated before use.
+    typeof parsed.token !== 'string' ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Lock metadata crosses a process boundary and must be validated before use.
+    typeof parsed.createdAt !== 'number'
+  ) {
+    return undefined
+  }
+  return {
+    pid: parsed.pid,
+    token: parsed.token,
+    createdAt: parsed.createdAt
+  }
+}
+
+const lockCanBeReclaimed = async (): Promise<boolean> => {
+  let lockCreatedAt: number
+  try {
+    lockCreatedAt = (await stat(performanceLock)).mtimeMs
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT')) {
+      return true
+    }
+    throw cause
+  }
+
+  const owner = await readPerformanceLockOwner()
+  if (owner) {
+    return !isProcessAlive(owner.pid)
+  }
+
+  return Date.now() - lockCreatedAt >= performanceLockStaleAfterMs
+}
+
+const reclaimPerformanceLock = async (): Promise<void> => {
+  const staleLock = `${performanceLock}.stale-${process.pid}-${randomUUID()}`
+  try {
+    await rename(performanceLock, staleLock)
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT')) {
+      return
+    }
+    throw cause
+  }
+  await rm(staleLock, { recursive: true, force: true })
+}
+
+const acquirePerformanceLock = async (): Promise<() => Promise<void>> => {
+  const owner: PerformanceLockOwner = {
+    pid: process.pid,
+    token: randomUUID(),
+    createdAt: Date.now()
+  }
+  const ownerPath = join(performanceLock, 'owner.json')
+
+  while (true) {
+    try {
+      await mkdir(performanceLock)
+      try {
+        await writeFile(ownerPath, JSON.stringify(owner), 'utf8')
+      } catch (cause) {
+        await rm(performanceLock, { recursive: true, force: true })
+        throw cause
+      }
+      let released = false
+      return async () => {
+        if (released) {
+          return
+        }
+        released = true
+        const currentOwner = await readPerformanceLockOwner()
+        if (currentOwner?.token === owner.token) {
+          await rm(performanceLock, { recursive: true, force: true })
+        }
+      }
+    } catch (cause) {
+      if (!isAlreadyExistsError(cause)) {
+        throw cause
+      }
+      if (await lockCanBeReclaimed()) {
+        await reclaimPerformanceLock()
+        continue
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    }
+  }
+}
+
+const ensurePackageBuild = async (packageRoot: string): Promise<void> => {
+  if (!(await Bun.file(join(packageRoot, 'dist/index.d.mts')).exists())) {
+    await runCommand(['bun', 'run', 'build'], packageRoot)
+  }
+}
+
+const stagePublicPackages = async (
+  includeBetterAuth: boolean,
+  includeKysely: boolean
+): Promise<void> => {
   const stagingRoot = await mkdtemp(join(tmpdir(), 'better-effect-type-system-'))
 
   try {
-    await runCommand(['bun', 'run', 'build'], corePackageRoot)
-    await runCommand(['bun', 'run', 'build'], betterAuthPackageRoot)
+    await ensurePackageBuild(corePackageRoot)
+    if (includeBetterAuth) {
+      await ensurePackageBuild(betterAuthPackageRoot)
+    }
+    if (includeKysely) {
+      await ensurePackageBuild(kyselyPackageRoot)
+    }
     const coreArchive = await packPackage(corePackageRoot, 'better-effect', stagingRoot)
-    const betterAuthArchive = await packPackage(
-      betterAuthPackageRoot,
-      'better-effect-better-auth',
-      stagingRoot
-    )
+    const betterAuthArchive = includeBetterAuth
+      ? await packPackage(betterAuthPackageRoot, 'better-effect-better-auth', stagingRoot)
+      : undefined
+    const kyselyArchive = includeKysely
+      ? await packPackage(kyselyPackageRoot, 'better-effect-kysely', stagingRoot)
+      : undefined
     const consumerRoot = join(stagingRoot, 'consumer')
     const archiveReference = (archive: string): string =>
       `file:./${relative(consumerRoot, archive).split(sep).join('/')}`
+    const dependencies = new Map<string, string>([
+      ['better-effect', archiveReference(coreArchive)],
+      ['better-result', '3.0.0']
+    ])
+
+    if (includeBetterAuth && betterAuthArchive) {
+      dependencies.set('better-auth', '1.7.2')
+      dependencies.set('better-effect-better-auth', archiveReference(betterAuthArchive))
+    }
+    if (includeKysely && kyselyArchive) {
+      dependencies.set('better-effect-kysely', archiveReference(kyselyArchive))
+      dependencies.set('kysely', '0.29.5')
+    }
 
     await mkdir(consumerRoot, { recursive: true })
     await writeFile(
@@ -124,12 +323,7 @@ const stagePublicPackages = async (): Promise<void> => {
         {
           private: true,
           type: 'module',
-          dependencies: {
-            'better-auth': '1.7.2',
-            'better-effect': archiveReference(coreArchive),
-            'better-effect-better-auth': archiveReference(betterAuthArchive),
-            'better-result': '3.0.0'
-          },
+          dependencies: Object.fromEntries(dependencies),
           devDependencies: {
             '@types/bun': '1.3.14',
             typescript: currentTypeScriptVersion
@@ -148,7 +342,11 @@ const stagePublicPackages = async (): Promise<void> => {
     await rm(stagingRoot, { recursive: true, force: true })
   }
 
-  for (const packageName of ['better-effect', 'better-effect-better-auth']) {
+  for (const packageName of [
+    'better-effect',
+    ...(includeBetterAuth ? ['better-effect-better-auth'] : []),
+    ...(includeKysely ? ['better-effect-kysely'] : [])
+  ]) {
     const declaration = join(fixtureRoot, 'node_modules', packageName, 'dist/index.d.mts')
     if (!(await Bun.file(declaration).exists())) {
       throw new Error(`Staged ${packageName} package is missing its public declaration`)
@@ -379,12 +577,14 @@ const parseArgs = (): ParsedOptions => {
         .split(',')
         .map((item) => Number(item.trim()))
       for (const item of parsed) {
+        // SAFETY: `item` is checked against the supported producer-count literals before use.
         if (!producerSizes.includes(item as ProducerSize)) {
           throw new Error(
             `Unknown producer count '${item}'. Allowed values: ${producerSizes.join(', ')}`
           )
         }
       }
+      // SAFETY: Every parsed value passed the producer-count membership check above.
       selectedProducerSizes = parsed as ProducerSize[]
     } else if (argument.startsWith('--worker-sizes=')) {
       selectedWorkerSizes = parseWorkerSizes(argument.slice('--worker-sizes='.length))
@@ -604,6 +804,13 @@ ${body}
 void Runtime.run(AppLive, () => program)`
 }
 
+const fixtureModuleSpecifier = (packageRoot: string, entrypoint: string): string => {
+  const path = relative(fixtureRoot, join(packageRoot, 'dist', entrypoint))
+    .split(sep)
+    .join('/')
+  return path.startsWith('.') ? path : `./${path}`
+}
+
 const jobRegistryFixtureSource = (size: number): string => {
   const names = Array.from(
     { length: size },
@@ -641,6 +848,7 @@ void missing
 }
 
 const jobStoreFixtureSource = (size: number): string => {
+  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
   const names = Array.from({ length: size }, (_, index) => String(index + 1).padStart(3, '0'))
   const tokenDeclarations = names
     .map((name) => `const Store${name} = JobStore.named('benchmark-${name}')`)
@@ -657,7 +865,7 @@ const jobStoreFixtureSource = (size: number): string => {
   const jobs = names.map((name) => `Job${name}`).join(', ')
   const first = names[0]!
 
-  return `import { Effect, Layer, Runtime } from '../../../packages/better-effect/dist/index.mjs'
+  return `import { Effect, Layer, Runtime } from '${coreEntry}'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
 import { Codec, Job, JobRegistry, JobStore, Queue } from '../../../packages/better-effect-mq/src/index.ts'
 
@@ -683,6 +891,9 @@ void Runtime.run(AppLive, () => program)
 }
 
 const jobProducerFixtureSource = (size: number): string => {
+  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
+  const coreServicesEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'standard-services.mjs')
+  const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from(
     { length: size },
     (_, index) => `Job${String(index + 1).padStart(3, '0')}`
@@ -707,8 +918,8 @@ const jobProducerFixtureSource = (size: number): string => {
   Runtime,
   type EffectError,
   type EffectRequirements
-} from '../../../packages/better-effect/dist/index.mjs'
-import { Clock, ClockLive } from '../../../packages/better-effect/dist/standard-services.mjs'
+} from '${coreEntry}'
+import { Clock, ClockLive } from '${coreServicesEntry}'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
 import type { UnhandledException } from '../../../packages/better-effect/node_modules/better-result'
 import {
@@ -730,7 +941,7 @@ import {
   type JobOperation,
   type JobStoreEnqueueError,
   type JobStoreGetJobError
-} from '../../../packages/better-effect-mq/dist/index.mjs'
+} from '${mqEntry}'
 
 type Assert<T extends true> = T
 type Equal<Left, Right> =
@@ -926,24 +1137,50 @@ void generatedHandler
 }
 
 const kyselyFixtureSource = (size: number): string => {
-  const imports = Array.from(
+  const serviceNames = Array.from(
     { length: size },
-    (_, index) =>
-      `import * as KyselyEffect${String(index + 1).padStart(3, '0')} from '../../../packages/better-effect-kysely/src/index.ts'`
-  ).join('\n')
-  const namespaces = Array.from(
-    { length: size },
-    (_, index) => `KyselyEffect${String(index + 1).padStart(3, '0')}`
-  ).join(', ')
+    (_, index) => `Database${String(index + 1).padStart(3, '0')}`
+  )
+  const schemas = serviceNames
+    .map(
+      (_, index) =>
+        `type Schema${String(index + 1).padStart(3, '0')} = {\n  table${String(index + 1).padStart(3, '0')}: { id: number; value: string }\n}`
+    )
+    .join('\n\n')
+  const declarations = serviceNames
+    .map((name, index) => {
+      const suffix = String(index + 1).padStart(3, '0')
+      return `const ${name} = KyselyEffect.service<Schema${suffix}>()('@perf/${name}')\ndeclare const raw${suffix}: KyselyService<Schema${suffix}>\nconst layer${suffix} = ${name}.layer(() => raw${suffix})\nconst borrowed${suffix} = ${name}.succeed(raw${suffix})\ntype Expected${suffix} = KyselyServiceInstance<'@perf/${name}', Schema${suffix}>\ntype Provided${suffix} = Layer.Provided<typeof layer${suffix}>\ntype BorrowedProvided${suffix} = Layer.Provided<typeof borrowed${suffix}>\ntype Required${suffix} = Layer.Required<typeof layer${suffix}>\ntype Check${suffix} = Assert<Equal<Provided${suffix}, Expected${suffix}>>\ntype BorrowedCheck${suffix} = Assert<Equal<BorrowedProvided${suffix}, Expected${suffix}>>\ntype RequiredCheck${suffix} = Assert<Equal<Required${suffix}, never>>`
+    })
+    .join('\n\n')
+  const layers = serviceNames
+    .map((_, index) => `layer${String(index + 1).padStart(3, '0')}`)
+    .join(',\n  ')
+  const expected = serviceNames
+    .map((name, index) => `Expected${String(index + 1).padStart(3, '0')}`)
+    .join(' | ')
 
-  return `${imports}
+  return `import { Layer } from 'better-effect'
+import { KyselyEffect } from 'better-effect-kysely'
+import type { KyselyService, KyselyServiceInstance } from 'better-effect-kysely'
 
-type FoundationExports = keyof typeof KyselyEffect001
-const namespaces = [${namespaces}] as const
-type FoundationHasNoExports = FoundationExports extends never ? true : false
-const foundationCheck: FoundationHasNoExports = true
-void namespaces
-void foundationCheck
+type Assert<Condition extends true> = Condition
+type Equal<Left, Right> =
+  (<Type>() => Type extends Left ? 1 : 2) extends <Type>() => Type extends Right ? 1 : 2
+    ? true
+    : false
+
+${schemas}
+
+${declarations}
+
+const AppLive = Layer.merge(
+  ${layers}
+)
+type AppProvided = Layer.Provided<typeof AppLive>
+type ExpectedProvided = ${expected}
+type AppCheck = Assert<Equal<AppProvided, ExpectedProvided>>
+void AppLive
 `
 }
 
@@ -1276,31 +1513,114 @@ const compilersFor = (scenario: Scenario): readonly Compiler[] =>
     ? ['current', 'minimum']
     : ['current']
 
+const createIsolatedPackageRoot = async (sourceRoot: string, targetRoot: string): Promise<void> => {
+  await mkdir(targetRoot, { recursive: true })
+  await cp(join(sourceRoot, 'package.json'), join(targetRoot, 'package.json'))
+  await mkdir(join(targetRoot, 'node_modules'), { recursive: true })
+}
+
+const prepareCleanDependencies = async (
+  needsCoreDeclarations: boolean,
+  needsMqDeclarations: boolean
+): Promise<PreparedDependencies> => {
+  if (!needsCoreDeclarations && !needsMqDeclarations) {
+    return {
+      corePackageRoot,
+      mqPackageRoot,
+      cleanup: async () => {}
+    }
+  }
+
+  const stagingRoot = await mkdtemp(join(tmpdir(), 'better-effect-type-system-clean-'))
+  const isolatedCoreRoot = join(stagingRoot, 'better-effect')
+  const isolatedMqRoot = join(stagingRoot, 'better-effect-mq')
+
+  try {
+    if (needsCoreDeclarations) {
+      await createIsolatedPackageRoot(corePackageRoot, isolatedCoreRoot)
+      await symlink(
+        join(corePackageRoot, 'node_modules/better-result'),
+        join(isolatedCoreRoot, 'node_modules/better-result'),
+        'dir'
+      )
+      await runCommand(
+        ['bun', 'run', 'build', '--', '--out-dir', join(isolatedCoreRoot, 'dist'), '--no-exports'],
+        corePackageRoot
+      )
+    }
+
+    if (needsMqDeclarations) {
+      await createIsolatedPackageRoot(mqPackageRoot, isolatedMqRoot)
+      await symlink(
+        needsCoreDeclarations ? isolatedCoreRoot : corePackageRoot,
+        join(isolatedMqRoot, 'node_modules/better-effect'),
+        'dir'
+      )
+      await symlink(
+        join(mqPackageRoot, 'node_modules/better-result'),
+        join(isolatedMqRoot, 'node_modules/better-result'),
+        'dir'
+      )
+      await runCommand(
+        ['bun', 'run', 'build', '--', '--out-dir', join(isolatedMqRoot, 'dist'), '--no-exports'],
+        mqPackageRoot
+      )
+    }
+  } catch (cause) {
+    await rm(stagingRoot, { recursive: true, force: true })
+    throw cause
+  }
+
+  return {
+    corePackageRoot: needsCoreDeclarations ? isolatedCoreRoot : corePackageRoot,
+    mqPackageRoot: needsMqDeclarations ? isolatedMqRoot : mqPackageRoot,
+    cleanup: async () => {
+      await rm(stagingRoot, { recursive: true, force: true })
+    }
+  }
+}
+
 const prepareScenarioDependencies = async (
-  selectedScenarios: readonly Scenario[]
-): Promise<void> => {
+  selectedScenarios: readonly Scenario[],
+  cleanDist: boolean
+): Promise<PreparedDependencies> => {
   const needsCoreDeclarations =
     selectedScenarios.includes('job-store') ||
     selectedScenarios.includes('job-producer') ||
     selectedScenarios.includes('worker-handlers')
   const needsMqDeclarations = selectedScenarios.includes('job-producer')
+  const isolateDependencies = cleanDist && needsMqDeclarations
+  const dependencies = isolateDependencies
+    ? await prepareCleanDependencies(needsCoreDeclarations, needsMqDeclarations)
+    : {
+        corePackageRoot,
+        mqPackageRoot,
+        cleanup: async () => {}
+      }
 
-  if (needsCoreDeclarations) {
+  if (cleanDist && !isolateDependencies) {
+    await Promise.all([
+      rm(join(corePackageRoot, 'dist'), { recursive: true, force: true }),
+      rm(join(mqPackageRoot, 'dist'), { recursive: true, force: true })
+    ])
+  }
+
+  if (!isolateDependencies && needsCoreDeclarations) {
     await runCommand(['bun', 'run', 'build'], corePackageRoot)
   }
 
-  if (needsMqDeclarations) {
+  if (!isolateDependencies && needsMqDeclarations) {
     await runCommand(['bun', 'run', 'build'], mqPackageRoot)
   }
 
   const declarations = [
     ...(needsCoreDeclarations
       ? [
-          join(corePackageRoot, 'dist/index.d.mts'),
-          join(corePackageRoot, 'dist/standard-services.d.mts')
+          join(dependencies.corePackageRoot, 'dist/index.d.mts'),
+          join(dependencies.corePackageRoot, 'dist/standard-services.d.mts')
         ]
       : []),
-    ...(needsMqDeclarations ? [join(mqPackageRoot, 'dist/index.d.mts')] : [])
+    ...(needsMqDeclarations ? [join(dependencies.mqPackageRoot, 'dist/index.d.mts')] : [])
   ]
 
   for (const declaration of declarations) {
@@ -1310,25 +1630,25 @@ const prepareScenarioDependencies = async (
       )
     }
   }
+
+  return dependencies
 }
 
-const main = async (): Promise<void> => {
-  const options = parseArgs()
+const runPreparedPerformance = async (
+  options: ParsedOptions,
+  dependencies: PreparedDependencies
+): Promise<void> => {
+  const usePublicDeclarations =
+    options.scenarios.includes('better-auth') || options.scenarios.includes('kysely')
 
-  await rm(fixtureRoot, { recursive: true, force: true })
-  if (options.cleanDist) {
-    await Promise.all([
-      rm(join(corePackageRoot, 'dist'), { recursive: true, force: true }),
-      rm(join(mqPackageRoot, 'dist'), { recursive: true, force: true })
-    ])
-  }
-  await mkdir(fixtureRoot, { recursive: true })
-  const usePublicDeclarations = options.scenarios.includes('better-auth')
-
-  await prepareScenarioDependencies(options.scenarios)
+  fixtureCorePackageRoot = dependencies.corePackageRoot
+  fixtureMqPackageRoot = dependencies.mqPackageRoot
 
   if (usePublicDeclarations) {
-    await stagePublicPackages()
+    await stagePublicPackages(
+      options.scenarios.includes('better-auth'),
+      options.scenarios.includes('kysely')
+    )
   } else {
     await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true })
     await symlink(
@@ -1336,7 +1656,7 @@ const main = async (): Promise<void> => {
       join(fixtureRoot, 'node_modules/better-auth'),
       'dir'
     )
-    await symlink(corePackageRoot, join(fixtureRoot, 'node_modules/better-effect'), 'dir')
+    await symlink(fixtureCorePackageRoot, join(fixtureRoot, 'node_modules/better-effect'), 'dir')
   }
 
   const results: Result[] = []
@@ -1415,6 +1735,29 @@ const main = async (): Promise<void> => {
           .join('\n')}`
       )
     }
+  }
+}
+
+const runPerformance = async (options: ParsedOptions): Promise<void> => {
+  await rm(fixtureRoot, { recursive: true, force: true })
+  await mkdir(fixtureRoot, { recursive: true })
+
+  const dependencies = await prepareScenarioDependencies(options.scenarios, options.cleanDist)
+  try {
+    await runPreparedPerformance(options, dependencies)
+  } finally {
+    await dependencies.cleanup()
+  }
+}
+
+const main = async (): Promise<void> => {
+  const options = parseArgs()
+  const releasePerformanceLock = await acquirePerformanceLock()
+
+  try {
+    await runPerformance(options)
+  } finally {
+    await releasePerformanceLock()
   }
 }
 

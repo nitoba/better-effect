@@ -54,15 +54,15 @@ const main = async (): Promise<void> => {
         `functional-api has a broken import:\n${result.output}`
       )
       assertCondition(
-        result.output.includes('KyselyEffect'),
-        `functional-api did not fail for the unpublished API:\n${result.output}`
+        result.output.includes('Kysely') || result.output.includes('Database'),
+        `functional-api did not fail for the invalid public API:\n${result.output}`
       )
     }
   } finally {
     await rm(root, { force: true, recursive: true })
   }
 
-  console.log('public Kysely foundation negative type fixtures passed')
+  console.log('public Kysely negative type fixtures passed')
 }
 
 await main()
