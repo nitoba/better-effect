@@ -10,6 +10,7 @@
     "types": ["bun"]
   },
   "files": [
+    "application.types.ts",
     "protocol.types.ts",
     "codec.types.ts",
     "jobs.types.ts",

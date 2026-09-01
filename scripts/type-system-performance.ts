@@ -314,6 +314,7 @@ type ParsedOptions = {
   readonly betterAuthSizes: BetterAuthSize[]
   readonly scenarios: Scenario[]
   readonly checkBudget: boolean
+  readonly cleanDist: boolean
   readonly json: boolean
 }
 
@@ -325,11 +326,14 @@ const parseArgs = (): ParsedOptions => {
   let selectedBetterAuthSizes: BetterAuthSize[] = [...betterAuthSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
   let checkBudget = false
+  let cleanDist = false
   let json = false
 
   for (const argument of process.argv.slice(2)) {
     if (argument === '--check-budget') {
       checkBudget = true
+    } else if (argument === '--clean-dist') {
+      cleanDist = true
     } else if (argument === '--json') {
       json = true
     } else if (argument.startsWith('--sizes=')) {
@@ -367,6 +371,7 @@ const parseArgs = (): ParsedOptions => {
           `  --better-auth-sizes=1       Better Auth plugin fixtures (default: ${betterAuthSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
           '  --check-budget             Exit non-zero when a configured ceiling is exceeded',
+          '  --clean-dist               Remove generated/core/MQ dist before preparing fixtures',
           '  --json                     Print machine-readable results'
         ].join('\n')
       )
@@ -384,6 +389,7 @@ const parseArgs = (): ParsedOptions => {
     betterAuthSizes: selectedBetterAuthSizes,
     scenarios: selectedScenarios,
     checkBudget,
+    cleanDist,
     json
   }
 }
@@ -647,7 +653,7 @@ const jobProducerFixtureSource = (size: number): string => {
   const declarations = names
     .map(
       (name, index) =>
-        `const ${name} = queue.job('job-${String(index + 1).padStart(3, '0')}', { version: 1, payload, store: JobStore })`
+        `const ${name} = queue.job('job-${String(index + 1).padStart(3, '0')}', { version: 1, payload, result: Codec.string, failure, store: JobStore })`
     )
     .join('\n')
   const enqueues = names
@@ -658,10 +664,36 @@ const jobProducerFixtureSource = (size: number): string => {
     .join('\n')
   const ids = names.map((_, index) => `id${String(index + 1).padStart(3, '0')}`).join(', ')
 
-  return `import { Effect, Layer, Runtime, type EffectRequirements } from '../../../packages/better-effect/dist/index.mjs'
+  return `import {
+  Effect,
+  Layer,
+  Runtime,
+  type EffectError,
+  type EffectRequirements
+} from '../../../packages/better-effect/dist/index.mjs'
 import { Clock, ClockLive } from '../../../packages/better-effect/dist/standard-services.mjs'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
-import { Codec, JobStore, Queue } from '../../../packages/better-effect-mq/dist/index.mjs'
+import type { UnhandledException } from '../../../packages/better-effect/node_modules/better-result'
+import {
+  Codec,
+  Job,
+  JobStore,
+  Queue,
+  type JobAwaitAbortedError,
+  type JobAwaitResultError,
+  type JobDecodeFailure,
+  type JobDefinitionError,
+  type JobEnqueueError,
+  type JobEncodeFailure,
+  type JobExecutionCancelledError,
+  type JobExecutionFailureError,
+  type JobId,
+  type JobIdentityMismatchError,
+  type JobNotFoundError,
+  type JobOperation,
+  type JobStoreEnqueueError,
+  type JobStoreGetJobError
+} from '../../../packages/better-effect-mq/dist/index.mjs'
 
 type Assert<T extends true> = T
 type Equal<Left, Right> =
@@ -670,16 +702,55 @@ type Equal<Left, Right> =
 
 const implementation = {} as JobStore.Contract
 const queue = Queue.define('benchmark.producer')
+type HandlerFailure = { readonly code: string }
 const payload = Codec.json<{ readonly id: string }>()
+const failure = Codec.json<HandlerFailure>()
 ${declarations}
+
+type ExpectedEnqueueError =
+  | JobDecodeFailure
+  | JobEncodeFailure
+  | JobDefinitionError
+  | JobStoreEnqueueError
+  | UnhandledException
+type ExpectedAwaitError =
+  | HandlerFailure
+  | JobStoreGetJobError
+  | JobIdentityMismatchError
+  | JobNotFoundError
+  | JobDecodeFailure
+  | JobExecutionFailureError
+  | JobExecutionCancelledError
+  | JobAwaitAbortedError
+  | UnhandledException
+type ExpectedProducerError = ExpectedEnqueueError | ExpectedAwaitError
+type _FailureExact = Assert<Equal<Job.Failure<typeof Job001>, HandlerFailure>>
+type _EnqueueErrorExact = Assert<Equal<JobEnqueueError, ExpectedEnqueueError>>
+type _AwaitErrorExact = Assert<Equal<JobAwaitResultError<HandlerFailure>, ExpectedAwaitError>>
+type _EnqueueExact = Assert<Equal<
+  ReturnType<typeof Job001.enqueue>,
+  JobOperation<JobId, JobEnqueueError, typeof JobStore, true>
+>>
+type _AwaitExact = Assert<Equal<
+  ReturnType<typeof Job001.awaitResult>,
+  JobOperation<string, ExpectedAwaitError, typeof JobStore, true>
+>>
+type _ExecuteExact = Assert<Equal<
+  ReturnType<typeof Job001.execute>,
+  JobOperation<string, ExpectedProducerError, typeof JobStore, true>
+>>
 
 const program = Effect.gen(async function* () {
 ${enqueues}
-  return Result.ok([${ids}])
+  const completed = yield* Job001.awaitResult(id001)
+  const executed = yield* Job001.execute({ id: 'execute' })
+  return Result.ok({ ids: [${ids}], completed, executed })
 })
 type Requirements = EffectRequirements<typeof program>
+type Errors = EffectError<typeof program>
 type ExpectedRequirements = JobStore.Instance | InstanceType<typeof Clock>
 type _RequirementsExact = Assert<Equal<Requirements, ExpectedRequirements>>
+type _ErrorsExact = Assert<Equal<Errors, ExpectedProducerError>>
 
 const AppLive = Layer.merge(
   Layer.succeed(JobStore, JobStore.of(implementation)),
@@ -1076,18 +1147,56 @@ const formatRow = (result: Result): string => {
 }
 
 const compilersFor = (scenario: Scenario): readonly Compiler[] =>
-  scenario === 'better-auth' ? ['current', 'minimum'] : ['current']
+  scenario === 'better-auth' || scenario === 'job-producer' ? ['current', 'minimum'] : ['current']
+
+const prepareScenarioDependencies = async (
+  selectedScenarios: readonly Scenario[]
+): Promise<void> => {
+  const needsCoreDeclarations =
+    selectedScenarios.includes('job-store') || selectedScenarios.includes('job-producer')
+  const needsMqDeclarations = selectedScenarios.includes('job-producer')
+
+  if (needsCoreDeclarations) {
+    await runCommand(['bun', 'run', 'build'], corePackageRoot)
+  }
+
+  if (needsMqDeclarations) {
+    await runCommand(['bun', 'run', 'build'], mqPackageRoot)
+  }
+
+  const declarations = [
+    ...(needsCoreDeclarations
+      ? [
+          join(corePackageRoot, 'dist/index.d.mts'),
+          join(corePackageRoot, 'dist/standard-services.d.mts')
+        ]
+      : []),
+    ...(needsMqDeclarations ? [join(mqPackageRoot, 'dist/index.d.mts')] : [])
+  ]
+
+  for (const declaration of declarations) {
+    if (!(await Bun.file(declaration).exists())) {
+      throw new Error(
+        `Required generated declaration is missing: ${relative(repoRoot, declaration)}`
+      )
+    }
+  }
+}
 
 const main = async (): Promise<void> => {
   const options = parseArgs()
 
   await rm(fixtureRoot, { recursive: true, force: true })
+  if (options.cleanDist) {
+    await Promise.all([
+      rm(join(corePackageRoot, 'dist'), { recursive: true, force: true }),
+      rm(join(mqPackageRoot, 'dist'), { recursive: true, force: true })
+    ])
+  }
   await mkdir(fixtureRoot, { recursive: true })
   const usePublicDeclarations = options.scenarios.includes('better-auth')
 
-  if (options.scenarios.includes('job-producer')) {
-    await runCommand(['bun', 'run', 'build'], mqPackageRoot)
-  }
+  await prepareScenarioDependencies(options.scenarios)
 
   if (usePublicDeclarations) {
     await stagePublicPackages()

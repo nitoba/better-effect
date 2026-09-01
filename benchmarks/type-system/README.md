@@ -43,14 +43,17 @@ Each fixture measures:
 - typed Job producer pipelines over many definitions, including exact Result
   error and Service-requirement inference.
 
-The Better Auth fixture runs with the current TypeScript `6.0.3` and minimum
-supported TypeScript `5.7.2`; its exact custom plugin endpoint, plugin fields,
-and error-code assertions reject `any` and `unknown`. The report includes
+The Better Auth and producer fixtures run with the current TypeScript `6.0.3`
+and minimum supported TypeScript `5.7.2`. Better Auth's exact custom plugin
+endpoint, plugin fields, and error-code assertions reject `any` and `unknown`;
+the producer fixture locks exact JobId, handler-failure, store, decode, timeout,
+and cancellation error metadata. The report includes
 compiler, files, types, instantiations, memory, check time, and total time. Use
 `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
 `--job-sizes=10,50,100,250 --scenarios=job-registry` to measure only the registry
 fixtures. Use `--producer-sizes=10,50,100 --scenarios=job-producer` for the
-producer matrix. `--check-budget` enforces
+producer matrix. Use `--clean-dist` to remove generated, core, and MQ
+artifacts before dependency preparation. `--check-budget` enforces
 the current ceilings:
 
 | Services | Check time |   Types | Instantiations |  Memory |
