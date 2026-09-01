@@ -24,7 +24,7 @@ const expectedPeers = {
   typescript: '>=5.7.0'
 } as const
 
-const allowedExternalImports = new Set(['better-effect', 'kysely'])
+const allowedExternalImports = new Set(['better-effect', 'better-result', 'kysely'])
 const developmentOnlyPackages = new Set([
   'better-sqlite3',
   'mysql2',
@@ -331,8 +331,9 @@ const assertGeneratedPackage = async (): Promise<void> => {
 
   const entrypoint = await import(pathToFileURL(join(distRoot, 'index.mjs')).href)
   assertCondition(
-    JSON.stringify(Object.keys(entrypoint).sort()) === JSON.stringify(['KyselyEffect']),
-    'Published Kysely Service exports changed'
+    JSON.stringify(Object.keys(entrypoint).sort()) ===
+      JSON.stringify(['KyselyEffect', 'KyselyQueryError', 'KyselyTransactionError']),
+    'Published Kysely integration exports changed'
   )
 }
 

@@ -1,6 +1,10 @@
 export { KyselyEffect } from './service'
+export { KyselyQueryError, KyselyTransactionError } from './errors'
 
 export type { KyselyServiceFactory } from './service'
+export type { KyselyExecutionOptions } from './options'
+export type { KyselyOperation } from './operation'
+export type { KyselyQueryOperation } from './errors'
 
 export type {
   KyselyService,
