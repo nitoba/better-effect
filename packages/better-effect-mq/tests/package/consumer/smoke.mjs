@@ -1,5 +1,14 @@
-import { Codec, JobId, JobRegistry, JobStore, Queue, protocolVersion } from 'better-effect-mq'
-import { Layer, Runtime } from 'better-effect'
+import {
+  Codec,
+  JobId,
+  JobRegistry,
+  JobStore,
+  MemoryJobStore,
+  Queue,
+  Worker,
+  protocolVersion
+} from 'better-effect-mq'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { Result } from 'better-result'
 import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
@@ -20,10 +29,27 @@ if (decoded.status !== 'ok' || decoded.value !== 'external') {
 
 const queue = Queue.define('external')
 const job = queue.job('smoke', { version: 1, payload: Codec.string })
+const workerJob = queue.job('worker', { version: 1, payload: Codec.string, result: Codec.void })
 const registry = JobRegistry.make([job])
 if (registry.lookup(job.identity).status !== 'ok') {
   throw new Error('the better-effect-mq job registry did not resolve')
 }
+
+const workerRuntime = await Runtime.make(MemoryJobStore.layer)
+const worker = await Worker.start(workerRuntime, {
+  handlers: [
+    Worker.handle(workerJob, () =>
+      // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+      Effect.fn(async function* () {
+        return Result.ok(undefined)
+      })
+    )
+  ],
+  pollIntervalMs: 1
+})
+await worker.awaitIdle()
+await worker.stop()
+await workerRuntime.dispose()
 
 const smokeContract = {
   protocolVersion: 1,

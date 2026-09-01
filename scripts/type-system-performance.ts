@@ -17,6 +17,8 @@ const jobSizes = [10, 50, 100, 250] as const
 type JobSize = (typeof jobSizes)[number]
 const producerSizes = [10, 50, 100] as const
 type ProducerSize = (typeof producerSizes)[number]
+const workerSizes = [10, 50, 100] as const
+type WorkerSize = (typeof workerSizes)[number]
 const honoSizes = [1, 3, 6, 10] as const
 type HonoSize = (typeof honoSizes)[number]
 const betterAuthSizes = [1] as const
@@ -35,7 +37,8 @@ const scenarios = [
   'program-collections',
   'job-registry',
   'job-store',
-  'job-producer'
+  'job-producer',
+  'worker-handlers'
 ] as const
 type Scenario = (typeof scenarios)[number]
 type Compiler = 'current' | 'minimum'
@@ -220,6 +223,17 @@ const jobStoreBudgets = {
   }
 } satisfies Record<JobSize, Budget>
 
+const workerBudgets = {
+  10: { maxCheckMs: 4_000, maxInstantiations: 500_000, maxMemoryMiB: 768, maxTypes: 200_000 },
+  50: { maxCheckMs: 15_000, maxInstantiations: 3_000_000, maxMemoryMiB: 1_024, maxTypes: 700_000 },
+  100: {
+    maxCheckMs: 45_000,
+    maxInstantiations: 10_000_000,
+    maxMemoryMiB: 1_536,
+    maxTypes: 1_500_000
+  }
+} satisfies Record<WorkerSize, Budget>
+
 const honoBudgets = {
   1: { maxCheckMs: 2_000, maxInstantiations: 400_000, maxMemoryMiB: 512, maxTypes: 100_000 },
   3: { maxCheckMs: 3_000, maxInstantiations: 450_000, maxMemoryMiB: 512, maxTypes: 200_000 },
@@ -274,6 +288,22 @@ const parseJobSizes = (value: string): JobSize[] => {
   return values as JobSize[]
 }
 
+const parseWorkerSizes = (value: string): WorkerSize[] => {
+  const values = value.split(',').map((item) => Number(item.trim()))
+
+  for (const item of values) {
+    // SAFETY: `item` is checked against the supported Worker-handler literals before use.
+    if (!workerSizes.includes(item as WorkerSize)) {
+      throw new Error(
+        `Unknown Worker handler count '${item}'. Allowed values: ${workerSizes.join(', ')}`
+      )
+    }
+  }
+
+  // SAFETY: Every parsed value passed the Worker-handler literal-tuple membership check above.
+  return values as WorkerSize[]
+}
+
 const parseHonoSizes = (value: string): HonoSize[] => {
   const values = value.split(',').map((item) => Number(item.trim()))
 
@@ -310,6 +340,7 @@ type ParsedOptions = {
   readonly sizes: Size[]
   readonly jobSizes: JobSize[]
   readonly producerSizes: ProducerSize[]
+  readonly workerSizes: WorkerSize[]
   readonly honoSizes: HonoSize[]
   readonly betterAuthSizes: BetterAuthSize[]
   readonly scenarios: Scenario[]
@@ -322,6 +353,7 @@ const parseArgs = (): ParsedOptions => {
   let selectedSizes: Size[] = [...sizes]
   let selectedJobSizes: JobSize[] = [...jobSizes]
   let selectedProducerSizes: ProducerSize[] = [...producerSizes]
+  let selectedWorkerSizes: WorkerSize[] = [...workerSizes]
   let selectedHonoSizes: HonoSize[] = [...honoSizes]
   let selectedBetterAuthSizes: BetterAuthSize[] = [...betterAuthSizes]
   let selectedScenarios: Scenario[] = [...scenarios]
@@ -353,6 +385,8 @@ const parseArgs = (): ParsedOptions => {
         }
       }
       selectedProducerSizes = parsed as ProducerSize[]
+    } else if (argument.startsWith('--worker-sizes=')) {
+      selectedWorkerSizes = parseWorkerSizes(argument.slice('--worker-sizes='.length))
     } else if (argument.startsWith('--hono-sizes=')) {
       selectedHonoSizes = parseHonoSizes(argument.slice('--hono-sizes='.length))
     } else if (argument.startsWith('--better-auth-sizes=')) {
@@ -367,6 +401,7 @@ const parseArgs = (): ParsedOptions => {
           `  --sizes=10,25,50,100       Service counts (default: ${sizes.join(',')})`,
           `  --job-sizes=10,50,100,250   Job definitions (default: ${jobSizes.join(',')})`,
           `  --producer-sizes=10,50,100  Producer pipeline size (default: ${producerSizes.join(',')})`,
+          `  --worker-sizes=10,50,100    Worker handler counts (default: ${workerSizes.join(',')})`,
           `  --hono-sizes=1,3,6,10       Hono middleware counts (default: ${honoSizes.join(',')})`,
           `  --better-auth-sizes=1       Better Auth plugin fixtures (default: ${betterAuthSizes.join(',')})`,
           `  --scenarios=${scenarios.join(',')}  Fixtures to measure (default: all)`,
@@ -385,6 +420,7 @@ const parseArgs = (): ParsedOptions => {
     sizes: selectedSizes,
     jobSizes: selectedJobSizes,
     producerSizes: selectedProducerSizes,
+    workerSizes: selectedWorkerSizes,
     honoSizes: selectedHonoSizes,
     betterAuthSizes: selectedBetterAuthSizes,
     scenarios: selectedScenarios,
@@ -760,6 +796,62 @@ void Runtime.run(AppLive, () => program)
 `
 }
 
+const workerFixtureSource = (size: number): string => {
+  const names = Array.from(
+    { length: size },
+    (_, index) => `Job${String(index + 1).padStart(3, '0')}`
+  )
+  const jobs = names
+    .map(
+      (name, index) =>
+        `const ${name} = queue.job('job-${String(index + 1).padStart(3, '0')}', { version: 1, payload, result: Codec.string })`
+    )
+    .join('\n')
+  const handlers = names
+    .map(
+      (name) => `const ${name}Handler = Worker.handle(${name}, (input) =>
+  Effect.fn(async function* () {
+    const root = yield* WorkerRoot
+    const context = yield* JobContext
+    void root
+    void context
+    return Result.ok(input.id)
+  })
+)`
+    )
+    .join('\n\n')
+  const handlerTuple = names.map((name) => `${name}Handler`).join(', ')
+
+  return `import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { Result } from '../../../packages/better-effect/node_modules/better-result'
+import { Codec, JobContext, JobStore, Queue, Worker, type WorkerRequirements } from '../../../packages/better-effect-mq/src/index.ts'
+
+class WorkerRoot extends Service<WorkerRoot>()('WorkerBenchmarkRoot') {}
+const implementation = {} as JobStore.Contract
+const queue = Queue.define('benchmark.worker')
+const payload = Codec.json<{ readonly id: string }>()
+${jobs}
+${handlers}
+const handlers = [${handlerTuple}] as const
+type ExpectedRequirements = WorkerRoot | JobStore.Instance
+type ActualRequirements = WorkerRequirements<typeof handlers>
+const requirements: ExpectedRequirements = null as unknown as ActualRequirements
+const reverseRequirements: ActualRequirements = null as unknown as ExpectedRequirements
+const AppLive = Layer.merge(
+  Layer.succeed(JobStore, JobStore.of(implementation)),
+  Layer.succeed(WorkerRoot, WorkerRoot.of({}))
+)
+declare const runtime: Runtime.For<typeof AppLive>
+void requirements
+void reverseRequirements
+void Worker.start(runtime, { handlers, concurrency: 8 })
+void Worker.use(runtime, { handlers }, async (worker) => {
+  await worker.awaitIdle()
+  return worker.state
+})
+`
+}
+
 const honoValidatorTargets = ['param', 'header', 'query', 'cookie', 'json', 'form'] as const
 
 type HonoValidatorTarget = (typeof honoValidatorTargets)[number]
@@ -945,6 +1037,10 @@ const fixtureSource = (scenario: Scenario, size: number): string => {
     return jobProducerFixtureSource(size)
   }
 
+  if (scenario === 'worker-handlers') {
+    return workerFixtureSource(size)
+  }
+
   // SAFETY: Non-Hono scenarios are called only with the service-count literals parsed above.
   const names = serviceNames(size as Size)
   const withMethods = scenario === 'methods'
@@ -1106,7 +1202,9 @@ const budgetFailures = (scenario: Scenario, size: number, metrics: Metrics): str
             ? producerBudgets[size as ProducerSize]
             : scenario === 'job-registry'
               ? jobBudgets[size as JobSize]
-              : budgets[size as Size]
+              : scenario === 'worker-handlers'
+                ? workerBudgets[size as WorkerSize]
+                : budgets[size as Size]
   const failures: string[] = []
 
   if (metrics.checkMs > budget.maxCheckMs) {
@@ -1147,13 +1245,17 @@ const formatRow = (result: Result): string => {
 }
 
 const compilersFor = (scenario: Scenario): readonly Compiler[] =>
-  scenario === 'better-auth' || scenario === 'job-producer' ? ['current', 'minimum'] : ['current']
+  scenario === 'better-auth' || scenario === 'job-producer' || scenario === 'worker-handlers'
+    ? ['current', 'minimum']
+    : ['current']
 
 const prepareScenarioDependencies = async (
   selectedScenarios: readonly Scenario[]
 ): Promise<void> => {
   const needsCoreDeclarations =
-    selectedScenarios.includes('job-store') || selectedScenarios.includes('job-producer')
+    selectedScenarios.includes('job-store') ||
+    selectedScenarios.includes('job-producer') ||
+    selectedScenarios.includes('worker-handlers')
   const needsMqDeclarations = selectedScenarios.includes('job-producer')
 
   if (needsCoreDeclarations) {
@@ -1222,6 +1324,8 @@ const main = async (): Promise<void> => {
             ? options.jobSizes
             : scenario === 'job-producer'
               ? options.producerSizes
+              : scenario === 'worker-handlers'
+                ? options.workerSizes
               : options.sizes
 
     for (const size of scenarioSizes) {

@@ -1,10 +1,16 @@
+import { Effect, Runtime, Service } from 'better-effect'
+import type { AnyService } from 'better-effect'
+import { Result } from 'better-result'
+
 import {
   Codec,
   Job,
+  JobContext,
   JobId,
   JobRegistry,
   JobStore,
   Queue,
+  Worker,
   bindJob,
   protocolVersion
 } from 'better-effect-mq'
@@ -23,6 +29,24 @@ const codec = Codec.json<{ readonly source: string }>()
 const encoded = codec.encode({ source: 'external' })
 const queue = Queue.define('external')
 const job = queue.job('smoke', { version: 1, payload: codec })
+class WorkerRoot extends Service<WorkerRoot>()('ExternalWorkerRoot') {}
+const workerJob = queue.job('worker', {
+  version: 1,
+  payload: codec,
+  result: Codec.void
+})
+const workerHandler = Worker.handle(workerJob, (input) =>
+  Effect.fn(async function* () {
+    const root = yield* WorkerRoot
+    const context = yield* JobContext
+    void input
+    void root
+    void context
+    return Result.ok(undefined)
+  })
+)
+declare const workerRuntime: Runtime<WorkerRoot | AnyService>
+const workerStarted = Worker.start(workerRuntime, { handlers: [workerHandler] as const })
 const registry = JobRegistry.make([job] as const)
 const found = registry.lookup(job.identity)
 const namedStore = JobStore.named('external')
@@ -46,6 +70,7 @@ void payload
 void recordState
 void encoded
 void found
+void workerStarted
 void namedStore
 void bound
 void boundAgain
