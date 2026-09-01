@@ -1326,7 +1326,7 @@ const main = async (): Promise<void> => {
               ? options.producerSizes
               : scenario === 'worker-handlers'
                 ? options.workerSizes
-              : options.sizes
+                : options.sizes
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)
