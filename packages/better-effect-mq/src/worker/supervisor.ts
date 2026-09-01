@@ -1260,6 +1260,24 @@ const makeAwaitIdleAbortedError = (signal: AbortSignal): WorkerAwaitIdleError =>
   )
 }
 
+const observeRejectedSignalListenerResult = (value: unknown): void => {
+  if (value === undefined) {
+    return
+  }
+
+  try {
+    void Promise.resolve(value).catch(() => undefined)
+  } catch {
+    // Promise resolution itself is best effort; no returned rejection may escape cleanup.
+  }
+}
+
+const invalidSignalListenerReturn = (): WorkerAwaitIdleError =>
+  new WorkerAwaitIdleError(
+    'invalid-signal',
+    'Worker awaitIdle abort listener registration must return void'
+  )
+
 const installWaiter = (waiter: Waiter, options: NormalizedAwaitIdleOptions): void => {
   const signal = options.signal
 
@@ -1267,7 +1285,13 @@ const installWaiter = (waiter: Waiter, options: NormalizedAwaitIdleOptions): voi
     waiter.onAbort = () => waiter.reject(makeAwaitIdleAbortedError(signal))
 
     try {
-      signal.addEventListener('abort', waiter.onAbort, { once: true })
+      const result: unknown = signal.addEventListener('abort', waiter.onAbort, { once: true })
+
+      if (result !== undefined) {
+        observeRejectedSignalListenerResult(result)
+        waiter.reject(invalidSignalListenerReturn())
+        return
+      }
     } catch (cause) {
       waiter.reject(
         new WorkerAwaitIdleError(
@@ -1357,7 +1381,8 @@ const cleanupWaiter = (waiter: Waiter): void => {
 
   if (signal !== undefined && onAbort !== undefined) {
     try {
-      signal.removeEventListener('abort', onAbort)
+      const result: unknown = signal.removeEventListener('abort', onAbort)
+      observeRejectedSignalListenerResult(result)
     } catch {
       // A malformed signal cannot retain this waiter's local references.
     }

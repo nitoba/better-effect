@@ -109,6 +109,61 @@ try {
     throw new Error('the packed Worker reused a JobContext job id')
   }
 
+  const normalAbort = new AbortController()
+  const normalWait = worker.awaitIdle({ signal: normalAbort.signal, timeoutMs: 1_000 })
+  normalAbort.abort(new Error('normal signal abort'))
+  try {
+    await normalWait
+    throw new Error('the packed Worker did not reject an aborted native signal')
+  } catch (cause) {
+    if (cause?.name !== 'WorkerAwaitIdleError' || cause.reason !== 'aborted') {
+      throw cause
+    }
+  }
+
+  const unhandledRejections = []
+  const onUnhandledRejection = (reason) => {
+    unhandledRejections.push(reason)
+  }
+  process.on('unhandledRejection', onUnhandledRejection)
+  let addCalls = 0
+  let removeCalls = 0
+  const rejectingSignal = {
+    aborted: false,
+    addEventListener() {
+      addCalls += 1
+      return Promise.reject(new Error('add listener rejected'))
+    },
+    removeEventListener() {
+      removeCalls += 1
+      return Promise.reject(new Error('remove listener rejected'))
+    }
+  }
+
+  try {
+    let failure
+    try {
+      await worker.awaitIdle({ signal: rejectingSignal, timeoutMs: 1_000 })
+    } catch (cause) {
+      failure = cause
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    if (failure?.name !== 'WorkerAwaitIdleError' || failure.reason !== 'invalid-signal') {
+      throw new Error('the packed Worker did not reject a non-void signal listener result')
+    }
+    if (addCalls !== 1 || removeCalls !== 1) {
+      throw new Error('the packed Worker did not synchronously clean its malformed signal waiter')
+    }
+    if (unhandledRejections.length !== 0) {
+      throw new Error(
+        `the packed Worker leaked ${unhandledRejections.length} unhandled signal rejection(s)`
+      )
+    }
+  } finally {
+    process.off('unhandledRejection', onUnhandledRejection)
+  }
+
   releaseGate()
   await worker.awaitIdle()
   if (worker.activeCount !== 0) {

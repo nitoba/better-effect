@@ -124,6 +124,40 @@ const makeTrackedSignal = (initialAborted = false) => {
   }
 }
 
+const makeRejectedListenerSignal = (rejectAdd: boolean, rejectRemove: boolean) => {
+  let additions = 0
+  let removals = 0
+  const listeners = new Set<() => void>()
+  const signal = {
+    aborted: false,
+    addEventListener(_type: string, listener: () => void) {
+      additions += 1
+      if (rejectAdd) {
+        return Promise.reject(new Error('add listener rejected'))
+      }
+      listeners.add(listener)
+    },
+    removeEventListener(_type: string, listener: () => void) {
+      removals += 1
+      if (rejectRemove) {
+        return Promise.reject(new Error('remove listener rejected'))
+      }
+      listeners.delete(listener)
+    }
+  }
+
+  return {
+    // SAFETY: this object implements the AbortSignal members used by awaitIdle.
+    signal: signal as AbortSignal,
+    get additions() {
+      return additions
+    },
+    get removals() {
+      return removals
+    }
+  }
+}
+
 test('Worker executes a handler with root Services, JobContext, and CurrentAbortSignal', async () => {
   const store = MemoryJobStore.make()
   const runtime = await Runtime.make(
@@ -231,6 +265,52 @@ test('Worker.awaitIdle validates options before installing wait resources', asyn
     // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
     await expect(aborted).rejects.toBeInstanceOf(WorkerAwaitIdleError)
     expect(aborting.removals).toBe(1)
+    expect(idleWaiterCount(worker)).toBe(0)
+  } finally {
+    release()
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
+test('Worker.awaitIdle handles rejected listener thenables without retaining waiters', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  await enqueue(store, voidJob, 1)
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const handler = Worker.handle(voidJob, () =>
+    // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
+    Effect.fn(async function* () {
+      await gate
+      return Result.ok(undefined)
+    })
+  )
+  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+
+  try {
+    const addRejected = makeRejectedListenerSignal(true, false)
+    const registration = worker.awaitIdle({ signal: addRejected.signal, timeoutMs: 2_000 })
+    // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+    await expect(registration).rejects.toMatchObject({
+      name: 'WorkerAwaitIdleError',
+      reason: 'invalid-signal'
+    })
+    expect(addRejected.additions).toBe(1)
+    expect(addRejected.removals).toBe(1)
+    expect(idleWaiterCount(worker)).toBe(0)
+
+    const removeRejected = makeRejectedListenerSignal(false, true)
+    const timedOut = worker.awaitIdle({ signal: removeRejected.signal, timeoutMs: 0 })
+    // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+    await expect(timedOut).rejects.toMatchObject({
+      name: 'WorkerAwaitIdleError',
+      reason: 'timeout'
+    })
+    expect(removeRejected.additions).toBe(1)
+    expect(removeRejected.removals).toBe(1)
     expect(idleWaiterCount(worker)).toBe(0)
   } finally {
     release()
