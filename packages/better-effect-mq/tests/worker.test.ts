@@ -700,8 +700,8 @@ test('Workers for named stores share one Runtime without cross-store claims', as
 })
 
 test('Worker scopes heartbeat loss by store, job ID, and lease token', async () => {
-  const firstStore = MemoryJobStore.make()
-  const secondStore = MemoryJobStore.make()
+  const firstStore = MemoryJobStore.make({ idGenerator: { next: () => 'shared-lease-token' } })
+  const secondStore = MemoryJobStore.make({ idGenerator: { next: () => 'shared-lease-token' } })
   const firstToken = JobStore.named('heartbeat-store-a')
   const secondToken = JobStore.named('heartbeat-store-b')
   let firstHeartbeat!: () => void
@@ -828,8 +828,8 @@ test('Worker scopes heartbeat loss by store, job ID, and lease token', async () 
   } finally {
     release()
     await worker.stop()
-    expect((await resolve(firstStore.getAttempts({ jobId: sameId }))).length).toBeGreaterThan(0)
-    expect((await resolve(secondStore.getAttempts({ jobId: sameId }))).length).toBeGreaterThan(0)
+    expect((await resolve(firstStore.getAttempts({ jobId: sameId }))).length).toBe(0)
+    expect((await resolve(secondStore.getAttempts({ jobId: sameId }))).length).toBe(1)
     await runtime.dispose()
   }
 })

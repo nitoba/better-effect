@@ -368,7 +368,7 @@ class MemoryStore {
     if (applied.value.attempt === undefined) {
       return error(jobStoreError('attempt', 'settlement did not return an attempt'))
     }
-    return ok({ record: applied.value.record, attempt: applied.value.attempt })
+    return ok({ record: applied.value.record, attempt: applied.value.attempt, status: 'applied' })
   }
 
   release(request: JobStoreType.ReleaseRequest): Operation<JobStoreType.ReleaseResult> {

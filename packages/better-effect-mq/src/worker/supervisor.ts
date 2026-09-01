@@ -26,7 +26,8 @@ import type {
   HeartbeatResult,
   RecoverStalledResult,
   JobStoreContract,
-  JobStoreOperation
+  JobStoreOperation,
+  SettlementResult
 } from '../store'
 
 import { JobContext } from './context'
@@ -94,6 +95,13 @@ class DecodeOutcome {
   constructor(readonly cause: unknown) {}
 }
 
+class StoreOperationTimeoutError extends Error {
+  constructor(readonly operation: string) {
+    super(`Job store operation timed out: ${operation}`)
+    this.name = 'StoreOperationTimeoutError'
+  }
+}
+
 const defaultConcurrency = 1
 const defaultLeaseDurationMs = 30_000
 const defaultPollIntervalMs = 100
@@ -148,9 +156,9 @@ export class WorkerSupervisor implements WorkerHandle {
       )
     }
 
-    const stores = new Map<string, AnyJobStoreToken>()
-    for (const group of this.groups) stores.set(group.store.serviceTag, group.store)
-    for (const store of stores.values()) {
+    const stores = new Set<AnyJobStoreToken>()
+    for (const group of this.groups) stores.add(group.store)
+    for (const store of stores) {
       this.startSupervisionLoop(store, 'heartbeat')
       this.startSupervisionLoop(store, 'stalled')
     }
@@ -334,10 +342,7 @@ export class WorkerSupervisor implements WorkerHandle {
     let count = 0
 
     for (const attempt of this.activeAttempts.values()) {
-      if (
-        attempt.entry.queue === group.queue &&
-        attempt.entry.store.serviceTag === group.store.serviceTag
-      ) {
+      if (attempt.entry.queue === group.queue && attempt.entry.store === group.store) {
         count += 1
       }
     }
@@ -560,7 +565,7 @@ export class WorkerSupervisor implements WorkerHandle {
     const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     if (attempt?.state === 'lost') return
     if (attempt !== undefined) attempt.state = 'settling'
-    const result = await runStoreOperation(
+    const result = await runStoreOperation<SettlementResult>(
       this.runtime,
       group.store,
       (store) =>
@@ -572,21 +577,27 @@ export class WorkerSupervisor implements WorkerHandle {
           startedAt
         }),
       undefined,
-      this.workerOptions.pollIntervalMs
+      this.workerOptions.pollIntervalMs,
+      this.workerOptions.storeOperationTimeoutMs
     )
 
     if (Result.isError(result)) {
       this.report(result.error)
+    } else if (result.value.status === 'already-applied') {
+      // A lost ACK is not a second settlement; the store's idempotent
+      // acknowledgment is the terminal result for this local attempt.
+      return
     }
   }
 
   private async releaseJob(group: ClaimGroup, job: ActiveJobSnapshot): Promise<void> {
-    const result = await runStoreOperation(
+    const result = await runStoreOperation<import('../store').ReleaseResult>(
       this.runtime,
       group.store,
       (store) => store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() }),
       undefined,
-      this.workerOptions.pollIntervalMs
+      this.workerOptions.pollIntervalMs,
+      this.workerOptions.storeOperationTimeoutMs
     )
 
     if (Result.isError(result)) {
@@ -641,19 +652,22 @@ export class WorkerSupervisor implements WorkerHandle {
         (attempt) =>
           attempt.job.leaseOwner === this.id &&
           attempt.job.leaseToken !== undefined &&
-          attempt.entry.store.serviceTag === store.serviceTag
+          attempt.entry.store === store
       )
       .filter((attempt) => attempt.state !== 'lost' && attempt.state !== 'settling')
       .map((attempt) => ({ jobId: attempt.job.id, leaseToken: attempt.job.leaseToken! }))
     if (leases.length === 0) return
     const snapshot = new Map(
       [...this.activeAttempts.values()]
-        .filter((attempt) =>
-          leases.some(
-            (lease) => lease.jobId === attempt.job.id && lease.leaseToken === attempt.job.leaseToken
-          )
+        .filter(
+          (attempt) =>
+            attempt.entry.store === store &&
+            leases.some(
+              (lease) =>
+                lease.jobId === attempt.job.id && lease.leaseToken === attempt.job.leaseToken
+            )
         )
-        .map((attempt) => [heartbeatKey(store, attempt.job.id, attempt.job.leaseToken), attempt])
+        .map((attempt) => [heartbeatKey(attempt.job.id, attempt.job.leaseToken), attempt])
     )
     const result = await runStoreOperation<HeartbeatResult>(
       this.runtime,
@@ -665,14 +679,19 @@ export class WorkerSupervisor implements WorkerHandle {
           now: this.readNow()
         }),
       this.supervisionController.signal,
-      this.workerOptions.pollIntervalMs
+      this.workerOptions.pollIntervalMs,
+      this.workerOptions.storeOperationTimeoutMs
     )
     if (Result.isError(result)) {
-      this.report(result.error)
+      if (result.error instanceof StoreOperationTimeoutError) {
+        for (const attempt of snapshot.values()) this.markLost(attempt, result.error)
+      } else {
+        this.report(result.error)
+      }
       return
     }
     for (const lost of result.value.lost) {
-      const attempt = snapshot.get(heartbeatKey(store, lost.jobId, lost.leaseToken))
+      const attempt = snapshot.get(heartbeatKey(lost.jobId, lost.leaseToken))
       if (
         attempt === undefined ||
         attempt.state === 'lost' ||
@@ -680,17 +699,25 @@ export class WorkerSupervisor implements WorkerHandle {
         attempt.job.leaseOwner !== this.id
       )
         continue
-      attempt.state = 'lost'
-      attempt.controller.abort(
+      this.markLost(
+        attempt,
         new LeaseLostError({ jobId: lost.jobId, leaseToken: lost.leaseToken, reason: lost.reason })
       )
     }
     for (const jobId of result.value.cancellationRequested) {
-      const attempt = [...snapshot.values()].find((candidate) => candidate.job.id === jobId)
+      const attempt = [...snapshot.values()].find(
+        (candidate) => candidate.job.id === jobId && candidate.entry.store === store
+      )
       if (attempt === undefined || attempt.state !== 'running') continue
       attempt.state = 'cancelling'
       attempt.controller.abort(new Error('Job cancellation requested'))
     }
+  }
+
+  private markLost(attempt: AttemptState, cause: unknown): void {
+    if (attempt.state === 'lost') return
+    attempt.state = 'lost'
+    attempt.controller.abort(cause)
   }
 
   private async recoverStalled(store: AnyJobStoreToken): Promise<void> {
@@ -703,7 +730,8 @@ export class WorkerSupervisor implements WorkerHandle {
           now: this.readNow()
         }),
       this.supervisionController.signal,
-      this.workerOptions.pollIntervalMs
+      this.workerOptions.pollIntervalMs,
+      this.workerOptions.storeOperationTimeoutMs
     )
     if (Result.isError(result)) this.report(result.error)
   }
@@ -861,6 +889,7 @@ export type NormalizedWorkerOptions = {
   readonly stalledIntervalMs: number
   readonly maxStalledCount: number
   readonly pollIntervalMs: number
+  readonly storeOperationTimeoutMs: number
   readonly now: () => number
   readonly onError: WorkerErrorHandler | undefined
   readonly shutdown: { readonly gracePeriodMs: number; readonly abortAfterGracePeriod: boolean }
@@ -953,6 +982,10 @@ export const normalizeWorkerOptions = (
     stalledIntervalMs,
     maxStalledCount,
     pollIntervalMs,
+    storeOperationTimeoutMs: Math.max(
+      pollIntervalMs,
+      Math.min(leaseDurationMs, heartbeatIntervalMs * 2)
+    ),
     now,
     shutdown,
     onError: onError as WorkerErrorHandler | undefined
@@ -963,14 +996,11 @@ const makeGroups = (
   handlers: readonly AnyWorkerHandler[],
   options: NormalizedWorkerOptions
 ): readonly ClaimGroup[] => {
-  const groups = new Map<
-    string,
-    {
-      readonly queue: JobRecord['queue']
-      readonly store: AnyJobStoreToken
-      handlers: HandlerEntry[]
-    }
-  >()
+  const groups: {
+    readonly queue: JobRecord['queue']
+    readonly store: AnyJobStoreToken
+    handlers: HandlerEntry[]
+  }[] = []
 
   for (const handler of handlers) {
     const definition = handler.job
@@ -989,18 +1019,19 @@ const makeGroups = (
       store: definition.store,
       concurrency: handler.concurrency ?? options.concurrency
     }
-    const key = JSON.stringify([definition.store.serviceTag, queue.value])
-    const group = groups.get(key)
+    const group = groups.find(
+      (candidate) => candidate.store === definition.store && candidate.queue === queue.value
+    )
 
     if (group === undefined) {
-      groups.set(key, { queue: queue.value, store: definition.store, handlers: [entry] })
+      groups.push({ queue: queue.value, store: definition.store, handlers: [entry] })
     } else {
       group.handlers.push(entry)
     }
   }
 
-  return [...groups.entries()].map(([key, group]) => ({
-    key,
+  return groups.map((group, index) => ({
+    key: String(index),
     queue: group.queue,
     store: group.store,
     handlers: Object.freeze(group.handlers.slice()),
@@ -1171,20 +1202,25 @@ const runStoreOperation = async <Value>(
   token: AnyJobStoreToken,
   operation: (store: JobStoreContract) => StoreOperation<Value>,
   signal?: AbortSignal,
-  retryDelayMs = 1
+  retryDelayMs = 1,
+  timeoutMs = Math.max(minimumTimerMs, retryDelayMs)
 ): Promise<ResultType<Value, unknown>> => {
   let retries = 0
   while (true) {
     let result: ResultType<Value, unknown>
     try {
-      result = (await runtime.run(
+      const pending = runtime.run(
         () =>
           Effect.gen(async function* () {
             const store = yield* token
             const value = yield* Result.await(Promise.resolve(operation(store)))
             return Result.ok(value)
           }) as never
-      )) as ResultType<Value, unknown>
+      ) as Promise<ResultType<Value, unknown>>
+      // A store cannot be cancelled by JavaScript; contain both late rejection and
+      // the supervisor's wait so a broken backend cannot block shutdown.
+      void pending.catch(() => undefined)
+      result = await raceStoreOperation(pending, token.serviceTag, timeoutMs, signal)
     } catch (cause) {
       return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<Value, unknown>
     }
@@ -1202,6 +1238,33 @@ const runStoreOperation = async <Value>(
   }
 }
 
+const raceStoreOperation = async <Value>(
+  pending: Promise<ResultType<Value, unknown>>,
+  operation: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<ResultType<Value, unknown>> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  const interrupted = new Promise<ResultType<Value, unknown>>((resolve) => {
+    const finish = (cause: StoreOperationTimeoutError): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
+      resolve(Result.err(cause) as ResultType<Value, unknown>)
+    }
+    timer = setTimeout(() => finish(new StoreOperationTimeoutError(operation)), timeoutMs)
+    if (signal !== undefined) {
+      onAbort = () => finish(new StoreOperationTimeoutError(operation))
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+    }
+  })
+  const result = await Promise.race([pending, interrupted])
+  if (timer !== undefined) clearTimeout(timer)
+  if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
+  return result
+}
+
 const cancellableDelay = (delay: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     if (signal?.aborted) return resolve()
@@ -1215,10 +1278,9 @@ const cancellableDelay = (delay: number, signal?: AbortSignal): Promise<void> =>
   })
 
 const heartbeatKey = (
-  store: AnyJobStoreToken,
   jobId: JobRecord['id'],
   leaseToken: NonNullable<JobRecord['leaseToken']>
-): string => JSON.stringify([store.serviceTag, jobId, leaseToken])
+): string => JSON.stringify([jobId, leaseToken])
 
 const isResultLike = (value: unknown): value is UnknownResult => {
   if (typeof value !== 'object' || value === null) {

@@ -587,7 +587,7 @@ class MemoryJobStoreImplementation {
           return ok({
             record: cloneRecord(current),
             attempt: cloneAttempt(previousAttempt),
-            alreadySettled: true
+            status: 'already-applied'
           })
         }
         return fail(
@@ -633,7 +633,8 @@ class MemoryJobStoreImplementation {
       this.settledTokens.set(jobId.value, leaseToken.value)
       return ok({
         record: cloneRecord(prepared.value.transition.record),
-        attempt: cloneAttempt(attempt)
+        attempt: cloneAttempt(attempt),
+        status: 'applied'
       })
     } catch {
       return fail(

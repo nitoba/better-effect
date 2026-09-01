@@ -506,10 +506,11 @@ completion is fenced. If a settlement response is lost after the store may
 have applied it, the worker retries infrastructure failures with bounded
 exponential backoff using
 the exact same job ID and lease token. The persisted terminal record is the
-source of truth: stores that can prove same-token application return an
-`alreadySettled` acknowledgment without a second ledger entry; otherwise they
-must return `LeaseLost`/an infrastructure failure and the worker reports the
-uncertainty without manufacturing another handler attempt.
+source of truth: stores that can prove same-token application return a typed
+`{ status: 'already-applied' }` acknowledgment without a second ledger entry;
+first applications return `{ status: 'applied' }`. Otherwise they must return
+`LeaseLost`/an infrastructure failure and the worker reports the uncertainty
+without manufacturing another handler attempt.
 
 `WorkerHandle.stop()` transitions to stopping before awaiting anything, stops new
 claims, keeps supervision active for in-flight attempts, applies the configured
