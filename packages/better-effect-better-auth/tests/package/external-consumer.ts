@@ -65,11 +65,7 @@ const assertSuccess = (result: CommandResult, description: string): void => {
   )
 }
 
-const buildPackage = (
-  source: string,
-  label: string,
-  preserveExistingOutput = false
-): void => {
+const buildPackage = (source: string, label: string, preserveExistingOutput = false): void => {
   const command = ['bun', 'run', 'build']
   if (preserveExistingOutput) command.push('--', '--no-clean')
   assertSuccess(run(command, source), `Building ${label}`)
