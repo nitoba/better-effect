@@ -65,8 +65,14 @@ const assertSuccess = (result: CommandResult, description: string): void => {
   )
 }
 
-const buildPackage = (source: string, label: string): void => {
-  assertSuccess(run(['bun', 'run', 'build'], source), `Building ${label}`)
+const buildPackage = (
+  source: string,
+  label: string,
+  preserveExistingOutput = false
+): void => {
+  const command = ['bun', 'run', 'build']
+  if (preserveExistingOutput) command.push('--', '--no-clean')
+  assertSuccess(run(command, source), `Building ${label}`)
 }
 
 const pack = async (root: string, source: string, label: string): Promise<string> => {
@@ -496,7 +502,7 @@ const main = async (): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), 'better-effect-better-auth-consumer-'))
 
   try {
-    buildPackage(coreSource, 'better-effect')
+    buildPackage(coreSource, 'better-effect', true)
     buildPackage(packageRoot, 'better-effect-better-auth')
     const integrationArchive = await pack(root, packageRoot, 'better-effect-better-auth')
     const coreArchive = await pack(root, coreSource, 'better-effect')
