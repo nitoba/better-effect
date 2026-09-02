@@ -1,3 +1,5 @@
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- canonical snapshots omit optional fields.
+
 import { Result, type Result as ResultType } from 'better-result'
 
 import {
@@ -43,6 +45,7 @@ const jobRecordFields = [
   'orderingSequence',
   'attemptsMax',
   'attemptsMade',
+  'attemptSequence',
   'deliveryCount',
   'stalledCount',
   'backoff',
@@ -62,18 +65,24 @@ const jobRecordFields = [
 
 const attemptRecordFields = [
   'attempt',
+  'attemptSequence',
   'delivery',
   'startedAt',
   'finishedAt',
   'outcome',
   'result',
-  'failure'
+  'failure',
+  'retryAt',
+  'retryDelayMs'
 ] as const
 
 type MutableBackoffCopy = {
   type: PersistedBackoff['type']
   delayMs: number
+  incrementMs?: number
+  factor?: number
   maxDelayMs?: number
+  jitter?: number
 }
 
 type MutableFailureCopy = {
@@ -169,9 +178,10 @@ const cloneBackoff = (backoff: PersistedBackoff | undefined): PersistedBackoff |
     delayMs: backoff.delayMs
   }
 
-  if (backoff.maxDelayMs !== undefined) {
-    copy.maxDelayMs = backoff.maxDelayMs
-  }
+  if (backoff.incrementMs !== undefined) copy.incrementMs = backoff.incrementMs
+  if (backoff.factor !== undefined) copy.factor = backoff.factor
+  if (backoff.maxDelayMs !== undefined) copy.maxDelayMs = backoff.maxDelayMs
+  if (backoff.jitter !== undefined) copy.jitter = backoff.jitter
 
   return Object.freeze(copy)
 }
@@ -215,6 +225,7 @@ const freezeRecord = (record: JobRecord): JobRecord =>
     orderingSequence: record.orderingSequence,
     attemptsMax: record.attemptsMax,
     attemptsMade: record.attemptsMade,
+    ...(record.attemptSequence === undefined ? {} : { attemptSequence: record.attemptSequence }),
     deliveryCount: record.deliveryCount,
     stalledCount: record.stalledCount,
     backoff: cloneBackoff(record.backoff),
@@ -370,6 +381,17 @@ const validateJobRecordInternal = (
   if (Result.isError(deliveryCount)) {
     return invalidRecord(deliveryCount.error.field, deliveryCount.error.message)
   }
+  const attemptSequence =
+    fields.attemptSequence === undefined
+      ? Result.ok<number>(
+          state.value === 'active'
+            ? Math.max(attemptsMade.value, deliveryCount.value - 1)
+            : Math.max(attemptsMade.value, deliveryCount.value)
+        )
+      : validateCounterValue(fields.attemptSequence, 'attemptSequence')
+  if (Result.isError(attemptSequence)) {
+    return invalidRecord(attemptSequence.error.field, attemptSequence.error.message)
+  }
   if (Result.isError(stalledCount)) {
     return invalidRecord(stalledCount.error.field, stalledCount.error.message)
   }
@@ -450,6 +472,9 @@ const validateJobRecordInternal = (
   if (attemptsMade.value > deliveryCount.value) {
     return invalidRecord('attemptsMade', 'must not exceed deliveryCount')
   }
+  if (attemptSequence.value < attemptsMade.value) {
+    return invalidRecord('attemptSequence', 'must not be below attemptsMade')
+  }
 
   if (state.value === 'active' && deliveryCount.value === 0) {
     return invalidRecord('deliveryCount', 'active jobs must have at least one delivery')
@@ -496,6 +521,7 @@ const validateJobRecordInternal = (
       orderingSequence: orderingSequence.value,
       attemptsMax: attemptsMax.value,
       attemptsMade: attemptsMade.value,
+      attemptSequence: attemptSequence.value,
       deliveryCount: deliveryCount.value,
       stalledCount: stalledCount.value,
       backoff: backoff.value,
@@ -534,12 +560,15 @@ export const makeJobRecord = validateJobRecord
 const freezeAttempt = (attempt: AttemptRecord): AttemptRecord =>
   Object.freeze({
     attempt: attempt.attempt,
+    ...(attempt.attemptSequence === undefined ? {} : { attemptSequence: attempt.attemptSequence }),
     delivery: attempt.delivery,
     startedAt: attempt.startedAt,
     finishedAt: attempt.finishedAt,
     outcome: attempt.outcome,
     result: attempt.result === undefined ? undefined : cloneJsonValue(attempt.result),
-    failure: cloneFailure(attempt.failure)
+    failure: cloneFailure(attempt.failure),
+    ...(attempt.retryAt === undefined ? {} : { retryAt: attempt.retryAt }),
+    ...(attempt.retryDelayMs === undefined ? {} : { retryDelayMs: attempt.retryDelayMs })
   })
 
 /** Validate an attempt ledger entry and return an immutable canonical copy. */
@@ -547,13 +576,22 @@ const validateAttemptRecordInternal = (
   fields: ParsedObjectFields
 ): ResultType<AttemptRecord, JobDefinitionError> => {
   const attemptNumber = validateCounterValue(fields.attempt, 'attempt')
+  const attemptSequence =
+    fields.attemptSequence === undefined
+      ? Result.ok<number | undefined>(undefined)
+      : validateCounterValue(fields.attemptSequence, 'attemptSequence')
   const delivery = validatePositiveIntegerValue(fields.delivery, 'delivery')
   const finishedAt = validateTimestampValue(fields.finishedAt, 'finishedAt')
   const startedAt = validateOptionalTimestampValue(fields.startedAt, 'startedAt')
   const outcome = validateAttemptOutcome(fields.outcome)
+  const retryAt = validateOptionalTimestampValue(fields.retryAt, 'retryAt')
+  const retryDelayMs = validateOptionalDurationValue(fields.retryDelayMs, 'retryDelayMs')
 
   if (Result.isError(attemptNumber)) {
     return invalidAttempt(attemptNumber.error.field, attemptNumber.error.message)
+  }
+  if (Result.isError(attemptSequence)) {
+    return invalidAttempt(attemptSequence.error.field, attemptSequence.error.message)
   }
   if (Result.isError(delivery)) return invalidAttempt(delivery.error.field, delivery.error.message)
   if (Result.isError(finishedAt)) {
@@ -566,9 +604,35 @@ const validateAttemptRecordInternal = (
   if (Result.isError(outcome)) {
     return invalidAttempt(outcome.error.field, outcome.error.message)
   }
+  if (Result.isError(retryAt)) return invalidAttempt(retryAt.error.field, retryAt.error.message)
+  if (Result.isError(retryDelayMs)) {
+    return invalidAttempt(retryDelayMs.error.field, retryDelayMs.error.message)
+  }
+  if (
+    outcome.value !== 'retried' &&
+    (retryAt.value !== undefined || retryDelayMs.value !== undefined)
+  ) {
+    return invalidAttempt('retryAt', 'retry schedule is only valid for retried entries')
+  }
+  if (outcome.value === 'retried' && retryAt.value === undefined) {
+    return invalidAttempt('retryAt', 'retried entries must contain retryAt')
+  }
+  if (retryAt.value !== undefined && retryDelayMs.value !== undefined) {
+    const expected =
+      finishedAt.value >= Number.MAX_SAFE_INTEGER - retryDelayMs.value
+        ? Number.MAX_SAFE_INTEGER
+        : finishedAt.value + retryDelayMs.value
+    if (retryAt.value !== expected) {
+      return invalidAttempt('retryDelayMs', 'must satisfy retryAt = finishedAt + retryDelayMs')
+    }
+  }
 
-  if (attemptNumber.value > delivery.value) {
+  if (attemptSequence.value === undefined && attemptNumber.value > delivery.value) {
     return invalidAttempt('attempt', 'must not exceed delivery')
+  }
+
+  if (attemptSequence.value !== undefined && attemptSequence.value !== attemptNumber.value) {
+    return invalidAttempt('attemptSequence', 'must match attempt')
   }
 
   if (startedAt.value !== undefined && startedAt.value > finishedAt.value) {
@@ -593,12 +657,15 @@ const validateAttemptRecordInternal = (
   return Result.ok(
     freezeAttempt({
       attempt: attemptNumber.value,
+      ...(attemptSequence.value === undefined ? {} : { attemptSequence: attemptSequence.value }),
       delivery: delivery.value,
       startedAt: startedAt.value,
       finishedAt: finishedAt.value,
       outcome: outcome.value,
       result: result.value,
-      failure: failure.value
+      failure: failure.value,
+      ...(retryAt.value === undefined ? {} : { retryAt: retryAt.value }),
+      ...(retryDelayMs.value === undefined ? {} : { retryDelayMs: retryDelayMs.value })
     })
   )
 }

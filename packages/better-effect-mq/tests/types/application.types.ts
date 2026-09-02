@@ -144,7 +144,7 @@ expectTypeOf<JobAdminResumeError>().toEqualTypeOf<ExpectedAdminResumeError>()
 expectTypeOf<JobAdminRemoveError>().toEqualTypeOf<ExpectedAdminRemoveError>()
 expectTypeOf<JobRetryError>().toEqualTypeOf<ExpectedRetryError>()
 expectTypeOf<JobExecutionFailureError['kind']>().toEqualTypeOf<
-  'defect' | 'timeout' | 'decode' | 'stalled'
+  'defect' | 'encode' | 'timeout' | 'decode' | 'stalled'
 >()
 expectTypeOf<JobExecutionCancelledError['failure']>().toEqualTypeOf<
   import('../../src').SerializedJobFailure | undefined

@@ -2186,7 +2186,8 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
           second.transitions[0]?.record.attemptsMade === 0 &&
           second.transitions[0]?.record.deliveryCount === 2 &&
           second.transitions[0]?.attempt?.outcome === 'cancelled' &&
-          second.transitions[0]?.attempt?.attempt === 0 &&
+          second.transitions[0]?.attempt?.attempt === 2 &&
+          second.transitions[0]?.attempt?.attemptSequence === 2 &&
           second.transitions[0]?.attempt?.delivery === 2,
         context,
         'stalled cancellation ledger',
@@ -2195,8 +2196,9 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
       ensure(
         attempts.length === 2 &&
           attempts[0]?.outcome === 'stalled' &&
+          attempts[0]?.attempt === 1 &&
           attempts[1]?.outcome === 'cancelled' &&
-          attempts[1]?.attempt === 0 &&
+          attempts[1]?.attempt === 2 &&
           attempts[1]?.delivery === 2,
         context,
         'stalled cancellation ledger',

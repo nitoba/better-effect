@@ -1,3 +1,15 @@
+/** A job exceeded its per-attempt cooperative deadline. */
+export class JobTimeoutError extends Error {
+  readonly _tag = 'JobTimeoutError'
+  constructor(
+    readonly jobId?: string,
+    message = 'Job attempt timed out'
+  ) {
+    super(message)
+    this.name = 'JobTimeoutError'
+  }
+}
+
 /** Reasons a WorkerHandle.awaitIdle operation can fail. */
 export type WorkerAwaitIdleErrorReason =
   | 'invalid-options'

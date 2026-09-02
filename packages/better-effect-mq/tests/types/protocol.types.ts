@@ -156,6 +156,7 @@ const failureIsExhaustive = (kind: JobFailureKind): string => {
   switch (kind) {
     case 'typed':
     case 'defect':
+    case 'encode':
     case 'timeout':
     case 'decode':
     case 'stalled':

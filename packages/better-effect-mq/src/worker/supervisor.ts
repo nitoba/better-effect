@@ -1,13 +1,22 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- Worker validates handler, clock, and store results at JavaScript boundaries.
+// oxlint-disable anti-slop/no-known-value-widening -- hostile callback results are normalized explicitly.
 // oxlint-disable anti-slop/no-unknown-parameters -- store and handler adapters are intentionally untyped at this erased boundary.
 // oxlint-disable anti-slop/no-unknown-returns -- Result and codec values are normalized immediately after crossing a boundary.
 // oxlint-disable anti-slop/no-chained-type-assertions -- heterogeneous handlers and store operations are erased in one module.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are localized to checked runtime boundaries.
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
 import { Runtime, ServiceRuntime } from 'better-effect'
-import { Result, UnhandledException, type Result as ResultType } from 'better-result'
+import { Panic, Result, UnhandledException, type Result as ResultType } from 'better-result'
 
-import { type AnyJobDefinition, type CodecLike } from '../job'
+import {
+  isUnrecoverableFailure,
+  runRetryable,
+  type AnyJobDefinition,
+  type CodecLike,
+  type JobFailure
+} from '../job'
+import { Retry } from '../retry'
 import { parseJsonValue } from '../internal/json'
 import {
   JobDefinitionError,
@@ -31,13 +40,17 @@ import type {
 } from '../store'
 
 import { JobContext } from './context'
-import { WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
+import { scheduleDeadline } from './timer'
+import { JobTimeoutError, WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 import type {
   AnyWorkerHandler,
   WorkerAwaitIdleOptions,
   WorkerErrorHandler,
+  JobFailureEvent,
+  JobFailureHandler,
   WorkerHandle,
   WorkerOptions,
+  WorkerRandom,
   WorkerStopOptions
 } from './types'
 
@@ -83,6 +96,11 @@ type AttemptState = {
   readonly startedAt: number
   promise: Promise<void>
   state: 'running' | 'cancelling' | 'settling' | 'lost'
+  timeoutCancel?: () => void
+  timedOut?: boolean
+  failureCause?: unknown
+  failureCauseSet: boolean
+  failureNotified?: boolean
 }
 
 type CodecOutcome =
@@ -94,7 +112,7 @@ type Waiter = {
   readonly reject: (cause: unknown) => void
   readonly signal: AbortSignal | undefined
   onAbort: (() => void) | undefined
-  timer: ReturnType<typeof setTimeout> | undefined
+  timer: (() => void) | undefined
   settled: boolean
 }
 
@@ -205,8 +223,8 @@ export class WorkerSupervisor implements WorkerHandle {
     for (const lease of this.claimLeases) {
       if (lease.lifecycle === 'pending') lease.lifecycle = 'abandoned'
     }
-    // Stop claiming immediately, but keep lease supervision alive while local
-    // handlers and their cleanup are still able to settle.
+    // Stop claiming immediately. Active attempt deadlines remain authoritative unless
+    // the selected shutdown policy explicitly aborts the attempts.
     this.claimController.abort()
     this.shutdownController.abort(new Error('Worker is stopping'))
 
@@ -269,6 +287,7 @@ export class WorkerSupervisor implements WorkerHandle {
     for (const attempt of this.activeAttempts.values()) {
       if (attempt.state === 'running') attempt.state = 'cancelling'
       this.shutdownAborts.add(attempt.key)
+      attempt.timeoutCancel?.()
       attempt.controller.abort(new Error('Worker is stopping'))
     }
   }
@@ -579,12 +598,22 @@ export class WorkerSupervisor implements WorkerHandle {
       controller,
       startedAt: this.readNow(),
       promise: Promise.resolve(),
-      state: 'running'
+      state: 'running',
+      failureCauseSet: false
     }
 
     this.active += 1
     increment(this.activeByHandler, entry.identityKey)
     this.activeAttempts.set(key, attempt)
+    if (job.timeoutMs !== undefined) {
+      attempt.timeoutCancel = scheduleDeadline(job.timeoutMs, () => {
+        const cause = new JobTimeoutError(String(job.id))
+        attempt.timedOut = true
+        attempt.failureCause = cause
+        attempt.failureCauseSet = true
+        attempt.controller.abort(cause)
+      })
+    }
 
     const promise = this.executeAttempt(group, attempt, context)
       .catch((cause) => {
@@ -611,7 +640,26 @@ export class WorkerSupervisor implements WorkerHandle {
         await this.releaseJob(group, attempt.job)
         return
       }
-      outcome = await this.makeOutcome(attempt.entry.definition, result)
+      outcome = attempt.timedOut
+        ? timeoutOutcome(
+            attempt.failureCause,
+            this.readNow(),
+            attempt.job,
+            attempt.entry.definition.retryPolicy?.type !== 'never',
+            this.workerOptions.random
+          )
+        : await this.makeOutcome(attempt, result)
+      // Timeout is authoritative even when outcome encoding or policy work
+      // completed after the cooperative abort was requested.
+      if (attempt.timedOut) {
+        outcome = timeoutOutcome(
+          attempt.failureCause ?? new JobTimeoutError(String(attempt.job.id)),
+          this.readNow(),
+          attempt.job,
+          attempt.entry.definition.retryPolicy?.type !== 'never',
+          this.workerOptions.random
+        )
+      }
     } catch (cause) {
       if (attempt.state === 'lost') return
       if (this.shutdownAborts.has(attempt.key)) {
@@ -619,10 +667,29 @@ export class WorkerSupervisor implements WorkerHandle {
         return
       }
       this.report(cause)
+      // The timeout error passed to abort() is the authoritative cause. Runtime
+      // cancellation commonly rejects with a different AbortError. Result-based
+      // handler generators wrap thrown defects in a better-result boundary; hooks
+      // should observe the original in-memory cause rather than that wrapper.
+      if (!attempt.timedOut) preserveAttemptCause(attempt, unwrapBetterResultCause(cause))
       outcome =
         attempt.state === 'cancelling'
           ? { type: 'cancelled' }
-          : failOutcome(safeCauseMessage(cause), this.readNow())
+          : attempt.timedOut
+            ? timeoutOutcome(
+                attempt.failureCause ?? cause,
+                this.readNow(),
+                attempt.job,
+                attempt.entry.definition.retryPolicy?.type !== 'never',
+                this.workerOptions.random
+              )
+            : defectOutcome(
+                this.readNow(),
+                this.workerOptions.retryDefects &&
+                  attempt.entry.definition.retryPolicy?.type !== 'never',
+                attempt.job,
+                this.workerOptions.random
+              )
     }
 
     // Encoding a result/failure is an async boundary. Cancellation may have been
@@ -633,6 +700,15 @@ export class WorkerSupervisor implements WorkerHandle {
       return
     }
     if (attempt.state === 'cancelling') outcome = { type: 'cancelled' }
+    if (attempt.timedOut) {
+      outcome = timeoutOutcome(
+        attempt.failureCause ?? new JobTimeoutError(String(attempt.job.id)),
+        this.readNow(),
+        attempt.job,
+        attempt.entry.definition.retryPolicy?.type !== 'never',
+        this.workerOptions.random
+      )
+    }
     await this.settleJob(group, attempt.job, outcome, startedAt)
   }
 
@@ -663,25 +739,35 @@ export class WorkerSupervisor implements WorkerHandle {
     )
   }
 
-  private async makeOutcome(
-    definition: AnyJobDefinition,
-    result: unknown
-  ): Promise<SettlementOutcome> {
+  private async makeOutcome(attempt: AttemptState, result: unknown): Promise<SettlementOutcome> {
+    const definition = attempt.entry.definition
     const recordedAt = this.readNow()
 
     if (!isResultLike(result)) {
-      return failOutcome('Handler did not return a Result', recordedAt)
+      preserveAttemptCause(attempt, result)
+      return failOutcome(recordedAt)
     }
 
     if (Result.isError(result)) {
       if (result.error instanceof DecodeOutcome) {
+        preserveAttemptCause(attempt, result.error.cause)
         return decodeOutcome(result.error.cause, recordedAt)
       }
 
-      return typedFailureOutcome(definition, result.error, recordedAt)
+      preserveAttemptCause(attempt, result.error)
+      return typedFailureOutcome(
+        definition,
+        result.error,
+        recordedAt,
+        attempt.job,
+        this.workerOptions.random,
+        (cause) => preserveAttemptCause(attempt, cause)
+      )
     }
 
-    return completeOutcome(definition, result.value, recordedAt)
+    return completeOutcome(definition, result.value, recordedAt, (cause) =>
+      preserveAttemptCause(attempt, cause)
+    )
   }
 
   private async settleJob(
@@ -693,17 +779,37 @@ export class WorkerSupervisor implements WorkerHandle {
     const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     if (attempt?.state === 'lost') return
     if (attempt !== undefined) attempt.state = 'settling'
+    let submittedOutcome = outcome
     const result = await runStoreOperation<SettlementResult>(
       this.runtime,
       group.store,
-      (store) =>
-        store.settle({
+      (store) => {
+        // runStoreOperation invokes this callback asynchronously. Re-check at that
+        // gate so a deadline that wins before adapter invocation cannot submit Complete.
+        if (attempt?.timedOut) {
+          submittedOutcome = timeoutOutcome(
+            attempt.failureCause ?? new JobTimeoutError(String(job.id)),
+            this.readNow(),
+            job,
+            attempt.entry.definition.retryPolicy?.type !== 'never',
+            this.workerOptions.random
+          )
+        }
+        // retryDelayMs/runAt cannot reconstruct the original timestamp after
+        // safeRunAt saturates. The failure envelope retains that internal
+        // settlement sample without adding adapter-visible outcome fields.
+        const settlementNow =
+          submittedOutcome.type === 'retry'
+            ? (submittedOutcome.failure?.recordedAt ?? this.readNow())
+            : this.readNow()
+        return store.settle({
           jobId: job.id,
           leaseToken: job.leaseToken,
-          outcome,
-          now: this.readNow(),
+          outcome: submittedOutcome,
+          now: settlementNow,
           startedAt
-        }),
+        })
+      },
       undefined,
       this.workerOptions.pollIntervalMs,
       this.workerOptions.storeOperationTimeoutMs,
@@ -712,10 +818,69 @@ export class WorkerSupervisor implements WorkerHandle {
 
     if (Result.isError(result)) {
       this.report(result.error)
-    } else if (result.value.status === 'already-applied') {
-      // A lost ACK is not a second settlement; the store's idempotent
-      // acknowledgment is the terminal result for this local attempt.
-      return
+    } else if (
+      (result.value.status === 'applied' || result.value.status === 'already-applied') &&
+      (submittedOutcome.type === 'fail' || submittedOutcome.type === 'retry') &&
+      (result.value.attempt.outcome === 'failed' || result.value.attempt.outcome === 'retried')
+    ) {
+      const persisted = result.value.attempt
+      const persistedFailure = persisted.failure ?? submittedOutcome.failure
+      if (persistedFailure === undefined) return
+      const persistedOutcome =
+        persisted.outcome === 'retried'
+          ? {
+              type: 'retry' as const,
+              runAt: persisted.retryAt ?? job.runAt,
+              ...(persisted.retryDelayMs === undefined
+                ? {}
+                : { retryDelayMs: persisted.retryDelayMs })
+            }
+          : { type: 'fail' as const, failure: persistedFailure }
+      if (result.value.status === 'already-applied' && attempt?.failureNotified) return
+      if (attempt !== undefined) attempt.failureNotified = true
+      // Hooks are advisory and must not occupy a worker slot or block stop().
+      void this.notifyFailure(
+        job,
+        persisted.attempt,
+        persistedFailure,
+        persistedOutcome,
+        attempt?.failureCause,
+        attempt?.failureCauseSet === true
+      )
+    }
+  }
+
+  private async notifyFailure(
+    job: ActiveJobSnapshot,
+    attempt: number,
+    failure: SerializedJobFailure | undefined,
+    outcome: SettlementOutcome,
+    cause: unknown,
+    hasCause: boolean
+  ): Promise<void> {
+    if (failure === undefined || (outcome.type !== 'fail' && outcome.type !== 'retry')) return
+    const hook = this.workerOptions.onJobFailure
+    if (hook === undefined) return
+    // SAFETY: the persisted failure kind and event kind are copied from the same validated value.
+    const event = {
+      job: { id: job.id, queue: job.queue, name: job.name, version: job.version },
+      attempt,
+      attemptsMax: job.attemptsMax,
+      kind: failure.kind,
+      cause: hasCause ? cause : failure.kind === 'typed' ? failure.data : failure.message,
+      failure,
+      willRetry: outcome.type === 'retry',
+      ...(outcome.type === 'retry'
+        ? {
+            retryAt: outcome.runAt,
+            retryDelayMs: outcome.retryDelayMs ?? Math.max(0, outcome.runAt - failure.recordedAt)
+          }
+        : {})
+    } as JobFailureEvent
+    try {
+      await hook(event)
+    } catch (cause) {
+      this.report(cause)
     }
   }
 
@@ -736,6 +901,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private finishAttempt(attempt: AttemptState): void {
+    attempt.timeoutCancel?.()
     this.active -= 1
     decrement(this.activeByHandler, attempt.entry.identityKey)
     this.activeAttempts.delete(attempt.key)
@@ -852,6 +1018,7 @@ export class WorkerSupervisor implements WorkerHandle {
   private markLost(attempt: AttemptState, cause: unknown): void {
     if (attempt.state === 'lost') return
     attempt.state = 'lost'
+    attempt.timeoutCancel?.()
     attempt.controller.abort(cause)
   }
 
@@ -1000,12 +1167,13 @@ export class WorkerSupervisor implements WorkerHandle {
     }
 
     return new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(timer)
+      let cancelDeadline: (() => void) | undefined
+      const finish = (): void => {
+        cancelDeadline?.()
         signal.removeEventListener('abort', finish)
         resolve()
       }
-      const timer = setTimeout(finish, delayMs)
+      cancelDeadline = scheduleDeadline(delayMs, finish)
       signal.addEventListener('abort', finish, { once: true })
 
       if (signal.aborted) {
@@ -1026,7 +1194,10 @@ export type NormalizedWorkerOptions = {
   readonly pollIntervalMs: number
   readonly storeOperationTimeoutMs: number
   readonly now: () => number
+  readonly random: WorkerRandom
   readonly onError: WorkerErrorHandler | undefined
+  readonly onJobFailure: JobFailureHandler | undefined
+  readonly retryDefects: boolean
   readonly shutdown: { readonly gracePeriodMs: number; readonly abortAfterGracePeriod: boolean }
 }
 
@@ -1102,10 +1273,23 @@ export const normalizeWorkerOptions = (
   const id = normalizeWorkerId(readOption(options, 'id'), readOption(options, 'workerId'))
   const queueLimits = normalizeQueueLimits(readOption(options, 'queueConcurrency'), concurrency)
   const now = normalizeClock(readOption(options, 'now'))
+  const randomValue = readOption(options, 'random')
+  if (randomValue !== undefined && typeof randomValue !== 'function') {
+    throw new JobDefinitionError({ field: 'random', message: 'must be callable' })
+  }
+  const random = (randomValue ?? Math.random) as WorkerRandom
   const onError = readOption(options, 'onError')
+  const onJobFailure = readOption(options, 'onJobFailure')
+  const retryDefects = readOption(options, 'retryDefects') ?? true
 
   if (onError !== undefined && typeof onError !== 'function') {
     throw new JobDefinitionError({ field: 'onError', message: 'must be callable' })
+  }
+  if (onJobFailure !== undefined && typeof onJobFailure !== 'function') {
+    throw new JobDefinitionError({ field: 'onJobFailure', message: 'must be callable' })
+  }
+  if (typeof retryDefects !== 'boolean') {
+    throw new JobDefinitionError({ field: 'retryDefects', message: 'must be boolean' })
   }
 
   return {
@@ -1122,8 +1306,11 @@ export const normalizeWorkerOptions = (
       Math.min(leaseDurationMs, heartbeatIntervalMs * 2)
     ),
     now,
+    random,
     shutdown,
-    onError: onError as WorkerErrorHandler | undefined
+    onError: onError as WorkerErrorHandler | undefined,
+    onJobFailure: onJobFailure as JobFailureHandler | undefined,
+    retryDefects
   }
 }
 
@@ -1221,69 +1408,237 @@ const decodePayload = async (codec: CodecLike, payload: JsonValue): Promise<Code
 const completeOutcome = async (
   definition: AnyJobDefinition,
   value: unknown,
-  recordedAt: number
+  recordedAt: number,
+  preserveCause: (cause: unknown) => void
 ): Promise<SettlementOutcome> => {
   if (definition.result === undefined) {
-    return value === undefined
-      ? { type: 'complete' }
-      : failOutcome('Result codec is not configured', recordedAt)
+    if (value === undefined) return { type: 'complete' }
+    const cause = new Error('Result codec is not configured')
+    preserveCause(cause)
+    return encodeFailureOutcome('Job result could not be encoded', recordedAt)
   }
 
   const encoded = await encodeCodec(definition.result, value)
-  return encoded.ok
-    ? { type: 'complete', result: encoded.value }
-    : failOutcome(safeCauseMessage(encoded.cause), recordedAt)
+  if (encoded.ok) return { type: 'complete', result: encoded.value }
+  preserveCause(encoded.cause)
+  return encodeFailureOutcome('Job result could not be encoded', recordedAt)
 }
 
 const typedFailureOutcome = async (
   definition: AnyJobDefinition,
   failure: unknown,
-  recordedAt: number
+  recordedAt: number,
+  job: ActiveJobSnapshot,
+  random: WorkerRandom,
+  preserveCause: (cause: unknown) => void
 ): Promise<SettlementOutcome> => {
   if (definition.failure === undefined) {
-    return failOutcome('Failure codec is not configured', recordedAt)
+    return failOutcome(recordedAt)
   }
 
   const encoded = await encodeCodec(definition.failure, failure)
 
   if (!encoded.ok) {
-    return failOutcome(safeCauseMessage(encoded.cause), recordedAt)
+    preserveCause(encoded.cause)
+    return encodeFailureOutcome('Job failure could not be encoded', recordedAt)
   }
 
+  const retryableResult = runRetryable(definition, failure as JobFailure<typeof definition>)
+  const predicateRetryable = !Result.isError(retryableResult) && retryableResult.value === true
+  const policy = definition.retryPolicy
+  const retryable =
+    !isUnrecoverableFailure(failure) &&
+    (definition.retryable === undefined
+      ? policy?.type === 'custom' || predicateRetryable
+      : predicateRetryable)
+  const allowed = retryable && policy?.type !== 'never' && job.attemptsMade + 1 < job.attemptsMax
+  const failureEnvelope = makeFailure({
+    kind: 'typed',
+    code: 'handler-failure',
+    message: 'Handler returned a typed failure',
+    data: encoded.value,
+    retryable,
+    recordedAt
+  })
+  if (!allowed) return { type: 'fail', failure: failureEnvelope }
+  const decision =
+    policy?.type === 'custom'
+      ? safeCustomDecision(policy, failure, job.attemptsMade + 1, job.attemptsMax)
+      : { retry: true }
+  if (!decision.retry) return { type: 'fail', failure: failureEnvelope }
+  const delay =
+    decision.delayMs ??
+    (job.backoff === undefined ? 0 : Retry.delay(job.backoff, job.attemptsMade + 1, random()))
   return {
-    type: 'fail',
-    failure: makeFailure({
-      kind: 'typed',
-      code: 'handler-failure',
-      message: 'Handler returned a typed failure',
-      data: encoded.value,
-      retryable: false,
-      recordedAt
-    })
+    type: 'retry',
+    runAt: safeRunAt(recordedAt, delay),
+    retryDelayMs: delay,
+    failure: failureEnvelope
   }
 }
 
-const decodeOutcome = (cause: unknown, recordedAt: number): SettlementOutcome => ({
+const decodeOutcome = (_cause: unknown, recordedAt: number): SettlementOutcome => ({
   type: 'fail',
   failure: makeFailure({
     kind: 'decode',
     code: 'payload-decode',
-    message: safeCauseMessage(cause),
+    message: 'Job payload could not be decoded',
     retryable: false,
     recordedAt
   })
 })
 
-const failOutcome = (message: string, recordedAt: number): SettlementOutcome => ({
+const unwrapBetterResultCause = (cause: unknown): unknown => {
+  if (Panic.is(cause) || UnhandledException.is(cause)) return cause.cause
+  return cause
+}
+
+const preserveAttemptCause = (attempt: AttemptState, cause: unknown): void => {
+  if (!attempt.timedOut && !attempt.failureCauseSet) {
+    attempt.failureCause = cause
+    attempt.failureCauseSet = true
+  }
+}
+
+const failOutcome = (recordedAt: number): SettlementOutcome => ({
   type: 'fail',
   failure: makeFailure({
     kind: 'defect',
     code: 'handler-defect',
+    message: 'Job handler failed',
+    retryable: false,
+    recordedAt
+  })
+})
+
+const retryOrFail = (
+  failure: SerializedJobFailure,
+  recordedAt: number,
+  retryable: boolean,
+  job: ActiveJobSnapshot,
+  random: WorkerRandom
+): SettlementOutcome => {
+  if (!retryable || job.attemptsMade + 1 >= job.attemptsMax) return { type: 'fail', failure }
+  const delay =
+    job.backoff === undefined ? 0 : Retry.delay(job.backoff, job.attemptsMade + 1, random())
+  return {
+    type: 'retry',
+    runAt: safeRunAt(recordedAt, delay),
+    retryDelayMs: delay,
+    failure
+  }
+}
+
+const safeRunAt = (recordedAt: number, delay: number): number => {
+  if (!Number.isSafeInteger(recordedAt) || !Number.isSafeInteger(delay) || delay < 0) {
+    return Number.MAX_SAFE_INTEGER
+  }
+  return recordedAt >= Number.MAX_SAFE_INTEGER - delay
+    ? Number.MAX_SAFE_INTEGER
+    : recordedAt + delay
+}
+
+const defectOutcome = (
+  recordedAt: number,
+  retryable: boolean,
+  job: ActiveJobSnapshot,
+  random: WorkerRandom
+): SettlementOutcome =>
+  retryOrFail(
+    makeFailure({
+      kind: 'defect',
+      code: 'handler-defect',
+      message: 'Job handler failed',
+      retryable,
+      recordedAt
+    }),
+    recordedAt,
+    retryable,
+    job,
+    random
+  )
+
+const timeoutOutcome = (
+  _cause: unknown,
+  recordedAt: number,
+  job: ActiveJobSnapshot,
+  enabled = true,
+  random: WorkerRandom = Math.random
+): SettlementOutcome =>
+  retryOrFail(
+    makeFailure({
+      kind: 'timeout',
+      code: 'job-timeout',
+      message: 'Job execution timed out',
+      retryable: true,
+      recordedAt
+    }),
+    recordedAt,
+    enabled,
+    job,
+    random
+  )
+
+const encodeFailureOutcome = (message: string, recordedAt: number): SettlementOutcome => ({
+  type: 'fail',
+  failure: makeFailure({
+    kind: 'encode',
+    code: 'codec-encode',
     message,
     retryable: false,
     recordedAt
   })
 })
+
+const safeCustomDecision = (
+  policy: {
+    readonly decide: (
+      failure: never,
+      context: { readonly attempt: number; readonly attemptsMax: number }
+    ) => unknown
+  },
+  failure: unknown,
+  attempt: number,
+  attemptsMax: number
+): { retry: boolean; delayMs?: number } => {
+  try {
+    const decision = policy.decide(failure as never, { attempt, attemptsMax })
+    if (isThenable(decision)) {
+      // Custom decisions are synchronous. Assimilate and observe hostile thenables now;
+      // otherwise a returned rejected Promise would become an unhandled rejection.
+      void Promise.resolve(decision).catch(() => undefined)
+      return { retry: false }
+    }
+    if (decision === true) return { retry: true }
+    if (decision === false || decision === undefined || decision === null) return { retry: false }
+    if (typeof decision !== 'object' || decision === null) return { retry: false }
+    const prototype = Object.getPrototypeOf(decision)
+    if (prototype !== Object.prototype && prototype !== null) return { retry: false }
+    const retryDescriptor = Object.getOwnPropertyDescriptor(decision, 'retry')
+    const delayDescriptor = Object.getOwnPropertyDescriptor(decision, 'delayMs')
+    if (
+      retryDescriptor === undefined ||
+      !('value' in retryDescriptor) ||
+      (delayDescriptor !== undefined && !('value' in delayDescriptor)) ||
+      typeof retryDescriptor.value !== 'boolean'
+    )
+      return { retry: false }
+    const allowed = new Set(['retry', 'delayMs'])
+    for (const key of Reflect.ownKeys(decision)) {
+      if (typeof key !== 'string' || !allowed.has(key)) return { retry: false }
+      const descriptor = Object.getOwnPropertyDescriptor(decision, key)
+      if (descriptor === undefined || !('value' in descriptor)) return { retry: false }
+    }
+    const delay = delayDescriptor?.value
+    return delay === undefined
+      ? { retry: retryDescriptor.value }
+      : typeof delay === 'number' && Number.isSafeInteger(delay) && delay >= 0
+        ? { retry: retryDescriptor.value, delayMs: delay }
+        : { retry: false }
+  } catch {
+    return { retry: false }
+  }
+}
 
 const makeFailure = (failure: {
   readonly kind: SerializedJobFailure['kind']
@@ -1325,14 +1680,6 @@ const encodeCodec = async (codec: CodecLike, value: unknown): Promise<CodecOutco
     return Result.isError(json) ? { ok: false, cause: json.error } : { ok: true, value: json.value }
   } catch (cause) {
     return { ok: false, cause }
-  }
-}
-
-const safeCauseMessage = (cause: unknown): string => {
-  try {
-    return new UnhandledException({ cause }).message
-  } catch {
-    return 'Unhandled exception'
   }
 }
 
@@ -1386,15 +1733,17 @@ const raceStoreOperation = async <Value>(
   timeoutMs: number,
   signal?: AbortSignal
 ): Promise<ResultType<Value, unknown>> => {
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancelDeadline: (() => void) | undefined
   let onAbort: (() => void) | undefined
   const interrupted = new Promise<ResultType<Value, unknown>>((resolve) => {
     const finish = (cause: StoreOperationTimeoutError): void => {
-      if (timer !== undefined) clearTimeout(timer)
+      cancelDeadline?.()
       if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
       resolve(Result.err(cause) as ResultType<Value, unknown>)
     }
-    timer = setTimeout(() => finish(new StoreOperationTimeoutError(operation)), timeoutMs)
+    cancelDeadline = scheduleDeadline(timeoutMs, () =>
+      finish(new StoreOperationTimeoutError(operation))
+    )
     if (signal !== undefined) {
       onAbort = () => finish(new StoreOperationTimeoutError(operation))
       signal.addEventListener('abort', onAbort, { once: true })
@@ -1402,7 +1751,7 @@ const raceStoreOperation = async <Value>(
     }
   })
   const result = await Promise.race([pending, interrupted])
-  if (timer !== undefined) clearTimeout(timer)
+  cancelDeadline?.()
   if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
   return result
 }
@@ -1410,12 +1759,13 @@ const raceStoreOperation = async <Value>(
 const cancellableDelay = (delay: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     if (signal?.aborted) return resolve()
+    let cancelDeadline: (() => void) | undefined
     const done = (): void => {
-      clearTimeout(timer)
+      cancelDeadline?.()
       signal?.removeEventListener('abort', done)
       resolve()
     }
-    const timer = setTimeout(done, delay)
+    cancelDeadline = scheduleDeadline(delay, done)
     signal?.addEventListener('abort', done, { once: true })
   })
 
@@ -1423,6 +1773,15 @@ const heartbeatKey = (
   jobId: JobRecord['id'],
   leaseToken: NonNullable<JobRecord['leaseToken']>
 ): string => JSON.stringify([jobId, leaseToken])
+
+const isThenable = (value: unknown): boolean => {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false
+  try {
+    return typeof (value as { readonly then?: unknown }).then === 'function'
+  } catch {
+    return false
+  }
+}
 
 const isResultLike = (value: unknown): value is UnknownResult => {
   if (typeof value !== 'object' || value === null) {
@@ -1836,9 +2195,8 @@ const installWaiter = (waiter: Waiter, options: NormalizedAwaitIdleOptions): voi
 
   if (options.timeoutMs !== undefined) {
     try {
-      waiter.timer = setTimeout(
-        () => waiter.reject(new WorkerAwaitIdleError('timeout', 'Worker awaitIdle timed out')),
-        options.timeoutMs
+      waiter.timer = scheduleDeadline(options.timeoutMs, () =>
+        waiter.reject(new WorkerAwaitIdleError('timeout', 'Worker awaitIdle timed out'))
       )
     } catch (cause) {
       waiter.reject(
@@ -1897,7 +2255,7 @@ const makeWaiter = (
 
 const cleanupWaiter = (waiter: Waiter): void => {
   if (waiter.timer !== undefined) {
-    clearTimeout(waiter.timer)
+    waiter.timer()
     waiter.timer = undefined
   }
 

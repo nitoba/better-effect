@@ -3,7 +3,7 @@ import type { Effect, Service } from 'better-effect'
 import type { AnyService, ServiceContract } from 'better-effect'
 import type { AnyJobDefinition, Job } from '../job'
 import type { JobContext } from './context'
-import type { WorkerId } from '../protocol'
+import type { WorkerId, JobRecord, SerializedJobFailure } from '../protocol'
 
 /** Optional concurrency override for one registered handler. */
 export interface WorkerHandlerOptions {
@@ -30,6 +30,7 @@ export type AnyWorkerHandler = WorkerHandler<any, any>
 
 /** A source of epoch milliseconds used by store requests. */
 export type WorkerClock = (() => number | Date) | { readonly now: () => number | Date }
+export type WorkerRandom = () => number
 
 /** Reliability and lease-supervision controls for a Worker. */
 export interface WorkerReliabilityOptions {
@@ -64,6 +65,25 @@ export interface WorkerAwaitIdleOptions {
 /** Runtime failures observed by the supervisor without stopping other groups. */
 export type WorkerErrorHandler = (cause: unknown) => void | PromiseLike<void>
 
+type JobFailureEventBase = {
+  readonly job: Pick<JobRecord, 'id' | 'queue' | 'name' | 'version'>
+  readonly attempt: number
+  readonly attemptsMax: number
+  readonly cause: unknown
+  readonly willRetry: boolean
+  readonly retryAt?: number
+  readonly retryDelayMs?: number
+}
+
+/** Failure hook payload; `kind` narrows the persisted failure and event branch. */
+export type JobFailureEvent = {
+  [Kind in SerializedJobFailure['kind']]: JobFailureEventBase & {
+    readonly kind: Kind
+    readonly failure: SerializedJobFailure & { readonly kind: Kind }
+  }
+}[SerializedJobFailure['kind']]
+export type JobFailureHandler = (event: JobFailureEvent) => void | PromiseLike<void>
+
 /** Options shared by the Worker start and use entrypoints. */
 export interface WorkerOptions<
   Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]
@@ -75,7 +95,10 @@ export interface WorkerOptions<
   readonly workerId?: WorkerId
   readonly id?: WorkerId
   readonly now?: WorkerClock
+  readonly random?: WorkerRandom
   readonly onError?: WorkerErrorHandler
+  readonly retryDefects?: boolean
+  readonly onJobFailure?: JobFailureHandler
 }
 
 /** Public lifecycle handle returned by Worker.start. */

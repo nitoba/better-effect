@@ -13,6 +13,7 @@ export const QueueName = QueueNameFactory
 export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
+export { Retry } from './retry'
 export { JobAdmin } from './job/application'
 export {
   JobAwaitAbortedError,
@@ -32,7 +33,9 @@ export {
   normalizeRetryable,
   runIdempotencyKey,
   runMetadata,
-  runRetryable
+  runRetryable,
+  isUnrecoverableFailure,
+  markUnrecoverable
 } from './job'
 
 export type {
@@ -51,6 +54,15 @@ export type {
   RegistryIdentityInput,
   RetryableCallback
 } from './job'
+
+export type {
+  RetryContext,
+  RetryDecision,
+  RetryJitter,
+  RetryPolicy,
+  RetryDecide,
+  PersistedRetryPolicy
+} from './retry'
 
 export type {
   DecodedJobFailure,
@@ -141,7 +153,13 @@ export {
 
 export { JobStore, JobStoreWakeAbortedError, MemoryJobStore } from './store'
 
-export { JobContext, Worker, WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './worker'
+export {
+  JobContext,
+  JobTimeoutError,
+  Worker,
+  WorkerAwaitIdleError,
+  WorkerRuntimeOwnershipError
+} from './worker'
 
 export type {
   AnyWorkerHandler,
@@ -151,11 +169,14 @@ export type {
   WorkerAwaitIdleOptions,
   WorkerClock,
   WorkerErrorHandler,
+  JobFailureEvent,
+  JobFailureHandler,
   WorkerHandler,
   WorkerHandlerOptions,
   WorkerHandle,
   WorkerReliabilityOptions,
   WorkerOptions,
+  WorkerRandom,
   WorkerRequirements,
   WorkerStopOptions
 } from './worker'

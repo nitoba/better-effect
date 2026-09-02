@@ -691,6 +691,47 @@ test('terminal jobs require explicit retry and receive a fresh attempt budget', 
   expect(retried.deliveryCount).toBe(3)
 })
 
+test('admin retry preserves a monotonic settlement ledger while resetting budget', () => {
+  const failed = unwrap(
+    reduceJob(activeJob(), {
+      type: 'settle',
+      jobId,
+      leaseToken,
+      now: 150,
+      outcome: {
+        type: 'fail',
+        failure: { kind: 'typed', message: 'temporary', retryable: true, recordedAt: 150 }
+      }
+    })
+  )
+  const redriven = unwrap(retryJob(failed.record, { type: 'retry', jobId, runAt: 200, now: 160 }))
+  const claimed = unwrap(
+    claimJob(redriven, {
+      type: 'claim',
+      jobId,
+      workerId: worker,
+      leaseToken: nextLeaseToken,
+      leaseExpiresAt: 300,
+      now: 200
+    })
+  )
+  const settled = unwrap(
+    reduceJob(claimed, {
+      type: 'settle',
+      jobId,
+      leaseToken: nextLeaseToken,
+      now: 220,
+      outcome: { type: 'complete', result: { ok: true } }
+    })
+  )
+
+  expect(failed.attempt?.attempt).toBe(1)
+  expect(redriven.attemptsMade).toBe(0)
+  expect(settled.attempt?.attempt).toBe(2)
+  expect(settled.attempt?.delivery).toBe(2)
+  expect(settled.attempt?.attemptSequence).toBe(2)
+})
+
 test('cancellation requests do not steal an active lease', () => {
   const active = activeJob()
   const requested = unwrap(
@@ -784,7 +825,8 @@ test('requested cancellation cannot be dropped by release or stalled recovery', 
   expect(released.record.deliveryCount).toBe(1)
   expect(released.record.stalledCount).toBe(0)
   expect(released.attempt?.outcome).toBe('cancelled')
-  expect(released.attempt?.attempt).toBe(0)
+  expect(released.attempt?.attempt).toBe(1)
+  expect(released.attempt?.attemptSequence).toBe(1)
 
   const requestedAgain = unwrap(
     requestJobCancellation(activeJob(), {
@@ -806,7 +848,8 @@ test('requested cancellation cannot be dropped by release or stalled recovery', 
   expect(recovered.record.deliveryCount).toBe(1)
   expect(recovered.record.stalledCount).toBe(1)
   expect(recovered.attempt?.outcome).toBe('cancelled')
-  expect(recovered.attempt?.attempt).toBe(0)
+  expect(recovered.attempt?.attempt).toBe(1)
+  expect(recovered.attempt?.attemptSequence).toBe(1)
 })
 
 test('cancelled settlement consumes exactly one attempt and active jobs retain a slot', () => {
@@ -864,7 +907,8 @@ test('stalled recovery is visible without consuming an attempt', () => {
   expect(recovered.record.stalledCount).toBe(1)
   expect(recovered.record.failure?.kind).toBe('stalled')
   expect(recovered.attempt?.outcome).toBe('stalled')
-  expect(recovered.attempt?.attempt).toBe(1)
+  expect(recovered.attempt?.attempt).toBe(2)
+  expect(recovered.attempt?.attemptSequence).toBe(2)
   expect(Result.isOk(validateAttemptRecord(recovered.attempt))).toBe(true)
   const highStallCount = unwrap(
     recoverStalledJob(activeJob({ stalledCount: 10 }), {
@@ -909,7 +953,8 @@ test('stalled recovery is visible without consuming an attempt', () => {
   expect(saturated.record.deliveryCount).toBe(3)
   expect(saturated.record.failure).toMatchObject({ kind: 'stalled', retryable: false })
   expect(saturated.attempt).toMatchObject({
-    attempt: 2,
+    attempt: 3,
+    attemptSequence: 3,
     delivery: 3,
     outcome: 'stalled'
   })
@@ -935,7 +980,8 @@ test('stalled recovery is visible without consuming an attempt', () => {
   expect(cancelledAtSaturation.record.attemptsMade).toBe(0)
   expect(cancelledAtSaturation.record.failure?.kind).toBe('cancelled')
   expect(cancelledAtSaturation.attempt).toMatchObject({
-    attempt: 0,
+    attempt: 1,
+    attemptSequence: 1,
     delivery: 1,
     outcome: 'cancelled'
   })

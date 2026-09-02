@@ -1,5 +1,7 @@
 // oxlint-disable unicorn/no-thenable -- These tests deliberately model PromiseLike adapter races.
 // oxlint-disable anti-slop/no-unknown-parameters -- Thenable callbacks are intentionally erased test boundaries.
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- The helper omits optional store fields.
+// oxlint-disable require-yield -- Several fixtures intentionally return completed Results.
 
 import { expect, test } from 'bun:test'
 
@@ -8,6 +10,8 @@ import { Result } from 'better-result'
 
 import {
   Codec,
+  JobEncodeFailure,
+  Retry,
   JobStore,
   JobStoreFailure,
   type JobStoreError,
@@ -18,6 +22,7 @@ import {
   JobName,
   makeJobId,
   WorkerAwaitIdleError,
+  JobTimeoutError,
   type JobRecord,
   type WorkerHandle
 } from '../src'
@@ -79,6 +84,34 @@ const enqueue = async (
 
 const runtimeFor = async (store: ReturnType<typeof MemoryJobStore.make>): Promise<Runtime<any>> =>
   Runtime.make(Layer.succeed(JobStore, JobStore.of(store)))
+
+const enqueueWith = async (
+  store: ReturnType<typeof MemoryJobStore.make>,
+  job: AnyJobDefinition,
+  payloadValue: unknown,
+  options: {
+    readonly now: number
+    readonly runAt?: number
+    readonly attemptsMax?: number
+    readonly backoff?: JobRecord['backoff']
+    readonly timeoutMs?: number
+  }
+): Promise<JobRecord> =>
+  (
+    await resolve(
+      store.enqueue({
+        job: job.identity,
+        // SAFETY: test inputs are deliberately erased to exercise persistence boundaries.
+        payload: payloadValue as JobRecord['payload'],
+        runAt: options.runAt ?? options.now,
+        attemptsMax: options.attemptsMax ?? 1,
+        ...(options.backoff === undefined ? {} : { backoff: options.backoff }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        metadata: {},
+        now: options.now
+      })
+    )
+  ).job
 
 const idleWaiterCount = (worker: WorkerHandle): number => {
   // SAFETY: tests inspect the supervisor's private waiter set to verify prompt cleanup.
@@ -1283,6 +1316,503 @@ test('Worker shares global slots across independent store and queue groups', asy
     expect(maximum).toBeLessThanOrEqual(2)
     expect((await resolve(firstStore.counts())).completed).toBe(6)
     expect((await resolve(secondStore.counts())).completed).toBe(6)
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker observes rejected synchronous custom decisions without unhandled rejection', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const customJob = queue.job('rejected-custom-decision', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    defaults: {
+      attempts: 2,
+      backoff: {
+        type: 'custom',
+        // SAFETY: this deliberately models an untyped synchronous-policy violation.
+        decide: (() => Promise.reject(new Error('decision rejected'))) as never
+      }
+    }
+  })
+  const now = Date.now()
+  const created = await resolve(
+    store.enqueue({
+      job: customJob.identity,
+      payload: { value: 1 },
+      runAt: now,
+      attemptsMax: 2,
+      metadata: {},
+      now
+    })
+  )
+  let unhandled = 0
+  const onUnhandled = () => {
+    unhandled += 1
+  }
+  process.on('unhandledRejection', onUnhandled)
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(customJob, () =>
+        Effect.fn(async function* () {
+          yield* JobContext
+          return Result.err({ code: 'failed' })
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 0))
+    expect((await resolve(store.getJob({ jobId: created.job.id })))?.state).toBe('failed')
+    expect(unhandled).toBe(0)
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled)
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker persists typed retry schedules and monotonic attempts', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const job = queue.job('typed-retry-ledger', {
+    version: 1,
+    payload,
+    result: numberResult,
+    failure,
+    retryable: () => true,
+    defaults: { attempts: 2, backoff: Retry.fixed({ delayMs: 0, maxAttempts: 2 }) }
+  })
+  const now = 10_000
+  const created = await enqueueWith(
+    store,
+    job,
+    { value: 4 },
+    {
+      now,
+      attemptsMax: 2,
+      backoff: { type: 'constant', delayMs: 0 }
+    }
+  )
+  let calls = 0
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(job, (value) =>
+        Effect.fn(async function* () {
+          calls += 1
+          return calls === 1 ? Result.err({ code: 'again' }) : Result.ok(value.value * 2)
+        })
+      )
+    ],
+    now: () => now,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    const record = await resolve(store.getJob({ jobId: created.id }))
+    const attempts = await resolve(store.getAttempts({ jobId: created.id }))
+    expect(record).toMatchObject({
+      state: 'completed',
+      attemptsMade: 2,
+      deliveryCount: 2,
+      backoff: { type: 'constant', delayMs: 0 }
+    })
+    expect(attempts.map((attempt) => [attempt.attempt, attempt.delivery, attempt.outcome])).toEqual(
+      [
+        [1, 1, 'retried'],
+        [2, 2, 'completed']
+      ]
+    )
+    expect(attempts[0]).toMatchObject({ retryAt: attempts[0]?.finishedAt, retryDelayMs: 0 })
+    expect(attempts[0]?.failure).toMatchObject({
+      kind: 'typed',
+      code: 'handler-failure',
+      data: { code: 'again' },
+      retryable: true
+    })
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker applies per-job backoff overrides and Retry.never as terminal', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const neverJob = queue.job('retry-never-worker', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    defaults: { backoff: Retry.never() }
+  })
+  const overrideJob = queue.job('retry-override-worker', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    retryable: () => true,
+    defaults: { attempts: 2, backoff: Retry.fixed({ delayMs: 1, maxAttempts: 2 }) }
+  })
+  const [never, override] = await Promise.all([
+    enqueueWith(store, neverJob, { value: 1 }, { now: 20_000 }),
+    enqueueWith(
+      store,
+      overrideJob,
+      { value: 2 },
+      {
+        now: 20_000,
+        attemptsMax: 2,
+        backoff: { type: 'constant', delayMs: 0 }
+      }
+    )
+  ])
+  const calls = new Map<string, number>()
+  const makeHandler = (job: typeof neverJob | typeof overrideJob) =>
+    Worker.handle(job, () =>
+      Effect.fn(async function* () {
+        calls.set(job.name, (calls.get(job.name) ?? 0) + 1)
+        return Result.err({ code: 'nope' })
+      })
+    )
+  const worker = await Worker.start(runtime, {
+    handlers: [makeHandler(neverJob), makeHandler(overrideJob)],
+    now: () => 20_000,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    const neverAttempts = await resolve(store.getAttempts({ jobId: never.id }))
+    const overrideAttempts = await resolve(store.getAttempts({ jobId: override.id }))
+    expect((await resolve(store.getJob({ jobId: never.id })))?.state).toBe('failed')
+    expect(neverAttempts).toHaveLength(1)
+    expect(neverAttempts[0]?.outcome).toBe('failed')
+    expect(neverAttempts[0]?.retryAt).toBeUndefined()
+    const overrideRecord = await resolve(store.getJob({ jobId: override.id }))
+    expect(overrideRecord).toMatchObject({
+      state: 'failed',
+      backoff: { type: 'constant', delayMs: 0 }
+    })
+    expect(overrideAttempts).toHaveLength(2)
+    expect(overrideAttempts[0]).toMatchObject({ outcome: 'retried', retryDelayMs: 0 })
+    expect(calls.get(neverJob.name)).toBe(1)
+    expect(calls.get(overrideJob.name)).toBe(2)
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker controls defect retries with retryDefects and persists defect failures', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const noRetry = queue.job('defect-no-retry', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    defaults: { attempts: 2 }
+  })
+  const retry = queue.job('defect-retry', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    defaults: { attempts: 2 }
+  })
+  const noRetryCause = new Error('boom-no')
+  let observedNoRetryCause: unknown
+  const [first] = await Promise.all([
+    enqueueWith(store, noRetry, { value: 1 }, { now: 30_000, attemptsMax: 2 }),
+    enqueueWith(store, retry, { value: 2 }, { now: 30_000, attemptsMax: 2 })
+  ])
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(noRetry, () =>
+        Effect.fn(async function* () {
+          throw noRetryCause
+        })
+      ),
+      Worker.handle(retry, () =>
+        Effect.fn(async function* () {
+          throw new Error('boom-yes')
+        })
+      )
+    ],
+    onJobFailure: (event) => {
+      if (event.job.name === noRetry.name) observedNoRetryCause = event.cause
+    },
+    retryDefects: false,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect((await resolve(store.getJob({ jobId: first.id })))?.state).toBe('failed')
+    expect((await resolve(store.getAttempts({ jobId: first.id })))[0]?.failure).toMatchObject({
+      kind: 'defect'
+    })
+    expect(observedNoRetryCause).toBe(noRetryCause)
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+
+  const retryStore = MemoryJobStore.make()
+  const retryRuntime = await runtimeFor(retryStore)
+  const retried = await enqueueWith(
+    retryStore,
+    retry,
+    { value: 2 },
+    { now: 30_000, attemptsMax: 2 }
+  )
+  const retryWorker = await Worker.start(retryRuntime, {
+    handlers: [
+      Worker.handle(retry, () =>
+        Effect.fn(async function* () {
+          throw new Error('boom-yes')
+        })
+      )
+    ],
+    retryDefects: true,
+    pollIntervalMs: 1
+  })
+  try {
+    await retryWorker.awaitIdle({ timeoutMs: 2_000 })
+    const attempts = await resolve(retryStore.getAttempts({ jobId: retried.id }))
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ outcome: 'retried', failure: { kind: 'defect' } })
+    expect(attempts[1]?.failure).toMatchObject({ kind: 'defect' })
+  } finally {
+    await retryWorker.stop()
+    await retryRuntime.dispose()
+  }
+})
+
+test('Worker treats decode and encode failures as terminal without invoking the handler', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const decodeJob = queue.job('decode-terminal', {
+    version: 1,
+    payload: Codec.number,
+    result: voidResult,
+    failure
+  })
+  const encodeCodec = Codec.make<number>({
+    encode: () => Result.err(new JobEncodeFailure({ code: 'cannot-encode' })),
+    // SAFETY: the worker decodes the known numeric result before attempting encoding.
+    decode: (value) => Result.ok(value as number)
+  })
+  const encodeJob = queue.job('encode-terminal', {
+    version: 1,
+    payload,
+    result: encodeCodec,
+    failure
+  })
+  const [decode, encode] = await Promise.all([
+    enqueueWith(store, decodeJob, 'not-a-number', { now: 40_000 }),
+    enqueueWith(store, encodeJob, { value: 1 }, { now: 40_000 })
+  ])
+  let decodeHandlerCalls = 0
+  let encodeHandlerCalls = 0
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(decodeJob, () =>
+        Effect.fn(async function* () {
+          decodeHandlerCalls += 1
+          return Result.ok(undefined)
+        })
+      ),
+      Worker.handle(encodeJob, () =>
+        Effect.fn(async function* () {
+          encodeHandlerCalls += 1
+          return Result.ok(7)
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect(decodeHandlerCalls).toBe(0)
+    expect(encodeHandlerCalls).toBe(1)
+    expect((await resolve(store.getAttempts({ jobId: decode.id })))[0]?.failure).toMatchObject({
+      kind: 'decode'
+    })
+    expect((await resolve(store.getAttempts({ jobId: encode.id })))[0]?.failure).toMatchObject({
+      kind: 'encode',
+      code: 'codec-encode'
+    })
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker classifies cooperative timeout and sends a nonblocking failure event', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const job = queue.job('timeout-worker', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    defaults: { timeoutMs: 1 }
+  })
+  const created = await enqueueWith(store, job, { value: 1 }, { now: 50_000, timeoutMs: 1 })
+  let aborted!: () => void
+  let timeoutCause: unknown
+  const signalAborted = new Promise<void>((resolveAborted) => {
+    aborted = resolveAborted
+  })
+  let hookCalled = false
+  const hookPending = new Promise<void>(() => undefined)
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(job, () =>
+        Effect.fn(async function* () {
+          const signal = yield* CurrentAbortSignal
+          signal.addEventListener(
+            'abort',
+            () => {
+              timeoutCause = signal.reason
+              aborted()
+            },
+            { once: true }
+          )
+          await signalAborted
+          return Result.ok(undefined)
+        })
+      )
+    ],
+    onJobFailure: (event) => {
+      hookCalled = true
+      expect(event.kind).toBe('timeout')
+      expect(event.willRetry).toBe(false)
+      expect(event.cause).toBeInstanceOf(JobTimeoutError)
+      expect(event.cause).toBe(timeoutCause)
+      return hookPending
+    },
+    now: () => 50_000,
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    const attempt = (await resolve(store.getAttempts({ jobId: created.id })))[0]
+    expect(hookCalled).toBe(true)
+    expect(attempt).toMatchObject({ outcome: 'failed', failure: { kind: 'timeout' } })
+  } finally {
+    await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
+test('Worker preserves an explicit undefined defect cause for failure hooks', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const job = queue.job('undefined-defect-hook', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure
+  })
+  const created = await enqueueWith(store, job, { value: 1 }, { now: 55_000 })
+  let observedCause: unknown = Symbol('unset')
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(job, () =>
+        Effect.fn(async function* () {
+          throw undefined
+        })
+      )
+    ],
+    onJobFailure: (event) => {
+      observedCause = event.cause
+    },
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect(observedCause).toBeUndefined()
+    expect((await resolve(store.getAttempts({ jobId: created.id })))[0]?.failure).toMatchObject({
+      kind: 'defect',
+      message: 'Job handler failed'
+    })
+  } finally {
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
+test('Worker failure hook reports applied retry and terminal failure details', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const retryJob = queue.job('hook-retry', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    retryable: () => true,
+    defaults: { attempts: 2, backoff: Retry.fixed({ delayMs: 0, maxAttempts: 2 }) }
+  })
+  const failJob = queue.job('hook-fail', { version: 1, payload, result: voidResult, failure })
+  const [retry, fail] = await Promise.all([
+    enqueueWith(store, retryJob, { value: 1 }, { now: 60_000, attemptsMax: 2 }),
+    enqueueWith(store, failJob, { value: 2 }, { now: 60_000 })
+  ])
+  const events: Array<{ name: string; kind: string; willRetry: boolean; cause: unknown }> = []
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(retryJob, () =>
+        Effect.fn(async function* () {
+          return Result.err({ code: 'retry' })
+        })
+      ),
+      Worker.handle(failJob, () =>
+        Effect.fn(async function* () {
+          return Result.err({ code: 'fail' })
+        })
+      )
+    ],
+    onJobFailure: (event) => {
+      events.push({
+        name: event.job.name,
+        kind: event.kind,
+        willRetry: event.willRetry,
+        cause: event.cause
+      })
+    },
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    const eventSummary = events.map(({ name, kind, willRetry }) => ({ name, kind, willRetry }))
+    expect(eventSummary).toContainEqual({ name: retryJob.name, kind: 'typed', willRetry: true })
+    expect(eventSummary).toContainEqual({ name: retryJob.name, kind: 'typed', willRetry: false })
+    expect(eventSummary).toContainEqual({ name: failJob.name, kind: 'typed', willRetry: false })
+    expect(eventSummary).toHaveLength(3)
+    expect(events.every((event) => event.cause !== undefined)).toBe(true)
+    expect(
+      (await resolve(store.getAttempts({ jobId: retry.id }))).map((entry) => entry.outcome)
+    ).toEqual(['retried', 'failed'])
+    expect((await resolve(store.getAttempts({ jobId: fail.id })))[0]?.failure).toMatchObject({
+      kind: 'typed',
+      code: 'handler-failure',
+      data: { code: 'fail' }
+    })
   } finally {
     await worker.stop()
     await runtime.dispose()

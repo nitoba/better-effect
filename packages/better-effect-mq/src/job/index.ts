@@ -7,7 +7,9 @@ export {
   normalizeRetryable,
   runIdempotencyKey,
   runMetadata,
-  runRetryable
+  runRetryable,
+  isUnrecoverableFailure,
+  markUnrecoverable
 } from './job'
 export { Queue } from './queue'
 export { JobRegistry, makeJobRegistry } from './registry'

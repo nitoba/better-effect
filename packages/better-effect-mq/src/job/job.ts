@@ -24,6 +24,8 @@ import {
   validatePositiveDuration
 } from '../protocol'
 import type { PersistedBackoff } from '../protocol'
+import { normalizeRetryPolicy } from '../retry'
+import type { RetryPolicy } from '../retry'
 import { JobStore, isJobStoreToken } from '../store'
 import type { AnyJobStoreToken, DefaultJobStoreToken } from '../store'
 import { makeJobOperations } from './application'
@@ -41,6 +43,20 @@ import {
 } from './internal'
 
 declare const JobDefinitionTypeId: unique symbol
+
+const unrecoverableFailures = new WeakSet<object>()
+
+export const isUnrecoverableFailure = (value: unknown): boolean =>
+  (typeof value === 'object' && value !== null) || typeof value === 'function'
+    ? unrecoverableFailures.has(value)
+    : false
+
+export const markUnrecoverable = <Failure>(failure: Failure): Failure => {
+  if ((typeof failure === 'object' && failure !== null) || typeof failure === 'function') {
+    unrecoverableFailures.add(failure)
+  }
+  return failure
+}
 
 /** A codec-shaped value used only to erase heterogeneous codec details internally. */
 export type CodecLike = {
@@ -109,7 +125,7 @@ export type JobDefaults = {
 
 export type JobDefaultsInput = {
   readonly attempts?: number
-  readonly backoff?: PersistedBackoff
+  readonly backoff?: PersistedBackoff | RetryPolicy
   readonly timeoutMs?: number
   readonly priority?: number
 }
@@ -173,6 +189,7 @@ export interface JobDefinition<
   readonly idempotencyKey: IdempotencyKeyCallback<CodecValueOf<PayloadCodec>> | undefined
   readonly metadata: MetadataCallback<CodecValueOf<PayloadCodec>> | undefined
   readonly retryable: RetryableFor<FailureCodec>
+  readonly retryPolicy: RetryPolicy | undefined
 }
 
 export type AnyJobDefinition = JobDefinition<
@@ -355,13 +372,23 @@ const normalizeDefaults = (value: unknown): ResultType<JobDefaults, JobDefinitio
   const backoffValue = fieldValue(fields.value, 'backoff')
 
   if (backoffValue !== undefined) {
-    const backoff = makePersistedBackoff(backoffValue)
-
-    if (Result.isError(backoff)) {
-      return Result.err(backoff.error)
+    const policy = normalizeRetryPolicy(backoffValue)
+    if (Result.isError(policy)) return Result.err(policy.error)
+    if (policy.value !== undefined) {
+      if (policy.value.type !== 'custom' && policy.value.type !== 'never') {
+        defaults.backoff = policy.value.backoff
+      }
+      if (policy.value.maxAttempts !== undefined && attemptsValue === undefined) {
+        defaults.attempts = policy.value.maxAttempts
+      }
+      if (
+        policy.value.maxAttempts !== undefined &&
+        attemptsValue !== undefined &&
+        policy.value.maxAttempts !== attemptsValue
+      ) {
+        return invalid('defaults.backoff.maxAttempts', 'must match defaults.attempts')
+      }
     }
-
-    defaults.backoff = backoff.value
   }
 
   return Result.ok(Object.freeze(defaults))
@@ -1489,11 +1516,18 @@ const buildJob = (queue: unknown, name: unknown, options: unknown): AnyJobDefini
   const result = snapshotOptionalCodec(checkedOptions.value.result, 'result')
   const failure = snapshotOptionalCodec(checkedOptions.value.failure, 'failure')
   const defaults = normalizeDefaults(checkedOptions.value.defaults)
+  const rawDefaults =
+    checkedOptions.value.defaults === undefined ? {} : checkedOptions.value.defaults
+  const rawDefaultFields = readDataFields(rawDefaults, defaultFields, 'defaults')
+  const retryPolicy = Result.isError(rawDefaultFields)
+    ? Result.err(rawDefaultFields.error)
+    : normalizeRetryPolicy(fieldValue(rawDefaultFields.value, 'backoff'))
 
   if (Result.isError(payload)) throw payload.error
   if (Result.isError(result)) throw result.error
   if (Result.isError(failure)) throw failure.error
   if (Result.isError(defaults)) throw defaults.error
+  if (Result.isError(retryPolicy)) throw retryPolicy.error
 
   const callbacks = validateCallbacks(checkedOptions.value, failure.value !== undefined)
 
@@ -1526,6 +1560,7 @@ const buildJob = (queue: unknown, name: unknown, options: unknown): AnyJobDefini
       idempotencyKey: checkedOptions.value.idempotencyKey,
       metadata: checkedOptions.value.metadata,
       retryable: checkedOptions.value.retryable,
+      retryPolicy: retryPolicy.value,
       ...makeJobOperations({
         identity,
         payload: payload.value,
@@ -2134,5 +2169,6 @@ export const Job = {
   normalizeMetadata,
   runIdempotencyKey,
   runMetadata,
-  runRetryable
+  runRetryable,
+  unrecoverable: markUnrecoverable
 } as const

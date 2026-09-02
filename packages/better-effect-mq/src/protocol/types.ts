@@ -24,14 +24,25 @@ export type AttemptOutcome =
   | 'stalled'
   | 'released'
 
-export type JobFailureKind = 'typed' | 'defect' | 'timeout' | 'decode' | 'stalled' | 'cancelled'
+export type JobFailureKind =
+  | 'typed'
+  | 'defect'
+  | 'encode'
+  | 'timeout'
+  | 'decode'
+  | 'stalled'
+  | 'cancelled'
 
 export type BackoffKind = 'constant' | 'linear' | 'exponential'
 
 export interface PersistedBackoff {
   readonly type: BackoffKind
   readonly delayMs: number
+  readonly incrementMs?: number
+  readonly factor?: number
   readonly maxDelayMs?: number
+  /** Symmetric multiplicative jitter range, from 0 to 1. */
+  readonly jitter?: number
 }
 
 export interface SerializedJobFailure {
@@ -56,6 +67,9 @@ export interface JobRecord {
   readonly orderingSequence: number
   readonly attemptsMax: number
   readonly attemptsMade: number
+  /** Monotonic ledger sequence for every recorded settlement or administrative transition. */
+  /** Optional on legacy snapshots; validators derive it from deliveryCount. */
+  readonly attemptSequence?: number
   readonly deliveryCount: number
   readonly stalledCount: number
   readonly backoff: PersistedBackoff | undefined
@@ -74,13 +88,19 @@ export interface JobRecord {
 }
 
 export interface AttemptRecord {
+  /** Monotonic ledger sequence for this entry; unlike attemptsMade it includes administrative entries. */
   readonly attempt: number
+  /** Present on new entries when the monotonic ledger differs from delivery. */
+  readonly attemptSequence?: number
   readonly delivery: number
   readonly startedAt: number | undefined
   readonly finishedAt: number
   readonly outcome: AttemptOutcome
   readonly result: JsonValue | undefined
   readonly failure: SerializedJobFailure | undefined
+  /** Exact retry schedule for retried entries. Optional for legacy records. */
+  readonly retryAt?: number
+  readonly retryDelayMs?: number
 }
 
 export interface CompleteOutcome {
@@ -91,6 +111,8 @@ export interface CompleteOutcome {
 export interface RetryOutcome {
   readonly type: 'retry'
   readonly runAt: number
+  /** Delay selected before settlement; retained so the ledger reports the exact schedule. */
+  readonly retryDelayMs?: number
   readonly failure?: SerializedJobFailure
 }
 
