@@ -1555,7 +1555,16 @@ const prepareCleanDependencies = async (
         'dir'
       )
       await runCommand(
-        ['bun', 'run', 'build', '--', '--out-dir', join(isolatedCoreRoot, 'dist'), '--no-exports'],
+        [
+          'bun',
+          'run',
+          'build',
+          '--',
+          '--out-dir',
+          join(isolatedCoreRoot, 'dist'),
+          '--no-exports',
+          '--no-clean'
+        ],
         corePackageRoot
       )
     }
@@ -1573,7 +1582,16 @@ const prepareCleanDependencies = async (
         'dir'
       )
       await runCommand(
-        ['bun', 'run', 'build', '--', '--out-dir', join(isolatedMqRoot, 'dist'), '--no-exports'],
+        [
+          'bun',
+          'run',
+          'build',
+          '--',
+          '--out-dir',
+          join(isolatedMqRoot, 'dist'),
+          '--no-exports',
+          '--no-clean'
+        ],
         mqPackageRoot
       )
     }
@@ -1628,11 +1646,11 @@ const prepareScenarioDependencies = async (
   }
 
   if (!isolateDependencies && needsCoreDeclarations) {
-    await runCommand(['bun', 'run', 'build'], corePackageRoot)
+    await ensurePackageBuild(corePackageRoot)
   }
 
   if (!isolateDependencies && needsMqDeclarations) {
-    await runCommand(['bun', 'run', 'build'], mqPackageRoot)
+    await ensurePackageBuild(mqPackageRoot)
   }
 
   const declarations = [
