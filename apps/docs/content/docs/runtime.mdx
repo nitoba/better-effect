@@ -201,6 +201,9 @@ instances are not a general concurrent-isolation strategy.
 
 For a command, migration or script, use `Runtime.run`:
 
+Database integrations that forward cancellation through a native query terminal
+can use the [Kysely integration](/docs/kysely).
+
 ```ts
 const migrate = Effect.fn(async function* () {
   const database = yield* Database

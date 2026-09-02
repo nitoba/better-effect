@@ -1,0 +1,513 @@
+---
+title: Kysely integration
+description: Preserve Kysely's native SQL boundary inside typed better-effect Programs.
+icon: Database
+---
+
+`better-effect-kysely` is the optional, server-side integration between
+[better-effect](/docs/getting-started) and [Kysely](https://kysely.dev/). Kysely
+remains the SQL query builder, compiler, executor and dialect boundary. The
+integration adds a small bridge for Service provisioning, lazy Effect
+terminals and transaction outcomes; it is not an ORM or repository framework.
+
+## Install the integration
+
+Install the integration, its peers and the driver selected by your Kysely
+dialect:
+
+```bash
+bun add better-effect-kysely better-effect better-result kysely
+# Install one application-owned driver, for example:
+bun add better-sqlite3
+```
+
+The package has no runtime driver dependency. Its peer ranges are:
+
+| Peer            | Range              |
+| --------------- | ------------------ |
+| `better-effect` | `>=0.13.0 <0.14.0` |
+| `better-result` | `^3.0.0`           |
+| `kysely`        | `>=0.29.5 <0.30.0` |
+| TypeScript      | `>=5.7.0`          |
+
+Drivers such as `better-sqlite3`, `pg`, `mysql2` or PGlite are explicit
+application choices. Importing `better-effect-kysely` does not select a driver,
+open a connection or create a database.
+
+## The integration boundary
+
+A native Kysely query is a Promise terminal. A `better-effect` Program is a
+lazy function whose result is a `better-result` `Result` and whose declaration
+carries Service requirements. The bridge connects those boundaries without
+turning a builder into a new Effect value:
+
+```text
+Kysely builder / schema operation / raw builder
+                    │
+                    ▼
+         .$call(KyselyEffect.execute)
+                    │
+                    ▼
+       lazy KyselyOperation<A, KyselyQueryError>
+                    │
+                    ▼
+       Runtime resolves Services and awaits Promise
+                    │
+                    ▼
+              Result<A, E>
+```
+
+`$call` is Kysely's native terminal. It preserves the builder's receiver and
+allows normal Kysely code to stay normal Kysely code until the point where an
+Effect Program needs to await it:
+
+```ts
+const users =
+  yield * database.selectFrom('users').select(['id', 'email']).$call(KyselyEffect.execute)
+```
+
+Do not write `yield* query` directly. Kysely builders are not yieldable
+Services and the integration intentionally does not add an iterator,
+prototype method or module augmentation.
+
+## Define a database Service
+
+Create one token for each schema and use it as both the Layer handle and the
+value yielded by a Program:
+
+```ts
+import { KyselyEffect } from 'better-effect-kysely'
+
+interface AppDatabase {
+  users: {
+    id: number
+    email: string
+  }
+}
+
+const Database = KyselyEffect.service<AppDatabase>()('@app/Database')
+```
+
+The resolved value is the original `Kysely<AppDatabase>` reference. Its native
+private state, methods, plugins, builder inference and dialect remain intact:
+
+```ts
+import { Effect } from 'better-effect'
+import { Result } from 'better-result'
+
+const listUsers = Effect.fn(async function* () {
+  const database = yield* Database
+  const users = yield* database.selectFrom('users').selectAll().$call(KyselyEffect.execute)
+
+  return Result.ok(users)
+})
+```
+
+See [Services](/docs/services) for the general Service model and [Layers](/docs/layers)
+for composition and completeness checks.
+
+## Owned and borrowed databases
+
+The two Layer helpers make ownership explicit:
+
+| Layer                        | Acquire                                        | Runtime shutdown           | Use it when                            |
+| ---------------------------- | ---------------------------------------------- | -------------------------- | -------------------------------------- |
+| `Database.layer(factory)`    | Lazily creates one Kysely instance per Runtime | Calls `database.destroy()` | The Runtime owns creation and lifetime |
+| `Database.succeed(database)` | Uses the already-created instance              | Does not destroy it        | The caller, test or host owns lifetime |
+
+```ts
+const ownedRuntime = await Runtime.make(Database.layer(makeDatabase))
+await ownedRuntime.dispose() // destroys the owned Kysely instance
+
+const borrowedRuntime = await Runtime.make(Database.succeed(existingDatabase))
+await borrowedRuntime.dispose() // existingDatabase remains usable
+await existingDatabase.destroy() // caller cleanup
+```
+
+An owned provider is lazy and cached for the Runtime. It is released through
+the Runtime root `Scope`, including after a failed execution. A borrowed
+provider transfers neither acquisition nor disposal to the Runtime. Do not use
+`layer` for a pool managed by another owner, and do not use `succeed` when the
+application expects Runtime shutdown to close the database.
+
+## Query terminals
+
+The runtime helpers live under the frozen `KyselyEffect` namespace:
+
+| Helper                                           | Native operation              | Success value                           |
+| ------------------------------------------------ | ----------------------------- | --------------------------------------- |
+| `execute`                                        | `query.execute()`             | The complete row array                  |
+| `executeWith(options)`                           | `query.execute(options)`      | The complete row array                  |
+| `executeTakeFirst`                               | `query.executeTakeFirst()`    | First row or `undefined`                |
+| `executeTakeFirstWith(options)`                  | Configured first-row terminal | First row or `undefined`                |
+| `executeTakeFirstOrFail(makeError)`              | First-row terminal            | First row, or the supplied domain error |
+| `executeTakeFirstOrFailWith(options, makeError)` | Configured first-row-or-fail  | First row, or the supplied domain error |
+
+Every helper is a lazy single-Promise bridge. It invokes the native Kysely
+terminal once, preserves its receiver and returns the original success value:
+
+```ts
+const inserted =
+  yield *
+  database
+    .insertInto('users')
+    .values({ id: 1, email: 'ada@example.test' })
+    .returningAll()
+    .$call(KyselyEffect.execute)
+
+const optional =
+  yield *
+  database.selectFrom('users').selectAll().where('id', '=', id).$call(KyselyEffect.executeTakeFirst)
+```
+
+Schema builders and mutations use exactly the same boundary:
+
+```ts
+yield *
+  database.schema
+    .createTable('users')
+    .addColumn('id', 'integer', (column) => column.primaryKey())
+    .addColumn('email', 'text', (column) => column.notNull())
+    .$call(KyselyEffect.execute)
+```
+
+### First-row absence
+
+`executeTakeFirst` models an absent row as `undefined`. Use an or-fail helper
+when absence is part of the application contract:
+
+```ts
+class UserNotFound extends Error {
+  constructor(readonly userId: number) {
+    super(`User ${userId} was not found`)
+  }
+}
+
+const user =
+  yield *
+  database
+    .selectFrom('users')
+    .selectAll()
+    .where('id', '=', userId)
+    .$call(KyselyEffect.executeTakeFirstOrFail(() => new UserNotFound(userId)))
+```
+
+Only strict `undefined` invokes `makeError`. A row containing nullable columns,
+`false`, `0`, an empty string or `null` is still a successful row. The error is
+a typed Result error rather than Kysely's uncaught `executeTakeFirstOrThrow`
+defect.
+
+## Raw and compiled queries
+
+Use `executeQuery(database, query, options?)` when the application needs
+Kysely's complete `QueryResult` rather than only its rows. It accepts a native
+`RawBuilder`, a structural `Compilable` or a `CompiledQuery`:
+
+```ts
+import { sql } from 'kysely'
+
+const raw =
+  yield * KyselyEffect.executeQuery(database, sql<{ value: number }>`select ${1} as value`)
+
+const compiled = database
+  .selectFrom('users')
+  .select(['id', 'email'])
+  .where('id', '=', userId)
+  .compile()
+const compiledResult = yield * KyselyEffect.executeQuery(database, compiled)
+```
+
+The result retains rows and dialect metadata such as affected-row counts. A
+real RawBuilder uses Kysely's native RawBuilder executor, so its plugins and
+result transformation run normally. A `CompiledQuery` keeps its SQL and
+parameters; the bridge does not compile it a second time. The executor may be
+the outer `Kysely<DB>` or a native `Transaction<DB>`.
+
+## Transactions
+
+`KyselyEffect.transaction` bridges Kysely's callback transaction to a lazy
+`Effect.Program`. Kysely begins the native transaction first, then invokes the
+factory with the native `Transaction<DB>`:
+
+```ts
+const createUser = Effect.fn(async function* () {
+  const database = yield* Database
+
+  const user = yield* KyselyEffect.transaction(database, (transaction) =>
+    Effect.fn(async function* () {
+      const created = yield* transaction
+        .insertInto('users')
+        .values({ id: 1, email: 'ada@example.test' })
+        .returningAll()
+        .$call(KyselyEffect.executeTakeFirstOrFail(() => new Error('no row returned')))
+
+      return Result.ok(created)
+    })
+  )
+
+  return Result.ok(user)
+})
+```
+
+The body uses `transaction` explicitly. The outer Database Service is not
+replaced, no nested Runtime is created, and other Services from the existing
+Runtime remain available inside the body:
+
+```ts
+const operation = KyselyEffect.transaction(database, (transaction) =>
+  Effect.fn(async function* () {
+    const audit = yield* AuditService
+    audit.record('user.create')
+    yield* transaction
+      .insertInto('users')
+      .values({ id: 1, email: 'ada@example.test' })
+      .$call(KyselyEffect.execute)
+    return Result.ok(undefined)
+  })
+)
+```
+
+### Transaction state machine
+
+```text
+               native begin
+                    │
+                    ▼
+             ┌─────────────┐
+             │ body runs   │◄──── additional Services use current Runtime
+             └──────┬──────┘
+                    │
+         ┌──────────┼──────────┐
+         │          │          │
+   Result.ok   Result.err   throw/reject/abort
+         │          │          │
+         ▼          ▼          ▼
+      commit     rollback     rollback
+         │          │          │
+         └──────────┴──────────┘
+                    │
+              release native
+```
+
+`Result.ok(value)` commits and exposes `value`. Every `Result.err(error)`
+rolls back, including a query operation error, and restores that exact error
+when rollback succeeds. If rollback itself fails, the result is a
+`KyselyTransactionError` whose non-enumerable `.bodyFailure` retains the typed
+body error. Thrown defects and abort reasons roll back and are rethrown; when
+cleanup also fails, their aggregate keeps the body cause first. Native begin or
+commit failures are represented by `KyselyTransactionError`.
+
+A successful transaction can still surface native cleanup failure. The
+transaction bridge does not add retries, savepoints or controlled-transaction
+semantics.
+
+`KyselyTransactionOptions` forwards Kysely's native `isolationLevel` and
+`accessMode`:
+
+```ts
+const readOnly = KyselyEffect.transaction(
+  database,
+  { isolationLevel: 'serializable', accessMode: 'read only' },
+  (transaction) =>
+    Effect.fn(async function* () {
+      const rows = yield* transaction.selectFrom('users').selectAll().$call(KyselyEffect.execute)
+      return Result.ok(rows)
+    })
+)
+```
+
+The supported values and their effect depend on the selected dialect. They are
+not emulated by the integration.
+
+## Cancellation
+
+Pass a request or shutdown signal to a Runtime execution:
+
+```ts
+const result = await runtime.run(listUsers, { signal: request.signal })
+```
+
+The integration links that signal to the single Kysely Promise boundary. Query
+options expose Kysely's `inflightQueryAbortStrategy`:
+
+```ts
+const execute = KyselyEffect.executeWith({
+  inflightQueryAbortStrategy: 'cancel query'
+})
+const users = yield * database.selectFrom('users').selectAll().$call(execute)
+```
+
+The public `KyselyExecutionOptions` intentionally does not accept `signal`.
+Runtime owns the signal and supplies a fresh linked option set for each
+execution. The strategies mean:
+
+| Strategy       | Meaning                                                             |
+| -------------- | ------------------------------------------------------------------- |
+| `ignore query` | Stop waiting according to Kysely's policy; server work may continue |
+| `cancel query` | Ask a capable driver to cancel the query                            |
+| `kill session` | Ask a capable driver to terminate its session                       |
+
+Cancellation support is dialect- and driver-dependent. It is not a universal
+server-side guarantee, and a write may already have been applied. The public
+Kysely callback API also leaves a small unavoidable race between the final
+transaction cancellation check and native commit.
+
+For the core Runtime lifecycle and signal ownership, see [Runtime](/docs/runtime).
+
+## Errors and failure precedence
+
+`KyselyQueryError` wraps a query Promise failure. `KyselyTransactionError`
+represents native transaction or cleanup failures. Both preserve the original
+cause in memory while keeping it out of normal enumeration and `toJSON()`:
+
+```ts
+const result = await runtime.run(listUsers)
+if (Result.isError(result)) {
+  console.error(result.error.name)
+}
+```
+
+Messages and serialized fields do not contain SQL, parameters, credentials or
+driver-specific details. Inspect `.cause` only at an intentional trusted
+diagnostic boundary; do not put it directly in an HTTP response or structured
+log by default. Map application domain errors explicitly with the patterns in
+[Errors and Results](/docs/errors).
+
+A domain `Result.err` is not silently converted into a generic query error.
+When cleanup succeeds, the body failure remains the primary application error.
+When typed rollback cleanup also fails, `KyselyTransactionError.bodyFailure`
+retains that body error; defects and abort reasons are composed body-first with
+the cleanup cause. A successful transaction exposes cleanup failure rather than
+its value.
+
+## Multiple database Services
+
+Use distinct literal tags for distinct database instances, even if their table
+shapes overlap:
+
+```ts
+const PrimaryDatabase = KyselyEffect.service<PrimarySchema>()('@app/PrimaryDatabase')
+const AnalyticsDatabase = KyselyEffect.service<AnalyticsSchema>()('@app/AnalyticsDatabase')
+
+const AppLive = Layer.merge(
+  PrimaryDatabase.layer(createPrimaryDatabase),
+  AnalyticsDatabase.layer(createAnalyticsDatabase)
+)
+```
+
+Layer composition rejects duplicate tags rather than choosing a provider by
+accident. The two resolved values remain native Kysely instances with their
+own schema inference.
+
+## Composing with repositories
+
+Keep business behavior in application Services or ordinary modules. A
+repository can depend on the database Service without moving business logic
+into Kysely or a dependency container:
+
+```text
+UserRepository Service
+        │ yield* Database
+        ▼
+Kysely query builder
+        │ .$call(KyselyEffect.execute)
+        ▼
+Result<User[], KyselyQueryError | DomainError>
+```
+
+This boundary keeps the repository responsible for domain mapping and Kysely
+responsible for SQL typing. `better-effect-kysely` only adapts the Promise
+terminal and database lifetime.
+
+## Testing the integration
+
+Use a real dialect for integration tests and a borrowed Layer when the test
+creates and destroys the native database itself:
+
+```ts
+const database = makeInMemoryDatabase()
+const runtime = await Runtime.make(Database.succeed(database))
+
+try {
+  const result = await runtime.run(listUsers)
+  // Assert the Result and native rows.
+} finally {
+  await runtime.dispose()
+  await database.destroy()
+}
+```
+
+Use an owned Layer when the test is specifically verifying Runtime lifecycle:
+assert that `destroy()` runs once after success and failure. Test raw and
+compiled queries, plugin transformation, logger events, transaction rollback
+and dialect-native values against the actual driver. Avoid replacing every
+Kysely builder with a mock when the behavior under test is the compiler or
+executor boundary.
+
+The package release suite runs deterministic real-database tests with Bun
+SQLite and PGlite. It also checks PostgreSQL, MySQL and SQLite Kysely types
+without opening external servers. PGlite evidence should not be read as a
+claim that every `pg` version or deployment behaves identically.
+
+See [Testing](/docs/testing) for general Layer overrides and Runtime test
+helpers.
+
+## Compatibility and limitations
+
+The `0.1.x` integration is validated with:
+
+- Bun `1.3.14` and Node.js `24`;
+- TypeScript `5.7.2` and the current repository compiler;
+- Kysely `0.29.5`, which is both the minimum and current tested version for
+  this release;
+- Bun's built-in SQLite adapter and PGlite `0.5.8` for real database runs;
+- `better-sqlite3` `12.4.1` in the external Node.js consumer cell. The Bun
+  SQLite cell uses `bun:sqlite` because `better-sqlite3` is not supported by
+  Bun.
+
+The runtime source is dialect-agnostic and bundles no driver. Driver errors,
+feature support, cancellation, returned scalar representations and metadata
+remain native to the selected Kysely dialect.
+
+This integration deliberately does not provide:
+
+- migrations or schema management beyond Kysely's own schema builder;
+- streaming, cursors or result backpressure;
+- controlled transactions, savepoints or automatic retries;
+- schema codecs or runtime result validation;
+- OpenTelemetry/RuntimeObserver integration;
+- a repository, ORM or dependency-container framework;
+- directly yieldable Kysely builders.
+
+## Public API
+
+Runtime helpers are namespaced under `KyselyEffect`:
+
+| Name                        | Kind              | Purpose                                                            |
+| --------------------------- | ----------------- | ------------------------------------------------------------------ |
+| `KyselyEffect`              | runtime namespace | Service factory, query terminals, `executeQuery` and `transaction` |
+| `KyselyOperation`           | type              | Operation value, error and requirement channels                    |
+| `KyselyExecutionOptions`    | type              | Kysely abort strategy options without a second signal              |
+| `KyselyTransactionOptions`  | type              | Native isolation and access mode options                           |
+| `KyselyQueryOperation`      | type              | Query operation names used by safe errors                          |
+| `KyselyServiceInstance`     | type              | Tagged native Kysely instance contract                             |
+| `KyselyServiceToken`        | type              | Tagged Kysely Service token                                        |
+| `KyselyService`             | type              | Native `Kysely<DB>` contract                                       |
+| `KyselyExecutable`          | type              | Structural execute terminal                                        |
+| `KyselyTakeFirstExecutable` | type              | Structural first-row terminal                                      |
+| `KyselyQueryError`          | class             | Safe query boundary failure                                        |
+| `KyselyTransactionError`    | class             | Safe transaction/cleanup failure                                   |
+
+The root exports intentionally do not expose sentinels, transaction outcomes,
+Promise normalizers, private error helpers, source paths or dialect drivers.
+
+## Further reading
+
+- [Kysely API documentation](https://kysely.dev/docs/intro)
+- [Services](/docs/services)
+- [Layers](/docs/layers)
+- [Effects and Programs](/docs/effects)
+- [Runtime and cancellation](/docs/runtime)
+- [Errors and Results](/docs/errors)
+- [Testing](/docs/testing)
+- [Package README](https://github.com/nitoba/better-effect/tree/main/packages/better-effect-kysely)

@@ -314,6 +314,52 @@ const assertRepositoryIntegration = async (): Promise<void> => {
   )
 }
 
+const assertPublicDeclaration = async (): Promise<void> => {
+  const declaration = await readFile(join(distRoot, 'index.d.mts'), 'utf8')
+  const publicNames = [
+    'KyselyEffect',
+    'KyselyOperation',
+    'KyselyExecutionOptions',
+    'KyselyTransactionOptions',
+    'KyselyQueryOperation',
+    'KyselyService',
+    'KyselyServiceFactory',
+    'KyselyServiceInstance',
+    'KyselyServiceTag',
+    'KyselyServiceToken',
+    'KyselyExecutable',
+    'KyselyTakeFirstExecutable',
+    'KyselyQueryError',
+    'KyselyTransactionError'
+  ]
+  const exportStatement = declaration.slice(declaration.lastIndexOf('export {'))
+  assertCondition(exportStatement.length > 0, 'Declaration has no export statement')
+  for (const name of publicNames) {
+    assertCondition(new RegExp(`\\b${name}\\b`).test(exportStatement), `Declaration misses ${name}`)
+  }
+  for (const forbidden of [
+    'fromKyselyPromise',
+    'query-options',
+    'transaction-outcome',
+    'better-effect-kysely/src/',
+    'kysely/src/',
+    'node_modules'
+  ]) {
+    assertCondition(!declaration.includes(forbidden), `Declaration exposes ${forbidden}`)
+  }
+  assertCondition(!/\bany\b/.test(exportStatement), 'Public export statement exposes any')
+  const anyLines = declaration.split(/\r?\n/).filter((line) => /\bany\b/.test(line))
+  assertCondition(
+    anyLines.every(
+      (line) =>
+        line.includes('Execute any') ||
+        line.includes('type AnyKysely') ||
+        line.includes('type AnyTransactionProgram')
+    ),
+    'Declaration contains an unjustified any outside internal erased aliases'
+  )
+}
+
 const assertGeneratedPackage = async (): Promise<void> => {
   const sourceFiles = await collectFiles(sourceRoot)
   const generatedFiles = await collectFiles(distRoot)
@@ -454,6 +500,7 @@ await assertManifest()
 await assertRepositoryIntegration()
 assertBoundarySelfTests()
 await assertGeneratedPackage()
+await assertPublicDeclaration()
 await assertSourceMaps()
 await assertPackedArtifact()
 

@@ -396,4 +396,5 @@ The Service requirement metadata is erased. `Effect.gen` delegates Result
 control flow to `better-result`, while Service iterators resolve their instance
 from the active `ServiceRuntime`. There is no fiber, scheduler, or hidden task
 registry. Cooperative cancellation is available only when an explicit
-`AbortSignal` is supplied at the Runtime boundary.
+`AbortSignal` is supplied at the Runtime boundary. For the native Promise
+boundary used by Kysely queries, see the [Kysely integration](/docs/kysely).

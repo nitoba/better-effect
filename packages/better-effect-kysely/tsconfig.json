@@ -22,5 +22,9 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src", "tests"],
-  "exclude": ["tests/package/consumer", "tests/package/public-types"]
+  "exclude": [
+    "tests/package/consumer",
+    "tests/package/import-consumer",
+    "tests/package/public-types"
+  ]
 }

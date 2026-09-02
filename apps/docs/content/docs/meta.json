@@ -12,6 +12,7 @@
     "next",
     "hono",
     "better-auth",
+    "kysely",
     "scope",
     "resource",
     "pipelines",
