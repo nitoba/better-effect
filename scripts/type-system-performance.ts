@@ -273,7 +273,9 @@ const acquirePerformanceLock = async (): Promise<() => Promise<void>> => {
 }
 
 const ensurePackageBuild = async (packageRoot: string): Promise<void> => {
-  if (!(await Bun.file(join(packageRoot, 'dist/index.d.mts')).exists())) {
+  const hasDeclaration = await Bun.file(join(packageRoot, 'dist/index.d.mts')).exists()
+  const hasRuntime = await Bun.file(join(packageRoot, 'dist/index.mjs')).exists()
+  if (!hasDeclaration || !hasRuntime) {
     await runCommand(['bun', 'run', 'build'], packageRoot)
   }
 }
@@ -1585,6 +1587,7 @@ const prepareCleanDependencies = async (
     mqPackageRoot: needsMqDeclarations ? isolatedMqRoot : mqPackageRoot,
     cleanup: async () => {
       await rm(stagingRoot, { recursive: true, force: true })
+      await ensurePackageBuild(corePackageRoot)
     }
   }
 }
