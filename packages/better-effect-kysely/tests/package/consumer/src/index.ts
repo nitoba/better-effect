@@ -1,7 +1,13 @@
 import { Layer, Runtime, ServiceRuntime } from 'better-effect'
 import { Kysely } from 'kysely'
+import type { CompiledQuery, QueryResult } from 'kysely'
 import { KyselyEffect } from 'better-effect-kysely'
-import type { KyselyServiceInstance, KyselyServiceToken } from 'better-effect-kysely'
+import type {
+  KyselyOperation,
+  KyselyQueryError,
+  KyselyServiceInstance,
+  KyselyServiceToken
+} from 'better-effect-kysely'
 
 interface DatabaseSchema {
   users: {
@@ -18,7 +24,22 @@ expectToken(Database)
 expectInstance(Database.of(database))
 expectLayer(Database.layer(() => database))
 expectLayer(Database.succeed(database))
+const query = database.selectFrom('users').selectAll()
+const executeOperation: KyselyOperation<DatabaseSchema['users'][], KyselyQueryError> = query.$call(
+  KyselyEffect.execute
+)
+const firstOperation: KyselyOperation<DatabaseSchema['users'] | undefined, KyselyQueryError> =
+  query.$call(KyselyEffect.executeTakeFirst)
+declare const rawQuery: CompiledQuery<DatabaseSchema['users']>
+const rawOperation: KyselyOperation<
+  QueryResult<DatabaseSchema['users']>,
+  KyselyQueryError
+> = KyselyEffect.executeQuery(database, rawQuery)
+
 void KyselyEffect.service
+void executeOperation
+void firstOperation
+void rawOperation
 
 function expectToken(token: KyselyServiceToken<'@external/Database', DatabaseSchema>): void {
   void token

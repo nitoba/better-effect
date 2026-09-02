@@ -52,7 +52,7 @@ import { Result } from 'better-result'
 
 const program = Effect.fn(async function* () {
   const db = yield* Database
-  const users = yield* Result.await(db.selectFrom('users').selectAll().execute())
+  const users = yield* db.selectFrom('users').selectAll().$call(KyselyEffect.execute)
 
   return Result.ok(users)
 })
@@ -69,9 +69,48 @@ Scope lifecycle, including failed executions and shutdown diagnostics.
 ## Design boundary
 
 The integration adapts Kysely's Promise-based execution boundary without
-changing Kysely itself. Query terminal helpers using `$call(...)`, raw and
-compiled query execution, cancellation, and transactions are introduced by
-follow-up package changes.
+changing Kysely itself. Use the native `$call(...)` terminal helpers when a
+query belongs in an Effect program:
+
+- `KyselyEffect.execute` preserves the complete result of any executable query.
+- `KyselyEffect.executeWith(options)` adds Kysely's non-signal options.
+- `KyselyEffect.executeTakeFirst` preserves an optional first row.
+- `KyselyEffect.executeTakeFirstWith(options)` is its configured form.
+- `KyselyEffect.executeTakeFirstOrFail(makeError)` maps only `undefined` to a
+  caller-owned typed error; its configured form is
+  `executeTakeFirstOrFailWith(options, makeError)`.
+- `KyselyEffect.executeQuery(database, query, options?)` executes a raw or
+  compiled query and preserves the complete `QueryResult`.
+
+Each terminal is lazy, calls the native Kysely method once, preserves its
+receiver, and returns the original result reference. The terminal functions are
+members of the frozen `KyselyEffect` namespace rather than prototype methods or
+builder wrappers. Transaction helpers remain a separate follow-up change.
+
+Inside an Effect generator:
+
+```ts
+import { Effect } from 'better-effect'
+import { Result } from 'better-result'
+import { sql } from 'kysely'
+
+const program = Effect.fn(async function* () {
+  const db = yield* Database
+  const userQuery = db.selectFrom('users').selectAll()
+  const missingUser = KyselyEffect.executeTakeFirstOrFail(() => new Error('user not found'))
+  const user = yield* userQuery.$call(missingUser)
+
+  const executeWithCancellation = KyselyEffect.executeWith({
+    inflightQueryAbortStrategy: 'cancel query'
+  })
+  const users = yield* userQuery.$call(executeWithCancellation)
+
+  const rawQuery = sql<{ id: number }>`select id from users`
+  const raw = yield* KyselyEffect.executeQuery(db, rawQuery)
+
+  return Result.ok({ user, users, raw })
+})
+```
 
 There are deliberately no prototype patches, recursive Proxies, global module
 augmentations, driver choices, connection creation, or import-time database
@@ -108,8 +147,10 @@ The package exports `KyselyServiceInstance<Tag, DB>` and
 
 `KyselyOperation<A, E, R>` and `KyselyExecutionOptions` are also exported,
 with the corresponding `KyselyEffect.Operation<A, E, R>` and
-`KyselyEffect.ExecutionOptions` namespace aliases. `KyselyQueryOperation` is
-the closed union of supported query boundary names.
+`KyselyEffect.ExecutionOptions` namespace aliases. `KyselyExecutable<A>` and
+`KyselyTakeFirstExecutable<A>` describe the structural native terminals. The
+`KyselyQueryOperation` type is the closed union of supported query boundary
+names.
 
 ## License
 
