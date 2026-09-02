@@ -1166,12 +1166,13 @@ export class WorkerSupervisor implements WorkerHandle {
     }
 
     return new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(timer)
+      let cancelDeadline: (() => void) | undefined
+      const finish = (): void => {
+        cancelDeadline?.()
         signal.removeEventListener('abort', finish)
         resolve()
       }
-      const timer = setTimeout(finish, delayMs)
+      cancelDeadline = scheduleDeadline(delayMs, finish)
       signal.addEventListener('abort', finish, { once: true })
 
       if (signal.aborted) {
@@ -1723,15 +1724,17 @@ const raceStoreOperation = async <Value>(
   timeoutMs: number,
   signal?: AbortSignal
 ): Promise<ResultType<Value, unknown>> => {
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancelDeadline: (() => void) | undefined
   let onAbort: (() => void) | undefined
   const interrupted = new Promise<ResultType<Value, unknown>>((resolve) => {
     const finish = (cause: StoreOperationTimeoutError): void => {
-      if (timer !== undefined) clearTimeout(timer)
+      cancelDeadline?.()
       if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
       resolve(Result.err(cause) as ResultType<Value, unknown>)
     }
-    timer = setTimeout(() => finish(new StoreOperationTimeoutError(operation)), timeoutMs)
+    cancelDeadline = scheduleDeadline(timeoutMs, () =>
+      finish(new StoreOperationTimeoutError(operation))
+    )
     if (signal !== undefined) {
       onAbort = () => finish(new StoreOperationTimeoutError(operation))
       signal.addEventListener('abort', onAbort, { once: true })
@@ -1739,7 +1742,7 @@ const raceStoreOperation = async <Value>(
     }
   })
   const result = await Promise.race([pending, interrupted])
-  if (timer !== undefined) clearTimeout(timer)
+  cancelDeadline?.()
   if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
   return result
 }
@@ -1747,12 +1750,13 @@ const raceStoreOperation = async <Value>(
 const cancellableDelay = (delay: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     if (signal?.aborted) return resolve()
+    let cancelDeadline: (() => void) | undefined
     const done = (): void => {
-      clearTimeout(timer)
+      cancelDeadline?.()
       signal?.removeEventListener('abort', done)
       resolve()
     }
-    const timer = setTimeout(done, delay)
+    cancelDeadline = scheduleDeadline(delay, done)
     signal?.addEventListener('abort', done, { once: true })
   })
 
