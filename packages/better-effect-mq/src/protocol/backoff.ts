@@ -58,6 +58,16 @@ export const makePersistedBackoff = (
     return invalidBackoff('maxDelayMs must be greater than or equal to delayMs')
   }
 
+  if (fields.value.type === 'constant' && fields.value.incrementMs !== undefined) {
+    return invalidBackoff('incrementMs is only valid for linear backoff')
+  }
+  if (fields.value.type !== 'exponential' && fields.value.factor !== undefined) {
+    return invalidBackoff('factor is only valid for exponential backoff')
+  }
+  if (fields.value.type === 'exponential' && fields.value.incrementMs !== undefined) {
+    return invalidBackoff('incrementMs is not valid for exponential backoff')
+  }
+
   const increment =
     fields.value.incrementMs === undefined
       ? Result.ok<number | undefined>(undefined)
@@ -70,6 +80,9 @@ export const makePersistedBackoff = (
     (typeof factor !== 'number' || !Number.isFinite(factor) || factor <= 0)
   ) {
     return invalidBackoff('factor must be finite and greater than zero')
+  }
+  if (fields.value.type === 'linear' && increment.value === undefined) {
+    return invalidBackoff('linear backoff requires incrementMs')
   }
   const jitter = fields.value.jitter
   if (

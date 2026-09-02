@@ -1,3 +1,5 @@
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- canonical snapshots omit optional fields.
+
 import { Result, type Result as ResultType } from 'better-result'
 
 import { cloneJsonValue, parseJsonValue } from '../internal/json'
@@ -267,6 +269,12 @@ const makeCancellationFailure = (
     recordedAt: now
   })
 
+const ledgerSequence = (record: JobRecord): number =>
+  record.attemptSequence ??
+  (record.state === 'active'
+    ? Math.max(record.attemptsMade, record.deliveryCount - 1)
+    : Math.max(record.attemptsMade, record.deliveryCount))
+
 const makeAttempt = (
   record: JobRecord,
   command: SettleCommand,
@@ -277,13 +285,23 @@ const makeAttempt = (
   startedAt: number | undefined
 ): AttemptRecord =>
   Object.freeze({
-    attempt,
+    // attemptsMade is the current handler budget. attemptSequence is the durable
+    // ledger sequence, so an explicit admin retry cannot repeat history.
+    attempt: ledgerSequence(record) + 1,
+    attemptSequence: ledgerSequence(record) + 1,
     delivery: record.deliveryCount,
     startedAt,
     finishedAt: command.now,
     outcome,
     result: result === undefined ? undefined : cloneJsonValue(result),
-    failure
+    failure,
+    ...(outcome === 'retried' && command.outcome.type === 'retry'
+      ? {
+          retryAt: command.outcome.runAt,
+          retryDelayMs:
+            command.outcome.retryDelayMs ?? Math.max(0, command.outcome.runAt - command.now)
+        }
+      : {})
   })
 
 const settleComplete = (
@@ -309,6 +327,7 @@ const settleComplete = (
     ...record,
     state: 'completed',
     attemptsMade: attempt,
+    attemptSequence: ledgerSequence(record) + 1,
     updatedAt: command.now,
     processedAt: command.now,
     finishedAt: command.now,
@@ -360,6 +379,7 @@ const settleRetry = (
     ...record,
     state: runAt.value <= command.now ? 'waiting' : 'delayed',
     attemptsMade: attempt,
+    attemptSequence: ledgerSequence(record) + 1,
     runAt: runAt.value,
     updatedAt: command.now,
     processedAt: undefined,
@@ -396,6 +416,7 @@ const settleFail = (
     ...record,
     state: 'failed',
     attemptsMade: attempt,
+    attemptSequence: ledgerSequence(record) + 1,
     updatedAt: command.now,
     processedAt: command.now,
     finishedAt: command.now,
@@ -422,6 +443,7 @@ const settleCancelled = (
     ...record,
     state: 'cancelled',
     attemptsMade: attempt,
+    attemptSequence: ledgerSequence(record) + 1,
     updatedAt: command.now,
     processedAt: command.now,
     finishedAt: command.now,
@@ -546,6 +568,14 @@ const settle = (record: JobRecord, command: SettleCommand): TransitionResult => 
   }
 
   const cancellationRequested = prepared.value.cancellationRequestedAt !== undefined
+  if (ledgerSequence(prepared.value) >= Number.MAX_SAFE_INTEGER) {
+    return Result.err(
+      new JobDefinitionError({
+        field: 'attemptSequence',
+        message: 'cannot exceed safe integer range'
+      })
+    )
+  }
   const attempt = nextAttemptNumber(prepared.value)
 
   if (Result.isError(attempt)) {
@@ -833,8 +863,9 @@ const retry = (record: JobRecord, command: RetryCommand): TransitionResult => {
     ...prepared.value,
     state: runAt.value <= command.now ? 'waiting' : 'delayed',
     runAt: runAt.value,
-    attemptsMade:
-      prepared.value.attemptsMade >= prepared.value.attemptsMax ? 0 : prepared.value.attemptsMade,
+    // Explicit admin retry starts a fresh handler budget; attemptSequence remains
+    // the monotonic ledger sequence.
+    attemptsMade: 0,
     updatedAt: command.now,
     processedAt: undefined,
     finishedAt: undefined,

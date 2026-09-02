@@ -691,6 +691,47 @@ test('terminal jobs require explicit retry and receive a fresh attempt budget', 
   expect(retried.deliveryCount).toBe(3)
 })
 
+test('admin retry preserves a monotonic settlement ledger while resetting budget', () => {
+  const failed = unwrap(
+    reduceJob(activeJob(), {
+      type: 'settle',
+      jobId,
+      leaseToken,
+      now: 150,
+      outcome: {
+        type: 'fail',
+        failure: { kind: 'typed', message: 'temporary', retryable: true, recordedAt: 150 }
+      }
+    })
+  )
+  const redriven = unwrap(retryJob(failed.record, { type: 'retry', jobId, runAt: 200, now: 160 }))
+  const claimed = unwrap(
+    claimJob(redriven, {
+      type: 'claim',
+      jobId,
+      workerId: worker,
+      leaseToken: nextLeaseToken,
+      leaseExpiresAt: 300,
+      now: 200
+    })
+  )
+  const settled = unwrap(
+    reduceJob(claimed, {
+      type: 'settle',
+      jobId,
+      leaseToken: nextLeaseToken,
+      now: 220,
+      outcome: { type: 'complete', result: { ok: true } }
+    })
+  )
+
+  expect(failed.attempt?.attempt).toBe(1)
+  expect(redriven.attemptsMade).toBe(0)
+  expect(settled.attempt?.attempt).toBe(2)
+  expect(settled.attempt?.delivery).toBe(2)
+  expect(settled.attempt?.attemptSequence).toBe(2)
+})
+
 test('cancellation requests do not steal an active lease', () => {
   const active = activeJob()
   const requested = unwrap(

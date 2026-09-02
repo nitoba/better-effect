@@ -4,6 +4,7 @@
 // oxlint-disable anti-slop/no-unknown-returns -- Result and codec values are normalized immediately after crossing a boundary.
 // oxlint-disable anti-slop/no-chained-type-assertions -- heterogeneous handlers and store operations are erased in one module.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are localized to checked runtime boundaries.
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
 import { Runtime, ServiceRuntime } from 'better-effect'
 import { Result, UnhandledException, type Result as ResultType } from 'better-result'
@@ -96,6 +97,7 @@ type AttemptState = {
   state: 'running' | 'cancelling' | 'settling' | 'lost'
   timeoutTimer?: ReturnType<typeof setTimeout>
   timedOut?: boolean
+  failureCause?: unknown
 }
 
 type CodecOutcome =
@@ -630,9 +632,10 @@ export class WorkerSupervisor implements WorkerHandle {
         await this.releaseJob(group, attempt.job)
         return
       }
+      if (attempt.timedOut) attempt.failureCause = new JobTimeoutError(String(attempt.job.id))
       outcome = attempt.timedOut
         ? timeoutOutcome(
-            new JobTimeoutError(String(attempt.job.id)),
+            attempt.failureCause,
             this.readNow(),
             attempt.job,
             attempt.entry.definition.retryPolicy?.type !== 'never',
@@ -646,6 +649,7 @@ export class WorkerSupervisor implements WorkerHandle {
         return
       }
       this.report(cause)
+      attempt.failureCause = cause
       outcome =
         attempt.state === 'cancelling'
           ? { type: 'cancelled' }
@@ -715,9 +719,11 @@ export class WorkerSupervisor implements WorkerHandle {
 
     if (Result.isError(result)) {
       if (result.error instanceof DecodeOutcome) {
+        attempt.failureCause = result.error.cause
         return decodeOutcome(result.error.cause, recordedAt)
       }
 
+      attempt.failureCause = result.error
       return typedFailureOutcome(
         definition,
         result.error,
@@ -762,34 +768,47 @@ export class WorkerSupervisor implements WorkerHandle {
       // A lost ACK is not a second settlement; the store's idempotent
       // acknowledgment is the terminal result for this local attempt.
       return
-    } else if (result.value.status === 'applied' && outcome.type === 'fail') {
-      await this.notifyFailure(job, result.value.attempt.attempt, outcome.failure, outcome)
+    } else if (
+      result.value.status === 'applied' &&
+      (outcome.type === 'fail' || outcome.type === 'retry')
+    ) {
+      await this.notifyFailure(
+        job,
+        result.value.attempt.attempt,
+        outcome.failure,
+        outcome,
+        attempt?.failureCause
+      )
     }
   }
 
   private async notifyFailure(
     job: ActiveJobSnapshot,
     attempt: number,
-    failure: SerializedJobFailure,
-    outcome: SettlementOutcome
+    failure: SerializedJobFailure | undefined,
+    outcome: SettlementOutcome,
+    cause?: unknown
   ): Promise<void> {
+    if (failure === undefined || (outcome.type !== 'fail' && outcome.type !== 'retry')) return
     const hook = this.workerOptions.onJobFailure
     if (hook === undefined) return
-    const event: JobFailureEvent = {
+    // SAFETY: the persisted failure kind and event kind are copied from the same validated value.
+    const event = {
       job: { id: job.id, queue: job.queue, name: job.name, version: job.version },
       attempt,
       attemptsMax: job.attemptsMax,
       kind: failure.kind,
-      cause: failure.kind === 'typed' ? failure.data : failure.message,
+      cause:
+        cause === undefined ? (failure.kind === 'typed' ? failure.data : failure.message) : cause,
       failure,
-      willRetry: outcome.type === 'retry'
-    }
-    if (outcome.type === 'retry') {
-      Object.assign(event, {
-        retryAt: outcome.runAt,
-        retryDelayMs: outcome.runAt - failure.recordedAt
-      })
-    }
+      willRetry: outcome.type === 'retry',
+      ...(outcome.type === 'retry'
+        ? {
+            retryAt: outcome.runAt,
+            retryDelayMs: outcome.retryDelayMs ?? Math.max(0, outcome.runAt - failure.recordedAt)
+          }
+        : {})
+    } as JobFailureEvent
     try {
       await hook(event)
     } catch (cause) {
@@ -1370,10 +1389,13 @@ const typedFailureOutcome = async (
   if (!decision.retry) return { type: 'fail', failure: failureEnvelope }
   const delay =
     decision.delayMs ??
-    (policy?.type === 'fixed' || policy?.type === 'linear' || policy?.type === 'exponential'
-      ? Retry.delay(policy.backoff, job.attemptsMade + 1, random())
-      : 0)
-  return { type: 'retry', runAt: recordedAt + delay, failure: failureEnvelope }
+    (job.backoff === undefined ? 0 : Retry.delay(job.backoff, job.attemptsMade + 1, random()))
+  return {
+    type: 'retry',
+    runAt: safeRunAt(recordedAt, delay),
+    retryDelayMs: delay,
+    failure: failureEnvelope
+  }
 }
 
 const decodeOutcome = (cause: unknown, recordedAt: number): SettlementOutcome => ({
@@ -1408,8 +1430,16 @@ const retryOrFail = (
   if (!retryable || job.attemptsMade + 1 >= job.attemptsMax) return { type: 'fail', failure }
   const delay =
     job.backoff === undefined ? 0 : Retry.delay(job.backoff, job.attemptsMade + 1, random())
-  return { type: 'retry', runAt: Math.min(Number.MAX_SAFE_INTEGER, recordedAt + delay), failure }
+  return {
+    type: 'retry',
+    runAt: safeRunAt(recordedAt, delay),
+    retryDelayMs: delay,
+    failure
+  }
 }
+
+const safeRunAt = (recordedAt: number, delay: number): number =>
+  recordedAt >= Number.MAX_SAFE_INTEGER - delay ? Number.MAX_SAFE_INTEGER : recordedAt + delay
 
 const defectOutcome = (
   message: string,

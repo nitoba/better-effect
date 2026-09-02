@@ -65,17 +65,23 @@ export interface WorkerAwaitIdleOptions {
 /** Runtime failures observed by the supervisor without stopping other groups. */
 export type WorkerErrorHandler = (cause: unknown) => void | PromiseLike<void>
 
-export type JobFailureEvent = {
+type JobFailureEventBase = {
   readonly job: Pick<JobRecord, 'id' | 'queue' | 'name' | 'version'>
   readonly attempt: number
   readonly attemptsMax: number
-  readonly kind: SerializedJobFailure['kind']
   readonly cause: unknown
-  readonly failure: SerializedJobFailure
   readonly willRetry: boolean
   readonly retryAt?: number
   readonly retryDelayMs?: number
 }
+
+/** Failure hook payload; `kind` narrows the persisted failure and event branch. */
+export type JobFailureEvent = {
+  [Kind in SerializedJobFailure['kind']]: JobFailureEventBase & {
+    readonly kind: Kind
+    readonly failure: SerializedJobFailure & { readonly kind: Kind }
+  }
+}[SerializedJobFailure['kind']]
 export type JobFailureHandler = (event: JobFailureEvent) => void | PromiseLike<void>
 
 /** Options shared by the Worker start and use entrypoints. */

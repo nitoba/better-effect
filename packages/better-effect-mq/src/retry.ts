@@ -1,6 +1,7 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- Retry validates public configuration at its boundary.
 // oxlint-disable anti-slop/no-unknown-parameters -- policy factories accept untrusted JavaScript options.
 // oxlint-disable anti-slop/no-known-value-widening -- callback decisions are normalized at the boundary.
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- canonical snapshots omit optional fields.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts follow explicit runtime checks.
 
 import { Result, type Result as ResultType } from 'better-result'
@@ -34,6 +35,25 @@ export type RetryPolicy =
 const invalid = (message: string): never => {
   throw new JobDefinitionError({ field: 'retry', message })
 }
+
+const backoffFields = [
+  'type',
+  'delayMs',
+  'initialDelayMs',
+  'incrementMs',
+  'maxDelayMs',
+  'factor',
+  'jitter'
+] as const
+
+const typeFields = (type: unknown, hasPolicyBackoff: boolean): readonly string[] =>
+  type === 'never'
+    ? ['type']
+    : type === 'custom'
+      ? ['type', 'maxAttempts', 'decide']
+      : hasPolicyBackoff && (type === 'fixed' || type === 'linear' || type === 'exponential')
+        ? ['type', 'backoff', 'maxAttempts']
+        : backoffFields
 
 const integer = (value: unknown, field: string, minimum = 0): number => {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
@@ -156,33 +176,76 @@ export const normalizeRetryPolicy = (
   value: unknown
 ): ResultType<RetryPolicy | undefined, JobDefinitionError> => {
   if (value === undefined) return Result.ok(undefined)
-  if (typeof value !== 'object' || value === null)
+  if (typeof value !== 'object' || value === null) {
     return Result.err(
       new JobDefinitionError({
         field: 'defaults.backoff',
         message: 'must be a Retry policy or persisted backoff'
       })
     )
-  const candidate = value as {
-    readonly type?: unknown
-    readonly backoff?: unknown
-    readonly maxAttempts?: unknown
-    readonly decide?: unknown
   }
   try {
-    if (candidate.type === 'never') return Result.ok(Retry.never())
-    if (candidate.type === 'custom') {
-      const customOptions: { decide: RetryDecide; maxAttempts?: number } = {
-        decide: candidate.decide as RetryDecide
-      }
-      if (candidate.maxAttempts !== undefined)
-        customOptions.maxAttempts = candidate.maxAttempts as number
-      return Result.ok(Retry.custom(customOptions))
+    const candidate = value as {
+      readonly type?: unknown
+      readonly backoff?: unknown
+      readonly maxAttempts?: unknown
+      readonly decide?: unknown
     }
-    if (candidate.backoff !== undefined) return Result.ok(value as RetryPolicy)
-    if (candidate.type === 'constant') return Result.ok(staticPolicy('constant', value as never))
-    if (candidate.type === 'linear' || candidate.type === 'exponential')
-      return Result.ok(staticPolicy(candidate.type, value as never))
+    const type = candidate.type
+    const hasPolicyBackoff = Object.prototype.hasOwnProperty.call(value, 'backoff')
+    const allowed = typeFields(type, hasPolicyBackoff)
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || !allowed.includes(key))
+        invalid('retry policy contains unsupported fields')
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (descriptor === undefined || !('value' in descriptor))
+        invalid('retry policy contains an accessor field')
+    }
+    if (type === 'never') {
+      if (
+        candidate.backoff !== undefined ||
+        candidate.maxAttempts !== undefined ||
+        candidate.decide !== undefined
+      )
+        invalid('never cannot contain retry options')
+      return Result.ok(Retry.never())
+    }
+    if (type === 'custom') {
+      if (candidate.backoff !== undefined) invalid('custom cannot contain a backoff')
+      const maxAttempts = attempts(candidate.maxAttempts)
+      return Result.ok(
+        maxAttempts === undefined
+          ? Retry.custom({ decide: candidate.decide as RetryDecide })
+          : Retry.custom({ decide: candidate.decide as RetryDecide, maxAttempts })
+      )
+    }
+    if (hasPolicyBackoff && (type === 'fixed' || type === 'linear' || type === 'exponential')) {
+      const backoff = makePersistedBackoff(candidate.backoff)
+      if (Result.isError(backoff)) return Result.err(backoff.error)
+      if (backoff.value === undefined) invalid(`${type} requires a backoff`)
+      if (
+        (type === 'fixed' && backoff.value.type !== 'constant') ||
+        (type !== 'fixed' && backoff.value.type !== type)
+      )
+        invalid('policy type and backoff type must agree')
+      const maxAttempts = attempts(candidate.maxAttempts)
+      return Result.ok(
+        Object.freeze({
+          type,
+          backoff: backoff.value,
+          ...(maxAttempts === undefined ? {} : { maxAttempts })
+        }) as RetryPolicy
+      )
+    }
+    // Legacy persisted backoffs are canonicalized into a policy snapshot.
+    const backoff = makePersistedBackoff(value)
+    if (Result.isError(backoff)) return Result.err(backoff.error)
+    return Result.ok(
+      Object.freeze({
+        type: backoff.value.type === 'constant' ? 'fixed' : backoff.value.type,
+        backoff: backoff.value
+      }) as RetryPolicy
+    )
   } catch (error) {
     return Result.err(
       error instanceof JobDefinitionError
@@ -190,9 +253,6 @@ export const normalizeRetryPolicy = (
         : new JobDefinitionError({ field: 'defaults.backoff', message: 'invalid retry policy' })
     )
   }
-  return Result.err(
-    new JobDefinitionError({ field: 'defaults.backoff', message: 'unsupported retry policy' })
-  )
 }
 
 export type PersistedRetryPolicy = Exclude<

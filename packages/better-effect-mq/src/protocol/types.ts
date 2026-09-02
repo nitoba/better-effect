@@ -67,6 +67,9 @@ export interface JobRecord {
   readonly orderingSequence: number
   readonly attemptsMax: number
   readonly attemptsMade: number
+  /** Monotonic count of handler settlements, independent of the current retry budget. */
+  /** Optional on legacy snapshots; validators derive it from deliveryCount. */
+  readonly attemptSequence?: number
   readonly deliveryCount: number
   readonly stalledCount: number
   readonly backoff: PersistedBackoff | undefined
@@ -85,13 +88,19 @@ export interface JobRecord {
 }
 
 export interface AttemptRecord {
+  /** Handler-attempt number for this delivery; unlike attemptsMade this remains a monotonic ledger number. */
   readonly attempt: number
+  /** Present on new entries when the monotonic ledger differs from delivery. */
+  readonly attemptSequence?: number
   readonly delivery: number
   readonly startedAt: number | undefined
   readonly finishedAt: number
   readonly outcome: AttemptOutcome
   readonly result: JsonValue | undefined
   readonly failure: SerializedJobFailure | undefined
+  /** Exact retry schedule for retried entries. Optional for legacy records. */
+  readonly retryAt?: number
+  readonly retryDelayMs?: number
 }
 
 export interface CompleteOutcome {
@@ -102,6 +111,8 @@ export interface CompleteOutcome {
 export interface RetryOutcome {
   readonly type: 'retry'
   readonly runAt: number
+  /** Delay selected before settlement; retained so the ledger reports the exact schedule. */
+  readonly retryDelayMs?: number
   readonly failure?: SerializedJobFailure
 }
 

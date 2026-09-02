@@ -13,6 +13,9 @@ describe('Retry', () => {
     const policy = Retry.exponential({ initialDelayMs: 10, factor: 2, maxDelayMs: 25, jitter: 0.2 })
     expect(Retry.delay(policy.backoff, 3, 0)).toBe(25)
     expect(Retry.delay(policy.backoff, 3, 1)).toBe(25)
+    const jittered = Retry.linear({ initialDelayMs: 100, incrementMs: 0, jitter: 0.2 })
+    expect(Retry.delay(jittered.backoff, 1, 0)).toBe(80)
+    expect(Retry.delay(jittered.backoff, 1, 1)).toBe(120)
     expect(
       Retry.delay({ type: 'exponential', delayMs: Number.MAX_SAFE_INTEGER, factor: 2 }, 3)
     ).toBe(Number.MAX_SAFE_INTEGER)
