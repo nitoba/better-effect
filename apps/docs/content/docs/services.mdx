@@ -200,8 +200,72 @@ await runtime.dispose()
 ```
 
 The entrypoint also includes `Random`/`RandomSeeded`, `Logger`/`LoggerTest`,
-`CurrentRequest`, and the compatible `CurrentAbortSignal` bridge. Importing it
-never installs a hidden global provider.
+`CurrentRequest`, the compatible `CurrentAbortSignal` bridge, and the
+schema-aware `Config` Service. Importing it never installs a hidden global
+provider.
+
+### Schema-aware configuration
+
+`Config.withSchema(schema)` creates a Service token whose `get` method is typed
+from the schema's decoded output. Its Layer validates the source during
+acquisition, so each selected value keeps the type declared by the schema:
+
+```ts
+import { Result } from 'better-result'
+import { Effect, Runtime } from 'better-effect'
+import { Config } from 'better-effect/standard-services'
+
+const EnvSchema = {
+  '~standard': {
+    version: 1,
+    vendor: 'application',
+    types: {} as {
+      input: {
+        readonly PORT?: string
+        readonly APP_NAME?: string
+      }
+      output: {
+        readonly port: number
+        readonly name: string
+      }
+    },
+    validate: (raw: unknown) => {
+      const env = raw as Record<string, string | undefined>
+      const port = Number(env.PORT)
+
+      return Number.isInteger(port) && env.APP_NAME !== undefined
+        ? { value: { port, name: env.APP_NAME } }
+        : { issues: [{ message: 'PORT and APP_NAME are required' }] }
+    }
+  }
+}
+
+const AppConfig = Config.withSchema(EnvSchema)
+const AppConfigLive = AppConfig.layerFromEnv({
+  envSource: { PORT: '3000', APP_NAME: 'api' }
+})
+const runtime = await Runtime.make(AppConfigLive)
+
+const result = await runtime.run(
+  Effect.fn(async function* () {
+    const config = yield* AppConfig
+
+    const port = config.get('port') // number
+    const name = config.get('name') // string
+    // config.get('PORT') // TypeScript error: not a decoded output key
+
+    return Result.ok({ port, name })
+  })
+)
+
+await runtime.dispose()
+```
+
+The returned values are the schema output, not raw environment strings. An
+optional output property also remains optional in the return type. Use
+`Config.fromEnv({ schema })` when the complete decoded object is preferable, or
+`Config.schema(schema)` with `Config.layer(...)` when multiple descriptors need
+to share an explicitly replaceable raw source.
 
 ### Cancellable sleeps and deterministic time
 

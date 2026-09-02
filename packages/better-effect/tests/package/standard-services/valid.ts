@@ -1,4 +1,5 @@
-import type { ServiceContract } from 'better-effect'
+import { Result, type StandardSchemaV1 } from 'better-result'
+import { Effect, type ServiceContract } from 'better-effect'
 
 import {
   Clock,
@@ -78,3 +79,32 @@ export type IdGeneratorContract = Expect<
 export type IdGeneratorLayer = Expect<
   Equal<typeof IdGeneratorTestLayer extends object ? true : false, true>
 >
+
+type PackageConfigSchemaTypes = {
+  input: { readonly PORT?: string }
+  output: { readonly port: number }
+}
+
+const packageConfigSchema = {
+  '~standard': {
+    version: 1,
+    vendor: 'better-effect-package-config-test',
+    // SAFETY: Standard Schema uses this declaration-only carrier for exact input/output inference.
+    types: {} as PackageConfigSchemaTypes,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The fixture models a Standard Schema boundary.
+    validate: (_value: unknown): StandardSchemaV1.Result<{ readonly port: number }> => ({
+      value: { port: 3000 }
+    })
+  }
+} satisfies StandardSchemaV1<PackageConfigSchemaTypes['input'], PackageConfigSchemaTypes['output']>
+
+const PackageConfig = Config.withSchema(packageConfigSchema)
+const packageConfigProgram = Effect.fn(async function* () {
+  const config = yield* PackageConfig
+  const port = config.get('port')
+  // @ts-expect-error Config.get only accepts decoded schema output keys.
+  config.get('PORT')
+  return Result.ok(port)
+})
+
+export type PackageConfigPort = Expect<Equal<Effect.Success<typeof packageConfigProgram>, number>>
