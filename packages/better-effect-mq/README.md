@@ -668,6 +668,58 @@ The driver uses the same ordering, fencing, settlement, ledger, admin,
 listing, cursor, and wake behavior as the storage-neutral contract, but makes
 no persistence or cross-instance visibility guarantees.
 
+## TestJobStore utility
+
+`better-effect-mq/testing` also provides `TestJobStore`, a small harness that
+keeps one `MemoryJobStore` instance together with a controllable clock, ID
+source, Layer, and `RecordedJobObserver`. Its inspection helpers use the public
+store contract and the exact Job codec; they never mutate private store state.
+
+```ts
+import { Effect } from 'better-effect'
+import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
+import { TestRuntime } from 'better-effect/testing'
+import { Result } from 'better-result'
+import { Codec, Queue } from 'better-effect-mq'
+import { TestJobStore } from 'better-effect-mq/testing'
+
+const SendEmail = Queue.define('emails').job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string }>()
+})
+const testStore = TestJobStore.make({
+  clock: new ClockTest(Date.UTC(2026, 0, 1)),
+  ids: IdGeneratorTest.from((index) => `job-${index + 1}`)
+})
+const observedSendEmail = testStore.observe(SendEmail)
+const runtime = await TestRuntime.make(testStore.layer, {
+  clock: testStore.clock,
+  idGenerator: testStore.idGenerator
+})
+
+const jobId = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const id = yield* observedSendEmail.enqueue({ to: 'ada@example.test' })
+    return Result.ok(id)
+  })
+)
+if (Result.isError(jobId)) throw jobId.error
+
+const records = await testStore.enqueued(SendEmail)
+const payloads = await testStore.enqueuedPayloads(SendEmail)
+const attempts = await testStore.attempts(jobId.value)
+void records
+void payloads
+void attempts
+await runtime.dispose()
+```
+
+`TestJobStore.makeFor(namedStore, options)` creates the same harness for a named
+`JobStore` token. `claim`, `settle`, and `release` accept the explicit public
+lease/token requests, so tests can exercise fencing and attempt-ledger
+transitions without a fake reducer. Use the real `Worker` for worker scenarios;
+the harness does not implement a second supervisor.
+
 ## Runner-agnostic JobStore conformance
 
 The `better-effect-mq/testing` entrypoint publishes stable JobStore scenarios,

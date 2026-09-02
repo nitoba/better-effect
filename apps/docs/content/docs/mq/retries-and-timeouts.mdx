@@ -1,0 +1,45 @@
+---
+title: Retries and timeouts
+description: Configure durable backoff and cooperative attempt limits.
+---
+
+`Retry.never`, `Retry.fixed`, `Retry.linear` and `Retry.exponential` produce
+validated callback-free policy data. The policy is persisted with the Job;
+`Retry.custom` remains process-local and is evaluated only by the Worker.
+
+```ts
+import { Codec, Queue, Retry } from 'better-effect-mq'
+
+const Jobs = Queue.define('billing')
+const ChargeCard = Jobs.job('charge-card', {
+  version: 1,
+  payload: Codec.json<{ readonly paymentId: string }>(),
+  result: Codec.void,
+  failure: Codec.json<{ readonly code: string }>(),
+  defaults: {
+    attempts: 4,
+    backoff: Retry.exponential({
+      initialDelayMs: 100,
+      factor: 2,
+      maxDelayMs: 5_000,
+      maxAttempts: 4
+    }),
+    timeoutMs: 30_000
+  },
+  retryable: ({ code }) => code !== 'card-blocked'
+})
+```
+
+`attempts` includes the first delivery. A typed `Result.err` is retryable only
+when the Job policy says so; `Job.unrecoverable(value)` marks an object failure
+as terminal. Defects retry by default and can be disabled with
+`retryDefects: false`. Decode and encode failures are terminal because the
+Worker cannot safely invoke the handler or persist its result.
+
+Timeouts abort the attempt cooperatively with `JobTimeoutError`. The Worker
+checks the deadline at the settlement submission gate, but a Promise that
+ignores its signal may continue running outside the supervisor. External APIs
+must use their own timeout and idempotency controls.
+
+Retry and failure data are bounded JSON-safe DTOs. Causes, stacks, arbitrary
+exceptions and sensitive payloads do not become persisted failure fields.

@@ -10,9 +10,12 @@ import {
   protocolVersion
 } from 'better-effect-mq'
 import { Effect, Layer, Runtime } from 'better-effect'
+import { TestRuntime } from 'better-effect/testing'
+import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
+import { TestJobStore } from 'better-effect-mq/testing'
 import packageJson from 'better-effect-mq/package.json' with { type: 'json' }
 
 if (Object.keys(core).length === 0 || protocolVersion !== 1) {
@@ -42,6 +45,25 @@ if (registry.lookup(job.identity).status !== 'ok') {
 }
 
 const store = MemoryJobStore.make()
+const testStore = TestJobStore.make({
+  clock: new ClockTest(1_700_000_000_000),
+  ids: IdGeneratorTest.from((index) => `test-${index}`)
+})
+const testRuntime = await TestRuntime.make(testStore.layer, {
+  clock: testStore.clock,
+  idGenerator: testStore.idGenerator
+})
+const testEnqueued = testStore.store.enqueue({
+  id: JobId.make('testing-job').unwrap(),
+  job: workerJob.identity,
+  payload: { value: 'testing' },
+  runAt: 1_700_000_000_000,
+  attemptsMax: 1,
+  now: 1_700_000_000_000
+})
+if (testEnqueued.status !== 'ok' || (await testStore.enqueued(workerJob)).length !== 1) {
+  throw new Error('the packed TestJobStore did not expose the public store harness')
+}
 const workerRuntime = await Runtime.make(Layer.succeed(JobStore, JobStore.of(store)))
 const now = 1_700_000_000_000
 const jobs = []
@@ -195,6 +217,7 @@ try {
   await firstStop
   await worker[Symbol.asyncDispose]()
   await workerRuntime.dispose()
+  await testRuntime.dispose()
 }
 
 if (!stopWasIdempotent) {

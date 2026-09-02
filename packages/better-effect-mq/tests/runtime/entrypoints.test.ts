@@ -92,13 +92,15 @@ test('the core entrypoint exposes only the durable protocol surface', () => {
   expect(core.protocolVersion).toBe(1)
 })
 
-test('the testing entrypoint exposes only the runner-agnostic factory and error', () => {
+test('the testing entrypoint exposes only runner-agnostic testing utilities', () => {
   expect(Object.keys(testing).sort()).toEqual([
     'JobStoreConformanceError',
     'RecordedJobObserver',
+    'TestJobStore',
     'jobStoreContract'
   ])
   expect(testing.jobStoreContract).toBeDefined()
   expect(testing.RecordedJobObserver).toBeDefined()
+  expect(testing.TestJobStore).toBeDefined()
   expect(testing.JobStoreConformanceError.name).toBe('JobStoreConformanceError')
 })

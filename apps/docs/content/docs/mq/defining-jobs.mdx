@@ -1,0 +1,51 @@
+---
+title: Defining Jobs
+description: Declare immutable queue identities, codecs and payload versions.
+---
+
+A queue is an inert namespace. A Job identity is the literal
+`queue + name + version` tuple; JavaScript function names are never used for
+persistence or routing. Defining a Job does not resolve a Service, open a
+connection or register a Worker.
+
+```ts
+import { Codec, Queue, Retry } from 'better-effect-mq'
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string; readonly messageId: string }>(),
+  result: Codec.void,
+  failure: Codec.json<{ readonly code: string }>(),
+  defaults: {
+    attempts: 5,
+    backoff: Retry.exponential({
+      initialDelayMs: 1_000,
+      maxDelayMs: 60_000,
+      maxAttempts: 5
+    })
+  }
+})
+```
+
+`Codec.json`, primitive codecs and Standard Schema codecs validate at the
+persistence boundary. Payloads, results and failure values must cross that
+boundary as JSON-safe values. `Job.PayloadInput` describes the codec input;
+`Job.Payload` is the decoded value received by a handler.
+
+Keep a new Job version when a persisted payload or result contract changes:
+
+```ts
+const SendEmailV2 = Emails.job('send-email', {
+  version: 2,
+  payload: Codec.json<{ readonly recipient: string; readonly body: string }>()
+})
+```
+
+A local `JobRegistry` can accept multiple versions for a Worker claim. It is
+not a global handler registry. Version changes and upcasting are application
+policy: keep old codecs available for records that are still in flight, and
+remove a version only after its persisted records are retired.
+
+Metadata is bounded string data. Do not put connections, requests, live
+`Error` objects, lease tokens or arbitrary causes in a Job record.

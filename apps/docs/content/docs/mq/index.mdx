@@ -1,0 +1,32 @@
+---
+title: better-effect-mq
+description: Storage-neutral durable jobs, workers and testing for better-effect.
+icon: ListChecks
+---
+
+`better-effect-mq` is an experimental, storage-neutral protocol for durable
+jobs. A **queue** is a namespace, a **Job** is an immutable versioned
+producer/handler identity, and a **JobStore** is the atomic persistence seam.
+A Worker runs handlers over an existing `better-effect` Runtime; it does not
+create a second runtime or choose a database.
+
+The package version and wire protocol are intentionally separate:
+`protocolVersion` is `1`, while the package is still `0.x`. Read the guide
+that matches the operation you are implementing:
+
+- [Introduction](./introduction) — protocol boundaries and the complete overview.
+- [Defining Jobs](./defining-jobs) — queue, identity, codecs and versions.
+- [Enqueueing](./enqueueing) — producer programs, admin operations and idempotency.
+- [Workers](./workers) — handler inference and the Worker lifecycle.
+- [Retries and timeouts](./retries-and-timeouts) — durable backoff and cooperative limits.
+- [Cancellation and shutdown](./cancellation-and-shutdown) — AbortSignal and graceful ownership.
+- [Idempotency and delivery](./idempotency-and-delivery) — at-least-once processing.
+- [Stores and named stores](./stores-and-named-stores) — adapters and bindings.
+- [Testing](./testing) — `TestJobStore`, real Workers and deterministic clocks.
+- [Writing a driver](./writing-a-driver) — the public JobStore contract.
+- [Operations and observability](./operations-and-observability) — polling, events and production checks.
+
+The public package surface is exported from `better-effect-mq`; runner-neutral
+helpers are under `better-effect-mq/testing`. The package uses only
+`better-effect` and `better-result` as its core foundations and contains no
+SQL, Redis or other driver.
