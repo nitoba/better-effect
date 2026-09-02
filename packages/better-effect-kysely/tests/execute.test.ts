@@ -350,6 +350,26 @@ describe('Kysely query terminals', () => {
     }
   })
 
+  test('executeQuery does not misclassify a structural Compilable with a raw marker', async () => {
+    type Row = { id: number }
+    type DatabaseSchema = { users: Row }
+    const query: Compilable<Row> & { readonly isRawBuilder: true } = {
+      isRawBuilder: true,
+      compile: () => {
+        throw new Error('integration must not compile')
+      }
+    }
+    const queryResult: QueryResult<Row> = { rows: [{ id: 3 }] }
+    const database = toKysely<DatabaseSchema>(new NativeCompilableDatabase(query, queryResult))
+
+    const result = await runOperation(KyselyEffect.executeQuery(database, query))
+
+    expect(Result.isOk(result)).toBe(true)
+    if (Result.isOk(result)) {
+      expect(result.value).toBe(queryResult)
+    }
+  })
+
   test('executeQuery normalizes a synchronous native throw as KyselyQueryError', async () => {
     const cause = new Error('query failed synchronously')
     const query = CompiledQuery.raw('select 1')

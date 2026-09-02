@@ -16,6 +16,12 @@ bun add better-effect-kysely better-effect better-result kysely
 Drivers such as `better-sqlite3`, `pg`, `mysql2`, or PGlite remain explicit
 application choices. They are not bundled or required by this package.
 
+The v0.1 integration matrix exercises Bun's SQLite adapter and PGlite. This
+proves the bridge delegates to Kysely's public dialect boundary; it does not
+claim complete compatibility with the `pg` driver solely because PGlite is
+PostgreSQL-compatible. PostgreSQL, MySQL, and SQLite Kysely types are also
+checked without opening external connections.
+
 ## Service and ownership
 
 Declare a token for one database schema and choose ownership explicitly:

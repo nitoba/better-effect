@@ -13,3 +13,5 @@
   raw or compiled query execution.
 - Add a lazy Kysely transaction bridge that rolls back typed Result failures,
   preserves defects and cancellation reasons, and forwards native transaction settings.
+- Validate the bridge against Bun SQLite and in-process PostgreSQL via PGlite,
+  with type-only coverage for PostgreSQL, MySQL, and SQLite dialects.

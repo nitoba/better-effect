@@ -1,4 +1,5 @@
 import { Effect, Layer } from 'better-effect'
+import { sql } from 'kysely'
 import type { CompiledQuery, Kysely, QueryResult, Transaction } from 'kysely'
 import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from 'better-effect-kysely'
 import { Result } from 'better-result'
@@ -59,6 +60,12 @@ const firstOrFailOperation = query.$call(
 )
 declare const compiledQuery: CompiledQuery<UserTable>
 const rawOperation = KyselyEffect.executeQuery(database, compiledQuery)
+const rawBuilderOperation = KyselyEffect.executeQuery(
+  database,
+  sql<{ value: number }>`select 1 as value`
+)
+declare const nativeTransaction: Transaction<DatabaseSchema>
+const transactionRawOperation = KyselyEffect.executeQuery(nativeTransaction, compiledQuery)
 type _Execute = Assert<Equal<typeof executeOperation, KyselyOperation<Rows, KyselyQueryError>>>
 type _ExecuteWith = Assert<
   Equal<typeof executeWithOperation, KyselyOperation<Rows, KyselyQueryError>>
@@ -71,6 +78,15 @@ type _FirstOrFail = Assert<
 >
 type _Raw = Assert<
   Equal<typeof rawOperation, KyselyOperation<QueryResult<UserTable>, KyselyQueryError>>
+>
+type _RawBuilder = Assert<
+  Equal<
+    typeof rawBuilderOperation,
+    KyselyOperation<QueryResult<{ value: number }>, KyselyQueryError>
+  >
+>
+type _TransactionRaw = Assert<
+  Equal<typeof transactionRawOperation, KyselyOperation<QueryResult<UserTable>, KyselyQueryError>>
 >
 const assertTransaction = (transaction: Transaction<DatabaseSchema>): void => {
   void transaction
@@ -152,3 +168,4 @@ type _LiteralTag = Assert<Equal<typeof SameNamedToken.serviceTag, '@consumer/Dat
 void database
 void query
 void SameNamedToken
+void transactionRawOperation
