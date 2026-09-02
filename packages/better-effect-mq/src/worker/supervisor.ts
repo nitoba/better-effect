@@ -7,7 +7,7 @@
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
 import { Runtime, ServiceRuntime } from 'better-effect'
-import { Result, UnhandledException, type Result as ResultType } from 'better-result'
+import { Result, type Result as ResultType } from 'better-result'
 
 import {
   isUnrecoverableFailure,
@@ -683,7 +683,6 @@ export class WorkerSupervisor implements WorkerHandle {
                 this.workerOptions.random
               )
             : defectOutcome(
-                safeCauseMessage(cause),
                 this.readNow(),
                 this.workerOptions.retryDefects &&
                   attempt.entry.definition.retryPolicy?.type !== 'never',
@@ -744,7 +743,8 @@ export class WorkerSupervisor implements WorkerHandle {
     const recordedAt = this.readNow()
 
     if (!isResultLike(result)) {
-      return failOutcome('Handler did not return a Result', recordedAt)
+      attempt.failureCause = result
+      return failOutcome(recordedAt)
     }
 
     if (Result.isError(result)) {
@@ -1411,13 +1411,13 @@ const completeOutcome = async (
     if (value === undefined) return { type: 'complete' }
     const cause = new Error('Result codec is not configured')
     preserveCause(cause)
-    return encodeFailureOutcome(safeCauseMessage(cause), recordedAt, cause)
+    return encodeFailureOutcome('Job result could not be encoded', recordedAt)
   }
 
   const encoded = await encodeCodec(definition.result, value)
   if (encoded.ok) return { type: 'complete', result: encoded.value }
   preserveCause(encoded.cause)
-  return encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt, encoded.cause)
+  return encodeFailureOutcome('Job result could not be encoded', recordedAt)
 }
 
 const typedFailureOutcome = async (
@@ -1429,14 +1429,14 @@ const typedFailureOutcome = async (
   preserveCause: (cause: unknown) => void
 ): Promise<SettlementOutcome> => {
   if (definition.failure === undefined) {
-    return failOutcome('Failure codec is not configured', recordedAt)
+    return failOutcome(recordedAt)
   }
 
   const encoded = await encodeCodec(definition.failure, failure)
 
   if (!encoded.ok) {
     preserveCause(encoded.cause)
-    return encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt, encoded.cause)
+    return encodeFailureOutcome('Job failure could not be encoded', recordedAt)
   }
 
   const retryableResult = runRetryable(definition, failure as JobFailure<typeof definition>)
@@ -1473,23 +1473,23 @@ const typedFailureOutcome = async (
   }
 }
 
-const decodeOutcome = (cause: unknown, recordedAt: number): SettlementOutcome => ({
+const decodeOutcome = (_cause: unknown, recordedAt: number): SettlementOutcome => ({
   type: 'fail',
   failure: makeFailure({
     kind: 'decode',
     code: 'payload-decode',
-    message: safeCauseMessage(cause),
+    message: 'Job payload could not be decoded',
     retryable: false,
     recordedAt
   })
 })
 
-const failOutcome = (message: string, recordedAt: number): SettlementOutcome => ({
+const failOutcome = (recordedAt: number): SettlementOutcome => ({
   type: 'fail',
   failure: makeFailure({
     kind: 'defect',
     code: 'handler-defect',
-    message,
+    message: 'Job handler failed',
     retryable: false,
     recordedAt
   })
@@ -1523,14 +1523,19 @@ const safeRunAt = (recordedAt: number, delay: number): number => {
 }
 
 const defectOutcome = (
-  message: string,
   recordedAt: number,
   retryable: boolean,
   job: ActiveJobSnapshot,
   random: WorkerRandom
 ): SettlementOutcome =>
   retryOrFail(
-    makeFailure({ kind: 'defect', code: 'handler-defect', message, retryable, recordedAt }),
+    makeFailure({
+      kind: 'defect',
+      code: 'handler-defect',
+      message: 'Job handler failed',
+      retryable,
+      recordedAt
+    }),
     recordedAt,
     retryable,
     job,
@@ -1538,7 +1543,7 @@ const defectOutcome = (
   )
 
 const timeoutOutcome = (
-  cause: unknown,
+  _cause: unknown,
   recordedAt: number,
   job: ActiveJobSnapshot,
   enabled = true,
@@ -1548,7 +1553,7 @@ const timeoutOutcome = (
     makeFailure({
       kind: 'timeout',
       code: 'job-timeout',
-      message: safeCauseMessage(cause),
+      message: 'Job execution timed out',
       retryable: true,
       recordedAt
     }),
@@ -1558,11 +1563,7 @@ const timeoutOutcome = (
     random
   )
 
-const encodeFailureOutcome = (
-  message: string,
-  recordedAt: number,
-  _cause?: unknown
-): SettlementOutcome => ({
+const encodeFailureOutcome = (message: string, recordedAt: number): SettlementOutcome => ({
   type: 'fail',
   failure: makeFailure({
     kind: 'encode',
@@ -1663,14 +1664,6 @@ const encodeCodec = async (codec: CodecLike, value: unknown): Promise<CodecOutco
     return Result.isError(json) ? { ok: false, cause: json.error } : { ok: true, value: json.value }
   } catch (cause) {
     return { ok: false, cause }
-  }
-}
-
-const safeCauseMessage = (cause: unknown): string => {
-  try {
-    return new UnhandledException({ cause }).message
-  } catch {
-    return 'Unhandled exception'
   }
 }
 
