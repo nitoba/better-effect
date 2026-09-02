@@ -15,6 +15,8 @@ import {
 } from './execute-take-first'
 import type { KyselyExecutionOptions } from './options'
 import type { KyselyOperation } from './operation'
+import { transaction } from './transaction'
+import type { KyselyTransactionOptions } from './transaction-options'
 
 import type {
   KyselyService,
@@ -95,7 +97,8 @@ export const KyselyEffect = Object.freeze({
   executeTakeFirstWith,
   executeTakeFirstOrFail,
   executeTakeFirstOrFailWith,
-  executeQuery
+  executeQuery,
+  transaction
 })
 
 /** Type aliases colocated with the `KyselyEffect` namespace value. */
@@ -105,4 +108,5 @@ export declare namespace KyselyEffect {
   export type ServiceToken<Tag extends string, DB> = KyselyServiceToken<Tag, DB>
   export type Operation<A, E, R extends Service.Any = never> = KyselyOperation<A, E, R>
   export type ExecutionOptions = KyselyExecutionOptions
+  export type TransactionOptions = KyselyTransactionOptions
 }

@@ -20,3 +20,17 @@ export const loadUsers = Effect.fn(async function* () {
 
   return Result.ok(users)
 })
+
+export const loadUsersInTransaction = Effect.fn(async function* () {
+  const database = yield* Database
+
+  const users = yield* KyselyEffect.transaction(database, (transaction) =>
+    Effect.fn(async function* () {
+      const users = yield* transaction.selectFrom('users').selectAll().$call(KyselyEffect.execute)
+
+      return Result.ok(users)
+    })
+  )
+
+  return Result.ok(users)
+})

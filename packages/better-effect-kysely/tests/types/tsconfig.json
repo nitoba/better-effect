@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "files": ["foundation.types.ts", "operation.types.ts"]
+  "files": ["foundation.types.ts", "operation.types.ts", "transaction.types.ts"]
 }

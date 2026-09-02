@@ -85,7 +85,47 @@ query belongs in an Effect program:
 Each terminal is lazy, calls the native Kysely method once, preserves its
 receiver, and returns the original result reference. The terminal functions are
 members of the frozen `KyselyEffect` namespace rather than prototype methods or
-builder wrappers. Transaction helpers remain a separate follow-up change.
+builder wrappers.
+
+### Transactions
+
+`KyselyEffect.transaction` accepts a lazy `Effect.Program` factory. The factory
+runs only after Kysely has begun the transaction and receives the native
+`Transaction<DB>` instance:
+
+```ts
+const createUser = Effect.fn(async function* () {
+  const database = yield* Database
+
+  const user = yield* KyselyEffect.transaction(database, (transaction) =>
+    Effect.fn(async function* () {
+      const user = yield* transaction
+        .insertInto('users')
+        .values({ id: 1, email: 'ada@example.test' })
+        .returningAll()
+        .$call(KyselyEffect.executeTakeFirstOrFail(() => new Error('not created')))
+
+      return Result.ok(user)
+    })
+  )
+
+  return Result.ok(user)
+})
+```
+
+A successful Program result commits and returns the original value. A
+`Result.err` is translated to a private rejection while Kysely rolls back, then
+restored as the same typed error. Program defects and cancellation reasons are
+also rolled back and rethrown; native begin, commit, or rollback failures use
+`KyselyTransactionError`. Optional `KyselyTransactionOptions` forwards only
+Kysely's `isolationLevel` and `accessMode` settings.
+
+The transaction body uses `transaction` explicitly and does not replace the
+outer Database Service. It runs in the existing Runtime context, so additional
+Services remain available without a nested Runtime. Cancellation is checked
+before begin, after begin, and immediately before returning success; the small
+race between that last check and Kysely's native commit cannot be eliminated by
+Kysely's public callback API.
 
 Inside an Effect generator:
 
@@ -120,8 +160,8 @@ side effects.
 
 The package's internal Promise boundary is represented publicly by
 `KyselyOperation<A, E, R>`. Query operations use the default `R = never`; the
-third channel lets a future transaction operation retain the Services required
-by its lazy body without creating a nested Runtime.
+third channel lets a transaction operation retain the Services required by its
+lazy body without creating a nested Runtime.
 
 `KyselyExecutionOptions` exposes Kysely's
 `inflightQueryAbortStrategy` (`ignore query`, `cancel query`, or `kill session`)
@@ -147,10 +187,11 @@ The package exports `KyselyServiceInstance<Tag, DB>` and
 
 `KyselyOperation<A, E, R>` and `KyselyExecutionOptions` are also exported,
 with the corresponding `KyselyEffect.Operation<A, E, R>` and
-`KyselyEffect.ExecutionOptions` namespace aliases. `KyselyExecutable<A>` and
-`KyselyTakeFirstExecutable<A>` describe the structural native terminals. The
-`KyselyQueryOperation` type is the closed union of supported query boundary
-names.
+`KyselyEffect.ExecutionOptions` namespace aliases. `KyselyTransactionOptions`
+is exported directly and as `KyselyEffect.TransactionOptions`.
+`KyselyExecutable<A>` and `KyselyTakeFirstExecutable<A>` describe the
+structural native terminals. The `KyselyQueryOperation` type is the closed
+union of supported query boundary names.
 
 ## License
 

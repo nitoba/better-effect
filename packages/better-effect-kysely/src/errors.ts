@@ -105,7 +105,7 @@ export class KyselyTransactionError extends TaggedError(
       }
     })
 
-    if (args.bodyFailure !== undefined) {
+    if (Object.hasOwn(args, 'bodyFailure')) {
       Object.defineProperty(this, 'bodyFailure', {
         configurable: false,
         enumerable: false,

@@ -1,4 +1,5 @@
-import { Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { Effect, Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { Result } from 'better-result'
 import { Kysely } from 'kysely'
 import type { CompiledQuery, QueryResult } from 'kysely'
 import { KyselyEffect } from 'better-effect-kysely'
@@ -6,7 +7,8 @@ import type {
   KyselyOperation,
   KyselyQueryError,
   KyselyServiceInstance,
-  KyselyServiceToken
+  KyselyServiceToken,
+  KyselyTransactionError
 } from 'better-effect-kysely'
 
 interface DatabaseSchema {
@@ -35,8 +37,17 @@ const rawOperation: KyselyOperation<
   QueryResult<DatabaseSchema['users']>,
   KyselyQueryError
 > = KyselyEffect.executeQuery(database, rawQuery)
+const transactionOperation: KyselyOperation<number, KyselyTransactionError> =
+  KyselyEffect.transaction(database, (_transaction) =>
+    // oxlint-disable-next-line require-yield -- This consumer fixture checks a pure transaction Program type.
+    Effect.fn(async function* () {
+      return Result.ok(1)
+    })
+  )
 
 void KyselyEffect.service
+void KyselyEffect.transaction
+void transactionOperation
 void executeOperation
 void firstOperation
 void rawOperation

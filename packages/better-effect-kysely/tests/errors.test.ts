@@ -67,4 +67,19 @@ describe('Kysely integration errors', () => {
       name: 'KyselyTransactionError'
     })
   })
+
+  test('preserves an explicitly undefined body failure marker', () => {
+    const error = new KyselyTransactionError({
+      cause: new Error('rollback failure'),
+      bodyFailure: undefined
+    })
+
+    expect('bodyFailure' in error).toBe(true)
+    expect(error.bodyFailure).toBeUndefined()
+    expect(error.toJSON()).toEqual({
+      _tag: 'KyselyTransactionError',
+      message: 'Kysely transaction failed.',
+      name: 'KyselyTransactionError'
+    })
+  })
 })
