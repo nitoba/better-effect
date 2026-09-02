@@ -60,7 +60,7 @@ accessors are rejected.
 
 `SerializedJobFailure` has a deliberately small whitelist:
 
-- `kind`: `typed`, `defect`, `timeout`, `decode`, `stalled`, or `cancelled`;
+- `kind`: `typed`, `defect`, `encode`, `timeout`, `decode`, `stalled`, or `cancelled`;
 - optional safe `code`;
 - redacted safe `message`;
 - optional JSON-safe `data` selected by the application;

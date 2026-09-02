@@ -642,7 +642,6 @@ export class WorkerSupervisor implements WorkerHandle {
         await this.releaseJob(group, attempt.job)
         return
       }
-      if (attempt.timedOut) attempt.failureCause = new JobTimeoutError(String(attempt.job.id))
       outcome = attempt.timedOut
         ? timeoutOutcome(
             attempt.failureCause,
@@ -670,13 +669,15 @@ export class WorkerSupervisor implements WorkerHandle {
         return
       }
       this.report(cause)
-      attempt.failureCause = cause
+      // The timeout error passed to abort() is the authoritative cause. Runtime
+      // cancellation commonly rejects with a different AbortError.
+      if (!attempt.timedOut) attempt.failureCause = cause
       outcome =
         attempt.state === 'cancelling'
           ? { type: 'cancelled' }
           : attempt.timedOut
             ? timeoutOutcome(
-                cause,
+                attempt.failureCause ?? cause,
                 this.readNow(),
                 attempt.job,
                 attempt.entry.definition.retryPolicy?.type !== 'never',
@@ -743,32 +744,30 @@ export class WorkerSupervisor implements WorkerHandle {
     const recordedAt = this.readNow()
 
     if (!isResultLike(result)) {
-      attempt.failureCause = result
+      preserveAttemptCause(attempt, result)
       return failOutcome(recordedAt)
     }
 
     if (Result.isError(result)) {
       if (result.error instanceof DecodeOutcome) {
-        attempt.failureCause = result.error.cause
+        preserveAttemptCause(attempt, result.error.cause)
         return decodeOutcome(result.error.cause, recordedAt)
       }
 
-      attempt.failureCause = result.error
+      preserveAttemptCause(attempt, result.error)
       return typedFailureOutcome(
         definition,
         result.error,
         recordedAt,
         attempt.job,
         this.workerOptions.random,
-        (cause) => {
-          attempt.failureCause = cause
-        }
+        (cause) => preserveAttemptCause(attempt, cause)
       )
     }
 
-    return completeOutcome(definition, result.value, recordedAt, (cause) => {
-      attempt.failureCause = cause
-    })
+    return completeOutcome(definition, result.value, recordedAt, (cause) =>
+      preserveAttemptCause(attempt, cause)
+    )
   }
 
   private async settleJob(
@@ -796,9 +795,12 @@ export class WorkerSupervisor implements WorkerHandle {
             this.workerOptions.random
           )
         }
+        // retryDelayMs/runAt cannot reconstruct the original timestamp after
+        // safeRunAt saturates. The failure envelope retains that internal
+        // settlement sample without adding adapter-visible outcome fields.
         const settlementNow =
-          submittedOutcome.type === 'retry' && submittedOutcome.retryDelayMs !== undefined
-            ? submittedOutcome.runAt - submittedOutcome.retryDelayMs
+          submittedOutcome.type === 'retry'
+            ? (submittedOutcome.failure?.recordedAt ?? this.readNow())
             : this.readNow()
         return store.settle({
           jobId: job.id,
@@ -1483,6 +1485,10 @@ const decodeOutcome = (_cause: unknown, recordedAt: number): SettlementOutcome =
     recordedAt
   })
 })
+
+const preserveAttemptCause = (attempt: AttemptState, cause: unknown): void => {
+  if (!attempt.timedOut) attempt.failureCause = cause
+}
 
 const failOutcome = (recordedAt: number): SettlementOutcome => ({
   type: 'fail',

@@ -1665,6 +1665,7 @@ test('Worker classifies cooperative timeout and sends a nonblocking failure even
   })
   const created = await enqueueWith(store, job, { value: 1 }, { now: 50_000, timeoutMs: 1 })
   let aborted!: () => void
+  let timeoutCause: unknown
   const signalAborted = new Promise<void>((resolveAborted) => {
     aborted = resolveAborted
   })
@@ -1675,7 +1676,14 @@ test('Worker classifies cooperative timeout and sends a nonblocking failure even
       Worker.handle(job, () =>
         Effect.fn(async function* () {
           const signal = yield* CurrentAbortSignal
-          signal.addEventListener('abort', () => aborted(), { once: true })
+          signal.addEventListener(
+            'abort',
+            () => {
+              timeoutCause = signal.reason
+              aborted()
+            },
+            { once: true }
+          )
           await signalAborted
           return Result.ok(undefined)
         })
@@ -1686,6 +1694,7 @@ test('Worker classifies cooperative timeout and sends a nonblocking failure even
       expect(event.kind).toBe('timeout')
       expect(event.willRetry).toBe(false)
       expect(event.cause).toBeInstanceOf(JobTimeoutError)
+      expect(event.cause).toBe(timeoutCause)
       return hookPending
     },
     pollIntervalMs: 1

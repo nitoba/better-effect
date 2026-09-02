@@ -13,7 +13,10 @@ export const scheduleDeadline = (
   scheduleTimer: TimerScheduler = setTimeout,
   cancelTimer: TimerCanceller = clearTimeout
 ): (() => void) => {
-  const deadline = now() + delayMs
+  // Keep the duration separate from the clock sample. Adding the two can lose
+  // the duration or overflow when the clock is near MAX_SAFE_INTEGER.
+  let lastNow = now()
+  let remaining = delayMs
   let handle: TimerHandle | undefined
   let cancelled = false
 
@@ -27,7 +30,6 @@ export const scheduleDeadline = (
 
   const schedule = (): void => {
     if (cancelled) return
-    const remaining = deadline - now()
     if (remaining <= 0) {
       handle = scheduleTimer(() => {
         handle = undefined
@@ -38,6 +40,14 @@ export const scheduleDeadline = (
     handle = scheduleTimer(
       () => {
         handle = undefined
+        if (cancelled) return
+        const currentNow = now()
+        // A backwards clock must not extend the deadline. Only elapsed forward
+        // movement consumes the duration, avoiding timestamp arithmetic.
+        if (currentNow > lastNow) {
+          remaining -= currentNow - lastNow
+          lastNow = currentNow
+        }
         schedule()
       },
       Math.min(remaining, maximumTimerDelay)
