@@ -55,6 +55,18 @@ const typeFields = (type: unknown, hasPolicyBackoff: boolean): readonly string[]
         ? ['type', 'backoff', 'maxAttempts']
         : backoffFields
 
+const validateFactoryOptions = (options: unknown, allowed: readonly string[]): void => {
+  if (typeof options !== 'object' || options === null) invalid('options must be an object')
+  const objectOptions = options as object
+  for (const key of Reflect.ownKeys(objectOptions)) {
+    if (typeof key !== 'string' || !allowed.includes(key))
+      invalid('retry options contain unsupported fields')
+    const descriptor = Object.getOwnPropertyDescriptor(objectOptions, key)
+    if (descriptor === undefined || !('value' in descriptor))
+      invalid('retry options contain an accessor field')
+  }
+}
+
 const integer = (value: unknown, field: string, minimum = 0): number => {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
     return invalid(`${field} must be a finite safe integer >= ${minimum}`)
@@ -85,6 +97,14 @@ const staticPolicy = (
     readonly maxAttempts?: unknown
   }
 ): RetryPolicy => {
+  validateFactoryOptions(
+    options,
+    type === 'constant'
+      ? ['delayMs', 'maxAttempts']
+      : type === 'linear'
+        ? ['initialDelayMs', 'incrementMs', 'maxDelayMs', 'maxAttempts', 'jitter']
+        : ['initialDelayMs', 'factor', 'maxDelayMs', 'maxAttempts', 'jitter']
+  )
   const delay = integer(options.delayMs ?? options.initialDelayMs, 'delayMs')
   const maxDelayMs =
     options.maxDelayMs === undefined ? undefined : integer(options.maxDelayMs, 'maxDelayMs')
@@ -106,10 +126,11 @@ const staticPolicy = (
     factor,
     jitter: safeJitter
   }).unwrap()
+  const maxAttempts = attempts(options.maxAttempts)
   return Object.freeze({
     type: type === 'constant' ? 'fixed' : type,
     backoff: persisted,
-    maxAttempts: attempts(options.maxAttempts)
+    ...(maxAttempts === undefined ? {} : { maxAttempts })
   }) as RetryPolicy
 }
 
@@ -140,6 +161,7 @@ export const Retry = {
     readonly maxAttempts?: number
     readonly decide: RetryDecide<Failure>
   }): RetryPolicy => {
+    validateFactoryOptions(options, ['maxAttempts', 'decide'])
     if (typeof options?.decide !== 'function') invalid('decide must be callable')
     const maxAttempts = attempts(options.maxAttempts)
     const policy: { type: 'custom'; maxAttempts?: number; decide: RetryDecide<Failure> } = {

@@ -274,7 +274,7 @@ test('MemoryJobStore counts the terminal stalled recovery', async () => {
   expect(current?.stalledCount).toBe(2)
   expect(attempts).toHaveLength(2)
   expect(attempts[1]?.outcome).toBe('stalled')
-  expect(attempts[1]?.attempt).toBe(0)
+  expect(attempts[1]?.attempt).toBe(2)
 })
 
 test('MemoryJobStore counts terminal stalled cancellation in the ledger', async () => {
@@ -321,14 +321,16 @@ test('MemoryJobStore counts terminal stalled cancellation in the ledger', async 
   expect(terminalRecovery.transitions[0]?.record.attemptsMade).toBe(0)
   expect(terminalRecovery.transitions[0]?.record.deliveryCount).toBe(2)
   expect(terminalRecovery.transitions[0]?.attempt).toMatchObject({
-    attempt: 0,
+    attempt: 2,
+    attemptSequence: 2,
     delivery: 2,
     outcome: 'cancelled'
   })
   expect(current?.stalledCount).toBe(2)
   expect(attempts).toHaveLength(2)
   expect(attempts.map((attempt) => attempt.outcome)).toEqual(['stalled', 'cancelled'])
-  expect(attempts[1]?.attempt).toBe(0)
+  expect(attempts[1]?.attempt).toBe(2)
+  expect(attempts[1]?.attemptSequence).toBe(2)
   expect(attempts[1]?.delivery).toBe(2)
 })
 

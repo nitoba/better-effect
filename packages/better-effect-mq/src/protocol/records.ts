@@ -617,6 +617,15 @@ const validateAttemptRecordInternal = (
   if (outcome.value === 'retried' && retryAt.value === undefined) {
     return invalidAttempt('retryAt', 'retried entries must contain retryAt')
   }
+  if (retryAt.value !== undefined && retryDelayMs.value !== undefined) {
+    const expected =
+      finishedAt.value >= Number.MAX_SAFE_INTEGER - retryDelayMs.value
+        ? Number.MAX_SAFE_INTEGER
+        : finishedAt.value + retryDelayMs.value
+    if (retryAt.value !== expected) {
+      return invalidAttempt('retryDelayMs', 'must satisfy retryAt = finishedAt + retryDelayMs')
+    }
+  }
 
   if (attemptSequence.value === undefined && attemptNumber.value > delivery.value) {
     return invalidAttempt('attempt', 'must not exceed delivery')

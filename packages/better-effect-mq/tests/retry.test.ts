@@ -27,4 +27,20 @@ describe('Retry', () => {
     expect(Retry.never()).toEqual({ type: 'never', maxAttempts: 1 })
     expect(Object.isFrozen(Retry.fixed({ delayMs: 1 }))).toBe(true)
   })
+
+  test('rejects unsupported and accessor factory fields without undefined option keys', () => {
+    // SAFETY: these casts intentionally model untyped JavaScript callers.
+    expect(() => Retry.fixed({ delayMs: 1, extra: 42 } as never)).toThrow()
+    // SAFETY: these casts intentionally model untyped JavaScript callers.
+    expect(() => Retry.custom({ decide: () => true, extra: 42 } as never)).toThrow()
+    const fixed = Retry.fixed({ delayMs: 1 })
+    expect(Object.hasOwn(fixed, 'maxAttempts')).toBe(false)
+    const custom = Retry.custom({ decide: () => true })
+    expect(Object.hasOwn(custom, 'maxAttempts')).toBe(false)
+    const accessor = Object.defineProperty({ delayMs: 1 }, 'maxAttempts', {
+      get: () => 2
+    })
+    // SAFETY: this cast intentionally models an untyped accessor-bearing caller.
+    expect(() => Retry.fixed(accessor as never)).toThrow()
+  })
 })

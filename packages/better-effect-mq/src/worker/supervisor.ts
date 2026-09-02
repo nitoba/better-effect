@@ -98,6 +98,7 @@ type AttemptState = {
   timeoutTimer?: ReturnType<typeof setTimeout>
   timedOut?: boolean
   failureCause?: unknown
+  failureNotified?: boolean
 }
 
 type CodecOutcome =
@@ -642,6 +643,17 @@ export class WorkerSupervisor implements WorkerHandle {
             this.workerOptions.random
           )
         : await this.makeOutcome(attempt, result)
+      // Timeout is authoritative even when outcome encoding or policy work
+      // completed after the cooperative abort was requested.
+      if (attempt.timedOut) {
+        outcome = timeoutOutcome(
+          attempt.failureCause ?? new JobTimeoutError(String(attempt.job.id)),
+          this.readNow(),
+          attempt.job,
+          attempt.entry.definition.retryPolicy?.type !== 'never',
+          this.workerOptions.random
+        )
+      }
     } catch (cause) {
       if (attempt.state === 'lost') return
       if (this.shutdownAborts.has(attempt.key)) {
@@ -679,6 +691,15 @@ export class WorkerSupervisor implements WorkerHandle {
       return
     }
     if (attempt.state === 'cancelling') outcome = { type: 'cancelled' }
+    if (attempt.timedOut) {
+      outcome = timeoutOutcome(
+        attempt.failureCause ?? new JobTimeoutError(String(attempt.job.id)),
+        this.readNow(),
+        attempt.job,
+        attempt.entry.definition.retryPolicy?.type !== 'never',
+        this.workerOptions.random
+      )
+    }
     await this.settleJob(group, attempt.job, outcome, startedAt)
   }
 
@@ -745,6 +766,10 @@ export class WorkerSupervisor implements WorkerHandle {
     const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     if (attempt?.state === 'lost') return
     if (attempt !== undefined) attempt.state = 'settling'
+    const settlementNow =
+      outcome.type === 'retry' && outcome.retryDelayMs !== undefined
+        ? outcome.runAt - outcome.retryDelayMs
+        : this.readNow()
     const result = await runStoreOperation<SettlementResult>(
       this.runtime,
       group.store,
@@ -753,7 +778,7 @@ export class WorkerSupervisor implements WorkerHandle {
           jobId: job.id,
           leaseToken: job.leaseToken,
           outcome,
-          now: this.readNow(),
+          now: settlementNow,
           startedAt
         }),
       undefined,
@@ -764,19 +789,32 @@ export class WorkerSupervisor implements WorkerHandle {
 
     if (Result.isError(result)) {
       this.report(result.error)
-    } else if (result.value.status === 'already-applied') {
-      // A lost ACK is not a second settlement; the store's idempotent
-      // acknowledgment is the terminal result for this local attempt.
-      return
     } else if (
-      result.value.status === 'applied' &&
-      (outcome.type === 'fail' || outcome.type === 'retry')
+      (result.value.status === 'applied' || result.value.status === 'already-applied') &&
+      (outcome.type === 'fail' || outcome.type === 'retry') &&
+      (result.value.attempt.outcome === 'failed' || result.value.attempt.outcome === 'retried')
     ) {
-      await this.notifyFailure(
+      const persisted = result.value.attempt
+      const persistedFailure = persisted.failure ?? outcome.failure
+      if (persistedFailure === undefined) return
+      const persistedOutcome =
+        persisted.outcome === 'retried'
+          ? {
+              type: 'retry' as const,
+              runAt: persisted.retryAt ?? job.runAt,
+              ...(persisted.retryDelayMs === undefined
+                ? {}
+                : { retryDelayMs: persisted.retryDelayMs })
+            }
+          : { type: 'fail' as const, failure: persistedFailure }
+      if (result.value.status === 'already-applied' && attempt?.failureNotified) return
+      if (attempt !== undefined) attempt.failureNotified = true
+      // Hooks are advisory and must not occupy a worker slot or block stop().
+      void this.notifyFailure(
         job,
-        result.value.attempt.attempt,
-        outcome.failure,
-        outcome,
+        persisted.attempt,
+        persistedFailure,
+        persistedOutcome,
         attempt?.failureCause
       )
     }
@@ -1371,7 +1409,10 @@ const typedFailureOutcome = async (
   const predicateRetryable = !Result.isError(retryableResult) && retryableResult.value === true
   const policy = definition.retryPolicy
   const retryable =
-    !isUnrecoverableFailure(failure) && (policy?.type === 'custom' || predicateRetryable)
+    !isUnrecoverableFailure(failure) &&
+    (definition.retryable === undefined
+      ? policy?.type === 'custom' || predicateRetryable
+      : predicateRetryable)
   const allowed = retryable && policy?.type !== 'never' && job.attemptsMade + 1 < job.attemptsMax
   const failureEnvelope = makeFailure({
     kind: 'typed',
@@ -1438,8 +1479,14 @@ const retryOrFail = (
   }
 }
 
-const safeRunAt = (recordedAt: number, delay: number): number =>
-  recordedAt >= Number.MAX_SAFE_INTEGER - delay ? Number.MAX_SAFE_INTEGER : recordedAt + delay
+const safeRunAt = (recordedAt: number, delay: number): number => {
+  if (!Number.isSafeInteger(recordedAt) || !Number.isSafeInteger(delay) || delay < 0) {
+    return Number.MAX_SAFE_INTEGER
+  }
+  return recordedAt >= Number.MAX_SAFE_INTEGER - delay
+    ? Number.MAX_SAFE_INTEGER
+    : recordedAt + delay
+}
 
 const defectOutcome = (
   message: string,

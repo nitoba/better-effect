@@ -67,7 +67,7 @@ export interface JobRecord {
   readonly orderingSequence: number
   readonly attemptsMax: number
   readonly attemptsMade: number
-  /** Monotonic count of handler settlements, independent of the current retry budget. */
+  /** Monotonic ledger sequence for every recorded settlement or administrative transition. */
   /** Optional on legacy snapshots; validators derive it from deliveryCount. */
   readonly attemptSequence?: number
   readonly deliveryCount: number
@@ -88,7 +88,7 @@ export interface JobRecord {
 }
 
 export interface AttemptRecord {
-  /** Handler-attempt number for this delivery; unlike attemptsMade this remains a monotonic ledger number. */
+  /** Monotonic ledger sequence for this entry; unlike attemptsMade it includes administrative entries. */
   readonly attempt: number
   /** Present on new entries when the monotonic ledger differs from delivery. */
   readonly attemptSequence?: number

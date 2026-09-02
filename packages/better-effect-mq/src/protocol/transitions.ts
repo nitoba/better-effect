@@ -3,7 +3,11 @@
 import { Result, type Result as ResultType } from 'better-result'
 
 import { cloneJsonValue, parseJsonValue } from '../internal/json'
-import { validateOptionalTimestampValue, validateTimestampValue } from '../internal/validation'
+import {
+  validateOptionalDurationValue,
+  validateOptionalTimestampValue,
+  validateTimestampValue
+} from '../internal/validation'
 
 import { makeJobId, makeLeaseToken, makeWorkerId } from './brands'
 import type { JobId, LeaseToken } from './brands'
@@ -298,8 +302,7 @@ const makeAttempt = (
     ...(outcome === 'retried' && command.outcome.type === 'retry'
       ? {
           retryAt: command.outcome.runAt,
-          retryDelayMs:
-            command.outcome.retryDelayMs ?? Math.max(0, command.outcome.runAt - command.now)
+          retryDelayMs: command.outcome.retryDelayMs ?? command.outcome.runAt - command.now
         }
       : {})
   })
@@ -364,9 +367,20 @@ const settleRetry = (
   }
 
   const runAt = validateTimestampValue(command.outcome.runAt, 'runAt')
+  const retryDelayMs = validateOptionalDurationValue(command.outcome.retryDelayMs, 'retryDelayMs')
 
-  if (Result.isError(runAt)) {
-    return Result.err(runAt.error)
+  if (Result.isError(runAt)) return Result.err(runAt.error)
+  if (Result.isError(retryDelayMs)) return Result.err(retryDelayMs.error)
+  if (
+    retryDelayMs.value !== undefined &&
+    (runAt.value !== safeAdd(command.now, retryDelayMs.value) || runAt.value < command.now)
+  ) {
+    return Result.err(
+      new JobDefinitionError({
+        field: 'retryDelayMs',
+        message: 'must satisfy runAt = settlement now + retryDelayMs'
+      })
+    )
   }
 
   const failure = validateOutcomeFailure(command.outcome.failure)
@@ -474,6 +488,7 @@ const terminalCancelWithoutHandler = (
     ...record,
     state: 'cancelled',
     stalledCount,
+    attemptSequence: ledgerSequence(record) + 1,
     updatedAt: now,
     processedAt: now,
     finishedAt: now,
@@ -483,8 +498,9 @@ const terminalCancelWithoutHandler = (
     failure: failure.value
   }
   const attempt: AttemptRecord = Object.freeze({
-    attempt: record.attemptsMade,
-    delivery: record.deliveryCount,
+    attempt: ledgerSequence(record) + 1,
+    attemptSequence: ledgerSequence(record) + 1,
+    delivery: Math.max(1, record.deliveryCount),
     startedAt: undefined,
     finishedAt: now,
     outcome: 'cancelled',
@@ -515,6 +531,7 @@ const terminalizeStalledRecovery = (
     ...record,
     state: 'failed',
     stalledCount,
+    attemptSequence: ledgerSequence(record) + 1,
     updatedAt: now,
     processedAt: now,
     finishedAt: now,
@@ -524,8 +541,9 @@ const terminalizeStalledRecovery = (
     failure: failure.value
   }
   const attempt: AttemptRecord = Object.freeze({
-    attempt: record.attemptsMade,
-    delivery: record.deliveryCount,
+    attempt: ledgerSequence(record) + 1,
+    attemptSequence: ledgerSequence(record) + 1,
+    delivery: Math.max(1, record.deliveryCount),
     startedAt: undefined,
     finishedAt: now,
     outcome: 'stalled',
@@ -726,6 +744,7 @@ const release = (record: JobRecord, command: ReleaseCommand): TransitionResult =
     ...prepared.value,
     state: 'waiting',
     runAt: command.now,
+    attemptSequence: ledgerSequence(prepared.value) + 1,
     updatedAt: command.now,
     processedAt: undefined,
     finishedAt: undefined,
@@ -736,8 +755,9 @@ const release = (record: JobRecord, command: ReleaseCommand): TransitionResult =
   }
 
   const attempt: AttemptRecord = Object.freeze({
-    attempt: prepared.value.attemptsMade,
-    delivery: prepared.value.deliveryCount,
+    attempt: ledgerSequence(prepared.value) + 1,
+    attemptSequence: ledgerSequence(prepared.value) + 1,
+    delivery: Math.max(1, prepared.value.deliveryCount),
     startedAt: undefined,
     finishedAt: command.now,
     outcome: 'released',
@@ -802,6 +822,8 @@ const cancel = (record: JobRecord, command: CancelCommand): TransitionResult => 
     )
   }
 
+  const failure = makeCancellationFailure(command.now)
+  if (Result.isError(failure)) return Result.err(failure.error)
   const next: JobRecord = {
     ...prepared.value,
     state: 'cancelled',
@@ -809,10 +831,21 @@ const cancel = (record: JobRecord, command: CancelCommand): TransitionResult => 
     processedAt: command.now,
     finishedAt: command.now,
     result: undefined,
-    failure: undefined
+    failure: undefined,
+    attemptSequence: ledgerSequence(prepared.value) + 1
   }
+  const attempt: AttemptRecord = Object.freeze({
+    attempt: ledgerSequence(prepared.value) + 1,
+    attemptSequence: ledgerSequence(prepared.value) + 1,
+    delivery: Math.max(1, prepared.value.deliveryCount),
+    startedAt: undefined,
+    finishedAt: command.now,
+    outcome: 'cancelled',
+    result: undefined,
+    failure: failure.value
+  })
 
-  return transition(next)
+  return transition(next, attempt)
 }
 
 const promote = (record: JobRecord, command: PromoteCommand): TransitionResult => {
@@ -875,6 +908,9 @@ const retry = (record: JobRecord, command: RetryCommand): TransitionResult => {
   })
 }
 
+const safeAdd = (left: number, right: number): number =>
+  left >= Number.MAX_SAFE_INTEGER - right ? Number.MAX_SAFE_INTEGER : left + right
+
 const incrementStalledCount = (stalledCount: number): number =>
   stalledCount === Number.MAX_SAFE_INTEGER ? stalledCount : stalledCount + 1
 
@@ -932,6 +968,7 @@ export const recoverStalledWithPolicy = (
     state: 'waiting',
     runAt: command.now,
     stalledCount,
+    attemptSequence: ledgerSequence(prepared.value) + 1,
     updatedAt: command.now,
     processedAt: undefined,
     finishedAt: undefined,
@@ -942,8 +979,9 @@ export const recoverStalledWithPolicy = (
   }
 
   const attempt: AttemptRecord = Object.freeze({
-    attempt: prepared.value.attemptsMade,
-    delivery: prepared.value.deliveryCount,
+    attempt: ledgerSequence(prepared.value) + 1,
+    attemptSequence: ledgerSequence(prepared.value) + 1,
+    delivery: Math.max(1, prepared.value.deliveryCount),
     startedAt: undefined,
     finishedAt: command.now,
     outcome: 'stalled',
