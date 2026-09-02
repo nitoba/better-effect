@@ -1,0 +1,326 @@
+---
+title: Durable jobs with better-effect-mq
+description: Define durable jobs, run workers and build storage adapters around protocol v1.
+icon: ListChecks
+---
+
+[`better-effect-mq`](https://www.npmjs.com/package/better-effect-mq) is an
+experimental, storage-neutral durable queue protocol for `better-effect`. It
+provides immutable Job definitions, producer operations, a Worker supervisor,
+and a `JobStore` Service contract. It does not open a database connection or
+choose a persistence technology.
+
+## Protocol v1: at-least-once delivery
+
+The exported `protocolVersion` is `1`. A successful settlement under the
+current lease is not normally delivered again. If a worker performs a side
+effect and crashes before settlement is persisted, the job can be delivered
+again. This is **at-least-once**, not exactly-once processing.
+
+Design handlers so repeating the external operation is safe. Use the Job ID or
+a business idempotency key with the downstream API, and make the downstream
+write conditional or deduplicated where possible. A lease token fences an old
+worker from settling a newer delivery; it cannot undo a side effect that
+already happened before a crash.
+
+```ts
+import { protocolVersion } from 'better-effect-mq'
+
+protocolVersion // 1
+```
+
+Persisted records are JSON-safe DTOs. They contain identities, state, counters,
+leases, encoded payloads and bounded failure envelopes—not live `Error`,
+`Result`, Service or connection objects.
+
+## Define a queue and jobs
+
+A queue definition is an inert namespace. A Job definition is immutable and
+versioned by the literal queue, name and positive integer version. Defining a
+Job does not register a handler, resolve a Service or open storage.
+
+```ts
+import { Codec, Queue, Retry } from 'better-effect-mq'
+
+const Emails = Queue.define('emails')
+
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly messageId: string
+    readonly recipient: string
+  }>(),
+  result: Codec.json<{ readonly accepted: boolean }>(),
+  failure: Codec.json<{ readonly code: string }>(),
+  defaults: {
+    attempts: 5,
+    backoff: Retry.exponential({
+      initialDelayMs: 1_000,
+      factor: 2,
+      maxDelayMs: 60_000,
+      maxAttempts: 5
+    }),
+    timeoutMs: 30_000
+  },
+  idempotencyKey: ({ messageId }) => messageId,
+  retryable: ({ code }) => code !== 'recipient-blocked'
+})
+```
+
+`payload` is the input/value boundary for the payload codec. `result` and
+`failure` codecs are optional; without them, the corresponding persisted result
+or typed failure is not available. `defaults.attempts` includes the first
+execution. If a retry policy supplies `maxAttempts`, it must agree with the
+attempt default.
+
+Use `Job.define` when the direct form is more convenient. Multiple versions can
+be kept in a local immutable registry:
+
+```ts
+import { Codec, Job, JobRegistry } from 'better-effect-mq'
+
+const SendEmailV2 = Job.define('send-email', {
+  queue: Emails,
+  version: 2,
+  payload: Codec.json<{
+    readonly messageId: string
+    readonly recipient: string
+  }>()
+})
+const Jobs = JobRegistry.make([SendEmail, SendEmailV2] as const)
+```
+
+The queue/name/version identity is what storage and claims use. Function names
+are not identity, and the package does not provide a global handler registry.
+
+## Produce jobs
+
+A Job is also a typed producer. Its methods are better-effect programs: run
+them inside a Runtime that provides the Job's bound `JobStore` token.
+`enqueue` encodes the payload, runs the metadata/idempotency callbacks and
+returns a branded `JobId`.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import { MemoryJobStore } from 'better-effect-mq'
+
+const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
+
+const id = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const jobId = yield* SendEmail.enqueue({
+      messageId: 'message-123',
+      recipient: 'ada@example.test'
+    })
+    return Result.ok(jobId)
+  })
+)
+
+await runtime.dispose()
+```
+
+Production callers typically use a durable Layer instead of
+`MemoryJobStore.layer`. `enqueueMany` accepts payloads or
+`{ payload, options }` entries, preserves input order, and processes bounded
+chunks; a store failure after an earlier chunk can therefore leave a partial
+batch. Deterministic IDs or idempotency keys make a producer retry safe.
+
+Other Job operations include `poll`, `attempts`, `awaitResult`, `execute`,
+`cancel`, `promote` and `retry`. `execute` means enqueue then poll; it is not an
+exactly-once RPC. Aborting `awaitResult` stops waiting but does not cancel a
+persisted Job.
+
+## MemoryJobStore for tests
+
+`MemoryJobStore` is an isolated in-process reference driver. It is useful for
+unit tests, examples and disposable processes, but is not durable, shared
+between processes or a distributed coordination mechanism. Each
+`MemoryJobStore.layer` resolution creates fresh store state.
+
+```ts
+import { Runtime } from 'better-effect'
+import { MemoryJobStore } from 'better-effect-mq'
+
+let sequence = 0
+const testRuntime = await Runtime.make(
+  MemoryJobStore.layerWith({
+    idGenerator: () => `test-${sequence++}`
+  })
+)
+
+// Run producer and worker programs against testRuntime.
+await testRuntime.dispose()
+```
+
+For deterministic tests, `clock` controls the epoch milliseconds used by store
+requests and `idGenerator` controls generated Job IDs and lease tokens. Use
+`MemoryJobStore.make(options)` when a Layer is not needed. A named token can use
+`MemoryJobStore.layerFor(token, options)`.
+
+The runner-neutral `better-effect-mq/testing` entrypoint also exports
+`jobStoreContract`. It supplies scenarios for enqueue identity, ordering,
+claims, leases, settlements, administration, listing and wake semantics. The
+adapter provides `makeRuntime`, setup/reset hooks and declared capabilities;
+register each returned scenario with the test runner of your choice.
+
+For focused application tests, `TestJobStore` keeps a real isolated
+`MemoryJobStore` together with `ClockTest`, `IdGeneratorTest`, a Layer, and a
+recorded observer. Its `enqueued`, `enqueuedPayloads`, `job`, `attempts`, and
+`counts` helpers use public store operations and the definition's exact codec;
+`claim`, `settle`, and `release` accept explicit lease tokens. Named stores use
+`TestJobStore.makeFor(namedStore, options)`. This is a harness around the real
+protocol, not a second worker or a private state mutator.
+
+```ts
+import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
+import { Codec, Queue } from 'better-effect-mq'
+import { TestJobStore } from 'better-effect-mq/testing'
+
+const SendEmail = Queue.define('emails').job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string }>()
+})
+const testStore = TestJobStore.make({
+  clock: new ClockTest(0),
+  ids: IdGeneratorTest.from((index) => `test-${index}`)
+})
+const observedSendEmail = testStore.observe(SendEmail)
+// Provide testStore.layer and testStore.clock to a real Runtime/TestRuntime.
+void observedSendEmail
+```
+
+## Run and stop a Worker
+
+Workers run handlers over an already configured `better-effect` Runtime (such
+as the `runtime` from the producer example, or your durable `AppLive`). The
+application owns that Runtime and its resources; a Worker does not create a
+parallel container or provide a `Worker.layer`.
+
+```ts
+import { Effect, Runtime } from 'better-effect'
+import { Result } from 'better-result'
+import { Worker } from 'better-effect-mq'
+
+const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    // Put the idempotent external send here. Use the Job ID or messageId as
+    // the downstream idempotency key.
+    return Result.ok({ accepted: payload.recipient.length > 0 })
+  })
+)
+
+const worker = await Worker.start(runtime, {
+  handlers: [SendEmailHandler],
+  concurrency: 8
+})
+
+await worker.awaitIdle()
+await worker.stop()
+await runtime.dispose()
+```
+
+`Worker.use` owns the stop step when a callback-scoped worker is preferable:
+
+```ts
+await Worker.use(runtime, { handlers: [SendEmailHandler] }, async (worker) => {
+  await worker.awaitIdle()
+})
+```
+
+`Worker.stop()` is idempotent. It stops new claims, interrupts claim waits,
+waits for active attempts according to the shutdown policy and clears local
+supervision resources. `{ abortActive: true }` cooperatively aborts active
+attempts. With a long-lived Runtime, stop the Worker before disposing the
+Runtime so in-flight store operations still have their environment.
+
+## Retry, backoff and timeout
+
+`Retry.never()`, `Retry.fixed`, `Retry.linear` and `Retry.exponential` create
+validated immutable policies. Backoff is persisted as data; `Retry.custom` is
+evaluated synchronously in the Worker and is not delegated to a store.
+
+Typed failures are retried only when the Job's `retryable` predicate returns
+`true`. Mark an object failure with `Job.unrecoverable(failure)` when it must
+not retry. Defects retry by default; set `retryDefects: false` to disable that.
+Decode and encode failures are terminal. A timeout aborts the attempt
+cooperatively and is persisted as a timeout failure; a Promise that ignores its
+signal cannot be forcibly killed.
+
+```ts
+const worker = await Worker.start(runtime, {
+  handlers: [SendEmailHandler],
+  retryDefects: false,
+  leaseDurationMs: 30_000,
+  heartbeatIntervalMs: 10_000,
+  stalledIntervalMs: 30_000,
+  maxStalledCount: 1,
+  shutdown: {
+    gracePeriodMs: 5_000,
+    abortAfterGracePeriod: true
+  }
+})
+```
+
+The lease must remain valid while the attempt runs. Workers heartbeat active
+leases, recover expired leases with `recoverStalled`, and fence late results
+with the lease token. Shutdown and lease loss are cooperative; external work
+still needs idempotency and its own fencing strategy.
+
+## Errors and settlement semantics
+
+A handler's nominal `Result.ok` becomes a completed settlement. A nominal
+`Result.err` becomes a typed failed settlement, and a thrown or rejected
+handler becomes a defect settlement. Results and failure values are encoded by
+the Job codecs before persistence. `onJobFailure` is best effort and runs only
+after an applied terminal or retry settlement; `onError` reports supervisor
+errors without stopping other claim loops.
+
+The store applies settlement as one fenced state transition and attempt-ledger
+write. `applied` means this request made the transition. If a response is lost
+after the store applied it, retrying the same Job ID and lease token may return
+`already-applied` without adding another ledger entry. A mismatched, missing or
+expired token returns `LeaseLostError`; the old worker cannot settle a newer
+claim.
+
+The protocol states are `waiting`, `delayed`, `active`, `completed`, `failed`
+and `cancelled`. `release` returns an active job to waiting without consuming
+an attempt. `retry` is an explicit administrative transition for a terminal
+failed or cancelled job and preserves its attempt history. Stalled recovery
+records a stalled ledger outcome and can terminally fail a job when the stalled
+limit is reached.
+
+## The storage adapter boundary
+
+`JobStore` is the only storage seam. It is a yieldable Service whose
+`JobStore.Contract` contains atomic operations such as `enqueue`, `claim`,
+`settle`, `release`, `heartbeat`, `recoverStalled`, `awaitWake`, inspection and
+administration. Every operation returns a completed better-effect Result or a
+PromiseLike of one, so an adapter can perform asynchronous I/O without
+changing the consumer API.
+
+An adapter supplies its structural contract through a Layer:
+
+```ts
+import { Layer } from 'better-effect'
+import { JobStore } from 'better-effect-mq'
+
+const DurableStore = JobStore.named('durable')
+
+declare const adapter: JobStore.Contract
+const DurableStoreLayer = Layer.succeed(DurableStore, DurableStore.of(adapter))
+```
+
+Bind a Job to that named store with `store: DurableStore` in its definition or
+with `bindJob(job, DurableStore)`. The core only sees the Service contract and
+protocol DTOs. The adapter owns transactions, persistence, indexes, wake
+notifications and backend-specific translation. It must reproduce the
+protocol's claim ordering, fencing, time validation and atomic settlement
+semantics; capability flags are performance hints, not permission to weaken
+correctness.
+
+Do not put driver types, SQL/Redis keys or connection objects in Job records,
+codecs or core APIs. The same boundary lets `MemoryJobStore`, a database
+adapter and a test double implement one protocol without changing producer or
+worker code.

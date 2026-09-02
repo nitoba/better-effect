@@ -1,0 +1,46 @@
+---
+title: Enqueueing Jobs
+description: Run typed producer programs against a configured JobStore.
+---
+
+A Job is a typed producer program. It needs a Runtime that provides its bound
+`JobStore` token. The producer owns the Runtime and decides when it is disposed.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import { MemoryJobStore, JobStore } from 'better-effect-mq'
+import { SendEmail } from './jobs'
+
+const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
+try {
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const id = yield* SendEmail.enqueue({
+        messageId: 'message-123',
+        recipient: 'ada@example.test'
+      })
+      return Result.ok(id)
+    })
+  )
+  if (Result.isError(result)) throw result.error
+} finally {
+  await runtime.dispose()
+}
+```
+
+`enqueue` validates and encodes the payload before insertion. `enqueueMany`
+processes bounded chunks, preserves input order and can therefore leave an
+intentional partial batch if a later store operation fails. `poll`,
+`awaitResult`, `attempts`, `cancel`, `promote` and `retry` are separate typed
+operations; `execute` means enqueue then await, not exactly-once RPC.
+
+Publishing idempotency and handler idempotency are different. An
+`idempotencyKey` prevents duplicate publication for the same store scope. It
+does not make an external side effect safe when a Worker crashes before its
+settlement is persisted. See [Idempotency and delivery](./idempotency-and-delivery).
+
+For a producer-only process, import the Job definitions and producer APIs but
+do not import or start a Worker. A durable adapter can replace
+`MemoryJobStore.layer` without changing this producer program.

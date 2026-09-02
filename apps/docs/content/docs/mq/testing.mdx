@@ -1,0 +1,58 @@
+---
+title: Testing
+description: Test the real JobStore and Worker with deterministic controls.
+---
+
+The `better-effect-mq/testing` entrypoint is runner-neutral. `TestJobStore`
+wraps the real `MemoryJobStore` contract and keeps a `ClockTest`, an
+`IdGeneratorTest`, a store Layer and a recorded observer together. It does not
+mutate private state or implement a second Worker.
+
+```ts
+import { Effect } from 'better-effect'
+import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
+import { TestRuntime } from 'better-effect/testing'
+import { Result } from 'better-result'
+import { Codec, Queue } from 'better-effect-mq'
+import { TestJobStore } from 'better-effect-mq/testing'
+
+const clock = new ClockTest(Date.UTC(2026, 0, 1))
+const ids = IdGeneratorTest.from((index) => `job-${index + 1}`)
+const testStore = TestJobStore.make({ clock, ids })
+const SendEmail = Queue.define('emails').job('send', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string }>()
+})
+const runtime = await TestRuntime.make(testStore.layer, {
+  clock,
+  idGenerator: ids
+})
+
+try {
+  const id = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const value = yield* SendEmail.enqueue({ to: 'ada@example.test' })
+      return Result.ok(value)
+    })
+  )
+  if (Result.isError(id)) throw id.error
+  console.log(await testStore.enqueuedPayloads(SendEmail))
+} finally {
+  await runtime.dispose()
+}
+```
+
+The harness assertions are oldest-first and readonly:
+`enqueued`, `enqueuedPayloads`, `job`, `attempts` and `counts`. `claim`,
+`settle` and `release` call the public contract with explicit lease tokens.
+Named stores use `TestJobStore.makeFor(namedToken, options)`.
+
+For Worker scenarios, start the real `Worker` over `testRuntime.runtime` and
+use `ClockTest`, a deterministic random source and a zero-delay persisted
+backoff. Assert the completed/failed record and attempt ledger after
+`awaitIdle`; advance the test clock for delayed Jobs instead of replacing
+`Date` or using arbitrary sleeps. Also cover `Result.err`, defects, cleanup
+failures, cooperative cancellation, lease expiry and named-store isolation.
+
+The lower-level `jobStoreContract` exercises adapter conformance. Use it for
+store implementations; use `TestJobStore` for focused application tests.

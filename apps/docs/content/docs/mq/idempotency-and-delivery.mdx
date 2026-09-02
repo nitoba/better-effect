@@ -1,0 +1,34 @@
+---
+title: Idempotency and delivery
+description: Design for at-least-once delivery and the side-effect window.
+---
+
+Protocol v1 is **at-least-once**. A Worker can perform an external side effect,
+then crash before its settlement/ACK is durably recorded. The same Job may
+therefore be delivered again. No lease can undo the external side effect.
+
+There are two separate idempotency boundaries:
+
+- **Publication idempotency**: an enqueue `idempotencyKey` deduplicates a
+  producer retry within the store's identity scope.
+- **Handler idempotency**: the external operation uses the Job ID or a business
+  key so a redelivered attempt is a no-op or safely replaces the prior write.
+
+```ts
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly messageId: string; readonly to: string }>(),
+  idempotencyKey: ({ messageId }) => messageId
+})
+
+// The email provider should also receive messageId as its idempotency key.
+```
+
+A lease token is a fencing token: an old Worker cannot settle a newer claim.
+It protects the JobStore state, not an already-started request to a downstream
+system. Use conditional writes, provider idempotency keys and downstream
+fencing where the side effect requires stronger coordination.
+
+At-least-once also applies after uncertain store responses. If the client loses
+the settlement response, retrying with the same Job ID and lease token may
+return `already-applied`; it must not add a second attempt ledger entry.

@@ -46,21 +46,22 @@ Each fixture measures:
 - `Worker.start`/`Worker.use` over immutable handler tuples, including payload,
   JobContext, store, Runtime, and union requirement inference.
 
-The Better Auth, producer, and Worker fixtures run with the current TypeScript
-`6.0.3` and minimum supported TypeScript `5.7.2`. Better Auth's exact custom
-plugin endpoint, plugin fields, and error-code assertions reject `any` and
-`unknown`; the producer fixture locks exact JobId, handler-failure, store,
-decode, timeout, and cancellation error metadata; the Worker fixture locks the
-exact WorkerRequirements service union and checks both Worker entrypoints. The
+The Better Auth and all MQ fixtures run with the current TypeScript `6.0.3`
+and minimum supported TypeScript `5.7.2`. Better Auth's exact custom plugin
+endpoint, plugin fields, and error-code assertions reject `any` and `unknown`;
+the producer fixture locks exact JobId, handler-failure, store, decode, timeout,
+and cancellation error metadata; the registry, named-store, and Worker fixtures
+lock their exact tuple/Service unions and check both supported compilers. The
 report includes compiler, files, types, instantiations, memory, check time, and
 total time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
 `--job-sizes=10,50,100,250 --scenarios=job-registry` to measure only the registry
 fixtures. Use `--producer-sizes=10,50,100 --scenarios=job-producer` for the
 producer matrix, or `--worker-sizes=10,50,100 --scenarios=worker-handlers` for
-the Worker matrix. Use `--clean-dist` to remove generated, core, and MQ
-artifacts before dependency preparation; producer dependencies are rebuilt in
-isolated temporary package roots. `--check-budget` enforces the current
-ceilings:
+the Worker matrix. Use `--clean-dist` to remove generated fixtures and rebuild the selected core
+and MQ declarations in isolated temporary package roots. The MQ package release
+check runs the complete registry (10/50/100/250), named-store
+(10/50/100/250), producer (10/50/100), and Worker (10/50/100) matrices with
+`--check-budget`. `--check-budget` enforces the current ceilings:
 
 | Services | Check time |   Types | Instantiations |  Memory |
 | -------: | ---------: | ------: | -------------: | ------: |

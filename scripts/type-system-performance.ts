@@ -273,7 +273,9 @@ const acquirePerformanceLock = async (): Promise<() => Promise<void>> => {
 }
 
 const ensurePackageBuild = async (packageRoot: string): Promise<void> => {
-  if (!(await Bun.file(join(packageRoot, 'dist/index.d.mts')).exists())) {
+  const hasDeclaration = await Bun.file(join(packageRoot, 'dist/index.d.mts')).exists()
+  const hasRuntime = await Bun.file(join(packageRoot, 'dist/index.mjs')).exists()
+  if (!hasDeclaration || !hasRuntime) {
     await runCommand(['bun', 'run', 'build'], packageRoot)
   }
 }
@@ -825,7 +827,9 @@ const jobRegistryFixtureSource = (size: number): string => {
   const expected = names.map((name) => `typeof ${name}`).join(' | ')
   const tuple = names.join(', ')
 
-  return `import { Codec, JobRegistry, Queue } from '../../../packages/better-effect-mq/src/index.ts'
+  const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
+
+  return `import { Codec, JobRegistry, Queue } from '${mqEntry}'
 
 const queue = Queue.define('benchmark.jobs')
 const payload = Codec.json<{ readonly id: string }>()
@@ -849,6 +853,7 @@ void missing
 
 const jobStoreFixtureSource = (size: number): string => {
   const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
+  const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from({ length: size }, (_, index) => String(index + 1).padStart(3, '0'))
   const tokenDeclarations = names
     .map((name) => `const Store${name} = JobStore.named('benchmark-${name}')`)
@@ -867,7 +872,7 @@ const jobStoreFixtureSource = (size: number): string => {
 
   return `import { Effect, Layer, Runtime } from '${coreEntry}'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
-import { Codec, Job, JobRegistry, JobStore, Queue } from '../../../packages/better-effect-mq/src/index.ts'
+import { Codec, Job, JobRegistry, JobStore, Queue } from '${mqEntry}'
 
 const implementation = {} as JobStore.Contract
 const queue = Queue.define('benchmark.store')
@@ -1009,6 +1014,8 @@ void Runtime.run(AppLive, () => program)
 }
 
 const workerFixtureSource = (size: number): string => {
+  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
+  const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from(
     { length: size },
     (_, index) => `Job${String(index + 1).padStart(3, '0')}`
@@ -1034,9 +1041,9 @@ const workerFixtureSource = (size: number): string => {
     .join('\n\n')
   const handlerTuple = names.map((name) => `${name}Handler`).join(', ')
 
-  return `import { Effect, Layer, Runtime, Service } from 'better-effect'
+  return `import { Effect, Layer, Runtime, Service } from '${coreEntry}'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
-import { Codec, JobContext, JobStore, Queue, Worker, type WorkerRequirements } from '../../../packages/better-effect-mq/src/index.ts'
+import { Codec, JobContext, JobStore, Queue, Worker, type WorkerRequirements } from '${mqEntry}'
 
 class WorkerRoot extends Service<WorkerRoot>()('WorkerBenchmarkRoot') {}
 const implementation = {} as JobStore.Contract
@@ -1509,7 +1516,11 @@ const formatRow = (result: Result): string => {
 }
 
 const compilersFor = (scenario: Scenario): readonly Compiler[] =>
-  scenario === 'better-auth' || scenario === 'job-producer' || scenario === 'worker-handlers'
+  scenario === 'better-auth' ||
+  scenario === 'job-registry' ||
+  scenario === 'job-store' ||
+  scenario === 'job-producer' ||
+  scenario === 'worker-handlers'
     ? ['current', 'minimum']
     : ['current']
 
@@ -1544,7 +1555,16 @@ const prepareCleanDependencies = async (
         'dir'
       )
       await runCommand(
-        ['bun', 'run', 'build', '--', '--out-dir', join(isolatedCoreRoot, 'dist'), '--no-exports'],
+        [
+          'bun',
+          'run',
+          'build',
+          '--',
+          '--out-dir',
+          join(isolatedCoreRoot, 'dist'),
+          '--no-exports',
+          '--no-clean'
+        ],
         corePackageRoot
       )
     }
@@ -1562,7 +1582,16 @@ const prepareCleanDependencies = async (
         'dir'
       )
       await runCommand(
-        ['bun', 'run', 'build', '--', '--out-dir', join(isolatedMqRoot, 'dist'), '--no-exports'],
+        [
+          'bun',
+          'run',
+          'build',
+          '--',
+          '--out-dir',
+          join(isolatedMqRoot, 'dist'),
+          '--no-exports',
+          '--no-clean'
+        ],
         mqPackageRoot
       )
     }
@@ -1576,6 +1605,7 @@ const prepareCleanDependencies = async (
     mqPackageRoot: needsMqDeclarations ? isolatedMqRoot : mqPackageRoot,
     cleanup: async () => {
       await rm(stagingRoot, { recursive: true, force: true })
+      await ensurePackageBuild(corePackageRoot)
     }
   }
 }
@@ -1584,12 +1614,22 @@ const prepareScenarioDependencies = async (
   selectedScenarios: readonly Scenario[],
   cleanDist: boolean
 ): Promise<PreparedDependencies> => {
-  const needsCoreDeclarations =
+  const needsMqDeclarations =
+    selectedScenarios.includes('job-registry') ||
     selectedScenarios.includes('job-store') ||
     selectedScenarios.includes('job-producer') ||
     selectedScenarios.includes('worker-handlers')
-  const needsMqDeclarations = selectedScenarios.includes('job-producer')
+  const needsCoreDeclarations =
+    needsMqDeclarations ||
+    selectedScenarios.includes('job-store') ||
+    selectedScenarios.includes('job-producer') ||
+    selectedScenarios.includes('worker-handlers')
   const isolateDependencies = cleanDist && needsMqDeclarations
+  if (isolateDependencies) {
+    // Keep package consumers usable after the isolated clean build. A standalone
+    // package check may start without a previously built core declaration.
+    await ensurePackageBuild(corePackageRoot)
+  }
   const dependencies = isolateDependencies
     ? await prepareCleanDependencies(needsCoreDeclarations, needsMqDeclarations)
     : {
@@ -1606,11 +1646,11 @@ const prepareScenarioDependencies = async (
   }
 
   if (!isolateDependencies && needsCoreDeclarations) {
-    await runCommand(['bun', 'run', 'build'], corePackageRoot)
+    await ensurePackageBuild(corePackageRoot)
   }
 
   if (!isolateDependencies && needsMqDeclarations) {
-    await runCommand(['bun', 'run', 'build'], mqPackageRoot)
+    await ensurePackageBuild(mqPackageRoot)
   }
 
   const declarations = [
