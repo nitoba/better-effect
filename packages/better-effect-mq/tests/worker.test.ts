@@ -1529,6 +1529,8 @@ test('Worker controls defect retries with retryDefects and persists defect failu
     failure,
     defaults: { attempts: 2 }
   })
+  const noRetryCause = new Error('boom-no')
+  let observedNoRetryCause: unknown
   const [first] = await Promise.all([
     enqueueWith(store, noRetry, { value: 1 }, { now: 30_000, attemptsMax: 2 }),
     enqueueWith(store, retry, { value: 2 }, { now: 30_000, attemptsMax: 2 })
@@ -1537,7 +1539,7 @@ test('Worker controls defect retries with retryDefects and persists defect failu
     handlers: [
       Worker.handle(noRetry, () =>
         Effect.fn(async function* () {
-          throw new Error('boom-no')
+          throw noRetryCause
         })
       ),
       Worker.handle(retry, () =>
@@ -1546,6 +1548,9 @@ test('Worker controls defect retries with retryDefects and persists defect failu
         })
       )
     ],
+    onJobFailure: (event) => {
+      if (event.job.name === noRetry.name) observedNoRetryCause = event.cause
+    },
     retryDefects: false,
     pollIntervalMs: 1
   })
@@ -1556,6 +1561,7 @@ test('Worker controls defect retries with retryDefects and persists defect failu
     expect((await resolve(store.getAttempts({ jobId: first.id })))[0]?.failure).toMatchObject({
       kind: 'defect'
     })
+    expect(observedNoRetryCause).toBe(noRetryCause)
   } finally {
     await worker.stop()
     await runtime.dispose()
@@ -1697,6 +1703,7 @@ test('Worker classifies cooperative timeout and sends a nonblocking failure even
       expect(event.cause).toBe(timeoutCause)
       return hookPending
     },
+    now: () => 50_000,
     pollIntervalMs: 1
   })
 
@@ -1707,6 +1714,44 @@ test('Worker classifies cooperative timeout and sends a nonblocking failure even
     expect(attempt).toMatchObject({ outcome: 'failed', failure: { kind: 'timeout' } })
   } finally {
     await worker.stop({ abortActive: true })
+    await runtime.dispose()
+  }
+})
+
+test('Worker preserves an explicit undefined defect cause for failure hooks', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const job = queue.job('undefined-defect-hook', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure
+  })
+  const created = await enqueueWith(store, job, { value: 1 }, { now: 55_000 })
+  let observedCause: unknown = Symbol('unset')
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(job, () =>
+        Effect.fn(async function* () {
+          throw undefined
+        })
+      )
+    ],
+    onJobFailure: (event) => {
+      observedCause = event.cause
+    },
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    expect(observedCause).toBeUndefined()
+    expect((await resolve(store.getAttempts({ jobId: created.id })))[0]?.failure).toMatchObject({
+      kind: 'defect',
+      message: 'Job handler failed'
+    })
+  } finally {
+    await worker.stop()
     await runtime.dispose()
   }
 })

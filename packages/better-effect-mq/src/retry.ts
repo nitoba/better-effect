@@ -1,6 +1,7 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- Retry validates public configuration at its boundary.
 // oxlint-disable anti-slop/no-unknown-parameters -- policy factories accept untrusted JavaScript options.
 // oxlint-disable anti-slop/no-known-value-widening -- callback decisions are normalized at the boundary.
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- the null-prototype snapshot is an internal parsed DTO.
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- canonical snapshots omit optional fields.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts follow explicit runtime checks.
 
@@ -45,6 +46,7 @@ const backoffFields = [
   'factor',
   'jitter'
 ] as const
+const retryPolicyFields = [...backoffFields, 'backoff', 'maxAttempts', 'decide'] as const
 
 const typeFields = (type: unknown, hasPolicyBackoff: boolean): readonly string[] =>
   type === 'never'
@@ -55,21 +57,39 @@ const typeFields = (type: unknown, hasPolicyBackoff: boolean): readonly string[]
         ? ['type', 'backoff', 'maxAttempts']
         : backoffFields
 
-const validateFactoryOptions = (options: unknown, allowed: readonly string[]): void => {
-  if (typeof options !== 'object' || options === null) invalid('options must be an object')
+const snapshotOwnDataFields = (
+  options: unknown,
+  allowed: readonly string[],
+  label: string
+): Readonly<Record<string, unknown>> => {
+  if (typeof options !== 'object' || options === null) invalid(`${label} must be an object`)
   const objectOptions = options as object
   const prototype = Object.getPrototypeOf(objectOptions)
   if (prototype !== Object.prototype && prototype !== null) {
-    invalid('retry options must be a plain object')
+    invalid(`${label} must be a plain object`)
   }
+
+  const fields: Record<string, unknown> = Object.create(null) as Record<string, unknown>
   for (const key of Reflect.ownKeys(objectOptions)) {
     if (typeof key !== 'string' || !allowed.includes(key))
-      invalid('retry options contain unsupported fields')
+      invalid(`${label} contain unsupported fields`)
     const descriptor = Object.getOwnPropertyDescriptor(objectOptions, key)
-    if (descriptor === undefined || !('value' in descriptor))
-      invalid('retry options contain an accessor field')
+    if (descriptor === undefined) return invalid(`${label} contain an accessor field`)
+    if (!('value' in descriptor)) return invalid(`${label} contain an accessor field`)
+    Object.defineProperty(fields, key, {
+      configurable: true,
+      enumerable: true,
+      value: descriptor.value,
+      writable: true
+    })
   }
+  return Object.freeze(fields)
 }
+
+const validateFactoryOptions = (
+  options: unknown,
+  allowed: readonly string[]
+): Readonly<Record<string, unknown>> => snapshotOwnDataFields(options, allowed, 'retry options')
 
 const integer = (value: unknown, field: string, minimum = 0): number => {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
@@ -101,7 +121,7 @@ const staticPolicy = (
     readonly maxAttempts?: unknown
   }
 ): RetryPolicy => {
-  validateFactoryOptions(
+  const fields = validateFactoryOptions(
     options,
     type === 'constant'
       ? ['delayMs', 'maxAttempts']
@@ -109,19 +129,19 @@ const staticPolicy = (
         ? ['initialDelayMs', 'incrementMs', 'maxDelayMs', 'maxAttempts', 'jitter']
         : ['initialDelayMs', 'factor', 'maxDelayMs', 'maxAttempts', 'jitter']
   )
-  const delay = integer(options.delayMs ?? options.initialDelayMs, 'delayMs')
+  const delay = integer(fields.delayMs ?? fields.initialDelayMs, 'delayMs')
   const maxDelayMs =
-    options.maxDelayMs === undefined ? undefined : integer(options.maxDelayMs, 'maxDelayMs')
+    fields.maxDelayMs === undefined ? undefined : integer(fields.maxDelayMs, 'maxDelayMs')
   if (maxDelayMs !== undefined && maxDelayMs < delay) invalid('maxDelayMs must be >= initial delay')
   const incrementMs =
-    options.incrementMs === undefined ? undefined : integer(options.incrementMs, 'incrementMs')
-  const factor = options.factor === undefined ? undefined : options.factor
+    fields.incrementMs === undefined ? undefined : integer(fields.incrementMs, 'incrementMs')
+  const factor = fields.factor === undefined ? undefined : fields.factor
   if (
     factor !== undefined &&
     (typeof factor !== 'number' || !Number.isFinite(factor) || factor <= 0)
   )
     invalid('factor must be finite and > 0')
-  const safeJitter = jitter(options.jitter)
+  const safeJitter = jitter(fields.jitter)
   const persisted = makePersistedBackoff({
     type,
     delayMs: delay,
@@ -130,7 +150,7 @@ const staticPolicy = (
     factor,
     jitter: safeJitter
   }).unwrap()
-  const maxAttempts = attempts(options.maxAttempts)
+  const maxAttempts = attempts(fields.maxAttempts)
   return Object.freeze({
     type: type === 'constant' ? 'fixed' : type,
     backoff: persisted,
@@ -165,12 +185,13 @@ export const Retry = {
     readonly maxAttempts?: number
     readonly decide: RetryDecide<Failure>
   }): RetryPolicy => {
-    validateFactoryOptions(options, ['maxAttempts', 'decide'])
-    if (typeof options?.decide !== 'function') invalid('decide must be callable')
-    const maxAttempts = attempts(options.maxAttempts)
+    const fields = validateFactoryOptions(options, ['maxAttempts', 'decide'])
+    if (typeof fields.decide !== 'function') invalid('decide must be callable')
+    const maxAttempts = attempts(fields.maxAttempts)
     const policy: { type: 'custom'; maxAttempts?: number; decide: RetryDecide<Failure> } = {
       type: 'custom',
-      decide: options.decide
+      // SAFETY: the runtime check above establishes the callable custom decision.
+      decide: fields.decide as RetryDecide<Failure>
     }
     if (maxAttempts !== undefined) policy.maxAttempts = maxAttempts
     return Object.freeze(policy)
@@ -214,24 +235,17 @@ export const normalizeRetryPolicy = (
     )
   }
   try {
-    const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null)
-      invalid('retry policy must be a plain object')
-    for (const key of Reflect.ownKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (descriptor === undefined || !('value' in descriptor))
-        invalid('retry policy contains an accessor field')
-    }
-    const candidate = value as {
+    const fields = snapshotOwnDataFields(value, retryPolicyFields, 'retry policy')
+    const candidate = fields as {
       readonly type?: unknown
       readonly backoff?: unknown
       readonly maxAttempts?: unknown
       readonly decide?: unknown
     }
     const type = candidate.type
-    const hasPolicyBackoff = Object.prototype.hasOwnProperty.call(value, 'backoff')
+    const hasPolicyBackoff = Object.prototype.hasOwnProperty.call(fields, 'backoff')
     const allowed = typeFields(type, hasPolicyBackoff)
-    for (const key of Reflect.ownKeys(value)) {
+    for (const key of Reflect.ownKeys(fields)) {
       if (typeof key !== 'string' || !allowed.includes(key))
         invalid('retry policy contains unsupported fields')
     }
@@ -245,6 +259,8 @@ export const normalizeRetryPolicy = (
       return Result.ok(Retry.never())
     }
     if (type === 'custom') {
+      if (!Object.prototype.hasOwnProperty.call(fields, 'decide'))
+        invalid('custom requires an own decide property')
       if (candidate.backoff !== undefined) invalid('custom cannot contain a backoff')
       const maxAttempts = attempts(candidate.maxAttempts)
       return Result.ok(
@@ -272,7 +288,7 @@ export const normalizeRetryPolicy = (
       )
     }
     // Legacy persisted backoffs are canonicalized into a policy snapshot.
-    const backoff = makePersistedBackoff(value)
+    const backoff = makePersistedBackoff(fields)
     if (Result.isError(backoff)) return Result.err(backoff.error)
     return Result.ok(
       Object.freeze({

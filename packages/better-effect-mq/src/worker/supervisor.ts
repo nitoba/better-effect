@@ -7,7 +7,7 @@
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
 import { Runtime, ServiceRuntime } from 'better-effect'
-import { Result, type Result as ResultType } from 'better-result'
+import { Panic, Result, UnhandledException, type Result as ResultType } from 'better-result'
 
 import {
   isUnrecoverableFailure,
@@ -99,6 +99,7 @@ type AttemptState = {
   timeoutCancel?: () => void
   timedOut?: boolean
   failureCause?: unknown
+  failureCauseSet: boolean
   failureNotified?: boolean
 }
 
@@ -222,10 +223,9 @@ export class WorkerSupervisor implements WorkerHandle {
     for (const lease of this.claimLeases) {
       if (lease.lifecycle === 'pending') lease.lifecycle = 'abandoned'
     }
-    // Stop claiming immediately, and remove attempt deadlines while local
-    // handlers and their cleanup are still able to settle.
+    // Stop claiming immediately. Active attempt deadlines remain authoritative unless
+    // the selected shutdown policy explicitly aborts the attempts.
     this.claimController.abort()
-    for (const attempt of this.activeAttempts.values()) attempt.timeoutCancel?.()
     this.shutdownController.abort(new Error('Worker is stopping'))
 
     if (normalizedOptions.abortActive === true) this.abortActiveAttempts()
@@ -598,23 +598,21 @@ export class WorkerSupervisor implements WorkerHandle {
       controller,
       startedAt: this.readNow(),
       promise: Promise.resolve(),
-      state: 'running'
+      state: 'running',
+      failureCauseSet: false
     }
 
     this.active += 1
     increment(this.activeByHandler, entry.identityKey)
     this.activeAttempts.set(key, attempt)
     if (job.timeoutMs !== undefined) {
-      attempt.timeoutCancel = scheduleDeadline(
-        job.timeoutMs,
-        () => {
-          const cause = new JobTimeoutError(String(job.id))
-          attempt.timedOut = true
-          attempt.failureCause = cause
-          attempt.controller.abort(cause)
-        },
-        () => this.readNow()
-      )
+      attempt.timeoutCancel = scheduleDeadline(job.timeoutMs, () => {
+        const cause = new JobTimeoutError(String(job.id))
+        attempt.timedOut = true
+        attempt.failureCause = cause
+        attempt.failureCauseSet = true
+        attempt.controller.abort(cause)
+      })
     }
 
     const promise = this.executeAttempt(group, attempt, context)
@@ -670,8 +668,10 @@ export class WorkerSupervisor implements WorkerHandle {
       }
       this.report(cause)
       // The timeout error passed to abort() is the authoritative cause. Runtime
-      // cancellation commonly rejects with a different AbortError.
-      if (!attempt.timedOut) attempt.failureCause = cause
+      // cancellation commonly rejects with a different AbortError. Result-based
+      // handler generators wrap thrown defects in a better-result boundary; hooks
+      // should observe the original in-memory cause rather than that wrapper.
+      if (!attempt.timedOut) preserveAttemptCause(attempt, unwrapBetterResultCause(cause))
       outcome =
         attempt.state === 'cancelling'
           ? { type: 'cancelled' }
@@ -844,7 +844,8 @@ export class WorkerSupervisor implements WorkerHandle {
         persisted.attempt,
         persistedFailure,
         persistedOutcome,
-        attempt?.failureCause
+        attempt?.failureCause,
+        attempt?.failureCauseSet === true
       )
     }
   }
@@ -854,7 +855,8 @@ export class WorkerSupervisor implements WorkerHandle {
     attempt: number,
     failure: SerializedJobFailure | undefined,
     outcome: SettlementOutcome,
-    cause?: unknown
+    cause: unknown,
+    hasCause: boolean
   ): Promise<void> {
     if (failure === undefined || (outcome.type !== 'fail' && outcome.type !== 'retry')) return
     const hook = this.workerOptions.onJobFailure
@@ -865,8 +867,7 @@ export class WorkerSupervisor implements WorkerHandle {
       attempt,
       attemptsMax: job.attemptsMax,
       kind: failure.kind,
-      cause:
-        cause === undefined ? (failure.kind === 'typed' ? failure.data : failure.message) : cause,
+      cause: hasCause ? cause : failure.kind === 'typed' ? failure.data : failure.message,
       failure,
       willRetry: outcome.type === 'retry',
       ...(outcome.type === 'retry'
@@ -1487,8 +1488,16 @@ const decodeOutcome = (_cause: unknown, recordedAt: number): SettlementOutcome =
   })
 })
 
+const unwrapBetterResultCause = (cause: unknown): unknown => {
+  if (Panic.is(cause) || UnhandledException.is(cause)) return cause.cause
+  return cause
+}
+
 const preserveAttemptCause = (attempt: AttemptState, cause: unknown): void => {
-  if (!attempt.timedOut) attempt.failureCause = cause
+  if (!attempt.timedOut && !attempt.failureCauseSet) {
+    attempt.failureCause = cause
+    attempt.failureCauseSet = true
+  }
 }
 
 const failOutcome = (recordedAt: number): SettlementOutcome => ({
