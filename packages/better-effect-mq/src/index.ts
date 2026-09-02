@@ -14,6 +14,36 @@ export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
 export { Retry } from './retry'
+export { JobMetricNames, JobObserver, makeJobDepthSampler } from './observability'
+export type {
+  JobEvent,
+  JobEventBase,
+  JobEventType,
+  JobEnqueued,
+  JobClaimed,
+  JobStarted,
+  JobCompleted,
+  JobRetryScheduled,
+  JobFailed,
+  JobCancelled,
+  JobReleased,
+  JobLeaseLost,
+  JobStalledRecovered,
+  WorkerStarted,
+  WorkerStopping,
+  WorkerStopped,
+  StoreOperationFailed,
+  JobLogData,
+  JobLogEvent,
+  JobLogLevel,
+  JobLogger,
+  JobLoggerOptions,
+  JobMetricAttributes,
+  JobMetricsSink,
+  JobObserver as JobObserverContract,
+  JobDepthSampler,
+  JobDepthSamplerOptions
+} from './observability'
 export { JobAdmin } from './job/application'
 export {
   JobAwaitAbortedError,
@@ -27,6 +57,7 @@ export {
   JobRegistry,
   Queue,
   bindJob,
+  observeJob,
   makeJobRegistry,
   normalizeIdempotencyKey,
   normalizeMetadata,
@@ -67,6 +98,7 @@ export type {
 export type {
   DecodedJobFailure,
   JobAdminClient,
+  JobAdminObserverBinding,
   JobAdminCountOptions,
   JobAdminListError,
   JobAdminListOptions,

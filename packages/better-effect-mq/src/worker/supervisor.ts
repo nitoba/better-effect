@@ -6,7 +6,7 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are localized to checked runtime boundaries.
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
-import { Runtime, ServiceRuntime } from 'better-effect'
+import { Program, Runtime, ServiceRuntime } from 'better-effect'
 import { Panic, Result, UnhandledException, type Result as ResultType } from 'better-result'
 
 import {
@@ -27,6 +27,9 @@ import {
   makeQueueName
 } from '../protocol'
 import type { JobRecord, JsonValue, SerializedJobFailure, SettlementOutcome } from '../protocol'
+import { freezeJobEvent } from '../observability/events'
+import type { JobEvent } from '../observability/events'
+import { notifyJobObserver } from '../observability/observer'
 import { JobStore, JobStoreWakeAbortedError } from '../store'
 import type {
   ActiveJobSnapshot,
@@ -53,6 +56,7 @@ import type {
   WorkerRandom,
   WorkerStopOptions
 } from './types'
+import type { JobObserver } from '../observability'
 
 type AnyRuntime = Runtime<any>
 type UnknownResult = ResultType<unknown, unknown>
@@ -94,6 +98,7 @@ type AttemptState = {
   readonly job: ActiveJobSnapshot
   readonly controller: AbortController
   readonly startedAt: number
+  readonly monotonicStartedAt: number
   promise: Promise<void>
   state: 'running' | 'cancelling' | 'settling' | 'lost'
   timeoutCancel?: () => void
@@ -101,11 +106,24 @@ type AttemptState = {
   failureCause?: unknown
   failureCauseSet: boolean
   failureNotified?: boolean
+  leaseLostNotified?: boolean
+  terminalNotified?: boolean
+  durationMs?: number
 }
 
 type CodecOutcome =
   | { readonly ok: true; readonly value: JsonValue }
   | { readonly ok: false; readonly cause: unknown }
+
+type StoreFailureContext = {
+  readonly workerId?: import('../protocol').WorkerId
+  readonly jobId?: import('../protocol').JobId
+  readonly queue?: import('../protocol').QueueName
+  readonly name?: import('../protocol').JobName
+  readonly version?: number
+  readonly attempt?: number
+  readonly delivery?: number
+}
 
 type Waiter = {
   readonly resolve: () => void
@@ -135,6 +153,15 @@ const minimumTimerMs = 1
 const minimumLeaseDurationMs = 10
 const minimumStalledIntervalMs = 10
 const maximumStoreRetries = 3
+
+const monotonicNow = (): number => {
+  if (typeof globalThis.performance?.now === 'function') {
+    const value = globalThis.performance.now()
+    if (Number.isFinite(value)) return value
+  }
+  const wallClock = Date.now()
+  return Number.isFinite(wallClock) ? wallClock : 0
+}
 
 export class WorkerSupervisor implements WorkerHandle {
   private readonly workerId: NormalizedWorkerOptions['id']
@@ -193,6 +220,7 @@ export class WorkerSupervisor implements WorkerHandle {
       this.startSupervisionLoop(store, 'heartbeat')
       this.startSupervisionLoop(store, 'stalled')
     }
+    this.emit({ type: 'worker-started', recordedAt: this.readNow(), workerId: this.id })
   }
 
   get id(): NormalizedWorkerOptions['id'] {
@@ -218,6 +246,7 @@ export class WorkerSupervisor implements WorkerHandle {
 
     const normalizedOptions = normalizeStopOptions(options)
     this.currentState = 'stopping'
+    this.emit({ type: 'worker-stopping', recordedAt: this.readNow(), workerId: this.id })
     // A store cannot be required to observe our AbortSignal. Fence every claim
     // before waking its caller; a later successful result is compensated below.
     for (const lease of this.claimLeases) {
@@ -279,6 +308,7 @@ export class WorkerSupervisor implements WorkerHandle {
     await Promise.allSettled(this.supervisionTasks)
     await Promise.allSettled(this.claimCleanupTasks)
     this.currentState = 'stopped'
+    this.emit({ type: 'worker-stopped', recordedAt: this.readNow(), workerId: this.id })
     this.notifySlots()
     this.notifyIdle()
   }
@@ -324,6 +354,10 @@ export class WorkerSupervisor implements WorkerHandle {
       plan.group.observedEmpty = false
       this.releaseClaim(plan)
       this.notifyIdle()
+      this.emitStoreFailure('claim', result.error, {
+        workerId: this.id,
+        queue: plan.group.queue
+      })
       this.report(result.error)
       await this.sleep(this.workerOptions.pollIntervalMs, this.claimController.signal)
       return
@@ -338,8 +372,8 @@ export class WorkerSupervisor implements WorkerHandle {
     }
 
     group.observedEmpty = false
-
     try {
+      this.emitClaimed(result.value.jobs)
       await this.dispatchJobs(group, result.value.jobs)
     } finally {
       this.releaseClaim(plan)
@@ -518,6 +552,9 @@ export class WorkerSupervisor implements WorkerHandle {
     this.claimLeases.delete(lease)
     if (jobs.length === 0) return
 
+    // The claim was persisted even though the Worker stopped waiting for it. Emit
+    // the claim before its compensating release so observers see a valid sequence.
+    this.emitClaimed(jobs)
     const task = Promise.allSettled(jobs.map((job) => this.releaseClaimSnapshot(lease, job))).then(
       () => undefined
     )
@@ -541,7 +578,20 @@ export class WorkerSupervisor implements WorkerHandle {
     )
     // Late compensation is deliberately best effort. Its rejection is contained
     // and the lease remains fenced for adapters that cannot release immediately.
-    if (Result.isError(result)) this.report(result.error)
+    if (Result.isError(result)) {
+      this.emitStoreFailure('release', result.error, {
+        workerId: this.id,
+        jobId: job.id,
+        queue: job.queue,
+        name: job.name,
+        version: job.version,
+        attempt: job.attemptsMade + 1,
+        delivery: job.deliveryCount
+      })
+      this.report(result.error)
+    } else {
+      this.emitRelease(job, result.value)
+    }
   }
 
   private async dispatchJobs(group: ClaimGroup, jobs: readonly ActiveJobSnapshot[]): Promise<void> {
@@ -562,6 +612,24 @@ export class WorkerSupervisor implements WorkerHandle {
     }
 
     this.notifyIdle()
+  }
+
+  private emitClaimed(jobs: readonly ActiveJobSnapshot[]): void {
+    const recordedAt = this.readNow()
+    for (const job of jobs) {
+      this.emit({
+        type: 'claimed',
+        recordedAt,
+        workerId: this.id,
+        jobId: job.id,
+        queue: job.queue,
+        name: job.name,
+        version: job.version,
+        attempt: job.attemptsMade + 1,
+        delivery: job.deliveryCount,
+        waitDurationMs: Math.max(0, recordedAt - job.runAt)
+      })
+    }
   }
 
   private canStart(entry: HandlerEntry, group: ClaimGroup): boolean {
@@ -597,6 +665,7 @@ export class WorkerSupervisor implements WorkerHandle {
       job,
       controller,
       startedAt: this.readNow(),
+      monotonicStartedAt: monotonicNow(),
       promise: Promise.resolve(),
       state: 'running',
       failureCauseSet: false
@@ -614,6 +683,17 @@ export class WorkerSupervisor implements WorkerHandle {
         attempt.controller.abort(cause)
       })
     }
+    this.emit({
+      type: 'started',
+      recordedAt: attempt.startedAt,
+      workerId: this.id,
+      jobId: job.id,
+      queue: job.queue,
+      name: job.name,
+      version: job.version,
+      attempt: job.attemptsMade + 1,
+      delivery: job.deliveryCount
+    })
 
     const promise = this.executeAttempt(group, attempt, context)
       .catch((cause) => {
@@ -713,30 +793,45 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async executeProgram(attempt: AttemptState, context: JobContext): Promise<unknown> {
+    const attemptNumber = attempt.job.attemptsMade + 1
     const attributes = {
-      workerId: this.id,
-      jobId: attempt.job.id,
-      queue: attempt.job.queue,
-      name: attempt.job.name,
-      version: attempt.job.version,
-      attempt: attempt.job.attemptsMade + 1,
-      delivery: attempt.job.deliveryCount
+      'mq.job.id': attempt.job.id,
+      'mq.job.name': attempt.job.name,
+      'mq.job.version': attempt.job.version,
+      'mq.job.queue': attempt.job.queue,
+      'mq.job.attempt': attemptNumber,
+      'mq.worker.id': this.id
     }
+    const name = `better-effect-mq/${attempt.job.queue}/${attempt.job.name}@${attempt.job.version}`
+    const callback = async () => {
+      const decoded = await decodePayload(attempt.entry.definition.payload, attempt.job.payload)
 
-    return this.runtime.runWith(
-      JobContext.layer(context),
-      async () => {
-        const decoded = await decodePayload(attempt.entry.definition.payload, attempt.job.payload)
+      if (!decoded.ok) {
+        return Result.err(new DecodeOutcome(decoded.cause))
+      }
 
-        if (!decoded.ok) {
-          return Result.err(new DecodeOutcome(decoded.cause))
-        }
-
-        const program = attempt.entry.handler.handler(decoded.value as never)
-        return program()
-      },
-      { signal: attempt.controller.signal, attributes }
+      const handlerProgram = attempt.entry.handler.handler(decoded.value as never)
+      return handlerProgram()
+    }
+    const program = Program.named(
+      name,
+      // SAFETY: Runtime already accepts this exact callback shape; Program.named only adds
+      // declaration-only metadata and does not require the nominal marker at runtime.
+      callback as unknown as import('better-effect').Effect.Program<
+        unknown,
+        unknown,
+        import('better-effect').AnyService
+      >
     )
+
+    try {
+      return await this.runtime.runWith(JobContext.layer(context), program, {
+        signal: attempt.controller.signal,
+        attributes
+      })
+    } finally {
+      attempt.durationMs = Math.max(0, monotonicNow() - attempt.monotonicStartedAt)
+    }
   }
 
   private async makeOutcome(attempt: AttemptState, result: unknown): Promise<SettlementOutcome> {
@@ -817,36 +912,104 @@ export class WorkerSupervisor implements WorkerHandle {
     )
 
     if (Result.isError(result)) {
+      if (attempt !== undefined && LeaseLostError.is(result.error))
+        this.markLost(attempt, result.error)
+      this.emitStoreFailure('settle', result.error, this.storeFailureContext(attempt, job))
       this.report(result.error)
-    } else if (
-      (result.value.status === 'applied' || result.value.status === 'already-applied') &&
-      (submittedOutcome.type === 'fail' || submittedOutcome.type === 'retry') &&
-      (result.value.attempt.outcome === 'failed' || result.value.attempt.outcome === 'retried')
-    ) {
-      const persisted = result.value.attempt
-      const persistedFailure = persisted.failure ?? submittedOutcome.failure
-      if (persistedFailure === undefined) return
-      const persistedOutcome =
-        persisted.outcome === 'retried'
-          ? {
-              type: 'retry' as const,
-              runAt: persisted.retryAt ?? job.runAt,
-              ...(persisted.retryDelayMs === undefined
-                ? {}
-                : { retryDelayMs: persisted.retryDelayMs })
-            }
-          : { type: 'fail' as const, failure: persistedFailure }
-      if (result.value.status === 'already-applied' && attempt?.failureNotified) return
-      if (attempt !== undefined) attempt.failureNotified = true
-      // Hooks are advisory and must not occupy a worker slot or block stop().
-      void this.notifyFailure(
-        job,
-        persisted.attempt,
-        persistedFailure,
-        persistedOutcome,
-        attempt?.failureCause,
-        attempt?.failureCauseSet === true
-      )
+      return
+    }
+
+    if (result.value.status !== 'applied' && result.value.status !== 'already-applied') return
+    const persisted = result.value.attempt
+    if (attempt?.terminalNotified === true) return
+    if (attempt !== undefined) attempt.terminalNotified = true
+    this.emitSettled(job, persisted, attempt?.durationMs)
+
+    const submittedFailure =
+      submittedOutcome.type === 'fail' || submittedOutcome.type === 'retry'
+        ? submittedOutcome.failure
+        : undefined
+    const persistedFailure = persisted.failure ?? submittedFailure
+    if (
+      persistedFailure === undefined ||
+      (persisted.outcome !== 'failed' && persisted.outcome !== 'retried')
+    )
+      return
+    const persistedOutcome =
+      persisted.outcome === 'retried'
+        ? {
+            type: 'retry' as const,
+            runAt: persisted.retryAt ?? job.runAt,
+            ...(persisted.retryDelayMs === undefined
+              ? {}
+              : { retryDelayMs: persisted.retryDelayMs })
+          }
+        : { type: 'fail' as const, failure: persistedFailure }
+    if (result.value.status === 'already-applied' && attempt?.failureNotified) return
+    if (attempt !== undefined) attempt.failureNotified = true
+    // Hooks are advisory and must not occupy a worker slot or block stop().
+    void this.notifyFailure(
+      job,
+      persisted.attempt,
+      persistedFailure,
+      persistedOutcome,
+      attempt?.failureCause,
+      attempt?.failureCauseSet === true
+    )
+  }
+
+  private emitSettled(
+    job: ActiveJobSnapshot,
+    attempt: import('../protocol').AttemptRecord,
+    durationMs: number | undefined
+  ): void {
+    const common = {
+      recordedAt: this.readNow(),
+      workerId: this.id,
+      jobId: job.id,
+      queue: job.queue,
+      name: job.name,
+      version: job.version,
+      attempt: attempt.attempt,
+      delivery: attempt.delivery
+    }
+    switch (attempt.outcome) {
+      case 'completed':
+        this.emit({ type: 'completed', ...common, durationMs: durationMs ?? 0 })
+        break
+      case 'retried':
+        this.emit({
+          type: 'retry-scheduled',
+          ...common,
+          retryAt: attempt.retryAt ?? job.runAt,
+          ...(attempt.retryDelayMs === undefined ? {} : { retryDelayMs: attempt.retryDelayMs }),
+          ...(durationMs === undefined ? {} : { durationMs }),
+          source: 'attempt',
+          ...(attempt.failure?.kind === undefined ? {} : { failureKind: attempt.failure.kind }),
+          ...(attempt.failure?.code === undefined ? {} : { failureCode: attempt.failure.code })
+        })
+        break
+      case 'failed':
+        this.emit({
+          type: 'failed',
+          ...common,
+          willRetry: false,
+          ...(durationMs === undefined ? {} : { durationMs }),
+          ...(attempt.failure?.kind === undefined ? {} : { failureKind: attempt.failure.kind }),
+          ...(attempt.failure?.code === undefined ? {} : { failureCode: attempt.failure.code })
+        })
+        break
+      case 'cancelled':
+        this.emit({
+          type: 'cancelled',
+          ...common,
+          source: 'worker',
+          ...(durationMs === undefined ? {} : { durationMs })
+        })
+        break
+      case 'stalled':
+      case 'released':
+        break
     }
   }
 
@@ -885,6 +1048,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async releaseJob(group: ClaimGroup, job: ActiveJobSnapshot): Promise<void> {
+    const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     const result = await runStoreOperation<import('../store').ReleaseResult>(
       this.runtime,
       group.store,
@@ -896,7 +1060,45 @@ export class WorkerSupervisor implements WorkerHandle {
     )
 
     if (Result.isError(result)) {
+      if (attempt !== undefined && LeaseLostError.is(result.error))
+        this.markLost(attempt, result.error)
+      this.emitStoreFailure('release', result.error, this.storeFailureContext(attempt, job))
       this.report(result.error)
+      return
+    }
+    this.emitRelease(job, result.value)
+  }
+
+  private emitRelease(
+    job: ActiveJobSnapshot,
+    transition: import('../protocol').JobTransition
+  ): void {
+    const attempt = transition.attempt
+    if (attempt?.outcome === 'released') {
+      this.emit({
+        type: 'released',
+        recordedAt: this.readNow(),
+        workerId: this.id,
+        jobId: job.id,
+        queue: job.queue,
+        name: job.name,
+        version: job.version,
+        attempt: attempt.attempt,
+        delivery: attempt.delivery
+      })
+    } else if (attempt?.outcome === 'cancelled') {
+      this.emit({
+        type: 'cancelled',
+        recordedAt: this.readNow(),
+        workerId: this.id,
+        jobId: job.id,
+        queue: job.queue,
+        name: job.name,
+        version: job.version,
+        attempt: attempt.attempt,
+        delivery: attempt.delivery,
+        source: 'release'
+      })
     }
   }
 
@@ -979,6 +1181,7 @@ export class WorkerSupervisor implements WorkerHandle {
       this.workerOptions.storeOperationTimeoutMs
     )
     if (Result.isError(result)) {
+      this.emitStoreFailure('heartbeat', result.error)
       if (result.error instanceof StoreOperationTimeoutError) {
         for (const attempt of snapshot.values()) this.markLost(attempt, result.error)
       } else {
@@ -1019,6 +1222,21 @@ export class WorkerSupervisor implements WorkerHandle {
     if (attempt.state === 'lost') return
     attempt.state = 'lost'
     attempt.timeoutCancel?.()
+    if (attempt.leaseLostNotified !== true) {
+      attempt.leaseLostNotified = true
+      this.emit({
+        type: 'lease-lost',
+        recordedAt: this.readNow(),
+        workerId: this.id,
+        jobId: attempt.job.id,
+        queue: attempt.job.queue,
+        name: attempt.job.name,
+        version: attempt.job.version,
+        attempt: attempt.job.attemptsMade + 1,
+        delivery: attempt.job.deliveryCount,
+        reason: LeaseLostError.is(cause) ? cause.reason : 'store-timeout'
+      })
+    }
     attempt.controller.abort(cause)
   }
 
@@ -1035,7 +1253,53 @@ export class WorkerSupervisor implements WorkerHandle {
       this.workerOptions.pollIntervalMs,
       this.workerOptions.storeOperationTimeoutMs
     )
-    if (Result.isError(result)) this.report(result.error)
+    if (Result.isError(result)) {
+      this.emitStoreFailure('recoverStalled', result.error)
+      this.report(result.error)
+    } else {
+      this.emitStalledRecoveries(result.value.transitions)
+    }
+  }
+
+  private emitStalledRecoveries(transitions: readonly import('../protocol').JobTransition[]): void {
+    for (const transition of transitions) {
+      const record = transition.record
+      const attempt = transition.attempt
+      const attemptNumber = attempt?.attempt ?? record.attemptsMade
+      const delivery = attempt?.delivery ?? record.deliveryCount
+      const outcome =
+        record.state === 'cancelled'
+          ? 'cancelled'
+          : record.state === 'failed'
+            ? 'failed'
+            : 'requeued'
+      this.emit({
+        type: 'stalled-recovered',
+        recordedAt: this.readNow(),
+        workerId: this.id,
+        jobId: record.id,
+        queue: record.queue,
+        name: record.name,
+        version: record.version,
+        attempt: attemptNumber,
+        delivery,
+        outcome
+      })
+      if (outcome === 'cancelled') {
+        this.emit({
+          type: 'cancelled',
+          recordedAt: this.readNow(),
+          workerId: this.id,
+          jobId: record.id,
+          queue: record.queue,
+          name: record.name,
+          version: record.version,
+          attempt: attemptNumber,
+          delivery,
+          source: 'stalled'
+        })
+      }
+    }
   }
 
   private async waitForWork(group: ClaimGroup, claim: ClaimResult): Promise<void> {
@@ -1062,6 +1326,7 @@ export class WorkerSupervisor implements WorkerHandle {
       (result) => {
         if (Result.isError(result)) {
           if (!JobStoreWakeAbortedError.is(result.error)) {
+            this.emitStoreFailure('awaitWake', result.error)
             this.report(result.error)
             return 'wake-error'
           }
@@ -1147,6 +1412,40 @@ export class WorkerSupervisor implements WorkerHandle {
     this.idleWaiters.clear()
   }
 
+  private emit(event: JobEvent): void {
+    const observer = this.workerOptions.observer
+    if (observer !== undefined) notifyJobObserver(observer, freezeJobEvent(event))
+  }
+
+  private storeFailureContext(
+    attempt: AttemptState | undefined,
+    job: ActiveJobSnapshot
+  ): StoreFailureContext {
+    return {
+      workerId: this.id,
+      jobId: job.id,
+      queue: job.queue,
+      name: job.name,
+      version: job.version,
+      attempt: (attempt?.job.attemptsMade ?? job.attemptsMade) + 1,
+      delivery: attempt?.job.deliveryCount ?? job.deliveryCount
+    }
+  }
+
+  private emitStoreFailure(
+    operation: string,
+    cause: unknown,
+    context: StoreFailureContext = {}
+  ): void {
+    this.emit({
+      type: 'store-operation-failed',
+      recordedAt: this.readNow(),
+      operation,
+      retryable: JobStoreFailure.is(cause) && cause.retryable === true,
+      ...context
+    })
+  }
+
   private report(cause: unknown): void {
     const callback = this.workerOptions.onError
 
@@ -1196,6 +1495,7 @@ export type NormalizedWorkerOptions = {
   readonly now: () => number
   readonly random: WorkerRandom
   readonly onError: WorkerErrorHandler | undefined
+  readonly observer: JobObserver | undefined
   readonly onJobFailure: JobFailureHandler | undefined
   readonly retryDefects: boolean
   readonly shutdown: { readonly gracePeriodMs: number; readonly abortAfterGracePeriod: boolean }
@@ -1220,6 +1520,22 @@ const readOption = (value: object, key: string, field = key): unknown => {
   }
 
   return descriptor.value
+}
+
+const validateObserver = (value: unknown): void => {
+  if (value === undefined) return
+  let callback: unknown
+  try {
+    callback =
+      value !== null && typeof value === 'object'
+        ? (value as { readonly onEvent?: unknown }).onEvent
+        : undefined
+  } catch {
+    throw new JobDefinitionError({ field: 'observer', message: 'could not read observer' })
+  }
+  if (typeof callback !== 'function') {
+    throw new JobDefinitionError({ field: 'observer', message: 'must implement onEvent' })
+  }
 }
 
 export const normalizeWorkerOptions = (
@@ -1279,6 +1595,7 @@ export const normalizeWorkerOptions = (
   }
   const random = (randomValue ?? Math.random) as WorkerRandom
   const onError = readOption(options, 'onError')
+  const observer = readOption(options, 'observer')
   const onJobFailure = readOption(options, 'onJobFailure')
   const retryDefects = readOption(options, 'retryDefects') ?? true
 
@@ -1288,6 +1605,7 @@ export const normalizeWorkerOptions = (
   if (onJobFailure !== undefined && typeof onJobFailure !== 'function') {
     throw new JobDefinitionError({ field: 'onJobFailure', message: 'must be callable' })
   }
+  validateObserver(observer)
   if (typeof retryDefects !== 'boolean') {
     throw new JobDefinitionError({ field: 'retryDefects', message: 'must be boolean' })
   }
@@ -1309,6 +1627,7 @@ export const normalizeWorkerOptions = (
     random,
     shutdown,
     onError: onError as WorkerErrorHandler | undefined,
+    observer: observer as JobObserver | undefined,
     onJobFailure: onJobFailure as JobFailureHandler | undefined,
     retryDefects
   }

@@ -21,6 +21,7 @@ import { validateJsonValue } from '../codec/json'
 import {
   JobDefinitionError,
   JobNotFoundError,
+  JobStoreFailure,
   UnsupportedJobStoreOperationError,
   makeJobId,
   makeJobName,
@@ -61,6 +62,9 @@ import type {
 } from '../store'
 
 import type { CodecLike, JobDefaults, JobIdentity } from './job'
+import { freezeJobEvent } from '../observability/events'
+import type { JobObserver } from '../observability/observer'
+import { notifyJobObserver } from '../observability/observer'
 import {
   JobAwaitAbortedError,
   JobExecutionCancelledError,
@@ -299,6 +303,11 @@ export interface JobAdminClient<Store extends AnyJobStoreToken> {
   ) => JobOperation<import('../store').RemoveResult, JobAdminRemoveError, Store, true>
 }
 
+/** An observer binding that can be applied to a selected JobStore. */
+export interface JobAdminObserverBinding {
+  readonly for: <Store extends AnyJobStoreToken>(token: Store) => JobAdminClient<Store>
+}
+
 /** Runtime descriptor fields needed by the single descriptor-bound implementation. */
 export type JobOperationDescriptor = {
   readonly identity: JobIdentity<string, string, number>
@@ -309,6 +318,7 @@ export type JobOperationDescriptor = {
   readonly store: AnyJobStoreToken
   readonly idempotencyKey: unknown
   readonly metadata: unknown
+  readonly observer?: JobObserver | undefined
 }
 
 /** The methods attached immutably to every Job descriptor. */
@@ -616,6 +626,30 @@ const resolveStoreOperation = async <Value, Failure extends JobStoreError>(
   }
 }
 
+const observedStoreOperation = async <Value, Failure extends JobStoreError>(
+  operation: JobStoreOperation<Value, Failure>,
+  observer: JobObserver | undefined,
+  operationName: string,
+  recordedAt?: number
+): Promise<ResultType<Value, Failure | UnhandledException>> => {
+  const result = await resolveStoreOperation(operation)
+  if (Result.isError(result) && observer !== undefined) {
+    notifyJobObserver(
+      observer,
+      freezeJobEvent({
+        type: 'store-operation-failed',
+        recordedAt: recordedAt ?? Date.now(),
+        operation: operationName,
+        retryable: isRetryableStoreFailure(result.error)
+      })
+    )
+  }
+  return result
+}
+
+const isRetryableStoreFailure = (error: unknown): boolean =>
+  JobStoreFailure.is(error) && error.retryable === true
+
 const clockNow = (
   clock: InstanceType<typeof Clock>
 ): ResultType<number, JobDefinitionError | UnhandledException> => {
@@ -922,6 +956,27 @@ const mergeBatchOptions = (
   return merged
 }
 
+const emitEnqueued = (
+  observer: JobObserver | undefined,
+  job: JobRecord,
+  duplicate: boolean,
+  recordedAt: number
+): void => {
+  if (observer === undefined) return
+  notifyJobObserver(
+    observer,
+    freezeJobEvent({
+      type: 'enqueued',
+      recordedAt,
+      jobId: job.id,
+      queue: job.queue,
+      name: job.name,
+      version: job.version,
+      duplicate
+    })
+  )
+}
+
 const runEnqueue = async function* (
   definition: JobOperationDescriptor,
   payload: unknown,
@@ -935,7 +990,12 @@ const runEnqueue = async function* (
   const request = yield* Result.await(
     Promise.resolve(prepareEnqueue(definition, payload, checkedFields, now))
   )
-  const result = yield* Result.await(Promise.resolve(resolveStoreOperation(store.enqueue(request))))
+  const result = yield* Result.await(
+    Promise.resolve(
+      observedStoreOperation(store.enqueue(request), definition.observer, 'enqueue', now)
+    )
+  )
+  emitEnqueued(definition.observer, result.job, result.duplicate, now)
 
   return result.job.id
 }
@@ -993,10 +1053,15 @@ const runEnqueueMany = async function* (
     }
 
     const results = yield* Result.await(
-      Promise.resolve(resolveStoreOperation(store.enqueueMany(requests)))
+      Promise.resolve(
+        observedStoreOperation(store.enqueueMany(requests), definition.observer, 'enqueueMany', now)
+      )
     )
 
-    for (const result of results) ids.push(result.job.id)
+    for (const result of results) {
+      emitEnqueued(definition.observer, result.job, result.duplicate, now)
+      ids.push(result.job.id)
+    }
   }
 
   return Object.freeze(ids)
@@ -1024,7 +1089,9 @@ const readJob = async function* (
 ): ErasedOperation<JobRecord | undefined, JobPollError> {
   const jobId = yield* Result.await(Promise.resolve(normalizeJobId(value)))
   const store = yield* definition.store
-  const found = yield* Result.await(Promise.resolve(resolveStoreOperation(store.getJob({ jobId }))))
+  const found = yield* Result.await(
+    Promise.resolve(observedStoreOperation(store.getJob({ jobId }), definition.observer, 'getJob'))
+  )
 
   if (found !== undefined && !matchesIdentity(definition, found)) {
     yield* failOperation<JobRecord | undefined, JobIdentityMismatchError>(
@@ -1160,7 +1227,13 @@ const runAttempts = async function* (
   }
   const store = yield* definition.store
   const entries = yield* Result.await(
-    Promise.resolve(resolveStoreOperation(store.getAttempts({ jobId: record.id })))
+    Promise.resolve(
+      observedStoreOperation(
+        store.getAttempts({ jobId: record.id }),
+        definition.observer,
+        'getAttempts'
+      )
+    )
   )
   const decoded: ErasedAttemptView[] = []
 
@@ -1320,7 +1393,9 @@ const runAwaitResult = async function* (
   try {
     for (;;) {
       const record = yield* Result.await(
-        Promise.resolve(resolveStoreOperation(store.getJob({ jobId: checkedId })))
+        Promise.resolve(
+          observedStoreOperation(store.getJob({ jobId: checkedId }), definition.observer, 'getJob')
+        )
       )
       if (record === undefined) {
         return yield* failOperation<unknown, JobNotFoundError>(
@@ -1358,7 +1433,9 @@ const makeTransition = async function* (
   const checkedId = yield* Result.await(Promise.resolve(normalizeJobId(value)))
   const store = yield* definition.store
   const found = yield* Result.await(
-    Promise.resolve(resolveStoreOperation(store.getJob({ jobId: checkedId })))
+    Promise.resolve(
+      observedStoreOperation(store.getJob({ jobId: checkedId }), definition.observer, 'getJob')
+    )
   )
   if (found === undefined) {
     return yield* failOperation<JobRecord, JobNotFoundError>(
@@ -1379,21 +1456,77 @@ const makeTransition = async function* (
     )
     const runAt = yield* Result.await(Promise.resolve(normalizeSchedule(fields, now)))
     const transition = yield* Result.await(
-      Promise.resolve(resolveStoreOperation(store.retry({ jobId: checkedId, runAt, now })))
+      Promise.resolve(
+        observedStoreOperation(
+          store.retry({ jobId: checkedId, runAt, now }),
+          definition.observer,
+          'retry',
+          now
+        )
+      )
     )
+    emitAdminTransition(definition.observer, 'retry', transition, now)
     return transition.record
   }
 
   const transition =
     type === 'cancel'
       ? yield* Result.await(
-          Promise.resolve(resolveStoreOperation(store.cancel({ jobId: checkedId, now })))
+          Promise.resolve(
+            observedStoreOperation(
+              store.cancel({ jobId: checkedId, now }),
+              definition.observer,
+              'cancel',
+              now
+            )
+          )
         )
       : yield* Result.await(
-          Promise.resolve(resolveStoreOperation(store.promote({ jobId: checkedId, now })))
+          Promise.resolve(
+            observedStoreOperation(
+              store.promote({ jobId: checkedId, now }),
+              definition.observer,
+              'promote',
+              now
+            )
+          )
         )
 
+  emitAdminTransition(definition.observer, type, transition, now)
   return transition.record
+}
+
+const emitAdminTransition = (
+  observer: JobObserver | undefined,
+  type: 'cancel' | 'promote' | 'retry',
+  transition: import('../protocol').JobTransition,
+  recordedAt: number
+): void => {
+  if (observer === undefined || type === 'promote') return
+  const record = transition.record
+  const attempt = transition.attempt
+  const common = {
+    recordedAt,
+    jobId: record.id,
+    queue: record.queue,
+    name: record.name,
+    version: record.version,
+    ...(attempt === undefined ? {} : { attempt: attempt.attempt, delivery: attempt.delivery })
+  }
+  if (type === 'cancel') {
+    notifyJobObserver(observer, freezeJobEvent({ type: 'cancelled', ...common, source: 'admin' }))
+    return
+  }
+  notifyJobObserver(
+    observer,
+    freezeJobEvent({
+      type: 'retry-scheduled',
+      ...common,
+      retryAt: record.runAt,
+      retryDelayMs: Math.max(0, record.runAt - recordedAt),
+      source: 'admin'
+    })
+  )
 }
 
 const normalizeExecuteOptions = (
@@ -1685,34 +1818,42 @@ const normalizeRemoveOptions = (
 
 const runAdminList = async function* (
   token: AnyJobStoreToken,
-  options: unknown
+  options: unknown,
+  observer: JobObserver | undefined
 ): JobOperation<import('../store').ListJobsResult, JobAdminListError, AnyJobStoreToken> {
   const request = yield* Result.await(Promise.resolve(normalizeListOptions(options)))
   const store = yield* token
-  return yield* Result.await(Promise.resolve(resolveStoreOperation(store.list(request))))
+  return yield* Result.await(
+    Promise.resolve(observedStoreOperation(store.list(request), observer, 'list'))
+  )
 }
 
 const runAdminCounts = async function* (
   token: AnyJobStoreToken,
-  options: unknown
+  options: unknown,
+  observer: JobObserver | undefined
 ): JobOperation<import('../store').JobCounts, JobAdminCountError, AnyJobStoreToken> {
   const request = yield* Result.await(Promise.resolve(normalizeCountOptions(options)))
   const store = yield* token
-  return yield* Result.await(Promise.resolve(resolveStoreOperation(store.counts(request))))
+  return yield* Result.await(
+    Promise.resolve(observedStoreOperation(store.counts(request), observer, 'counts'))
+  )
 }
 
 const runAdminCount = async function* (
   token: AnyJobStoreToken,
-  options: unknown
+  options: unknown,
+  observer: JobObserver | undefined
 ): JobOperation<number, JobAdminCountError, AnyJobStoreToken> {
-  const counts = yield* runAdminCounts(token, options)
+  const counts = yield* runAdminCounts(token, options, observer)
   return counts.total
 }
 
 const runAdminPause = async function* (
   token: AnyJobStoreToken,
   queue: unknown,
-  shouldPause: boolean
+  shouldPause: boolean,
+  observer: JobObserver | undefined
 ): JobOperation<
   import('../store').QueuePauseResult,
   JobAdminPauseError | JobAdminResumeError,
@@ -1725,25 +1866,33 @@ const runAdminPause = async function* (
   const now = yield* Result.await(Promise.resolve(clockNow(clock)))
   const request = { queue: checkedQueue, now }
   return shouldPause
-    ? yield* Result.await(Promise.resolve(resolveStoreOperation(store.pause(request))))
-    : yield* Result.await(Promise.resolve(resolveStoreOperation(store.resume(request))))
+    ? yield* Result.await(
+        Promise.resolve(observedStoreOperation(store.pause(request), observer, 'pause', now))
+      )
+    : yield* Result.await(
+        Promise.resolve(observedStoreOperation(store.resume(request), observer, 'resume', now))
+      )
 }
 
 const runAdminPaused = async function* (
-  token: AnyJobStoreToken
+  token: AnyJobStoreToken,
+  observer: JobObserver | undefined
 ): JobOperation<
   readonly import('../protocol').QueueName[],
   import('../store').JobStorePausedQueuesError | UnhandledException,
   AnyJobStoreToken
 > {
   const store = yield* token
-  return yield* Result.await(Promise.resolve(resolveStoreOperation(store.pausedQueues())))
+  return yield* Result.await(
+    Promise.resolve(observedStoreOperation(store.pausedQueues(), observer, 'pausedQueues'))
+  )
 }
 
 const runAdminRemove = async function* (
   token: AnyJobStoreToken,
   jobId: unknown,
-  options: unknown
+  options: unknown,
+  observer: JobObserver | undefined
 ): JobOperation<import('../store').RemoveResult, JobAdminRemoveError, AnyJobStoreToken, true> {
   const checkedId = yield* Result.await(Promise.resolve(normalizeJobId(jobId)))
   const expectedState = yield* Result.await(Promise.resolve(normalizeRemoveOptions(options)))
@@ -1752,49 +1901,54 @@ const runAdminRemove = async function* (
   const now = yield* Result.await(Promise.resolve(clockNow(clock)))
   const request: import('../store').RemoveRequest = { jobId: checkedId, now }
   if (expectedState !== undefined) Object.assign(request, { expectedState })
-  return yield* Result.await(Promise.resolve(resolveStoreOperation(store.remove(request))))
+  return yield* Result.await(
+    Promise.resolve(observedStoreOperation(store.remove(request), observer, 'remove', now))
+  )
 }
 
-const makeAdminClient = <Store extends AnyJobStoreToken>(token: Store): JobAdminClient<Store> => {
+const makeAdminClient = <Store extends AnyJobStoreToken>(
+  token: Store,
+  observer: JobObserver | undefined
+): JobAdminClient<Store> => {
   const client: JobAdminClient<Store> = {
     list: (options) =>
-      runAdminList(token, options) as JobAdminClient<Store>['list'] extends (
+      runAdminList(token, options, observer) as JobAdminClient<Store>['list'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
         : never,
     counts: ((options?: string | JobAdminCountOptions) =>
-      runAdminCounts(token, options) as JobAdminClient<Store>['counts'] extends (
+      runAdminCounts(token, options, observer) as JobAdminClient<Store>['counts'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
         : never) as JobAdminClient<Store>['counts'],
     count: ((options?: string | JobAdminCountOptions) =>
-      runAdminCount(token, options) as JobAdminClient<Store>['count'] extends (
+      runAdminCount(token, options, observer) as JobAdminClient<Store>['count'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
         : never) as JobAdminClient<Store>['count'],
     pause: (queue) =>
-      runAdminPause(token, queue, true) as JobAdminClient<Store>['pause'] extends (
+      runAdminPause(token, queue, true, observer) as JobAdminClient<Store>['pause'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
         : never,
     resume: (queue) =>
-      runAdminPause(token, queue, false) as JobAdminClient<Store>['resume'] extends (
+      runAdminPause(token, queue, false, observer) as JobAdminClient<Store>['resume'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
         : never,
     pausedQueues: () =>
-      runAdminPaused(token) as JobAdminClient<Store>['pausedQueues'] extends (
+      runAdminPaused(token, observer) as JobAdminClient<Store>['pausedQueues'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
         : never,
     remove: (jobId, options) =>
-      runAdminRemove(token, jobId, options) as JobAdminClient<Store>['remove'] extends (
+      runAdminRemove(token, jobId, options, observer) as JobAdminClient<Store>['remove'] extends (
         ...args: never[]
       ) => infer Output
         ? Output
@@ -1845,13 +1999,40 @@ export const makeJobOperations = (definition: JobOperationDescriptor): ErasedOpe
 /** Explicitly bind generic admin operations to a selected store token. */
 export const JobAdmin = Object.freeze({
   for: <Store extends AnyJobStoreToken>(token: Store): JobAdminClient<Store> => {
-    if (!isJobStoreToken(token)) {
-      throw new JobDefinitionError({ field: 'store', message: 'must be a JobStore token' })
-    }
-
-    return makeAdminClient(token)
+    validateAdminStore(token)
+    return makeAdminClient(token, undefined)
+  },
+  observe: (observer: JobObserver): JobAdminObserverBinding => {
+    validateObserver(observer)
+    return Object.freeze({
+      for: <Store extends AnyJobStoreToken>(token: Store): JobAdminClient<Store> => {
+        validateAdminStore(token)
+        return makeAdminClient(token, observer)
+      }
+    })
   }
 })
+
+const validateAdminStore: (token: unknown) => asserts token is AnyJobStoreToken = (token) => {
+  if (!isJobStoreToken(token)) {
+    throw new JobDefinitionError({ field: 'store', message: 'must be a JobStore token' })
+  }
+}
+
+const validateObserver: (observer: unknown) => asserts observer is JobObserver = (observer) => {
+  try {
+    if (
+      observer === null ||
+      typeof observer !== 'object' ||
+      typeof (observer as { readonly onEvent?: unknown }).onEvent !== 'function'
+    ) {
+      throw new JobDefinitionError({ field: 'observer', message: 'must implement onEvent' })
+    }
+  } catch (cause) {
+    if (cause instanceof JobDefinitionError) throw cause
+    throw new JobDefinitionError({ field: 'observer', message: 'could not read observer' })
+  }
+}
 
 const failOperation = <Value, Failure>(
   error: Failure

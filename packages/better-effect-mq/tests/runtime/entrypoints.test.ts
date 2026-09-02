@@ -13,6 +13,9 @@ const expectedCoreRuntimeExports = [
   'JobStore',
   'JobStoreWakeAbortedError',
   'JobTimeoutError',
+  'JobMetricNames',
+  'JobObserver',
+  'makeJobDepthSampler',
   'JobContext',
   'MemoryJobStore',
   'JobCodecFailure',
@@ -58,6 +61,7 @@ const expectedCoreRuntimeExports = [
   'normalizeIdempotencyKey',
   'normalizeMetadata',
   'normalizeRetryable',
+  'observeJob',
   'orderJobs',
   'promoteJob',
   'protocolVersion',
@@ -89,7 +93,12 @@ test('the core entrypoint exposes only the durable protocol surface', () => {
 })
 
 test('the testing entrypoint exposes only the runner-agnostic factory and error', () => {
-  expect(Object.keys(testing).sort()).toEqual(['JobStoreConformanceError', 'jobStoreContract'])
+  expect(Object.keys(testing).sort()).toEqual([
+    'JobStoreConformanceError',
+    'RecordedJobObserver',
+    'jobStoreContract'
+  ])
   expect(testing.jobStoreContract).toBeDefined()
+  expect(testing.RecordedJobObserver).toBeDefined()
   expect(testing.JobStoreConformanceError.name).toBe('JobStoreConformanceError')
 })
