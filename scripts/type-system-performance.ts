@@ -1604,6 +1604,11 @@ const prepareScenarioDependencies = async (
     selectedScenarios.includes('job-producer') ||
     selectedScenarios.includes('worker-handlers')
   const isolateDependencies = cleanDist && needsMqDeclarations
+  if (isolateDependencies) {
+    // Keep package consumers usable after the isolated clean build. A standalone
+    // package check may start without a previously built core declaration.
+    await ensurePackageBuild(corePackageRoot)
+  }
   const dependencies = isolateDependencies
     ? await prepareCleanDependencies(needsCoreDeclarations, needsMqDeclarations)
     : {
