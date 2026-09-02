@@ -19,6 +19,7 @@
     "errors",
     "backends",
     "testing",
+    "mq",
     "todo-api",
     "patterns",
     "troubleshooting"

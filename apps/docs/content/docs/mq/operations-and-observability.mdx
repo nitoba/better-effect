@@ -1,0 +1,36 @@
+---
+title: Operations and observability
+description: Operate polling workers, bounded events and production adapters.
+---
+
+Notifications are an optimization, not a correctness boundary. A Worker must
+continue to poll because a process can miss a notification, restart between a
+commit and a wake, or use an adapter without notifications. `awaitWake` should
+wake a claim loop promptly, while bounded polling remains the recovery path.
+
+`JobObserver` emits process-local, best-effort lifecycle events such as
+`job-enqueued`, `job-claimed`, `job-started`, `job-completed`,
+`job-retry-scheduled`, `job-failed`, `job-released`, `job-lease-lost` and
+`store-operation-failed`. Events intentionally carry low-cardinality identity
+and timing fields, not payloads, full metadata, lease tokens, idempotency keys
+or arbitrary causes. Use `attempts` and `counts` for durable inspection; events
+are not an event log.
+
+Operational checklist before replacing `MemoryJobStore` with a real adapter:
+
+- verify atomic settlement and current-token fencing under concurrent Workers;
+- make external handler effects idempotent and monitor uncertain settlements;
+- measure waiting, delayed, active, failed and cancelled counts separately;
+- keep polling enabled even when notifications are available;
+- bound payload, metadata and failure sizes at the application boundary;
+- test retry, timeout, lease-expiry, stalled-recovery and shutdown races;
+- stop Workers before disposing their Runtime and close adapter clients last;
+- run the full conformance suite and the external tarball consumer under Node.js
+  24 and the supported Bun release.
+
+`protocolVersion === 1` identifies the persisted protocol, not a promise of
+stability. The package is experimental `0.x`: minor bumps may change the
+contract before protocol v1 is declared stable. A JobStore-breaking change
+must call out affected adapters, and package release notes must state both the
+package version and protocol version. Do not publish a driver placeholder with
+the MVP.

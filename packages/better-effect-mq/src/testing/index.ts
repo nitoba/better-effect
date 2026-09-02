@@ -1,3 +1,6 @@
+export { TestJobStore } from './test-job-store'
+export type { TestJobStoreOptions } from './test-job-store'
+
 export { RecordedJobObserver } from './recorded-job-observer'
 export type { RecordedJobObserverSnapshot } from './recorded-job-observer'
 

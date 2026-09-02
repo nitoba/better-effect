@@ -8,6 +8,8 @@
   cooperative job timeouts, and best-effort failure notifications.
 - Process-local JobEvent observers, logging and metrics adapters, RecordedJobObserver,
   Runtime attempt metadata, and opt-in queue-depth sampling.
+- The deterministic TestJobStore harness, end-to-end examples, MQ documentation,
+  and package/type-system release gates.
 
 ## [0.1.0] - 2026-08-31
 

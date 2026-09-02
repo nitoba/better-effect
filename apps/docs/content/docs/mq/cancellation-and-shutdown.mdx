@@ -1,0 +1,44 @@
+---
+title: Cancellation and shutdown
+description: Coordinate AbortSignal cancellation, Worker stop and Runtime ownership.
+---
+
+Cancellation is cooperative. `awaitResult` can stop waiting without cancelling
+the persisted Job, and a handler observes the attempt's `CurrentAbortSignal`.
+Use an application `AbortController` when a request or process boundary owns
+that cancellation.
+
+```ts
+const controller = new AbortController()
+const waiting = SendEmail.awaitResult(jobId, { signal: controller.signal })
+controller.abort(new Error('request closed'))
+// The Job remains persisted; only this wait ends.
+await waiting
+```
+
+A graceful long-lived process owns its resources in this order:
+
+1. stop accepting new work;
+2. stop the Worker, optionally with `{ abortActive: true }`;
+3. await active attempts and store settlements/releases;
+4. dispose the Runtime and its root resources.
+
+```ts
+try {
+  await using worker = await Worker.start(runtime, { handlers })
+  await serveRequests()
+} finally {
+  // `worker` is stopped here before Runtime disposal.
+  await runtime.dispose()
+}
+```
+
+`Worker.stop()` is idempotent. It stops claim loops, waits for active attempts
+according to the configured shutdown policy and cleans supervision resources.
+Runtime disposal rejects new executions, waits for active executions, closes
+root scopes and disposes the backend last. Do not replace this sequence with a
+forced process exit: in-flight settlement can otherwise be delivered again.
+
+A lease expiry or shutdown can race with a handler result. The store's current
+lease token and atomic settlement determine the winner. Make side effects safe
+for either outcome.

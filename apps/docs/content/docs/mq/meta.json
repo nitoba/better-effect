@@ -1,0 +1,18 @@
+{
+  "title": "better-effect-mq",
+  "pages": [
+    "index",
+    "introduction",
+    "defining-jobs",
+    "enqueueing",
+    "workers",
+    "retries-and-timeouts",
+    "cancellation-and-shutdown",
+    "idempotency-and-delivery",
+    "stores-and-named-stores",
+    "testing",
+    "writing-a-driver",
+    "operations-and-observability"
+  ],
+  "defaultOpen": true
+}

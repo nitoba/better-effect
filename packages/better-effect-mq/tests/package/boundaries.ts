@@ -642,7 +642,12 @@ const assertCoreEntrypoint = async (path: string): Promise<void> => {
 const assertTestingEntrypoint = async (path: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
   const actual = Object.keys(module).sort()
-  const expected = ['JobStoreConformanceError', 'RecordedJobObserver', 'jobStoreContract']
+  const expected = [
+    'JobStoreConformanceError',
+    'RecordedJobObserver',
+    'TestJobStore',
+    'jobStoreContract'
+  ]
 
   assertCondition(
     JSON.stringify(actual) === JSON.stringify(expected),

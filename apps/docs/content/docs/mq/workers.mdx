@@ -1,0 +1,51 @@
+---
+title: Workers
+description: Run real handlers over an existing better-effect Runtime.
+---
+
+A Worker is a supervisor over an already configured Runtime. It claims jobs,
+provides `JobContext` and `CurrentAbortSignal` to the handler, and settles the
+result through the same JobStore contract used by producers.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import { JobContext, JobStore, MemoryJobStore, Worker } from 'better-effect-mq'
+import { SendEmail } from './jobs'
+
+const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
+const handler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    // Use context.jobId as a downstream idempotency key.
+    void context
+    return Result.ok(`sent:${payload.recipient}`)
+  })
+)
+
+try {
+  await using worker = await Worker.start(runtime, {
+    handlers: [handler],
+    concurrency: 8
+  })
+  await worker.awaitIdle()
+} finally {
+  // The await-using Worker is stopped before this Runtime is disposed.
+  await runtime.dispose()
+}
+```
+
+`Worker.use(runtime, options, callback)` is the callback-scoped alternative.
+Both forms use the real Worker supervisor; they do not provide a parallel
+container, scheduler or `Worker.layer`. The handler's `Effect` requirements
+and the Job's store requirement are checked against the Runtime at the start
+boundary.
+
+A Worker may have several handlers and named store bindings. Claims are fenced
+by lease token, and handler attempts are bounded by global, queue and handler
+concurrency. Keep the Worker alive while processing and stop it before
+disposing the Runtime that owns its store and other services.
+
+A cooperative `AbortSignal` is available for cancellation and timeout. A
+handler that ignores the signal cannot be forcibly killed by JavaScript.

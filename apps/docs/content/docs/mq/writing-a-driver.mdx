@@ -1,0 +1,38 @@
+---
+title: Writing a driver
+description: Implement a storage adapter without leaking backend details.
+---
+
+A driver implements `JobStore.Contract` and is provided through a default or
+named `JobStore` token. Each operation returns a completed `better-result`
+`Result` or a `PromiseLike` of one. Keep transactions, indexes, notifications
+and connection lifecycle inside the adapter.
+
+The important atomic boundaries are:
+
+- enqueue identity and idempotency checks;
+- claim ordering and exclusive lease acquisition;
+- heartbeat and lease-token fencing;
+- settlement plus attempt-ledger append;
+- release and stalled recovery;
+- cancellation, retry and administrative transitions.
+
+Validate all untrusted DTOs at the adapter boundary and return the protocol's
+focused errors. Persist JSON-safe payloads, metadata, retry data and bounded
+failure envelopes only. Do not persist live `Result`, `Error`, Service,
+Promise, request or connection objects.
+
+`awaitWake` is an optimization. A correct Worker must still make progress with
+polling, and a notification must never expose payloads, metadata, idempotency
+keys, lease tokens or arbitrary failure causes. `queueFilteredNotifications`
+and other capability flags describe performance, not permission to skip a
+transition or claim check.
+
+Run `jobStoreContract` against every supported capability configuration. The
+suite covers ordering, duplicate identity, fencing, retries, counts,
+pagination, wake races, cleanup and multi-store isolation. Add adapter-specific
+integration tests for transaction rollback, reconnect behavior and concurrent
+writers.
+
+An adapter package is intentionally separate from the MVP core. Do not add an
+empty database placeholder to `better-effect-mq`.

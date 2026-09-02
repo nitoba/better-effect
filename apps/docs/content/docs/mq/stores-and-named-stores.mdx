@@ -1,0 +1,44 @@
+---
+title: Stores and named stores
+description: Bind durable storage through the JobStore Service contract.
+---
+
+`JobStore` is a yieldable `better-effect` Service. Its structural Contract
+contains atomic operations for enqueue, claim, fenced settlement/release,
+heartbeat, stalled recovery, wake, inspection and administration. The core
+never sees SQL, Redis keys, connection objects or driver-specific DTOs.
+
+```ts
+import { Layer, Runtime } from 'better-effect'
+import { Codec, JobStore, MemoryJobStore, Queue } from 'better-effect-mq'
+
+declare const adapter: JobStore.Contract
+const Durable = JobStore.named('durable')
+const DurableLayer = Layer.succeed(Durable, Durable.of(adapter))
+```
+
+Bind a Job explicitly when several stores share one Runtime:
+
+```ts
+const AuditJob = Queue.define('audit').job('write', {
+  version: 1,
+  payload: Codec.json<{ readonly event: string }>(),
+  store: Durable
+})
+```
+
+The default `MemoryJobStore` is an isolated in-process reference driver. It is
+useful for tests and local demos, not for durable or cross-process delivery.
+`MemoryJobStore.layer` creates fresh state per Runtime; `make` creates one
+explicit instance. `MemoryJobStore.layerFor(namedToken, options)` supplies a
+named binding.
+
+```ts
+const runtime = await Runtime.make(
+  Layer.merge(MemoryJobStore.layer, MemoryJobStore.layerFor(Durable))
+)
+```
+
+Adapters must preserve claim ordering, lease fencing, atomic settlement,
+request timestamp validation and wake correctness. Capability flags can
+optimize polling but cannot weaken those semantics. See [Writing a driver](./writing-a-driver).

@@ -18,6 +18,7 @@
     "format": "turbo run format",
     "format:check": "turbo run format:check",
     "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq --filter=better-effect-better-auth --filter=better-effect-kysely",
+    "lint:release": "packages/better-effect/node_modules/.bin/oxlint --type-aware scripts/release-artifact.ts scripts/release-plan.ts scripts/release-route.ts scripts/release-route.test.ts",
     "check": "turbo run check && bun run test:kysely-docs && bun run test:release && bun run lint:release",
     "test:kysely-docs": "bun scripts/check-kysely-docs.ts",
     "lint:release": "packages/better-effect/node_modules/.bin/oxlint --type-aware scripts/check-kysely-docs.ts scripts/release-artifact.ts scripts/release-plan.ts scripts/release-route.ts scripts/release-route.test.ts",
