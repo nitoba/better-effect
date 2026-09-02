@@ -77,3 +77,48 @@ expectTypeOf<Service.Requirements<SettingsService>>().toEqualTypeOf<Config>()
 
 expectTypeOf<ConfigValidationError>().toMatchTypeOf<Error>()
 expectTypeOf<UnhandledException>().toMatchTypeOf<Error>()
+
+type TypedConfigInput = {
+  readonly PORT?: string
+  readonly DATABASE_URL?: string
+}
+
+type TypedConfigOutput = {
+  readonly port: number
+  readonly name: string
+}
+
+type TypedConfigSchemaTypes = {
+  input: TypedConfigInput
+  output: TypedConfigOutput
+}
+
+const typedConfigSchema = {
+  '~standard': {
+    version: 1,
+    vendor: 'better-effect-config-key-test',
+    // SAFETY: Standard Schema uses this declaration-only carrier for exact input/output inference.
+    types: {} as TypedConfigSchemaTypes,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The fixture models a Standard Schema boundary.
+    validate: (value: unknown): StandardSchemaV1.Result<TypedConfigOutput> => ({
+      // SAFETY: This fixture models the schema after it has validated the input shape.
+      value: { port: Number((value as TypedConfigInput).PORT), name: 'typed' }
+    })
+  }
+} satisfies StandardSchemaV1<TypedConfigInput, TypedConfigOutput>
+
+const TypedConfig = Config.withSchema(typedConfigSchema)
+const typedConfigProgram = Effect.fn(async function* () {
+  const config = yield* TypedConfig
+  const port = config.get('port')
+  const name = config.get('name')
+  // @ts-expect-error Config keys are derived from the Standard Schema output.
+  config.get('NOT_IN_SCHEMA')
+  return Result.ok({ port, name })
+})
+
+expectTypeOf<Effect.Success<typeof typedConfigProgram>>().toEqualTypeOf<{
+  port: number
+  name: string
+}>()
+void TypedConfig.layer({ PORT: '3000' })

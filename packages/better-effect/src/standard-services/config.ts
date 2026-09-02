@@ -11,6 +11,8 @@ import type { ServiceRequirement } from '../effect/types'
 import { Layer } from '../layer'
 import { Service } from '../service'
 
+/* oxlint-disable anti-slop/no-unsafe-dictionary-type -- schema output is opaque at this generic runtime boundary and is narrowed before storage. */
+
 /** Raw string values supplied to a configuration schema. */
 export type ConfigSource = Readonly<Record<string, string | undefined>>
 
@@ -30,6 +32,15 @@ export type ConfigOutput<Schema extends StandardSchemaV1> = StandardSchemaV1.Inf
 
 /** The raw input type described by a Standard Schema. */
 export type ConfigInput<Schema extends StandardSchemaV1> = StandardSchemaV1.InferInput<Schema>
+
+/** The string keys exposed by a schema's decoded configuration output. */
+type ConfigOutputObject<Schema extends StandardSchemaV1> =
+  ConfigOutput<Schema> extends object ? ConfigOutput<Schema> : Record<never, never>
+
+export type ConfigKey<Schema extends StandardSchemaV1> = Extract<
+  keyof ConfigOutputObject<Schema>,
+  string
+>
 
 /** A safe validation issue exposed by a configuration failure. */
 export type ConfigIssue = StandardSchemaV1.Issue
@@ -276,15 +287,93 @@ const makeConfigValue = <Schema extends StandardSchemaV1, Requirements extends S
   return value as ConfigValue<Schema, Requirements>
 }
 
-/** Host-backed raw configuration source and provider token. */
-export class Config extends Service<Config>()('Config') {
-  constructor(readonly source: ConfigSource) {
-    super()
+type ConfigWithOutput<Schema extends StandardSchemaV1> = Omit<Config, 'get'> & {
+  get<Key extends ConfigKey<Schema>>(key: Key): ConfigOutputObject<Schema>[Key]
+}
+
+type SchemaConfigToken<Schema extends StandardSchemaV1> = Service.Class<
+  'Config',
+  ConfigWithOutput<Schema>
+> &
+  Service.Token<'Config', ConfigWithOutput<Schema>> & {
+    readonly [Symbol.asyncIterator]: () => AsyncGenerator<
+      ServiceRequirement<ConfigWithOutput<Schema>>,
+      ConfigWithOutput<Schema>,
+      unknown
+    >
+  } & {
+    readonly layer: (source: ConfigSource) => Layer<ConfigWithOutput<Schema>, never>
+    readonly layerFromEnv: (options?: ConfigSourceOptions) => Layer<ConfigWithOutput<Schema>, never>
   }
 
-  /** Read one raw value from the configured source. */
+/** Host-backed raw configuration source and provider token. */
+export class Config extends Service<Config>()('Config') {
+  private values: Readonly<Record<string, unknown>>
+
+  constructor(readonly source: ConfigSource) {
+    super()
+    this.values = source
+  }
+
+  /** Read one value from the configured source or decoded schema output. */
   get(key: string): string | undefined {
-    return this.source[key]
+    // SAFETY: The unbound Config API contains raw string values; schema-bound tokens
+    // narrow this method to their decoded output type.
+    return this.values[key] as string | undefined
+  }
+
+  /**
+   * Create a schema-bound Config token with a typed `get` accessor.
+   *
+   * The token validates its source while its Layer is acquired. The accessor then
+   * reads the decoded schema output, so its return type follows the selected key.
+   */
+  static withSchema<Schema extends StandardSchemaV1>(schema: Schema): SchemaConfigToken<Schema> {
+    class SchemaConfig extends Config {}
+
+    // SAFETY: SchemaConfig is a Config subclass; this cast adds only schema-derived static signatures.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+    const token = SchemaConfig as unknown as SchemaConfigToken<Schema>
+    const acquire = async (source: ConfigSource): Promise<ConfigWithOutput<Schema>> => {
+      const checked = await validate(schema, source)
+
+      if (checked.status === 'error') {
+        throw checked.error
+      }
+
+      const values = checked.value
+
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Schema outputs must be objects for keyed access.
+      if (typeof values !== 'object' || values === null) {
+        throw new TypeError('Config schema output must be an object to use Config.get')
+      }
+
+      // SAFETY: Standard Schema returned a non-null object; this cast stores it behind the schema-derived Config.get type.
+      const config = new Config(source)
+      // SAFETY: The preceding object check establishes the runtime shape retained by Config.
+      config.values = values as Readonly<Record<string, unknown>>
+      // SAFETY: The validated output and schema key mapping establish this typed accessor.
+      return config as ConfigWithOutput<Schema>
+    }
+
+    Object.assign(SchemaConfig, {
+      layer: (source: ConfigSource) => Layer.make(token, () => acquire(source)),
+      layerFromEnv: (options: ConfigSourceOptions = {}) =>
+        Layer.make(token, async () => {
+          const loaded = await Result.tryPromise({
+            try: () => loadSource(options),
+            catch: (cause) => sourceError(options.dotEnvPath, cause)
+          })
+
+          if (loaded.status === 'error') {
+            throw loaded.error
+          }
+
+          return await acquire(loaded.value)
+        })
+    })
+
+    return token
   }
 
   /** Create a provider from an already-loaded source. */

@@ -1230,6 +1230,24 @@ Use `Config.schema(schema)` with `Config.layer(source)` or
 `Config.layerFromEnv(options)` when several descriptors should share an
 explicitly replaceable provider.
 
+When configuration should be consumed through a Service token, bind the schema
+to that token so `get` only accepts keys from the decoded schema output:
+
+```ts
+const AppConfig = Config.withSchema(EnvSchema)
+const AppConfigLive = AppConfig.layerFromEnv({ dotEnvPath: '.env' })
+
+const program = Effect.fn(async function* () {
+  const config = yield* AppConfig
+  return Result.ok(config.get('DATABASE_URL'))
+  //             ^ autocomplete is restricted to EnvSchema output keys
+})
+```
+
+`config.get(...)` reads the validated schema output, with the value type inferred
+from the selected key. Use `Config.schema(schema)` or
+`Config.fromEnv({ schema })` when the complete transformed output is needed.
+
 ---
 
 ## How it compares

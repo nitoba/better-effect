@@ -165,6 +165,24 @@ test('Config.fromEnv validates transformed values and can be reused', async () =
   }
 })
 
+test('Config.withSchema exposes validated output values through get', async () => {
+  const AppConfig = Config.withSchema(appSchema)
+  const runtime = await Runtime.make(AppConfig.layer({ PORT: '9090', APP_NAME: 'typed' }))
+
+  try {
+    const result = await runtime.run(
+      Effect.fn(async function* () {
+        const config = yield* AppConfig
+        return Result.ok({ port: config.get('port'), name: config.get('name') })
+      })
+    )
+
+    expectResult(result, Result.ok({ port: 9090, name: 'typed' }))
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('Config supports asynchronous validation and typed validation failures', async () => {
   const asyncSchema = {
     '~standard': {

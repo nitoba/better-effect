@@ -12,6 +12,7 @@ export type {
   ConfigFromEnvOptions,
   ConfigInput,
   ConfigIssue,
+  ConfigKey,
   ConfigOutput,
   ConfigSource,
   ConfigSourceOptions,
