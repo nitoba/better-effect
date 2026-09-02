@@ -1,4 +1,4 @@
-import { cp, mkdtemp, mkdir, realpath, readdir, rename, rm } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, realpath, readdir, rename, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -7,10 +7,11 @@ const packageRoot = resolve(fileURLToPath(new URL('../', import.meta.url)))
 
 const run = async (
   command: readonly string[],
-  environment: Record<string, string | undefined> = process.env
+  environment: Record<string, string | undefined> = process.env,
+  cwd: string = packageRoot
 ): Promise<void> => {
   const child = Bun.spawn([...command], {
-    cwd: packageRoot,
+    cwd,
     env: environment,
     stdout: 'inherit',
     stderr: 'inherit'
@@ -51,21 +52,35 @@ const unpackPackage = async (archive: string, directory: string): Promise<string
   return packageDirectory
 }
 
-const runFreshPackedNodeRuntimeTests = async (): Promise<void> => {
-  await rm(join(packageRoot, 'dist'), { force: true, recursive: true })
-  await run([process.execPath, 'run', 'build'])
+const freshPackageFiles = [
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'tsdown.config.ts',
+  'tsconfig.json'
+] as const
 
+const prepareFreshPackage = async (directory: string): Promise<void> => {
+  await mkdir(directory, { recursive: true })
+  await Promise.all(
+    freshPackageFiles.map((file) => cp(join(packageRoot, file), join(directory, file)))
+  )
+  await symlink(join(packageRoot, 'src'), join(directory, 'src'), 'dir')
+  await symlink(join(packageRoot, 'node_modules'), join(directory, 'node_modules'), 'dir')
+}
+
+const runFreshPackedNodeRuntimeTests = async (): Promise<void> => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'better-effect-node-runtime-'))
+  const freshPackageDirectory = join(temporaryDirectory, 'fresh-package')
 
   try {
-    await run([
-      process.execPath,
-      'pm',
-      'pack',
-      '--destination',
-      temporaryDirectory,
-      '--ignore-scripts'
-    ])
+    await prepareFreshPackage(freshPackageDirectory)
+    await run([process.execPath, 'run', 'build'], process.env, freshPackageDirectory)
+    await run(
+      [process.execPath, 'pm', 'pack', '--destination', temporaryDirectory, '--ignore-scripts'],
+      process.env,
+      freshPackageDirectory
+    )
     const archive = await packageArchive(temporaryDirectory)
     const packageDirectory = await unpackPackage(archive, temporaryDirectory)
     const environment = {
