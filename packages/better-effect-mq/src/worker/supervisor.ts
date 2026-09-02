@@ -40,6 +40,7 @@ import type {
 } from '../store'
 
 import { JobContext } from './context'
+import { scheduleDeadline } from './timer'
 import { JobTimeoutError, WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 import type {
   AnyWorkerHandler,
@@ -95,7 +96,7 @@ type AttemptState = {
   readonly startedAt: number
   promise: Promise<void>
   state: 'running' | 'cancelling' | 'settling' | 'lost'
-  timeoutTimer?: ReturnType<typeof setTimeout>
+  timeoutCancel?: () => void
   timedOut?: boolean
   failureCause?: unknown
   failureNotified?: boolean
@@ -110,7 +111,7 @@ type Waiter = {
   readonly reject: (cause: unknown) => void
   readonly signal: AbortSignal | undefined
   onAbort: (() => void) | undefined
-  timer: ReturnType<typeof setTimeout> | undefined
+  timer: (() => void) | undefined
   settled: boolean
 }
 
@@ -221,9 +222,10 @@ export class WorkerSupervisor implements WorkerHandle {
     for (const lease of this.claimLeases) {
       if (lease.lifecycle === 'pending') lease.lifecycle = 'abandoned'
     }
-    // Stop claiming immediately, but keep lease supervision alive while local
+    // Stop claiming immediately, and remove attempt deadlines while local
     // handlers and their cleanup are still able to settle.
     this.claimController.abort()
+    for (const attempt of this.activeAttempts.values()) attempt.timeoutCancel?.()
     this.shutdownController.abort(new Error('Worker is stopping'))
 
     if (normalizedOptions.abortActive === true) this.abortActiveAttempts()
@@ -285,6 +287,7 @@ export class WorkerSupervisor implements WorkerHandle {
     for (const attempt of this.activeAttempts.values()) {
       if (attempt.state === 'running') attempt.state = 'cancelling'
       this.shutdownAborts.add(attempt.key)
+      attempt.timeoutCancel?.()
       attempt.controller.abort(new Error('Worker is stopping'))
     }
   }
@@ -602,10 +605,16 @@ export class WorkerSupervisor implements WorkerHandle {
     increment(this.activeByHandler, entry.identityKey)
     this.activeAttempts.set(key, attempt)
     if (job.timeoutMs !== undefined) {
-      attempt.timeoutTimer = setTimeout(() => {
-        attempt.timedOut = true
-        attempt.controller.abort(new JobTimeoutError(String(job.id)))
-      }, job.timeoutMs)
+      attempt.timeoutCancel = scheduleDeadline(
+        job.timeoutMs,
+        () => {
+          const cause = new JobTimeoutError(String(job.id))
+          attempt.timedOut = true
+          attempt.failureCause = cause
+          attempt.controller.abort(cause)
+        },
+        () => this.readNow()
+      )
     }
 
     const promise = this.executeAttempt(group, attempt, context)
@@ -750,11 +759,16 @@ export class WorkerSupervisor implements WorkerHandle {
         result.error,
         recordedAt,
         attempt.job,
-        this.workerOptions.random
+        this.workerOptions.random,
+        (cause) => {
+          attempt.failureCause = cause
+        }
       )
     }
 
-    return completeOutcome(definition, result.value, recordedAt)
+    return completeOutcome(definition, result.value, recordedAt, (cause) => {
+      attempt.failureCause = cause
+    })
   }
 
   private async settleJob(
@@ -884,7 +898,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private finishAttempt(attempt: AttemptState): void {
-    if (attempt.timeoutTimer !== undefined) clearTimeout(attempt.timeoutTimer)
+    attempt.timeoutCancel?.()
     this.active -= 1
     decrement(this.activeByHandler, attempt.entry.identityKey)
     this.activeAttempts.delete(attempt.key)
@@ -1001,6 +1015,7 @@ export class WorkerSupervisor implements WorkerHandle {
   private markLost(attempt: AttemptState, cause: unknown): void {
     if (attempt.state === 'lost') return
     attempt.state = 'lost'
+    attempt.timeoutCancel?.()
     attempt.controller.abort(cause)
   }
 
@@ -1389,18 +1404,20 @@ const decodePayload = async (codec: CodecLike, payload: JsonValue): Promise<Code
 const completeOutcome = async (
   definition: AnyJobDefinition,
   value: unknown,
-  recordedAt: number
+  recordedAt: number,
+  preserveCause: (cause: unknown) => void
 ): Promise<SettlementOutcome> => {
   if (definition.result === undefined) {
-    return value === undefined
-      ? { type: 'complete' }
-      : encodeFailureOutcome('Result codec is not configured', recordedAt)
+    if (value === undefined) return { type: 'complete' }
+    const cause = new Error('Result codec is not configured')
+    preserveCause(cause)
+    return encodeFailureOutcome(safeCauseMessage(cause), recordedAt, cause)
   }
 
   const encoded = await encodeCodec(definition.result, value)
-  return encoded.ok
-    ? { type: 'complete', result: encoded.value }
-    : encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt)
+  if (encoded.ok) return { type: 'complete', result: encoded.value }
+  preserveCause(encoded.cause)
+  return encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt, encoded.cause)
 }
 
 const typedFailureOutcome = async (
@@ -1408,7 +1425,8 @@ const typedFailureOutcome = async (
   failure: unknown,
   recordedAt: number,
   job: ActiveJobSnapshot,
-  random: WorkerRandom
+  random: WorkerRandom,
+  preserveCause: (cause: unknown) => void
 ): Promise<SettlementOutcome> => {
   if (definition.failure === undefined) {
     return failOutcome('Failure codec is not configured', recordedAt)
@@ -1416,7 +1434,10 @@ const typedFailureOutcome = async (
 
   const encoded = await encodeCodec(definition.failure, failure)
 
-  if (!encoded.ok) return encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt)
+  if (!encoded.ok) {
+    preserveCause(encoded.cause)
+    return encodeFailureOutcome(safeCauseMessage(encoded.cause), recordedAt, encoded.cause)
+  }
 
   const retryableResult = runRetryable(definition, failure as JobFailure<typeof definition>)
   const predicateRetryable = !Result.isError(retryableResult) && retryableResult.value === true
@@ -1537,7 +1558,11 @@ const timeoutOutcome = (
     random
   )
 
-const encodeFailureOutcome = (message: string, recordedAt: number): SettlementOutcome => ({
+const encodeFailureOutcome = (
+  message: string,
+  recordedAt: number,
+  _cause?: unknown
+): SettlementOutcome => ({
   type: 'fail',
   failure: makeFailure({
     kind: 'encode',
@@ -2158,9 +2183,8 @@ const installWaiter = (waiter: Waiter, options: NormalizedAwaitIdleOptions): voi
 
   if (options.timeoutMs !== undefined) {
     try {
-      waiter.timer = setTimeout(
-        () => waiter.reject(new WorkerAwaitIdleError('timeout', 'Worker awaitIdle timed out')),
-        options.timeoutMs
+      waiter.timer = scheduleDeadline(options.timeoutMs, () =>
+        waiter.reject(new WorkerAwaitIdleError('timeout', 'Worker awaitIdle timed out'))
       )
     } catch (cause) {
       waiter.reject(
@@ -2219,7 +2243,7 @@ const makeWaiter = (
 
 const cleanupWaiter = (waiter: Waiter): void => {
   if (waiter.timer !== undefined) {
-    clearTimeout(waiter.timer)
+    waiter.timer()
     waiter.timer = undefined
   }
 

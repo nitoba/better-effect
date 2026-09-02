@@ -184,7 +184,10 @@ export const Retry = {
           ? backoff.delayMs * Math.pow(backoff.factor ?? 2, n - 1)
           : backoff.delayMs
     const spread = backoff.jitter ?? 0
-    const jittered = base * (1 - spread + 2 * spread * Math.min(1, Math.max(0, random)))
+    // Host-provided random sources are untrusted; invalid values must not turn
+    // a finite schedule into NaN (which previously selected the max delay).
+    const boundedRandom = Number.isFinite(random) ? Math.min(1, Math.max(0, random)) : 0.5
+    const jittered = base * (1 - spread + 2 * spread * boundedRandom)
     const capped = Math.min(jittered, backoff.maxDelayMs ?? Number.MAX_SAFE_INTEGER)
     return Math.min(
       Number.MAX_SAFE_INTEGER,

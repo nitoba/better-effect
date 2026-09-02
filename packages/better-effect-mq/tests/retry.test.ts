@@ -21,6 +21,15 @@ describe('Retry', () => {
     ).toBe(Number.MAX_SAFE_INTEGER)
   })
 
+  test('normalizes invalid random outputs without corrupting jitter', () => {
+    const policy = Retry.linear({ initialDelayMs: 100, incrementMs: 0, jitter: 0.2 })
+    expect(Retry.delay(policy.backoff, 1, Number.NaN)).toBe(100)
+    expect(Retry.delay(policy.backoff, 1, Number.POSITIVE_INFINITY)).toBe(100)
+    expect(Retry.delay(policy.backoff, 1, Number.NEGATIVE_INFINITY)).toBe(100)
+    expect(Retry.delay(policy.backoff, 1, -1)).toBe(80)
+    expect(Retry.delay(policy.backoff, 1, 2)).toBe(120)
+  })
+
   test('validates policy configuration and preserves never semantics', () => {
     expect(() => Retry.linear({ initialDelayMs: 10, incrementMs: -1 })).toThrow()
     expect(() => Retry.exponential({ initialDelayMs: 10, factor: 0 })).toThrow()
