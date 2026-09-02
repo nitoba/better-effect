@@ -1,5 +1,5 @@
 import { Layer } from 'better-effect'
-import type { Kysely } from 'kysely'
+import type { CompiledQuery, Kysely, QueryResult } from 'kysely'
 import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from 'better-effect-kysely'
 import type {
   KyselyExecutionOptions,
@@ -46,6 +46,30 @@ type _BorrowedRequired = Assert<Equal<Layer.Required<ReturnType<typeof Database.
 const query = database.selectFrom('users').select(['id', 'email'])
 type Rows = Awaited<ReturnType<typeof query.execute>>
 type _Rows = Assert<Equal<Rows, Array<{ id: number; email: string }>>>
+const executeOperation = query.$call(KyselyEffect.execute)
+const executeWithOperation = query.$call(
+  KyselyEffect.executeWith({ inflightQueryAbortStrategy: 'cancel query' })
+)
+const firstOperation = query.$call(KyselyEffect.executeTakeFirst)
+class MissingUser extends Error {}
+const firstOrFailOperation = query.$call(
+  KyselyEffect.executeTakeFirstOrFail(() => new MissingUser())
+)
+declare const compiledQuery: CompiledQuery<UserTable>
+const rawOperation = KyselyEffect.executeQuery(database, compiledQuery)
+type _Execute = Assert<Equal<typeof executeOperation, KyselyOperation<Rows, KyselyQueryError>>>
+type _ExecuteWith = Assert<
+  Equal<typeof executeWithOperation, KyselyOperation<Rows, KyselyQueryError>>
+>
+type _First = Assert<
+  Equal<typeof firstOperation, KyselyOperation<UserTable | undefined, KyselyQueryError>>
+>
+type _FirstOrFail = Assert<
+  Equal<typeof firstOrFailOperation, KyselyOperation<UserTable, MissingUser | KyselyQueryError>>
+>
+type _Raw = Assert<
+  Equal<typeof rawOperation, KyselyOperation<QueryResult<UserTable>, KyselyQueryError>>
+>
 type _Operation = Assert<
   Equal<KyselyEffect.Operation<number, KyselyQueryError>, KyselyOperation<number, KyselyQueryError>>
 >

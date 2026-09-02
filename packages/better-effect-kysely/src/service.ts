@@ -5,6 +5,14 @@ import { Layer, Service } from 'better-effect'
 
 import type { ServiceClass } from 'better-effect'
 
+import { execute, executeWith } from './execute'
+import { executeQuery } from './execute-query'
+import {
+  executeTakeFirst,
+  executeTakeFirstOrFail,
+  executeTakeFirstOrFailWith,
+  executeTakeFirstWith
+} from './execute-take-first'
 import type { KyselyExecutionOptions } from './options'
 import type { KyselyOperation } from './operation'
 
@@ -79,7 +87,16 @@ export function service<DB>(): KyselyServiceFactory<DB> {
 }
 
 /** Kysely integration namespace value. */
-export const KyselyEffect = Object.freeze({ service })
+export const KyselyEffect = Object.freeze({
+  service,
+  execute,
+  executeWith,
+  executeTakeFirst,
+  executeTakeFirstWith,
+  executeTakeFirstOrFail,
+  executeTakeFirstOrFailWith,
+  executeQuery
+})
 
 /** Type aliases colocated with the `KyselyEffect` namespace value. */
 export declare namespace KyselyEffect {

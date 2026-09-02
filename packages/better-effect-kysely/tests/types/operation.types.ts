@@ -2,14 +2,16 @@ import { expectTypeOf } from 'bun:test'
 
 import { Effect, Service } from 'better-effect'
 import { Result, TaggedError } from 'better-result'
+import type { Compilable, CompiledQuery, Kysely, QueryResult, SelectQueryBuilder } from 'kysely'
 import type { InflightQueryAbortStrategy } from 'kysely'
 
-import { KyselyQueryError, KyselyTransactionError } from '../../src'
+import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from '../../src'
 import type {
-  KyselyEffect,
+  KyselyExecutable,
   KyselyExecutionOptions,
   KyselyOperation,
-  KyselyQueryOperation
+  KyselyQueryOperation,
+  KyselyTakeFirstExecutable
 } from '../../src'
 
 class QueryFailure extends TaggedError('QueryFailure')<{
@@ -76,6 +78,104 @@ expectTypeOf(transactionError.toJSON()).toEqualTypeOf<{
   readonly name: 'KyselyTransactionError'
   readonly message: string
 }>()
+
+interface TerminalDatabase {
+  users: {
+    id: number
+    email: string | null
+  }
+}
+
+declare const executable: KyselyExecutable<readonly string[]>
+declare const firstExecutable: KyselyTakeFirstExecutable<
+  | {
+      readonly id: number
+    }
+  | undefined
+>
+declare const queryBuilder: SelectQueryBuilder<
+  TerminalDatabase,
+  'users',
+  { readonly id: number; readonly email: string | null }
+>
+declare const database: Kysely<TerminalDatabase>
+declare const compiledQuery: CompiledQuery<{ readonly id: number }>
+declare const compilableQuery: Compilable<{ readonly id: number }>
+
+const builderProgram = Effect.fn(async function* () {
+  const rows = yield* queryBuilder.$call(KyselyEffect.execute)
+  return Result.ok(rows)
+})
+
+const executableProgram = Effect.fn(async function* () {
+  const rows = yield* KyselyEffect.execute(executable)
+  return Result.ok(rows)
+})
+
+const firstProgram = Effect.fn(async function* () {
+  const row = yield* KyselyEffect.executeTakeFirst(firstExecutable)
+  return Result.ok(row)
+})
+
+const firstOrFailProgram = Effect.fn(async function* () {
+  const row = yield* KyselyEffect.executeTakeFirstOrFail(
+    () => new QueryFailure({ message: 'missing' })
+  )(firstExecutable)
+  return Result.ok(row)
+})
+
+const rawQueryProgram = Effect.fn(async function* () {
+  const result = yield* KyselyEffect.executeQuery(database, compiledQuery)
+  return Result.ok(result)
+})
+
+const compilableQueryOperation = KyselyEffect.executeQuery(database, compilableQuery)
+
+expectTypeOf<Effect.Success<ReturnType<typeof builderProgram>>>().toEqualTypeOf<
+  { readonly id: number; readonly email: string | null }[]
+>()
+expectTypeOf<Effect.Requirements<ReturnType<typeof builderProgram>>>().toBeNever()
+expectTypeOf<Effect.Success<ReturnType<typeof executableProgram>>>().toEqualTypeOf<
+  readonly string[]
+>()
+expectTypeOf<Effect.Error<ReturnType<typeof executableProgram>>>().toEqualTypeOf<KyselyQueryError>()
+expectTypeOf<Effect.Success<ReturnType<typeof firstProgram>>>().toEqualTypeOf<
+  { readonly id: number } | undefined
+>()
+expectTypeOf<Effect.Success<ReturnType<typeof firstOrFailProgram>>>().toEqualTypeOf<{
+  readonly id: number
+}>()
+expectTypeOf<Effect.Error<ReturnType<typeof firstOrFailProgram>>>().toEqualTypeOf<
+  QueryFailure | KyselyQueryError
+>()
+expectTypeOf<Effect.Success<ReturnType<typeof rawQueryProgram>>>().toEqualTypeOf<
+  QueryResult<{ readonly id: number }>
+>()
+expectTypeOf<Effect.Requirements<ReturnType<typeof rawQueryProgram>>>().toBeNever()
+expectTypeOf(compilableQueryOperation).toEqualTypeOf<
+  KyselyOperation<QueryResult<{ readonly id: number }>, KyselyQueryError>
+>()
+
+// The structural terminals accept the exact native Kysely boundaries.
+const terminalOptions: KyselyExecutionOptions = {
+  inflightQueryAbortStrategy: 'cancel query'
+}
+const executeWithOperation = KyselyEffect.executeWith(terminalOptions)(executable)
+const firstWithOperation = KyselyEffect.executeTakeFirstWith(terminalOptions)(firstExecutable)
+const firstOrFailWithOperation = KyselyEffect.executeTakeFirstOrFailWith(
+  terminalOptions,
+  () => new QueryFailure({ message: 'missing' })
+)(firstExecutable)
+
+expectTypeOf(executeWithOperation).toEqualTypeOf<
+  KyselyOperation<readonly string[], KyselyQueryError>
+>()
+expectTypeOf(firstWithOperation).toEqualTypeOf<
+  KyselyOperation<{ readonly id: number } | undefined, KyselyQueryError>
+>()
+expectTypeOf(firstOrFailWithOperation).toEqualTypeOf<
+  KyselyOperation<{ readonly id: number }, QueryFailure | KyselyQueryError>
+>()
 
 // @ts-expect-error Runtime owns the signal; callers may only provide Kysely's strategy option.
 const invalidOptions: KyselyExecutionOptions = { signal: new AbortController().signal }

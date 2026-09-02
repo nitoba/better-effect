@@ -9,3 +9,5 @@
   isolated external consumer gate for the v0.1 implementation.
 - Add the yieldable `KyselyOperation` contract, Runtime signal forwarding, and
   safe typed query and transaction boundary errors.
+- Add lazy native query terminals for execute, first-row, first-row-or-fail, and
+  raw or compiled query execution.
