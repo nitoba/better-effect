@@ -9,8 +9,8 @@ heartbeat, stalled recovery, wake, inspection and administration. The core
 never sees SQL, Redis keys, connection objects or driver-specific DTOs.
 
 ```ts
-import { Layer } from 'better-effect'
-import { Codec, JobStore, Queue } from 'better-effect-mq'
+import { Layer, Runtime } from 'better-effect'
+import { Codec, JobStore, MemoryJobStore, Queue } from 'better-effect-mq'
 
 declare const adapter: JobStore.Contract
 const Durable = JobStore.named('durable')
