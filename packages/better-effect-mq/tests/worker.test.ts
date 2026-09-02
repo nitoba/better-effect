@@ -1289,6 +1289,63 @@ test('Worker shares global slots across independent store and queue groups', asy
   }
 })
 
+test('Worker observes rejected synchronous custom decisions without unhandled rejection', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const customJob = queue.job('rejected-custom-decision', {
+    version: 1,
+    payload,
+    result: voidResult,
+    failure,
+    defaults: {
+      attempts: 2,
+      backoff: {
+        type: 'custom',
+        // SAFETY: this deliberately models an untyped synchronous-policy violation.
+        decide: (() => Promise.reject(new Error('decision rejected'))) as never
+      }
+    }
+  })
+  const now = Date.now()
+  const created = await resolve(
+    store.enqueue({
+      job: customJob.identity,
+      payload: { value: 1 },
+      runAt: now,
+      attemptsMax: 2,
+      metadata: {},
+      now
+    })
+  )
+  let unhandled = 0
+  const onUnhandled = () => {
+    unhandled += 1
+  }
+  process.on('unhandledRejection', onUnhandled)
+  const worker = await Worker.start(runtime, {
+    handlers: [
+      Worker.handle(customJob, () =>
+        Effect.fn(async function* () {
+          yield* JobContext
+          return Result.err({ code: 'failed' })
+        })
+      )
+    ],
+    pollIntervalMs: 1
+  })
+
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 0))
+    expect((await resolve(store.getJob({ jobId: created.job.id })))?.state).toBe('failed')
+    expect(unhandled).toBe(0)
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled)
+    await worker.stop()
+    await runtime.dispose()
+  }
+})
+
 test('Worker observer attributes identify exactly one Runtime attempt per job', async () => {
   const store = MemoryJobStore.make()
   const starts: Array<{ readonly id: unknown; readonly name: unknown }> = []

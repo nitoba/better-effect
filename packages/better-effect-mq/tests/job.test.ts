@@ -610,6 +610,25 @@ test('definitions validate names, versions, and persisted default policies', () 
   )
 })
 
+test('Retry.never canonicalizes through Job defaults', () => {
+  const queue = Queue.define('retry-never')
+  const definition = queue.job('run-once', {
+    version: 1,
+    payload: Codec.json<{ readonly value: number }>(),
+    defaults: { backoff: { type: 'never', maxAttempts: 1 } }
+  })
+
+  expect(definition.defaults.attempts).toBe(1)
+  expect(definition.defaults.backoff).toBeUndefined()
+  expect(() =>
+    queue.job('invalid-never', {
+      version: 1,
+      payload: Codec.json<{ readonly value: number }>(),
+      defaults: { backoff: { type: 'never', maxAttempts: 2 } as never }
+    })
+  ).toThrow(JobDefinitionError)
+})
+
 test('identity is the literal queue/name/version tuple, never a function name', () => {
   const queue = Queue.define('billing')
   const namedHandler = function ThisFunctionNameMustNotBecomeIdentity(): string {

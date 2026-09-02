@@ -766,21 +766,34 @@ export class WorkerSupervisor implements WorkerHandle {
     const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     if (attempt?.state === 'lost') return
     if (attempt !== undefined) attempt.state = 'settling'
-    const settlementNow =
-      outcome.type === 'retry' && outcome.retryDelayMs !== undefined
-        ? outcome.runAt - outcome.retryDelayMs
-        : this.readNow()
+    let submittedOutcome = outcome
     const result = await runStoreOperation<SettlementResult>(
       this.runtime,
       group.store,
-      (store) =>
-        store.settle({
+      (store) => {
+        // runStoreOperation invokes this callback asynchronously. Re-check at that
+        // gate so a deadline that wins before adapter invocation cannot submit Complete.
+        if (attempt?.timedOut) {
+          submittedOutcome = timeoutOutcome(
+            attempt.failureCause ?? new JobTimeoutError(String(job.id)),
+            this.readNow(),
+            job,
+            attempt.entry.definition.retryPolicy?.type !== 'never',
+            this.workerOptions.random
+          )
+        }
+        const settlementNow =
+          submittedOutcome.type === 'retry' && submittedOutcome.retryDelayMs !== undefined
+            ? submittedOutcome.runAt - submittedOutcome.retryDelayMs
+            : this.readNow()
+        return store.settle({
           jobId: job.id,
           leaseToken: job.leaseToken,
-          outcome,
+          outcome: submittedOutcome,
           now: settlementNow,
           startedAt
-        }),
+        })
+      },
       undefined,
       this.workerOptions.pollIntervalMs,
       this.workerOptions.storeOperationTimeoutMs,
@@ -791,11 +804,11 @@ export class WorkerSupervisor implements WorkerHandle {
       this.report(result.error)
     } else if (
       (result.value.status === 'applied' || result.value.status === 'already-applied') &&
-      (outcome.type === 'fail' || outcome.type === 'retry') &&
+      (submittedOutcome.type === 'fail' || submittedOutcome.type === 'retry') &&
       (result.value.attempt.outcome === 'failed' || result.value.attempt.outcome === 'retried')
     ) {
       const persisted = result.value.attempt
-      const persistedFailure = persisted.failure ?? outcome.failure
+      const persistedFailure = persisted.failure ?? submittedOutcome.failure
       if (persistedFailure === undefined) return
       const persistedOutcome =
         persisted.outcome === 'retried'
@@ -1548,19 +1561,37 @@ const safeCustomDecision = (
 ): { retry: boolean; delayMs?: number } => {
   try {
     const decision = policy.decide(failure as never, { attempt, attemptsMax })
+    if (isThenable(decision)) {
+      // Custom decisions are synchronous. Assimilate and observe hostile thenables now;
+      // otherwise a returned rejected Promise would become an unhandled rejection.
+      void Promise.resolve(decision).catch(() => undefined)
+      return { retry: false }
+    }
     if (decision === true) return { retry: true }
     if (decision === false || decision === undefined || decision === null) return { retry: false }
+    if (typeof decision !== 'object' || decision === null) return { retry: false }
+    const prototype = Object.getPrototypeOf(decision)
+    if (prototype !== Object.prototype && prototype !== null) return { retry: false }
+    const retryDescriptor = Object.getOwnPropertyDescriptor(decision, 'retry')
+    const delayDescriptor = Object.getOwnPropertyDescriptor(decision, 'delayMs')
     if (
-      typeof decision !== 'object' ||
-      decision === null ||
-      typeof (decision as { retry?: unknown }).retry !== 'boolean'
+      retryDescriptor === undefined ||
+      !('value' in retryDescriptor) ||
+      (delayDescriptor !== undefined && !('value' in delayDescriptor)) ||
+      typeof retryDescriptor.value !== 'boolean'
     )
       return { retry: false }
-    const delay = (decision as { delayMs?: unknown }).delayMs
+    const allowed = new Set(['retry', 'delayMs'])
+    for (const key of Reflect.ownKeys(decision)) {
+      if (typeof key !== 'string' || !allowed.has(key)) return { retry: false }
+      const descriptor = Object.getOwnPropertyDescriptor(decision, key)
+      if (descriptor === undefined || !('value' in descriptor)) return { retry: false }
+    }
+    const delay = delayDescriptor?.value
     return delay === undefined
-      ? { retry: (decision as { retry: boolean }).retry }
+      ? { retry: retryDescriptor.value }
       : typeof delay === 'number' && Number.isSafeInteger(delay) && delay >= 0
-        ? { retry: (decision as { retry: boolean }).retry, delayMs: delay }
+        ? { retry: retryDescriptor.value, delayMs: delay }
         : { retry: false }
   } catch {
     return { retry: false }
@@ -1705,6 +1736,15 @@ const heartbeatKey = (
   jobId: JobRecord['id'],
   leaseToken: NonNullable<JobRecord['leaseToken']>
 ): string => JSON.stringify([jobId, leaseToken])
+
+const isThenable = (value: unknown): boolean => {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false
+  try {
+    return typeof (value as { readonly then?: unknown }).then === 'function'
+  } catch {
+    return false
+  }
+}
 
 const isResultLike = (value: unknown): value is UnknownResult => {
   if (typeof value !== 'object' || value === null) {

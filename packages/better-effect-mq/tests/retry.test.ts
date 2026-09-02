@@ -42,5 +42,20 @@ describe('Retry', () => {
     })
     // SAFETY: this cast intentionally models an untyped accessor-bearing caller.
     expect(() => Retry.fixed(accessor as never)).toThrow()
+    const inheritedDelay = Object.create({
+      get delayMs() {
+        return 10
+      }
+    })
+    inheritedDelay.maxAttempts = 2
+    // SAFETY: this cast intentionally models an untyped inherited-accessor caller.
+    expect(() => Retry.fixed(inheritedDelay as never)).toThrow()
+    const inheritedDecide = Object.create({
+      get decide() {
+        return () => true
+      }
+    })
+    // SAFETY: this cast intentionally models an untyped inherited-accessor caller.
+    expect(() => Retry.custom(inheritedDecide as never)).toThrow()
   })
 })

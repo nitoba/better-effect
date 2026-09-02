@@ -48,7 +48,7 @@ const backoffFields = [
 
 const typeFields = (type: unknown, hasPolicyBackoff: boolean): readonly string[] =>
   type === 'never'
-    ? ['type']
+    ? ['type', 'maxAttempts']
     : type === 'custom'
       ? ['type', 'maxAttempts', 'decide']
       : hasPolicyBackoff && (type === 'fixed' || type === 'linear' || type === 'exponential')
@@ -58,6 +58,10 @@ const typeFields = (type: unknown, hasPolicyBackoff: boolean): readonly string[]
 const validateFactoryOptions = (options: unknown, allowed: readonly string[]): void => {
   if (typeof options !== 'object' || options === null) invalid('options must be an object')
   const objectOptions = options as object
+  const prototype = Object.getPrototypeOf(objectOptions)
+  if (prototype !== Object.prototype && prototype !== null) {
+    invalid('retry options must be a plain object')
+  }
   for (const key of Reflect.ownKeys(objectOptions)) {
     if (typeof key !== 'string' || !allowed.includes(key))
       invalid('retry options contain unsupported fields')
@@ -207,6 +211,14 @@ export const normalizeRetryPolicy = (
     )
   }
   try {
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null)
+      invalid('retry policy must be a plain object')
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (descriptor === undefined || !('value' in descriptor))
+        invalid('retry policy contains an accessor field')
+    }
     const candidate = value as {
       readonly type?: unknown
       readonly backoff?: unknown
@@ -219,17 +231,14 @@ export const normalizeRetryPolicy = (
     for (const key of Reflect.ownKeys(value)) {
       if (typeof key !== 'string' || !allowed.includes(key))
         invalid('retry policy contains unsupported fields')
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (descriptor === undefined || !('value' in descriptor))
-        invalid('retry policy contains an accessor field')
     }
     if (type === 'never') {
       if (
+        candidate.maxAttempts !== 1 ||
         candidate.backoff !== undefined ||
-        candidate.maxAttempts !== undefined ||
         candidate.decide !== undefined
       )
-        invalid('never cannot contain retry options')
+        invalid('never requires maxAttempts to be exactly 1')
       return Result.ok(Retry.never())
     }
     if (type === 'custom') {

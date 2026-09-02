@@ -106,9 +106,14 @@ Typed failures are retried only when `retryable` returns true. Use
 failures cannot carry this process-local identity marker. Defects retry by
 default (`retryDefects: false` disables that), while decode and encode failures
 are terminal. `timeoutMs` aborts the attempt cooperatively and is persisted per
-job; the exported `JobTimeoutError` is used as the abort reason. `onJobFailure`
-is a best-effort callback invoked only after an applied terminal or retry
-settlement.
+job; the exported `JobTimeoutError` is used as the abort reason. The Worker
+re-checks the deadline at the single settlement submission gate, so a timeout
+that wins before adapter invocation is persisted as timeout retry/fail and
+cannot be replaced by `complete`. Once an adapter settlement call has begun,
+the adapter owns its non-cancellable mutation: the observed applied outcome
+wins (the Worker does not pretend it can retract it), while fencing and the
+attempt ledger prevent a duplicate settlement. `onJobFailure` is a best-effort
+callback invoked only after an applied terminal or retry settlement.
 
 ## Portable codecs and trust boundaries
 
