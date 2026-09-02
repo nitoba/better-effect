@@ -30,6 +30,7 @@ import { JobStore, isJobStoreToken } from '../store'
 import type { AnyJobStoreToken, DefaultJobStoreToken } from '../store'
 import { makeJobOperations } from './application'
 import type { JobBoundOperations, JobOperationDescriptor } from './application'
+import type { JobObserver } from '../observability/observer'
 
 import type { QueueDefinition } from './queue'
 import { isQueueDefinition } from './queue'
@@ -45,6 +46,7 @@ import {
 declare const JobDefinitionTypeId: unique symbol
 
 const unrecoverableFailures = new WeakSet<object>()
+const jobObserver = Symbol('better-effect-mq/job-observer')
 
 export const isUnrecoverableFailure = (value: unknown): boolean =>
   (typeof value === 'object' && value !== null) || typeof value === 'function'
@@ -1598,6 +1600,57 @@ export function createJob(queue: unknown, name: unknown, options: unknown): AnyJ
 }
 
 /** Bind an inert Job descriptor to a default or named JobStore token. */
+export const observeJob = <Definition extends AnyJobDefinition>(
+  definition: Definition,
+  observer: JobObserver
+): Definition => {
+  if (!isJobDefinition(definition)) {
+    throw new JobDefinitionError({ field: 'definition', message: 'must be a Job definition' })
+  }
+  validateJobObserver(observer)
+  const operations = makeJobOperations({
+    identity: definition.identity,
+    payload: definition.payload,
+    result: definition.result,
+    failure: definition.failure,
+    defaults: definition.defaults,
+    store: definition.store,
+    idempotencyKey: definition.idempotencyKey,
+    metadata: definition.metadata,
+    observer
+  } satisfies JobOperationDescriptor)
+  const observed = markDescriptor({ ...definition, ...operations }, jobTypeId)
+  Object.defineProperty(observed, jobObserver, {
+    configurable: false,
+    enumerable: false,
+    value: observer,
+    writable: false
+  })
+  return Object.freeze(observed) as unknown as Definition
+}
+
+const validateJobObserver: (observer: unknown) => asserts observer is JobObserver = (observer) => {
+  try {
+    if (
+      observer === null ||
+      typeof observer !== 'object' ||
+      typeof (observer as { readonly onEvent?: unknown }).onEvent !== 'function'
+    ) {
+      throw new JobDefinitionError({ field: 'observer', message: 'must implement onEvent' })
+    }
+  } catch (cause) {
+    if (cause instanceof JobDefinitionError) throw cause
+    throw new JobDefinitionError({ field: 'observer', message: 'could not read observer' })
+  }
+}
+
+const observerFor = (definition: AnyJobDefinition): JobObserver | undefined => {
+  const descriptor = Object.getOwnPropertyDescriptor(definition, jobObserver)
+  return descriptor !== undefined && 'value' in descriptor
+    ? (descriptor.value as JobObserver)
+    : undefined
+}
+
 export const bindJob = <Definition extends AnyJobDefinition, Store extends AnyJobStoreToken>(
   definition: Definition,
   store: Store
@@ -1619,11 +1672,20 @@ export const bindJob = <Definition extends AnyJobDefinition, Store extends AnyJo
     defaults: definition.defaults,
     store,
     idempotencyKey: definition.idempotencyKey,
-    metadata: definition.metadata
+    metadata: definition.metadata,
+    observer: observerFor(definition)
   } satisfies JobOperationDescriptor)
-  return Object.freeze(
-    markDescriptor({ ...definition, store, ...operations }, jobTypeId)
-  ) as unknown as Job.Bound<Definition, Store>
+  const observer = observerFor(definition)
+  const bound = markDescriptor({ ...definition, store, ...operations }, jobTypeId)
+  if (observer !== undefined) {
+    Object.defineProperty(bound, jobObserver, {
+      configurable: false,
+      enumerable: false,
+      value: observer,
+      writable: false
+    })
+  }
+  return Object.freeze(bound) as unknown as Job.Bound<Definition, Store>
 }
 
 export const normalizeIdempotencyKey = (
@@ -2164,6 +2226,7 @@ export const Job = {
   },
   bind: bindJob,
   bindStore: bindJob,
+  observe: observeJob,
   is: isJobDefinition,
   normalizeIdempotencyKey,
   normalizeMetadata,

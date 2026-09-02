@@ -4,6 +4,7 @@ import type { AnyService, ServiceContract } from 'better-effect'
 import type { AnyJobDefinition, Job } from '../job'
 import type { JobContext } from './context'
 import type { WorkerId, JobRecord, SerializedJobFailure } from '../protocol'
+import type { JobObserver } from '../observability'
 
 /** Optional concurrency override for one registered handler. */
 export interface WorkerHandlerOptions {
@@ -97,6 +98,8 @@ export interface WorkerOptions<
   readonly now?: WorkerClock
   readonly random?: WorkerRandom
   readonly onError?: WorkerErrorHandler
+  /** Process-local, best-effort events for this Worker. */
+  readonly observer?: JobObserver
   readonly retryDefects?: boolean
   readonly onJobFailure?: JobFailureHandler
 }

@@ -29,6 +29,9 @@ const expectedCoreRuntimeExports = [
   'JobStore',
   'JobStoreWakeAbortedError',
   'MemoryJobStore',
+  'JobMetricNames',
+  'JobObserver',
+  'makeJobDepthSampler',
   'JobAdmin',
   'JobAwaitAbortedError',
   'JobCodecFailure',
@@ -75,6 +78,7 @@ const expectedCoreRuntimeExports = [
   'normalizeIdempotencyKey',
   'normalizeMetadata',
   'normalizeRetryable',
+  'observeJob',
   'orderJobs',
   'promoteJob',
   'protocolVersion',
@@ -638,7 +642,7 @@ const assertCoreEntrypoint = async (path: string): Promise<void> => {
 const assertTestingEntrypoint = async (path: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
   const actual = Object.keys(module).sort()
-  const expected = ['JobStoreConformanceError', 'jobStoreContract']
+  const expected = ['JobStoreConformanceError', 'RecordedJobObserver', 'jobStoreContract']
 
   assertCondition(
     JSON.stringify(actual) === JSON.stringify(expected),

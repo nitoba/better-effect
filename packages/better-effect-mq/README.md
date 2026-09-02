@@ -563,6 +563,80 @@ convergence. There is no exactly-once guarantee.
 A handler error is reported through `onError` and does not terminate other claim
 loops.
 
+## Process-local observability
+
+`JobEvent` and `JobObserver` provide storage-neutral, process-local telemetry
+without adding an OpenTelemetry, Prometheus, or logger dependency. Attach one
+observer to a Worker, or compose several adapters in declaration order:
+
+```ts
+const observer = JobObserver.compose(
+  JobObserver.logger((event) => console.info(event.message, event.data)),
+  JobObserver.metrics(metricsSink)
+)
+
+await using worker = await Worker.start(runtime, {
+  handlers: [SendEmailHandler],
+  observer
+})
+```
+
+Observer callbacks are synchronous from the Worker’s perspective and are never
+awaited. A throw or rejected thenable is contained and does not affect queue
+claims, settlement, leases, or shutdown. Keep callbacks short and offload slow
+work to an external bounded system; the package does not create an unbounded
+internal observer queue. Events are shallow-frozen snapshots and contain only
+scalar/brand identity, timing, transition, and bounded failure-kind/code fields.
+They never include payloads, results, metadata, idempotency keys, lease tokens,
+causes, messages, or failure data.
+
+`Job.observe(job, observer)` attaches producer/admin store-operation and
+administrative transition events to an immutable Job descriptor. For generic
+inspection operations use `JobAdmin.observe(observer).for(store)`. Worker
+lifecycle events are attached independently through `WorkerOptions.observer`.
+`RecordedJobObserver` is available from `better-effect-mq/testing`:
+
+```ts
+const recorded = RecordedJobObserver.make()
+const observedJob = Job.observe(SendEmail, recorded)
+recorded.events // readonly event timeline
+recorded.snapshot() // detached readonly view
+recorded.clear()
+```
+
+The optional logger adapter accepts a callback, a `{ log }` object, or levelled
+`debug`/`info`/`warn`/`error` methods. When no target is supplied, it writes to
+`console`; its defaults log retries and terminal
+failures at `warn`/`error`, lease/stall events at `warn`, and startup/shutdown at
+`info`; successful runs are omitted unless enabled. `JobObserver.metrics(sink)`
+uses stable names such as `better_effect_mq_job_runs_total` and
+`better_effect_mq_jobs_in_flight`. Metric labels use only queue/name and bounded
+outcome fields—never job or worker IDs.
+
+Queue depth is an opt-in gauge sampler over `JobStore.counts`:
+
+```ts
+const sampler = JobObserver.depthSampler(store, metricsSink, {
+  queues: [queueName],
+  intervalMs: 1_000
+})
+sampler.start()
+// sampler.stop() cancels future samples and timers
+```
+
+The first sample is immediate, later samples wait for the configured interval,
+and stopping the sampler ignores an in-flight result. Depth is `waiting +
+delayed` and is emitted as `better_effect_mq_queue_depth` with only a `queue`
+attribute.
+
+Worker handler attempts are also named for Runtime observers as
+`better-effect-mq/<queue>/<job>@<version>` with the allowlisted `mq.*`
+attributes (`mq.job.id`, `mq.job.name`, `mq.job.version`, `mq.job.queue`,
+`mq.job.attempt`, and `mq.worker.id`). Runtime remains the owner of execution
+start/end events; MQ does not duplicate them. A completed/retry/failure event is
+emitted only after its settlement is confirmed, and an uncertain settlement
+emits a store-operation failure rather than a false completion.
+
 ## MemoryJobStore reference driver
 
 `MemoryJobStore` is the complete in-process reference driver for tests, demos,

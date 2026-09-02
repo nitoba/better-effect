@@ -1827,13 +1827,13 @@ test('Worker observer attributes identify exactly one Runtime attempt per job', 
     observers: [
       {
         onExecutionStart: (event) => {
-          if (event.attributes?.jobId !== undefined) {
-            starts.push({ id: event.attributes.jobId, name: event.attributes.name })
+          if (event.attributes?.['mq.job.id'] !== undefined) {
+            starts.push({ id: event.attributes['mq.job.id'], name: event.name })
           }
         },
         onExecutionEnd: (event) => {
-          if (event.attributes?.jobId !== undefined) {
-            ends.push({ id: event.attributes.jobId, name: event.attributes.name })
+          if (event.attributes?.['mq.job.id'] !== undefined) {
+            ends.push({ id: event.attributes['mq.job.id'], name: event.name })
           }
         }
       }
@@ -1860,8 +1860,9 @@ test('Worker observer attributes identify exactly one Runtime attempt per job', 
     expect(ends).toHaveLength(jobs.length)
     expect(new Set(starts.map((execution) => execution.id)).size).toBe(jobs.length)
     expect(new Set(ends.map((execution) => execution.id)).size).toBe(jobs.length)
-    expect(starts.every((execution) => execution.name === successfulJob.name)).toBe(true)
-    expect(ends.every((execution) => execution.name === successfulJob.name)).toBe(true)
+    const expectedName = `better-effect-mq/${successfulJob.queue}/${successfulJob.name}@${successfulJob.version}`
+    expect(starts.every((execution) => execution.name === expectedName)).toBe(true)
+    expect(ends.every((execution) => execution.name === expectedName)).toBe(true)
   } finally {
     await worker.stop()
     await runtime.dispose()

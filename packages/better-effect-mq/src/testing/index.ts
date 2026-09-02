@@ -1,3 +1,6 @@
+export { RecordedJobObserver } from './recorded-job-observer'
+export type { RecordedJobObserverSnapshot } from './recorded-job-observer'
+
 export { JobStoreConformanceError, jobStoreContract } from './job-store-contract'
 
 export type {

@@ -2,6 +2,7 @@ export {
   Job,
   bindJob,
   createJob,
+  observeJob,
   normalizeIdempotencyKey,
   normalizeMetadata,
   normalizeRetryable,
@@ -35,6 +36,7 @@ export type { AnyJobRegistry, RegisteredJobIdentity, RegistryIdentityInput } fro
 export type {
   DecodedJobFailure,
   JobAdminClient,
+  JobAdminObserverBinding,
   JobAdminCountError,
   JobAdminCountOptions,
   JobAdminListError,

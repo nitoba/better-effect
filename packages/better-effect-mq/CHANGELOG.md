@@ -6,6 +6,8 @@
 
 - Retry policies with durable backoff normalization, typed failure handling,
   cooperative job timeouts, and best-effort failure notifications.
+- Process-local JobEvent observers, logging and metrics adapters, RecordedJobObserver,
+  Runtime attempt metadata, and opt-in queue-depth sampling.
 
 ## [0.1.0] - 2026-08-31
 
