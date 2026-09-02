@@ -58,6 +58,7 @@
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-kysely"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@types/bun": "1.3.14",
     "better-effect": "0.13.0",
     "better-result": "^3.0.0",

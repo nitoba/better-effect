@@ -2,7 +2,15 @@ import { expectTypeOf } from 'bun:test'
 
 import { Effect, Service } from 'better-effect'
 import { Result, TaggedError } from 'better-result'
-import type { Compilable, CompiledQuery, Kysely, QueryResult, SelectQueryBuilder } from 'kysely'
+import type {
+  Compilable,
+  CompiledQuery,
+  Kysely,
+  QueryResult,
+  RawBuilder,
+  SelectQueryBuilder,
+  Transaction
+} from 'kysely'
 import type { InflightQueryAbortStrategy } from 'kysely'
 
 import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from '../../src'
@@ -101,6 +109,8 @@ declare const queryBuilder: SelectQueryBuilder<
 declare const database: Kysely<TerminalDatabase>
 declare const compiledQuery: CompiledQuery<{ readonly id: number }>
 declare const compilableQuery: Compilable<{ readonly id: number }>
+declare const rawBuilder: RawBuilder<{ readonly value: number }>
+declare const transaction: Transaction<TerminalDatabase>
 
 const builderProgram = Effect.fn(async function* () {
   const rows = yield* queryBuilder.$call(KyselyEffect.execute)
@@ -130,6 +140,8 @@ const rawQueryProgram = Effect.fn(async function* () {
 })
 
 const compilableQueryOperation = KyselyEffect.executeQuery(database, compilableQuery)
+const rawBuilderOperation = KyselyEffect.executeQuery(database, rawBuilder)
+const transactionQueryOperation = KyselyEffect.executeQuery(transaction, rawBuilder)
 
 expectTypeOf<Effect.Success<ReturnType<typeof builderProgram>>>().toEqualTypeOf<
   { readonly id: number; readonly email: string | null }[]
@@ -154,6 +166,12 @@ expectTypeOf<Effect.Success<ReturnType<typeof rawQueryProgram>>>().toEqualTypeOf
 expectTypeOf<Effect.Requirements<ReturnType<typeof rawQueryProgram>>>().toBeNever()
 expectTypeOf(compilableQueryOperation).toEqualTypeOf<
   KyselyOperation<QueryResult<{ readonly id: number }>, KyselyQueryError>
+>()
+expectTypeOf(rawBuilderOperation).toEqualTypeOf<
+  KyselyOperation<QueryResult<{ readonly value: number }>, KyselyQueryError>
+>()
+expectTypeOf(transactionQueryOperation).toEqualTypeOf<
+  KyselyOperation<QueryResult<{ readonly value: number }>, KyselyQueryError>
 >()
 
 // The structural terminals accept the exact native Kysely boundaries.

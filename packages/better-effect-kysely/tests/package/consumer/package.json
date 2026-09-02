@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "better-effect": "^0.13.0",
     "better-effect-kysely": "file:./artifacts/better-effect-kysely.tgz",
     "better-result": "^3.0.0",
