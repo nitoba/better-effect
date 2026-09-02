@@ -42,7 +42,9 @@ The library is intentionally small. It gives you a composition root and
 lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
 dependency injection to ordinary TypeScript libraries or adapters. For a
 server-side Better Auth integration that keeps Better Auth's own plugins,
-cookies, and Web handler, see [Better Auth](/docs/better-auth).
+cookies, and Web handler, see [Better Auth](/docs/better-auth). For a native
+Kysely database integration that preserves Kysely's builders, drivers and
+lifecycle boundaries, see [Kysely integration](/docs/kysely).
 
 Layers expose a simple `Layer<Provided, Required>` contract. `Provided` and
 `Required` are tagged Service instance unions; after composition, `Required`
@@ -54,7 +56,8 @@ contains only dependencies that remain external.
   items={[
     'I am new to better-effect',
     'I already use better-result',
-    'I am integrating a container'
+    'I am integrating a container',
+    'I am integrating Kysely'
   ]}
 >
   <Tab>
@@ -70,6 +73,10 @@ contains only dependencies that remain external.
   <Tab>
     Read [Backends](/docs/backends). The core contracts are deliberately container-agnostic; ITI is
     the built-in `MapLayerBackend` by default; ITI remains an optional adapter.
+  </Tab>
+  <Tab>
+    Read [Kysely integration](/docs/kysely). It explains the `$call` Promise boundary, owned and
+    borrowed database Layers, raw/compiled queries, transactions and cancellation limits.
   </Tab>
 </Tabs>
 

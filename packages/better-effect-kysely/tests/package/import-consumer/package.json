@@ -1,13 +1,11 @@
 {
-  "name": "better-effect-kysely-external-consumer",
+  "name": "better-effect-kysely-import-consumer",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@electric-sql/pglite": "0.5.8",
     "better-effect": "file:./artifacts/better-effect.tgz",
     "better-effect-kysely": "file:./artifacts/better-effect-kysely.tgz",
     "better-result": "^3.0.0",
-    "better-sqlite3": "12.4.1",
     "kysely": "0.29.5"
   },
   "devDependencies": {

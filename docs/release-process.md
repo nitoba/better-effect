@@ -49,6 +49,27 @@ allowlist. Checking both packers keeps the gate aligned with the npm command
 used for publication. It does not call `bun publish --dry-run`, because that
 command can require registry credentials under the supported Bun version.
 
+For the initial `better-effect-kysely@0.1.0` decision, the package check also
+packs both `better-effect` and `better-effect-kysely`, installs them in a
+throwaway external consumer, runs Bun SQLite and `better-sqlite3` plus PGlite
+smoke programs under Bun and Node.js 24, typechecks with TypeScript 5.7.2 and the current compiler,
+and checks an import-only consumer with no database driver. The documentation
+page and generated LLM routes are checked by `bun run test:kysely-docs` and
+`bun run docs:build`.
+
+Use the non-mutating evidence sequence from a clean maintainer checkout:
+
+```bash
+bun install --frozen-lockfile
+bun run check
+bun run docs:build
+(cd packages/better-effect-kysely && bun run check)
+(cd packages/better-effect-kysely && bun run release:dry)
+```
+
+These commands prepare evidence only. They do not publish to npm or create a
+Git tag; both remain a separate maintainer release decision.
+
 ## Bootstrapping a new npm package
 
 npm Trusted Publishers can only be configured after the package name exists on

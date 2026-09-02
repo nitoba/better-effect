@@ -1,17 +1,30 @@
 # Changelog
 
+## [0.1.0] - 2026-09-02
+
+Initial release of `better-effect-kysely`.
+
+- Add yieldable Kysely Service tokens with schema-preserving inference.
+- Add explicit owned (`layer`) and borrowed (`succeed`) database Layers.
+- Add lazy Effect `$call` terminals for queries, first-row reads, and raw or
+  compiled `QueryResult` values.
+- Forward Runtime-linked cancellation through Kysely's native abort strategy
+  options without exposing a second `signal` option.
+- Add safe typed `KyselyQueryError` and `KyselyTransactionError` boundaries.
+- Add a transaction bridge that commits `Result.ok` and rolls back
+  `Result.err`, defects, and cancellation while retaining native transaction
+  settings.
+- Validate the bridge with real Bun SQLite and PGlite integrations, plus
+  type-only coverage for PostgreSQL, MySQL and SQLite Kysely dialects.
+- Validate packed external consumers across Bun and Node.js 24 with Bun SQLite,
+  `better-sqlite3`, PGlite, TypeScript 5.7.2 and the current compiler.
+- Document the compatibility matrix, ownership model and cancellation limits.
+
+This release does not certify every Kysely dialect or driver combination,
+does not provide universal server-side cancellation, and is not a drop-in
+replacement for Kysely. Migrations, streaming, controlled transactions,
+schema codecs and repository abstractions remain outside the package.
+
 ## Unreleased
 
-- Add the independent `better-effect-kysely` package foundation.
-- Add yieldable Kysely Service tokens with typed schema preservation.
-- Add explicit owned (`layer`) and borrowed (`succeed`) Layer lifecycle helpers.
-- Establish ESM exports, peer dependency boundaries, package audits, and an
-  isolated external consumer gate for the v0.1 implementation.
-- Add the yieldable `KyselyOperation` contract, Runtime signal forwarding, and
-  safe typed query and transaction boundary errors.
-- Add lazy native query terminals for execute, first-row, first-row-or-fail, and
-  raw or compiled query execution.
-- Add a lazy Kysely transaction bridge that rolls back typed Result failures,
-  preserves defects and cancellation reasons, and forwards native transaction settings.
-- Validate the bridge against Bun SQLite and in-process PostgreSQL via PGlite,
-  with type-only coverage for PostgreSQL, MySQL, and SQLite dialects.
+Future changes will be recorded here without promising a release date.

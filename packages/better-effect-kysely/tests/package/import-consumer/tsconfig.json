@@ -7,13 +7,7 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["bun"]
+    "types": []
   },
-  "files": [
-    "sqlite-support.ts",
-    "sqlite.ts",
-    "transactions.ts",
-    "borrowed-database.ts",
-    "foundation.ts"
-  ]
+  "include": ["src/index.ts"]
 }
