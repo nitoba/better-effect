@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.examples-dist/
+.test-dist/
+coverage/
+*.tgz
+*.zip
+.DS_Store

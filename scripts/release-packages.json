@@ -27,6 +27,13 @@
       "changelog": "packages/better-effect-kysely/CHANGELOG.md",
       "tagPrefix": "better-effect-kysely-v",
       "initialRelease": true
+    },
+    {
+      "name": "better-effect-zod",
+      "directory": "packages/better-effect-zod",
+      "changelog": "packages/better-effect-zod/CHANGELOG.md",
+      "tagPrefix": "better-effect-zod-v",
+      "initialRelease": true
     }
   ]
 }

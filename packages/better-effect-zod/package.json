@@ -1,0 +1,83 @@
+{
+  "name": "better-effect-zod",
+  "version": "0.1.0",
+  "description": "Effect-inspired Zod schema classes with better-result failures and better-effect composition.",
+  "keywords": [
+    "better-effect",
+    "better-result",
+    "zod",
+    "schema",
+    "class",
+    "codec",
+    "effect",
+    "typescript",
+    "validation"
+  ],
+  "homepage": "https://github.com/nitoba/better-effect#readme",
+  "bugs": {
+    "url": "https://github.com/nitoba/better-effect/issues"
+  },
+  "license": "MIT",
+  "author": "Bruno Alves",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nitoba/better-effect.git",
+    "directory": "packages/better-effect-zod"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/esm/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "default": "./dist/esm/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "docs/api.md",
+    "docs/architecture.md",
+    "README.md",
+    "VERIFICATION.md",
+    "MIGRATION.md",
+    "MONOREPO_INTEGRATION.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node ./scripts/build.mjs",
+    "test:runtime": "node ./scripts/test-runtime.mjs",
+    "test:types": "tsc -p tsconfig.type-tests.json --noEmit",
+    "test": "npm run clean && npm run build && npm run test:runtime && npm run test:types",
+    "examples:build": "tsc -p tsconfig.examples.json",
+    "examples:run": "node ./scripts/run-examples.mjs",
+    "examples": "npm run build && npm run examples:build && npm run examples:run",
+    "check:source": "node ./scripts/check-source.mjs",
+    "check:package": "node ./scripts/check-package.mjs",
+    "check": "npm run typecheck && npm test && npm run examples:build && npm run examples:run && npm run check:source && npm run check:package && npm run test:package && npm pack --dry-run --ignore-scripts",
+    "prepack": "npm run clean && npm run build",
+    "test:package": "node ./scripts/test-package.mjs",
+    "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-zod"
+  },
+  "peerDependencies": {
+    "better-effect": ">=0.13.0 <0.14.0",
+    "better-result": "^3.0.0",
+    "typescript": ">=5.7.0",
+    "zod": ">=4.5.4 <5"
+  },
+  "devDependencies": {
+    "better-effect": "0.13.0",
+    "better-result": "3.0.1",
+    "typescript": "^6.0.3",
+    "zod": "4.5.4"
+  }
+}
