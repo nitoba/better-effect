@@ -1,12 +1,14 @@
-import { Layer } from 'better-effect'
-import type { CompiledQuery, Kysely, QueryResult } from 'kysely'
+import { Effect, Layer } from 'better-effect'
+import type { CompiledQuery, Kysely, QueryResult, Transaction } from 'kysely'
 import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from 'better-effect-kysely'
+import { Result } from 'better-result'
 import type {
   KyselyExecutionOptions,
   KyselyOperation,
   KyselyQueryOperation,
   KyselyServiceInstance,
-  KyselyServiceToken
+  KyselyServiceToken,
+  KyselyTransactionOptions
 } from 'better-effect-kysely'
 
 type Assert<Condition extends true> = Condition
@@ -70,6 +72,36 @@ type _FirstOrFail = Assert<
 type _Raw = Assert<
   Equal<typeof rawOperation, KyselyOperation<QueryResult<UserTable>, KyselyQueryError>>
 >
+const assertTransaction = (transaction: Transaction<DatabaseSchema>): void => {
+  void transaction
+}
+const transactionOperation = KyselyEffect.transaction(database, (transaction) => {
+  assertTransaction(transaction)
+  // oxlint-disable-next-line require-yield -- This fixture checks a pure transaction Program type.
+  return Effect.fn(async function* () {
+    const rows = yield* transaction.selectFrom('users').selectAll().$call(KyselyEffect.execute)
+    return Result.ok(rows)
+  })
+})
+type _Transaction = Assert<
+  Equal<
+    typeof transactionOperation,
+    KyselyOperation<UserTable[], KyselyQueryError | KyselyTransactionError>
+  >
+>
+const configuredTransaction = KyselyEffect.transaction(
+  database,
+  { isolationLevel: 'serializable', accessMode: 'read write' } satisfies KyselyTransactionOptions,
+  (_transaction) =>
+    // oxlint-disable-next-line require-yield -- This fixture checks a pure transaction Program type.
+    Effect.fn(async function* () {
+      return Result.ok(1)
+    })
+)
+type _ConfiguredTransaction = Assert<
+  Equal<typeof configuredTransaction, KyselyOperation<number, KyselyTransactionError>>
+>
+type _TransactionOptions = Assert<Equal<KyselyEffect.TransactionOptions, KyselyTransactionOptions>>
 type _Operation = Assert<
   Equal<KyselyEffect.Operation<number, KyselyQueryError>, KyselyOperation<number, KyselyQueryError>>
 >

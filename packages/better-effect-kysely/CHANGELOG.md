@@ -11,3 +11,5 @@
   safe typed query and transaction boundary errors.
 - Add lazy native query terminals for execute, first-row, first-row-or-fail, and
   raw or compiled query execution.
+- Add a lazy Kysely transaction bridge that rolls back typed Result failures,
+  preserves defects and cancellation reasons, and forwards native transaction settings.

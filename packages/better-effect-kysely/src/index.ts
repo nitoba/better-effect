@@ -6,6 +6,7 @@ export type { KyselyExecutable } from './execute'
 export type { KyselyTakeFirstExecutable } from './execute-take-first'
 export type { KyselyExecutionOptions } from './options'
 export type { KyselyOperation } from './operation'
+export type { KyselyTransactionOptions } from './transaction-options'
 export type { KyselyQueryOperation } from './errors'
 
 export type {

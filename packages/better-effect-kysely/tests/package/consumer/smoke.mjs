@@ -9,6 +9,10 @@ import {
 import * as KyselyEffect from 'better-effect-kysely'
 import packageJson from 'better-effect-kysely/package.json' with { type: 'json' }
 
+if (KyselyEffect.KyselyEffect.transaction === undefined) {
+  throw new Error('The packed Kysely transaction helper is missing')
+}
+
 const Database = KyselyEffect.KyselyEffect.service()('@external/Database')
 const dialect = {
   createAdapter: () => new PostgresAdapter(),
