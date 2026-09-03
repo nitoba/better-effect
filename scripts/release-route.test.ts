@@ -62,12 +62,23 @@ test('resolves every qualified package route', () => {
     release_version: '0.1.1',
     initial_release: 'false'
   })
+  expect(readRoute('--tag', 'better-effect-zod-v0.1.0')).toMatchObject({
+    package_name: 'better-effect-zod',
+    tag_prefix: 'better-effect-zod-v',
+    release_version: '0.1.0',
+    initial_release: 'true'
+  })
 })
 
 test('keeps initial-release metadata for local package selection', () => {
   expect(readRoute('--package', 'better-effect-better-auth').initial_release).toBe('true')
   expect(readRoute('--package', 'better-effect-mq').initial_release).toBe('true')
   expect(readRoute('--package', 'better-effect-kysely').initial_release).toBe('true')
+  expect(readRoute('--package', 'better-effect-zod')).toMatchObject({
+    package_name: 'better-effect-zod',
+    tag_prefix: 'better-effect-zod-v',
+    initial_release: 'true'
+  })
 })
 
 test('rejects unallowlisted tags', () => {

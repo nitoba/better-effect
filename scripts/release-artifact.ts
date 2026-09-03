@@ -7,6 +7,7 @@ type ReleaseRoute = {
   readonly name: string
   readonly directory: string
   readonly changelog: string
+  readonly additionalFiles?: readonly string[]
 }
 
 type ReleaseRoutes = {
@@ -45,7 +46,8 @@ const configs: Record<string, ReleaseConfig> = Object.fromEntries(
         'package/LICENSE',
         'package/README.md',
         'package/package.json',
-        ...(route.changelog === 'CHANGELOG.md' ? [] : ['package/CHANGELOG.md'])
+        ...(route.changelog === 'CHANGELOG.md' ? [] : ['package/CHANGELOG.md']),
+        ...(route.additionalFiles ?? []).map((file) => `package/${file}`)
       ],
       includeAllDistFiles: true
     }

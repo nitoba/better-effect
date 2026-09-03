@@ -20,7 +20,7 @@ test("delegates Zod apply instead of Function.prototype.apply", () => {
 test("exposes the concrete codec and class kind", () => {
   const optional = Person.optional()
 
-  assert.equal(Person.codec, optional.innerType)
+  assert.equal(Person.codec, optional.unwrap())
   assert.equal(Person.kind, "class")
 })
 

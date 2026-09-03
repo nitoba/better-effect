@@ -82,8 +82,12 @@ export const attachMetadataToCodec = (
   const metadata = findMetadata(constructor)
   if (metadata === undefined) return
 
+  const isGeneratedBase = metadataByClass.has(constructor)
   metadataByClass.set(constructor, metadata)
-  z.globalRegistry.add(asSchema(constructor), metadata)
+  z.globalRegistry.add(
+    asSchema(constructor),
+    isGeneratedBase ? metadataForCodec(metadata) : metadata
+  )
   z.globalRegistry.add(codec, metadataForCodec(metadata))
 }
 

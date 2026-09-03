@@ -1,5 +1,5 @@
 import * as z from "zod"
-import type { Effect } from "better-effect"
+import { Effect } from "better-effect"
 import { Result } from "better-result"
 import {
   Schema,
@@ -25,7 +25,7 @@ const input: unknown = {
 const decoded = Schema.decodeUnknown(User)(input)
 decoded satisfies Effect<User, SchemaDecodeFailure, never>
 
-const roundTrip = Result.gen(function* () {
+const roundTrip = Effect.gen(function* () {
   const user = yield* decoded
   const encoded = yield* Schema.encode(User)(user)
   return Result.ok(encoded)

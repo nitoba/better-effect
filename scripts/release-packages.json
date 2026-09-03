@@ -33,7 +33,14 @@
       "directory": "packages/better-effect-zod",
       "changelog": "packages/better-effect-zod/CHANGELOG.md",
       "tagPrefix": "better-effect-zod-v",
-      "initialRelease": true
+      "initialRelease": true,
+      "additionalFiles": [
+        "MIGRATION.md",
+        "MONOREPO_INTEGRATION.md",
+        "VERIFICATION.md",
+        "docs/api.md",
+        "docs/architecture.md"
+      ]
     }
   ]
 }

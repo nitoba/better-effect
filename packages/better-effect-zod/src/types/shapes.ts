@@ -136,9 +136,31 @@ export type StripObject<Schema extends AnyObjectSchema> = z.ZodObject<
   z.core.$strip
 >
 
+type CatchallOutput<Shape extends RawShape> =
+  z.output<z.ZodObject<Shape>> & Record<string, unknown>
+
+type CatchallInput<Shape extends RawShape> =
+  z.input<z.ZodObject<Shape>> & Record<string, unknown>
+
+type CatchallInternals<
+  Shape extends RawShape,
+  Catchall extends z.core.SomeType
+> = Omit<
+  z.core.$ZodObjectInternals<Shape, z.core.$catchall<Catchall>>,
+  "output" | "input"
+> & {
+  output: CatchallOutput<Shape>
+  input: CatchallInput<Shape>
+}
+
 export type CatchallObject<
   Schema extends AnyObjectSchema,
   Catchall extends z.core.SomeType
-> = z.ZodObject<ShapeOf<Schema>, z.core.$catchall<Catchall>>
+> = Omit<
+  z.ZodObject<ShapeOf<Schema>, z.core.$catchall<Catchall>>,
+  "_zod"
+> & {
+  readonly _zod: CatchallInternals<ShapeOf<Schema>, Catchall>
+}
 
 export type SchemaShape<Schema extends AnyObjectSchema> = ShapeOf<Schema>

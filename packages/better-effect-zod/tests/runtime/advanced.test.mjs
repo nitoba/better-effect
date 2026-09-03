@@ -26,7 +26,7 @@ test("metadata remains attached to the class identity", () => {
   assert.equal(Person.describe("An updated person"), Person)
   assert.equal(Person.meta().description, "An updated person")
   assert.equal(
-    z.globalRegistry.get(optionalPerson.innerType).description,
+    z.globalRegistry.get(optionalPerson.unwrap()).description,
     "An updated person"
   )
 
@@ -62,7 +62,7 @@ test("JSON Schema is generated from the encoded input side", () => {
   const viaClassDefault = Person.toJSONSchema()
 
   assert.equal(schema.type, "object")
-  assert.equal(schema.properties.id.type, "number")
+  assert.equal(schema.properties.id.type, "integer")
   assert.equal(schema.properties.bornAt.type, "string")
   assert.deepEqual(schema.required, ["id", "bornAt"])
   assert.deepEqual(viaClass, schema)

@@ -51,7 +51,7 @@ new RequiredPerson({ id: 1, name: "Ada" })
 
 type _RequiredIdField = Expect<Equal<
   Z.Fields<typeof RequiredPerson>["id"],
-  z.ZodNonOptional<z.ZodOptional<z.ZodNumber>>
+  z.ZodNonOptional<z.ZodOptional<z.ZodInt>>
 >>
 
 type _EmployeeEncoded = Expect<Equal<

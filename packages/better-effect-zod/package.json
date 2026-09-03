@@ -26,6 +26,10 @@
   },
   "type": "module",
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -63,7 +67,8 @@
     "examples": "npm run build && npm run examples:build && npm run examples:run",
     "check:source": "node ./scripts/check-source.mjs",
     "check:package": "node ./scripts/check-package.mjs",
-    "check": "npm run typecheck && npm test && npm run examples:build && npm run examples:run && npm run check:source && npm run check:package && npm run test:package && npm pack --dry-run --ignore-scripts",
+    "publint": "publint",
+    "check": "npm run typecheck && npm test && npm run examples:build && npm run examples:run && npm run check:source && npm run check:package && npm run test:package && npm run publint && npm run release:dry && npm pack --dry-run --ignore-scripts",
     "prepack": "npm run clean && npm run build",
     "test:package": "node ./scripts/test-package.mjs",
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-zod"
@@ -77,6 +82,7 @@
   "devDependencies": {
     "better-effect": "0.13.0",
     "better-result": "3.0.1",
+    "publint": "^0.3.23",
     "typescript": "^6.0.3",
     "zod": "4.5.4"
   }

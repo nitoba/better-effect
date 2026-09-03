@@ -7,6 +7,7 @@ type ReleasePackage = {
   readonly changelog: string
   readonly tagPrefix: string
   readonly initialRelease: boolean
+  readonly additionalFiles?: readonly string[]
 }
 
 type ReleaseConfig = {

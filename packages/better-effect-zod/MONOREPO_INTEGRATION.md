@@ -53,17 +53,7 @@ Add `better-effect-zod` to the root `publint` filter:
 }
 ```
 
-The package currently performs its own archive boundary and external-consumer checks. When the monorepo standardizes it on the shared release helper, add:
-
-```json
-{
-  "scripts": {
-    "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-zod"
-  }
-}
-```
-
-and add an allowlist entry to `scripts/release-packages.json`:
+The package performs its own source, archive-boundary, and external-consumer checks. Its `release:dry` script also invokes the shared artifact validator, so the package must be present in `scripts/release-packages.json` before that script is enabled. The allowlist entry includes the documentation files intentionally published by this package:
 
 ```json
 {
@@ -71,17 +61,22 @@ and add an allowlist entry to `scripts/release-packages.json`:
   "directory": "packages/better-effect-zod",
   "changelog": "packages/better-effect-zod/CHANGELOG.md",
   "tagPrefix": "better-effect-zod-v",
-  "initialRelease": true
+  "initialRelease": true,
+  "additionalFiles": [
+    "MIGRATION.md",
+    "MONOREPO_INTEGRATION.md",
+    "VERIFICATION.md",
+    "docs/api.md",
+    "docs/architecture.md"
+  ]
 }
 ```
 
-Then extend `scripts/release-route.test.ts` with both package-name and qualified-tag cases. The resulting release tag is:
+Keep `scripts/release-route.test.ts` covered by both package-name and qualified-tag cases. The resulting release tag is:
 
 ```text
 better-effect-zod-v0.1.0
 ```
-
-Do not add the `release:dry` script before the allowlist and route tests support the package, because an apparently available release command that cannot route the package is misleading.
 
 ## 4. Documentation placement
 

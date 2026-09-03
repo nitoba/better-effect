@@ -75,6 +75,7 @@ try {
 
   await writeFile(join(consumer, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
+      lib: ["ES2022", "DOM", "ESNext.Disposable"],
       target: "ES2022",
       module: "NodeNext",
       moduleResolution: "NodeNext",
@@ -88,7 +89,7 @@ try {
   }, null, 2))
 
   await writeFile(join(consumer, "smoke.ts"), `import * as z from "zod"
-import type { Effect } from "better-effect"
+import { Effect } from "better-effect"
 import { Result, TaggedError } from "better-result"
 import {
   Schema,
@@ -106,7 +107,7 @@ class User extends Schema.Class<User>("external/User")({
   createdAt: DateFromISOString
 }) {}
 
-const operation = Result.gen(function* () {
+const operation = Effect.gen(function* () {
   const user = yield* Schema.decodeUnknown(User)({
     id: "550e8400-e29b-41d4-a716-446655440000",
     createdAt: "2026-09-02T10:00:00.000Z"

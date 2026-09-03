@@ -2,6 +2,63 @@ import { findDescriptor, registerDescriptor } from "./descriptor.js"
 import { getClassCodec } from "./codec.js"
 
 const schemaMethodCache = new WeakMap<Function, Map<PropertyKey, unknown>>()
+const zodStateCache = new WeakMap<Function, object>()
+
+type JSONSchemaContext = {
+  readonly seen?: Map<unknown, unknown>
+}
+
+const seenOf = (context: unknown): Map<unknown, unknown> | undefined => {
+  if (typeof context !== "object" || context === null) return undefined
+
+  const seen = Reflect.get(context, "seen")
+  return seen instanceof Map ? seen : undefined
+}
+
+const zodStateFor = (
+  constructor: Function,
+  codec: object
+): object => {
+  const cached = zodStateCache.get(constructor)
+  if (cached !== undefined) return cached
+
+  const state = Reflect.get(codec, "_zod", codec) as object
+  const processor = Reflect.get(state, "processJSONSchema", state)
+  if (typeof processor !== "function") {
+    zodStateCache.set(constructor, state)
+    return state
+  }
+
+  const facadeState = new Proxy(state, {
+    get(current, property, receiver) {
+      if (property !== "processJSONSchema") {
+        return Reflect.get(current, property, receiver)
+      }
+
+      return (
+        context: JSONSchemaContext,
+        json: unknown,
+        params: unknown
+      ): unknown => {
+        const seen = seenOf(context)
+        const result = seen?.get(constructor)
+        if (seen === undefined || result === undefined || seen.has(codec)) {
+          return Reflect.apply(processor, state, [context, json, params])
+        }
+
+        seen.set(codec, result)
+        try {
+          return Reflect.apply(processor, state, [context, json, params])
+        } finally {
+          seen.delete(codec)
+        }
+      }
+    }
+  })
+
+  zodStateCache.set(constructor, facadeState)
+  return facadeState
+}
 
 const asSchemaConstructor = (
   receiver: unknown,
@@ -39,6 +96,8 @@ const delegatedValue = (
   if (cached.has(property)) return cached.get(property)
 
   const codec = getClassCodec(constructor)
+  if (property === "_zod") return zodStateFor(constructor, codec)
+
   const value = Reflect.get(codec, property, codec) as unknown
   if (typeof value !== "function") return value
 
