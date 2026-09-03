@@ -32,6 +32,7 @@ import { makeJobOperations } from './application'
 import type { JobBoundOperations, JobOperationDescriptor } from './application'
 import type { JobObserver } from '../observability/observer'
 
+import { hasUnpairedSurrogate } from '../internal/validation'
 import type { QueueDefinition } from './queue'
 import { isQueueDefinition } from './queue'
 import {
@@ -1695,8 +1696,16 @@ export const normalizeIdempotencyKey = (
     return Result.ok(undefined)
   }
 
-  if (typeof value !== 'string' || value.length === 0) {
-    return invalid('idempotencyKey', 'must be a non-empty string or undefined')
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.includes('\u0000') ||
+    hasUnpairedSurrogate(value)
+  ) {
+    return invalid(
+      'idempotencyKey',
+      'must be a non-empty well-formed string without NUL or undefined'
+    )
   }
 
   return Result.ok(value)

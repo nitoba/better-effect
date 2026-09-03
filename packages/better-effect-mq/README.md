@@ -884,7 +884,10 @@ are:
 
 The reducer is pure and immutable. `reduceJob` returns the new record and, when
 appropriate, the `AttemptRecord` that an adapter should persist atomically with
-it. Storage adapters own the transaction; this package does not implement one.
+it. Storage adapters that determine the stalled terminal policy from their own
+configuration can use the public `recoverStalledWithPolicy` helper; the policy
+is never taken from the recovery command. Storage adapters own the transaction;
+this package does not implement one.
 
 ## Attempts, deliveries, and stalls
 

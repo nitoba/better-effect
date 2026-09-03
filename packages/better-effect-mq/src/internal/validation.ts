@@ -5,7 +5,7 @@ import { JobDefinitionError } from '../protocol/errors'
 const invalid = <T>(field: string, message: string): ResultType<T, JobDefinitionError> =>
   Result.err<T, JobDefinitionError>(new JobDefinitionError({ field, message }))
 
-const hasUnpairedSurrogate = (value: string): boolean => {
+export const hasUnpairedSurrogate = (value: string): boolean => {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index)
 

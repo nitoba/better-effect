@@ -165,6 +165,7 @@ export {
   promoteJob,
   protocolVersion,
   recoverStalledJob,
+  recoverStalledWithPolicy,
   retryJob,
   reduceJob,
   releaseJob,
