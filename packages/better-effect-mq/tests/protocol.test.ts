@@ -127,6 +127,10 @@ test('identity constructors validate without changing persistent identity string
 
   for (const value of malformedUnicode) {
     expect(Result.isError(JobId.make(value))).toBe(true)
+    expect(Result.isError(QueueName.make(value))).toBe(true)
+    expect(Result.isError(JobName.make(value))).toBe(true)
+    expect(Result.isError(LeaseToken.make(value))).toBe(true)
+    expect(Result.isError(WorkerId.make(value))).toBe(true)
   }
 
   const scalar = unwrap(JobId.make(`emoji-${String.fromCodePoint(0x1f642)}`))

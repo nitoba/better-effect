@@ -50,22 +50,26 @@ export const makeJobId = (
 export const makeQueueName = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- this is a public untyped identity boundary.
   value: unknown
-): ResultType<QueueName, JobDefinitionError> => validateIdentity(value, 'queue', asQueueName)
+): ResultType<QueueName, JobDefinitionError> =>
+  validateIdentity(value, 'queue', asQueueName, { requireWellFormedUnicode: true })
 
 export const makeJobName = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- this is a public untyped identity boundary.
   value: unknown
-): ResultType<JobName, JobDefinitionError> => validateIdentity(value, 'name', asJobName)
+): ResultType<JobName, JobDefinitionError> =>
+  validateIdentity(value, 'name', asJobName, { requireWellFormedUnicode: true })
 
 export const makeLeaseToken = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- this is a public untyped identity boundary.
   value: unknown
-): ResultType<LeaseToken, JobDefinitionError> => validateIdentity(value, 'leaseToken', asLeaseToken)
+): ResultType<LeaseToken, JobDefinitionError> =>
+  validateIdentity(value, 'leaseToken', asLeaseToken, { requireWellFormedUnicode: true })
 
 export const makeWorkerId = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- this is a public untyped identity boundary.
   value: unknown
-): ResultType<WorkerId, JobDefinitionError> => validateIdentity(value, 'workerId', asWorkerId)
+): ResultType<WorkerId, JobDefinitionError> =>
+  validateIdentity(value, 'workerId', asWorkerId, { requireWellFormedUnicode: true })
 
 export const JobId = { make: makeJobId } as const
 export const QueueName = { make: makeQueueName } as const

@@ -914,7 +914,11 @@ const safeAdd = (left: number, right: number): number =>
 const incrementStalledCount = (stalledCount: number): number =>
   stalledCount === Number.MAX_SAFE_INTEGER ? stalledCount : stalledCount + 1
 
-/** @internal Apply a store-selected terminal policy without exposing it in the protocol command. */
+/**
+ * Apply a store-selected terminal policy without putting that policy in the
+ * public recovery command. Adapters derive `terminal` from their configured
+ * stalled-recovery limit and must persist the returned transition atomically.
+ */
 export const recoverStalledWithPolicy = (
   record: JobRecord,
   command: RecoverStalledCommand,

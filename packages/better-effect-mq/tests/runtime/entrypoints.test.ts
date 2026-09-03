@@ -66,6 +66,7 @@ const expectedCoreRuntimeExports = [
   'promoteJob',
   'protocolVersion',
   'recoverStalledJob',
+  'recoverStalledWithPolicy',
   'retryJob',
   'reduceJob',
   'releaseJob',

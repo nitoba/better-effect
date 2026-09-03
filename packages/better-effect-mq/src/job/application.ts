@@ -16,6 +16,7 @@ import { Result, UnhandledException } from 'better-result'
 import type { Err, Result as ResultType } from 'better-result'
 
 import { JobDecodeFailure, JobEncodeFailure } from '../codec'
+import { hasUnpairedSurrogate } from '../internal/validation'
 import { isMarkedVoidCodec } from '../codec/snapshot'
 import { validateJsonValue } from '../codec/json'
 import {
@@ -757,8 +758,16 @@ const normalizeIdempotencyValue = (
     return Result.ok(undefined)
   }
 
-  if (typeof value !== 'string' || value.length === 0) {
-    return invalid('idempotencyKey', 'must be a non-empty string or undefined')
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.includes('\u0000') ||
+    hasUnpairedSurrogate(value)
+  ) {
+    return invalid(
+      'idempotencyKey',
+      'must be a non-empty well-formed string without NUL or undefined'
+    )
   }
 
   return Result.ok(value)

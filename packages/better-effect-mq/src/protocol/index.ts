@@ -41,6 +41,7 @@ export {
   promoteJob,
   reduceJob,
   recoverStalledJob,
+  recoverStalledWithPolicy,
   retryJob,
   releaseJob,
   requestJobCancellation,

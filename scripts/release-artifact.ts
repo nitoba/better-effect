@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,6 +8,7 @@ type ReleaseRoute = {
   readonly directory: string
   readonly changelog: string
   readonly additionalFiles?: readonly string[]
+  readonly extraFiles?: readonly string[]
 }
 
 type ReleaseRoutes = {
@@ -17,6 +18,7 @@ type ReleaseRoutes = {
 type ReleaseConfig = {
   readonly directory: string
   readonly expectedEntries: readonly string[]
+  readonly extraFiles: readonly string[]
   readonly includeAllDistFiles: boolean
 }
 
@@ -49,6 +51,7 @@ const configs: Record<string, ReleaseConfig> = Object.fromEntries(
         ...(route.changelog === 'CHANGELOG.md' ? [] : ['package/CHANGELOG.md']),
         ...(route.additionalFiles ?? []).map((file) => `package/${file}`)
       ],
+      extraFiles: route.extraFiles ?? [],
       includeAllDistFiles: true
     }
   ])
@@ -110,6 +113,42 @@ const distEntries = async (packageRoot: string): Promise<string[]> => {
       else if (entry.isFile())
         files.push(`package/dist/${relative(join(packageRoot, 'dist'), path).split(sep).join('/')}`)
     }
+  }
+
+  return files.sort()
+}
+
+const extraEntries = async (
+  packageRoot: string,
+  paths: readonly string[]
+): Promise<string[]> => {
+  const files: string[] = []
+
+  for (const relativePath of paths) {
+    const root = join(packageRoot, relativePath)
+    const metadata = await stat(root).catch(() => undefined)
+    assertCondition(metadata !== undefined, `Required package path is missing: ${relativePath}`)
+    const before = files.length
+    const pending = [root]
+
+    while (pending.length > 0) {
+      const path = pending.pop()
+      if (path === undefined) continue
+
+      const entry = await stat(path)
+      if (entry.isDirectory()) {
+        for (const child of await readdir(path, { withFileTypes: true })) {
+          pending.push(join(path, child.name))
+        }
+      } else if (entry.isFile()) {
+        files.push(`package/${relative(packageRoot, path).split(sep).join('/')}`)
+      }
+    }
+
+    assertCondition(
+      files.length > before,
+      `Required package path is empty: ${relativePath}`
+    )
   }
 
   return files.sort()
@@ -179,7 +218,8 @@ const assertArchive = async (
     ...new Set([
       ...config.expectedEntries,
       ...requiredDistEntries(packageManifest),
-      ...(config.includeAllDistFiles ? await distEntries(packageRoot) : [])
+      ...(config.includeAllDistFiles ? await distEntries(packageRoot) : []),
+      ...(await extraEntries(packageRoot, config.extraFiles))
     ])
   ].sort()
 
