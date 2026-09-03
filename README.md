@@ -12,6 +12,7 @@ working with the library. The tested runtime matrix is Node.js 24 and Bun
 - [`packages/better-effect-mq`](./packages/better-effect-mq) — the experimental message-queue foundation
 - [`packages/better-effect-kysely`](./packages/better-effect-kysely) — the server-side Kysely integration (initial `0.1.0` release preparation)
 - [`packages/better-effect-mq-postgres`](./packages/better-effect-mq-postgres) — the optional PostgreSQL JobStore adapter, schema, and migrations for MQ
+- [`packages/better-effect-mq-redis`](./packages/better-effect-mq-redis) — the optional Redis/Valkey client, key layout, codecs, and Lua foundation for MQ
 - [`apps/docs`](./apps/docs) — the Next.js documentation application powered by Fumadocs
 - [`skills/better-effect`](./skills/better-effect) — the official Agent Skill for implementing, reviewing, debugging, and refactoring `better-effect` applications
 

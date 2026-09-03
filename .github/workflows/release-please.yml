@@ -8,6 +8,7 @@ on:
       - 'better-effect-mq-v*'
       - 'better-effect-kysely-v*'
       - 'better-effect-mq-postgres-v*'
+      - 'better-effect-mq-redis-v*'
   workflow_dispatch:
     inputs:
       tag_name:

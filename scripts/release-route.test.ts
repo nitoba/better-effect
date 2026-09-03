@@ -73,6 +73,11 @@ test('resolves every qualified package route', () => {
     release_version: '0.1.0',
     initial_release: 'true'
   })
+  expect(readRoute('--tag', 'better-effect-mq-redis-v0.1.0')).toMatchObject({
+    package_name: 'better-effect-mq-redis',
+    release_version: '0.1.0',
+    initial_release: 'true'
+  })
 })
 
 test('keeps initial-release metadata for local package selection', () => {
@@ -85,6 +90,7 @@ test('keeps initial-release metadata for local package selection', () => {
     initial_release: 'true'
   })
   expect(readRoute('--package', 'better-effect-mq-postgres').initial_release).toBe('true')
+  expect(readRoute('--package', 'better-effect-mq-redis').initial_release).toBe('true')
 })
 
 test('rejects unallowlisted tags', () => {
