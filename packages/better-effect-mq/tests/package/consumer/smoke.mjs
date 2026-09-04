@@ -11,7 +11,7 @@ import {
 } from 'better-effect-mq'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { TestRuntime } from 'better-effect/testing'
-import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
+import { ClockLive, ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import * as core from 'better-effect-mq'
 import * as testing from 'better-effect-mq/testing'
@@ -39,6 +39,12 @@ const workerJob = queue.job('worker', {
   payload: workerPayload,
   result: Codec.void
 })
+const vectorQueue = Queue.define('application-tests')
+const vectorJob = vectorQueue.job('send', {
+  version: 1,
+  payload: Codec.json(),
+  idempotencyKey: (payload) => payload.id
+})
 const registry = JobRegistry.make([job])
 if (registry.lookup(job.identity).status !== 'ok') {
   throw new Error('the better-effect-mq job registry did not resolve')
@@ -64,7 +70,9 @@ const testEnqueued = testStore.store.enqueue({
 if (testEnqueued.status !== 'ok' || (await testStore.enqueued(workerJob)).length !== 1) {
   throw new Error('the packed TestJobStore did not expose the public store harness')
 }
-const workerRuntime = await Runtime.make(Layer.succeed(JobStore, JobStore.of(store)))
+const workerRuntime = await Runtime.make(
+  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), ClockLive)
+)
 const now = 1_700_000_000_000
 const jobs = []
 for (let index = 0; index < 8; index += 1) {
@@ -119,6 +127,19 @@ const worker = await Worker.start(workerRuntime, {
 let stopWasIdempotent = false
 
 try {
+  const vectorResult = await workerRuntime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* vectorJob.enqueue({ id: 'one' }))
+    })
+  )
+  if (
+    !Result.isOk(vectorResult) ||
+    vectorResult.value !==
+      'idem-v1-9ce225892cc3f574919f45ec4322f13e58c529385f8d78cece9ec7068d78b3dd'
+  ) {
+    throw new Error('the packed idempotency vector changed across runtimes')
+  }
+
   if (worker.state !== 'running') {
     throw new Error('the packed Worker did not start')
   }
@@ -228,14 +249,22 @@ if (worker.state !== 'stopped' || worker.activeCount !== 0) {
 }
 
 const smokeContract = {
-  protocolVersion: 1,
-  capabilities: {
-    notifications: false,
-    queueFilteredNotifications: false,
-    batchClaim: false,
-    transactionalEnqueue: false,
-    changeFeed: false
-  },
+  descriptor: Object.freeze({
+    protocolVersion: 1,
+    adapter: 'external-smoke',
+    adapterVersion: '0.1.0',
+    layoutVersion: 1,
+    capabilities: Object.freeze({
+      queueFilteredNotifications: false,
+      nativeBatchEnqueue: false,
+      nativeBatchClaim: false,
+      metadataIndex: 'none',
+      transactionalEnqueue: false,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    })
+  }),
   list: () => Result.ok({ jobs: [], nextCursor: undefined })
 }
 const suite = testing.jobStoreContract({

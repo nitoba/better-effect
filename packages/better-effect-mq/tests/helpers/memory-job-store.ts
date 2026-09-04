@@ -1,5 +1,6 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- this test-only adapter validates deliberately untyped request defects.
 // oxlint-disable anti-slop/no-unknown-parameters -- fault fixtures intentionally cross public boundaries.
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- canonicalization probes JSON-shaped test values.
 // oxlint-disable anti-slop/no-chained-type-assertions -- the adapter restores focused operation types at one fixture boundary.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- all assertions are test fixture erasure boundaries.
 
@@ -22,6 +23,7 @@ import {
   JobNotFoundError,
   JobStore,
   JobStoreWakeAbortedError,
+  SettlementConflictError,
   QueueName,
   UnsupportedJobStoreOperationError,
   compareJobOrder,
@@ -42,6 +44,7 @@ import {
   type JobStoreToken,
   type JobTransition,
   type JobStoreCapabilities,
+  type JobStoreDescriptor,
   type JobListOrder,
   type JobListOrderBy,
   type LeaseLossReason,
@@ -160,14 +163,30 @@ const freezeCapabilities = (
   capabilities: Partial<JobStoreCapabilities> | undefined
 ): JobStoreCapabilities =>
   Object.freeze({
-    notifications: capabilities?.notifications ?? false,
     queueFilteredNotifications: capabilities?.queueFilteredNotifications ?? false,
-    batchClaim: capabilities?.batchClaim ?? false,
+    nativeBatchEnqueue: capabilities?.nativeBatchEnqueue ?? false,
+    nativeBatchClaim: capabilities?.nativeBatchClaim ?? false,
+    metadataIndex: capabilities?.metadataIndex ?? 'none',
     transactionalEnqueue: capabilities?.transactionalEnqueue ?? false,
-    changeFeed: capabilities?.changeFeed ?? false
+    durableChangeFeed: capabilities?.durableChangeFeed ?? false,
+    globalConcurrency: capabilities?.globalConcurrency ?? false,
+    rateLimiting: capabilities?.rateLimiting ?? false
   })
 
 const activeSnapshot = (record: JobRecord): ActiveJobSnapshot => record as ActiveJobSnapshot
+
+const settlementDigest = (outcome: JobStoreType.SettleRequest['outcome']): string => {
+  const visit = (value: unknown): string => {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value)
+    if (Array.isArray(value)) return `[${value.map(visit).join(',')}]`
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => (value as Record<string, unknown>)[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${visit((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`
+  }
+  return visit(outcome)
+}
 
 const compareRecordToCursor = (record: JobRecord, cursor: ListJobsRequest['cursor']): number => {
   if (cursor === undefined) return 1
@@ -193,16 +212,17 @@ const compareRecordToCursor = (record: JobRecord, cursor: ListJobsRequest['curso
 }
 
 class MemoryStore {
-  readonly protocolVersion = 1 as const
+  readonly descriptor: JobStoreDescriptor
   readonly capabilities: JobStoreCapabilities
 
   private readonly jobs = new Map<string, JobRecord>()
   private readonly attempts = new Map<string, AttemptRecord[]>()
+  private readonly settled = new Map<string, { readonly token: string; readonly digest: string }>()
   private readonly idempotency = new Map<string, string>()
   private readonly paused = new Set<string>()
   private readonly waiters = new Set<StoredWaiter>()
   private readonly wakeEvents: StoredWakeEvent[] = []
-  private sequence = 0
+  private sequence = 1
   private wakeVersion = 0
   private enqueueManyCalls = 0
 
@@ -212,6 +232,13 @@ class MemoryStore {
     private readonly synchronization?: JobStoreContractSynchronization
   ) {
     this.capabilities = freezeCapabilities(capabilities)
+    this.descriptor = Object.freeze({
+      protocolVersion: 1,
+      adapter: 'test-memory',
+      adapterVersion: '0.1.0',
+      layoutVersion: 1,
+      capabilities: this.capabilities
+    })
   }
 
   enqueue(request: EnqueueRequest): Operation<JobStoreType.EnqueueResult> {
@@ -348,6 +375,25 @@ class MemoryStore {
   settle(request: JobStoreType.SettleRequest): Operation<JobStoreType.SettlementResult> {
     const current = this.requireJob(request.jobId)
     if (current.status === 'error') return error(current.error)
+    const settled = this.settled.get(request.jobId)
+    if (current.value.state !== 'active' && settled?.token === request.leaseToken) {
+      if (settled.digest !== settlementDigest(request.outcome)) {
+        return error(
+          new SettlementConflictError({
+            jobId: request.jobId,
+            leaseToken: request.leaseToken
+          })
+        )
+      }
+      const attempt = this.attempts.get(request.jobId)?.at(-1)
+      if (attempt !== undefined) {
+        return ok({
+          record: current.value,
+          attempt,
+          status: 'already-applied'
+        })
+      }
+    }
     const leaseToken =
       this.fault === 'no-fencing'
         ? (current.value.leaseToken ?? request.leaseToken)
@@ -368,6 +414,10 @@ class MemoryStore {
     if (applied.value.attempt === undefined) {
       return error(jobStoreError('attempt', 'settlement did not return an attempt'))
     }
+    this.settled.set(request.jobId, {
+      token: request.leaseToken,
+      digest: settlementDigest(request.outcome)
+    })
     return ok({ record: applied.value.record, attempt: applied.value.attempt, status: 'applied' })
   }
 
@@ -865,10 +915,13 @@ export const makeMemoryRuntime = async <Name extends string | undefined>(
 
 export const makeMemoryMultiRuntime = async (
   context: JobStoreContractMultiStoreContext,
-  fault?: MemoryStoreFault
+  fault?: MemoryStoreFault,
+  capabilities?: Partial<JobStoreCapabilities>
 ): Promise<JobStoreContractMultiStoreRuntime> => {
   const makeStore = (): JobStoreType.Contract =>
-    makeMemoryJobStore({ synchronization: context.synchronization })
+    capabilities === undefined
+      ? makeMemoryJobStore({ synchronization: context.synchronization })
+      : makeMemoryJobStore({ synchronization: context.synchronization, capabilities })
   const defaultStore = makeStore()
   const firstStore = fault === 'cross-store' ? defaultStore : makeStore()
   const secondStore = fault === 'cross-store' ? defaultStore : makeStore()

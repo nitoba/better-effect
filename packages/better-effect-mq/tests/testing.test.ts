@@ -18,12 +18,18 @@ import {
 } from './helpers/memory-job-store'
 
 const capabilities = {
-  notifications: true,
   queueFilteredNotifications: true,
-  batchClaim: true
+  nativeBatchEnqueue: false,
+  nativeBatchClaim: true,
+  metadataIndex: 'none',
+  transactionalEnqueue: false,
+  durableChangeFeed: false,
+  globalConcurrency: false,
+  rateLimiting: false
 } as const
 
 const expectedScenarioMetadata = [
+  'golden-transition-trace|golden-trace|canonical protocol v1 command and snapshot trace',
   'enqueue-immediate-waiting|enqueue|immediate enqueue enters waiting',
   'enqueue-future-delayed|enqueue|future enqueue enters delayed',
   'enqueue-explicit-id-duplicate|enqueue|duplicate explicit IDs are idempotent no-ops',
@@ -56,6 +62,7 @@ const expectedScenarioMetadata = [
   'settle-fail-terminal|settlement|fail is terminal and records a failed attempt',
   'settle-cancelled-terminal|settlement|cancelled settlement is terminal and consumes one attempt',
   'settle-duplicate-no-reapply|settlement|duplicate settlement does not apply a second transition',
+  'settle-conflicting-outcome|settlement|same-token settlement with a different outcome is rejected',
   'settle-attempt-once|settlement|settlement increments attemptsMade exactly once',
   'retry-preserves-ledger|settlement|administrative retry preserves prior delivery and attempt history',
   'release-stalled-ledger|settlement|release and stalled recovery do not fake handler attempts',
@@ -68,6 +75,7 @@ const expectedScenarioMetadata = [
   'admin-remove-active-rejected|admin|remove refuses active jobs',
   'admin-counts-coherent|admin|counts remain coherent across state transitions',
   'list-filters|listing|list supports the portable queue, name, and state filters',
+  'list-metadata-filter|listing|metadata filtering uses exact key/value AND semantics',
   'list-empty|listing|empty list states return no jobs and no cursor',
   'list-keyset-pagination|listing|keyset pagination has no overlap or loss',
   'list-timestamp-tie|listing|equal timestamps use a deterministic insertion tiebreaker',
@@ -126,7 +134,7 @@ const makeMultiSuite = (fault?: MemoryStoreFault) =>
         makeMemoryJobStore({ capabilities, synchronization: context.synchronization }),
         JobStore
       ),
-    makeMultiStoreRuntime: async (context) => makeMemoryMultiRuntime(context, fault)
+    makeMultiStoreRuntime: async (context) => makeMemoryMultiRuntime(context, fault, capabilities)
   })
 
 const byId = (suite: readonly JobStoreContractScenario[], id: string): JobStoreContractScenario => {
@@ -150,19 +158,66 @@ for (const scenario of makePublicSuite()) {
 
 test('JobStore contract reports capability coverage and skips', () => {
   const suite = jobStoreContract({
-    makeRuntime: async () => makeMemoryRuntime(makeMemoryJobStore(), JobStore)
+    makeRuntime: async () =>
+      makeMemoryRuntime(
+        makeMemoryJobStore({
+          capabilities: {
+            queueFilteredNotifications: false,
+            nativeBatchEnqueue: false,
+            nativeBatchClaim: false,
+            metadataIndex: 'none',
+            transactionalEnqueue: false,
+            durableChangeFeed: false,
+            globalConcurrency: false,
+            rateLimiting: false
+          }
+        }),
+        JobStore
+      )
   })
   const report = suite.report()
 
   expect(report.skipped.some((item) => item.id === 'wake-token-change')).toBe(true)
   expect(report.skipped.some((item) => item.id === 'batch-claim-order')).toBe(true)
-  expect(report.capabilitiesNotTested).toEqual([
-    'notifications',
-    'queueFilteredNotifications',
-    'batchClaim',
-    'transactionalEnqueue',
-    'changeFeed'
+  expect(report.capabilitiesNotTested).toEqual([])
+})
+
+test('JobStore contract reports declared extension capabilities without scenarios', async () => {
+  const suite = jobStoreContract({
+    capabilities: {
+      durableChangeFeed: true,
+      globalConcurrency: true,
+      rateLimiting: true
+    },
+    makeRuntime: async () =>
+      makeMemoryRuntime(
+        makeMemoryJobStore({
+          capabilities: {
+            durableChangeFeed: true,
+            globalConcurrency: true,
+            rateLimiting: true
+          }
+        }),
+        JobStore
+      )
+  })
+
+  await byId(suite, 'enqueue-immediate-waiting').run()
+  expect(suite.report().capabilitiesNotTested).toEqual([
+    'durableChangeFeed',
+    'globalConcurrency',
+    'rateLimiting'
   ])
+})
+
+test('JobStore contract rejects capabilities that differ from the descriptor', async () => {
+  const suite = jobStoreContract({
+    capabilities: { queueFilteredNotifications: true },
+    makeRuntime: async () => makeMemoryRuntime(makeMemoryJobStore(), JobStore)
+  })
+
+  const cause = await expectConformanceFailure(byId(suite, 'enqueue-immediate-waiting'))
+  expect(cause.invariant).toBe('capability verification')
 })
 
 test('JobStore contract honors a named JobStore token', async () => {

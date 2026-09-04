@@ -49,7 +49,9 @@ const expectedCoreRuntimeExports = [
   'JobNotPromotableError',
   'JobNotRetryableError',
   'JobStoreFailure',
+  'JobStoreProtocolMismatchError',
   'LeaseLostError',
+  'SettlementConflictError',
   'LeaseToken',
   'Queue',
   'QueueName',
@@ -62,6 +64,8 @@ const expectedCoreRuntimeExports = [
   'cancelJob',
   'claimJob',
   'compareJobOrder',
+  'assertJobStoreProtocolCompatible',
+  'isJobStoreDescriptor',
   'isUnrecoverableFailure',
   'bindJob',
   'makeJobId',
@@ -647,7 +651,9 @@ const assertTestingEntrypoint = async (path: string): Promise<void> => {
     'JobStoreConformanceError',
     'RecordedJobObserver',
     'TestJobStore',
-    'jobStoreContract'
+    'jobStoreContract',
+    'jobStoreGoldenTrace',
+    'runJobStoreGoldenTrace'
   ]
 
   assertCondition(

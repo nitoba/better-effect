@@ -16,6 +16,7 @@ import { Result, UnhandledException } from 'better-result'
 import type { Err, Result as ResultType } from 'better-result'
 
 import { JobDecodeFailure, JobEncodeFailure } from '../codec'
+import { deriveIdempotencyJobId } from '../internal/idempotency'
 import { hasUnpairedSurrogate } from '../internal/validation'
 import { isMarkedVoidCodec } from '../codec/snapshot'
 import { validateJsonValue } from '../codec/json'
@@ -795,13 +796,13 @@ const mergeMetadata = (
   override: Readonly<Record<string, string>>
 ): Readonly<Record<string, string>> => Object.freeze({ ...derived, ...override })
 
-const makeEnqueueRequest = (
+const makeEnqueueRequest = async (
   definition: JobOperationDescriptor,
   fields: Readonly<Record<string, unknown>>,
   materialized: unknown,
   encoded: JsonValue,
   now: number
-): ResultType<import('../store').EnqueueRequest, JobEnqueueError> => {
+): Promise<ResultType<import('../store').EnqueueRequest, JobEnqueueError>> => {
   const schedule = normalizeSchedule(fields, now)
   if (Result.isError(schedule)) return schedule
 
@@ -876,7 +877,12 @@ const makeEnqueueRequest = (
     now
   }
 
-  if (explicitJobId.value !== undefined) request.id = explicitJobId.value
+  const producerId =
+    explicitJobId.value !== undefined || idempotency.value === undefined
+      ? Result.ok(explicitJobId.value)
+      : await deriveIdempotencyJobId(definition.identity, idempotency.value)
+  if (Result.isError(producerId)) return producerId
+  if (producerId.value !== undefined) request.id = producerId.value
 
   if (backoff.value !== undefined) request.backoff = backoff.value
   if (timeout.value !== undefined) request.timeoutMs = timeout.value
@@ -900,7 +906,7 @@ const prepareEnqueue = async (
   const encoded = await encodeValue(definition.payload, materialized.value)
   if (Result.isError(encoded)) return encoded
 
-  return makeEnqueueRequest(definition, fields.value, materialized.value, encoded.value, now)
+  return await makeEnqueueRequest(definition, fields.value, materialized.value, encoded.value, now)
 }
 
 const copyKnownFields = (

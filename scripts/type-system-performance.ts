@@ -888,7 +888,7 @@ const program = Effect.gen(async function* () {
   const jobToken: typeof Store${first} = null as unknown as Job.StoreToken<typeof Job${first}>
   void registry
   void jobToken
-  return Result.ok(store.protocolVersion)
+  return Result.ok(store.descriptor.protocolVersion)
 })
 void Runtime.make(AppLive)
 void Runtime.run(AppLive, () => program)

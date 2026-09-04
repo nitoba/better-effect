@@ -9,7 +9,8 @@ import { Result, type Result as ResultType } from 'better-result'
 
 import { Job, type AnyJobDefinition } from '../job'
 import { JobDefinitionError } from '../protocol'
-import type { AnyJobStoreToken } from '../store'
+import { assertJobStoreProtocolCompatible } from '../store'
+import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from '../store'
 
 import { normalizeWorkerOptions, WorkerSupervisor } from './supervisor'
 import type {
@@ -294,12 +295,14 @@ const assertStoreAvailable = async (
   const result = (await runtime.run(
     () =>
       Effect.gen(async function* () {
-        yield* token
-        return Result.ok(undefined)
+        const store = yield* token
+        return Result.ok(store)
       }) as never
-  )) as ResultType<undefined, unknown>
+  )) as ResultType<JobStoreNamespace.Contract, unknown>
 
   if (Result.isError(result)) {
     throw result.error
   }
+
+  assertJobStoreProtocolCompatible(result.value.descriptor)
 }

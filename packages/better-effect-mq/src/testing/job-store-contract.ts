@@ -17,10 +17,13 @@ import {
   JobRegistry,
   JobStore,
   Queue,
+  assertJobStoreProtocolCompatible,
   QueueName,
   makeLeaseToken,
   makeWorkerId
 } from '../index'
+
+import { runJobStoreGoldenTrace } from './golden-trace'
 
 import type {
   ActiveJobSnapshot,
@@ -34,6 +37,7 @@ import type {
   JobRecord,
   JobStore as JobStoreNamespace,
   JobStoreCapabilities,
+  JobStoreDescriptor,
   JobStoreError,
   JobStoreOperation,
   LeaseToken,
@@ -231,6 +235,9 @@ export interface JobStoreContractSkippedScenario extends JobStoreContractScenari
 
 /** A detached report of scenario execution and capability coverage. */
 export interface JobStoreContractReport {
+  readonly version: 1
+  readonly protocolVersion: 1
+  readonly descriptor: JobStoreDescriptor | undefined
   readonly capabilities: JobStoreCapabilities
   readonly executed: readonly string[]
   readonly passed: readonly string[]
@@ -263,7 +270,7 @@ export interface JobStoreContractOptions<Token extends AnyJobStoreToken = Defaul
   readonly reset?: (context: JobStoreContractContext<Token>) => JobStoreContractMaybePromise<void>
   /** The token provided by the runtime; defaults to the public JobStore token. */
   readonly token?: Token
-  /** Declared immutable capability flags. Omitted flags are false. */
+  /** Capabilities exercised by this test environment. Omitted flags are skipped. */
   readonly capabilities?: Partial<JobStoreCapabilities>
   /** Per-scenario control factory or a deliberately shared control object. */
   readonly controls?:
@@ -324,19 +331,25 @@ type ClaimOverrides = Partial<
 >
 
 const capabilityNames = [
-  'notifications',
   'queueFilteredNotifications',
-  'batchClaim',
+  'nativeBatchEnqueue',
+  'nativeBatchClaim',
+  'metadataIndex',
   'transactionalEnqueue',
-  'changeFeed'
+  'durableChangeFeed',
+  'globalConcurrency',
+  'rateLimiting'
 ] as const satisfies readonly (keyof JobStoreCapabilities)[]
 
 const defaultCapabilities: JobStoreCapabilities = Object.freeze({
-  notifications: false,
   queueFilteredNotifications: false,
-  batchClaim: false,
+  nativeBatchEnqueue: false,
+  nativeBatchClaim: false,
+  metadataIndex: 'none',
   transactionalEnqueue: false,
-  changeFeed: false
+  durableChangeFeed: false,
+  globalConcurrency: false,
+  rateLimiting: false
 })
 
 const multiStoreTokens: JobStoreContractMultiStoreTokens = Object.freeze({
@@ -377,20 +390,55 @@ const normalizeCapabilities = (
     return defaultCapabilities
   }
 
-  const copy = {
-    notifications: value.notifications ?? false,
+  const copy: JobStoreCapabilities = {
     queueFilteredNotifications: value.queueFilteredNotifications ?? false,
-    batchClaim: value.batchClaim ?? false,
+    nativeBatchEnqueue: value.nativeBatchEnqueue ?? false,
+    nativeBatchClaim: value.nativeBatchClaim ?? false,
+    metadataIndex: value.metadataIndex ?? 'none',
     transactionalEnqueue: value.transactionalEnqueue ?? false,
-    changeFeed: value.changeFeed ?? false
+    durableChangeFeed: value.durableChangeFeed ?? false,
+    globalConcurrency: value.globalConcurrency ?? false,
+    rateLimiting: value.rateLimiting ?? false
   }
 
   for (const name of capabilityNames) {
-    assertBoolean(copy[name], name)
+    if (name === 'metadataIndex') {
+      if (
+        copy.metadataIndex !== 'none' &&
+        copy.metadataIndex !== 'residual' &&
+        copy.metadataIndex !== 'indexed'
+      ) {
+        throw new TypeError('jobStoreContract capabilities.metadataIndex is invalid')
+      }
+    } else {
+      assertBoolean(copy[name], name)
+    }
   }
 
   return Object.freeze(copy)
 }
+
+const capabilityEnabled = (
+  capabilities: JobStoreCapabilities,
+  name: keyof JobStoreCapabilities
+): boolean =>
+  name === 'metadataIndex' ? capabilities.metadataIndex !== 'none' : capabilities[name] === true
+
+const sameDescriptor = (left: JobStoreDescriptor, right: JobStoreDescriptor): boolean =>
+  left.protocolVersion === right.protocolVersion &&
+  left.adapter === right.adapter &&
+  left.adapterVersion === right.adapterVersion &&
+  left.layoutVersion === right.layoutVersion &&
+  capabilityNames.every((name) => left.capabilities[name] === right.capabilities[name])
+
+const matchesDeclaredCapabilities = (
+  descriptor: JobStoreDescriptor,
+  declared: Partial<JobStoreCapabilities> | undefined
+): boolean =>
+  declared === undefined ||
+  capabilityNames.every(
+    (name) => declared[name] === undefined || declared[name] === descriptor.capabilities[name]
+  )
 
 const assertScenarioInfo = (scenario: JobStoreContractScenarioInfo): void => {
   if (
@@ -674,6 +722,7 @@ const resolveStore = async <Token extends AnyJobStoreToken>(
     const program = async (): Promise<JobStoreNamespace.Contract> =>
       await ServiceRuntime.resolve(token)
     const store = await runtime.run<JobStoreNamespace.Contract>(program)
+    assertJobStoreProtocolCompatible(store.descriptor)
 
     return store
   } catch (cause) {
@@ -684,6 +733,30 @@ const resolveStore = async <Token extends AnyJobStoreToken>(
       cause
     )
   }
+}
+
+const verifyStoreDescriptor = (
+  store: JobStoreNamespace.Contract,
+  context: JobStoreContractScenarioInfo,
+  declared: Partial<JobStoreCapabilities> | undefined,
+  expected: JobStoreDescriptor | undefined
+): JobStoreDescriptor => {
+  const descriptor = assertJobStoreProtocolCompatible(store.descriptor)
+  if (!matchesDeclaredCapabilities(descriptor, declared)) {
+    fail(
+      context,
+      'capability verification',
+      'declared capabilities did not match the resolved store descriptor'
+    )
+  }
+  if (expected !== undefined && !sameDescriptor(expected, descriptor)) {
+    fail(
+      context,
+      'descriptor consistency',
+      'one contract suite resolved stores with different adapter descriptors'
+    )
+  }
+  return descriptor
 }
 
 type OwnedRuntime = Pick<JobStoreContractRuntime, 'dispose'>
@@ -722,7 +795,8 @@ const makeClient = async <Token extends AnyJobStoreToken>(
 const makeMultiStoreClient = async <Token extends AnyJobStoreToken>(
   options: JobStoreContractOptions<Token>,
   context: JobStoreContractContext<Token>,
-  runtimes: Set<OwnedRuntime>
+  runtimes: Set<OwnedRuntime>,
+  expectedDescriptor?: JobStoreDescriptor
 ): Promise<JobStoreContractMultiStoreClient> => {
   const factory = options.makeMultiStoreRuntime
   if (factory === undefined) {
@@ -766,6 +840,9 @@ const makeMultiStoreClient = async <Token extends AnyJobStoreToken>(
     default: await resolveStore(runtime, multiStoreTokens.default, context),
     first: await resolveStore(runtime, multiStoreTokens.first, context),
     second: await resolveStore(runtime, multiStoreTokens.second, context)
+  }
+  for (const store of [stores.default, stores.first, stores.second]) {
+    verifyStoreDescriptor(store, context, options.capabilities, expectedDescriptor)
   }
 
   return Object.freeze({ runtime, tokens: multiStoreTokens, stores: Object.freeze(stores) })
@@ -974,11 +1051,24 @@ const makeScenario = <Token extends AnyJobStoreToken>(
       context = baseContext
       await options.setup?.(baseContext)
       const client = await makeClient(options, baseContext, runtimes)
+      const descriptor = verifyStoreDescriptor(
+        client.store,
+        baseContext,
+        options.capabilities,
+        report.descriptor
+      )
+      if (report.descriptor === undefined) {
+        report.descriptor = descriptor
+        report.capabilities = descriptor.capabilities
+      }
       const fixtures = makeFixtures(token)
-      const openClient = async (): Promise<JobStoreContractClient<Token>> =>
-        makeClient(options, baseContext, runtimes)
+      const openClient = async (): Promise<JobStoreContractClient<Token>> => {
+        const opened = await makeClient(options, baseContext, runtimes)
+        verifyStoreDescriptor(opened.store, baseContext, options.capabilities, report.descriptor)
+        return opened
+      }
       const openMultiStore = async (): Promise<JobStoreContractMultiStoreClient> =>
-        makeMultiStoreClient(options, baseContext, runtimes)
+        makeMultiStoreClient(options, baseContext, runtimes, report.descriptor)
       const scenarioContext: JobStoreContractScenarioContext<Token> = Object.freeze({
         ...baseContext,
         client,
@@ -1047,7 +1137,8 @@ const makeScenario = <Token extends AnyJobStoreToken>(
 }
 
 type ReportState = {
-  readonly capabilities: JobStoreCapabilities
+  descriptor: JobStoreDescriptor | undefined
+  capabilities: JobStoreCapabilities
   readonly executed: Set<string>
   readonly passed: Set<string>
   readonly failed: Set<string>
@@ -1057,6 +1148,9 @@ type ReportState = {
 
 const reportSnapshot = (state: ReportState): JobStoreContractReport =>
   Object.freeze({
+    version: 1,
+    protocolVersion: 1,
+    descriptor: state.descriptor,
     capabilities: state.capabilities,
     executed: Object.freeze([...state.executed]),
     passed: Object.freeze([...state.passed]),
@@ -1196,6 +1290,14 @@ const assertCounts = async (
 }
 
 const builtInScenarios = (): readonly ScenarioDefinition[] => [
+  definition(
+    'golden-transition-trace',
+    'canonical protocol v1 command and snapshot trace',
+    'golden-trace',
+    async (context) => {
+      await runJobStoreGoldenTrace(context)
+    }
+  ),
   definition(
     'enqueue-immediate-waiting',
     'immediate enqueue enters waiting',
@@ -2422,14 +2524,12 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'settle'
       )
-      if (!isErrorResult(duplicate)) {
-        ensure(
-          duplicate.value.attempt.attempt === 1,
-          context,
-          'duplicate settlement',
-          'duplicate settlement returned a new attempt'
-        )
-      }
+      ensure(
+        !isErrorResult(duplicate) && duplicate.value.status === 'already-applied',
+        context,
+        'duplicate settlement',
+        'same-token settlement replay did not return already-applied'
+      )
       const attempts = await succeed(
         operation(() => context.store.getAttempts({ jobId: job.id })),
         context,
@@ -2451,6 +2551,49 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         context,
         'duplicate settlement',
         'duplicate settlement mutated the completed record'
+      )
+    }
+  ),
+  definition(
+    'settle-conflicting-outcome',
+    'same-token settlement with a different outcome is rejected',
+    'settlement',
+    async (context) => {
+      const job = await activeJob(context)
+      await succeed(
+        operation(() =>
+          context.store.settle({
+            jobId: job.id,
+            leaseToken: job.leaseToken,
+            now: now(context),
+            outcome: { type: 'complete' }
+          })
+        ),
+        context,
+        'settle'
+      )
+      await reject(
+        context.store.settle({
+          jobId: job.id,
+          leaseToken: job.leaseToken,
+          now: now(context),
+          outcome: { type: 'cancelled' }
+        }),
+        context,
+        'settle',
+        'settlement conflict',
+        'SettlementConflictError'
+      )
+      const attempts = await succeed(
+        operation(() => context.store.getAttempts({ jobId: job.id })),
+        context,
+        'getAttempts'
+      )
+      ensure(
+        attempts.length === 1,
+        context,
+        'settlement conflict',
+        'a conflicting replay created another attempt'
       )
     }
   ),
@@ -3112,6 +3255,72 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
     }
   ),
   definition(
+    'list-metadata-filter',
+    'metadata filtering uses exact key/value AND semantics',
+    'listing',
+    async (context) => {
+      const request = (label: string, metadata: Record<string, string>) => ({
+        ...enqueueRequest(context, context.fixtures.job, label),
+        metadata
+      })
+      const scenarioOnly = request('metadata-filter-scenario-only', { scenario: context.id })
+      const labelOnly = request('metadata-filter-label-only', { label: 'metadata-filter-hit' })
+      const hit = request('metadata-filter-hit', {
+        scenario: context.id,
+        label: 'metadata-filter-hit'
+      })
+      const extra = request('metadata-filter-extra', {
+        scenario: context.id,
+        label: 'metadata-filter-hit',
+        extra: 'unexpected'
+      })
+      await enqueueMany(context, [scenarioOnly, labelOnly, hit, extra])
+      const result = await succeed(
+        operation(() =>
+          context.store.list({
+            metadata: { scenario: context.id, label: 'metadata-filter-hit' },
+            limit: 10
+          })
+        ),
+        context,
+        'list'
+      )
+      ensure(
+        result.jobs.length === 1 && payloadValue(result.jobs[0]!) === 'metadata-filter-hit',
+        context,
+        'metadata filter',
+        'metadata lookup did not use exact key/value AND semantics'
+      )
+    }
+  ),
+  definition(
+    'metadata-index-lookup',
+    'metadata lookup returns only exact matching indexed records',
+    'listing',
+    async (context) => {
+      const hit = enqueueRequest(context, context.fixtures.job, 'metadata-index-hit')
+      const miss = enqueueRequest(context, context.fixtures.job, 'metadata-index-miss')
+      await enqueueMany(context, [hit, miss])
+      const result = await succeed(
+        operation(() =>
+          context.store.list({
+            metadata: { scenario: context.id, label: 'metadata-index-hit' },
+            limit: 10
+          })
+        ),
+        context,
+        'list'
+      )
+      ensure(
+        result.jobs.length === 1 && payloadValue(result.jobs[0]!) === 'metadata-index-hit',
+        context,
+        'metadata index',
+        'metadata lookup returned an unrelated record or missed the indexed record'
+      )
+    },
+    'metadataIndex'
+  ),
+  definition(
     'list-empty',
     'empty list states return no jobs and no cursor',
     'listing',
@@ -3403,7 +3612,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         controller.abort()
       }
     },
-    'notifications'
+    'queueFilteredNotifications'
   ),
   definition(
     'wake-enqueue-notifies-waiter',
@@ -3447,7 +3656,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         controller.abort()
       }
     },
-    'notifications'
+    'queueFilteredNotifications'
   ),
   definition(
     'wake-queue-filter',
@@ -3553,7 +3762,66 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         controller.abort()
       }
     },
-    'notifications'
+    'queueFilteredNotifications'
+  ),
+  definition(
+    'batch-enqueue-order',
+    'native batch enqueue preserves result order and identity',
+    'enqueue',
+    async (context) => {
+      const results = await enqueueMany(context, [
+        enqueueRequest(context, context.fixtures.job, 'batch-enqueue-a'),
+        enqueueRequest(context, context.fixtures.job, 'batch-enqueue-b'),
+        enqueueRequest(context, context.fixtures.job, 'batch-enqueue-c')
+      ])
+      ensure(
+        results.length === 3 &&
+          results.every((result) => !result.duplicate) &&
+          results.map((result) => payloadValue(result.job)).join(',') ===
+            'batch-enqueue-a,batch-enqueue-b,batch-enqueue-c',
+        context,
+        'batch enqueue',
+        'native batch enqueue did not preserve input order and result alignment'
+      )
+    },
+    'nativeBatchEnqueue'
+  ),
+  definition(
+    'transactional-enqueue-rollback',
+    'transactional batch enqueue rolls back when one unit is invalid',
+    'enqueue',
+    async (context) => {
+      const first = enqueueRequest(context, context.fixtures.job, 'transactional-first', {
+        id: context.ids.jobId('transactional-first')
+      })
+      const invalid = {
+        ...enqueueRequest(context, context.fixtures.job, 'transactional-invalid'),
+        runAt: -1
+      } as unknown as EnqueueRequest
+      const result = await resolveOperation(
+        operation(() => context.store.enqueueMany([first, invalid])),
+        context,
+        'enqueueMany'
+      )
+      ensure(
+        isErrorResult(result),
+        context,
+        'transactional enqueue',
+        'an invalid batch was accepted'
+      )
+      const stored = await succeed(
+        operation(() => context.store.getJob({ jobId: first.id! })),
+        context,
+        'getJob'
+      )
+      ensure(
+        stored === undefined,
+        context,
+        'transactional enqueue',
+        'a transactional batch left a partial record after failure'
+      )
+    },
+    'transactionalEnqueue'
   ),
   definition(
     'batch-claim-order',
@@ -3576,7 +3844,7 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         'batch claim order was not preserved'
       )
     },
-    'batchClaim'
+    'nativeBatchClaim'
   )
 ]
 
@@ -3881,10 +4149,12 @@ export function jobStoreContract<Token extends AnyJobStoreToken>(
   }
 
   const skipped = definitions
-    .filter((item) => item.requires !== undefined && !capabilities[item.requires])
+    .filter(
+      (item) => item.requires !== undefined && !capabilityEnabled(capabilities, item.requires)
+    )
     .map((item) => makeSkipped(item, item.requires!))
   const enabled = definitions.filter(
-    (item) => item.requires === undefined || capabilities[item.requires]
+    (item) => item.requires === undefined || capabilityEnabled(capabilities, item.requires)
   )
   const testedCapabilities = new Set<keyof JobStoreCapabilities>()
 
@@ -3893,13 +4163,16 @@ export function jobStoreContract<Token extends AnyJobStoreToken>(
   }
 
   const state: ReportState = {
+    descriptor: undefined,
     capabilities,
     executed: new Set(),
     passed: new Set(),
     failed: new Set(),
     skipped: Object.freeze(skipped),
     capabilitiesNotTested: Object.freeze(
-      capabilityNames.filter((name) => !testedCapabilities.has(name))
+      capabilityNames.filter(
+        (name) => capabilityEnabled(capabilities, name) && !testedCapabilities.has(name)
+      )
     )
   }
   const scenarios = enabled.map((item) => makeScenario(item, options, token, state))
@@ -3915,6 +4188,12 @@ export function jobStoreContract<Token extends AnyJobStoreToken>(
   })
 
   return Object.freeze(suite) as JobStoreContractSuite
+}
+
+/** Versioned identity of the runner-neutral conformance kit. */
+export namespace jobStoreContract {
+  export const version = 1 as const
+  export const protocolVersion = 1 as const
 }
 
 export type {

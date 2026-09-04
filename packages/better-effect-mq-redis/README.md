@@ -45,7 +45,7 @@ All keys produced by `makeRedisKeyLayout` share a Redis Cluster hash slot. Names
 
 A namespace can therefore be distributed by using several namespaces, but a single namespace/queue is intentionally concentrated in one Cluster slot. Redis Cluster script calls must pass only keys from one layout.
 
-The layout includes job hashes, attempt lists, monotonic sequences, identity waiting/delayed indexes, active leases, queue controls, wake versions, counters, idempotency mappings, listing indexes, and a layout marker. The marker records adapter, protocol, layout, index-configuration, and script-set versions. Existing data with no marker or incompatible values fails with `RedisLayoutMismatchError`; the adapter never deletes or rewrites data automatically. Initial marker creation takes a short namespaced Redis lock and rechecks the marker while the lock is held; deployments should use this adapter (or otherwise coordinate writers) during first namespace initialization. Set `validateLayout: false` only when that check is deliberately managed elsewhere.
+The layout includes job hashes, attempt lists, monotonic sequences, identity waiting/delayed indexes, active leases, queue controls, wake versions, counters, idempotency mappings, listing indexes, and a layout marker. The marker records adapter, protocol, layout, index-configuration, and script-set versions. Existing data with no marker or incompatible values fails with `RedisLayoutMismatchError`; the adapter never deletes or rewrites data automatically. Initial marker creation takes a short namespaced Redis lock and rechecks the marker while the lock is held; deployments should use this adapter (or otherwise coordinate writers) during first namespace initialization. Set `validateLayout: false` only when that check is deliberately managed elsewhere. The JobStore descriptor reports protocol v1, layout `1`, and the capability matrix in the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
 ## Codecs
 
@@ -61,7 +61,7 @@ The wake channel is `<prefix>:{<namespace>}:wake`; its future messages contain o
 
 Valkey is supported when it implements the Redis commands and Lua behavior used by this adapter. Test the exact server/client pair used in production. Redis persistence, replication, `maxmemory`/eviction policy, failover, and Cluster deployment remain operational responsibilities; MQ namespaces should not use an eviction policy that can discard durable jobs.
 
-Metadata filtering is a residual first-version operation rather than a secondary Redis index. Prefer PostgreSQL for join-heavy or metadata-intensive queries. Destructive namespace flush helpers are not part of this public package.
+Metadata filtering is a residual first-version operation rather than a secondary Redis index; the descriptor therefore reports `metadataIndex: 'none'`. Prefer PostgreSQL for join-heavy or metadata-intensive queries. Destructive namespace flush helpers are not part of this public package.
 
 ## Development
 

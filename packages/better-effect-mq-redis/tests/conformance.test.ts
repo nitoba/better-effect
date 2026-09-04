@@ -45,10 +45,14 @@ const synchronizeStore = (
 
 const suite = jobStoreContract({
   capabilities: {
-    notifications: true,
     queueFilteredNotifications: true,
-    batchClaim: true,
-    transactionalEnqueue: false
+    nativeBatchEnqueue: true,
+    nativeBatchClaim: true,
+    metadataIndex: 'none',
+    transactionalEnqueue: false,
+    durableChangeFeed: false,
+    globalConcurrency: false,
+    rateLimiting: false
   },
   makeRuntime: async (context) => {
     const runtime = await Runtime.make(
@@ -91,5 +95,17 @@ describe('Redis JobStore conformance', () => {
     expect(report.failed).toEqual([])
     expect(report.executed).toHaveLength(suite.length)
     expect(report.passed).toHaveLength(suite.length)
+    expect(report.capabilities).toEqual({
+      queueFilteredNotifications: true,
+      nativeBatchEnqueue: true,
+      nativeBatchClaim: true,
+      metadataIndex: 'none',
+      transactionalEnqueue: false,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    })
+    expect(report.descriptor?.capabilities).toEqual(report.capabilities)
+    expect(report.capabilitiesNotTested).toEqual([])
   })
 })

@@ -19,7 +19,8 @@
       "directory": "packages/better-effect-mq",
       "changelog": "packages/better-effect-mq/CHANGELOG.md",
       "tagPrefix": "better-effect-mq-v",
-      "initialRelease": true
+      "initialRelease": true,
+      "extraFiles": ["docs"]
     },
     {
       "name": "better-effect-kysely",

@@ -12,10 +12,13 @@ import { Effect, Layer, Runtime, ServiceNotFoundError, ServiceRuntime } from 'be
 import { Result } from 'better-result'
 
 import {
+  assertJobStoreProtocolCompatible,
   Codec,
   Job,
   JobStore,
+  JobStoreProtocolMismatchError,
   JobStoreWakeAbortedError,
+  MemoryJobStore,
   Queue,
   bindJob,
   type EnqueueResult,
@@ -30,14 +33,22 @@ type StoreOperation<Name extends keyof JobStoreType.Contract> =
 const success = <Operation>(value: unknown): Operation => Result.ok(value) as unknown as Operation
 
 const contract: JobStoreType.Contract = {
-  protocolVersion: 1,
-  capabilities: {
-    notifications: false,
-    queueFilteredNotifications: false,
-    batchClaim: false,
-    transactionalEnqueue: false,
-    changeFeed: false
-  },
+  descriptor: Object.freeze({
+    protocolVersion: 1,
+    adapter: 'test',
+    adapterVersion: '0.1.0',
+    layoutVersion: 1,
+    capabilities: Object.freeze({
+      queueFilteredNotifications: false,
+      nativeBatchEnqueue: false,
+      nativeBatchClaim: false,
+      metadataIndex: 'none',
+      transactionalEnqueue: false,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    })
+  }),
   enqueue: () => success<StoreOperation<'enqueue'>>({} as EnqueueResult),
   enqueueMany: () => success<StoreOperation<'enqueueMany'>>([]),
   claim: () => success<StoreOperation<'claim'>>({} as JobStoreType.ClaimResult),
@@ -89,6 +100,44 @@ test('JobStore exposes stable default and named yieldable tokens', () => {
   expect(() => JobStore.named('' as unknown as never)).toThrow()
 })
 
+test('JobStore descriptors are complete and immutable', () => {
+  const store = MemoryJobStore.make()
+
+  expect(Object.isFrozen(store.descriptor)).toBe(true)
+  expect(Object.isFrozen(store.descriptor.capabilities)).toBe(true)
+  expect(assertJobStoreProtocolCompatible(store.descriptor)).toBe(store.descriptor)
+
+  const mutable = {
+    ...store.descriptor,
+    capabilities: { ...store.descriptor.capabilities }
+  }
+  expect(() => assertJobStoreProtocolCompatible(mutable)).toThrow(JobStoreProtocolMismatchError)
+})
+
+test('protocol mismatch diagnostics redact unsafe adapter metadata', () => {
+  const store = MemoryJobStore.make()
+  const descriptor = Object.freeze({
+    ...store.descriptor,
+    protocolVersion: 2,
+    adapter: 'adapter\nwith-control',
+    adapterVersion: 'version\u001b[31m'
+  })
+
+  let error: unknown
+  try {
+    assertJobStoreProtocolCompatible(descriptor)
+  } catch (cause) {
+    error = cause
+  }
+
+  expect(error).toBeInstanceOf(JobStoreProtocolMismatchError)
+  expect(error).toMatchObject({
+    actual: 2,
+    adapter: undefined,
+    adapterVersion: undefined
+  })
+})
+
 test('Job bindings are immutable descriptors and preserve the selected token', () => {
   const queue = Queue.define('jobs')
   const job = queue.job('send', { version: 1, payload: Codec.string })
@@ -109,7 +158,9 @@ test('JobStore implementations can be provided and yielded without a backend', a
   const value = await Runtime.run(layer, async () =>
     Effect.gen(async function* () {
       const store = yield* JobStore
-      return Result.ok(store === implementation && store.capabilities.batchClaim === false)
+      return Result.ok(
+        store === implementation && store.descriptor.capabilities.nativeBatchClaim === false
+      )
     })
   )
 
@@ -121,7 +172,13 @@ test('named stores remain isolated when provided together', async () => {
   const ephemeralToken = JobStore.named('test-ephemeral')
   const durable = durableToken.of({
     ...contract,
-    capabilities: { ...contract.capabilities, transactionalEnqueue: true }
+    descriptor: Object.freeze({
+      ...contract.descriptor,
+      capabilities: Object.freeze({
+        ...contract.descriptor.capabilities,
+        transactionalEnqueue: true
+      })
+    })
   })
   const ephemeral = ephemeralToken.of(contract)
   const layer = Layer.merge(
@@ -133,8 +190,8 @@ test('named stores remain isolated when provided together', async () => {
       const durableStore = yield* durableToken
       const ephemeralStore = yield* ephemeralToken
       return Result.ok([
-        durableStore.capabilities.transactionalEnqueue,
-        ephemeralStore.capabilities.transactionalEnqueue
+        durableStore.descriptor.capabilities.transactionalEnqueue,
+        ephemeralStore.descriptor.capabilities.transactionalEnqueue
       ] as const)
     })
   )

@@ -15,7 +15,8 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": []
+      "outputs": [],
+      "env": ["POSTGRES_URL", "REDIS_URL"]
     },
     "lint": {
       "outputs": []

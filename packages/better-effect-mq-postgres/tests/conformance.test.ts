@@ -68,7 +68,17 @@ const makeLayer = <const Token extends AnyJobStoreToken>(token: Token) =>
   })
 
 const suite = jobStoreContract({
-  capabilities: { batchClaim: true, transactionalEnqueue: true },
+  // PGlite exercises SQL semantics but has no PostgreSQL LISTEN/NOTIFY channel.
+  capabilities: {
+    queueFilteredNotifications: false,
+    nativeBatchEnqueue: true,
+    nativeBatchClaim: true,
+    metadataIndex: 'indexed',
+    transactionalEnqueue: true,
+    durableChangeFeed: false,
+    globalConcurrency: false,
+    rateLimiting: false
+  },
   makeRuntime: async () =>
     Runtime.make(PostgresJobStore.layer({ pool, schema, namespace, validateSchema: false })),
   makeMultiStoreRuntime: async () =>
@@ -100,5 +110,17 @@ describe('PostgreSQL JobStore conformance via PGlite', () => {
     expect(report.failed).toEqual([])
     expect(report.executed).toHaveLength(suite.length)
     expect(report.passed).toHaveLength(suite.length)
+    expect(report.capabilities).toEqual({
+      queueFilteredNotifications: false,
+      nativeBatchEnqueue: true,
+      nativeBatchClaim: true,
+      metadataIndex: 'indexed',
+      transactionalEnqueue: true,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    })
+    expect(report.descriptor?.capabilities).toEqual(report.capabilities)
+    expect(report.capabilitiesNotTested).toEqual([])
   })
 })

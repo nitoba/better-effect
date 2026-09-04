@@ -131,10 +131,15 @@ describe('Job producer and admin programs', () => {
 
       expect(Result.isOk(result)).toBe(true)
       if (Result.isError(result)) return
-      expect(String(result.value.first)).toBe('application-0')
+      expect(String(result.value.first)).toBe(
+        'idem-v1-9ce225892cc3f574919f45ec4322f13e58c529385f8d78cece9ec7068d78b3dd'
+      )
       expect(result.value.duplicate).toBe(result.value.first)
-      expect(result.value.batch.map(String)).toEqual(['application-1', 'application-2'])
-      expect(result.value.scheduled.map(String)).toEqual(['application-3'])
+      expect(result.value.batch).toHaveLength(2)
+      expect(result.value.batch.every((id) => /^idem-v1-[0-9a-f]{64}$/.test(String(id)))).toBe(true)
+      expect(new Set(result.value.batch.map(String)).size).toBe(2)
+      expect(result.value.scheduled).toHaveLength(1)
+      expect(String(result.value.scheduled[0])).toMatch(/^idem-v1-[0-9a-f]{64}$/)
       expect(result.value.scheduledView?.runAt).toBe(25)
       expect(String(result.value.explicit)).toBe('explicit-job')
       expect(result.value.explicitDuplicate).toBe(result.value.explicit)
@@ -646,7 +651,7 @@ describe('Job producer and admin programs', () => {
         })
       )
 
-      while (clock.pendingSleeps === 0) await Promise.resolve()
+      while (clock.pendingSleeps === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0))
       controller.abort('caller stopped waiting')
       const result = await pending
       expect(Result.isError(result)).toBe(true)

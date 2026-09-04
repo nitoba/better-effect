@@ -5,7 +5,10 @@
 `pg` is an optional peer. Importing the package, loading migrations, or using a
 caller-owned pool does not load `pg`; `PostgresClient.fromConfig` loads it
 lazily when it creates an owned pool. The shipped migration requires PostgreSQL
-12 or newer because it uses `jsonb_path_exists` for metadata constraints.
+12 or newer because it uses `jsonb_path_exists` for metadata constraints. The
+adapter implements protocol v1; its JobStore descriptor reports layout `1`,
+`metadataIndex: 'indexed'`, transactional enqueue, and native batch claim/enqueue.
+See the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
 ```ts
 import { PostgresJobStore } from 'better-effect-mq-postgres'
@@ -26,7 +29,8 @@ const StoreLive = PostgresJobStore.layerFromConfig({
 })
 ```
 
-For explicit migration control:
+For explicit migration control (the descriptor handshake does not replace
+layout validation):
 
 ```ts
 import { PostgresMigrator } from 'better-effect-mq-postgres'

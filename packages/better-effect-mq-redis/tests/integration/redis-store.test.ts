@@ -556,8 +556,8 @@ describe('RedisJobStore public integration', () => {
         second: await ServiceRuntime.resolve(second)
       }))
       expect(stores.first).not.toBe(stores.second)
-      expect(stores.first.capabilities.batchClaim).toBe(true)
-      expect(stores.first.capabilities.notifications).toBe(true)
+      expect(stores.first.descriptor.capabilities.nativeBatchClaim).toBe(true)
+      expect(stores.first.descriptor.capabilities.queueFilteredNotifications).toBe(true)
     } finally {
       await runtime.dispose()
     }

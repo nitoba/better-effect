@@ -3,36 +3,47 @@ title: Writing a driver
 description: Implement a storage adapter without leaking backend details.
 ---
 
-A driver implements `JobStore.Contract` and is provided through a default or
-named `JobStore` token. Each operation returns a completed `better-result`
-`Result` or a `PromiseLike` of one. Keep transactions, indexes, notifications
-and connection lifecycle inside the adapter.
+A driver implements `JobStore.Contract` and provides it through a default or
+named `JobStore` token. The npm package ships the normative protocol documents;
+this page is only a navigation summary:
 
-The important atomic boundaries are:
+- [JobStore contract](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/job-store-v1.md)
+- [state machine](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/state-machine-v1.md)
+- [operation atomicity](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/operation-atomicity-v1.md)
+- [errors](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/errors-v1.md)
+- [cursors and ordering](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/cursors-and-ordering-v1.md)
+- [time and leases](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/time-and-leases-v1.md)
+- [capabilities](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/capabilities-v1.md)
+- [compatibility](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md)
 
-- enqueue identity and idempotency checks;
-- claim ordering and exclusive lease acquisition;
-- heartbeat and lease-token fencing;
-- settlement plus attempt-ledger append;
-- release and stalled recovery;
-- cancellation, retry and administrative transitions.
+Keep transactions, indexes, wake delivery, migrations, and connection lifecycle
+inside the adapter. A caller-supplied pool/client is borrowed; a resource
+created by the adapter is owned and must be closed exactly once. Backend types,
+identifiers, credentials, and layout details must not leak into
+`better-effect-mq`.
 
-Validate all untrusted DTOs at the adapter boundary and return the protocol's
-focused errors. Persist JSON-safe payloads, metadata, retry data and bounded
-failure envelopes only. Do not persist live `Result`, `Error`, Service,
-Promise, request or connection objects.
+Every operation returns a completed `better-result` `Result` or a `PromiseLike`
+of one. Validate untrusted DTOs and decoded records, use the request's single
+`now` value, and persist only JSON-safe records and bounded failure envelopes.
+The required atomic boundaries are enqueue identity/idempotency, ordered claim
+and lease acquisition, settlement plus attempt ledger, fenced release and
+heartbeat, stalled recovery, and administrative transitions.
 
-`awaitWake` is an optimization. A correct Worker must still make progress with
-polling, and a notification must never expose payloads, metadata, idempotency
-keys, lease tokens or arbitrary failure causes. `queueFilteredNotifications`
-and other capability flags describe performance, not permission to skip a
-transition or claim check.
+`awaitWake` is an optimization over the persisted wake token/version. Polling
+must remain correct, and wake messages must not contain payloads, metadata,
+idempotency keys, lease tokens, or arbitrary causes. Publish one frozen
+`descriptor` containing `protocolVersion`, adapter/layout versions, and the
+v1 capabilities; Worker startup rejects an incomplete or incompatible
+handshake before supervision begins.
 
-Run `jobStoreContract` against every supported capability configuration. The
-suite covers ordering, duplicate identity, fencing, retries, counts,
-pagination, wake races, cleanup and multi-store isolation. Add adapter-specific
-integration tests for transaction rollback, reconnect behavior and concurrent
-writers.
-
-An adapter package is intentionally separate from the MVP core. Do not add an
-empty database placeholder to `better-effect-mq`.
+Run the runner-neutral `jobStoreContract` suite against every supported
+capability configuration, passing every capability explicitly (including
+`false`) so the descriptor manifest is checked. A declared-true
+`durableChangeFeed`, `globalConcurrency`, or `rateLimiting` flag requires a
+separate extension Service/interface and an executable `extensions` scenario;
+these flags never add optional methods to `JobStore` v1. The report marks a
+true declaration without such a scenario as `capabilitiesNotTested`. Then add
+backend tests for rollback, concurrent writers, reconnects, lost responses,
+migration boundaries, and borrowed-versus-owned cleanup. Before release, run
+the TypeScript 5.7.2 declaration fixture, full Bun checks, package boundaries,
+publint, and the external tarball consumer.

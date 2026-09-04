@@ -1,4 +1,5 @@
 export { JobStore, isJobStoreToken, jobStoreTag } from './store'
+export { assertJobStoreProtocolCompatible, isJobStoreDescriptor } from './compatibility'
 
 export type {
   AnyJobStoreToken,
@@ -71,6 +72,7 @@ export type {
   JobListOrderBy,
   JobListOrdering,
   JobStoreCapabilities,
+  JobStoreDescriptor,
   JobStoreEffect,
   JobStoreOperation,
   ListJobsRequest,

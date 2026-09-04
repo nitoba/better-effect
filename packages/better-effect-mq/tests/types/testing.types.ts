@@ -60,7 +60,7 @@ const extension: JobStoreContractExtension = {
   id: 'extension',
   name: 'extension',
   category: 'extension',
-  requires: 'notifications',
+  requires: 'queueFilteredNotifications',
   run: async (context) => {
     const client: JobStoreContractClient = context.client
     void client
@@ -74,7 +74,16 @@ const options: JobStoreContractOptions = {
     return runtime
   },
   controls: () => controls,
-  capabilities: { notifications: true, queueFilteredNotifications: true },
+  capabilities: {
+    queueFilteredNotifications: true,
+    nativeBatchEnqueue: false,
+    nativeBatchClaim: false,
+    metadataIndex: 'none',
+    transactionalEnqueue: false,
+    durableChangeFeed: false,
+    globalConcurrency: false,
+    rateLimiting: false
+  },
   extensions: [extension]
 }
 

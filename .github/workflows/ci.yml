@@ -222,6 +222,42 @@ jobs:
           POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/better_effect
         run: bun test tests/integration/postgres.test.ts
 
+  redis-integration:
+    name: Redis JobStore conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Run Redis JobStore conformance suite
+        working-directory: packages/better-effect-mq-redis
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+        run: bun test
+
   kysely-consumer:
     name: Kysely consumer (${{ matrix.runtime }}, ${{ matrix.dialect }}, ${{ matrix.kysely }})
     runs-on: ubuntu-latest
