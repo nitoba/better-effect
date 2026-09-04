@@ -53,6 +53,7 @@ import { MongoJobStoreMigrator } from './migrator'
 type Doc = Record<string, unknown>
 type Op<T> = ResultType<T, any>
 type TxBody<T> = (session: MongoSession) => Promise<T>
+class MongoDuplicateConflict extends Error {}
 const MAX = Number.MAX_SAFE_INTEGER
 const states = new Set(['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])
 const tagged = new Set([
@@ -312,6 +313,7 @@ class MongoJobStoreImplementation {
   private readonly waiters = new Set<(cause?: unknown) => void>()
   private stream: MongoQueueChangeStream | undefined
   private disposed = false
+  private disposal: Promise<void> | undefined
   constructor(private readonly client: MongoJobStoreClient) {
     this.collections = mongoCollections(client.db, client.collectionPrefix)
   }
@@ -353,6 +355,7 @@ class MongoJobStoreImplementation {
       )
       return ok(value as T)
     } catch (cause) {
+      if (cause instanceof MongoDuplicateConflict) return Result.err(cause) as Op<T>
       return fail(operation, cause)
     } finally {
       try {
@@ -369,15 +372,12 @@ class MongoJobStoreImplementation {
         $or: [{ value: { $lt: MAX } }, { value: { $exists: false } }]
       },
       {
-        $setOnInsert: { namespace: this.client.namespace, name: 'job-order-sequence', value: 0 },
+        $setOnInsert: { namespace: this.client.namespace, name: 'job-order-sequence' },
         $inc: { value: 1 }
       },
       { upsert: true, returnDocument: 'after', session }
     )
-    const value =
-      result !== null && typeof result === 'object' && 'value' in result
-        ? (result as { value?: Doc | null }).value
-        : (result as Doc | null)
+    const value = this.findOneResult(result)
     return integer(value?.value, 'counter.value', 1)
   }
   private async notify(queue: string, now: number, session: MongoSession): Promise<void> {
@@ -393,10 +393,7 @@ class MongoJobStoreImplementation {
       },
       { upsert: true, returnDocument: 'after', session }
     )
-    const value =
-      result !== null && typeof result === 'object' && 'value' in result
-        ? (result as { value?: Doc | null }).value
-        : (result as Doc | null)
+    const value = this.findOneResult(result)
     integer(value?.wakeVersion, 'queue.wakeVersion', 1)
   }
   private async readJob(
@@ -499,64 +496,64 @@ class MongoJobStoreImplementation {
         throw new JobDefinitionError({ field: 'requests', message: 'must be an array' })
       const normalized = requests.map((request) => this.newJob(request))
       if (normalized.length === 0) return ok(Object.freeze([]))
-      const result = await this.transaction('enqueue', async (session) => {
-        const output: J.EnqueueResult[] = []
-        for (const input of normalized) {
-          const explicit = input.explicit
-          const existing = explicit
-            ? await this.readJob(input.record.id, session)
-            : input.record.idempotencyKey === undefined
-              ? undefined
-              : await this.collections.jobs.findOne(
-                  {
-                    namespace: this.client.namespace,
-                    queue: input.record.queue,
-                    name: input.record.name,
-                    version: input.record.version,
-                    idempotencyKey: input.record.idempotencyKey
-                  },
-                  { session }
-                )
-          if (existing !== undefined && existing !== null) {
-            output.push({
-              job: explicit ? existing.record : decodeJob(existing as Doc),
-              duplicate: true
-            })
-            continue
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const result = await this.transaction('enqueue', async (session) => {
+          const output: J.EnqueueResult[] = []
+          for (const input of normalized) {
+            const explicit = input.explicit
+            const existing = explicit
+              ? await this.readJob(input.record.id, session)
+              : input.record.idempotencyKey === undefined
+                ? undefined
+                : await this.collections.jobs.findOne(
+                    {
+                      namespace: this.client.namespace,
+                      queue: input.record.queue,
+                      name: input.record.name,
+                      version: input.record.version,
+                      idempotencyKey: input.record.idempotencyKey
+                    },
+                    { session }
+                  )
+            if (existing !== undefined && existing !== null) {
+              output.push({
+                job: explicit ? existing.record : decodeJob(existing as Doc),
+                duplicate: true
+              })
+              continue
+            }
+            const sequence = await this.sequence(session)
+            const changed = makeJobRecord({ ...input.record, orderingSequence: sequence })
+            if (Result.isError(changed)) throw changed.error
+            try {
+              await this.collections.jobs.insertOne(
+                encodeJob(this.client.namespace, changed.value),
+                {
+                  session
+                }
+              )
+              await this.notify(changed.value.queue, changed.value.updatedAt, session)
+              output.push({ job: changed.value, duplicate: false })
+            } catch (cause) {
+              // A duplicate write aborts a MongoDB transaction. Retry from a
+              // fresh snapshot so the committed winner becomes observable.
+              if (this.duplicate(cause)) throw new MongoDuplicateConflict()
+              throw cause
+            }
           }
-          const sequence = await this.sequence(session)
-          const changed = makeJobRecord({ ...input.record, orderingSequence: sequence })
-          if (Result.isError(changed)) throw changed.error
-          try {
-            await this.collections.jobs.insertOne(encodeJob(this.client.namespace, changed.value), {
-              session
-            })
-            await this.notify(changed.value.queue, changed.value.updatedAt, session)
-            output.push({ job: changed.value, duplicate: false })
-          } catch (cause) {
-            if (!this.duplicate(cause)) throw cause
-            const duplicate = explicit
-              ? await this.readJob(changed.value.id, session)
-              : await this.collections.jobs.findOne(
-                  {
-                    namespace: this.client.namespace,
-                    queue: changed.value.queue,
-                    name: changed.value.name,
-                    version: changed.value.version,
-                    idempotencyKey: changed.value.idempotencyKey
-                  },
-                  { session }
-                )
-            if (duplicate === undefined || duplicate === null) throw cause
-            output.push({
-              job: explicit ? duplicate.record : decodeJob(duplicate as Doc),
-              duplicate: true
-            })
-          }
-        }
-        return Object.freeze(output)
-      })
-      return result
+          return Object.freeze(output)
+        })
+        if (!Result.isError(result) || !(result.error instanceof MongoDuplicateConflict))
+          return result
+      }
+      return fail(
+        'enqueue',
+        new JobStoreFailure({
+          operation: 'enqueue',
+          retryable: true,
+          message: 'MongoDB duplicate enqueue contention did not settle after retries'
+        })
+      )
     } catch (cause) {
       return fail('enqueue', cause)
     }
@@ -713,7 +710,6 @@ class MongoJobStoreImplementation {
                 leaseOwner: worker.value,
                 leaseToken,
                 leaseExpiresAtMs: now + duration,
-                processedAtMs: now,
                 updatedAtMs: now
               },
               $inc: { deliveryCount: 1 }
@@ -751,7 +747,12 @@ class MongoJobStoreImplementation {
   }
   private findOneResult(value: unknown): Doc | undefined {
     if (value === null) return undefined
-    if (typeof value === 'object' && value !== null && 'value' in value)
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'lastErrorObject' in value &&
+      'value' in value
+    )
       return (value as { value?: Doc | null }).value ?? undefined
     return value as Doc
   }
@@ -862,6 +863,11 @@ class MongoJobStoreImplementation {
     try {
       const now = inputNumber(request.now, 'now')
       const duration = inputNumber(request.leaseDurationMs, 'leaseDurationMs', 1)
+      if (now > MAX - duration)
+        throw new JobDefinitionError({
+          field: 'leaseDurationMs',
+          message: 'lease expiry exceeds safe integer range'
+        })
       const renewed: ActiveJobSnapshot[] = []
       const lost: LostLease[] = []
       const cancellationRequested: string[] = []
@@ -885,7 +891,9 @@ class MongoJobStoreImplementation {
         const found = await this.readJob(lease.jobId)
         if (
           found?.record.cancellationRequestedAt !== undefined &&
-          found.record.leaseToken === lease.leaseToken
+          found.record.leaseToken === lease.leaseToken &&
+          found.record.leaseExpiresAt !== undefined &&
+          found.record.leaseExpiresAt > now
         )
           cancellationRequested.push(lease.jobId)
         else
@@ -960,7 +968,8 @@ class MongoJobStoreImplementation {
           await this.notify(next.queue, now, session)
           return { ...reduced.value, record: next }
         })
-        if (Result.isOk(result) && result.value !== undefined) transitions.push(result.value)
+        if (Result.isError(result)) return result as Op<J.RecoverStalledResult>
+        if (result.value !== undefined) transitions.push(result.value)
       }
       return ok({ transitions: Object.freeze(transitions), recovered: transitions.length })
     } catch (cause) {
@@ -1053,7 +1062,7 @@ class MongoJobStoreImplementation {
         await this.collections.queues.findOneAndUpdate(
           { _id: namespaceId(this.client.namespace, queue.value) },
           {
-            $setOnInsert: { namespace: this.client.namespace, queue: queue.value, wakeVersion: 0 },
+            $setOnInsert: { namespace: this.client.namespace, queue: queue.value },
             $set: { paused, updatedAtMs: request.now },
             $inc: { wakeVersion: 1 }
           },
@@ -1168,11 +1177,7 @@ class MongoJobStoreImplementation {
           Array.isArray(raw.metadata)
         )
           throw new JobDefinitionError({ field: 'metadata', message: 'must be an object' })
-        filter.metadataEntries = {
-          $all: Object.entries(raw.metadata as Record<string, unknown>).map(([key, value]) => ({
-            $elemMatch: { key, value }
-          }))
-        }
+        filter.metadataEntries = metadataEntries(raw.metadata as Record<string, string>)
       }
       const signature = JSON.stringify([
         raw.queue ?? null,
@@ -1325,11 +1330,28 @@ class MongoJobStoreImplementation {
     for (const waiter of this.waiters) waiter()
   }
   async dispose(): Promise<void> {
-    if (this.disposed) return
+    if (this.disposal !== undefined) return this.disposal
     this.disposed = true
+    this.disposal = this.disposeResources()
+    return this.disposal
+  }
+  private async disposeResources(): Promise<void> {
+    const failures: unknown[] = []
     for (const waiter of this.waiters) waiter(new Error('store is disposed'))
-    await this.stream?.close()
-    if (this.client.ownsClient) await this.client.dispose()
+    try {
+      await this.stream?.close()
+    } catch (cause) {
+      failures.push(cause)
+    }
+    try {
+      if (this.client.ownsClient) await this.client.dispose()
+    } catch (cause) {
+      failures.push(cause)
+    }
+    if (failures.length > 0)
+      throw failures.length === 1
+        ? failures[0]
+        : new AggregateError(failures, 'MongoDB cleanup failed')
   }
 }
 const namespaceFor = (token: AnyJobStoreToken, namespace: string): string =>

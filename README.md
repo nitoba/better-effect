@@ -60,6 +60,25 @@ Turborepo runs each command only in the workspaces that define it and caches
 compatible tasks between runs. The root `bun.lock` is the canonical lockfile
 for every workspace.
 
+### MQ real-storage conformance
+
+The default test suite does not require database services. Run the explicit
+real-storage gate to start disposable MySQL 8 InnoDB and single-node MongoDB
+replica-set containers, migrate them, and execute the complete protocol-v1
+`jobStoreContract` for both MQ adapters:
+
+```bash
+bun run test:containers
+```
+
+The harness uses Testcontainers with rootless Podman at
+`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`, publishes no fixed host
+ports, generates an unlogged MySQL password, and stops both containers after a
+passing, failing, or interrupted test run. It disables Ryuk only after Podman
+reports that the configured engine is rootless. If the socket is unavailable,
+the command fails before starting tests with the command needed to enable
+`podman.socket`.
+
 Package releases use qualified tags and publish only the selected package. See
 [`docs/release-process.md`](./docs/release-process.md) for the release planner,
 initial Better Auth/MQ/Kysely/PostgreSQL release commands, and npm Trusted

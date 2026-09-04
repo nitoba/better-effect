@@ -35,7 +35,7 @@ const lockName = (database: string | undefined): string =>
   `better-effect-mq:${createHash('sha256')
     .update(database ?? 'default')
     .digest('hex')
-    .slice(0, 48)}`
+    .slice(0, 47)}`
 const componentOf = (component: string | undefined): string => {
   const value = component ?? MIGRATION_COMPONENT
   if (typeof value !== 'string' || value.length === 0 || value.includes('\u0000'))
@@ -214,7 +214,7 @@ const assertCompatible = async (
   await assertMySqlCompatibility(connection)
   const tables = Object.values(MYSQL_TABLES)
   const found = await connection.query<{ table_name: string; engine: string | null }>(
-    `SELECT table_name, engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN (${tables.map(() => '?').join(',')})`,
+    `SELECT table_name AS table_name, engine AS engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN (${tables.map(() => '?').join(',')})`,
     tables
   )
   const actual = new Map(found.rows.map((row) => [row.table_name, row.engine]))
