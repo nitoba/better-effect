@@ -241,6 +241,28 @@
         "redis",
       ],
     },
+    "packages/better-effect-mq-sqlite": {
+      "name": "better-effect-mq-sqlite",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "1.3.14",
+        "@types/node": "^24.0.0",
+        "better-effect": "0.13.0",
+        "better-effect-mq": "0.1.0",
+        "better-result": "^3.0.0",
+        "oxfmt": "^0.63.0",
+        "oxlint": "^1.78.0",
+        "publint": "^0.3.23",
+        "tsdown": "^0.22.14",
+        "typescript": "^6.0.3",
+      },
+      "peerDependencies": {
+        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect-mq": ">=0.1.0 <0.2.0",
+        "better-result": "^3.0.0",
+        "typescript": ">=5.7.0",
+      },
+    },
     "packages/better-effect-zod": {
       "name": "better-effect-zod",
       "version": "0.1.0",
@@ -913,6 +935,8 @@
     "better-effect-mq-postgres": ["better-effect-mq-postgres@workspace:packages/better-effect-mq-postgres"],
 
     "better-effect-mq-redis": ["better-effect-mq-redis@workspace:packages/better-effect-mq-redis"],
+
+    "better-effect-mq-sqlite": ["better-effect-mq-sqlite@workspace:packages/better-effect-mq-sqlite"],
 
     "better-effect-zod": ["better-effect-zod@workspace:packages/better-effect-zod"],
 
@@ -1746,6 +1770,8 @@
 
     "better-effect-mq-redis/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
+    "better-effect-mq-sqlite/@types/node": ["@types/node@24.13.3", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q=="],
+
     "better-effect-zod/zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
     "cytoscape-fcose/cose-base": ["cose-base@2.2.0", "", { "dependencies": { "layout-base": "^2.0.0" } }, "sha512-AzlgcsCbUMymkADOJtQm3wO9S3ltPfYOFD5033keQn9NJzIbtnZj+UdBJe7DYml/8TdbtHJW3j58SOnKhWY/5g=="],
@@ -1775,6 +1801,8 @@
     "better-effect-mq-postgres/@types/node/undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
 
     "better-effect-mq-redis/@types/node/undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+
+    "better-effect-mq-sqlite/@types/node/undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
     "cytoscape-fcose/cose-base/layout-base": ["layout-base@2.0.1", "", {}, "sha512-dp3s92+uNI1hWIpPGH3jK2kxE2lMjdXdr+DH8ynZHpd6PUlH6x6cbuXnoMmiNumznqaNO31xu9e79F0uuZ0JFg=="],
 

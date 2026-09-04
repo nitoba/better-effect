@@ -1,0 +1,68 @@
+{
+  "name": "better-effect-mq-sqlite",
+  "version": "0.1.0",
+  "description": "Embedded SQLite JobStore adapter for better-effect-mq.",
+  "keywords": [
+    "better-effect",
+    "message-queue",
+    "sqlite",
+    "typescript"
+  ],
+  "homepage": "https://github.com/nitoba/better-effect#readme",
+  "bugs": {
+    "url": "https://github.com/nitoba/better-effect/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nitoba/better-effect.git"
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./bun": "./dist/bun.mjs",
+    "./node": "./dist/node.mjs",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint --type-aware .",
+    "publint": "publint",
+    "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-mq-sqlite",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run publint && bun run release:dry && bun run lint"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "^24.0.0",
+    "better-effect": "0.13.0",
+    "better-effect-mq": "0.1.0",
+    "better-result": "^3.0.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "publint": "^0.3.23",
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "better-effect": ">=0.13.0 <0.14.0",
+    "better-effect-mq": ">=0.1.0 <0.2.0",
+    "better-result": "^3.0.0",
+    "typescript": ">=5.7.0"
+  }
+}
