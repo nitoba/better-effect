@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext", "ES2023", "ESNext.Disposable"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "types": ["bun", "node"]
+  },
+  "include": ["src", "tests"]
+}

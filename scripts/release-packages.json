@@ -57,6 +57,13 @@
       "changelog": "packages/better-effect-mq-redis/CHANGELOG.md",
       "tagPrefix": "better-effect-mq-redis-v",
       "initialRelease": true
+    },
+    {
+      "name": "better-effect-mq-mongodb",
+      "directory": "packages/better-effect-mq-mongodb",
+      "changelog": "packages/better-effect-mq-mongodb/CHANGELOG.md",
+      "tagPrefix": "better-effect-mq-mongodb-v",
+      "initialRelease": true
     }
   ]
 }
