@@ -16,7 +16,7 @@
     "test": {
       "dependsOn": ["^build"],
       "outputs": [],
-      "env": ["POSTGRES_URL", "REDIS_URL", "MONGODB_URL"]
+      "env": ["POSTGRES_URL", "REDIS_URL", "MONGODB_URL", "MYSQL_URL"]
     },
     "lint": {
       "outputs": []

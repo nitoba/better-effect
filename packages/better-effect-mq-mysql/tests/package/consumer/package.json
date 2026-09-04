@@ -1,0 +1,8 @@
+{
+  "name": "better-effect-mq-mysql-external-consumer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "better-result": "3.0.0"
+  }
+}
