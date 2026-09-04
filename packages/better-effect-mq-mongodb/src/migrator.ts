@@ -56,18 +56,44 @@ const schemas = {
       name: { bsonType: 'string', minLength: 1 },
       version: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       state: { enum: ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] },
-      metadataEntries: { bsonType: 'array' },
+      metadataEntries: {
+        bsonType: 'array',
+        items: {
+          bsonType: 'object',
+          required: ['key', 'value'],
+          properties: {
+            key: { bsonType: 'string' },
+            value: { bsonType: 'string' }
+          },
+          additionalProperties: false
+        }
+      },
       priority: { bsonType: ['int', 'long', 'double'] },
       runAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       orderSequence: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       attemptsMax: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       attemptsMade: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      attemptSequence: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       deliveryCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       stalledCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       cancelRequested: { bsonType: 'bool' },
+      cancellationRequestedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       createdAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
-      ledgerCount: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+      processedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      finishedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      leaseOwner: { bsonType: 'string', minLength: 1 },
+      leaseToken: { bsonType: 'string', minLength: 1 },
+      leaseExpiresAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      result: {},
+      failure: {},
+      backoff: {},
+      timeoutMs: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      idempotencyKey: { bsonType: 'string', minLength: 1 },
+      ledgerCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      lastSettlementToken: { bsonType: 'string', minLength: 1 },
+      lastSettlementDigest: { bsonType: 'string', minLength: 1 },
+      lastSettlementOutcome: { bsonType: 'string', minLength: 1 }
     }
   ),
   attempts: validator(
@@ -89,7 +115,14 @@ const schemas = {
       attempt: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       delivery: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       finishedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
-      outcome: { enum: ['completed', 'retried', 'failed', 'cancelled', 'stalled', 'released'] }
+      outcome: { enum: ['completed', 'retried', 'failed', 'cancelled', 'stalled', 'released'] },
+      attemptSequence: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      startedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      result: {},
+      failure: {},
+      workerId: { bsonType: 'string', minLength: 1 },
+      retryAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      retryDelayMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
     }
   ),
   queues: validator(['_id', 'namespace', 'queue', 'paused', 'wakeVersion', 'updatedAtMs'], {
@@ -179,13 +212,32 @@ export const MongoJobStoreMigrator = Object.freeze({
     const db = normalizeMongoJobStoreConfig({ db: options.db, collectionPrefix: prefix }).db
     const collections = mongoCollections(db, prefix)
     const owner = randomUUID()
-    const now = Date.now()
-    const lock = await collections.migrations.findOneAndUpdate(
-      { _id: 'migration-lock', $or: [{ leaseExpiresAtMs: { $lt: now } }, { owner }] },
-      { $set: { owner, leaseExpiresAtMs: now + 60_000 }, $inc: { fencing: 1 } },
-      { upsert: true, returnDocument: 'after' }
-    )
-    if (lock === null)
+    // A conditional upsert races when two fresh processes observe no lock
+    // document. Duplicate-key is contention, not a layout failure.
+    let acquired = false
+    for (let attempt = 0; attempt < 3 && !acquired; attempt += 1) {
+      const now = Date.now()
+      try {
+        const lock = await collections.migrations.findOneAndUpdate(
+          { _id: 'migration-lock', $or: [{ leaseExpiresAtMs: { $lt: now } }, { owner }] },
+          { $set: { owner, leaseExpiresAtMs: now + 60_000 }, $inc: { fencing: 1 } },
+          { upsert: true, returnDocument: 'after' }
+        )
+        const document =
+          lock !== null && typeof lock === 'object' && 'value' in lock
+            ? (lock as { readonly value?: unknown }).value
+            : lock
+        acquired = document !== null
+      } catch (cause) {
+        const duplicate =
+          typeof cause === 'object' &&
+          cause !== null &&
+          ((cause as { readonly code?: unknown }).code === 11000 ||
+            (cause as { readonly codeName?: unknown }).codeName === 'DuplicateKey')
+        if (!duplicate) throw cause
+      }
+    }
+    if (!acquired)
       throw new MongoJobStoreMigrationError('MongoDB migration lock is held by another process')
     try {
       const names = collectionNames(prefix)

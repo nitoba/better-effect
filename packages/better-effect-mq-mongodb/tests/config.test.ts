@@ -9,9 +9,12 @@ const db = {
     findOne: async () => null,
     findOneAndUpdate: async () => null,
     updateOne: async () => ({ matchedCount: 1 }),
+    insertOne: async () => undefined,
+    deleteOne: async () => ({ deletedCount: 1 }),
     deleteMany: async () => undefined,
     insertMany: async () => undefined,
-    createIndexes: async () => undefined
+    createIndexes: async () => undefined,
+    aggregate: () => ({ toArray: async () => [] })
   }),
   admin: () => ({ command: async () => ({}) }),
   client: {
