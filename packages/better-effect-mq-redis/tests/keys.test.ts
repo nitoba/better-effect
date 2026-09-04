@@ -43,6 +43,9 @@ describe('Redis key layout', () => {
       layout.byIdentity('send:email', 1),
       layout.byState('waiting'),
       layout.finished('completed'),
+      layout.created,
+      layout.runAt,
+      layout.finishedAt,
       layout.layout
     ]
 

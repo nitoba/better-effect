@@ -42,6 +42,34 @@ class FakeRedisClient implements RedisCommandClient {
   async subscribe(): Promise<void> {}
 }
 
+class FakeRedisClusterClient implements RedisCommandClient {
+  readonly calls: { route: string | undefined; readOnly: boolean | undefined; args: string[] }[] =
+    []
+  readonly scripts = new Map<string, string>()
+
+  async sendCommand(
+    route: string | undefined,
+    readOnly: boolean | undefined,
+    args: string[]
+  ): Promise<unknown> {
+    this.calls.push({ route, readOnly, args: [...args] })
+    if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+      const source = args[2]!
+      const sha = `${this.scripts.size + 1}`.padStart(40, '0')
+      this.scripts.set(sha, source)
+      return sha
+    }
+    if (args[0] === 'EVALSHA') return ['ok', args[1]]
+    throw new Error(`unexpected command: ${args[0]}`)
+  }
+
+  duplicate(): RedisSubscriberClient {
+    return this
+  }
+
+  async subscribe(): Promise<void> {}
+}
+
 const manifest: RedisScriptManifest = Object.freeze([
   Object.freeze({ name: 'enqueue', version: 1, source: 'return {KEYS[1], ARGV[1]}' })
 ])
@@ -58,6 +86,23 @@ describe('Redis script registry', () => {
     expect(result).toEqual(['ok', registry.getSha('enqueue')])
     expect(client.calls.at(-1)?.[0]).toBe('EVALSHA')
     expect(client.calls.some((call) => call[0] === 'EVAL')).toBe(false)
+  })
+
+  test('routes cluster script commands through their first key', async () => {
+    const client = new FakeRedisClusterClient()
+    const route = 'better-effect-mq:{ns}:all'
+    const registry = await RedisScriptRegistry.load(client, manifest, route)
+    await registry.execute('enqueue', [route])
+    expect(client.calls[0]).toEqual({
+      route,
+      readOnly: false,
+      args: ['SCRIPT', 'LOAD', manifest[0]!.source]
+    })
+    expect(client.calls.at(-1)).toMatchObject({
+      route,
+      readOnly: false,
+      args: ['EVALSHA', registry.getSha('enqueue'), '1', route]
+    })
   })
 
   test('reloads exactly once after NOSCRIPT and retries once', async () => {

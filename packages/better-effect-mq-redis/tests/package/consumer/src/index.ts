@@ -2,6 +2,7 @@
 
 import {
   RedisClient,
+  RedisJobStore,
   decodeDelayedMember,
   encodeDelayedMember,
   makeRedisKeyLayout,
@@ -16,4 +17,8 @@ if (decodeDelayedMember(encodeDelayedMember(1, 'consumer-job')).jobId !== 'consu
   throw new Error('codec mismatch')
 }
 if (typeof RedisClient.layer !== 'function') throw new Error('client layer missing')
+if (typeof RedisJobStore.layer !== 'function') throw new Error('job store layer missing')
+if (typeof RedisJobStore.layerFromConfig !== 'function') {
+  throw new Error('job store connection layer missing')
+}
 console.log('redis consumer ok')

@@ -1,6 +1,6 @@
 # better-effect-mq-redis
 
-Redis and Valkey infrastructure for [`better-effect-mq`](../better-effect-mq). This first release is the adapter foundation: it provides a namespaced client Layer, canonical key helpers, persistence codecs, Lua script loading, and startup layout validation. Complete job-store operations are intentionally reserved for the next adapter issue.
+Redis and Valkey infrastructure for [`better-effect-mq`](../better-effect-mq). It provides a namespaced client Layer, a Redis-backed `JobStore` Layer, canonical key helpers, persistence codecs, Lua script loading, and startup layout validation.
 
 ## Installation
 

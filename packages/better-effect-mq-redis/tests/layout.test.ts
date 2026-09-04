@@ -29,6 +29,14 @@ class LayoutClient implements RedisCommandClient {
       this.lock = args[2]
       return 'OK'
     }
+    if (args[0] === 'EVAL') {
+      if (this.lock === args[4]) {
+        this.lock = undefined
+        this.lockKey = undefined
+        return 1
+      }
+      return 0
+    }
     if (args[0] === 'GET') return this.lock
     if (args[0] === 'DEL') {
       this.lock = undefined
@@ -76,8 +84,7 @@ describe('Redis layout marker', () => {
       'SCAN',
       'HSETNX',
       'HSET',
-      'GET',
-      'DEL'
+      'EVAL'
     ])
   })
 
@@ -94,8 +101,7 @@ describe('Redis layout marker', () => {
       'SET',
       'HGETALL',
       'SCAN',
-      'GET',
-      'DEL'
+      'EVAL'
     ])
   })
 

@@ -22,6 +22,13 @@ class FakeClient implements RedisCommandClient, RedisSubscriberClient {
       this.lock = args[2]
       return 'OK'
     }
+    if (args[0] === 'EVAL') {
+      if (this.lock === args[4]) {
+        this.lock = undefined
+        return 1
+      }
+      return 0
+    }
     if (args[0] === 'GET') return this.lock
     if (args[0] === 'DEL') {
       this.lock = undefined

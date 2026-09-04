@@ -203,7 +203,16 @@ export class RedisClient extends Service<RedisClient>()('RedisClient') {
       subscriber = checkedSubscriber
       await connectClient(client)
       await connectClient(subscriber)
-      return new RedisClient(client, subscriber, normalized, { client: true, subscriber: true })
+      return new RedisClient(
+        client,
+        subscriber,
+        {
+          namespace: normalized.namespace,
+          prefix: normalized.prefix,
+          validateLayout: normalized.validateLayout
+        },
+        { client: true, subscriber: true }
+      )
     } catch (cause) {
       const cleanupErrors: unknown[] = []
       if (subscriber !== undefined) {
@@ -288,7 +297,11 @@ export class RedisClient extends Service<RedisClient>()('RedisClient') {
   private async initializeOnce(): Promise<this> {
     try {
       if (this.subscriberNeedsConnect) await connectClient(this.subscriber)
-      const registry = await RedisScriptRegistry.load(this.client, await loadRedisScriptManifest())
+      const registry = await RedisScriptRegistry.load(
+        this.client,
+        await loadRedisScriptManifest(),
+        this.layout.base
+      )
       const marker = await ensureRedisLayout(
         this.client,
         this.layout,
