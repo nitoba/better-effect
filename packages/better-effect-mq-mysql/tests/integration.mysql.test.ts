@@ -136,7 +136,7 @@ const legacyInitialSql = (sql: string): string =>
     )
     .replace(
       'KEY better_effect_mq_attempts_order_idx (namespace, job_id, ledger_sequence)',
-      'KEY better_effect_mq_attempts_sequence_idx (ledger_sequence), KEY better_effect_mq_attempts_order_idx (namespace, job_id, ledger_sequence)'
+      'KEY better_effect_mq_attempts_legacy_sequence_idx (ledger_sequence), KEY better_effect_mq_attempts_order_idx (namespace, job_id, ledger_sequence)'
     )
 const dropLayout = async (): Promise<void> => {
   const sql = configuredPool()
@@ -209,6 +209,27 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
     await expect(client.validate()).resolves.toMatchObject({ version: 2 })
     await expect(client.migrate()).resolves.toMatchObject({ applied: [] })
   })
+  integration(
+    'resumes migration 002 after every implicitly committed DDL',
+    async () => {
+      const migrations = await loadMySqlMigrations()
+      const upgrade = migrations[1]
+      if (upgrade === undefined) throw new Error('MySQL migration 002 is missing')
+      const ddl = statements(upgrade.sql)
+      const client = MySqlClient.fromPool({ pool: configuredPool(), namespace })
+
+      for (const interruptedAfter of ddl.keys()) {
+        await dropLayout()
+        await installLegacyLayout()
+        for (const statement of ddl.slice(0, interruptedAfter + 1))
+          await configuredPool().query(statement)
+
+        expect(await client.migrate()).toMatchObject({ version: 2, applied: [2] })
+        await expect(client.validate()).resolves.toMatchObject({ version: 2 })
+      }
+    },
+    60_000
+  )
   for (const scenario of suite)
     integration(scenario.name, async () => {
       await scenario.run()

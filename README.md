@@ -74,13 +74,13 @@ bun run test:containers
 The harness preserves an existing `DOCKER_HOST`. Without one, it discovers a
 rootless Podman socket through `XDG_RUNTIME_DIR`, the current user, or `podman
 info`; otherwise it uses the default Docker runtime (as on GitHub Actions).
-It uses random host ports, generated non-root application credentials, and
-stops both containers after a passing, failing, or interrupted test run. Ryuk
-is disabled only when the discovered Podman engine is rootless. On rootless
-Podman, a per-invocation container label provides a scoped `podman rm --force`
-fallback if normal cleanup fails. The Testcontainers v12 module API has no
-host-address binding option, so it cannot request loopback-only bindings; it
-never requests a fixed port.
+It uses random loopback-only host ports, generated non-root application
+credentials, and stops both containers after a passing, failing, or interrupted
+test run. The harness configures the Docker `HostIp` binding as `127.0.0.1` and
+verifies it through runtime inspection for both databases. Ryuk is disabled
+only when the discovered Podman engine is rootless. A per-invocation container
+label provides a scoped `podman rm --force` (or Docker equivalent) fallback if
+normal cleanup fails, including a startup/interrupt race.
 
 GitHub Actions enforces this gate in the `MQ MySQL and MongoDB storage
 conformance` job using the hosted runner's Docker socket; local development
