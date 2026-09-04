@@ -78,6 +78,14 @@
       "extraFiles": [
         "migrations"
       ]
+    },
+    {
+      "name": "better-effect-mq-mysql",
+      "directory": "packages/better-effect-mq-mysql",
+      "changelog": "packages/better-effect-mq-mysql/CHANGELOG.md",
+      "tagPrefix": "better-effect-mq-mysql-v",
+      "initialRelease": true,
+      "extraFiles": ["migrations"]
     }
   ]
 }
