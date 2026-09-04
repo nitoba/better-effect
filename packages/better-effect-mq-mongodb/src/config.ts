@@ -15,6 +15,8 @@ export interface MongoCollection {
   findOne(filter: object, options?: object): Promise<Record<string, unknown> | null>
   findOneAndUpdate(filter: object, update: object, options?: object): Promise<unknown>
   updateOne(filter: object, update: object, options?: object): Promise<{ matchedCount: number }>
+  deleteOne(filter: object, options?: object): Promise<{ deletedCount: number }>
+  insertOne(document: object, options?: object): Promise<unknown>
   deleteMany(filter: object, options?: object): Promise<unknown>
   insertMany(documents: readonly object[], options?: object): Promise<unknown>
   createIndexes(indexes: readonly object[]): Promise<unknown>

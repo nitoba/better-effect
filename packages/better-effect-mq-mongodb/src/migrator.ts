@@ -40,6 +40,7 @@ const schemas = {
       'orderSequence',
       'attemptsMax',
       'attemptsMade',
+      'attemptSequence',
       'deliveryCount',
       'stalledCount',
       'cancelRequested',
@@ -62,12 +63,29 @@ const schemas = {
       orderSequence: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       attemptsMax: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       attemptsMade: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      attemptSequence: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       deliveryCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       stalledCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       cancelRequested: { bsonType: 'bool' },
       createdAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
-      ledgerCount: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+      ledgerCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      payload: {},
+      backoff: {},
+      timeoutMs: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      idempotencyKey: { bsonType: 'string', minLength: 1 },
+      processedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      finishedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      leaseOwner: { bsonType: 'string', minLength: 1 },
+      leaseToken: { bsonType: 'string', minLength: 1 },
+      leaseExpiresAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      cancellationRequestedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      result: {},
+      failure: {},
+      lastSettlementToken: { bsonType: 'string', minLength: 1 },
+      lastSettlementDigest: { bsonType: 'string' },
+      lastSettlementOutcome: { bsonType: 'string' },
+      lastSettlementAttemptSequence: { bsonType: ['int', 'long', 'double'], minimum: 1 }
     }
   ),
   attempts: validator(
@@ -77,6 +95,7 @@ const schemas = {
       'jobId',
       'ledgerSequence',
       'attempt',
+      'attemptSequence',
       'delivery',
       'finishedAtMs',
       'outcome'
@@ -87,9 +106,15 @@ const schemas = {
       jobId: { bsonType: 'string' },
       ledgerSequence: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       attempt: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      attemptSequence: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       delivery: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       finishedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
-      outcome: { enum: ['completed', 'retried', 'failed', 'cancelled', 'stalled', 'released'] }
+      outcome: { enum: ['completed', 'retried', 'failed', 'cancelled', 'stalled', 'released'] },
+      startedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      result: {},
+      failure: {},
+      retryAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      retryDelayMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
     }
   ),
   queues: validator(['_id', 'namespace', 'queue', 'paused', 'wakeVersion', 'updatedAtMs'], {
