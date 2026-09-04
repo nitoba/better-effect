@@ -18,6 +18,8 @@ export interface MongoMigrationOptions {
   readonly collectionPrefix?: string
 }
 
+const previousLayoutVersion = 1 as const
+
 const validator = (required: readonly string[], properties: object): object => ({
   $jsonSchema: { bsonType: 'object', required, properties, additionalProperties: false }
 })
@@ -211,6 +213,17 @@ export const MongoJobStoreMigrator = Object.freeze({
     const prefix = validateCollectionPrefix(options.collectionPrefix ?? 'better_effect_mq')
     const db = normalizeMongoJobStoreConfig({ db: options.db, collectionPrefix: prefix }).db
     const collections = mongoCollections(db, prefix)
+    const existingLayout = await collections.migrations.findOne({ _id: 'layout' })
+    if (
+      existingLayout !== null &&
+      (existingLayout.protocolVersion !== MONGODB_PROTOCOL_VERSION ||
+        (existingLayout.layoutVersion !== previousLayoutVersion &&
+          existingLayout.layoutVersion !== MONGODB_LAYOUT_VERSION))
+    )
+      throw new MongoJobStoreLayoutError(
+        'MongoDB namespace layout cannot be migrated by this adapter',
+        ['incompatible protocol or layout version']
+      )
     const owner = randomUUID()
     // A conditional upsert races when two fresh processes observe no lock
     // document. Duplicate-key is contention, not a layout failure.

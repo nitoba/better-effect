@@ -306,7 +306,8 @@ const decodeAttempt = (document: Doc): AttemptRecord => {
   return attempt.value
 }
 
-class MongoJobStoreImplementation {
+/** @internal Direct source tests use this to exercise driver-boundary failures. */
+export class MongoJobStoreImplementation {
   private descriptorValue = descriptor(false)
   private readonly collections: MongoCollections
   private readonly waiters = new Set<(cause?: unknown) => void>()
@@ -342,6 +343,19 @@ class MongoJobStoreImplementation {
   }
   private async transaction<T>(operation: string, body: TxBody<T>): Promise<Op<T>> {
     if (this.disposed) return fail(operation, new Error('store is disposed'))
+    try {
+      return ok(await this.transactionOrThrow(body))
+    } catch (cause) {
+      return fail(operation, cause)
+    }
+  }
+  private async transactionOrThrow<T>(body: TxBody<T>): Promise<T> {
+    if (this.disposed)
+      throw new JobStoreFailure({
+        operation: 'transaction',
+        retryable: false,
+        message: 'MongoDB JobStore has been disposed'
+      })
     const session = this.client.client.startSession()
     try {
       let value: T | undefined
@@ -351,9 +365,7 @@ class MongoJobStoreImplementation {
         },
         { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } }
       )
-      return ok(value as T)
-    } catch (cause) {
-      return fail(operation, cause)
+      return value as T
     } finally {
       try {
         await session.endSession()
@@ -499,64 +511,58 @@ class MongoJobStoreImplementation {
         throw new JobDefinitionError({ field: 'requests', message: 'must be an array' })
       const normalized = requests.map((request) => this.newJob(request))
       if (normalized.length === 0) return ok(Object.freeze([]))
-      const result = await this.transaction('enqueue', async (session) => {
-        const output: J.EnqueueResult[] = []
-        for (const input of normalized) {
-          const explicit = input.explicit
-          const existing = explicit
-            ? await this.readJob(input.record.id, session)
-            : input.record.idempotencyKey === undefined
-              ? undefined
-              : await this.collections.jobs.findOne(
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          return ok(
+            await this.transactionOrThrow(async (session) => {
+              const output: J.EnqueueResult[] = []
+              for (const input of normalized) {
+                const explicit = input.explicit
+                const existing = explicit
+                  ? await this.readJob(input.record.id, session)
+                  : input.record.idempotencyKey === undefined
+                    ? undefined
+                    : await this.collections.jobs.findOne(
+                        {
+                          namespace: this.client.namespace,
+                          queue: input.record.queue,
+                          name: input.record.name,
+                          version: input.record.version,
+                          idempotencyKey: input.record.idempotencyKey
+                        },
+                        { session }
+                      )
+                if (existing !== undefined && existing !== null) {
+                  output.push({
+                    job: explicit ? existing.record : decodeJob(existing as Doc),
+                    duplicate: true
+                  })
+                  continue
+                }
+                const sequence = await this.sequence(session)
+                const changed = makeJobRecord({ ...input.record, orderingSequence: sequence })
+                if (Result.isError(changed)) throw changed.error
+                await this.collections.jobs.insertOne(
+                  encodeJob(this.client.namespace, changed.value),
                   {
-                    namespace: this.client.namespace,
-                    queue: input.record.queue,
-                    name: input.record.name,
-                    version: input.record.version,
-                    idempotencyKey: input.record.idempotencyKey
-                  },
-                  { session }
+                    session
+                  }
                 )
-          if (existing !== undefined && existing !== null) {
-            output.push({
-              job: explicit ? existing.record : decodeJob(existing as Doc),
-              duplicate: true
+                await this.notify(changed.value.queue, changed.value.updatedAt, session)
+                output.push({ job: changed.value, duplicate: false })
+              }
+              return Object.freeze(output)
             })
-            continue
-          }
-          const sequence = await this.sequence(session)
-          const changed = makeJobRecord({ ...input.record, orderingSequence: sequence })
-          if (Result.isError(changed)) throw changed.error
-          try {
-            await this.collections.jobs.insertOne(encodeJob(this.client.namespace, changed.value), {
-              session
-            })
-            await this.notify(changed.value.queue, changed.value.updatedAt, session)
-            output.push({ job: changed.value, duplicate: false })
-          } catch (cause) {
-            if (!this.duplicate(cause)) throw cause
-            const duplicate = explicit
-              ? await this.readJob(changed.value.id, session)
-              : await this.collections.jobs.findOne(
-                  {
-                    namespace: this.client.namespace,
-                    queue: changed.value.queue,
-                    name: changed.value.name,
-                    version: changed.value.version,
-                    idempotencyKey: changed.value.idempotencyKey
-                  },
-                  { session }
-                )
-            if (duplicate === undefined || duplicate === null) throw cause
-            output.push({
-              job: explicit ? duplicate.record : decodeJob(duplicate as Doc),
-              duplicate: true
-            })
-          }
+          )
+        } catch (cause) {
+          if (!this.duplicate(cause) || attempt === 2) return fail('enqueue', cause)
+          // A duplicate-key aborts a MongoDB transaction. Inspecting the winner
+          // is deliberately outside that aborted session; the next transaction
+          // then observes it and returns the protocol duplicate result.
+          await Promise.all(normalized.map((input) => this.findEnqueueDuplicate(input)))
         }
-        return Object.freeze(output)
-      })
-      return result
+      }
+      return fail('enqueue', new Error('MongoDB enqueue retry budget exhausted'))
     } catch (cause) {
       return fail('enqueue', cause)
     }
@@ -639,6 +645,23 @@ class MongoJobStoreImplementation {
         (cause as { codeName?: unknown }).codeName === 'DuplicateKey')
     )
   }
+  private async findEnqueueDuplicate(input: {
+    record: JobRecord
+    explicit: boolean
+  }): Promise<void> {
+    if (input.explicit) {
+      await this.readJob(input.record.id)
+      return
+    }
+    if (input.record.idempotencyKey !== undefined)
+      await this.collections.jobs.findOne({
+        namespace: this.client.namespace,
+        queue: input.record.queue,
+        name: input.record.name,
+        version: input.record.version,
+        idempotencyKey: input.record.idempotencyKey
+      })
+  }
   async claim(request: J.ClaimRequest): Promise<Op<J.ClaimResult>> {
     try {
       const raw = request as unknown as Doc
@@ -698,8 +721,9 @@ class MongoJobStoreImplementation {
         }
         const jobs: JobRecord[] = []
         for (let index = 0; index < limit; index += 1) {
-          const leaseToken = randomUUID()
-          const value = await this.collections.jobs.findOneAndUpdate(
+          const leaseToken = makeLeaseToken(randomUUID())
+          if (Result.isError(leaseToken)) throw leaseToken.error
+          const document = await this.collections.jobs.findOne(
             {
               namespace: this.client.namespace,
               queue: queue.value,
@@ -708,25 +732,28 @@ class MongoJobStoreImplementation {
               runAtMs: { $lte: now }
             },
             {
-              $set: {
-                state: 'active',
-                leaseOwner: worker.value,
-                leaseToken,
-                leaseExpiresAtMs: now + duration,
-                processedAtMs: now,
-                updatedAtMs: now
-              },
-              $inc: { deliveryCount: 1 }
-            },
-            {
               sort: { priority: -1, runAtMs: 1, orderSequence: 1, id: 1 },
-              returnDocument: 'after',
               session
             }
           )
-          const document = this.findOneResult(value)
-          if (document === undefined) break
-          jobs.push(decodeJob(document))
+          if (document === null) break
+          const current = decodeJob(document)
+          const transition = reduceJob(current, {
+            type: 'claim',
+            jobId: current.id,
+            workerId: worker.value,
+            leaseToken: leaseToken.value,
+            leaseExpiresAt: now + duration,
+            now
+          })
+          if (Result.isError(transition)) throw transition.error
+          if (!(await this.save(transition.value.record, session, current)))
+            throw new JobStoreFailure({
+              operation: 'claim',
+              retryable: true,
+              message: 'MongoDB conditional claim conflicted'
+            })
+          jobs.push(transition.value.record)
         }
         const earliest = await this.collections.jobs.findOne(
           {
@@ -862,6 +889,11 @@ class MongoJobStoreImplementation {
     try {
       const now = inputNumber(request.now, 'now')
       const duration = inputNumber(request.leaseDurationMs, 'leaseDurationMs', 1)
+      if (now > MAX - duration)
+        throw new JobDefinitionError({
+          field: 'leaseDurationMs',
+          message: 'lease expiry exceeds safe integer range'
+        })
       const renewed: ActiveJobSnapshot[] = []
       const lost: LostLease[] = []
       const cancellationRequested: string[] = []
@@ -884,6 +916,17 @@ class MongoJobStoreImplementation {
         }
         const found = await this.readJob(lease.jobId)
         if (
+          found?.record.state === 'active' &&
+          found.record.leaseToken === lease.leaseToken &&
+          found.record.leaseExpiresAt !== undefined &&
+          found.record.leaseExpiresAt <= now
+        )
+          lost.push({
+            jobId: lease.jobId,
+            leaseToken: lease.leaseToken,
+            reason: 'expired-lease'
+          })
+        else if (
           found?.record.cancellationRequestedAt !== undefined &&
           found.record.leaseToken === lease.leaseToken
         )
@@ -893,11 +936,7 @@ class MongoJobStoreImplementation {
             jobId: lease.jobId,
             leaseToken: lease.leaseToken,
             reason:
-              found?.record.leaseToken !== lease.leaseToken
-                ? 'mismatched-token'
-                : found?.record.leaseExpiresAt !== undefined && found.record.leaseExpiresAt <= now
-                  ? 'expired-lease'
-                  : 'missing-lease'
+              found?.record.leaseToken !== lease.leaseToken ? 'mismatched-token' : 'missing-lease'
           })
       }
       return ok({
@@ -960,7 +999,8 @@ class MongoJobStoreImplementation {
           await this.notify(next.queue, now, session)
           return { ...reduced.value, record: next }
         })
-        if (Result.isOk(result) && result.value !== undefined) transitions.push(result.value)
+        if (Result.isError(result)) return result as Op<J.RecoverStalledResult>
+        if (result.value !== undefined) transitions.push(result.value)
       }
       return ok({ transitions: Object.freeze(transitions), recovered: transitions.length })
     } catch (cause) {
@@ -1328,8 +1368,24 @@ class MongoJobStoreImplementation {
     if (this.disposed) return
     this.disposed = true
     for (const waiter of this.waiters) waiter(new Error('store is disposed'))
-    await this.stream?.close()
-    if (this.client.ownsClient) await this.client.dispose()
+    let streamFailure: unknown
+    let clientFailure: unknown
+    try {
+      await this.stream?.close()
+    } catch (cause) {
+      streamFailure = cause
+    }
+    if (this.client.ownsClient) {
+      try {
+        await this.client.dispose()
+      } catch (cause) {
+        clientFailure = cause
+      }
+    }
+    if (streamFailure !== undefined && clientFailure !== undefined)
+      throw new AggregateError([streamFailure, clientFailure], 'MongoDB JobStore disposal failed')
+    if (streamFailure !== undefined) throw streamFailure
+    if (clientFailure !== undefined) throw clientFailure
   }
 }
 const namespaceFor = (token: AnyJobStoreToken, namespace: string): string =>

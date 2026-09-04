@@ -4,7 +4,8 @@
 
 import type { MongoDb } from './config'
 
-export const MONGODB_LAYOUT_VERSION = 1 as const
+/** Layout 2 installs strict complete-document validators. */
+export const MONGODB_LAYOUT_VERSION = 2 as const
 export const MONGODB_PROTOCOL_VERSION = 1 as const
 
 export type MongoCollections = ReturnType<typeof mongoCollections>
