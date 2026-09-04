@@ -53,3 +53,11 @@ lock-wait timeouts are retried only at the complete transaction boundary.
 Metadata filtering uses `JSON_CONTAINS` and is residual (arbitrary metadata is
 not generically indexed). Operators own backups, replication, failover, and
 query-plan monitoring. MariaDB is intentionally not advertised as supported.
+
+## Integration verification
+
+The repository runs the MySQL conformance suite when `MYSQL_URL` is set to a
+dedicated MySQL 8.0.16+ test database. It covers protocol transitions, queue
+pause/wake behavior, lease fencing, settlement replay, and isolated named
+stores. Without that variable the real-engine suite is skipped; unit, package,
+and tarball checks still run.

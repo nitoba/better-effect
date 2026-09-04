@@ -6,7 +6,7 @@
 // oxlint-disable anti-slop/no-chained-type-assertions -- database JSON is narrowed by protocol validators.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts are confined to validated row/Service boundaries.
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Result, type Result as ResultType } from 'better-result'
 import { Layer } from 'better-effect'
 import type { ServiceContract } from 'better-effect'
@@ -66,7 +66,7 @@ const mysqlDescriptor = (queueFilteredNotifications: boolean): JobStoreDescripto
       queueFilteredNotifications,
       nativeBatchEnqueue: true,
       nativeBatchClaim: true,
-      metadataIndex: 'indexed',
+      metadataIndex: 'residual',
       transactionalEnqueue: true,
       durableChangeFeed: false,
       globalConcurrency: false,
@@ -114,18 +114,33 @@ const fail = <T>(operation: string, cause: unknown): StoreResult<T> => {
   if (isTaggedJobError(cause)) return Result.err(cause) as StoreResult<T>
   return Result.err(failure(operation, cause, isRetryable(cause))) as unknown as StoreResult<T>
 }
-const mysqlErrorCode = (cause: unknown): unknown => {
+const mysqlErrorDetails = (cause: unknown) => {
   try {
-    return typeof cause === 'object' && cause !== null
-      ? (cause as { code?: unknown }).code
-      : undefined
+    if (typeof cause !== 'object' || cause === null)
+      return { code: undefined, errno: undefined, sqlState: undefined }
+    const error = cause as {
+      readonly code?: unknown
+      readonly errno?: unknown
+      readonly sqlState?: unknown
+    }
+    return {
+      code: typeof error.code === 'string' ? error.code : undefined,
+      errno: typeof error.errno === 'number' ? error.errno : undefined,
+      sqlState: typeof error.sqlState === 'string' ? error.sqlState : undefined
+    }
   } catch {
-    return undefined
+    return { code: undefined, errno: undefined, sqlState: undefined }
   }
 }
 const isRetryable = (cause: unknown): boolean => {
-  const code = mysqlErrorCode(cause)
-  return code === '40001' || code === '40P01'
+  const error = mysqlErrorDetails(cause)
+  return (
+    error.code === 'ER_LOCK_DEADLOCK' ||
+    error.code === 'ER_LOCK_WAIT_TIMEOUT' ||
+    error.errno === 1213 ||
+    error.errno === 1205 ||
+    error.sqlState === '40001'
+  )
 }
 const releaseCleanupError = (cause: unknown, message: string): Error | undefined =>
   cause === undefined ? undefined : cause instanceof Error ? cause : new Error(message, { cause })
@@ -1021,8 +1036,8 @@ class MySqlJobStoreImplementation {
     const result = await tx.query(
       `UPDATE ${this.table(MYSQL_TABLES.jobs)} SET ${sets} WHERE namespace=? AND id=?${guards}`,
       [
-        this.client.namespace,
         ...values,
+        this.client.namespace,
         record.id,
         ...(expected === undefined
           ? []
@@ -1278,7 +1293,7 @@ class MySqlJobStoreImplementation {
           [this.client.namespace, queue.value]
         )
         const queueRow = queueState.rows[0]
-        if (queueRow?.paused === true) {
+        if (queueRow?.paused === true || queueRow?.paused === 1 || queueRow?.paused === '1') {
           return {
             jobs: Object.freeze([]),
             wakeToken: makeWakeToken(await this.wakeSnapshot(tx)),
@@ -1438,11 +1453,11 @@ class MySqlJobStoreImplementation {
         await tx.query(
           `UPDATE ${this.table(MYSQL_TABLES.jobs)} SET last_settlement_token=?,last_settlement_outcome=?,last_settlement_attempt_sequence=? WHERE namespace=? AND id=?`,
           [
-            this.client.namespace,
-            current.id,
             leaseToken.value,
             canonicalOutcome,
-            transition.attempt!.attemptSequence ?? transition.attempt!.attempt
+            transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+            this.client.namespace,
+            current.id
           ]
         )
         await this.notify(tx, current.queue, now)
@@ -2240,7 +2255,10 @@ const makeStoreLayer = <T extends AnyJobStoreToken>(
     }
   ) as Layer<InstanceType<T>, never>
 
-const namespaceForToken = (_token: AnyJobStoreToken, namespace: string): string => namespace
+const namespaceForToken = (token: AnyJobStoreToken, namespace: string): string =>
+  token.serviceTag === JobStore.serviceTag
+    ? namespace
+    : `${namespace}:store-${createHash('sha256').update(token.serviceTag).digest('hex').slice(0, 48)}`
 
 const borrowedClient = (
   token: AnyJobStoreToken,
