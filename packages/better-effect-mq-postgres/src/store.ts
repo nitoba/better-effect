@@ -14,11 +14,11 @@ import {
   JobStore,
   JobStoreWakeAbortedError,
   type AnyJobStoreToken,
-  type JobStore as JobStoreNamespace
+  type JobStore as JobStoreNamespace,
+  type JobStoreDescriptor
 } from 'better-effect-mq'
 import {
   makeJobRecord,
-  protocolVersion,
   reduceJob,
   validateAttemptRecord,
   type AttemptRecord,
@@ -31,6 +31,7 @@ import {
   JobDefinitionError,
   JobNotFoundError,
   LeaseLostError,
+  SettlementConflictError,
   makeJobId,
   makeJobName,
   makeLeaseToken,
@@ -55,13 +56,23 @@ import {
   type PoolClient
 } from './config'
 
-const makeCapabilities = (notifications: boolean) =>
+/** Build the immutable descriptor after the optional LISTEN channel is ready. */
+const postgresDescriptor = (queueFilteredNotifications: boolean): JobStoreDescriptor =>
   Object.freeze({
-    notifications,
-    queueFilteredNotifications: notifications,
-    batchClaim: true,
-    transactionalEnqueue: true,
-    changeFeed: false
+    protocolVersion: 1,
+    adapter: 'postgres',
+    adapterVersion: '0.1.0',
+    layoutVersion: 1,
+    capabilities: Object.freeze({
+      queueFilteredNotifications,
+      nativeBatchEnqueue: true,
+      nativeBatchClaim: true,
+      metadataIndex: 'indexed',
+      transactionalEnqueue: true,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    })
   })
 const maxRetries = 3
 
@@ -75,13 +86,18 @@ type Tx = PoolClient & {
 }
 
 const ok = <T>(value: T): StoreResult<T> => Result.ok(value) as unknown as StoreResult<T>
-const failure = (operation: string, cause: unknown, retryable = false): JobStoreFailure =>
-  new JobStoreFailure({ operation, retryable, message: `PostgreSQL ${operation} failed` })
+const failure = (operation: string, _cause: unknown, retryable = false): JobStoreFailure =>
+  new JobStoreFailure({
+    operation,
+    retryable,
+    message: `PostgreSQL ${operation} failed`
+  })
 const taggedJobErrorTags = new Set([
   'JobStoreFailure',
   'JobDefinitionError',
   'JobNotFoundError',
   'LeaseLostError',
+  'SettlementConflictError',
   'InvalidJobTransitionError',
   'JobNotRetryableError',
   'JobNotCancellableError',
@@ -840,8 +856,7 @@ const encodeRecord = (r: JobRecord): unknown[] => [
 ]
 
 class PostgresJobStoreImplementation {
-  readonly protocolVersion = protocolVersion
-  capabilities = makeCapabilities(false)
+  private descriptorValue = postgresDescriptor(false)
   private readonly channel: string
   private closed = false
   private listener:
@@ -856,6 +871,9 @@ class PostgresJobStoreImplementation {
   private disposal: Promise<void> | undefined
   constructor(private readonly client: PostgresClient) {
     this.channel = `mq_${hash(`${client.schema}:${client.namespace}`)}_wake`
+  }
+  get descriptor(): JobStoreDescriptor {
+    return this.descriptorValue
   }
   async start(): Promise<void> {
     let poolMax: unknown
@@ -904,7 +922,6 @@ class PostgresJobStoreImplementation {
         if (this.listener?.client !== connection) return
         this.listener = undefined
         this.releaseListenerReservation()
-        this.capabilities = makeCapabilities(false)
         this.wakeWaiters(undefined)
         const error =
           cause instanceof Error
@@ -929,7 +946,7 @@ class PostgresJobStoreImplementation {
       connection.on('notification', handler)
       connection.on('error', errorHandler)
       this.listener = { client: connection, handler, errorHandler }
-      this.capabilities = makeCapabilities(true)
+      this.descriptorValue = postgresDescriptor(true)
     } catch (cause) {
       const error =
         cause instanceof Error ? cause : new Error('PostgreSQL LISTEN setup failed', { cause })
@@ -1466,6 +1483,16 @@ class PostgresJobStoreImplementation {
           'last_settlement_attempt_sequence'
         )
         const canonicalOutcome = canonicalJson(settlementOutcome)
+        if (
+          previousToken === leaseToken.value &&
+          previousOutcome !== undefined &&
+          canonicalJson(parseJson(previousOutcome)) !== canonicalOutcome
+        ) {
+          throw new SettlementConflictError({
+            jobId: jobId.value,
+            leaseToken: leaseToken.value
+          })
+        }
         if (current.state !== 'active') {
           if (
             previousToken === leaseToken.value &&
@@ -1494,10 +1521,9 @@ class PostgresJobStoreImplementation {
             previousAttemptSequence === undefined ||
             canonicalJson(parseJson(previousOutcome)) !== canonicalOutcome
           ) {
-            throw new JobStoreFailure({
-              operation: 'settle',
-              retryable: false,
-              message: 'settlement token was already used for a different outcome'
+            throw new SettlementConflictError({
+              jobId: jobId.value,
+              leaseToken: leaseToken.value
             })
           }
           const attemptRow = await tx.query<Row>(

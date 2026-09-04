@@ -28,7 +28,16 @@ const makeLayer = <const Token extends AnyJobStoreToken>(token: Token) =>
   })
 
 const suite = jobStoreContract({
-  capabilities: { batchClaim: true, transactionalEnqueue: true },
+  capabilities: {
+    queueFilteredNotifications: true,
+    nativeBatchEnqueue: true,
+    nativeBatchClaim: true,
+    metadataIndex: 'indexed',
+    transactionalEnqueue: true,
+    durableChangeFeed: false,
+    globalConcurrency: false,
+    rateLimiting: false
+  },
   makeRuntime: async () =>
     Runtime.make(
       PostgresJobStore.layer({
@@ -105,5 +114,17 @@ describe('PostgreSQL JobStore conformance on PostgreSQL', () => {
     expect(report.failed).toEqual([])
     expect(report.executed).toHaveLength(suite.length)
     expect(report.passed).toHaveLength(suite.length)
+    expect(report.capabilities).toEqual({
+      queueFilteredNotifications: true,
+      nativeBatchEnqueue: true,
+      nativeBatchClaim: true,
+      metadataIndex: 'indexed',
+      transactionalEnqueue: true,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    })
+    expect(report.descriptor?.capabilities).toEqual(report.capabilities)
+    expect(report.capabilitiesNotTested).toEqual([])
   })
 })

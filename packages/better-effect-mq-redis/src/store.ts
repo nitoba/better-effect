@@ -15,6 +15,7 @@ import {
   JobStoreFailure,
   JobNotFoundError,
   LeaseLostError,
+  SettlementConflictError,
   JobDefinitionError,
   InvalidJobTransitionError,
   UnsupportedJobStoreOperationError,
@@ -24,7 +25,6 @@ import {
   makeJobName,
   makeWorkerId,
   makeJobRecord,
-  protocolVersion,
   reduceJob,
   recoverStalledWithPolicy,
   type AnyJobStoreToken,
@@ -33,7 +33,8 @@ import {
   type JobTransition,
   type ActiveJobSnapshot,
   type LostLease,
-  type JobStore as J
+  type JobStore as J,
+  type JobStoreDescriptor
 } from 'better-effect-mq'
 import { RedisClient } from './client'
 import { RedisConnectionError, RedisLayoutError } from './errors'
@@ -67,6 +68,7 @@ const tagged = new Set([
   'JobDefinitionError',
   'JobNotFoundError',
   'LeaseLostError',
+  'SettlementConflictError',
   'InvalidJobTransitionError',
   'UnsupportedJobStoreOperationError',
   'JobNotRetryableError',
@@ -486,6 +488,24 @@ const canonicalJson = (value: unknown): string => {
 }
 
 const jobStates = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const
+
+/** The v1 descriptor is declarative; wake notifications remain an optimization. */
+const redisDescriptor: JobStoreDescriptor = Object.freeze({
+  protocolVersion: 1,
+  adapter: 'redis',
+  adapterVersion: '0.1.0',
+  layoutVersion: '1',
+  capabilities: Object.freeze({
+    queueFilteredNotifications: true,
+    nativeBatchEnqueue: true,
+    nativeBatchClaim: true,
+    metadataIndex: 'none',
+    transactionalEnqueue: false,
+    durableChangeFeed: false,
+    globalConcurrency: false,
+    rateLimiting: false
+  })
+})
 const isAbortSignal = (value: unknown): value is AbortSignal => {
   if (value === null || typeof value !== 'object') return false
   try {
@@ -512,15 +532,7 @@ const listValue = (record: JobRecord, orderBy: J.JobListOrderBy): number | null 
       ? record.runAt
       : (record.finishedAt ?? null)
 class RedisJobStoreImplementation {
-  readonly protocolVersion = protocolVersion
-  readonly capabilities = Object.freeze({
-    notifications: true,
-    queueFilteredNotifications: true,
-    batchClaim: true,
-    // Oversized calls are intentionally split into independently atomic chunks.
-    transactionalEnqueue: false,
-    changeFeed: false
-  })
+  readonly descriptor = redisDescriptor
   private closed = false
   private disposal: Promise<void> | undefined
   private unsubscribeWake: (() => Promise<void>) | undefined
@@ -737,6 +749,11 @@ class RedisJobStoreImplementation {
     )
     const reply = await this.script(scriptName, keyList, [JSON.stringify(item)], true)
     if (reply.status === 'error') {
+      if (reply.operation === 'MQ_SETTLEMENT_CONFLICT' && mutation.settlementToken !== undefined)
+        throw new SettlementConflictError({
+          jobId: record.id as never,
+          leaseToken: mutation.settlementToken as never
+        })
       if (
         reply.operation === 'MQ_CONFLICT' &&
         (scriptName === 'settle' || scriptName === 'release' || scriptName === 'recover-stalled')
@@ -1366,10 +1383,9 @@ class RedisJobStoreImplementation {
       )
       if (settled.token === token.value) {
         if (settled.digest !== digest)
-          throw new JobStoreFailure({
-            operation: 'settle',
-            retryable: false,
-            message: 'settlement token was already used for a different outcome'
+          throw new SettlementConflictError({
+            jobId: id.value,
+            leaseToken: token.value
           })
         const attemptSequence = redisNumber(settled.attempt, 'attempt')
         const values = stringsReply(

@@ -3,7 +3,7 @@
 
 import { EventEmitter } from 'node:events'
 import { describe, expect, test } from 'bun:test'
-import { JobStore } from 'better-effect-mq'
+import { JobStore, type JobStoreContract, type JobStoreDescriptor } from 'better-effect-mq'
 import { Runtime, ServiceRuntime } from 'better-effect'
 import { PostgresJobStore, type Pool, type PoolClient, type QueryResult } from '../src/index'
 
@@ -35,6 +35,8 @@ class TestListenerClient extends EventEmitter implements PoolClient {
 const wakeToken = (queues: Record<string, number>): string =>
   `postgres-wake-v1-${encodeURIComponent(JSON.stringify({ version: 1, queues }))}`
 
+const descriptorOf = (store: JobStoreContract): JobStoreDescriptor => store.descriptor
+
 describe('PostgreSQL LISTEN fallback', () => {
   test('uses polling when pool capacity is not exposed', async () => {
     const listener = new TestListenerClient()
@@ -48,8 +50,27 @@ describe('PostgreSQL LISTEN fallback', () => {
     const runtime = await Runtime.make(PostgresJobStore.layer({ pool, validateSchema: false }))
     try {
       const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
-      expect(store.capabilities.notifications).toBe(false)
+      const descriptor = descriptorOf(store)
+      expect(descriptor).toEqual({
+        protocolVersion: 1,
+        adapter: 'postgres',
+        adapterVersion: '0.1.0',
+        layoutVersion: 1,
+        capabilities: {
+          queueFilteredNotifications: false,
+          nativeBatchEnqueue: true,
+          nativeBatchClaim: true,
+          metadataIndex: 'indexed',
+          transactionalEnqueue: true,
+          durableChangeFeed: false,
+          globalConcurrency: false,
+          rateLimiting: false
+        }
+      })
+      expect(Object.isFrozen(descriptor)).toBe(true)
+      expect(Object.isFrozen(descriptor.capabilities)).toBe(true)
       expect(connections).toBe(0)
+      expect(descriptor.capabilities.queueFilteredNotifications).toBe(false)
     } finally {
       await runtime.dispose()
     }
@@ -64,11 +85,12 @@ describe('PostgreSQL LISTEN fallback', () => {
     const runtime = await Runtime.make(PostgresJobStore.layer({ pool, validateSchema: false }))
     try {
       const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
-      expect(store.capabilities.notifications).toBe(true)
+      const before = descriptorOf(store)
       const failure = new Error('connection failed')
       listener.emit('error', failure)
       expect(listener.released).toEqual([failure])
-      expect(store.capabilities.notifications).toBe(false)
+      expect(descriptorOf(store)).toBe(before)
+      expect(descriptorOf(store).capabilities.queueFilteredNotifications).toBe(true)
     } finally {
       await runtime.dispose()
     }
@@ -83,8 +105,7 @@ describe('PostgreSQL LISTEN fallback', () => {
     }
     const runtime = await Runtime.make(PostgresJobStore.layer({ pool, validateSchema: false }))
     try {
-      const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
-      expect(store.capabilities.notifications).toBe(false)
+      await runtime.run(() => ServiceRuntime.resolve(JobStore))
       expect(listener.released[0]?.message).toBe('listen failed')
     } finally {
       await runtime.dispose()

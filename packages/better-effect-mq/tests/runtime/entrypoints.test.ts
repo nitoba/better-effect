@@ -32,7 +32,9 @@ const expectedCoreRuntimeExports = [
   'JobNotPromotableError',
   'JobNotRetryableError',
   'JobStoreFailure',
+  'JobStoreProtocolMismatchError',
   'LeaseLostError',
+  'SettlementConflictError',
   'LeaseToken',
   'Queue',
   'QueueName',
@@ -45,6 +47,8 @@ const expectedCoreRuntimeExports = [
   'cancelJob',
   'claimJob',
   'compareJobOrder',
+  'assertJobStoreProtocolCompatible',
+  'isJobStoreDescriptor',
   'isUnrecoverableFailure',
   'bindJob',
   'makeJobId',
@@ -98,7 +102,9 @@ test('the testing entrypoint exposes only runner-agnostic testing utilities', ()
     'JobStoreConformanceError',
     'RecordedJobObserver',
     'TestJobStore',
-    'jobStoreContract'
+    'jobStoreContract',
+    'jobStoreGoldenTrace',
+    'runJobStoreGoldenTrace'
   ])
   expect(testing.jobStoreContract).toBeDefined()
   expect(testing.RecordedJobObserver).toBeDefined()

@@ -12,7 +12,9 @@ import type {
   JobNotPromotableError,
   JobNotRetryableError,
   JobStoreFailure,
+  JobStoreProtocolMismatchError,
   LeaseLostError,
+  SettlementConflictError,
   UnsupportedJobStoreOperationError
 } from '../protocol'
 
@@ -65,7 +67,10 @@ export type JobStoreEnqueueError = JobStoreFailure | JobDefinitionError
 export type JobStoreClaimError = JobStoreFailure | JobDefinitionError
 export type JobStoreEnqueueManyError = JobStoreFailure | JobDefinitionError
 
-export type JobStoreSettlementError = JobStoreLeaseTransitionError | JobNotRetryableError
+export type JobStoreSettlementError =
+  | JobStoreLeaseTransitionError
+  | JobNotRetryableError
+  | SettlementConflictError
 
 export type JobStoreReleaseError = JobStoreLeaseTransitionError
 export type JobStoreHeartbeatError = JobStoreFailure | JobDefinitionError
@@ -114,6 +119,8 @@ export type JobStoreResumeError = JobStorePauseError
  */
 export type JobStoreError =
   | JobStoreFailure
+  | JobStoreProtocolMismatchError
+  | SettlementConflictError
   | UnsupportedJobStoreOperationError
   | JobStoreWakeAbortedError
   | JobDefinitionError

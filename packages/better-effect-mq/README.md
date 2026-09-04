@@ -9,6 +9,22 @@ pure state transitions, explicit JSON/Standard Schema conversion, the
 storage-neutral `JobStore` Service contract, and `Worker.start`/`Worker.use`.
 It does not open connections or provide a storage adapter.
 
+## Normative protocol documentation
+
+The packaged driver and protocol documentation is available under [`docs/`](./docs/):
+
+- [Writing a driver](./docs/writing-a-driver.md)
+- [JobStore protocol](./docs/protocol/job-store-v1.md)
+- [State machine](./docs/protocol/state-machine-v1.md)
+- [Operation atomicity](./docs/protocol/operation-atomicity-v1.md)
+- [Errors](./docs/protocol/errors-v1.md)
+- [Cursors and ordering](./docs/protocol/cursors-and-ordering-v1.md)
+- [Time and leases](./docs/protocol/time-and-leases-v1.md)
+- [Capabilities](./docs/protocol/capabilities-v1.md)
+- [Compatibility](./docs/protocol/compatibility-v1.md)
+
+These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
+
 The package uses [`better-effect`](https://github.com/nitoba/better-effect)'s
 Service type and [`better-result`](https://github.com/nitoba/better-result)'s
 Result model; it does not depend on the full Effect library.
@@ -325,7 +341,9 @@ applied. Deterministic IDs or idempotency keys make safe replay possible.
 `JobStore` is the only storage seam in this package. It is a yieldable
 `better-effect` Service, not a CRUD repository, query builder, SQL abstraction,
 or worker. An adapter supplies a structural `JobStore.Contract` through a Layer;
-the core never imports a driver or inspects a backend kind.
+the core never imports a driver or inspects a backend kind. The contract's
+immutable `descriptor` reports protocol, adapter, layout, and the fixed v1
+capability matrix; Worker startup validates it before polling.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
@@ -344,7 +362,7 @@ const layer = Layer.succeed(DurableStore, DurableStore.of(adapterContract))
 const program = () =>
   Effect.gen(async function* () {
     const store = yield* DurableStore
-    return Result.ok(store.capabilities)
+    return Result.ok(store.descriptor)
   })
 
 await Runtime.run(layer, program)
@@ -421,10 +439,12 @@ second job. ID/token collisions must be bounded and reported as
 
 Every operation receives an explicit `now` where time affects state. A
 `JobStoreFailure` describes infrastructure failure and state-specific tagged
-errors describe invalid transitions or lost fencing leases. Store capabilities
-(`notifications`, `queueFilteredNotifications`, `batchClaim`, `transactionalEnqueue`,
-and `changeFeed`) are immutable performance hints: false never changes
-correctness or makes a basic operation unavailable. The
+errors describe invalid transitions or lost fencing leases. The immutable
+`store.descriptor` reports the v1 capability matrix
+(`queueFilteredNotifications`, `nativeBatchEnqueue`, `nativeBatchClaim`,
+`metadataIndex`, `transactionalEnqueue`, `durableChangeFeed`,
+`globalConcurrency`, and `rateLimiting`). A false capability never changes
+correctness or makes a mandatory operation unavailable. The
 `queueFilteredNotifications` flag declares the stronger guarantee that an
 `awaitWake` waiter is not woken by an unrelated queue. Wake semantics remain on
 `JobStore` rather than a separate notifier so token/version consistency cannot
@@ -654,7 +674,7 @@ const runtime = await Runtime.make(MemoryJobStore.layer)
 const result = await runtime.run(() =>
   Effect.gen(async function* () {
     const store = yield* JobStore
-    return Result.ok(store.capabilities)
+    return Result.ok(store.descriptor)
   })
 )
 await runtime.dispose()
@@ -748,9 +768,14 @@ const scenarios = jobStoreContract({
   setup: async (context) => createSchema(context.id),
   reset: async (context) => resetDatabase(context.id),
   capabilities: {
-    notifications: true,
     queueFilteredNotifications: true,
-    batchClaim: true
+    nativeBatchEnqueue: true,
+    nativeBatchClaim: true,
+    metadataIndex: 'indexed',
+    transactionalEnqueue: true,
+    durableChangeFeed: false,
+    globalConcurrency: false,
+    rateLimiting: false
   }
 })
 ```
@@ -763,18 +788,6 @@ import { test } from 'bun:test'
 for (const scenario of scenarios) {
   test(scenario.name, scenario.run)
 }
-```
-
-For Vitest:
-
-```ts
-import { describe, it } from 'vitest'
-
-describe('MyStore JobStore contract', () => {
-  for (const scenario of scenarios) {
-    it(scenario.name, scenario.run)
-  }
-})
 ```
 
 Each scenario gets fresh controls, runs `setup`, then creates its runtime, and
@@ -790,11 +803,11 @@ Built-in scenarios cover enqueue identity and independent batch replay,
 ordering and atomic claims, leases/fencing/stalls, settlement ledgers,
 administration, keyset listing, controlled time, and wake-up abort/token
 semantics. `capabilities` is immutable metadata: false never skips a basic
-correctness scenario. Optional notification and batch-claim scenarios are
-returned only when their capability is declared; unsupported scenarios appear
-in `suite.report().skipped`. The report also includes `executed`, `passed`,
-`failed`, and `capabilitiesNotTested` so CI can make capability coverage
-explicit.
+correctness scenario. Capability-gated scenarios are returned only when their
+capability is declared; unsupported scenarios appear in `suite.report().skipped`.
+The report is versioned (`version` and `protocolVersion` are both `1`) and also
+includes the resolved descriptor, `executed`, `passed`, `failed`, and
+`capabilitiesNotTested` so CI can make capability coverage explicit.
 
 The context exposes a deterministic `clock`, `ids`, `barrier`, and checkpoint
 hooks for distributed or crash extensions. Notification adapters may use the
@@ -948,13 +961,17 @@ must not silently mix application, SQL, Redis, or test clocks in one operation.
 
 ## Version policy
 
-`protocolVersion = 1` is experimental but explicit. A breaking change to state
-semantics, persisted field meaning, transition preconditions, ordering, or safe
-failure representation requires a new protocol version, a changelog entry in
-this package, and coordinated adapter updates. Backward-compatible additions
-may be made within a version when existing records and adapters retain their
-meaning. Future codecs and job definitions may carry their own `name + version`
-identity, but they must not change this protocol silently.
+`protocolVersion = 1` is explicit and independent from the npm package version
+and every adapter's layout/migration version. The descriptor handshake rejects a
+missing, mutable, or incompatible descriptor before Worker startup. A breaking
+change to state semantics, persisted field meaning, transition preconditions,
+ordering, time/lease rules, or safe failure representation requires a new
+protocol version, coordinated adapter updates, a changelog entry, and an
+explicit migration plan. Backward-compatible additions may remain in v1 only
+when existing records and adapters retain their meaning. See
+[`docs/protocol/compatibility-v1.md`](./docs/protocol/compatibility-v1.md) for
+the pre-1.0/post-1.0 semver policy, rolling deployments, layout migrations, and
+explicit v2 coexistence rules.
 
 ## Installation
 

@@ -100,6 +100,19 @@ const assertArchiveContents = (entries: string[], name: string): void => {
     'package/LICENSE',
     'package/README.md',
     ...(name === 'better-effect-mq' ? ['package/CHANGELOG.md'] : []),
+    ...(name === 'better-effect-mq'
+      ? [
+          'package/docs/writing-a-driver.md',
+          'package/docs/protocol/job-store-v1.md',
+          'package/docs/protocol/state-machine-v1.md',
+          'package/docs/protocol/operation-atomicity-v1.md',
+          'package/docs/protocol/errors-v1.md',
+          'package/docs/protocol/cursors-and-ordering-v1.md',
+          'package/docs/protocol/time-and-leases-v1.md',
+          'package/docs/protocol/capabilities-v1.md',
+          'package/docs/protocol/compatibility-v1.md'
+        ]
+      : []),
     'package/dist/index.mjs',
     'package/dist/index.d.mts'
   ]

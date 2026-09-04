@@ -14,6 +14,7 @@ import {
   Retry,
   JobStore,
   JobStoreFailure,
+  JobStoreProtocolMismatchError,
   type JobStoreError,
   MemoryJobStore,
   Queue,
@@ -195,6 +196,39 @@ const makeRejectedListenerSignal = (rejectAdd: boolean, rejectRemove: boolean) =
     }
   }
 }
+
+test('Worker rejects an incompatible JobStore descriptor before supervision', async () => {
+  const store = MemoryJobStore.make()
+  // SAFETY: Object.create preserves the store prototype; only descriptor is replaced for this handshake fixture.
+  const incompatible: ReturnType<typeof MemoryJobStore.make> = Object.create(store)
+  Object.defineProperty(incompatible, 'descriptor', {
+    configurable: false,
+    enumerable: true,
+    value: Object.freeze({
+      ...store.descriptor,
+      protocolVersion: 2
+    }),
+    writable: false
+  })
+  const runtime = await runtimeFor(incompatible)
+  const handler = Worker.handle(voidJob, () =>
+    Effect.fn(async function* () {
+      return Result.ok(undefined)
+    })
+  )
+
+  try {
+    let cause: unknown
+    try {
+      await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+    } catch (error) {
+      cause = error
+    }
+    expect(cause).toBeInstanceOf(JobStoreProtocolMismatchError)
+  } finally {
+    await runtime.dispose()
+  }
+})
 
 test('Worker executes a handler with root Services, JobContext, and CurrentAbortSignal', async () => {
   const store = MemoryJobStore.make()

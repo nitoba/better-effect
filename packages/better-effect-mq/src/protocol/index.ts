@@ -10,7 +10,9 @@ export {
   JobNotPromotableError,
   JobNotRetryableError,
   JobStoreFailure,
+  JobStoreProtocolMismatchError,
   LeaseLostError,
+  SettlementConflictError,
   UnsupportedJobStoreOperationError
 } from './errors'
 export type { LeaseLossReason } from './errors'

@@ -5,7 +5,13 @@
 import { PGlite } from '@electric-sql/pglite'
 import { describe, expect, test } from 'bun:test'
 import { Runtime, ServiceRuntime } from 'better-effect'
-import { JobStore, makeJobId, makeQueueName, makeWorkerId } from 'better-effect-mq'
+import {
+  JobStore,
+  SettlementConflictError,
+  makeJobId,
+  makeQueueName,
+  makeWorkerId
+} from 'better-effect-mq'
 import {
   MIGRATION_COMPONENT,
   PostgresClient,
@@ -250,7 +256,9 @@ describe('PostgreSQL foundation via PGlite', () => {
       expect(result.duplicate.isOk() && result.duplicate.value.duplicate).toBe(true)
       expect(result.settled.isOk() && result.settled.value.status).toBe('applied')
       expect(result.acknowledged.isOk() && result.acknowledged.value.status).toBe('already-applied')
-      expect(result.conflicting.isErr()).toBe(true)
+      expect(
+        result.conflicting.isErr() && SettlementConflictError.is(result.conflicting.error)
+      ).toBe(true)
       expect(result.attempts.isOk() && result.attempts.value).toHaveLength(1)
       expect(result.page.isOk() && result.page.value.jobs).toHaveLength(2)
       expect(result.next.isOk() && result.next.value.jobs).toHaveLength(1)

@@ -54,13 +54,21 @@ type StoreOperation<Name extends keyof JobStoreContract> = JobStoreContract[Name
 const ok = <Operation>(value: unknown): Operation => Result.ok(value) as unknown as Operation
 
 const implementation = {
-  protocolVersion: 1,
-  capabilities: {
-    notifications: false,
-    queueFilteredNotifications: false,
-    batchClaim: false,
-    transactionalEnqueue: false,
-    changeFeed: false
+  descriptor: {
+    protocolVersion: 1,
+    adapter: 'test',
+    adapterVersion: '0.1.0',
+    layoutVersion: 1,
+    capabilities: {
+      queueFilteredNotifications: false,
+      nativeBatchEnqueue: false,
+      nativeBatchClaim: false,
+      metadataIndex: 'none',
+      transactionalEnqueue: false,
+      durableChangeFeed: false,
+      globalConcurrency: false,
+      rateLimiting: false
+    }
   },
   enqueue: () => ok<StoreOperation<'enqueue'>>({} as JobStore.EnqueueResult),
   enqueueMany: () => ok<StoreOperation<'enqueueMany'>>([]),
@@ -242,7 +250,7 @@ const durableLayer = Layer.succeed(Durable, durableInstance)
 const program = () =>
   Effect.gen(async function* () {
     const store = yield* Durable
-    return Result.ok(store.protocolVersion)
+    return Result.ok(store.descriptor.protocolVersion)
   })
 const complete = Runtime.run(durableLayer, program)
 const repeatedLayer = Layer.succeed(
@@ -251,7 +259,7 @@ const repeatedLayer = Layer.succeed(
 )
 const repeatedProgram = Effect.fn(async function* () {
   const store = yield* JobStore.named('durable')
-  return Result.ok(store.protocolVersion)
+  return Result.ok(store.descriptor.protocolVersion)
 })
 const repeatedComplete = Runtime.run(repeatedLayer, repeatedProgram)
 const wrong = JobStore.named('wrong')

@@ -14,6 +14,7 @@ import {
   JobNotFoundError,
   JobStoreFailure,
   LeaseLostError,
+  SettlementConflictError,
   UnsupportedJobStoreOperationError,
   compareJobOrder,
   makeJobId,
@@ -45,6 +46,7 @@ import type {
   JobListOrder,
   JobListOrderBy,
   JobStoreCapabilities,
+  JobStoreDescriptor,
   JobStoreOperation,
   JobIdRequest,
   ListJobsRequest,
@@ -134,11 +136,22 @@ const defaultListOrderBy: JobListOrderBy = 'enqueuedAt'
 const defaultListOrder: JobListOrder = 'asc'
 const validationId = makeJobId('memory-validation-id').unwrap()
 const memoryCapabilities: JobStoreCapabilities = Object.freeze({
-  notifications: true,
   queueFilteredNotifications: true,
-  batchClaim: true,
+  nativeBatchEnqueue: false,
+  nativeBatchClaim: true,
+  metadataIndex: 'none',
   transactionalEnqueue: false,
-  changeFeed: false
+  durableChangeFeed: false,
+  globalConcurrency: false,
+  rateLimiting: false
+})
+
+const memoryDescriptor: JobStoreDescriptor = Object.freeze({
+  protocolVersion: 1,
+  adapter: 'memory',
+  adapterVersion: '0.1.0',
+  layoutVersion: 1,
+  capabilities: memoryCapabilities
 })
 const listStates = new Set(['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])
 const listStateOrder = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const
@@ -231,6 +244,30 @@ const identityFromFields = (
 
 const identityKey = (identity: MemoryIdentity): string =>
   JSON.stringify([identity.queue, identity.name, identity.version])
+
+const canonicalJson = (value: unknown): string => {
+  const seen = new Set<object>()
+  const visit = (current: unknown): string => {
+    if (current === null || typeof current !== 'object') {
+      const encoded = JSON.stringify(current)
+      if (encoded === undefined) throw new TypeError('value is not JSON encodable')
+      return encoded
+    }
+    if (seen.has(current)) throw new TypeError('value is cyclic')
+    seen.add(current)
+    try {
+      if (Array.isArray(current)) return `[${current.map(visit).join(',')}]`
+      const entries = Object.keys(current)
+        .filter((key) => (current as Record<string, unknown>)[key] !== undefined)
+        .sort(compareText)
+        .map((key) => `${JSON.stringify(key)}:${visit((current as Record<string, unknown>)[key])}`)
+      return `{${entries.join(',')}}`
+    } finally {
+      seen.delete(current)
+    }
+  }
+  return visit(value)
+}
 
 const compareText = (left: string, right: string): number => {
   const leftBytes = new TextEncoder().encode(left)
@@ -390,14 +427,16 @@ const isRequeue = (previous: JobRecord, next: JobRecord): boolean =>
     previous.state === 'delayed')
 
 class MemoryJobStoreImplementation {
-  readonly protocolVersion = 1 as const
-  readonly capabilities = memoryCapabilities
+  readonly descriptor = memoryDescriptor
 
   private readonly jobs = new Map<string, JobRecord>()
   private readonly attempts = new Map<string, AttemptRecord[]>()
-  // Terminal records clear active lease fields; retain the fencing token so a
-  // lost settlement response can be safely acknowledged on retry.
-  private readonly settledTokens = new Map<string, LeaseToken>()
+  // Terminal records clear active lease fields; retain the fencing token and
+  // canonical outcome so a lost settlement response can be safely replayed.
+  private readonly settled = new Map<
+    string,
+    { readonly leaseToken: LeaseToken; readonly outcomeDigest: string }
+  >()
   private readonly idempotency = new Map<string, string>()
   private readonly generatedJobIds = new Set<string>()
   private readonly issuedLeaseTokens = new Set<string>()
@@ -405,7 +444,7 @@ class MemoryJobStoreImplementation {
   private readonly waiters = new Set<WakeWaiter>()
   private readonly queueWakeVersions = new Map<string, number>()
   private readonly queueWakeGlobals = new Map<string, number>()
-  private sequence = 0
+  private sequence = 1
   private defaultIdSequence = 0
   private defaultLeaseSequence = 0
   private wakeGlobal = 0
@@ -580,10 +619,19 @@ class MemoryJobStoreImplementation {
       if (Result.isError(leaseToken)) return fail(leaseToken.error)
       const current = this.jobs.get(jobId.value)
       if (current === undefined) return fail(new JobNotFoundError({ jobId: jobId.value }))
+      const outcomeDigest = canonicalJson(fields.value.outcome)
       if (current.state !== 'active') {
-        const settledToken = this.settledTokens.get(jobId.value)
+        const settled = this.settled.get(jobId.value)
         const previousAttempt = this.attempts.get(jobId.value)?.at(-1)
-        if (settledToken === leaseToken.value && previousAttempt !== undefined) {
+        if (settled?.leaseToken === leaseToken.value && previousAttempt !== undefined) {
+          if (settled.outcomeDigest !== outcomeDigest) {
+            return fail(
+              new SettlementConflictError({
+                jobId: jobId.value,
+                leaseToken: leaseToken.value
+              })
+            )
+          }
           return ok({
             record: cloneRecord(current),
             attempt: cloneAttempt(previousAttempt),
@@ -630,7 +678,7 @@ class MemoryJobStoreImplementation {
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
       this.commitPrepared([prepared.value], true)
-      this.settledTokens.set(jobId.value, leaseToken.value)
+      this.settled.set(jobId.value, { leaseToken: leaseToken.value, outcomeDigest })
       return ok({
         record: cloneRecord(prepared.value.transition.record),
         attempt: cloneAttempt(attempt),
@@ -1635,7 +1683,7 @@ class MemoryJobStoreImplementation {
     if (Result.isError(prepared)) return fail(prepared.error)
     const notify = command.type === 'promote' || command.type === 'retry'
     this.commitPrepared([prepared.value], notify)
-    if (command.type === 'retry') this.settledTokens.delete(current.id)
+    if (command.type === 'retry') this.settled.delete(current.id)
     return ok(snapshotTransition(prepared.value.transition))
   }
 

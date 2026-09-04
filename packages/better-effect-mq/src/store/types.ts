@@ -61,16 +61,31 @@ export type JobStoreOperation<
   | PromiseLike<JobStoreEffect<Success, Failure, Requirements>>
 
 /**
- * The feature flags exposed by a store. They are immutable hints only: a false
- * flag must not weaken the operation contracts. `queueFilteredNotifications`
- * additionally declares that wake delivery honors the requested queue set.
+ * The feature capabilities declared by a protocol-v1 store.
+ *
+ * Capabilities describe optimizations or separately implemented extensions;
+ * they never weaken the correctness requirements of the mandatory operations.
+ * The descriptor owns this value so adapters cannot advertise a different
+ * capability set through mutable per-instance state.
  */
 export interface JobStoreCapabilities {
-  readonly notifications: boolean
   readonly queueFilteredNotifications: boolean
-  readonly batchClaim: boolean
+  readonly nativeBatchEnqueue: boolean
+  readonly nativeBatchClaim: boolean
+  readonly metadataIndex: 'none' | 'residual' | 'indexed'
   readonly transactionalEnqueue: boolean
-  readonly changeFeed: boolean
+  readonly durableChangeFeed: boolean
+  readonly globalConcurrency: boolean
+  readonly rateLimiting: boolean
+}
+
+/** Immutable compatibility metadata exposed by every protocol-v1 store. */
+export interface JobStoreDescriptor {
+  readonly protocolVersion: import('../protocol').ProtocolVersion
+  readonly adapter: string
+  readonly adapterVersion: string
+  readonly layoutVersion: number | string
+  readonly capabilities: JobStoreCapabilities
 }
 
 /** Input accepted by `enqueue`. The store owns missing IDs and ordering data. */
@@ -330,8 +345,7 @@ export interface QueuePauseResult {
 
 /** A structural implementation suitable for `Service.of` and Layer providers. */
 export interface JobStoreContract {
-  readonly protocolVersion: import('../protocol').ProtocolVersion
-  readonly capabilities: JobStoreCapabilities
+  readonly descriptor: JobStoreDescriptor
 
   enqueue(request: EnqueueRequest): JobStoreOperation<EnqueueResult, JobStoreEnqueueError>
   enqueueMany(

@@ -147,7 +147,9 @@ export {
   JobNotPromotableError,
   JobNotRetryableError,
   JobStoreFailure,
+  JobStoreProtocolMismatchError,
   LeaseLostError,
+  SettlementConflictError,
   UnsupportedJobStoreOperationError,
   cancelJob,
   claimJob,
@@ -184,7 +186,13 @@ export {
   validateTimestamp
 } from './protocol'
 
-export { JobStore, JobStoreWakeAbortedError, MemoryJobStore } from './store'
+export {
+  JobStore,
+  JobStoreWakeAbortedError,
+  MemoryJobStore,
+  assertJobStoreProtocolCompatible,
+  isJobStoreDescriptor
+} from './store'
 
 export {
   JobContext,
@@ -241,6 +249,7 @@ export type {
   JobListOrderBy,
   JobListOrdering,
   JobStoreCapabilities,
+  JobStoreDescriptor,
   JobStoreCancelError,
   JobStoreClaimError,
   JobStoreContract,
