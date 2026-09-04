@@ -2,9 +2,9 @@
 
 import { Pool as PgPool } from 'pg'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { Layer, Runtime } from 'better-effect'
-import { JobStore, type AnyJobStoreToken } from 'better-effect-mq'
-import { jobStoreContract } from 'better-effect-mq/testing'
+import { Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { JobStore, type AnyJobStoreToken, type JobStore as JobStoreType } from 'better-effect-mq'
+import { jobStoreContract, type JobStoreContractSynchronization } from 'better-effect-mq/testing'
 import { PostgresClient, PostgresJobStore, type Pool } from '../../src/index'
 
 const connectionString = process.env.POSTGRES_URL
@@ -27,6 +27,26 @@ const makeLayer = <const Token extends AnyJobStoreToken>(token: Token) =>
     validateSchema: false
   })
 
+const synchronizeStore = (
+  store: JobStoreType.Contract,
+  synchronization: JobStoreContractSynchronization
+): void => {
+  const originalAwaitWake = store.awaitWake.bind(store)
+  Object.defineProperty(store, 'awaitWake', {
+    configurable: true,
+    enumerable: false,
+    value: (request: JobStoreType.AwaitWakeRequest) => {
+      const waiting = originalAwaitWake(request)
+      synchronization.ready()
+      return Promise.resolve(waiting).then((result) => {
+        synchronization.observed()
+        return result
+      })
+    },
+    writable: true
+  })
+}
+
 const suite = jobStoreContract({
   capabilities: {
     queueFilteredNotifications: true,
@@ -38,28 +58,43 @@ const suite = jobStoreContract({
     globalConcurrency: false,
     rateLimiting: false
   },
-  makeRuntime: async () =>
-    Runtime.make(
+  makeRuntime: async (context) => {
+    const runtime = await Runtime.make(
       PostgresJobStore.layer({
         pool: configuredPool(),
         schema,
         namespace,
         validateSchema: false
       })
-    ),
-  makeMultiStoreRuntime: async () =>
-    Runtime.make(
+    )
+    await runtime.run(async () => {
+      synchronizeStore(await ServiceRuntime.resolve(JobStore), context.synchronization)
+    })
+    return runtime
+  },
+  makeMultiStoreRuntime: async (context) => {
+    const runtime = await Runtime.make(
       Layer.merge(
-        PostgresJobStore.layer({
+        PostgresJobStore.layerFor(context.tokens.default, {
           pool: configuredPool(),
           schema,
           namespace,
           validateSchema: false
         }),
-        makeLayer(JobStore.named('contract-store-a')),
-        makeLayer(JobStore.named('contract-store-b'))
+        makeLayer(context.tokens.first),
+        makeLayer(context.tokens.second)
       )
-    ),
+    )
+    await runtime.run(async () => {
+      synchronizeStore(
+        await ServiceRuntime.resolve(context.tokens.default),
+        context.synchronization
+      )
+      synchronizeStore(await ServiceRuntime.resolve(context.tokens.first), context.synchronization)
+      synchronizeStore(await ServiceRuntime.resolve(context.tokens.second), context.synchronization)
+    })
+    return runtime
+  },
   reset: async () => {
     await pool?.query(`
       DELETE FROM "${schema}".better_effect_mq_attempts;
