@@ -1,0 +1,57 @@
+{
+  "name": "better-effect-mq-mongodb",
+  "version": "0.1.0",
+  "description": "MongoDB JobStore adapter and migrations for better-effect-mq.",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "oxlint --type-aware .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "publint": "publint",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run publint && bun run lint"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "^22.0.0",
+    "better-effect": "0.13.0",
+    "better-effect-mq": "0.1.0",
+    "better-result": "^3.0.0",
+    "mongodb": "^6.21.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "publint": "^0.3.23",
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "better-effect": ">=0.13.0 <0.14.0",
+    "better-effect-mq": ">=0.1.0 <0.2.0",
+    "better-result": "^3.0.0",
+    "mongodb": ">=6.0.0 <8.0.0",
+    "typescript": ">=5.7.0"
+  },
+  "peerDependenciesMeta": {
+    "mongodb": {
+      "optional": true
+    }
+  }
+}
