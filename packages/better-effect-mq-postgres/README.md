@@ -42,3 +42,24 @@ a transaction advisory lock. The shipped `migrations/001_initial.sql` creates
 fixed claim, lease, listing, idempotency, and metadata indexes. Protocol times
 are epoch milliseconds stored in `bigint`; values are always bound parameters
 and schema names are validated before quoting.
+
+## Upgrade and downgrade policy
+
+The migrator is forward-only: it never runs down migrations or silently
+rewrites an existing layout. Before deploying a downgrade, restore a
+compatible database backup or apply a separately reviewed, documented manual
+migration. A database that is newer than the running adapter must fail startup
+validation rather than execute against a partially compatible schema.
+
+For rolling deploys, introduce nullable or default-compatible columns first,
+then deploy code that reads and writes them, and remove obsolete columns only
+in a later expand/migrate/contract step. Breaking protocol or layout changes
+must follow that sequence whenever possible. Any destructive migration
+requires explicit release notes and operator approval; it is never performed
+implicitly by `PostgresMigrator`.
+
+The package tests use PGlite for PostgreSQL-engine integration and include a
+small `pg-mem` smoke test for the node-postgres Pool boundary and packaged DDL.
+The CI workflow runs the full optional `POSTGRES_URL` conformance suite against
+PostgreSQL 16 in a service container. `pg-mem` does not replace that suite's
+planner, catalog, locking, or JSON-semantics coverage.

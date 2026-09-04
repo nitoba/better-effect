@@ -9,6 +9,7 @@ import { JobStore, makeJobId, makeQueueName, makeWorkerId } from 'better-effect-
 import {
   MIGRATION_COMPONENT,
   PostgresClient,
+  loadPostgresMigrations,
   PostgresJobStore,
   PostgresMigrationError,
   type Pool,
@@ -101,6 +102,15 @@ describe('PostgreSQL foundation via PGlite', () => {
         metadata.source = 'after'
         const enqueued = await enqueuePromise
         if (enqueued.isErr()) throw enqueued.error
+        const additional = await store.enqueue({
+          job: { queue, name: 'job', version: 1 },
+          payload: { extra: true },
+          metadata: { source: 'before', extra: 'value' },
+          runAt: 0,
+          attemptsMax: 2,
+          now: 0
+        })
+        if (additional.isErr()) throw additional.error
         const claimed = await store.claim({
           queue,
           accepted: [{ queue, name: 'job', version: 1 }],
@@ -116,7 +126,7 @@ describe('PostgreSQL foundation via PGlite', () => {
           outcome: { type: 'complete', result: { ok: true } },
           now: 2
         })
-        const listed = await store.list({ state: 'completed', limit: 10 })
+        const listed = await store.list({ metadata: { source: 'before' }, limit: 10 })
         const snapshot = await store.getJob({
           jobId: enqueued.isOk() ? enqueued.value.job.id : ('missing' as never)
         })
@@ -125,6 +135,7 @@ describe('PostgreSQL foundation via PGlite', () => {
       expect(result.enqueued.isOk()).toBe(true)
       expect(result.settled.isOk()).toBe(true)
       expect(result.listed.isOk() && result.listed.value.jobs).toHaveLength(1)
+      expect(result.listed.isOk() && result.listed.value.jobs[0]?.state).toBe('completed')
       expect(result.snapshot.isOk() && result.snapshot.value?.payload).toEqual({
         nested: { value: 1 }
       })
@@ -607,6 +618,47 @@ describe('PostgreSQL foundation via PGlite', () => {
     }
   })
 
+  test('upgrades a pre-versioned schema from the previous baseline to the current migration', async () => {
+    const { database, pool } = await makePool()
+    const schema = 'mq_upgrade_test'
+    const client = PostgresClient.fromPool({ pool, schema })
+    try {
+      // Version 0 is the pre-001 baseline: the ledger exists, but no adapter migration has run.
+      await database.exec(`
+        CREATE SCHEMA "${schema}";
+        CREATE TABLE "${schema}".better_effect_mq_schema_versions (
+          component text PRIMARY KEY,
+          version integer NOT NULL,
+          applied_at_ms bigint NOT NULL,
+          checksum text NOT NULL,
+          CONSTRAINT better_effect_mq_schema_versions_values CHECK (
+            component <> '' AND version >= 0
+            AND applied_at_ms BETWEEN 0 AND 9007199254740991
+            AND checksum <> ''
+          )
+        );
+      `)
+      await database.query(
+        `INSERT INTO "${schema}".better_effect_mq_schema_versions
+         (component,version,applied_at_ms,checksum) VALUES ($1,0,$2,$3)`,
+        [MIGRATION_COMPONENT, 1, 'legacy-baseline']
+      )
+
+      const current = (await loadPostgresMigrations())[0]
+      const migrated = await client.migrate({ appliedAtMs: 2 })
+      expect(migrated).toMatchObject({ applied: [1], schema, version: 1 })
+      const history = await database.query(
+        `SELECT version,applied_at_ms,checksum
+         FROM "${schema}".better_effect_mq_schema_versions WHERE component=$1`,
+        [MIGRATION_COMPONENT]
+      )
+      expect(history.rows).toEqual([{ version: 1, applied_at_ms: 2, checksum: current?.checksum }])
+      await expect(client.validate()).resolves.toMatchObject({ schema, version: 1 })
+    } finally {
+      await database.close()
+    }
+  })
+
   test('serializes concurrent migrations and applies the manifest once', async () => {
     const { database, pool } = await makePool()
     const client = PostgresClient.fromPool({ pool, schema: 'mq_concurrent_test' })
@@ -726,7 +778,42 @@ describe('PostgreSQL foundation via PGlite', () => {
     const client = PostgresClient.fromPool({ pool, schema })
     try {
       await client.migrate({ appliedAtMs: 1 })
-      await database.exec('SET enable_seqscan = off')
+      await database.exec(`
+        INSERT INTO "${schema}".better_effect_mq_jobs
+          (namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,
+           attempts_max,attempts_made,delivery_count,stalled_count,attempt_sequence,
+           created_at_ms,updated_at_ms)
+        SELECT 'test','waiting-' || i,
+               CASE WHEN i % 4 = 0 THEN 'other' ELSE 'default' END,
+               CASE WHEN i % 3 = 0 THEN 'other-job' ELSE 'job' END,
+               1,'waiting','{}'::jsonb,
+               jsonb_build_object('tenant', CASE WHEN i = 1 THEN 'target' ELSE 'other' END),
+               i % 10,i % 100,
+               2,0,0,0,0,i,i
+        FROM generate_series(1,5000) AS i;
+        INSERT INTO "${schema}".better_effect_mq_jobs
+          (namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,
+           attempts_max,attempts_made,delivery_count,stalled_count,attempt_sequence,
+           created_at_ms,updated_at_ms,finished_at_ms)
+        SELECT 'test','terminal-' || i,'default','job',1,'completed',
+               '{}'::jsonb,'{}'::jsonb,0,0,1,1,1,0,1,i,i,i
+        FROM generate_series(1,1000) AS i;
+        INSERT INTO "${schema}".better_effect_mq_jobs
+          (namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,
+           attempts_max,attempts_made,delivery_count,stalled_count,attempt_sequence,
+           created_at_ms,updated_at_ms,lease_owner,lease_token,lease_expires_at_ms)
+        SELECT 'test','active-' || i,'default','job',1,'active',
+               '{}'::jsonb,'{}'::jsonb,0,0,2,1,2,0,1,i,i,
+               'worker','token-' || i,0
+        FROM generate_series(1,1000) AS i;
+        INSERT INTO "${schema}".better_effect_mq_jobs
+          (namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,
+           attempts_max,attempts_made,delivery_count,stalled_count,attempt_sequence,
+           dedupe_key,created_at_ms,updated_at_ms)
+        VALUES ('test','dedupe','default','job',1,'waiting','{}'::jsonb,'{}'::jsonb,
+                0,0,2,0,0,0,0,'request-1',0,0);
+        ANALYZE "${schema}".better_effect_mq_jobs;
+      `)
       const claimPlan = await explainPlan(
         database,
         `SELECT id FROM "${schema}".better_effect_mq_jobs
@@ -757,10 +844,17 @@ describe('PostgreSQL foundation via PGlite', () => {
            AND dedupe_key = $5`,
         ['test', 'default', 'job', 1, 'request-1']
       )
+      const metadataPlan = await explainPlan(
+        database,
+        `SELECT id FROM "${schema}".better_effect_mq_jobs
+         WHERE namespace = $1 AND metadata @> $2::jsonb AND metadata <@ $2::jsonb`,
+        ['test', '{"tenant":"target"}']
+      )
       expect(claimPlan).toContain('better_effect_mq_jobs_claim_idx')
       expect(leasePlan).toContain('better_effect_mq_jobs_active_lease_idx')
       expect(terminalPlan).toContain('better_effect_mq_jobs_terminal_idx')
       expect(idempotencyPlan).toContain('better_effect_mq_jobs_idempotency_idx')
+      expect(metadataPlan).toContain('better_effect_mq_jobs_metadata_idx')
     } finally {
       await database.close()
     }
