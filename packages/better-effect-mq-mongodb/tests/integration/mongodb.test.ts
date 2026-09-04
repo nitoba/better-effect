@@ -10,6 +10,7 @@ import { MongoJobStore } from '../../src/index'
 const uri = process.env.MONGODB_URL
 const integration = uri === undefined ? test.skip : test
 const namespace = `mongodb_contract_${process.pid}`
+const configuredDatabaseName = process.env.MONGODB_DATABASE
 let client: MongoClient | undefined
 let databaseName: string | undefined
 
@@ -91,12 +92,11 @@ describe('MongoDB JobStore protocol v1 conformance on a replica set', () => {
     if (uri === undefined) return
     client = new MongoClient(uri, { directConnection: true })
     await client.connect()
-    databaseName = `better_effect_mq_mongodb_${process.pid}`
+    databaseName = configuredDatabaseName ?? `better_effect_mq_mongodb_${process.pid}`
     await MongoJobStore.migrate({ db: configuredDatabase() })
   }, 30_000)
   afterAll(async () => {
     if (client === undefined || databaseName === undefined) return
-    await client.db(databaseName).dropDatabase()
     await client.close()
   }, 30_000)
 

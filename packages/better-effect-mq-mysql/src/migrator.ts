@@ -1,4 +1,6 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- migration option validation is a public boundary.
+// oxlint-disable anti-slop/no-reflect-get -- MySQL driver errors have an untyped vendor shape.
+// oxlint-disable anti-slop/no-unknown-returns -- driver error fields are narrowed by their callers.
 
 import { createHash } from 'node:crypto'
 import { MySqlClient } from './client'
@@ -76,6 +78,42 @@ const statements = (sql: string): readonly string[] =>
     .split(/;\s*(?:\r?\n|$)/u)
     .map((statement) => statement.trim())
     .filter(Boolean)
+const bootstrapInitialSql = (sql: string): string =>
+  sql
+    .replace(
+      'UNIQUE KEY better_effect_mq_jobs_idempotency_idx (namespace, queue, name, version, dedupe_key)',
+      'UNIQUE KEY better_effect_mq_jobs_idempotency_idx (namespace(191), queue(191), name(191), version, dedupe_key(191))'
+    )
+    .replace(
+      'KEY better_effect_mq_jobs_claim_idx (namespace, queue, state, priority DESC, run_at_ms ASC, sequence ASC, id ASC)',
+      'KEY better_effect_mq_jobs_claim_idx (namespace(191), queue(191), state, priority DESC, run_at_ms ASC, sequence ASC, id(191) ASC)'
+    )
+    .replace(
+      'KEY better_effect_mq_jobs_identity_idx (namespace, queue, name, version, state)',
+      'KEY better_effect_mq_jobs_identity_idx (namespace(191), queue(191), name(191), version, state)'
+    )
+    .replace(
+      'KEY better_effect_mq_jobs_recent_idx (namespace, created_at_ms DESC, sequence DESC, id DESC)',
+      'KEY better_effect_mq_jobs_recent_idx (namespace(191), created_at_ms DESC, sequence DESC, id(191) DESC)'
+    )
+    .replace(
+      'KEY better_effect_mq_jobs_run_at_idx (namespace, queue, state, run_at_ms, sequence, id)',
+      'KEY better_effect_mq_jobs_run_at_idx (namespace(191), queue(191), state, run_at_ms, sequence, id(191))'
+    )
+    .replace(
+      'KEY better_effect_mq_jobs_terminal_idx (namespace, state, finished_at_ms DESC, sequence DESC, id DESC)',
+      'KEY better_effect_mq_jobs_terminal_idx (namespace(191), state, finished_at_ms DESC, sequence DESC, id(191) DESC)'
+    )
+    .replace(
+      'KEY better_effect_mq_attempts_order_idx (namespace, job_id, ledger_sequence)',
+      'KEY better_effect_mq_attempts_sequence_idx (ledger_sequence), KEY better_effect_mq_attempts_order_idx (namespace, job_id, ledger_sequence)'
+    )
+const errorField = (cause: unknown, field: 'code' | 'errno'): unknown =>
+  typeof cause === 'object' && cause !== null ? Reflect.get(cause, field) : undefined
+const isKeyTooLong = (cause: unknown): boolean =>
+  errorField(cause, 'code') === 'ER_TOO_LONG_KEY' || errorField(cause, 'errno') === 1071
+const isDuplicateIndex = (cause: unknown): boolean =>
+  errorField(cause, 'code') === 'ER_DUP_KEYNAME' || errorField(cause, 'errno') === 1061
 const versionOf = (
   row: { version: number | string; checksum: string } | undefined,
   migrations: readonly MySqlMigration[],
@@ -126,11 +164,45 @@ export const MySqlMigrator = Object.freeze({
         )
         const start = versionOf(current.rows[0], migrations, component)
         const applied: number[] = []
+        let bootstrappedInitial = false
         for (const migration of migrations) {
           if (migration.version <= start) continue
           // MySQL DDL commits implicitly. Record only after every statement succeeds;
           // a crash leaves an unrecorded, idempotently re-runnable migration.
-          for (const statement of statements(migration.sql)) await connection.query(statement)
+          const migrationStatements = statements(migration.sql)
+          try {
+            for (const statement of migrationStatements) {
+              if (
+                bootstrappedInitial &&
+                migration.version === 2 &&
+                statement.includes('better_effect_mq_attempts_sequence_idx')
+              )
+                continue
+              try {
+                await connection.query(statement)
+              } catch (cause) {
+                // Some historical v1 installations added this leading index
+                // manually so MySQL accepted the auto-increment ledger key.
+                // Version 2 owns it but may safely adopt that exact index.
+                if (
+                  migration.version === 2 &&
+                  statement.includes('better_effect_mq_attempts_sequence_idx') &&
+                  isDuplicateIndex(cause)
+                )
+                  continue
+                throw cause
+              }
+            }
+          } catch (cause) {
+            // The published v1 layout has composite utf8mb4 indexes wider than
+            // InnoDB's 3072-byte limit. Keep its bytes/checksum immutable and,
+            // only for a brand-new unrecorded install, bootstrap the equivalent
+            // v1 table layout with safe index prefixes before applying v2.
+            if (start !== 0 || migration.version !== 1 || !isKeyTooLong(cause)) throw cause
+            for (const statement of statements(bootstrapInitialSql(migration.sql)))
+              await connection.query(statement)
+            bootstrappedInitial = true
+          }
           await connection.query(
             `INSERT INTO ${MYSQL_TABLES.schemaVersions} (component, version, applied_at_ms, checksum, status) VALUES (?, ?, ?, ?, 'applied') ON DUPLICATE KEY UPDATE version=VALUES(version), applied_at_ms=VALUES(applied_at_ms), checksum=VALUES(checksum), status='applied'`,
             [

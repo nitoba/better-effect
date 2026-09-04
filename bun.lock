@@ -9,6 +9,7 @@
         "@testcontainers/mongodb": "^12.1.0",
         "@testcontainers/mysql": "^12.1.0",
         "lefthook": "^2.1.10",
+        "mongodb": "^6.21.0",
         "oxfmt": "^0.63.0",
         "oxlint-tsgolint": "^7.0.2001",
         "testcontainers": "^12.1.0",
