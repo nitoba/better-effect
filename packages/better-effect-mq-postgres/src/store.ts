@@ -2009,7 +2009,11 @@ class PostgresJobStoreImplementation {
         if (name !== undefined) add('name=$N', name.value)
         if (version !== undefined) add('version=$N', version)
         if (states !== undefined) add('state=ANY($N::text[])', states)
-        if (metadata !== undefined) add('metadata = $N::jsonb', json(metadata))
+        if (metadata !== undefined) {
+          values.push(json(metadata))
+          const metadataParameter = `$${values.length}::jsonb`
+          where.push(`metadata @> ${metadataParameter} AND metadata <@ ${metadataParameter}`)
+        }
         const column =
           orderBy === 'enqueuedAt'
             ? 'created_at_ms'
