@@ -129,10 +129,14 @@ export const normalizeSqliteJobStoreConfig = (
       DEFAULT_BUSY_TIMEOUT_MS
     ),
     validateSchema: input.validateSchema ?? true,
-    pollIntervalMs: nonNegativeInteger(
-      input.pollIntervalMs,
-      'pollIntervalMs',
-      DEFAULT_POLL_INTERVAL_MS
-    )
+    pollIntervalMs: (() => {
+      const value = nonNegativeInteger(
+        input.pollIntervalMs,
+        'pollIntervalMs',
+        DEFAULT_POLL_INTERVAL_MS
+      )
+      if (value === 0) throw error('pollIntervalMs', 'must be positive')
+      return value
+    })()
   })
 }

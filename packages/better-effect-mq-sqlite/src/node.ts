@@ -27,13 +27,14 @@ const ownedLayer = <Token extends AnyJobStoreToken>(
   Layer.scoped(
     token,
     () => {
-      const database = openSqlite(config.path)
+      const { path, ...options } = config
+      const database = openSqlite(path)
       try {
         database.exec('PRAGMA journal_mode = WAL;')
         const store = SqliteJobStore.make({
-          ...config,
+          ...options,
           database,
-          configurePragmas: config.configurePragmas ?? true
+          configurePragmas: options.configurePragmas ?? true
         })
         databases.set(store, database)
         return store as never

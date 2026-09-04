@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS better_effect_mq_schema_versions (
 );
 CREATE TABLE IF NOT EXISTS better_effect_mq_jobs (
   row_sequence INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL, id TEXT NOT NULL, queue TEXT NOT NULL, name TEXT NOT NULL,
-  version INTEGER NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL CHECK (json_valid(payload)), metadata TEXT NOT NULL CHECK (json_valid(metadata)),
+  version INTEGER NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL CHECK (json_valid(payload)), metadata TEXT NOT NULL CHECK (json_valid(metadata)), record_json TEXT NOT NULL CHECK (json_valid(record_json)),
   priority INTEGER NOT NULL, run_at_ms INTEGER NOT NULL, order_sequence INTEGER NOT NULL, attempts_max INTEGER NOT NULL,
   attempts_made INTEGER NOT NULL, attempt_sequence INTEGER NOT NULL, delivery_count INTEGER NOT NULL, stalled_count INTEGER NOT NULL,
   backoff TEXT, timeout_ms INTEGER, idempotency_key TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS better_effect_mq_jobs (
 CREATE TABLE IF NOT EXISTS better_effect_mq_attempts (
   ledger_sequence INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL, job_id TEXT NOT NULL, attempt_sequence INTEGER NOT NULL,
   attempt INTEGER NOT NULL, delivery INTEGER NOT NULL, started_at_ms INTEGER, finished_at_ms INTEGER NOT NULL, outcome TEXT NOT NULL,
-  result TEXT, failure TEXT, worker_id TEXT, retry_at_ms INTEGER, retry_delay_ms INTEGER,
+  result TEXT, failure TEXT, worker_id TEXT, retry_at_ms INTEGER, retry_delay_ms INTEGER, attempt_json TEXT NOT NULL CHECK (json_valid(attempt_json)),
   FOREIGN KEY(namespace, job_id) REFERENCES better_effect_mq_jobs(namespace, id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS better_effect_mq_queues (

@@ -2158,6 +2158,29 @@ export class SqliteJobStoreEngine {
     }
   }
 
+  /** Re-check local waiters after polling observes an external SQLite commit. */
+  refreshWakeWaiters(): void {
+    for (const waiter of Array.from(this.waiters)) {
+      if (this.hasRelevantWake(waiter.baseline, waiter.queues))
+        this.finishWaiter(waiter, ok(undefined))
+    }
+  }
+
+  closeWakeWaiters(): void {
+    for (const waiter of Array.from(this.waiters)) {
+      this.finishWaiter(
+        waiter,
+        fail(
+          new JobStoreFailure({
+            operation: 'awaitWake',
+            retryable: false,
+            message: 'store is closed'
+          })
+        )
+      )
+    }
+  }
+
   private finishWaiter(waiter: WakeWaiter, result: Operation<void>): void {
     if (waiter.settled) return
     this.waiters.delete(waiter)
