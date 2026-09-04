@@ -17,7 +17,7 @@
     "lint": "turbo run lint && bun run lint:release",
     "format": "turbo run format",
     "format:check": "turbo run format:check",
-    "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq --filter=better-effect-better-auth --filter=better-effect-kysely --filter=better-effect-zod --filter=better-effect-mq-postgres",
+    "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq --filter=better-effect-better-auth --filter=better-effect-kysely --filter=better-effect-zod --filter=better-effect-mq-postgres --filter=better-effect-mq-redis",
     "lint:release": "packages/better-effect/node_modules/.bin/oxlint --type-aware scripts/release-artifact.ts scripts/release-plan.ts scripts/release-route.ts scripts/release-route.test.ts",
     "check": "turbo run check --concurrency=1 && bun run test:kysely-docs && bun run test:release && bun run lint:release",
     "test:kysely-docs": "bun scripts/check-kysely-docs.ts",

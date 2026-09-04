@@ -49,6 +49,13 @@
       "tagPrefix": "better-effect-mq-postgres-v",
       "initialRelease": true,
       "extraFiles": ["migrations"]
+    },
+    {
+      "name": "better-effect-mq-redis",
+      "directory": "packages/better-effect-mq-redis",
+      "changelog": "packages/better-effect-mq-redis/CHANGELOG.md",
+      "tagPrefix": "better-effect-mq-redis-v",
+      "initialRelease": true
     }
   ]
 }

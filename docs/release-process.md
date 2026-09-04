@@ -10,6 +10,7 @@ allowlisted package tag:
 | `better-effect-mq`          | `packages/better-effect-mq`          | `better-effect-mq-v<version>`          | package `CHANGELOG.md` |
 | `better-effect-kysely`      | `packages/better-effect-kysely`      | `better-effect-kysely-v<version>`      | package `CHANGELOG.md` |
 | `better-effect-mq-postgres` | `packages/better-effect-mq-postgres` | `better-effect-mq-postgres-v<version>` | package `CHANGELOG.md` |
+| `better-effect-mq-redis`    | `packages/better-effect-mq-redis`    | `better-effect-mq-redis-v<version>`    | package `CHANGELOG.md` |
 
 The route table is centralized in `scripts/release-packages.json`; both the
 local release script and GitHub Actions resolve tags through
@@ -68,6 +69,8 @@ bun run docs:build
 (cd packages/better-effect-kysely && bun run release:dry)
 (cd packages/better-effect-mq-postgres && bun run check)
 (cd packages/better-effect-mq-postgres && bun run release:dry)
+(cd packages/better-effect-mq-redis && bun run check)
+(cd packages/better-effect-mq-redis && bun run release:dry)
 ```
 
 These commands prepare evidence only. They do not publish to npm or create a
@@ -77,7 +80,8 @@ Git tag; both remain a separate maintainer release decision.
 
 npm Trusted Publishers can only be configured after the package name exists on
 npm. Before creating the first qualified tag for `better-effect-better-auth`,
-`better-effect-mq`, `better-effect-kysely`, or `better-effect-mq-postgres`, perform
+`better-effect-mq`, `better-effect-kysely`, `better-effect-mq-postgres`, or
+`better-effect-mq-redis`, perform
 this one-time maintainer bootstrap:
 
 1. Merge the package preparation change and check out the resulting `main`
@@ -92,6 +96,8 @@ this one-time maintainer bootstrap:
    ./scripts/release.sh better-effect-kysely 0.1.0 --dry-run
    # or:
    ./scripts/release.sh better-effect-mq-postgres 0.1.0 --dry-run
+   # or:
+   ./scripts/release.sh better-effect-mq-redis 0.1.0 --dry-run
    ```
 
 3. Authenticate locally with `npm login` (or another short-lived maintainer
@@ -115,7 +121,9 @@ this one-time maintainer bootstrap:
    `package_name=better-effect-kysely` and
    `package_dir=packages/better-effect-kysely` for Kysely, or with
    `package_name=better-effect-mq-postgres` and
-   `package_dir=packages/better-effect-mq-postgres` for PostgreSQL MQ.
+   `package_dir=packages/better-effect-mq-postgres` for PostgreSQL MQ, or with
+   `package_name=better-effect-mq-redis` and
+   `package_dir=packages/better-effect-mq-redis` for Redis/Valkey MQ.
 
 5. Configure npm Trusted Publishing for that package using the workflow details
    in [Release administration](#release-administration).
@@ -156,6 +164,8 @@ versions are published by GitHub Actions with Trusted Publishing/OIDC.
    ./scripts/release.sh better-effect-kysely 0.1.0
    # Publish the initial independent PostgreSQL MQ package:
    ./scripts/release.sh better-effect-mq-postgres 0.1.0
+   # Publish the initial independent Redis/Valkey MQ package:
+   ./scripts/release.sh better-effect-mq-redis 0.1.0
    # Validate a route and archive without changing, tagging, or publishing:
    ./scripts/release.sh better-effect-better-auth 0.1.0 --dry-run
    ```
@@ -168,7 +178,8 @@ versions are published by GitHub Actions with Trusted Publishing/OIDC.
    `better-effect` development pin in configured dependent package manifests;
    those metadata-only changes are included in the core release commit. The
    initial `better-effect-better-auth@0.1.0`, `better-effect-mq@0.1.0`,
-   `better-effect-kysely@0.1.0`, and `better-effect-mq-postgres@0.1.0` routes tag
+   `better-effect-kysely@0.1.0`, `better-effect-mq-postgres@0.1.0`, and
+   `better-effect-mq-redis@0.1.0` routes tag
    their already selected manifest versions;
    later releases require an increasing version and create a version commit.
    Run the command once for each package that the release planner identifies;
@@ -190,8 +201,9 @@ versions are published by GitHub Actions with Trusted Publishing/OIDC.
 The package release workflow accepts only `v<version>` for the core,
 `better-effect-better-auth-v<version>` for the integration,
 `better-effect-mq-v<version>` for the MQ package,
-`better-effect-kysely-v<version>` for the Kysely package, or
-`better-effect-mq-postgres-v<version>` for the PostgreSQL MQ package. It checks out the exact tag,
+`better-effect-kysely-v<version>` for the Kysely package,
+`better-effect-mq-postgres-v<version>` for the PostgreSQL MQ package, or
+`better-effect-mq-redis-v<version>` for the Redis/Valkey MQ package. It checks out the exact tag,
 verifies the corresponding manifest name/version and package-local release
 notes, runs the quality gates and selected archive validation, and publishes
 from the selected package directory. It never publishes an unrelated package
@@ -216,7 +228,8 @@ creation also checks for an existing release before creating one.
 ## Release administration
 
 - Protect `v*`, `better-effect-better-auth-v*`, `better-effect-mq-v*`,
-  `better-effect-kysely-v*`, and `better-effect-mq-postgres-v*` tags from force-push
+  `better-effect-kysely-v*`, `better-effect-mq-postgres-v*`, and
+  `better-effect-mq-redis-v*` tags from force-push
   and deletion.
 - The workflow file keeps the `release-please.yml` name for npm Trusted
   Publishing compatibility; it does not run Release Please.
