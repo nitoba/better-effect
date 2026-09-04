@@ -12,9 +12,31 @@ import { validateNamespace, validatePrefix } from './keys'
 
 export type MaybePromise<T> = T | PromiseLike<T>
 
+/** Send through standalone Redis clients or node-redis Cluster clients. */
+export const sendRedisCommand = (
+  client: RedisCommandClient,
+  args: readonly string[],
+  routeKey?: string
+): PromiseLike<unknown> => {
+  const send = client.sendCommand as unknown as (
+    ...parameters: readonly unknown[]
+  ) => PromiseLike<unknown>
+  if (send.length >= 3)
+    return send.call(client, routeKey ?? '__better_effect_mq_script_load__', false, [...args])
+  return send.call(client, [...args])
+}
+
+export type RedisStandaloneCommand = (args: string[]) => PromiseLike<unknown>
+export type RedisClusterCommand = (
+  firstKey: string | undefined,
+  isReadonly: boolean | undefined,
+  args: string[],
+  options?: never
+) => PromiseLike<unknown>
+
 export interface RedisCommandClient {
-  sendCommand(args: string[]): PromiseLike<unknown>
-  duplicate(): MaybePromise<RedisSubscriberClient>
+  readonly sendCommand: RedisStandaloneCommand | RedisClusterCommand
+  duplicate(): MaybePromise<object>
   connect?(): MaybePromise<unknown>
   close?(): MaybePromise<unknown>
   quit?(): MaybePromise<unknown>
@@ -27,14 +49,10 @@ export interface RedisCommandClient {
 }
 
 export interface RedisSubscriberClient {
-  subscribe(
-    channel: string,
-    listener: (message: string, channel: string) => MaybePromise<void>
-  ): MaybePromise<unknown>
-  unsubscribe?(
-    channel?: string,
-    listener?: (message: string, channel: string) => MaybePromise<void>
-  ): MaybePromise<unknown>
+  // The optional Redis peer has both string and buffer-mode subscriber
+  // signatures. Wake normalization narrows these calls at its boundary.
+  readonly subscribe: (...args: readonly never[]) => MaybePromise<unknown>
+  readonly unsubscribe?: (...args: readonly never[]) => MaybePromise<unknown>
   connect?(): MaybePromise<unknown>
   close?(): MaybePromise<unknown>
   quit?(): MaybePromise<unknown>

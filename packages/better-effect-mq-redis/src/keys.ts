@@ -182,10 +182,50 @@ export const decodeDelayedMember = (value: string): RedisDelayedMember => {
   })
 }
 
-export const encodeListingMember = (orderingSequence: number, jobId: string): string =>
-  encodeDelayedMember(orderingSequence, jobId)
+const NULL_LISTING_VALUE = '9999999999999999'
 
-export const decodeListingMember = (value: string): RedisDelayedMember => decodeDelayedMember(value)
+export interface RedisListingMember {
+  readonly value: number | null
+  readonly orderingSequence: number
+  readonly jobId: string
+}
+
+export function encodeListingMember(
+  value: number | null,
+  orderingSequence: number,
+  jobId: string
+): string
+export function encodeListingMember(orderingSequence: number, jobId: string): string
+export function encodeListingMember(
+  valueOrSequence: number | null,
+  sequenceOrId: number | string,
+  maybeJobId?: string
+): string {
+  if (maybeJobId === undefined) {
+    if (typeof valueOrSequence !== 'number' || typeof sequenceOrId !== 'string')
+      return invalid('listing.jobId', 'must be a string')
+    return encodeDelayedMember(valueOrSequence, sequenceOrId)
+  }
+  if (typeof sequenceOrId !== 'number')
+    return invalid('listing.orderingSequence', 'must be a number')
+  const value =
+    valueOrSequence === null ? NULL_LISTING_VALUE : encodeInteger(valueOrSequence, 'listing.value')
+  return `${value}|${encodeInteger(sequenceOrId, 'listing.orderingSequence')}|${encodeKeySegment(maybeJobId)}`
+}
+
+export const decodeListingMember = (value: string): RedisListingMember => {
+  if (typeof value !== 'string') return invalid('listing member', 'must be a string')
+  const parts = value.split('|')
+  if (parts.length === 3) {
+    return Object.freeze({
+      value: parts[0] === NULL_LISTING_VALUE ? null : decodeInteger(parts[0]!, 'listing.value'),
+      orderingSequence: decodeInteger(parts[1]!, 'listing.orderingSequence'),
+      jobId: decodeKeySegment(parts[2]!, 'listing.jobId')
+    })
+  }
+  const legacy = decodeDelayedMember(value)
+  return Object.freeze({ value: legacy.orderingSequence, ...legacy })
+}
 
 export interface RedisKeyLayout {
   readonly prefix: string
@@ -211,6 +251,9 @@ export interface RedisKeyLayout {
   readonly byIdentity: (name: string, version: number) => string
   readonly byState: (state: JobState) => string
   readonly finished: (state: JobState) => string
+  readonly created: string
+  readonly runAt: string
+  readonly finishedAt: string
   readonly layout: string
 }
 
@@ -261,6 +304,9 @@ export const makeRedisKeyLayout = (prefixValue: string, namespaceValue: string):
       suffix(`byidentity:${identitySegment(name, version)}`),
     byState: (state: JobState) => suffix(`bystate:${stateKey(state, 'state')}`),
     finished: (state: JobState) => suffix(`finished:${stateKey(state, 'state')}`),
+    created: suffix('created'),
+    runAt: suffix('runat'),
+    finishedAt: suffix('finished-at'),
     layout: suffix('layout')
   }
   return Object.freeze(layout)
@@ -300,11 +346,36 @@ export const keyHashSlot = redisHashSlot
 
 export const assertSameRedisHashSlot = (keys: readonly string[]): number => {
   if (!Array.isArray(keys)) return invalid('keys', 'must be an array')
+  try {
+    if (Object.getPrototypeOf(keys) !== Array.prototype)
+      return invalid('keys', 'must use the standard array prototype')
+    const ownKeys = Reflect.ownKeys(keys)
+    if (
+      ownKeys.length !== keys.length + 1 ||
+      ownKeys.some(
+        (key) =>
+          key !== 'length' &&
+          (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= keys.length)
+      )
+    )
+      return invalid('keys', 'must contain only dense indexed values')
+    for (let index = 0; index < keys.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(keys, String(index))
+      if (
+        descriptor === undefined ||
+        !('value' in descriptor) ||
+        typeof descriptor.value !== 'string'
+      )
+        return invalid('keys', 'must contain string values')
+    }
+  } catch {
+    return invalid('keys', 'could not read the key array')
+  }
   const first = keys[0]
   if (first === undefined) return invalid('keys', 'must contain at least one key')
   const slot = redisHashSlot(first)
-  for (const key of keys.slice(1)) {
-    if (redisHashSlot(key) !== slot)
+  for (let index = 1; index < keys.length; index += 1) {
+    if (redisHashSlot(keys[index]!) !== slot)
       return invalid('keys', 'must share one Redis Cluster hash slot')
   }
   return slot

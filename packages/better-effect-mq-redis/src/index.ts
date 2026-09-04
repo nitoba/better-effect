@@ -1,3 +1,4 @@
+export { RedisJobStore } from './store'
 export {
   RedisClient,
   createRedisClient,
@@ -73,7 +74,13 @@ export {
   MAX_PREFIX_BYTES,
   SAFE_INTEGER_WIDTH
 } from './keys'
-export type { RedisDelayedMember, RedisIdentity, RedisKeyLayout, RedisWaitingMember } from './keys'
+export type {
+  RedisDelayedMember,
+  RedisIdentity,
+  RedisKeyLayout,
+  RedisListingMember,
+  RedisWaitingMember
+} from './keys'
 
 export {
   loadRedisScriptManifest,

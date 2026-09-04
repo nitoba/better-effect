@@ -8,7 +8,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { RedisLayoutError, RedisLayoutMismatchError } from './errors'
-import type { RedisCommandClient } from './config'
+import { sendRedisCommand, type RedisCommandClient } from './config'
 import type { RedisKeyLayout } from './keys'
 
 export const REDIS_ADAPTER_VERSION = '0.1.0' as const
@@ -24,6 +24,7 @@ export const REDIS_INDEX_CONFIGURATION = Object.freeze([
   'byidentity',
   'byqueue',
   'bystate',
+  'created',
   'counts',
   'delayed',
   'finished',
@@ -34,6 +35,9 @@ export const REDIS_INDEX_CONFIGURATION = Object.freeze([
   'layout-lock',
   'queue',
   'queues',
+  'revision',
+  'finished-at',
+  'runat',
   'seq:jobs',
   'seq:outcome',
   'waiting',
@@ -187,7 +191,11 @@ const scanNamespace = async (
     if (pages >= MAX_LAYOUT_SCAN_PAGES)
       throw invalid('layout', 'namespace scan exceeded its page limit')
     const reply = toScanReply(
-      await client.sendCommand(['SCAN', cursor, 'MATCH', pattern, 'COUNT', '256'])
+      await sendRedisCommand(
+        client,
+        ['SCAN', cursor, 'MATCH', pattern, 'COUNT', '256'],
+        layout.base
+      )
     )
     for (const key of reply.keys) {
       if (!key.startsWith(`${layout.base}:`) || key === layout.layoutLock) continue
@@ -210,14 +218,11 @@ const acquireLayoutLock = async (
 ): Promise<string> => {
   const token = randomUUID()
   try {
-    const reply = await client.sendCommand([
-      'SET',
-      layout.layoutLock,
-      token,
-      'NX',
-      'PX',
-      String(LAYOUT_LOCK_TTL_MS)
-    ])
+    const reply = await sendRedisCommand(
+      client,
+      ['SET', layout.layoutLock, token, 'NX', 'PX', String(LAYOUT_LOCK_TTL_MS)],
+      layout.base
+    )
     if (reply !== 'OK') {
       throw new RedisLayoutMismatchError(['layout initialization is already in progress'])
     }
@@ -234,8 +239,20 @@ const releaseLayoutLock = async (
   token: string
 ): Promise<void> => {
   try {
-    const current = await client.sendCommand(['GET', layout.layoutLock])
-    if (current === token) await client.sendCommand(['DEL', layout.layoutLock])
+    // GET followed by DEL can remove a successor's lock after the TTL expires.
+    // The compare-and-delete script is kept local because it is only used during
+    // bootstrap, before the packaged JobStore script registry is initialized.
+    await sendRedisCommand(
+      client,
+      [
+        'EVAL',
+        'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end',
+        '1',
+        layout.layoutLock,
+        token
+      ],
+      layout.base
+    )
   } catch (cause) {
     throw invalid('layout', 'could not release layout initialization lock', cause)
   }
@@ -264,7 +281,7 @@ const readMarker = async (
   layout: RedisKeyLayout
 ): Promise<RedisHash> => {
   try {
-    return toHash(await client.sendCommand(['HGETALL', layout.layout]))
+    return toHash(await sendRedisCommand(client, ['HGETALL', layout.layout], layout.base))
   } catch (cause) {
     if (cause instanceof RedisLayoutError) throw cause
     throw invalid('layout', 'could not read Redis layout marker', cause)
@@ -278,12 +295,11 @@ const writeMarker = async (
 ): Promise<void> => {
   const fields = markerFields(marker)
   try {
-    const claimed = await client.sendCommand([
-      'HSETNX',
-      layout.layout,
-      'adapterVersion',
-      marker.adapterVersion
-    ])
+    const claimed = await sendRedisCommand(
+      client,
+      ['HSETNX', layout.layout, 'adapterVersion', marker.adapterVersion],
+      layout.base
+    )
     if (claimed !== 1 && claimed !== '1') {
       throw new RedisLayoutMismatchError(['layout marker appeared during initialization'])
     }
@@ -292,7 +308,7 @@ const writeMarker = async (
       if (key === 'adapterVersion') continue
       command.push(key, value)
     }
-    await client.sendCommand(command)
+    await sendRedisCommand(client, command, layout.base)
   } catch (cause) {
     if (cause instanceof RedisLayoutError) throw cause
     throw invalid('layout', 'could not create Redis layout marker', cause)

@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises'
 
 import { RedisScriptError } from './errors'
 import { assertSameRedisHashSlot } from './keys'
-import type { RedisCommandClient } from './config'
+import { sendRedisCommand, type RedisCommandClient } from './config'
 
 export const redisScriptNames = [
   'enqueue',
@@ -69,9 +69,68 @@ const isNoScript = (cause: unknown): boolean => {
 
 const validScriptNames = new Set<string>(redisScriptNames)
 
+const validateStringArray = (
+  value: unknown,
+  script: RedisScriptName,
+  operation: string,
+  allowEmpty: boolean
+): readonly string[] => {
+  if (!Array.isArray(value)) throw new RedisScriptError(script, operation, 'INVALID_ARGUMENTS')
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) throw new Error('prototype')
+    const keys = Reflect.ownKeys(value)
+    if (
+      keys.length !== value.length + 1 ||
+      keys.some(
+        (key) =>
+          key !== 'length' &&
+          (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= value.length)
+      )
+    )
+      throw new Error('shape')
+    const output: string[] = []
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      if (
+        descriptor === undefined ||
+        !('value' in descriptor) ||
+        typeof descriptor.value !== 'string'
+      )
+        throw new Error('item')
+      output.push(descriptor.value)
+    }
+    if (!allowEmpty && output.length === 0) throw new Error('empty')
+    return Object.freeze(output)
+  } catch (cause) {
+    throw new RedisScriptError(script, operation, 'INVALID_ARGUMENTS', { cause })
+  }
+}
+
 const normalizeManifest = (manifest: RedisScriptManifest): RedisScriptManifest => {
   if (!Array.isArray(manifest))
     throw new RedisScriptError('manifest', 'validate', 'INVALID_MANIFEST')
+  try {
+    if (Object.getPrototypeOf(manifest) !== Array.prototype) throw new Error('prototype')
+    const keys = Reflect.ownKeys(manifest)
+    if (
+      keys.length !== manifest.length + 1 ||
+      keys.some(
+        (key) =>
+          key !== 'length' &&
+          (typeof key !== 'string' ||
+            !/^(?:0|[1-9]\d*)$/u.test(key) ||
+            Number(key) >= manifest.length)
+      )
+    )
+      throw new Error('shape')
+    for (let index = 0; index < manifest.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(manifest, String(index))
+      if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable)
+        throw new Error('item')
+    }
+  } catch (cause) {
+    throw new RedisScriptError('manifest', 'validate', 'INVALID_MANIFEST', { cause })
+  }
   const definitions: RedisScriptDefinition[] = []
   const seen = new Set<string>()
   try {
@@ -179,22 +238,29 @@ export class RedisScriptRegistry {
 
   private readonly client: RedisCommandClient
   private readonly definitions: ReadonlyMap<RedisScriptName, RedisScriptDefinition>
+  private readonly routingKey: string | undefined
   private readonly shas = new Map<RedisScriptName, string>()
   private readonly reloads = new Map<RedisScriptName, Promise<string>>()
 
-  private constructor(client: RedisCommandClient, manifest: RedisScriptManifest) {
+  private constructor(
+    client: RedisCommandClient,
+    manifest: RedisScriptManifest,
+    routingKey?: string
+  ) {
     this.client = client
     this.manifest = manifest
+    this.routingKey = routingKey
     this.scriptSetChecksum = sourceChecksum(manifest)
     this.definitions = new Map(manifest.map((definition) => [definition.name, definition]))
   }
 
   static async load(
     client: RedisCommandClient,
-    manifest?: RedisScriptManifest
+    manifest?: RedisScriptManifest,
+    routingKey?: string
   ): Promise<RedisScriptRegistry> {
     const loadedManifest = normalizeManifest(manifest ?? (await loadRedisScriptManifest()))
-    const registry = new RedisScriptRegistry(client, loadedManifest)
+    const registry = new RedisScriptRegistry(client, loadedManifest, routingKey)
     for (const definition of loadedManifest) await registry.loadOne(definition)
     return registry
   }
@@ -217,14 +283,12 @@ export class RedisScriptRegistry {
     arguments_: readonly string[] = []
   ): Promise<unknown> {
     assertSameRedisHashSlot(keys)
-    if (!Array.isArray(arguments_) || arguments_.some((value) => typeof value !== 'string')) {
-      throw new RedisScriptError(name, 'execute', 'INVALID_ARGUMENTS')
-    }
+    validateStringArray(arguments_, name, 'execute', true)
     try {
       return await this.evalSha(name, keys, arguments_)
     } catch (cause) {
       if (!isNoScript(cause)) throw this.executionError(name, cause)
-      await this.reload(name)
+      await this.reload(name, keys[0])
       try {
         return await this.evalSha(name, keys, arguments_)
       } catch (retryCause) {
@@ -239,12 +303,19 @@ export class RedisScriptRegistry {
     arguments_: readonly string[]
   ): Promise<unknown> {
     const command = ['EVALSHA', this.getSha(name), String(keys.length), ...keys, ...arguments_]
-    return this.client.sendCommand(command)
+    return sendRedisCommand(this.client, command, keys[0] ?? this.routingKey)
   }
 
-  private async loadOne(definition: RedisScriptDefinition): Promise<string> {
+  private async loadOne(
+    definition: RedisScriptDefinition,
+    routingKey = this.routingKey
+  ): Promise<string> {
     try {
-      const reply = await this.client.sendCommand(['SCRIPT', 'LOAD', definition.source])
+      const reply = await sendRedisCommand(
+        this.client,
+        ['SCRIPT', 'LOAD', definition.source],
+        routingKey
+      )
       const sha = normalizeSha(reply, definition.name)
       this.shas.set(definition.name, sha)
       return sha
@@ -254,12 +325,12 @@ export class RedisScriptRegistry {
     }
   }
 
-  private async reload(name: RedisScriptName): Promise<string> {
+  private async reload(name: RedisScriptName, routingKey?: string): Promise<string> {
     const existing = this.reloads.get(name)
     if (existing !== undefined) return existing
     const definition = this.definitions.get(name)
     if (definition === undefined) throw new RedisScriptError(name, 'reload', 'SCRIPT_UNKNOWN')
-    const pending = this.loadOne(definition)
+    const pending = this.loadOne(definition, routingKey)
     this.reloads.set(name, pending)
     try {
       return await pending

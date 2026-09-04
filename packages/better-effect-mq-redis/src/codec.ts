@@ -114,6 +114,8 @@ const canonicalize = (value: unknown, seen: Set<object>, field: string): unknown
 
   try {
     if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype)
+        throw invalid(field, 'must use the standard array prototype')
       const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
       const length = lengthDescriptor?.value
       if (
