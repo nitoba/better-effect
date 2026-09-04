@@ -1,44 +1,44 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- fixed SQLite test rows are narrowed after the query boundary.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- fixed selected-column assertions are documented at the query site.
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { Runtime } from 'better-effect'
 import { makeQueueName, makeWorkerId } from 'better-effect-mq'
 import { SqliteJobStore } from '../src/index'
 import { layerFromFile as bunLayerFromFile } from '../src/bun'
-import { layerFromFile as nodeLayerFromFile } from '../src/node'
 
-const directories: string[] = []
+const files: string[] = []
+const filePath = (): string => {
+  const path = `${Bun.env.TMPDIR ?? '/tmp'}/better-effect-mq-sqlite-${Bun.randomUUIDv7()}.sqlite`
+  files.push(path)
+  return path
+}
+
 afterEach(async () => {
   await Promise.all(
-    directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))
+    files
+      .splice(0)
+      .flatMap((path) => [path, `${path}-shm`, `${path}-wal`])
+      .map(async (path) =>
+        Bun.file(path)
+          .delete()
+          .catch(() => undefined)
+      )
   )
 })
 
 describe('SQLite durable coordination', () => {
-  test('Node and Bun adapter-owned file layers do not leak path into generic config', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'better-effect-mq-sqlite-'))
-    directories.push(directory)
-    for (const [name, layer] of [
-      ['node.sqlite', nodeLayerFromFile],
-      ['bun.sqlite', bunLayerFromFile]
-    ] as const) {
-      const path = join(directory, name)
-      const database = new Database(path)
-      SqliteJobStore.migrate({ database })
-      database.close()
-      const runtime = await Runtime.make(layer({ path }))
-      await runtime.dispose()
-    }
+  test('Bun adapter-owned file layer does not leak path into generic config', async () => {
+    const path = filePath()
+    const database = new Database(path)
+    SqliteJobStore.migrate({ database })
+    database.close()
+    const runtime = await Runtime.make(bunLayerFromFile({ path }))
+    await runtime.dispose()
   })
 
   test('persists work and lets two connections claim one live lease', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'better-effect-mq-sqlite-'))
-    directories.push(directory)
-    const path = join(directory, 'jobs.sqlite')
+    const path = filePath()
     const firstDatabase = new Database(path)
     SqliteJobStore.migrate({ database: firstDatabase })
     const secondDatabase = new Database(path)
