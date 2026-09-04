@@ -60,6 +60,32 @@ Turborepo runs each command only in the workspaces that define it and caches
 compatible tasks between runs. The root `bun.lock` is the canonical lockfile
 for every workspace.
 
+### MQ real-storage conformance
+
+The default test suite does not require database services. Run the explicit
+real-storage gate to start disposable MySQL 8 InnoDB and single-node MongoDB
+replica-set containers, migrate them, and execute the complete protocol-v1
+`jobStoreContract` for both MQ adapters:
+
+```bash
+bun run test:containers
+```
+
+The harness preserves an existing `DOCKER_HOST`. Without one, it discovers a
+rootless Podman socket through `XDG_RUNTIME_DIR`, the current user, or `podman
+info`; otherwise it uses the default Docker runtime (as on GitHub Actions).
+It uses random loopback-only host ports, generated non-root application
+credentials, and stops both containers after a passing, failing, or interrupted
+test run. The harness configures the Docker `HostIp` binding as `127.0.0.1` and
+verifies it through runtime inspection for both databases. Ryuk is disabled
+only when the discovered Podman engine is rootless. A per-invocation container
+label provides a scoped `podman rm --force` (or Docker equivalent) fallback if
+normal cleanup fails, including a startup/interrupt race.
+
+GitHub Actions enforces this gate in the `MQ MySQL and MongoDB storage
+conformance` job using the hosted runner's Docker socket; local development
+uses Docker or the discovered Podman socket.
+
 Package releases use qualified tags and publish only the selected package. See
 [`docs/release-process.md`](./docs/release-process.md) for the release planner,
 initial Better Auth/MQ/Kysely/PostgreSQL release commands, and npm Trusted

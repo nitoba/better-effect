@@ -14,6 +14,7 @@
     "docs:build": "turbo run build --filter=@better-effect/docs",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "test:containers": "bun test scripts/mq-container-support.test.ts && bun scripts/test-mq-containers.ts",
     "lint": "turbo run lint && bun run lint:release",
     "format": "turbo run format",
     "format:check": "turbo run format:check",
@@ -27,9 +28,13 @@
   },
   "devDependencies": {
     "@oxlint/plugins": "1.78.0",
+    "@testcontainers/mongodb": "^12.1.0",
+    "@testcontainers/mysql": "^12.1.0",
     "lefthook": "^2.1.10",
+    "mongodb": "^6.21.0",
     "oxfmt": "^0.63.0",
     "oxlint-tsgolint": "^7.0.2001",
+    "testcontainers": "^12.1.0",
     "turbo": "^2.10.9"
   },
   "devEngines": {

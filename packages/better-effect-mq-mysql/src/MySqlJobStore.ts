@@ -1190,6 +1190,7 @@ class MySqlJobStoreImplementation {
             orderingSequence,
             input.attemptsMax,
             input.now,
+            input.now,
             input.backoff === undefined ? null : json(input.backoff),
             input.timeoutMs ?? null,
             input.idempotencyKey ?? null,
@@ -1934,8 +1935,9 @@ class MySqlJobStoreImplementation {
             json(states)
           )
         if (metadata !== undefined) {
-          values.push(json(metadata))
-          where.push('JSON_CONTAINS(metadata, ?)')
+          const encoded = json(metadata)
+          values.push(encoded, encoded)
+          where.push('JSON_CONTAINS(metadata, ?) AND JSON_CONTAINS(?, metadata)')
         }
         const column =
           orderBy === 'enqueuedAt'
@@ -1946,22 +1948,20 @@ class MySqlJobStoreImplementation {
         if (cursorInput !== undefined) {
           const value = cursorInput.value
           const cmp = order === 'asc' ? '>' : '<'
-          const sequence = parameter(cursorInput.orderingSequence)
-          const id = parameter(cursorInput.id)
           if (value === null) {
-            const nullTie = `(sequence ${cmp} ${sequence} OR (sequence = ${sequence} AND id COLLATE utf8mb4_bin ${cmp} ${id}))`
+            const nullTie = `(sequence ${cmp} ${parameter(cursorInput.orderingSequence)} OR (sequence = ${parameter(cursorInput.orderingSequence)} AND id COLLATE utf8mb4_bin ${cmp} ${parameter(cursorInput.id)}))`
             where.push(
               order === 'desc'
                 ? `((${column} IS NULL AND ${nullTie}) OR ${column} IS NOT NULL)`
                 : `(${column} IS NULL AND ${nullTie})`
             )
           } else {
-            const primary = parameter(value)
-            const tie = `(${column} = ${primary} AND (sequence ${cmp} ${sequence} OR (sequence = ${sequence} AND id COLLATE utf8mb4_bin ${cmp} ${id})))`
+            const boundary = parameter(value)
+            const tie = `(${column} = ${parameter(value)} AND (sequence ${cmp} ${parameter(cursorInput.orderingSequence)} OR (sequence = ${parameter(cursorInput.orderingSequence)} AND id COLLATE utf8mb4_bin ${cmp} ${parameter(cursorInput.id)})))`
             where.push(
               order === 'asc'
-                ? `(${column} > ${primary} OR ${column} IS NULL OR ${tie})`
-                : `(${column} < ${primary} OR ${tie})`
+                ? `(${column} > ${boundary} OR ${column} IS NULL OR ${tie})`
+                : `(${column} < ${boundary} OR ${tie})`
             )
           }
         }
