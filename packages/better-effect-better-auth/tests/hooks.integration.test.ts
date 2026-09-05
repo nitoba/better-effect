@@ -65,8 +65,7 @@ describe('BetterAuthHooks with Better Auth', () => {
   })
 
   test('dispatches global and plugin hooks through rawAuth.api while plugin middleware stays request-only', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@integration/BetterAuthHookContext', runtime)
+    const hooks = BetterAuthHooks.define('@integration/BetterAuthHookContext')
     const observations: HookObservation[] = []
 
     const observe = (phase: string) => (context: BetterAuthMiddlewareContext) =>
@@ -86,10 +85,10 @@ describe('BetterAuthHooks with Better Auth', () => {
         return Result.ok()
       })
 
-    const before = hooks.middleware(observe('before'))
-    const globalAfter = hooks.middleware(observe('global-after'))
-    const pluginMiddleware = hooks.middleware(observe('plugin-middleware'))
-    const pluginAfter = hooks.middleware(() =>
+    const beforeOperation = hooks.middleware(observe('before'))
+    const globalAfterOperation = hooks.middleware(observe('global-after'))
+    const pluginMiddlewareOperation = hooks.middleware(observe('plugin-middleware'))
+    const pluginAfterOperation = hooks.middleware(() =>
       Effect.fn(async function* () {
         const scoped = yield* hooks.Context
         const signal = yield* CurrentAbortSignal
@@ -112,39 +111,47 @@ describe('BetterAuthHooks with Better Auth', () => {
       })
     )
 
-    const plugin = {
-      id: 'hooks-integration',
-      endpoints: {
-        hooksEcho: createAuthEndpoint(
-          '/hooks-integration/echo',
-          { method: 'GET' },
-          async (context) => context.json({ source: 'endpoint' })
-        )
-      },
-      hooks: {
-        after: [
+    const Auth = BetterAuth.make('@integration/IntegratedAuth', async function* () {
+      const before = yield* beforeOperation
+      const globalAfter = yield* globalAfterOperation
+      const pluginMiddleware = yield* pluginMiddlewareOperation
+      const pluginAfter = yield* pluginAfterOperation
+      const plugin = {
+        id: 'hooks-integration',
+        endpoints: {
+          hooksEcho: createAuthEndpoint(
+            '/hooks-integration/echo',
+            { method: 'GET' },
+            async (context) => context.json({ source: 'endpoint' })
+          )
+        },
+        hooks: {
+          after: [
+            {
+              matcher: (context) => context.path === '/hooks-integration/echo',
+              handler: pluginAfter
+            }
+          ]
+        },
+        middlewares: [
           {
-            matcher: (context) => context.path === '/hooks-integration/echo',
-            handler: pluginAfter
+            path: '/hooks-integration/*',
+            middleware: pluginMiddleware
           }
         ]
-      },
-      middlewares: [
-        {
-          path: '/hooks-integration/*',
-          middleware: pluginMiddleware
-        }
-      ]
-    } satisfies BetterAuthPlugin
+      } satisfies BetterAuthPlugin
 
-    const auth = betterAuth({
-      baseURL,
-      database: memoryAdapter(makeDatabase()),
-      emailAndPassword: { enabled: true },
-      hooks: { before, after: globalAfter },
-      plugins: [plugin],
-      secret: 'hooks-integration-secret-not-for-production-use'
+      return betterAuth({
+        baseURL,
+        database: memoryAdapter(makeDatabase()),
+        emailAndPassword: { enabled: true },
+        hooks: { before, after: globalAfter },
+        plugins: [plugin],
+        secret: 'hooks-integration-secret-not-for-production-use'
+      })
     })
+    const runtime = await Runtime.make(Auth.layer)
+    const auth = (await runtime.run(() => ServiceRuntime.resolve(Auth))).raw
 
     try {
       const directSignUp = await auth.api.signUpEmail({
@@ -226,11 +233,10 @@ describe('BetterAuthHooks with Better Auth', () => {
   })
 
   test('supports direct API dispatch and Better Auth background task hooks', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@integration/BetterAuthBackgroundHooks', runtime)
+    const hooks = BetterAuthHooks.define('@integration/BetterAuthBackgroundHooks')
     const backgroundTasks: Promise<unknown>[] = []
     const observedPaths: string[] = []
-    const backgroundHook = hooks.middleware(() =>
+    const backgroundHookOperation = hooks.middleware(() =>
       Effect.fn(async function* () {
         const hook = yield* hooks.Context
         hook.context.context.runInBackground(
@@ -239,19 +245,24 @@ describe('BetterAuthHooks with Better Auth', () => {
         return Result.ok()
       })
     )
-    const auth = betterAuth({
-      advanced: {
-        backgroundTasks: {
-          handler: (task) => {
-            backgroundTasks.push(task)
+    const Auth = BetterAuth.make('@integration/BackgroundAuth', async function* () {
+      const backgroundHook = yield* backgroundHookOperation
+      return betterAuth({
+        advanced: {
+          backgroundTasks: {
+            handler: (task) => {
+              backgroundTasks.push(task)
+            }
           }
-        }
-      },
-      baseURL,
-      database: memoryAdapter(makeDatabase()),
-      hooks: { after: backgroundHook },
-      secret: 'hooks-background-secret-not-for-production-use'
+        },
+        baseURL,
+        database: memoryAdapter(makeDatabase()),
+        hooks: { after: backgroundHook },
+        secret: 'hooks-background-secret-not-for-production-use'
+      })
     })
+    const runtime = await Runtime.make(Auth.layer)
+    const auth = (await runtime.run(() => ServiceRuntime.resolve(Auth))).raw
 
     try {
       expect(await auth.api.ok()).toEqual({ ok: true })

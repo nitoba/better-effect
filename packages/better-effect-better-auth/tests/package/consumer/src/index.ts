@@ -2,7 +2,7 @@ import { betterAuth, type BetterAuthPlugin } from 'better-auth'
 import { APIError, createAuthEndpoint } from 'better-auth/api'
 import { memoryAdapter } from 'better-auth/adapters/memory'
 import { admin } from 'better-auth/plugins'
-import { Effect, Layer, Service, type Runtime } from 'better-effect'
+import { Effect, Layer, Service } from 'better-effect'
 import { Result, TaggedError } from 'better-result'
 import { BetterAuthHooks, type BetterAuthMiddlewareContext } from 'better-effect-better-auth/hooks'
 import {
@@ -120,8 +120,7 @@ const program = Effect.fn(async function* () {
   return Result.ok({ plugin, session, users })
 })
 
-declare const runtime: Runtime<AuthInstance>
-const Hooks = BetterAuthHooks.make('@consumer/HookContext', runtime)
+const Hooks = BetterAuthHooks.define('@consumer/HookContext')
 const hookMiddleware = Hooks.middleware(() =>
   Effect.fn(async function* () {
     const hook = yield* Hooks.Context
@@ -130,8 +129,7 @@ const hookMiddleware = Hooks.middleware(() =>
   })
 )
 
-declare const runtimeWithPolicy: Runtime<HookPolicyInstance>
-const HooksWithPolicy = BetterAuthHooks.make('@consumer/HookContextWithPolicy', runtimeWithPolicy)
+const HooksWithPolicy = BetterAuthHooks.define('@consumer/HookContextWithPolicy')
 const layeredHook = HooksWithPolicy.middleware(
   (context) =>
     Effect.fn(async function* () {
@@ -167,18 +165,24 @@ const failedHook = HooksWithPolicy.middleware(
   }
 )
 
-const missingHookRuntime: Runtime<AuthInstance> = runtime
-const MissingHooks = BetterAuthHooks.make('@consumer/MissingHookContext', missingHookRuntime)
+const MissingHooks = BetterAuthHooks.define('@consumer/MissingHookContext')
 const needsPolicy = () =>
   Effect.fn(async function* () {
     yield* HookPolicy
     return Result.ok()
   })
-// @ts-expect-error packed declarations must reject a hook requirement absent from the Runtime.
-MissingHooks.middleware(needsPolicy)
+const MissingAuth = BetterAuth.make('@consumer/MissingAuth', async function* () {
+  const middleware = yield* MissingHooks.middleware(needsPolicy)
+  return betterAuth({ hooks: { before: middleware } })
+})
+
+type _MissingHookRequirement = Assert<
+  IsAssignable<Layer.Required<typeof MissingAuth.layer>, HookPolicyInstance>
+>
 
 void authLayer
-void runtime.run(program)
+void program
 void hookMiddleware
 void layeredHook
 void failedHook
+void MissingAuth

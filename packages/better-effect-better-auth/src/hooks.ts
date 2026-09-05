@@ -160,27 +160,11 @@ type HasService<Required extends AnyService, Available extends AnyService> = tru
   ? true
   : false
 
-type MissingServices<Required, Available> =
-  IsAny<Required> extends true
-    ? never
-    : IsAny<Available> extends true
-      ? never
-      : Required extends AnyService
-        ? HasService<Required, Extract<Available, AnyService>> extends true
-          ? never
-          : Required
-        : never
-
 type RemoveServices<Required, Removed> = Required extends AnyService
   ? HasService<Required, Extract<Removed, AnyService>> extends true
     ? never
     : Required
   : never
-
-/** Internal diagnostic retained in public call-site signatures. */
-type MissingDependencies<Missing extends AnyService> = {
-  readonly missingDependencies: Missing
-}
 
 type InvalidSuccess<Success> = {
   readonly invalidSuccess: Success
@@ -191,40 +175,6 @@ type ValidateHookSuccess<Factory extends HookProgramFactory> = [HookSuccess<Fact
 ]
   ? unknown
   : InvalidSuccess<HookSuccess<Factory>>
-
-type ValidateMissingServices<Required, Available> =
-  MissingServices<Required, Available> extends infer Missing
-    ? [Missing] extends [never]
-      ? unknown
-      : Missing extends AnyService
-        ? MissingDependencies<Missing>
-        : never
-    : never
-
-type ValidateHookRequirements<
-  Provided extends AnyService,
-  Factory extends HookProgramFactory,
-  ContextInstance extends AnyService
-> = ValidateMissingServices<HookRequirements<Factory>, Provided | ContextInstance>
-
-type ValidateHookLayerRequirements<
-  Provided extends AnyService,
-  ContextInstance extends AnyService,
-  RequestLayer extends Layer.Any
-> = ValidateMissingServices<Layer.Required<RequestLayer>, Provided | ContextInstance>
-
-type ValidateHookProgram<
-  Provided extends AnyService,
-  Factory extends HookProgramFactory,
-  ContextInstance extends AnyService,
-  RequestLayer extends Layer.Any
-> = ValidateHookSuccess<Factory> &
-  ValidateHookLayerRequirements<Provided, ContextInstance, RequestLayer> &
-  ValidateHookRequirements<
-    Provided | Extract<Layer.Provided<RequestLayer>, AnyService>,
-    Factory,
-    ContextInstance
-  >
 
 type HookExternalRequirements<
   Factory extends HookProgramFactory,
@@ -271,20 +221,6 @@ type ValidateGeneratedHook<
   Yield extends EffectYield,
   Returned extends AnyResult
 > = ValidateHookSuccess<GeneratedHookFactory<Yield, Returned>>
-
-type ValidateGeneratedHookProgram<
-  Provided extends AnyService,
-  Yield extends EffectYield,
-  Returned extends AnyResult,
-  ContextInstance extends AnyService,
-  RequestLayer extends Layer.Any
-> = ValidateGeneratedHook<Yield, Returned> &
-  ValidateHookLayerRequirements<Provided, ContextInstance, RequestLayer> &
-  ValidateHookRequirements<
-    Provided | Extract<Layer.Provided<RequestLayer>, AnyService>,
-    GeneratedHookFactory<Yield, Returned>,
-    ContextInstance
-  >
 
 /** A yieldable operation that captures only the active Runtime executor. */
 export interface BetterAuthHookOperation<Requirements extends AnyService = never> {
@@ -348,53 +284,6 @@ export interface BetterAuthHooksDefinition<Tag extends string> {
   >
 }
 
-/** A Better Auth hook bridge bound to one caller-owned Runtime. */
-export interface BetterAuthHooksInstance<Tag extends string, Provided extends AnyService> {
-  readonly Context: BetterAuthHookContextToken<Tag>
-  readonly middleware: <
-    Factory extends HookProgramFactory,
-    RequestLayer extends Layer.Any = typeof Layer.empty
-  >(
-    program: Factory & HookProgramConstraint,
-    ...options: HookMiddlewareCallArguments<
-      HookFailure<Factory>,
-      ValidateHookProgram<
-        Provided,
-        NoInfer<Factory>,
-        BetterAuthHookContextValue & Service.Identity<Tag>,
-        RequestLayer
-      >,
-      BetterAuthHookMiddlewareOptions<
-        HookFailure<Factory>,
-        BetterAuthMiddlewareContext,
-        RequestLayer
-      >
-    >
-  ) => BetterAuthMiddleware
-  readonly gen: <
-    Yield extends EffectYield,
-    Returned extends AnyResult,
-    RequestLayer extends Layer.Any = typeof Layer.empty
-  >(
-    generator: BetterAuthHookGenerator<BetterAuthMiddlewareContext, Yield, Returned>,
-    ...options: HookMiddlewareCallArguments<
-      HookGeneratorFailure<Yield, Returned>,
-      ValidateGeneratedHookProgram<
-        Provided,
-        Yield,
-        Returned,
-        BetterAuthHookContextValue & Service.Identity<Tag>,
-        RequestLayer
-      >,
-      BetterAuthHookMiddlewareOptions<
-        HookGeneratorFailure<Yield, Returned>,
-        BetterAuthMiddlewareContext,
-        RequestLayer
-      >
-    >
-  ) => BetterAuthMiddleware
-}
-
 type BetterAuthLiteralTag<Tag extends string> = string extends Tag
   ? never
   : Tag extends ''
@@ -451,24 +340,6 @@ const executeHook = async <Tag extends string, Factory extends HookProgramFactor
 const eraseExecutor = (executor: RuntimeExecutor<any>): RuntimeExecutor<AnyService> => {
   // SAFETY: RuntimeExecutor only changes its declaration-only environment view; the captured object remains the same non-owning executor.
   return executor as RuntimeExecutor<AnyService>
-}
-
-const legacyRuntimeExecutor = <Provided extends AnyService>(runtime: Runtime<Provided>) => {
-  const runtimeWithExecutor: {
-    readonly executor?: RuntimeExecutor<Provided>
-  } = runtime
-
-  if (runtimeWithExecutor.executor !== undefined) {
-    return eraseExecutor(runtimeWithExecutor.executor)
-  }
-
-  // SAFETY: better-effect versions predating Runtime.Executor expose the same bound run/runWith operations on Runtime.
-  const executor: RuntimeExecutor<Provided> = {
-    run: runtime.run.bind(runtime),
-    runWith: runtime.runWith.bind(runtime)
-  }
-
-  return eraseExecutor(executor)
 }
 
 const createBoundMiddleware = <Tag extends string, Factory extends HookProgramFactory>(
@@ -653,64 +524,9 @@ function defineBetterAuthHooks<const Tag extends string>(
   })
 }
 
-/** Create a compatibility bridge bound to one caller-owned Runtime. */
-function makeBetterAuthHooks<const Tag extends string, Provided extends AnyService>(
-  tag: BetterAuthLiteralTag<Tag>,
-  runtime: Runtime<Provided>
-): BetterAuthHooksInstance<Tag, Provided> {
-  type ContextInstance = BetterAuthHookContextValue & Service.Identity<Tag>
-
-  const Context = makeContextToken(tag)
-  const executor = legacyRuntimeExecutor(runtime)
-
-  const middleware = <
-    Factory extends HookProgramFactory,
-    RequestLayer extends Layer.Any = typeof Layer.empty
-  >(
-    program: Factory & HookProgramConstraint,
-    ...options: HookMiddlewareCallArguments<
-      HookFailure<Factory>,
-      ValidateHookProgram<Provided, NoInfer<Factory>, ContextInstance, RequestLayer>,
-      BetterAuthHookMiddlewareOptions<
-        HookFailure<Factory>,
-        BetterAuthMiddlewareContext,
-        RequestLayer
-      >
-    >
-  ): BetterAuthMiddleware => createBoundMiddleware(executor, Context, program, options[0])
-
-  const gen = <
-    Yield extends EffectYield,
-    Returned extends AnyResult,
-    RequestLayer extends Layer.Any = typeof Layer.empty
-  >(
-    generator: BetterAuthHookGenerator<BetterAuthMiddlewareContext, Yield, Returned>,
-    ...options: HookMiddlewareCallArguments<
-      HookGeneratorFailure<Yield, Returned>,
-      ValidateGeneratedHookProgram<Provided, Yield, Returned, ContextInstance, RequestLayer>,
-      BetterAuthHookMiddlewareOptions<
-        HookGeneratorFailure<Yield, Returned>,
-        BetterAuthMiddlewareContext,
-        RequestLayer
-      >
-    >
-  ): BetterAuthMiddleware => {
-    const factory = makeGeneratorFactory<Yield, Returned>(eraseGenerator(generator))
-    return createBoundMiddleware(executor, Context, factory, options[0])
-  }
-
-  return Object.freeze({
-    Context,
-    middleware,
-    gen
-  })
-}
-
 /** Framework-agnostic Better Auth hook and plugin middleware bridge. */
 export const BetterAuthHooks = Object.freeze({
-  define: defineBetterAuthHooks,
-  /** @deprecated Prefer `BetterAuthHooks.define(tag)` and yield its builders from `BetterAuth.make`. */
-  make: makeBetterAuthHooks
+  define: defineBetterAuthHooks
 })
 
 /** Type aliases colocated with the `BetterAuthHooks` factory. */
@@ -751,13 +567,9 @@ export declare namespace BetterAuthHooks {
   > = BetterAuthHookMiddlewareOptions<Failure, ContextType, RequestLayer>
   export type ContextToken<Tag extends string> = BetterAuthHookContextToken<Tag>
   export type Definition<Tag extends string> = BetterAuthHooksDefinition<Tag>
-  export type Instance<Tag extends string, Provided extends AnyService> = BetterAuthHooksInstance<
-    Tag,
-    Provided
-  >
 }
 
-/** The Context Service token returned by one `BetterAuthHooks.define` or `make` call. */
+/** The Context Service token returned by one `BetterAuthHooks.define` call. */
 export type BetterAuthHookContextToken<Tag extends string> = Service.Class<
   Tag,
   BetterAuthHookContextValue & Service.Identity<Tag>

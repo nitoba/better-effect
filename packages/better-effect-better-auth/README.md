@@ -24,7 +24,7 @@ bun add hono
 ```
 
 The package is ESM-only. Its framework-neutral `.` entry point has these peer
-requirements: `better-auth` `^1.7.0`, `better-effect` `>=0.12.0 <0.14.0`,
+requirements: `better-auth` `^1.7.0`, `better-effect` `>=0.13.0 <0.14.0`,
 `better-result` `^3.0.0`, and TypeScript `>=6.0.0`. The package also exposes
 optional public `/hooks` and `/hono` subpaths. Hono is an optional peer required
 only when importing `/hono` (`>=4.0.0`); it is not needed by `.` or `/hooks`.
@@ -284,11 +284,6 @@ configured global and plugin hooks, including for requestless server-side
 calls; plugin `middlewares` run only through a request handled by
 `auth.handler`. The bridge does not store contexts, create a global controller,
 run detached Runtime work, or provide framework adapters.
-
-`BetterAuthHooks.make(tag, runtime)` remains available as a deprecated
-compatibility API for applications that already bind hooks to a caller-owned
-Runtime. It exposes the same Context and non-yieldable builders; new code should
-use `define` with `BetterAuth.make`.
 
 ## Sessions
 

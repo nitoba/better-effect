@@ -36,12 +36,30 @@ class CapturedAuth extends Service<CapturedAuth>()('@hooks/CapturedAuth') {
   }
 }
 
+class CapturedMiddlewares extends Service<CapturedMiddlewares>()('@hooks/CapturedMiddlewares') {
+  constructor(
+    readonly programSync: BetterAuthMiddleware,
+    readonly programRejected: BetterAuthMiddleware,
+    readonly mapperSync: BetterAuthMiddleware,
+    readonly mapperRejected: BetterAuthMiddleware
+  ) {
+    super()
+  }
+}
+
 // oxlint-disable-next-line anti-slop/no-unknown-returns -- tests need to inspect arbitrary rejection causes.
 const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
   promise.then(
     () => undefined,
     (cause) => cause
   )
+
+const acquireMiddleware = async (layer: Layer.Any) => {
+  const runtime = await Runtime.make(layer)
+  const captured = await runtime.run(() => ServiceRuntime.resolve(CapturedAuth))
+  return { middleware: captured.middleware, runtime }
+}
+
 describe('BetterAuthHooks', () => {
   test('define captures the active Runtime executor during Layer acquisition', async () => {
     const hooks = BetterAuthHooks.define('@test/DefinedHookContext')
@@ -78,8 +96,7 @@ describe('BetterAuthHooks', () => {
   })
 
   test('runs each middleware call in an isolated Context scope without owning the Runtime', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/HookContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/HookContext')
     const contexts: BetterAuthMiddlewareContext[] = []
     let programCalls = 0
     let release!: () => void
@@ -91,7 +108,7 @@ describe('BetterAuthHooks', () => {
       release = resolve
     })
 
-    const middleware = hooks.middleware((context) =>
+    const operation = hooks.middleware((context) =>
       Effect.fn(async function* () {
         const scoped = yield* hooks.Context
         programCalls += 1
@@ -100,6 +117,11 @@ describe('BetterAuthHooks', () => {
         await ready
         expect(scoped.context).toBe(context)
         return Result.ok({ context: { hook: true } })
+      })
+    )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
       })
     )
 
@@ -127,8 +149,7 @@ describe('BetterAuthHooks', () => {
   })
 
   test('keeps concurrent invocation Context values separate', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/ConcurrentHookContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/ConcurrentHookContext')
     const contexts: BetterAuthMiddlewareContext[] = []
     const releases: (() => void)[] = []
     let resolveBoth!: () => void
@@ -136,7 +157,7 @@ describe('BetterAuthHooks', () => {
       resolveBoth = resolve
     })
 
-    const middleware = hooks.middleware((_context) =>
+    const operation = hooks.middleware((_context) =>
       Effect.fn(async function* () {
         const scoped = yield* hooks.Context
         contexts.push(scoped.context)
@@ -149,6 +170,11 @@ describe('BetterAuthHooks', () => {
           releases.push(resolve)
         })
         return Result.ok({ context: { path: scoped.context.path } })
+      })
+    )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
       })
     )
 
@@ -171,12 +197,11 @@ describe('BetterAuthHooks', () => {
   })
 
   test('creates per-invocation Layers from the Better Auth context and releases them', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/RequestLayerContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/RequestLayerContext')
     const acquired: string[] = []
     const released: string[] = []
 
-    const middleware = hooks.middleware(
+    const operation = hooks.middleware(
       (context) =>
         Effect.fn(async function* () {
           const metadata = yield* RequestMetadata
@@ -200,6 +225,11 @@ describe('BetterAuthHooks', () => {
           )
       }
     )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
+      })
+    )
 
     try {
       const firstRequest = new Request('https://example.test/first')
@@ -220,15 +250,19 @@ describe('BetterAuthHooks', () => {
   })
 
   test('does not invent a Better Auth request for requestless middleware', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/RequestlessHookContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/RequestlessHookContext')
     let observed: BetterAuthMiddlewareContext | undefined
 
-    const middleware = hooks.middleware((context) =>
+    const operation = hooks.middleware((context) =>
       Effect.fn(async function* () {
         observed = (yield* hooks.Context).context
         expect(context.request).toBeUndefined()
         return Result.ok()
+      })
+    )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
       })
     )
 
@@ -241,10 +275,9 @@ describe('BetterAuthHooks', () => {
   })
 
   test('preserves per-invocation Layer acquisition and cleanup failures', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/RequestLayerFailures', runtime)
+    const hooks = BetterAuthHooks.define('@test/RequestLayerFailures')
     const acquisitionFailure = new Error('request layer acquisition failed')
-    const acquisitionMiddleware = hooks.middleware(
+    const acquisitionOperation = hooks.middleware(
       () =>
         Effect.fn(async function* () {
           yield* FailingService
@@ -253,6 +286,12 @@ describe('BetterAuthHooks', () => {
       {
         layer: () => Layer.make(FailingService, () => Promise.reject(acquisitionFailure))
       }
+    )
+
+    const { middleware: acquisitionMiddleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* acquisitionOperation })
+      })
     )
 
     try {
@@ -274,7 +313,7 @@ describe('BetterAuthHooks', () => {
       expect(acquisitionError.cause).toBe(acquisitionFailure)
 
       const cleanupFailure = new Error('request layer cleanup failed')
-      const cleanupMiddleware = hooks.middleware(
+      const cleanupOperation = hooks.middleware(
         () =>
           Effect.fn(async function* () {
             yield* RequestMetadata
@@ -290,6 +329,15 @@ describe('BetterAuthHooks', () => {
         }
       )
 
+      const cleanupRuntime = await Runtime.make(
+        Layer.gen(CapturedAuth, async function* () {
+          return CapturedAuth.of({ middleware: yield* cleanupOperation })
+        })
+      )
+      const cleanupMiddleware = (
+        await cleanupRuntime.run(() => ServiceRuntime.resolve(CapturedAuth))
+      ).middleware
+
       let cleanupCause: unknown
       try {
         await cleanupMiddleware({})
@@ -303,20 +351,20 @@ describe('BetterAuthHooks', () => {
       }
 
       expect(cleanupCause.causes).toContain(cleanupFailure)
+      await cleanupRuntime.dispose()
     } finally {
       await runtime.dispose()
     }
   })
 
   test('forwards the request cancellation signal to the Runtime execution', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/CancellationHookContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/CancellationHookContext')
     let resolveStarted!: () => void
     const started = new Promise<void>((resolve) => {
       resolveStarted = resolve
     })
 
-    const middleware = hooks.middleware((context) =>
+    const operation = hooks.middleware((context) =>
       Effect.fn(async function* () {
         const signal = yield* CurrentAbortSignal
         const hookContext = yield* hooks.Context
@@ -330,6 +378,11 @@ describe('BetterAuthHooks', () => {
           signal.addEventListener('abort', () => resolve(), { once: true })
         })
         return Result.ok({ context: { cancelled: signal.aborted } })
+      })
+    )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
       })
     )
 
@@ -348,8 +401,7 @@ describe('BetterAuthHooks', () => {
   })
 
   test('preserves program and failure-mapper defect identity', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/DefectIdentity', runtime)
+    const hooks = BetterAuthHooks.define('@test/DefectIdentity')
     const programSyncDefect = new Error('program sync defect')
     const programRejectedDefect = new Error('program rejected defect')
     const mapperSyncDefect = new Error('mapper sync defect')
@@ -361,12 +413,12 @@ describe('BetterAuthHooks', () => {
       return unchecked as Effect.Program<void, never, never>
     }
 
-    const programSyncMiddleware = hooks.middleware(() =>
+    const programSyncOperation = hooks.middleware(() =>
       unsafeProgram(() => {
         throw programSyncDefect
       })
     )
-    const programRejectedMiddleware = hooks.middleware(() =>
+    const programRejectedOperation = hooks.middleware(() =>
       unsafeProgram(() => Promise.reject(programRejectedDefect))
     )
     const typedFailureProgram = () =>
@@ -374,34 +426,45 @@ describe('BetterAuthHooks', () => {
         yield* []
         return Result.err(new Denied({ message: 'mapper failure' }))
       })
-    const mapperSyncMiddleware = hooks.middleware(() => typedFailureProgram(), {
+    const mapperSyncOperation = hooks.middleware(() => typedFailureProgram(), {
       onFailure: () => {
         throw mapperSyncDefect
       }
     })
-    const mapperRejectedMiddleware = hooks.middleware(() => typedFailureProgram(), {
+    const mapperRejectedOperation = hooks.middleware(() => typedFailureProgram(), {
       onFailure: () => Promise.reject(mapperRejectedDefect)
     })
 
+    const runtime = await Runtime.make(
+      Layer.gen(CapturedMiddlewares, async function* () {
+        return CapturedMiddlewares.of({
+          programSync: yield* programSyncOperation,
+          programRejected: yield* programRejectedOperation,
+          mapperSync: yield* mapperSyncOperation,
+          mapperRejected: yield* mapperRejectedOperation
+        })
+      })
+    )
+    const captured = await runtime.run(() => ServiceRuntime.resolve(CapturedMiddlewares))
+
     try {
-      expect(await captureRejection(programSyncMiddleware({}))).toBe(programSyncDefect)
-      expect(await captureRejection(programRejectedMiddleware({}))).toBe(programRejectedDefect)
-      expect(await captureRejection(mapperSyncMiddleware({}))).toBe(mapperSyncDefect)
-      expect(await captureRejection(mapperRejectedMiddleware({}))).toBe(mapperRejectedDefect)
+      expect(await captureRejection(captured.programSync({}))).toBe(programSyncDefect)
+      expect(await captureRejection(captured.programRejected({}))).toBe(programRejectedDefect)
+      expect(await captureRejection(captured.mapperSync({}))).toBe(mapperSyncDefect)
+      expect(await captureRejection(captured.mapperRejected({}))).toBe(mapperRejectedDefect)
     } finally {
       await runtime.dispose()
     }
   })
 
   test('preserves an already-aborted request signal reason and identity', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/AlreadyAbortedSignal', runtime)
+    const hooks = BetterAuthHooks.define('@test/AlreadyAbortedSignal')
     const reason = new Error('request already cancelled')
     const controller = new AbortController()
     controller.abort(reason)
     let observedSignal: AbortSignal | undefined
 
-    const middleware = hooks.middleware(() =>
+    const operation = hooks.middleware(() =>
       Effect.fn(async function* () {
         const signal = yield* CurrentAbortSignal
         observedSignal = signal
@@ -411,6 +474,11 @@ describe('BetterAuthHooks', () => {
             reason: signal.reason
           }
         })
+      })
+    )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
       })
     )
     const request = new Request('https://example.test/already-cancelled', {
@@ -428,15 +496,14 @@ describe('BetterAuthHooks', () => {
   })
 
   test('cancels active hooks on Runtime shutdown and closes their execution Scope', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/ShutdownCancellation', runtime)
+    const hooks = BetterAuthHooks.define('@test/ShutdownCancellation')
     let resolveStarted!: () => void
     const started = new Promise<void>((resolve) => {
       resolveStarted = resolve
     })
     let releaseStatus: string | undefined
 
-    const middleware = hooks.middleware(
+    const operation = hooks.middleware(
       () =>
         Effect.fn(async function* () {
           yield* RequestMetadata
@@ -458,6 +525,11 @@ describe('BetterAuthHooks', () => {
           )
       }
     )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
+      })
+    )
 
     const pending = middleware({})
     await started
@@ -468,8 +540,7 @@ describe('BetterAuthHooks', () => {
   })
 
   test('closes the execution Scope before resolving the middleware', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/LifecycleHookContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/LifecycleHookContext')
     let released = false
     const disposable = {
       [Symbol.dispose]: () => {
@@ -477,7 +548,7 @@ describe('BetterAuthHooks', () => {
       }
     }
 
-    const middleware = hooks.middleware(
+    const operation = hooks.middleware(
       () =>
         Effect.fn(async function* () {
           yield* Effect.add(disposable)
@@ -487,6 +558,11 @@ describe('BetterAuthHooks', () => {
         onFailure: () => new Response(null, { status: 500 })
       }
     )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
+      })
+    )
 
     const value = await middleware({})
     expect(value).toBeUndefined()
@@ -495,12 +571,11 @@ describe('BetterAuthHooks', () => {
   })
 
   test('maps typed failures to Better Auth APIError or preserves a Response identity', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/FailureHookContext', runtime)
+    const hooks = BetterAuthHooks.define('@test/FailureHookContext')
     let mappedFailure: Denied | undefined
     let mappedContext: BetterAuthMiddlewareContext | undefined
 
-    const apiErrorMiddleware = hooks.middleware(
+    const apiErrorOperation = hooks.middleware(
       () =>
         Effect.fn(async function* () {
           yield* []
@@ -518,20 +593,9 @@ describe('BetterAuthHooks', () => {
       }
     )
 
-    let thrown: unknown
-    try {
-      await apiErrorMiddleware({})
-    } catch (cause) {
-      thrown = cause
-    }
-
-    expect(thrown).toBeInstanceOf(APIError)
-    expect(mappedFailure?.message).toBe('denied')
-    expect(mappedContext).toBeDefined()
-
     const response = new Response('denied', { status: 403 })
     let mapperFinished = false
-    const responseMiddleware = hooks.middleware(
+    const responseOperation = hooks.middleware(
       () =>
         Effect.fn(async function* () {
           yield* []
@@ -546,6 +610,31 @@ describe('BetterAuthHooks', () => {
       }
     )
 
+    const runtime = await Runtime.make(
+      Layer.gen(CapturedMiddlewares, async function* () {
+        return CapturedMiddlewares.of({
+          programSync: yield* apiErrorOperation,
+          programRejected: yield* responseOperation,
+          mapperSync: yield* apiErrorOperation,
+          mapperRejected: yield* responseOperation
+        })
+      })
+    )
+    const captured = await runtime.run(() => ServiceRuntime.resolve(CapturedMiddlewares))
+    const apiErrorMiddleware = captured.programSync
+    const responseMiddleware = captured.programRejected
+
+    let thrown: unknown
+    try {
+      await apiErrorMiddleware({})
+    } catch (cause) {
+      thrown = cause
+    }
+
+    expect(thrown).toBeInstanceOf(APIError)
+    expect(mappedFailure?.message).toBe('denied')
+    expect(mappedContext).toBeDefined()
+
     const mappedResponse = await responseMiddleware({})
     expect(mappedResponse).toBe(response)
     expect(mapperFinished).toBe(true)
@@ -553,12 +642,16 @@ describe('BetterAuthHooks', () => {
   })
 
   test('propagates a disposed Runtime failure instead of creating a replacement Runtime', async () => {
-    const runtime = await Runtime.make(Layer.empty)
-    const hooks = BetterAuthHooks.make('@test/DisposedHookContext', runtime)
-    const middleware = hooks.middleware(() =>
+    const hooks = BetterAuthHooks.define('@test/DisposedHookContext')
+    const operation = hooks.middleware(() =>
       Effect.fn(async function* () {
         yield* []
         return Result.ok()
+      })
+    )
+    const { middleware, runtime } = await acquireMiddleware(
+      Layer.gen(CapturedAuth, async function* () {
+        return CapturedAuth.of({ middleware: yield* operation })
       })
     )
 

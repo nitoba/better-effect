@@ -2,16 +2,15 @@ import { betterAuth } from 'better-auth'
 import { APIError, createAuthEndpoint } from 'better-auth/api'
 import { memoryAdapter } from 'better-auth/adapters/memory'
 import { admin } from 'better-auth/plugins'
-import { Effect, Layer, Runtime } from 'better-effect'
+import { Effect, Runtime } from 'better-effect'
 import { BetterAuth, BetterAuthApiError, Unauthenticated } from 'better-effect-better-auth'
 import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
 import { Result } from 'better-result'
 
 const baseURL = 'http://localhost:3000'
 const hookPaths = []
-const hookRuntime = await Runtime.make(Layer.empty)
-const AuthHooks = BetterAuthHooks.make('@consumer/HookContext', hookRuntime)
-const hookMiddleware = AuthHooks.middleware(() =>
+const AuthHooks = BetterAuthHooks.define('@consumer/HookContext')
+const hookOperation = AuthHooks.middleware(() =>
   Effect.fn(async function* () {
     const hook = yield* AuthHooks.Context
     hookPaths.push(hook.context.path)
@@ -127,8 +126,7 @@ const releaseGatePlugin = (signals) => ({
   }
 })
 
-const makeAuth = (options = {}) => {
-  const signals = []
+const makeAuth = (options = {}, before, signals = []) => {
   const rawAuth = betterAuth({
     baseURL,
     database: memoryAdapter(makeDatabase()),
@@ -136,19 +134,17 @@ const makeAuth = (options = {}) => {
       enabled: true
     },
     ...options,
-    hooks: {
-      before: hookMiddleware
-    },
+    hooks: before === undefined ? {} : { before },
     plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin(signals)],
     secret: 'external-consumer-secret-not-for-production-use'
   })
   return { rawAuth, signals }
 }
 
-const { rawAuth, signals } = makeAuth()
-// oxlint-disable-next-line require-yield -- the consumer smoke factory intentionally has no external requirements.
+const signals = []
 const Auth = BetterAuth.make('@consumer/Auth', async function* () {
-  return rawAuth
+  const hookMiddleware = yield* hookOperation
+  return makeAuth({}, hookMiddleware, signals).rawAuth
 })
 
 const execute = (operation) =>
@@ -157,93 +153,88 @@ const execute = (operation) =>
   })
 
 const runtime = await Runtime.make(Auth.layer)
-let result
-try {
-  result = await runtime.run(
-    Effect.fn(async function* () {
-      const auth = yield* Auth
-      const created = yield* auth.api.signUpEmail({
-        body: credentials
-      })
-      const signedIn = yield* auth.api.signInEmail.withHeaders({
-        body: {
-          email: credentials.email,
-          password: credentials.password
-        }
-      })
-      const cookies = signedIn.headers.getSetCookie()
-      const headers = new Headers({
-        cookie: cookieHeaderFromSetCookie(signedIn.headers)
-      })
-      const request = new Request(`${baseURL}/protected`, { headers })
-      const session = yield* auth.session.require(request)
-      const users = yield* auth.api.listUsers({
-        headers,
-        query: {
-          limit: 5
-        }
-      })
-      const plugin = yield* auth.api.consumerReleaseGate({ headers })
-      const pluginResponse = yield* auth.api.consumerReleaseGate.asResponse({ headers })
-      const streamResponse = yield* auth.handle(new Request(`${baseURL}/api/auth/consumer-stream`))
-      const signalRequest = new Request(`${baseURL}/api/auth/consumer-signal`)
-      const signalResponse = yield* auth.handle(signalRequest)
-      const abortedController = new AbortController()
-      abortedController.abort()
-      const abortedRequest = new Request(`${baseURL}/api/auth/consumer-signal`, {
-        signal: abortedController.signal
-      })
-      const abortedResponse = yield* auth.handle(abortedRequest)
-      const invalidHandler = yield* auth.handle(
-        new Request(`${baseURL}/api/auth/sign-in/email`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            email: credentials.email,
-            password: 'not-the-password'
-          })
-        })
-      )
-      const badRequestHandler = yield* auth.handle(
-        new Request(`${baseURL}/api/auth/sign-in/email`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            email: 'not-an-email',
-            password: 'not-a-password'
-          })
-        })
-      )
-      const handler = yield* auth.handle(
-        new Request(`${baseURL}/api/auth/get-session`, {
-          headers
-        })
-      )
-      const signOut = yield* auth.api.signOut.withHeaders({ headers })
-
-      return Result.ok({
-        abortedRequest,
-        abortedResponse,
-        auth,
-        badRequestHandler,
-        cookies,
-        created,
-        handler,
-        invalidHandler,
-        plugin,
-        pluginResponse,
-        session,
-        signalRequest,
-        signalResponse,
-        signOut,
-        streamResponse,
-        users
-      })
+const result = await runtime.run(
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    const created = yield* auth.api.signUpEmail({
+      body: credentials
     })
-  )
-} finally {
-  await runtime.dispose()
-}
+    const signedIn = yield* auth.api.signInEmail.withHeaders({
+      body: {
+        email: credentials.email,
+        password: credentials.password
+      }
+    })
+    const cookies = signedIn.headers.getSetCookie()
+    const headers = new Headers({
+      cookie: cookieHeaderFromSetCookie(signedIn.headers)
+    })
+    const request = new Request(`${baseURL}/protected`, { headers })
+    const session = yield* auth.session.require(request)
+    const users = yield* auth.api.listUsers({
+      headers,
+      query: {
+        limit: 5
+      }
+    })
+    const plugin = yield* auth.api.consumerReleaseGate({ headers })
+    const pluginResponse = yield* auth.api.consumerReleaseGate.asResponse({ headers })
+    const streamResponse = yield* auth.handle(new Request(`${baseURL}/api/auth/consumer-stream`))
+    const signalRequest = new Request(`${baseURL}/api/auth/consumer-signal`)
+    const signalResponse = yield* auth.handle(signalRequest)
+    const abortedController = new AbortController()
+    abortedController.abort()
+    const abortedRequest = new Request(`${baseURL}/api/auth/consumer-signal`, {
+      signal: abortedController.signal
+    })
+    const abortedResponse = yield* auth.handle(abortedRequest)
+    const invalidHandler = yield* auth.handle(
+      new Request(`${baseURL}/api/auth/sign-in/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: credentials.email,
+          password: 'not-the-password'
+        })
+      })
+    )
+    const badRequestHandler = yield* auth.handle(
+      new Request(`${baseURL}/api/auth/sign-in/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'not-an-email',
+          password: 'not-a-password'
+        })
+      })
+    )
+    const handler = yield* auth.handle(
+      new Request(`${baseURL}/api/auth/get-session`, {
+        headers
+      })
+    )
+    const signOut = yield* auth.api.signOut.withHeaders({ headers })
+
+    return Result.ok({
+      abortedRequest,
+      abortedResponse,
+      auth,
+      badRequestHandler,
+      cookies,
+      created,
+      handler,
+      invalidHandler,
+      plugin,
+      pluginResponse,
+      session,
+      signalRequest,
+      signalResponse,
+      signOut,
+      streamResponse,
+      users
+    })
+  })
+)
 
 if (!Result.isOk(result)) {
   throw new Error(`External Better Auth Program failed: ${String(result.error)}`)
@@ -390,9 +381,9 @@ if (
   throw new Error('Public Better Auth onAPIError.throw handling did not pass')
 }
 
-await hookRuntime.dispose()
 if (!hookPaths.includes('/sign-up/email')) {
   throw new Error('Packed Better Auth hooks subpath did not execute its middleware')
 }
 
+await runtime.dispose()
 console.log('packed Better Auth consumer passed')

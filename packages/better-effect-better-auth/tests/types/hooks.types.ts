@@ -2,8 +2,7 @@ import { expectTypeOf } from 'bun:test'
 import { betterAuth } from 'better-auth'
 import type { BetterAuthPlugin } from 'better-auth'
 import { APIError } from 'better-auth/api'
-import { Effect, Layer, Runtime, Service } from 'better-effect'
-import type { AnyService } from 'better-effect'
+import { Effect, Layer, Service } from 'better-effect'
 import { Result, TaggedError } from 'better-result'
 
 import {
@@ -12,7 +11,6 @@ import {
   type BetterAuthHookContextValue,
   type BetterAuthHookFailureResult,
   type BetterAuthHookSuccess,
-  type BetterAuthMiddleware,
   type BetterAuthMiddlewareContext
 } from '../../src/hooks'
 
@@ -32,10 +30,8 @@ class Denied extends TaggedError('@types/Denied')<{
 }> {}
 
 type PolicyInstance = InstanceType<typeof Policy>
-type Provided = PolicyInstance
 
-declare const runtime: Runtime<Provided>
-const Hooks = BetterAuthHooks.make('@types/HookContext', runtime)
+const Hooks = BetterAuthHooks.define('@types/HookContext')
 
 const DefinedHooks = BetterAuthHooks.define('@types/DefinedHookContext')
 
@@ -112,7 +108,7 @@ const noFailure = Hooks.middleware((context) =>
   })
 )
 
-expectTypeOf(noFailure).toMatchTypeOf<BetterAuthMiddleware>()
+expectTypeOf(noFailure).toMatchTypeOf<BetterAuthHooks.Operation<PolicyInstance>>()
 
 const layeredMiddleware = Hooks.middleware(
   (context) =>
@@ -136,7 +132,7 @@ const layeredMiddleware = Hooks.middleware(
   }
 )
 
-expectTypeOf(layeredMiddleware).toMatchTypeOf<BetterAuthMiddleware>()
+expectTypeOf(layeredMiddleware).toMatchTypeOf<BetterAuthHooks.Operation<PolicyInstance>>()
 
 const typedFailure = Hooks.middleware(
   () =>
@@ -156,7 +152,7 @@ const typedFailure = Hooks.middleware(
   }
 )
 
-expectTypeOf(typedFailure).toMatchTypeOf<BetterAuthMiddleware>()
+expectTypeOf(typedFailure).toMatchTypeOf<BetterAuthHooks.Operation>()
 
 const responseFailure = Hooks.middleware(
   () =>
@@ -169,33 +165,24 @@ const responseFailure = Hooks.middleware(
   }
 )
 
-expectTypeOf(responseFailure).toMatchTypeOf<BetterAuthMiddleware>()
+expectTypeOf(responseFailure).toMatchTypeOf<BetterAuthHooks.Operation>()
 
-const plugin = {
-  id: 'types-plugin',
-  hooks: {
-    before: [
-      {
-        matcher: (context) => context.path === '/types',
-        handler: noFailure
-      }
-    ],
-    after: [
-      {
-        matcher: (context) => context.path === '/types',
-        handler: typedFailure
-      }
-    ]
-  },
-  middlewares: [
-    {
-      path: '/types/*',
-      middleware: noFailure
-    }
-  ]
-} satisfies BetterAuthPlugin
+const PluginAuth = BetterAuth.make('@types/PluginAuth', async function* () {
+  const before = yield* noFailure
+  const after = yield* typedFailure
+  const plugin = {
+    id: 'types-plugin',
+    hooks: {
+      before: [{ matcher: (context) => context.path === '/types', handler: before }],
+      after: [{ matcher: (context) => context.path === '/types', handler: after }]
+    },
+    middlewares: [{ path: '/types/*', middleware: before }]
+  } satisfies BetterAuthPlugin
 
-void plugin.hooks
+  return betterAuth({ hooks: { before }, plugins: [plugin] })
+})
+
+expectTypeOf<Layer.Required<typeof PluginAuth.layer>>().toEqualTypeOf<PolicyInstance>()
 
 const needsMissingService = () =>
   Effect.fn(async function* () {
@@ -203,8 +190,12 @@ const needsMissingService = () =>
     return Result.ok()
   })
 
-// @ts-expect-error the Runtime does not provide MissingService
-Hooks.middleware(needsMissingService)
+const MissingAuth = BetterAuth.make('@types/MissingAuth', async function* () {
+  const middleware = yield* Hooks.middleware(needsMissingService)
+  return betterAuth({ hooks: { before: middleware } })
+})
+
+expectTypeOf<Layer.Required<typeof MissingAuth.layer>>().toEqualTypeOf<MissingService>()
 
 const layerNeedsMissingService = () =>
   Layer.gen(RequestMetadata, async function* () {
@@ -212,21 +203,22 @@ const layerNeedsMissingService = () =>
     return RequestMetadata.of({ requestId: 'missing' })
   })
 
-Hooks.middleware(
-  () =>
-    Effect.fn(async function* () {
-      yield* Policy
-      return Result.ok()
-    }),
-  // @ts-expect-error the per-invocation Layer requires a Service absent from the Runtime
-  { layer: layerNeedsMissingService }
-)
+const MissingLayerAuth = BetterAuth.make('@types/MissingLayerAuth', async function* () {
+  const middleware = yield* Hooks.middleware(
+    () =>
+      Effect.fn(async function* () {
+        yield* Policy
+        return Result.ok()
+      }),
+    { layer: layerNeedsMissingService }
+  )
 
-declare const completeRuntime: Runtime<Provided | InstanceType<typeof MissingService>>
-const CompleteHooks = BetterAuthHooks.make('@types/CompleteHookContext', completeRuntime)
-const completeMiddleware = CompleteHooks.middleware(needsMissingService)
+  return betterAuth({ hooks: { before: middleware } })
+})
 
-expectTypeOf(completeMiddleware).toMatchTypeOf<BetterAuthMiddleware>()
+expectTypeOf<Layer.Required<typeof MissingLayerAuth.layer>>().toEqualTypeOf<
+  PolicyInstance | InstanceType<typeof MissingLayerService>
+>()
 
 const invalidSuccess = () =>
   Effect.fn(async function* () {
@@ -249,7 +241,7 @@ type _ContextNotAny = Assert<IsAny<BetterAuthMiddlewareContext> extends false ? 
 type _SuccessResponse = Assert<IsAssignable<Response, BetterAuthHookSuccess>>
 type _FailureResponse = Assert<IsAssignable<Response, BetterAuthHookFailureResult>>
 type _NoSelfServiceRequirement = Assert<
-  IsAssignable<InstanceType<typeof Hooks.Context>, BetterAuthHookContextValue & AnyService>
+  IsAssignable<InstanceType<typeof Hooks.Context>, BetterAuthHookContextValue>
 >
 
 void failureResult
