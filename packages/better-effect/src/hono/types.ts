@@ -3,13 +3,14 @@ import type { Context, Env, HonoRequest, Input, MiddlewareHandler } from 'hono'
 
 import type {
   EffectError,
+  EffectRequirements,
   EffectYield,
   Program as ProgramType,
-  ProgramFromGenerator
+  ProgramFromGenerator,
+  ServiceRequirement
 } from '../effect/types'
 import type { CurrentRequest } from '../standard-services/current-request'
 import type {
-  ExecutionMissing,
   LayerInput,
   MissingServices,
   ProvidedEnvironment,
@@ -18,7 +19,6 @@ import type {
   ValidateOneOverride
 } from '../layer/inference'
 import type { AnyService } from '../service'
-import type { MissingDependencies } from '../internal/missing-dependencies'
 
 export type AnyResult = ResultType<any, any>
 export type AnyProgram = ProgramType<any, any, AnyService>
@@ -27,6 +27,16 @@ export type ResponseLike = Response | Promise<Response>
 export type AnyHonoMiddleware = MiddlewareHandler<any, any, any>
 export type AnyProgramFactory = (context: HonoContext) => AnyProgram
 export type AnyRouteOptions = HonoEffectRouteOptions<any, any>
+
+/** A builder operation resolved while the application Layer is acquired. */
+export interface HonoEffectOperation<A, Requirements extends AnyService = never> {
+  readonly [Symbol.iterator]: () => Generator<ServiceRequirement<Requirements>, A, unknown>
+  readonly [Symbol.asyncIterator]: () => AsyncGenerator<
+    ServiceRequirement<Requirements>,
+    A,
+    unknown
+  >
+}
 
 export type MiddlewareInput<Middleware extends AnyHonoMiddleware> =
   Middleware extends MiddlewareHandler<any, any, infer InputType> ? InputType : Input
@@ -142,11 +152,6 @@ export type DefaultRequestLayer = ReturnType<typeof CurrentRequest.layer>
 
 export type RequestProvided<RequestLayer extends LayerInput> = ProvidedEnvironment<RequestLayer>
 
-export type AvailableServices<Provided extends AnyService, RequestLayer extends LayerInput> =
-  | Provided
-  | InstanceType<typeof CurrentRequest>
-  | RequestProvided<RequestLayer>
-
 type InvalidFailure<Actual, Expected> = {
   readonly __betterEffectInvalidHonoFailure: {
     readonly actual: Actual
@@ -163,42 +168,25 @@ type ProgramFailure<Failure, Program extends AnyProgram> = FailureCheck<
   EffectError<Program>
 >
 
-type RequestLayerMissing<
-  Provided extends AnyService,
-  RequestLayer extends LayerInput
-> = MissingServices<
-  Extract<RequiredEnvironment<RequestLayer>, AnyService>,
-  Extract<Provided | InstanceType<typeof CurrentRequest>, AnyService>
+/** Validate a request Layer against the built-in CurrentRequest provider. */
+export type HonoRequestLayerChecks<RequestLayer extends LayerInput> =
+  ValidateLayerInput<RequestLayer> & ValidateOneOverride<DefaultRequestLayer, RequestLayer>
+
+/** Requirements of a route Program that must be provided by the application Layer. */
+export type HonoProgramRequirements<
+  RequestLayer extends LayerInput,
+  Program extends AnyProgram
+> = Extract<
+  | RequiredEnvironment<RequestLayer>
+  | MissingServices<
+      Extract<EffectRequirements<Program>, AnyService>,
+      Extract<InstanceType<typeof CurrentRequest> | RequestProvided<RequestLayer>, AnyService>
+    >,
+  AnyService
 >
 
-type RequestLayerChecks<
-  Provided extends AnyService,
-  RequestLayer extends LayerInput
-> = ValidateLayerInput<RequestLayer> &
-  ValidateOneOverride<DefaultRequestLayer, RequestLayer> &
-  ([RequestLayerMissing<Provided, RequestLayer>] extends [never]
-    ? unknown
-    : MissingDependencies<RequestLayerMissing<Provided, RequestLayer>>)
-
-/** Validate a request Layer against the Runtime root and built-in CurrentRequest provider. */
-export type HonoRequestLayerChecks<
-  Provided extends AnyService,
-  RequestLayer extends LayerInput
-> = RequestLayerChecks<Provided, RequestLayer>
-
-export type ProgramMissing<
-  Provided extends AnyService,
-  Program extends AnyProgram
-> = ExecutionMissing<Provided, Program>
-
-export type CompleteProgram<
-  Provided extends AnyService,
-  Program extends AnyProgram,
-  Failure = unknown
-> = Program &
-  ([ProgramMissing<Provided, Program>] extends [never]
-    ? unknown
-    : MissingDependencies<ProgramMissing<Provided, Program>>) &
+/** Validate only a route Program's typed failure channel at the builder boundary. */
+export type CompleteProgram<Program extends AnyProgram, Failure = unknown> = Program &
   ProgramFailure<Failure, Program>
 
 export type GeneratorBody<
@@ -212,14 +200,10 @@ export type GeneratorBody<
 export type AnyGeneratorBody = GeneratorBody<HonoContext, EffectYield, AnyResult>
 
 export type GeneratorChecks<
-  Provided extends AnyService,
   Yield extends EffectYield,
   Returned extends AnyResult,
   Failure = unknown
-> = ([ProgramMissing<Provided, ProgramFromGenerator<Yield, Returned>>] extends [never]
-  ? unknown
-  : MissingDependencies<ProgramMissing<Provided, ProgramFromGenerator<Yield, Returned>>>) &
-  FailureCheck<Failure, EffectError<ProgramFromGenerator<Yield, Returned>>>
+> = FailureCheck<Failure, EffectError<ProgramFromGenerator<Yield, Returned>>>
 
 export type HonoEffectSuccess<A = unknown> = {
   readonly value: A

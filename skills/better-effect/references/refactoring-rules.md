@@ -182,7 +182,7 @@ Do not repeatedly catch the normalized failure in every caller.
 Inside `Effect.fn`/`Effect.gen`:
 
 ```ts
-const user = yield* Result.await(repository.findById(id))
+const user = yield * Result.await(repository.findById(id))
 return Result.ok(user)
 ```
 
@@ -416,9 +416,9 @@ Avoid mutable global request context.
 
 A Hono application should normally:
 
-1. create one Runtime during startup;
-2. create one `HonoEffect` boundary from that Runtime;
-3. install `http.middleware()` before dependent middleware/routes;
+1. declare one `HonoEffect.app` or `HonoEffect.layer` during startup;
+2. compose its Layer with application Layers and create one Runtime;
+3. resolve the application token once and install its captured `http.middleware()` before dependent middleware/routes;
 4. define route Programs with `http.gen` or reuse external Programs through `http.handler`;
 5. map expected Result errors through one failure policy;
 6. keep thrown defects in Hono's defect/error path;

@@ -7,24 +7,43 @@ request-scoped current session to `HonoEffect`:
 
 ```ts
 import { Hono } from 'hono'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
+import { Result } from 'better-result'
 
 const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth)
-const http = HonoEffect.make(runtime, {
-  requestLayer: CurrentSession.requestLayer
-})
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    requestLayer: CurrentSession.requestLayer
+  },
+  async function* (http) {
+    const app = new Hono()
 
-// rawAuth is configured with basePath: '/api/auth'. Register it before catch-alls.
-app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
-app.use('*', http.middleware())
-app.use('/protected/*', http.guard(CurrentSession.guard))
-app.get(
-  '/protected/me',
-  http.gen(async function* () {
-    return Result.ok(yield* CurrentSession.require())
+    // rawAuth is configured with basePath: '/api/auth'. Register it before catch-alls.
+    app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+    app.use('*', yield* http.middleware())
+    app.use('/protected/*', yield* http.guard(CurrentSession.guard))
+    app.get(
+      '/protected/me',
+      yield* http.gen(async function* () {
+        return Result.ok(yield* CurrentSession.require())
+      })
+    )
+
+    return app
+  }
+)
+
+const runtime = await Runtime.make(Layer.merge(Auth.layer, App.layer))
+const result = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(result)) throw result.error
+const app = result.value
 ```
 
 The session is loaded only when `get()` or `require()` is yielded. Multiple

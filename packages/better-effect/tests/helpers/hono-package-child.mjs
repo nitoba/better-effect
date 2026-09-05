@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Result } from 'better-result'
-import { Layer, Runtime, Service } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { CurrentRequest } from 'better-effect/standard-services'
 
@@ -11,32 +11,47 @@ class PackedService extends Service()('PackedHonoService') {
 }
 
 const events = []
-const runtime = await Runtime.make(Layer.succeed(PackedService, new PackedService()), {
-  observers: [
-    {
-      onExecutionStart: () => events.push('start'),
-      onExecutionEnd: () => events.push('end')
-    }
-  ]
-})
-const http = HonoEffect.make(runtime)
-const app = new Hono()
+const App = HonoEffect.app('@packed/HonoApp', {}, async function* (http) {
+  const app = new Hono()
 
-app.use('*', http.middleware())
-app.use('*', http.middleware())
-app.get(
-  '/packed-hono',
-  http.gen(async function* () {
-    const service = yield* PackedService
-    const currentRequest = yield* CurrentRequest
-    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+  app.use('*', yield* http.middleware())
+  app.use('*', yield* http.middleware())
+  app.get(
+    '/packed-hono',
+    yield* http.gen(async function* () {
+      const service = yield* PackedService
+      const currentRequest = yield* CurrentRequest
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
 
-    return Result.ok({
-      service: service.value(),
-      url: currentRequest.request.url
+      return Result.ok({
+        service: service.value(),
+        url: currentRequest.request.url
+      })
     })
+  )
+
+  return app
+})
+const runtime = await Runtime.make(
+  Layer.merge(Layer.succeed(PackedService, new PackedService()), App.layer),
+  {
+    observers: [
+      {
+        onExecutionStart: () => events.push('start'),
+        onExecutionEnd: () => events.push('end')
+      }
+    ]
+  }
+)
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(appResult))
+  throw new Error(`Packed Hono app acquisition failed: ${String(appResult.error)}`)
+const app = appResult.value
+events.length = 0
 
 try {
   const response = await app.request('/packed-hono')

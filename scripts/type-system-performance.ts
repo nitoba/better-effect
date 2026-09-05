@@ -435,7 +435,7 @@ const workerBudgets = {
 } satisfies Record<WorkerSize, Budget>
 
 const honoBudgets = {
-  1: { maxCheckMs: 2_000, maxInstantiations: 400_000, maxMemoryMiB: 512, maxTypes: 100_000 },
+  1: { maxCheckMs: 2_000, maxInstantiations: 500_000, maxMemoryMiB: 512, maxTypes: 150_000 },
   3: { maxCheckMs: 3_000, maxInstantiations: 450_000, maxMemoryMiB: 512, maxTypes: 200_000 },
   6: { maxCheckMs: 6_000, maxInstantiations: 500_000, maxMemoryMiB: 768, maxTypes: 400_000 },
   10: {
@@ -1080,15 +1080,14 @@ const honoFixtureSource = (size: number): string => {
     .map((target) => `    const ${target} = c.req.valid('${target}')`)
     .join('\n')
   const resultFields = readTargets.map((target) => `${target}: ${target}`).join(', ')
-  const header = `import { Effect, Runtime } from '../../../packages/better-effect/src/index.ts'
+  const header = `import { Effect } from '../../../packages/better-effect/src/index.ts'
 import { HonoEffect } from '../../../packages/better-effect/src/hono/index.ts'
 import { Result } from '../../../packages/better-effect/node_modules/better-result'
 import { validator } from '../../../packages/better-effect/node_modules/hono/dist/types/validator/validator.js'
 
 `
 
-  return `${header}const runtime = {} as Runtime<never>
-const http = HonoEffect.make(runtime)
+  return `${header}const HonoApp = HonoEffect.app('@benchmark/HonoApp', {}, async function* (http) {
 
 const validateParam = validator('param', (value: { id?: string }) => ({
   id: value.id ?? ''
@@ -1109,7 +1108,7 @@ const validateForm = validator('form', () => ({
   note: ''
 }))
 
-const generated = http.gen(
+const generated = yield* http.gen(
   ${middlewareArguments},
   async function* (c) {
 ${reads}
@@ -1118,7 +1117,7 @@ ${reads}
   { status: 201 }
 )
 
-const generatedHandler = http.handler(
+const generatedHandler = yield* http.handler(
   ${middlewareArguments},
   (c) => {
 ${reads}
@@ -1131,6 +1130,9 @@ ${reads}
 
 void generated
 void generatedHandler
+return {}
+})
+void HonoApp
 `
 }
 

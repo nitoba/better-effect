@@ -861,28 +861,63 @@ request Scope cleanup to that shared boundary. You only need to configure one
 Hono middleware boundary per request; the adapter prevents duplicate
 registrations from opening another execution.
 
-Handlers can yield Services directly; the adapter provides `CurrentRequest`,
-forwards `Request.signal`, and converts Results to Responses in one policy:
+`HonoEffect.app` creates a yieldable application Service and its `.layer`. The
+factory is acquired once when the application Layer is resolved, so the host
+owns Runtime composition and shutdown. Handlers can yield Services directly;
+the adapter provides `CurrentRequest`, forwards `Request.signal`, and converts
+Results to Responses in one policy:
 
 ```ts
 import { Hono } from 'hono'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { Result } from 'better-result'
 import { HonoEffect } from 'better-effect/hono'
 
-const http = HonoEffect.make(runtime, {
-  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 400)
-})
-const app = new Hono()
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    onFailure: (_error, c) => c.json({ error: 'Request failed' }, 400)
+  },
+  async function* (http) {
+    const app = new Hono()
 
-app.use('*', http.middleware())
-app.get(
-  '/work-orders',
-  http.gen(async function* () {
-    const workOrders = yield* WorkOrderService
-    const items = yield* Result.await(workOrders.list())
-    return Result.ok(items)
+    app.use('*', yield* http.middleware())
+    app.get(
+      '/work-orders',
+      yield* http.gen(async function* () {
+        const workOrders = yield* WorkOrderService
+        const items = yield* Result.await(workOrders.list())
+        return Result.ok(items)
+      })
+    )
+
+    return app
+  }
+)
+
+const runtime = await Runtime.make(Layer.merge(AppLive, App.layer))
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(appResult)) throw new Error(String(appResult.error))
+const app = appResult.value
+```
+
+Route examples below belong inside the `HonoEffect.app` factory. For an
+existing application Service, use `HonoEffect.layer(ServiceToken, options,
+factory)` and compose the returned Layer with the Runtime's other Layers.
+
+Use `HonoEffect.layer` when the application should be provided through an
+existing Service token instead of a generated one:
+
+```ts
+const AppLive = HonoEffect.layer(MyApplication, {}, async function* (http) {
+  const app = new Hono()
+  app.use('*', yield* http.middleware())
+  return MyApplication.of({ app })
+})
 ```
 
 One or more Hono validators can precede the generator or handler callback, in

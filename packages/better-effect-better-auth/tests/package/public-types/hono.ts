@@ -51,52 +51,91 @@ type CurrentSessionValue =
     : never
 type _NullIsRetained = Assert<Equal<CurrentSessionValue, Session | null>>
 
-const runtime = {} as Runtime<AuthInstance>
-export const http = HonoEffect.make(runtime, {
-  requestLayer: CurrentSession.requestLayer,
-  onFailure: () => new Response(null, { status: 500 })
-})
-
-export const route = http.gen(async function* () {
-  const optional = yield* CurrentSession.get()
-  const required = yield* CurrentSession.require()
-  const nullable: Session | null = optional
-  const nonNullable: Session = required
-  return Result.ok({ nullable, nonNullable })
-})
-export const guard = http.guard(CurrentSession.guard)
-void route
-void guard
+export const http = HonoEffect.app(
+  '@public-types/HonoApp',
+  {
+    requestLayer: CurrentSession.requestLayer,
+    onFailure: () => new Response(null, { status: 500 })
+  },
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      const optional = yield* CurrentSession.get()
+      const required = yield* CurrentSession.require()
+      const nullable: Session | null = optional
+      const nonNullable: Session = required
+      return Result.ok({ nullable, nonNullable })
+    })
+    const guard = yield* builder.guard(CurrentSession.guard)
+    void route
+    void guard
+    return { route, guard }
+  }
+)
+type HonoApp = InstanceType<typeof http>
+void ({} as HonoApp)
 
 class Tenant extends Service<Tenant>()('@public-types/Tenant') {}
 const tenantLayer = Layer.succeed(Tenant, new Tenant())
-const composedRuntime = {} as Runtime<AuthInstance | InstanceType<typeof Tenant>>
-const composed = HonoEffect.make(composedRuntime, {
-  requestLayer: (context: HonoContext) =>
-    Layer.merge(tenantLayer, CurrentSession.requestLayer(context))
-})
+const composed = HonoEffect.app(
+  '@public-types/ComposedHonoApp',
+  {
+    requestLayer: (context: HonoContext) =>
+      Layer.merge(tenantLayer, CurrentSession.requestLayer(context))
+  },
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      const tenant = yield* Tenant
+      const session = yield* CurrentSession.get()
+      return Result.ok({ tenant, session })
+    })
+    return { route }
+  }
+)
 void composed
 
 const OtherSession = BetterAuthHono.session('@public-types/OtherSession', PlainAuth)
-const bothRuntime = {} as Runtime<
-  | AuthInstance
-  | BetterAuthServiceInstance<'@public-types/PlainAuth', typeof import('./auth').authWithoutPlugins>
->
-const both = HonoEffect.make(bothRuntime, {
-  requestLayer: (context) =>
-    Layer.merge(CurrentSession.requestLayer(context), OtherSession.requestLayer(context))
-})
+const both = HonoEffect.app(
+  '@public-types/BothHonoApp',
+  {
+    requestLayer: (context) =>
+      Layer.merge(CurrentSession.requestLayer(context), OtherSession.requestLayer(context))
+  },
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      const current = yield* CurrentSession.get()
+      const other = yield* OtherSession.get()
+      return Result.ok({ current, other })
+    })
+    return { route }
+  }
+)
 void both
 
+const MissingRequestApp = HonoEffect.app(
+  '@public-types/MissingRequestApp',
+  {
+    requestLayer: CurrentSession.requestLayer
+  },
+  async function* (builder) {
+    const middleware = yield* builder.middleware()
+    return { middleware }
+  }
+)
 // @ts-expect-error The request Layer requires its exact Auth Service.
-HonoEffect.make({} as Runtime<never>, {
-  requestLayer: CurrentSession.requestLayer
-})
+void Runtime.make(MissingRequestApp.layer)
 
+const MissingSessionApp = HonoEffect.app(
+  '@public-types/MissingSessionApp',
+  {},
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      return Result.ok(yield* CurrentSession.get())
+    })
+    return { route }
+  }
+)
 // @ts-expect-error A CurrentSession operation requires the matching request Layer.
-HonoEffect.make(runtime).gen(async function* () {
-  return Result.ok(yield* CurrentSession.get())
-})
+void Runtime.make(MissingSessionApp.layer)
 
 // @ts-expect-error Session options do not accept arbitrary fields.
 BetterAuthHono.session('@public-types/InvalidOptions', Auth, { unsupported: true })
