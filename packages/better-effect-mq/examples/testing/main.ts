@@ -47,20 +47,21 @@ try {
     })
   )
 
-  await Worker.use(
-    runtime.runtime,
-    {
-      handlers: [handler],
-      concurrency: 1,
-      pollIntervalMs: 1,
-      leaseDurationMs: 100,
-      heartbeatIntervalMs: 10,
-      stalledIntervalMs: 100,
-      now: () => clock.now(),
-      random: () => 0.5
-    },
-    (worker) => worker.awaitIdle({ timeoutMs: 2_000 })
-  )
+  const worker = await Worker.startWith(runtime.runtime.executor, {
+    handlers: [handler],
+    concurrency: 1,
+    pollIntervalMs: 1,
+    leaseDurationMs: 100,
+    heartbeatIntervalMs: 10,
+    stalledIntervalMs: 100,
+    now: () => clock.now(),
+    random: () => 0.5
+  })
+  try {
+    await worker.awaitIdle({ timeoutMs: 2_000 })
+  } finally {
+    await worker.stop()
+  }
 
   const completed = await testStore.job(jobId.value)
   if (completed?.state !== 'completed' || completed.result !== 'sent:ada@example.test') {

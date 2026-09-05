@@ -31,15 +31,16 @@ try {
     throw enqueued.error
   }
 
-  await Worker.use(
-    runtime,
-    {
-      handlers: [handler],
-      concurrency: 1,
-      pollIntervalMs: 1
-    },
-    (worker) => worker.awaitIdle()
-  )
+  const worker = await Worker.startWith(runtime.executor, {
+    handlers: [handler],
+    concurrency: 1,
+    pollIntervalMs: 1
+  })
+  try {
+    await worker.awaitIdle()
+  } finally {
+    await worker.stop()
+  }
 
   const completed = await store.getJob({ jobId: enqueued.value })
   if (Result.isError(completed) || completed.value?.state !== 'completed') {

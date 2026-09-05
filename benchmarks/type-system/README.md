@@ -43,8 +43,8 @@ Each fixture measures:
   and known/unknown identity lookup;
 - typed Job producer pipelines over many definitions, including exact Result
   error and Service-requirement inference;
-- `Worker.start`/`Worker.use` over immutable handler tuples, including payload,
-  JobContext, store, Runtime, and union requirement inference.
+- `Worker.startWith` over immutable handler tuples, including payload,
+  JobContext, store, executor, and union requirement inference.
 
 The Better Auth and all MQ fixtures run with the current TypeScript 7.x
 compiler. Better Auth's exact custom plugin

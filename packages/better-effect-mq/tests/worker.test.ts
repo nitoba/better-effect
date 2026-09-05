@@ -114,6 +114,12 @@ const enqueueWith = async (
     )
   ).job
 
+test('Worker exposes only the executor-based start API', () => {
+  expect(Object.keys(Worker).sort()).toEqual(['handle', 'startWith'])
+  expect('start' in Worker).toBe(false)
+  expect('use' in Worker).toBe(false)
+})
+
 const idleWaiterCount = (worker: WorkerHandle): number => {
   // SAFETY: tests inspect the supervisor's private waiter set to verify prompt cleanup.
   const supervisor = worker as WorkerHandle & { readonly idleWaiters: Set<unknown> }
@@ -220,7 +226,7 @@ test('Worker rejects an incompatible JobStore descriptor before supervision', as
   try {
     let cause: unknown
     try {
-      await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+      await Worker.startWith(runtime.executor, { handlers: [handler], pollIntervalMs: 1 })
     } catch (error) {
       cause = error
     }
@@ -295,7 +301,7 @@ test('Worker executes a handler with root Services, JobContext, and CurrentAbort
     })
   )
 
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler],
     pollIntervalMs: 1
   })
@@ -340,7 +346,10 @@ test('Worker.awaitIdle validates options before installing wait resources', asyn
       return Result.ok(undefined)
     })
   )
-  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+  const worker = await Worker.startWith(runtime.executor, {
+    handlers: [handler],
+    pollIntervalMs: 1
+  })
 
   try {
     await entered
@@ -388,7 +397,10 @@ test('Worker.awaitIdle handles rejected listener thenables without retaining wai
       return Result.ok(undefined)
     })
   )
-  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+  const worker = await Worker.startWith(runtime.executor, {
+    handlers: [handler],
+    pollIntervalMs: 1
+  })
 
   try {
     const addRejected = makeRejectedListenerSignal(true, false)
@@ -439,7 +451,10 @@ test('Worker.awaitIdle cleans timed-out and successful waiters', async () => {
       return Result.ok(undefined)
     })
   )
-  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+  const worker = await Worker.startWith(runtime.executor, {
+    handlers: [handler],
+    pollIntervalMs: 1
+  })
 
   try {
     await entered
@@ -488,7 +503,7 @@ test('Worker keeps active attempts within global concurrency', async () => {
       return Result.ok(undefined)
     })
   )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler],
     concurrency: 3,
     pollIntervalMs: 1
@@ -529,7 +544,7 @@ test('Worker supplies an isolated JobContext to overlapping attempts', async () 
       return Result.ok(0)
     })
   )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler],
     concurrency: 2,
     pollIntervalMs: 1
@@ -583,7 +598,7 @@ test('Worker settles success, typed Err, and defects after per-attempt cleanup',
         return Result.ok(undefined)
       })
     )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(success), makeHandler(error), makeHandler(defect)],
     concurrency: 3,
     pollIntervalMs: 1
@@ -623,7 +638,7 @@ test('Worker validates reliability options before starting supervision', async (
   // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
   await expect(
     Promise.resolve(
-      Worker.start(runtime, {
+      Worker.startWith(runtime.executor, {
         handlers: [handler],
         leaseDurationMs: 10,
         heartbeatIntervalMs: 10
@@ -631,7 +646,7 @@ test('Worker validates reliability options before starting supervision', async (
     )
   ).rejects.toThrow(/less than leaseDurationMs/)
 
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler],
     leaseDurationMs: 10,
     heartbeatIntervalMs: 1,
@@ -654,11 +669,14 @@ test('Worker validates duplicate handlers and repeated disposal', async () => {
   )
 
   // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
-  await expect(Worker.start(runtime, { handlers: [handler, handler] })).rejects.toThrow(
-    /duplicate handler/
-  )
+  await expect(
+    Worker.startWith(runtime.executor, { handlers: [handler, handler] })
+  ).rejects.toThrow(/duplicate handler/)
 
-  const worker = await Worker.start(runtime, { handlers: [handler], pollIntervalMs: 1 })
+  const worker = await Worker.startWith(runtime.executor, {
+    handlers: [handler],
+    pollIntervalMs: 1
+  })
   const first = worker.stop()
   const second = worker.stop()
 
@@ -668,7 +686,7 @@ test('Worker validates duplicate handlers and repeated disposal', async () => {
   await runtime.dispose()
 })
 
-test('Worker.use stops the Worker when its callback fails', async () => {
+test('Worker.startWith lets the caller stop the Worker after a callback fails', async () => {
   const store = MemoryJobStore.make()
   const runtime = await runtimeFor(store)
   const handler = Worker.handle(voidJob, () =>
@@ -680,13 +698,13 @@ test('Worker.use stops the Worker when its callback fails', async () => {
   let worker: WorkerHandle | undefined
   const cause = new Error('owner failed')
 
-  // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
-  await expect(
-    Worker.use(runtime, { handlers: [handler], pollIntervalMs: 1 }, async (started) => {
-      worker = started
-      throw cause
-    })
-  ).rejects.toBe(cause)
+  worker = await Worker.startWith(runtime.executor, { handlers: [handler], pollIntervalMs: 1 })
+  try {
+    // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
+    await expect(Promise.reject(cause)).rejects.toBe(cause)
+  } finally {
+    await worker.stop()
+  }
 
   expect(worker?.state).toBe('stopped')
   await runtime.dispose()
@@ -723,7 +741,7 @@ test('Worker bounds multi-handler claims by actually startable slots', async () 
         }),
       { concurrency: 1 }
     )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler(first), handler(second)],
     concurrency: 4,
     pollIntervalMs: 1
@@ -788,7 +806,7 @@ test('Repeated named store handles share one queue concurrency group', async () 
         return Result.ok(undefined)
       })
     )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(firstJob), makeHandler(secondJob)],
     concurrency: 2,
     queueConcurrency: 1,
@@ -846,7 +864,7 @@ test('Worker compensates a late claim after stop without starting a handler', as
   const runtime = await runtimeFor(base)
   const created = await enqueue(base, voidJob, 1)
   let handlerRuns = 0
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(voidJob, () =>
         // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
@@ -911,7 +929,7 @@ test('Worker compensates a reentrant late claim exactly once', async () => {
   const runtime = await runtimeFor(base)
   await enqueue(base, voidJob, 1)
   let handlerRuns = 0
-  worker = await Worker.start(runtime, {
+  worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(voidJob, () =>
         // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
@@ -991,7 +1009,7 @@ test('Worker retries abandoned claim compensation with the bounded release polic
   })
   const runtime = await runtimeFor(base)
   const created = await enqueue(base, voidJob, 1)
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(voidJob, () =>
         // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
@@ -1063,7 +1081,7 @@ test('Worker cancellation wins while result encoding is pending', async () => {
       return Result.ok(7)
     })
   )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler],
     leaseDurationMs: 100,
     heartbeatIntervalMs: 1,
@@ -1127,11 +1145,11 @@ test('Workers for named stores share one Runtime without cross-store claims', as
         return Result.ok(context.name)
       })
     )
-  const firstWorker = await Worker.start(runtime, {
+  const firstWorker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(firstJob)],
     pollIntervalMs: 1
   })
-  const secondWorker = await Worker.start(runtime, {
+  const secondWorker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(secondJob)],
     pollIntervalMs: 1
   })
@@ -1259,7 +1277,7 @@ test('Worker scopes heartbeat loss by store, job ID, and lease token', async () 
         return Result.ok(undefined)
       })
     )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(firstJob), makeHandler(secondJob)],
     concurrency: 2,
     leaseDurationMs: 100,
@@ -1318,7 +1336,7 @@ test('Worker validates all stores before starting any claim loop', async () => {
 
   // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
   await expect(
-    Worker.start(uncheckedRuntime, {
+    Worker.startWith(uncheckedRuntime.executor, {
       handlers: [makeHandler(availableJob), makeHandler(missingJob)],
       pollIntervalMs: 1
     })
@@ -1367,7 +1385,7 @@ test('Worker shares global slots across independent store and queue groups', asy
         return Result.ok(undefined)
       })
     )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(firstJob), makeHandler(secondJob)],
     concurrency: 2,
     pollIntervalMs: 1
@@ -1417,7 +1435,7 @@ test('Worker observes rejected synchronous custom decisions without unhandled re
     unhandled += 1
   }
   process.on('unhandledRejection', onUnhandled)
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(customJob, () =>
         Effect.fn(async function* () {
@@ -1464,7 +1482,7 @@ test('Worker persists typed retry schedules and monotonic attempts', async () =>
     }
   )
   let calls = 0
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(job, (value) =>
         Effect.fn(async function* () {
@@ -1545,7 +1563,7 @@ test('Worker applies per-job backoff overrides and Retry.never as terminal', asy
         return Result.err({ code: 'nope' })
       })
     )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [makeHandler(neverJob), makeHandler(overrideJob)],
     now: () => 20_000,
     pollIntervalMs: 1
@@ -1597,7 +1615,7 @@ test('Worker controls defect retries with retryDefects and persists defect failu
     enqueueWith(store, noRetry, { value: 1 }, { now: 30_000, attemptsMax: 2 }),
     enqueueWith(store, retry, { value: 2 }, { now: 30_000, attemptsMax: 2 })
   ])
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(noRetry, () =>
         Effect.fn(async function* () {
@@ -1637,7 +1655,7 @@ test('Worker controls defect retries with retryDefects and persists defect failu
     { value: 2 },
     { now: 30_000, attemptsMax: 2 }
   )
-  const retryWorker = await Worker.start(retryRuntime, {
+  const retryWorker = await Worker.startWith(retryRuntime.executor, {
     handlers: [
       Worker.handle(retry, () =>
         Effect.fn(async function* () {
@@ -1686,7 +1704,7 @@ test('Worker treats decode and encode failures as terminal without invoking the 
   ])
   let decodeHandlerCalls = 0
   let encodeHandlerCalls = 0
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(decodeJob, () =>
         Effect.fn(async function* () {
@@ -1739,7 +1757,7 @@ test('Worker classifies cooperative timeout and sends a nonblocking failure even
   })
   let hookCalled = false
   const hookPending = new Promise<void>(() => undefined)
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(job, () =>
         Effect.fn(async function* () {
@@ -1791,7 +1809,7 @@ test('Worker preserves an explicit undefined defect cause for failure hooks', as
   })
   const created = await enqueueWith(store, job, { value: 1 }, { now: 55_000 })
   let observedCause: unknown = Symbol('unset')
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(job, () =>
         Effect.fn(async function* () {
@@ -1835,7 +1853,7 @@ test('Worker failure hook reports applied retry and terminal failure details', a
     enqueueWith(store, failJob, { value: 2 }, { now: 60_000 })
   ])
   const events: Array<{ name: string; kind: string; willRetry: boolean; cause: unknown }> = []
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(retryJob, () =>
         Effect.fn(async function* () {
@@ -1910,7 +1928,7 @@ test('Worker observer attributes identify exactly one Runtime attempt per job', 
       return Result.ok(value.value)
     })
   )
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [handler],
     concurrency: 2,
     pollIntervalMs: 1

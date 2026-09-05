@@ -86,11 +86,11 @@ declare const namedCompleteRuntime: Runtime.For<typeof namedCompleteLayer>
 declare const storeOnlyRuntime: Runtime.For<typeof storeLayer>
 declare const otherRuntime: Runtime<OtherService>
 
-const complete = Worker.start(completeRuntime, {
+const complete = Worker.startWith(completeRuntime.executor, {
   handlers: [firstHandler, secondHandler],
   concurrency: 4
 })
-const namedComplete = Worker.start(namedCompleteRuntime, { handlers: [namedHandler] })
+const namedComplete = Worker.startWith(namedCompleteRuntime.executor, { handlers: [namedHandler] })
 const completeWithExecutor = Worker.startWith(completeRuntime.executor, {
   handlers: [firstHandler, secondHandler]
 })
@@ -98,16 +98,12 @@ const namedWithExecutor = Worker.startWith(namedCompleteRuntime.executor, {
   handlers: [namedHandler]
 })
 
-// @ts-expect-error A Worker handler's root Service must be present in the Runtime.
-void Worker.start(storeOnlyRuntime, { handlers: [firstHandler] })
 // @ts-expect-error A Worker handler's root Service must be present in the executor.
 void Worker.startWith(storeOnlyRuntime.executor, { handlers: [firstHandler] })
-// @ts-expect-error A Job bound to a named store cannot run on another environment.
-void Worker.start(completeRuntime, { handlers: [namedHandler] })
 // @ts-expect-error A Job bound to a named store cannot run on another executor environment.
 void Worker.startWith(completeRuntime.executor, { handlers: [namedHandler] })
-// @ts-expect-error A Runtime with an unrelated Service does not satisfy the handler.
-void Worker.start(otherRuntime, { handlers: [firstHandler] })
+// @ts-expect-error An executor with an unrelated Service does not satisfy the handler.
+void Worker.startWith(otherRuntime.executor, { handlers: [firstHandler] })
 
 const wrongFailure = Worker.handle(firstJob, () =>
   // @ts-expect-error A handler must return the Job's declared failure channel.

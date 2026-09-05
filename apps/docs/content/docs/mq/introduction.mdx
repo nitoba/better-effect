@@ -211,7 +211,7 @@ const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
   })
 )
 
-const worker = await Worker.start(runtime, {
+const worker = await Worker.startWith(runtime.executor, {
   handlers: [SendEmailHandler],
   concurrency: 8
 })
@@ -221,12 +221,17 @@ await worker.stop()
 await runtime.dispose()
 ```
 
-`Worker.use` owns the stop step when a callback-scoped worker is preferable:
+When a callback-scoped worker is preferable, keep the same ownership explicit:
 
 ```ts
-await Worker.use(runtime, { handlers: [SendEmailHandler] }, async (worker) => {
-  await worker.awaitIdle()
+const worker = await Worker.startWith(runtime.executor, {
+  handlers: [SendEmailHandler]
 })
+try {
+  await worker.awaitIdle()
+} finally {
+  await worker.stop()
+}
 ```
 
 `Worker.stop()` is idempotent. It stops new claims, interrupts claim waits,
@@ -249,7 +254,7 @@ cooperatively and is persisted as a timeout failure; a Promise that ignores its
 signal cannot be forcibly killed.
 
 ```ts
-const worker = await Worker.start(runtime, {
+const worker = await Worker.startWith(runtime.executor, {
   handlers: [SendEmailHandler],
   retryDefects: false,
   leaseDurationMs: 30_000,

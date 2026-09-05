@@ -4,7 +4,7 @@
 // oxlint-disable anti-slop/no-chained-type-assertions -- generic handler details are erased only after runtime validation.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions are confined to validated public boundaries.
 
-import { Effect, Runtime } from 'better-effect'
+import { Effect } from 'better-effect'
 import type { RuntimeExecutor } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
@@ -53,32 +53,6 @@ export function handle<
   }) as unknown as WorkerHandler<Definition, Effect.Requirements<Program>>
 }
 
-/**
- * Start a Worker over an already configured Runtime.
- *
- * @deprecated Use `Worker.startWith(runtime.executor, options)` for capability-based
- * integrations. The Runtime-first overload remains for source compatibility.
- */
-export function start<
-  Provided extends import('better-effect').AnyService,
-  const Handlers extends readonly AnyWorkerHandler[]
->(
-  runtime: Runtime<Provided>,
-  options: CompleteWorkerOptions<Provided, Handlers>
-): Promise<WorkerHandle>
-export async function start<Provided extends import('better-effect').AnyService>(
-  runtime: Runtime<Provided>,
-  options: WorkerOptions<readonly AnyWorkerHandler[]>
-): Promise<WorkerHandle> {
-  validateRuntime(runtime)
-  // SAFETY: the public overload validates this Runtime environment against the
-  // handler requirements; the implementation signature intentionally erases that tuple.
-  return startWith(
-    runtime.executor,
-    options as unknown as CompleteWorkerOptions<Provided, readonly AnyWorkerHandler[]>
-  )
-}
-
 /** Start a Worker over a non-owning Runtime executor capability. */
 export function startWith<
   Provided extends import('better-effect').AnyService,
@@ -105,38 +79,8 @@ export async function startWith<Provided extends import('better-effect').AnyServ
   return supervisor
 }
 
-/**
- * Run a callback with a Worker and always stop it before returning.
- *
- * @deprecated Use `Worker.startWith(runtime.executor, options)` when composing
- * the Worker with another lifecycle owner.
- */
-export function use<
-  Provided extends import('better-effect').AnyService,
-  const Handlers extends readonly AnyWorkerHandler[],
-  Value
->(
-  runtime: Runtime<Provided>,
-  options: CompleteWorkerOptions<Provided, Handlers>,
-  callback: (worker: WorkerHandle) => Value | PromiseLike<Value>
-): Promise<Awaited<Value>>
-export async function use(
-  runtime: Runtime<any>,
-  options: WorkerOptions<readonly AnyWorkerHandler[]>,
-  callback: (worker: WorkerHandle) => unknown
-): Promise<unknown> {
-  validateHandler(callback, 'callback')
-  const worker = await start(runtime, options)
-
-  try {
-    return await callback(worker)
-  } finally {
-    await worker.stop()
-  }
-}
-
 /** Worker entrypoints and the immutable handler constructor. */
-export const Worker = Object.freeze({ handle, start, startWith, use } as const)
+export const Worker = Object.freeze({ handle, startWith } as const)
 
 export namespace Worker {
   export type Handler<
@@ -157,12 +101,6 @@ export namespace Worker {
 const validateOptionsObject = (value: unknown, field: string): void => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new JobDefinitionError({ field, message: 'must be an object' })
-  }
-}
-
-const validateRuntime: (runtime: unknown) => asserts runtime is Runtime<any> = (runtime) => {
-  if (!(runtime instanceof Runtime)) {
-    throw new JobDefinitionError({ field: 'runtime', message: 'must be a Runtime instance' })
   }
 }
 

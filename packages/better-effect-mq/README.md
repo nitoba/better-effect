@@ -6,7 +6,7 @@
 Worker supervisor for `better-effect`. Version 0.1 exposes JSON-safe records,
 nominal identities, deterministic claim ordering, persisted failure envelopes,
 pure state transitions, explicit JSON/Standard Schema conversion, the
-storage-neutral `JobStore` Service contract, and `Worker.start`/`Worker.use`.
+storage-neutral `JobStore` Service contract, and `Worker.startWith`.
 It does not open connections or provide a storage adapter.
 
 ## Normative protocol documentation
@@ -459,8 +459,7 @@ consumes the public `JobStore.Contract`.
 executor. The application owns the Runtime and its Layer resources; the Worker
 never configures global Service state, creates a parallel container, or exposes
 a `Worker.layer`. `Worker.startWith` is the capability-based entrypoint for
-framework and lifecycle integrations; the Runtime-first `Worker.start` and
-`Worker.use` overloads remain as deprecated compatibility shims.
+framework and lifecycle integrations.
 
 ```ts
 import { CurrentAbortSignal, Effect, Runtime } from 'better-effect'
@@ -480,7 +479,7 @@ const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
 )
 
 await using runtime = await Runtime.make(AppLive)
-await using worker = await Worker.start(runtime, {
+await using worker = await Worker.startWith(runtime.executor, {
   handlers: [SendEmailHandler],
   concurrency: 8
 })
@@ -538,14 +537,6 @@ cancelable bounded backoff. Lease/state/not-found errors are never retried as
 infrastructure failures. A handler error is reported through `onError` and does
 not terminate other claim loops.
 
-Use `Worker.use` when one owner should always stop the supervisor:
-
-```ts
-await Worker.use(runtime, { handlers: [SendEmailHandler] }, async (worker) => {
-  await worker.awaitIdle()
-})
-```
-
 `WorkerHandle.stop()` is idempotent; it marks the Worker as stopping before
 aborting claim waits, prevents new claims, waits for active attempts according
 to the selected policy, and removes its local timers/listeners. Pass
@@ -590,11 +581,10 @@ without manufacturing another handler attempt.
 
 `WorkerHandle.stop()` transitions to stopping before awaiting anything, stops new
 claims, keeps supervision active for in-flight attempts, applies the configured
-grace period, and cleans its waits and supervision timers. `Worker.use` always
-stops the Worker before returning. When using a long-lived Runtime, the owner
-must use the order `await worker.stop(); await runtime.dispose()`; disposal of
-the Runtime first can reject Worker store calls and only permits best-effort
-convergence. There is no exactly-once guarantee.
+grace period, and cleans its waits and supervision timers. When using a
+long-lived Runtime, the owner must use the order `await worker.stop(); await
+runtime.dispose()`; disposal of the Runtime first can reject Worker store calls
+and only permits best-effort convergence. There is no exactly-once guarantee.
 
 A handler error is reported through `onError` and does not terminate other claim
 loops.
@@ -611,7 +601,7 @@ const observer = JobObserver.compose(
   JobObserver.metrics(metricsSink)
 )
 
-await using worker = await Worker.start(runtime, {
+await using worker = await Worker.startWith(runtime.executor, {
   handlers: [SendEmailHandler],
   observer
 })

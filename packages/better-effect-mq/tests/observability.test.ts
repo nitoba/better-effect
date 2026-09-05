@@ -190,7 +190,7 @@ test('Worker success lifecycle emits completion only after start', async () => {
   const observer = RecordedJobObserver.make()
   const runtime = await makeRuntime(store)
   await enqueue(store, successJob)
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(successJob, (value) =>
         Effect.fn(async function* () {
@@ -241,7 +241,7 @@ test('Worker preserves per-job event ordering for concurrent attempts', async ()
   const allEnteredPromise = new Promise<void>((resolve) => {
     allEntered = resolve
   })
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(successJob, (value) =>
         Effect.fn(async function* () {
@@ -281,7 +281,7 @@ test('Worker retry and terminal failure events carry attempt outcome ordering', 
   const runtime = await makeRuntime(store)
   await enqueue(store, failureJob, 1, 2)
   let attempts = 0
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(failureJob, () =>
         Effect.fn(async function* () {
@@ -320,7 +320,7 @@ test('Worker does not await slow observers', async () => {
       return new Promise<void>(() => undefined)
     }
   }
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(successJob, (value) =>
         Effect.fn(async function* () {
@@ -358,7 +358,7 @@ test('Worker reports uncertain settlement without a false completion event', asy
   const runtime = await makeRuntime(store)
   const created = await enqueue(store, successJob)
   const observer = RecordedJobObserver.make()
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(successJob, (value) =>
         Effect.fn(async function* () {
@@ -402,7 +402,7 @@ test('Worker abort lifecycle emits release before worker stop', async () => {
   const started = new Promise<void>((resolve) => {
     entered = resolve
   })
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(successJob, () =>
         Effect.fn(async function* () {
@@ -442,7 +442,7 @@ test('Worker programs preserve stable Program metadata attributes for Runtime ob
     }
   ])
   await enqueue(store, successJob)
-  const worker = await Worker.start(runtime, {
+  const worker = await Worker.startWith(runtime.executor, {
     handlers: [
       Worker.handle(successJob, (value) =>
         Effect.fn(async function* () {

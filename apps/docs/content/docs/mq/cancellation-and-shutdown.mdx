@@ -25,7 +25,7 @@ A graceful long-lived process owns its resources in this order:
 
 ```ts
 try {
-  await using worker = await Worker.start(runtime, { handlers })
+  await using worker = await Worker.startWith(runtime.executor, { handlers })
   await serveRequests()
 } finally {
   // `worker` is stopped here before Runtime disposal.
