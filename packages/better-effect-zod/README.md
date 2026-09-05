@@ -34,7 +34,7 @@ Compatibility targets:
 - Zod `>=4.5.4 <5`
 - better-result `^3.0.0`
 - better-effect `>=0.13.0 <0.14.0`
-- TypeScript `>=5.7.0`
+- TypeScript `>=6.0.0`
 - Node.js `>=20`
 
 The package is ESM-only.

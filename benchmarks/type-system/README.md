@@ -46,12 +46,12 @@ Each fixture measures:
 - `Worker.start`/`Worker.use` over immutable handler tuples, including payload,
   JobContext, store, Runtime, and union requirement inference.
 
-The Better Auth and all MQ fixtures run with the current TypeScript `6.0.3`
-and minimum supported TypeScript `5.7.2`. Better Auth's exact custom plugin
+The Better Auth and all MQ fixtures run with the current TypeScript 7.x
+compiler. Better Auth's exact custom plugin
 endpoint, plugin fields, and error-code assertions reject `any` and `unknown`;
 the producer fixture locks exact JobId, handler-failure, store, decode, timeout,
 and cancellation error metadata; the registry, named-store, and Worker fixtures
-lock their exact tuple/Service unions and check both supported compilers. The
+lock their exact tuple/Service unions and check the current compiler. The
 report includes compiler, files, types, instantiations, memory, check time, and
 total time. Use `--hono-sizes=1,3,6,10` to narrow the Hono matrix, or
 `--job-sizes=10,50,100,250 --scenarios=job-registry` to measure only the registry
@@ -78,8 +78,9 @@ The all-at-once `Layer.override` fixtures compile at 50 and 100 Services. The
 override validator now carries the current provided union and reuses a base
 tag map for exact replacements, avoiding repeated full provenance expansion.
 This keeps the full matrix within the configured budgets before adding cycle or
-graph validation. TypeScript 6.0.3 currently reports 221,737 instantiations
-for the 10-Service program chain and 204,031 for program collections, so the
+graph validation. The current compiler's measured instantiation counts for the
+10-Service program chain and program collections are tracked by the generated
+benchmark output, so the
 10-Service ceiling is 250,000 with room for normal compiler variance. The MQ
 fixture similarly checks exact tuple/union preservation
 and known/unknown identity lookups without recursively validating the tuple,

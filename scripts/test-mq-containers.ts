@@ -20,6 +20,10 @@ const mongoImage =
 const labelName = 'better-effect-mq.container-gate'
 const invocation = randomUUID()
 const labels = { [labelName]: invocation }
+const storageIntegrationTests = [
+  'packages/better-effect-mq-mysql/tests/integration.mysql.test.ts',
+  'packages/better-effect-mq-mongodb/tests/integration/mongodb.test.ts'
+] as const
 const decoder = new TextDecoder()
 const secrets = new Set<string>()
 
@@ -150,6 +154,52 @@ let child: ReturnType<typeof Bun.spawn> | undefined
 let interrupted = false
 let signals = 0
 
+const runStorageIntegrationTests = async (
+  mysqlUrl: string,
+  mongoDatabase: string,
+  mongoUrl: string
+): Promise<number> => {
+  child = Bun.spawn({
+    cmd: [process.execPath, 'test', ...storageIntegrationTests],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      MYSQL_URL: mysqlUrl,
+      MONGODB_DATABASE: mongoDatabase,
+      MONGODB_URL: mongoUrl
+    },
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'inherit'
+  })
+
+  const childProcess = child
+  let reportedFailures: number | undefined
+  const stdout = childProcess.stdout
+  const forwardOutput = async (): Promise<void> => {
+    if (stdout === null) return
+    const decoder = new TextDecoder()
+    let tail = ''
+    for await (const chunk of stdout) {
+      const text = decoder.decode(chunk, { stream: true })
+      process.stdout.write(text)
+      tail = `${tail}${text}`.slice(-4096)
+      const summary = tail.match(/(?:^|\n)\s*(\d+)\s+fail\b/u)
+      if (summary !== null && reportedFailures === undefined) {
+        reportedFailures = Number(summary[1])
+        childProcess.kill('SIGKILL')
+      }
+    }
+    process.stdout.write(decoder.decode())
+  }
+
+  const outputComplete = forwardOutput()
+  const childExitCode = await childProcess.exited
+  await outputComplete
+  if (reportedFailures !== undefined) return reportedFailures === 0 ? 0 : 1
+  return childExitCode
+}
+
 const fallbackCleanup = async (): Promise<readonly unknown[]> => {
   if (runtime.command === undefined) return []
   const environment = {
@@ -266,28 +316,11 @@ try {
   mongoUrl.searchParams.set('authSource', mongoDatabase)
   mongoUrl.searchParams.set('directConnection', 'true')
 
-  child = Bun.spawn({
-    cmd: [
-      process.execPath,
-      'x',
-      'turbo',
-      'run',
-      'test',
-      '--filter=better-effect-mq-mysql',
-      '--filter=better-effect-mq-mongodb'
-    ],
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      MYSQL_URL: mysql.getConnectionUri(),
-      MONGODB_DATABASE: mongoDatabase,
-      MONGODB_URL: mongoUrl.toString()
-    },
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit'
-  })
-  const childExitCode = await child.exited
+  const childExitCode = await runStorageIntegrationTests(
+    mysql.getConnectionUri(),
+    mongoDatabase,
+    mongoUrl.toString()
+  )
   if (childExitCode !== 0) exitCode = childExitCode
 } catch (cause) {
   exitCode = interrupted ? 130 : 1

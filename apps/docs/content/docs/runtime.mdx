@@ -8,7 +8,8 @@ icon: Play
 backend, owns the Layer's root Scope, and checks each program against the
 Services that the Layer provides. Without configuration it creates a fresh
 `MapLayerBackend`. The published Runtime entrypoint is officially supported on
-Node.js and Bun; the repository's release gates test Node.js 24 and Bun 1.3.14.
+Node.js and Bun; CI uses the latest Bun release by default and the current
+Node.js LTS for interoperability smoke tests.
 
 ## Long-lived Runtime
 

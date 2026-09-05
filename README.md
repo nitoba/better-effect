@@ -2,8 +2,8 @@
 
 This repository is a Bun + Turborepo monorepo containing the `better-effect`
 library, its Fumadocs documentation site, and the official agent skill for
-working with the library. The tested runtime matrix is Node.js 24 and Bun
-1.3.14.
+working with the library. CI uses the latest Bun release as its default runtime
+and the current Node.js LTS for interoperability smoke tests.
 
 ## Workspaces
 

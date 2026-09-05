@@ -163,11 +163,11 @@ const asynchronousConfiguredResponse = WebEffect.handle(
 )
 expectTypeOf(asynchronousConfiguredResponse).toEqualTypeOf<Promise<Response>>()
 
-// @ts-expect-error Response policies must return a standard Response.
 const invalidPolicyResponse = WebEffect.handle(
   runtime,
   new Request('https://example.test'),
   configuredProgram,
+  // @ts-expect-error Response policies must return a standard Response.
   {
     onSuccess: () => ({})
   }
@@ -192,7 +192,6 @@ const requestNeedsMissing = Layer.gen(RequestValue, async function* () {
   return new RequestValue('missing')
 })
 
-// @ts-expect-error Request Layer external requirements must be provided by the Runtime.
 const invalidRequestLayer = WebEffect.handle(
   runtime,
   new Request('https://example.test'),
@@ -200,6 +199,7 @@ const invalidRequestLayer = WebEffect.handle(
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok('ok')
   }),
+  // @ts-expect-error Request Layer external requirements must be provided by the Runtime.
   { requestLayer: () => requestNeedsMissing }
 )
 void invalidRequestLayer
@@ -248,7 +248,6 @@ void unchecked
 
 // SAFETY: This declaration-only fixture models a partially erased Layer.
 const partialRequestLayer = {} as Layer<any, never>
-// @ts-expect-error A partially erased request Layer is not an unchecked escape hatch.
 const invalidPartial = WebEffect.handle(
   runtime,
   new Request('https://example.test'),
@@ -256,13 +255,13 @@ const invalidPartial = WebEffect.handle(
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok('invalid')
   }),
+  // @ts-expect-error A partially erased request Layer is not an unchecked escape hatch.
   { requestLayer: () => partialRequestLayer }
 )
 void invalidPartial
 
 const requestLayerUnion =
   Math.random() > 0.5 ? requestLayer : Layer.succeed(OtherRequestValue, new OtherRequestValue())
-// @ts-expect-error Concrete request Layer unions must be narrowed before the Web boundary.
 const invalidUnion = WebEffect.handle(
   runtime,
   new Request('https://example.test'),
@@ -270,6 +269,7 @@ const invalidUnion = WebEffect.handle(
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok('invalid')
   }),
+  // @ts-expect-error Concrete request Layer unions must be narrowed before the Web boundary.
   { requestLayer: () => requestLayerUnion }
 )
 void invalidUnion
@@ -280,7 +280,6 @@ const incompatibleCurrentRequest = Layer.succeed(
   new IncompatibleCurrentRequest()
 )
 
-// @ts-expect-error Same-tag request overrides must remain contract-compatible.
 const invalidOverride = WebEffect.handle(
   runtime,
   new Request('https://example.test'),
@@ -288,6 +287,7 @@ const invalidOverride = WebEffect.handle(
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok('invalid')
   }),
+  // @ts-expect-error Same-tag request overrides must remain contract-compatible.
   { requestLayer: () => incompatibleCurrentRequest }
 )
 void invalidOverride
@@ -305,7 +305,6 @@ const compatibleRootOverride = WebEffect.handle(
 )
 void compatibleRootOverride
 
-// @ts-expect-error Request overrides must also be compatible with same-tag root Runtime providers.
 const invalidRootOverride = WebEffect.handle(
   rootBoundaryRuntime,
   new Request('https://example.test'),
@@ -313,6 +312,7 @@ const invalidRootOverride = WebEffect.handle(
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok('invalid')
   }),
+  // @ts-expect-error Request overrides must also be compatible with same-tag root Runtime providers.
   {
     requestLayer: () => Layer.succeed(IncompatibleRootBoundary, new IncompatibleRootBoundary())
   }

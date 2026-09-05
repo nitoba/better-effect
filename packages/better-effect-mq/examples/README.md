@@ -5,7 +5,6 @@ These examples use the real `Job`, `Runtime`, `MemoryJobStore`, `Worker`, and
 
 ```bash
 bun run typecheck:examples
-bun run typecheck:examples:minimum
 bun run test:examples
 ```
 

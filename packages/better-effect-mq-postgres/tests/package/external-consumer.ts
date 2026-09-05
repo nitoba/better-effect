@@ -49,17 +49,17 @@ try {
 
   run(
     [
-      'bunx',
-      '--bun',
-      '--package',
-      'typescript@5.7.2',
+      'bun',
+      'run',
+      '--silent',
       'tsc',
+      '--',
       '-p',
-      'tsconfig.json',
+      join(fixtureRoot, 'tsconfig.json'),
       '--pretty',
       'false'
     ],
-    fixtureRoot
+    packageRoot
   )
   run(['node', 'smoke.mjs'], fixtureRoot)
   run(['bun', 'smoke.mjs'], fixtureRoot)

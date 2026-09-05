@@ -51,7 +51,8 @@ Before editing an application:
 This skill was authored against the `better-effect` 0.9.x line, including `Effect.fn`, `Program.all`, two-channel `Layer<Provided, Required>`, hierarchical `Scope`, `Runtime.runWith`, standard services, and the Hono adapter. Treat that as embedded baseline knowledge, not permission to ignore the project's pinned version.
 
 The published Runtime entrypoint is officially supported on Node.js and Bun;
-the repository's release gates test Node.js 24 and Bun 1.3.14. Do not infer
+the repository's release gates use the latest Bun release and the current
+Node.js LTS for interoperability smoke tests. Do not infer
 support for browser, Deno, Cloudflare Workers, or other non-Node runtimes from
 TypeScript declarations, an adapter's use of web platform values, or the
 availability of `ExplicitRuntimeContextStorage`.

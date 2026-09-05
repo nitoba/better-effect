@@ -24,7 +24,7 @@ bun add hono
 
 The package is ESM-only. Its framework-neutral `.` entry point has these peer
 requirements: `better-auth` `^1.7.0`, `better-effect` `>=0.12.0 <0.14.0`,
-`better-result` `^3.0.0`, and TypeScript `>=5.7.0`. The package also exposes
+`better-result` `^3.0.0`, and TypeScript `>=6.0.0`. The package also exposes
 optional public `/hooks` and `/hono` subpaths. Hono is an optional peer required
 only when importing `/hono` (`>=4.0.0`); it is not needed by `.` or `/hooks`.
 These dependencies remain owned by the application.

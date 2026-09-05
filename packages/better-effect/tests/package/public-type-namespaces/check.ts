@@ -247,20 +247,6 @@ const invalidLayerExports = [
       '--pretty',
       'false'
     ]
-  },
-  {
-    label: 'TypeScript 5.7.2',
-    command: [
-      'bunx',
-      '--bun',
-      '--package',
-      'typescript@5.7.2',
-      'tsc',
-      '-p',
-      'tests/package/public-type-namespaces/tsconfig.invalid-layer-exports.json',
-      '--pretty',
-      'false'
-    ]
   }
 ] as const
 
@@ -277,20 +263,6 @@ const invalidWebFixtures = [
       '--silent',
       'tsc',
       '--',
-      '-p',
-      'tests/package/public-type-namespaces/tsconfig.invalid-web.json',
-      '--pretty',
-      'false'
-    ]
-  },
-  {
-    label: 'TypeScript 5.7.2',
-    command: [
-      'bunx',
-      '--bun',
-      '--package',
-      'typescript@5.7.2',
-      'tsc',
       '-p',
       'tests/package/public-type-namespaces/tsconfig.invalid-web.json',
       '--pretty',
@@ -313,13 +285,11 @@ for (const fixture of invalidWebFixtures) {
   )
 
   const line =
-    invalidWebSource
-      .split('\n')
-      .findIndex((candidate) => candidate.includes('const invalidRootOverride')) + 1
+    invalidWebSource.split('\n').findIndex((candidate) => candidate.includes('requestLayer:')) + 1
 
   assertCondition(line > 0, 'Missing invalid Web request-layer fixture line')
   assertCondition(
-    new RegExp(`invalid-web\\.ts\\(${line},`).test(output),
+    new RegExp(`invalid-web\\.ts\\((?:${line - 1}|${line}),`).test(output),
     `Incompatible root request override was not rejected under ${fixture.label}`
   )
 }

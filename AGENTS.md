@@ -19,8 +19,9 @@ This project must remain substantially smaller and simpler than Effect.
 
 ## Commands
 
-Use Bun for package management and tests. The repository's release gates test
-Node.js 24 and Bun 1.3.14 only.
+Use Bun for package management and tests. The repository's release gates use
+the latest Bun release and the current Node.js LTS for interoperability smoke
+tests.
 
 ```bash
 bun install --frozen-lockfile
@@ -388,9 +389,10 @@ Use `better-result` as the source of truth for:
 - `TaggedError`
 - `UnhandledException`
 
-The public TypeScript peer range starts at 5.7. The package and declaration
-fixtures MUST support TypeScript 5.7.2 and the current project compiler. The
-phantom Service-requirement types do not require TypeScript 7.
+The public TypeScript peer range starts at 6.0. The package and declaration
+fixtures use the current project compiler, TypeScript 7.x. The phantom
+Service-requirement types do not require TypeScript-specific machinery beyond
+the supported TypeScript 6+ range.
 
 Every `Result.gen` generator must finish by returning a `Result`.
 

@@ -54,7 +54,7 @@ command can require registry credentials under the supported Bun version.
 For the initial `better-effect-kysely@0.1.0` decision, the package check also
 packs both `better-effect` and `better-effect-kysely`, installs them in a
 throwaway external consumer, runs Bun SQLite and `better-sqlite3` plus PGlite
-smoke programs under Bun and Node.js 24, typechecks with TypeScript 5.7.2 and the current compiler,
+smoke programs under the latest Bun and Node.js LTS, and typechecks with the current TypeScript 7.x compiler,
 and checks an import-only consumer with no database driver. The documentation
 page and generated LLM routes are checked by `bun run test:kysely-docs` and
 `bun run docs:build`.

@@ -126,7 +126,7 @@ const installFixture = async (consumer: string, archive: string): Promise<void> 
         devDependencies: {
           '@types/node': '26.2.0',
           '@types/react': '19.2.18',
-          typescript: '6.0.3'
+          typescript: '7.0.2'
         }
       },
       null,
@@ -202,6 +202,5 @@ const runFreshPackedNextChecks = async (): Promise<void> => {
 
 await runFreshPackedNextChecks()
 await run([process.execPath, 'run', 'test:package-next'])
-await run([process.execPath, 'run', 'test:package-next:minimum'])
 
 console.log('Fresh packed NextEffect package and App Router fixture checks passed')

@@ -7,7 +7,7 @@
 - Zod 4.5.4 or newer within Zod 4
 - better-result 3.x
 - better-effect 0.13.x
-- TypeScript 5.7 or newer
+- TypeScript 6.0 or newer
 
 ## Setup
 
