@@ -100,6 +100,7 @@ test('WebEffect.handleWith runs through a Runtime executor', async () => {
         programRuns += 1
         const currentRequest = yield* CurrentRequest
 
+        // SAFETY: WebEffect supplies the Request object through CurrentRequest in this test.
         return Result.ok((currentRequest.request as Request).url)
       })
     )

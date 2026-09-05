@@ -95,6 +95,7 @@ const executorResponse = WebEffect.handleWith(
     const available = yield* Available
 
     return Result.ok({
+      // SAFETY: The Web boundary supplies CurrentRequest from the Request argument.
       url: (currentRequest.request as Request).url,
       value: available
     })
@@ -131,11 +132,16 @@ const invalidExecutor = WebEffect.handleWith(
   // @ts-expect-error WebEffect requires the branded Runtime.Executor capability, not an arbitrary structural runner.
   incompleteExecutor,
   new Request('https://example.test'),
+  // oxlint-disable-next-line require-yield -- This fixture checks the executor boundary's invalid Program type.
   Effect.fn(async function* () {
     return Result.ok('invalid')
   })
 )
 void invalidExecutor
+
+// @ts-expect-error WebEffect intentionally exposes only the executor-based handleWith API.
+const legacyHandle = WebEffect.handle
+void legacyHandle
 
 const defaultResponse = WebEffect.handleWith(
   runtime.executor,

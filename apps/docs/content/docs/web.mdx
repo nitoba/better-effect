@@ -151,7 +151,7 @@ const response = await WebEffect.handleWith(
 )
 ```
 
-The factory receives the same Web `Request` passed to `handle` and runs once
+The factory receives the same Web `Request` passed to `WebEffect.handleWith` and runs once
 per request. Its Layer is composed over the built-in `CurrentRequest` Layer,
 so a compatible same-tag provider can intentionally override it. Request-Layer
 external requirements must be provided by the Runtime. Concrete Layer unions
@@ -214,7 +214,7 @@ const response = await WebEffect.handleWith(runtime.executor, request, program, 
 The Program's typed failure channel is checked against `onFailure`. A policy
 must return a Web `Response`; a bad runtime value raises a `TypeError` rather
 than leaking an arbitrary object as a response. Thrown or rejected defects
-remain rejected by `handle`, while `Result.err` is converted by the failure
+remain rejected by `WebEffect.handleWith`, while `Result.err` is converted by the failure
 policy. In both cases request cleanup still runs. The original typed failure
 is supplied to request finalizers through the execution's failure outcome.
 
