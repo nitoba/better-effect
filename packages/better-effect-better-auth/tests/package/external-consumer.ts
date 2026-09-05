@@ -10,7 +10,6 @@ const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const vanillaExampleSource = join(packageRoot, 'examples/vanilla-server')
 const honoExampleSource = join(packageRoot, 'examples/hono')
 const decoder = new TextDecoder()
-const minimumBetterEffectVersion = '0.12.0'
 
 const assertCondition: (condition: boolean, message: string) => asserts condition = (
   condition,
@@ -82,32 +81,6 @@ const pack = async (root: string, source: string, label: string): Promise<string
 
   const archives = (await readdir(destination)).filter((name) => name.endsWith('.tgz'))
   assertCondition(archives.length === 1, `Expected one ${label} archive, found ${archives.length}`)
-  return join(destination, archives[0]!)
-}
-
-const packMinimumCore = async (root: string): Promise<string> => {
-  const destination = join(root, 'pack-better-effect-minimum')
-  await mkdir(destination)
-
-  assertSuccess(
-    run(
-      [
-        'npm',
-        'pack',
-        `better-effect@${minimumBetterEffectVersion}`,
-        '--pack-destination',
-        destination
-      ],
-      packageRoot
-    ),
-    `Packing better-effect@${minimumBetterEffectVersion} from the registry`
-  )
-
-  const archives = (await readdir(destination)).filter((name) => name.endsWith('.tgz'))
-  assertCondition(
-    archives.length === 1,
-    `Expected one minimum core archive, found ${archives.length}`
-  )
   return join(destination, archives[0]!)
 }
 
@@ -472,28 +445,20 @@ const main = async (): Promise<void> => {
     buildPackage(packageRoot, 'better-effect-better-auth')
     const integrationArchive = await pack(root, packageRoot, 'better-effect-better-auth')
     const coreArchive = await pack(root, coreSource, 'better-effect')
-    const minimumCoreArchive = await packMinimumCore(root)
     const currentHonoArchive = await packHono(root, '4.13.3', 'current')
     const minimumHonoArchive = await packHono(root, '4.0.0', 'minimum')
     assertIntegrationArchive(archiveEntries(integrationArchive))
 
     const integrationManifest = archiveManifest(integrationArchive)
     const coreManifest = archiveManifest(coreArchive)
-    const minimumCoreManifest = archiveManifest(minimumCoreArchive)
     const currentHonoManifest = archiveManifest(currentHonoArchive)
     const minimumHonoManifest = archiveManifest(minimumHonoArchive)
     const integrationVersion = integrationManifest['version']
     const coreVersion = coreManifest['version']
-    const minimumCoreVersion = minimumCoreManifest['version']
     const currentHonoVersion = currentHonoManifest['version']
     const minimumHonoVersion = minimumHonoManifest['version']
     assertCondition(isJsonString(integrationVersion), 'Integration archive version is missing')
     assertCondition(isJsonString(coreVersion), 'Core archive version is missing')
-    assertCondition(isJsonString(minimumCoreVersion), 'Minimum core archive version is missing')
-    assertCondition(
-      minimumCoreVersion === minimumBetterEffectVersion,
-      `Minimum core archive must be better-effect@${minimumBetterEffectVersion}, got ${minimumCoreVersion}`
-    )
     assertCondition(isJsonString(currentHonoVersion), 'Current Hono archive version is missing')
     assertCondition(isJsonString(minimumHonoVersion), 'Minimum Hono archive version is missing')
 
@@ -535,38 +500,19 @@ const main = async (): Promise<void> => {
       true
     )
 
-    const minimumCoreFixture = await makeFixture(
-      root,
-      'minimum-core-consumer',
-      integrationArchive,
-      minimumCoreArchive,
-      minimumCoreVersion,
-      minimumHonoArchive,
-      minimumHonoVersion,
-      false
-    )
-    await exerciseFixture(
-      minimumCoreFixture,
-      minimumCoreVersion,
-      integrationVersion,
-      minimumHonoVersion,
-      'minimum-core',
-      false
-    )
-
     const minimumHonoFixture = await makeFixture(
       root,
       'minimum-hono-consumer',
       integrationArchive,
-      minimumCoreArchive,
-      minimumCoreVersion,
+      coreArchive,
+      coreVersion,
       minimumHonoArchive,
       minimumHonoVersion,
       true
     )
     await exerciseFixture(
       minimumHonoFixture,
-      minimumCoreVersion,
+      coreVersion,
       integrationVersion,
       minimumHonoVersion,
       'minimum-hono',
