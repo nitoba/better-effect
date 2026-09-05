@@ -6,8 +6,9 @@ icon: ShieldCheck
 
 `better-effect-better-auth` is a small, server-side adapter. Better Auth still
 owns authentication, cookies, sessions, plugins, database adapters, and its
-Web-standard handler. The adapter only turns an existing Better Auth instance
-into a yieldable `better-effect` Service whose operations use `better-result`.
+Web-standard handler. The adapter turns a lazy or prebuilt Better Auth
+instance into a yieldable `better-effect` Service whose operations use
+`better-result`.
 
 ## Install
 
@@ -37,23 +38,30 @@ Auth normally, then adapt the instance at the application composition root:
 ```ts
 import { betterAuth } from 'better-auth'
 import { memoryAdapter } from 'better-auth/adapters/memory'
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { BetterAuth } from 'better-effect-better-auth'
 import { Result } from 'better-result'
 
-const rawAuth = betterAuth({
-  baseURL: 'http://localhost:3000',
-  basePath: '/api/auth',
-  database: memoryAdapter({
-    account: [],
-    session: [],
-    user: [],
-    verification: []
-  }),
-  emailAndPassword: { enabled: true },
-  secret: 'replace-this-example-secret'
+class AppConfig extends Service<AppConfig>()('@app/AppConfig') {
+  readonly baseURL = 'http://localhost:3000'
+}
+
+const Auth = BetterAuth.make('@app/Auth', async function* () {
+  const config = yield* AppConfig
+
+  return betterAuth({
+    baseURL: config.baseURL,
+    basePath: '/api/auth',
+    database: memoryAdapter({
+      account: [],
+      session: [],
+      user: [],
+      verification: []
+    }),
+    emailAndPassword: { enabled: true },
+    secret: 'replace-this-example-secret'
+  })
 })
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
 
 const readSession = (request: Request) =>
   Effect.fn(async function* () {
@@ -63,7 +71,9 @@ const readSession = (request: Request) =>
     return Result.ok(session)
   })
 
-const runtime = await Runtime.make(Auth.layer)
+const runtime = await Runtime.make(
+  Layer.merge(Layer.succeed(AppConfig, new AppConfig()), Auth.layer)
+)
 const result = await runtime.run(readSession(new Request('http://localhost:3000')))
 await runtime.dispose()
 ```
@@ -72,6 +82,12 @@ await runtime.dispose()
 Auth instance when an application needs an intentionally unadapted Better Auth
 API. The Service tag must be unique when several Better Auth instances are
 provided to one Runtime.
+
+When the application already owns a configured instance, use
+`BetterAuth.from('@app/Auth', rawAuth)`. It provides the same facade through
+`Layer.succeed` and never closes or reconfigures the borrowed instance.
+`BetterAuth.service(tag, rawAuth)` remains a deprecated compatibility alias for
+`from`.
 
 ## Endpoints and transport modes
 
@@ -136,11 +152,12 @@ are likewise available to TypeScript:
 ```ts
 import { admin } from 'better-auth/plugins'
 
-const rawAuth = betterAuth({
-  // ...database and normal Better Auth options
-  plugins: [admin()]
+const Auth = BetterAuth.make('@app/Auth', async function* () {
+  return betterAuth({
+    // ...database and normal Better Auth options
+    plugins: [admin()]
+  })
 })
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
 
 const program = Effect.fn(async function* () {
   const auth = yield* Auth
@@ -161,7 +178,7 @@ a typed current-session Service linked to one exact Better Auth Service:
 
 ```ts
 import { Hono } from 'hono'
-import { Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
 import { Result } from 'better-result'
@@ -178,7 +195,16 @@ const http = HonoEffect.make(runtime, {
 const app = new Hono()
 
 // Match basePath and register Better Auth before conflicting catch-all middleware.
-app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+app.all('/api/auth/*', async (context) => {
+  const result = await runtime.run(
+    Effect.fn(async function* () {
+      const auth = yield* Auth
+      return Result.ok(yield* auth.handle(context.req.raw))
+    })
+  )
+
+  return Result.isOk(result) ? result.value : new Response(null, { status: 500 })
+})
 app.use('*', http.middleware())
 app.use('/private/*', http.guard(CurrentSession.guard))
 app.get(
@@ -271,7 +297,7 @@ const requestAware = AuthHooks.middleware(
 const rawAuth = betterAuth({
   hooks: { before: requestAware }
 })
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const Auth = BetterAuth.from('@app/Auth', rawAuth)
 const appRuntime = await Runtime.make(Layer.merge(coreValues, Auth.layer))
 ```
 

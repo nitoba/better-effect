@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Added lazy `BetterAuth.make(tag, rawFactory)` with contextual Service
+  requirements and concrete Better Auth/plugin type preservation.
+- Added borrowed `BetterAuth.from(tag, rawAuth)` and kept
+  `BetterAuth.service(tag, rawAuth)` as its deprecated compatibility alias.
+
 ## [0.1.0] - 2026-08-31
 
 ### Added

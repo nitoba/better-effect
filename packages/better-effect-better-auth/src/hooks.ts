@@ -61,6 +61,13 @@ export type BetterAuthHookContextToken<Tag extends string> = Service.Class<
   Tag,
   BetterAuthHookContextValue & Service.Identity<Tag>
 > & {
+  readonly [Symbol.iterator]: (
+    this: Service.Token<Tag, BetterAuthHookContextValue & Service.Identity<Tag>>
+  ) => Generator<
+    ServiceRequirement<BetterAuthHookContextValue & Service.Identity<Tag>>,
+    BetterAuthHookContextValue & Service.Identity<Tag>,
+    unknown
+  >
   readonly [Symbol.asyncIterator]: (
     this: Service.Token<Tag, BetterAuthHookContextValue & Service.Identity<Tag>>
   ) => AsyncGenerator<
@@ -312,7 +319,8 @@ function makeBetterAuthHooks<const Tag extends string, Provided extends AnyServi
   // SAFETY: Service() exposes an abstract constructor type even though this factory creates a concrete runtime token.
   const abstractContext = Service<ContextInstance>()(tag)
   // SAFETY: The factory returns this concrete Service token; the assertion adds its public Context iterator type.
-  const Context = abstractContext as BetterAuthHookContextToken<Tag>
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the factory returns a concrete token with additional hook-only members.
+  const Context = abstractContext as unknown as BetterAuthHookContextToken<Tag>
 
   const middleware = <
     Factory extends HookProgramFactory,

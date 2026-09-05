@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
-import { Runtime } from 'better-effect'
+import { Effect, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { Result } from 'better-result'
 
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
-import { Auth, credentials, rawAuth } from './auth'
+import { Auth, credentials } from './auth'
 
 const baseURL = 'http://localhost:3000'
 const cookieHeaderFromSetCookie = (headers: Headers): string =>
@@ -13,6 +13,18 @@ const cookieHeaderFromSetCookie = (headers: Headers): string =>
     .map((setCookie) => setCookie.split(';', 1)[0])
     .join('; ')
 const runtime = await Runtime.make(Auth.layer)
+const rawResult = await runtime.run(
+  Effect.fn(async function* () {
+    const auth = yield* Auth
+    return Result.ok(auth.raw)
+  })
+)
+
+if (Result.isError(rawResult)) {
+  throw new Error(`Better Auth acquisition failed: ${String(rawResult.error)}`)
+}
+
+const rawAuth = rawResult.value
 const CurrentSession = BetterAuthHono.session('@example/CurrentSession', Auth)
 const http = HonoEffect.make(runtime, {
   requestLayer: CurrentSession.requestLayer,

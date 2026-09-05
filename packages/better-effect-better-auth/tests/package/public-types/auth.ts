@@ -30,5 +30,11 @@ export const authWithoutPlugins = betterAuth({
   database: memoryAdapter(makeDatabase())
 })
 
-export const Auth = BetterAuth.service('@public-types/Auth', authWithPlugins)
-export const PlainAuth = BetterAuth.service('@public-types/PlainAuth', authWithoutPlugins)
+// oxlint-disable-next-line require-yield -- the fixture intentionally has no external requirements.
+export const Auth = BetterAuth.make('@public-types/Auth', async function* () {
+  return authWithPlugins
+})
+// oxlint-disable-next-line require-yield -- the fixture intentionally has no external requirements.
+export const PlainAuth = BetterAuth.make('@public-types/PlainAuth', async function* () {
+  return authWithoutPlugins
+})

@@ -10,18 +10,19 @@ const database = {
   verification: []
 }
 
-export const rawAuth = betterAuth({
-  secret: 'example-only-secret-not-for-production-use',
-  baseURL: 'http://localhost:3000',
-  basePath: '/api/auth',
-  database: memoryAdapter(database),
-  emailAndPassword: {
-    enabled: true
-  },
-  plugins: [admin({ defaultRole: 'admin' })]
+// oxlint-disable-next-line require-yield -- the example has no contextual requirements.
+export const Auth = BetterAuth.make('@example/Auth', async function* () {
+  return betterAuth({
+    secret: 'example-only-secret-not-for-production-use',
+    baseURL: 'http://localhost:3000',
+    basePath: '/api/auth',
+    database: memoryAdapter(database),
+    emailAndPassword: {
+      enabled: true
+    },
+    plugins: [admin({ defaultRole: 'admin' })]
+  })
 })
-
-export const Auth = BetterAuth.service('@example/Auth', rawAuth)
 
 export const credentials = {
   email: 'admin@example.com',

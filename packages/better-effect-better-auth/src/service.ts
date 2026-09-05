@@ -1,12 +1,16 @@
-import { Layer, Service } from 'better-effect'
+import { Layer, Service, ServiceRuntime } from 'better-effect'
 
-import type { ServiceClass, ServiceRequirement } from 'better-effect'
+import type {
+  AnyService,
+  AnyServiceToken,
+  ServiceClass,
+  ServiceRequirement,
+  ServiceToken
+} from 'better-effect'
 
 import type { BetterAuthEffectApi, BetterAuthOperation } from './effect-api'
-import { makeBetterAuthEffectApi } from './internal/effect-api'
-import { fromBetterAuthPromise } from './internal/from-better-auth-promise'
+import { makeBetterAuthServiceValue } from './internal/make-service-value'
 import {
-  makeBetterAuthSessionApi,
   type BetterAuthSessionApi,
   type BetterAuthSessionOf,
   type BetterAuthSessionReadOptions,
@@ -28,12 +32,17 @@ export type BetterAuthServiceInstance<
   Auth extends BetterAuthInstance
 > = BetterAuthService<Auth> & Service.Identity<Tag>
 
-/** Yieldable, concrete Service class returned directly by `BetterAuth.service`. */
-export type BetterAuthServiceToken<
+type BetterAuthTokenMembers<
   Tag extends string,
-  Auth extends BetterAuthInstance
-> = ServiceClass<Tag, BetterAuthServiceInstance<Tag, Auth>> & {
-  readonly layer: Layer<BetterAuthServiceInstance<Tag, Auth>, never>
+  Auth extends BetterAuthInstance,
+  Required extends AnyService
+> = {
+  readonly layer: Layer<BetterAuthServiceInstance<Tag, Auth>, Required>
+  readonly [Symbol.iterator]: () => Generator<
+    ServiceRequirement<BetterAuthServiceInstance<Tag, Auth>>,
+    BetterAuthServiceInstance<Tag, Auth>,
+    unknown
+  >
   readonly [Symbol.asyncIterator]: () => AsyncGenerator<
     ServiceRequirement<BetterAuthServiceInstance<Tag, Auth>>,
     BetterAuthServiceInstance<Tag, Auth>,
@@ -41,33 +50,140 @@ export type BetterAuthServiceToken<
   >
 }
 
+/** Yieldable Better Auth token shape shared by prebuilt and factory-backed tokens. */
+export type BetterAuthToken<
+  Tag extends string,
+  Auth extends BetterAuthInstance,
+  Required extends AnyService = never
+> = ServiceToken<Tag, BetterAuthServiceInstance<Tag, Auth>> &
+  BetterAuthTokenMembers<Tag, Auth, Required>
+
+/** Yieldable, constructible Service class returned by `BetterAuth.from` and `BetterAuth.service`. */
+export type BetterAuthServiceToken<
+  Tag extends string,
+  Auth extends BetterAuthInstance,
+  Required extends AnyService = never
+> = ServiceClass<Tag, BetterAuthServiceInstance<Tag, Auth>> &
+  BetterAuthTokenMembers<Tag, Auth, Required>
+
+/** Yieldable token returned by `BetterAuth.make`; acquisition creates its Service value. */
+export type BetterAuthFactoryServiceToken<
+  Tag extends string,
+  Auth extends BetterAuthInstance,
+  Required extends AnyService = never
+> = BetterAuthToken<Tag, Auth, Required>
+
 type BetterAuthLiteralTag<Tag extends string> = string extends Tag
   ? never
   : Tag extends ''
     ? never
     : Tag
 
-/** Adapt an existing Better Auth instance into a normal better-effect Service token. */
-export function betterAuthService<const Tag extends string, Auth extends BetterAuthInstance>(
+type BetterAuthFactoryYield = ServiceRequirement<unknown>
+
+type BetterAuthFactoryRequirements<Yield> =
+  Yield extends ServiceRequirement<infer Requirement>
+    ? Requirement extends AnyService
+      ? Requirement
+      : never
+    : never
+
+type BetterAuthAsyncGeneratorFactory<
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+> = () => AsyncGenerator<Yield, Auth, unknown>
+
+type BetterAuthSyncGeneratorFactory<
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+> = () => Generator<Yield, Auth, unknown>
+
+type BetterAuthGeneratorFactory<
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+> = BetterAuthAsyncGeneratorFactory<Yield, Auth> | BetterAuthSyncGeneratorFactory<Yield, Auth>
+
+const isAsyncGenerator = <Yield, Auth>(
+  iterator: Generator<Yield, Auth, unknown> | AsyncGenerator<Yield, Auth, unknown>
+): iterator is AsyncGenerator<Yield, Auth, unknown> => Symbol.asyncIterator in iterator
+
+/* oxlint-disable anti-slop/no-unknown-parameters -- Generator values are validated at this private runtime boundary. */
+/* oxlint-disable anti-slop/no-runtime-typeof -- Generator values are validated at this private runtime boundary. */
+const isServiceToken = (value: unknown): value is AnyServiceToken => {
+  return (
+    typeof value === 'function' && 'serviceTag' in value && typeof value.serviceTag === 'string'
+  )
+}
+
+const runGeneratorFactory = async function* <
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+>(factory: BetterAuthGeneratorFactory<Yield, Auth>): AsyncGenerator<Yield, Auth, unknown> {
+  const iterator = factory()
+
+  if (isAsyncGenerator(iterator)) {
+    return yield* iterator
+  }
+
+  let state = iterator.next()
+
+  while (!state.done) {
+    if (!isServiceToken(state.value)) {
+      throw new TypeError('Better Auth raw factories may only yield contextual Services')
+    }
+
+    // SAFETY: Service's synchronous iterator yields its token as a declaration-only requirement marker.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the Service iterator's runtime token is represented by a phantom yield type.
+    const token = state.value as unknown as AnyServiceToken
+    const resolved = await ServiceRuntime.resolve(token)
+    state = iterator.next(resolved)
+  }
+
+  return state.value
+}
+
+const attachLayer = <Token extends object>(token: Token, layer: Layer<any, any>): Token => {
+  Object.defineProperty(token, 'layer', {
+    value: layer,
+    enumerable: true,
+    configurable: false,
+    writable: false
+  })
+
+  return token
+}
+
+function makeAuthToken<const Tag extends string, Auth extends BetterAuthInstance>(
+  tag: BetterAuthLiteralTag<Tag>
+): ServiceClass<Tag, BetterAuthServiceInstance<Tag, Auth>> {
+  type Instance = BetterAuthServiceInstance<Tag, Auth>
+
+  class AuthService extends Service<Instance>()(tag) {
+    constructor() {
+      super()
+      throw new TypeError('A factory-backed Better Auth Service must be acquired from its Layer')
+    }
+  }
+
+  // SAFETY: factory-backed tokens are never used as instances; the Layer generator supplies the branded value.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the public Service class hides its invalid constructor instance type.
+  return AuthService as unknown as ServiceClass<Tag, BetterAuthServiceInstance<Tag, Auth>>
+}
+
+/** Adapt an existing Better Auth instance into a caller-owned Service Layer. */
+export function betterAuthFrom<const Tag extends string, Auth extends BetterAuthInstance>(
   tag: BetterAuthLiteralTag<Tag>,
   raw: Auth
 ): BetterAuthServiceToken<Tag, Auth> {
   type Instance = BetterAuthServiceInstance<Tag, Auth>
 
-  const rawAuth = raw
-  const serviceApi = makeBetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>>(rawAuth.api)
-  const serviceSession = makeBetterAuthSessionApi<Auth>(serviceApi)
-  const serviceHandle = (
-    request: Request
-  ): BetterAuthOperation<Response, BetterAuthFailure<Auth>> =>
-    fromBetterAuthPromise<Response, BetterAuthErrorCode<Auth>>(() => rawAuth.handler(request))
+  const serviceValue = makeBetterAuthServiceValue(raw)
 
   class AuthService extends Service<Instance>()(tag) {
-    readonly api: BetterAuthEffectApi<Auth['api'], BetterAuthErrorCode<Auth>> = serviceApi
-    readonly session: BetterAuthSessionApi<Auth> = serviceSession
-    readonly handle: (request: Request) => BetterAuthOperation<Response, BetterAuthFailure<Auth>> =
-      serviceHandle
-    readonly raw: Auth = rawAuth
+    readonly api = serviceValue.api
+    readonly session = serviceValue.session
+    readonly handle = serviceValue.handle
+    readonly raw = serviceValue.raw
 
     constructor() {
       super()
@@ -75,31 +191,68 @@ export function betterAuthService<const Tag extends string, Auth extends BetterA
     }
   }
 
-  const value = AuthService.of(
-    Object.freeze({
-      api: serviceApi,
-      session: serviceSession,
-      handle: serviceHandle,
-      raw: rawAuth
-    })
-  )
+  const value = AuthService.of(serviceValue)
   const layer = Layer.succeed(AuthService, value)
 
-  Object.defineProperty(AuthService, 'layer', {
-    value: layer,
-    enumerable: true,
-    configurable: false,
-    writable: false
+  // SAFETY: attachLayer adds the locked Layer property to this exact AuthService constructor.
+  return attachLayer(AuthService, layer) as BetterAuthServiceToken<Tag, Auth>
+}
+
+/** Create a lazy Better Auth Service whose raw instance is acquired by its Layer. */
+export function betterAuthMake<
+  const Tag extends string,
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+>(
+  tag: BetterAuthLiteralTag<Tag>,
+  factory: BetterAuthAsyncGeneratorFactory<Yield, Auth>
+): BetterAuthFactoryServiceToken<Tag, Auth, BetterAuthFactoryRequirements<Yield>>
+
+export function betterAuthMake<
+  const Tag extends string,
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+>(
+  tag: BetterAuthLiteralTag<Tag>,
+  factory: BetterAuthSyncGeneratorFactory<Yield, Auth>
+): BetterAuthFactoryServiceToken<Tag, Auth, BetterAuthFactoryRequirements<Yield>>
+
+export function betterAuthMake<
+  const Tag extends string,
+  Yield extends BetterAuthFactoryYield,
+  Auth extends BetterAuthInstance
+>(
+  tag: BetterAuthLiteralTag<Tag>,
+  factory: BetterAuthGeneratorFactory<Yield, Auth>
+): BetterAuthFactoryServiceToken<Tag, Auth, BetterAuthFactoryRequirements<Yield>> {
+  type Required = BetterAuthFactoryRequirements<Yield>
+
+  const AuthService = makeAuthToken<Tag, Auth>(tag)
+  const layer = Layer.gen(AuthService, async function* () {
+    const raw = yield* runGeneratorFactory(factory)
+    return AuthService.of(makeBetterAuthServiceValue(raw))
   })
 
-  // SAFETY: the class is the exact concrete Service class created above and the readonly Layer was attached with a locked descriptor.
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The static class type cannot observe a property attached through Object.defineProperty.
-  return AuthService as unknown as BetterAuthServiceToken<Tag, Auth>
+  // SAFETY: attachLayer adds the locked Layer property to this exact AuthService constructor.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the public token restores its precise Layer requirement channel.
+  return attachLayer(AuthService, layer) as unknown as BetterAuthFactoryServiceToken<
+    Tag,
+    Auth,
+    Required
+  >
 }
+
+/** Compatibility alias for the original prebuilt-instance helper. */
+export const betterAuthService = betterAuthFrom
 
 /** Better Auth integration namespace. */
 export const BetterAuth = Object.freeze({
-  service: betterAuthService
+  make: betterAuthMake,
+  from: betterAuthFrom,
+  /**
+   * @deprecated Use BetterAuth.make for Layer-first construction or BetterAuth.from for a prebuilt instance.
+   */
+  service: betterAuthFrom
 })
 
 /** Type-level aliases colocated with the `BetterAuth` factory. */
@@ -115,8 +268,14 @@ export declare namespace BetterAuth {
   > = BetterAuthServiceInstance<Tag, Auth>
   export type ServiceToken<
     Tag extends string,
-    Auth extends BetterAuthInstance
-  > = BetterAuthServiceToken<Tag, Auth>
+    Auth extends BetterAuthInstance,
+    Required extends AnyService = never
+  > = BetterAuthToken<Tag, Auth, Required>
+  export type FactoryServiceToken<
+    Tag extends string,
+    Auth extends BetterAuthInstance,
+    Required extends AnyService = never
+  > = BetterAuthFactoryServiceToken<Tag, Auth, Required>
   export type Session<Auth extends BetterAuthInstance> = BetterAuthSessionOf<Auth>
   export type SessionApi<Auth extends BetterAuthInstance> = BetterAuthSessionApi<Auth>
   export type SessionSource = BetterAuthSessionSource

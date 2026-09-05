@@ -165,6 +165,46 @@ describe('BetterAuthHono', () => {
     }
   })
 
+  test('declares CurrentSession from a lazy Auth token before its raw instance exists', async () => {
+    const fixture = makeAuth(async (input) =>
+      successSession(input.headers.get('x-user') ?? 'anonymous')
+    )
+    let factoryCalls = 0
+    // oxlint-disable-next-line require-yield -- this factory intentionally has no external requirements.
+    const Auth = BetterAuth.make('@hono-test/LazyAuth', async function* () {
+      factoryCalls += 1
+      return fixture.rawAuth
+    })
+    const CurrentSession = BetterAuthHono.session('@hono-test/LazyCurrentSession', Auth)
+    const runtime = await Runtime.make(Auth.layer)
+    const http = HonoEffect.make(runtime, {
+      requestLayer: CurrentSession.requestLayer,
+      onFailure: () => new Response('failure', { status: 500 })
+    })
+    const app = new Hono()
+    app.use('*', http.middleware())
+    app.get(
+      '/lazy-session',
+      http.gen(async function* () {
+        return Result.ok(yield* CurrentSession.get())
+      })
+    )
+
+    try {
+      expect(factoryCalls).toBe(0)
+      const response = await app.request('/lazy-session', {
+        headers: { 'x-user': 'lazy' }
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ data: successSession('lazy') })
+      expect(factoryCalls).toBe(1)
+      expect(fixture.calls).toHaveLength(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('memoizes a missing session before require and later get calls', async () => {
     const fixture = makeAuth(async () => null)
     const CurrentSession = BetterAuthHono.session('@hono-test/NullSnapshot', fixture.Auth)

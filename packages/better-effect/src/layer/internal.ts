@@ -1,12 +1,12 @@
 import { LayerGeneratorYieldError } from './errors'
 
 import type { ServiceRequirement } from '../effect/types'
-import type { ServiceClass } from '../service'
+import type { ServiceToken } from '../service'
 
 import type { LayerGenerator } from './types'
 
 export const runLayerGenerator = async <
-  S extends ServiceClass<any, any>,
+  S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown>
 >(
   service: S,
