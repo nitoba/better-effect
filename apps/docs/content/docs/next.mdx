@@ -4,28 +4,26 @@ description: Run better-effect Programs inside typed Next.js Route Handlers.
 icon: Globe
 ---
 
-The optional `better-effect/next` entry point adapts an application-owned
-Runtime to the native Next.js App Router Route Handler API. It does not import
-Next.js from the core or main better-effect entry point.
+The optional `better-effect/next` entry point adapts the framework-neutral
+`WebEffect` boundary to native Next.js App Router Route Handlers. It does not
+import Next.js from the core or main better-effect entry point.
 
-Install the adapter with Next.js and better-result:
+Choose the ownership mode explicitly:
 
-```bash
-bun add better-effect better-result next
-```
+| Host situation                                            | API                         |
+| --------------------------------------------------------- | --------------------------- |
+| A route factory is already inside a better-effect Runtime | `NextEffect.fromCurrent`    |
+| Next.js owns module/request/process lifecycle             | `NextEffect.managed(layer)` |
 
-`next` is an optional peer dependency. Only applications that import
-`better-effect/next` need it.
+## Host-owned App Router Runtime
 
-## Create a Route Handler
-
-Create the Runtime once during application startup. `NextEffect.gen` exposes
-Next's asynchronous route `params` and returns the exact
-`(request, context) => Promise<Response>` shape expected by a route file:
+`managed` accepts a complete Layer and creates its Runtime lazily. Concurrent
+first requests share one initialization Promise; root resources remain alive
+until `dispose()`:
 
 ```ts
 import { Result } from 'better-result'
-import { Layer, Runtime, Service } from 'better-effect'
+import { Layer, Service } from 'better-effect'
 import { NextEffect } from 'better-effect/next'
 
 class UserService extends Service<UserService>()('UserService') {
@@ -34,10 +32,22 @@ class UserService extends Service<UserService>()('UserService') {
   }
 }
 
-const runtime = await Runtime.make(Layer.make(UserService))
-const http = NextEffect.make(runtime)
+export const AppNext = NextEffect.managed(Layer.make(UserService), {
+  runtime: { warmup: true }
+})
+```
 
-export const GET = http.gen(async function* (_request, context: RouteContext<'/api/users/[id]'>) {
+Use the manager in a route module. The returned value is the native
+`(request, context) => Promise<Response>` shape expected by Next:
+
+```ts
+import { Result } from 'better-result'
+import { AppNext } from '@/app/runtime'
+
+export const GET = AppNext.gen(async function* (
+  _request,
+  context: RouteContext<'/api/users/[id]'>
+) {
   const { id } = await context.params
   const users = yield* UserService
 
@@ -45,142 +55,69 @@ export const GET = http.gen(async function* (_request, context: RouteContext<'/a
 })
 ```
 
-Next generates the global `RouteContext` type when you run `next typegen` (and
-also during `next build`). You can use `NextEffect.Context<{ ... }>` when an
-application provides its own context type.
+Call `initialize()` from an application startup/instrumentation hook when eager
+warmup is useful, and call `dispose()` from a host lifecycle hook when one is
+available. The manager does not install process signal handlers, call
+`process.exit`, or promise automatic HMR cleanup. It also does not make Edge
+runtime or serverless long-lived resource ownership assumptions for you.
 
-Use `handler` when a complete Program already exists:
+## Embedded Runtime
+
+`fromCurrent` is inert: it creates no Runtime and owns no Layer. Its `handler`
+and `gen` methods return yieldable route materialization operations. Route
+Program requirements are therefore requirements of the surrounding Program:
 
 ```ts
-import { Effect } from 'better-effect'
+const next = NextEffect.fromCurrent()
 
-const getUser = (id: string) =>
-  Effect.fn(async function* () {
+const makeRoutes = Effect.fn(async function* () {
+  const GET = yield* next.gen(async function* (_request, context) {
+    const { id } = await context.params
     const users = yield* UserService
     return Result.ok(users.find(id))
   })
 
-export const GET = http.handler((request, context) => {
-  const id = new URL(request.url).pathname.split('/').at(-1) ?? ''
-  void context
-  return getUser(id)
+  return Result.ok(GET)
 })
 ```
 
-Both forms check the Program's Service requirements against the Runtime Layer.
-A missing Service or incompatible request Layer is rejected at the TypeScript
-boundary. The `Failure` channel is also checked when a typed `onFailure`
-policy is configured.
-
-For a long-lived App Router application, keep the Runtime in an
-application-owned module and expose explicit disposal for the host lifecycle:
-
-```ts
-// app/runtime.ts
-export const appRuntime = await Runtime.make(AppLive)
-
-// Call this from the actual host/server shutdown hook.
-export const disposeAppRuntime = (): Promise<void> => appRuntime.dispose()
-```
-
-Route modules import that Runtime and bind it to the adapter:
-
-```ts
-// app/api/users/[id]/route.ts
-import { appRuntime } from '@/app/runtime'
-
-const http = NextEffect.make(appRuntime)
-```
-
-Do not put this long-lived Runtime in an `await using` scope that ends during
-module initialization; that would dispose it before exported handlers serve
-requests. `NextEffect.make` stores only the Runtime supplied by the caller: it
-does not create a process-global singleton or mutate hidden adapter state.
-Sharing `appRuntime` is an application ownership choice.
+The operation captures the non-owning `Runtime.Executor` when yielded inside a
+Runtime. Yielding it outside an active Runtime fails explicitly.
 
 ## Request context and lifecycle
 
-Each invocation creates exactly one WebEffect execution and child Scope. The
-adapter installs `CurrentRequest` and links the native request's
-`AbortSignal` to `CurrentAbortSignal`. Request-local providers are created by
-`requestLayer` once per request and are released before the returned handler
-Promise resolves:
+Each request uses exactly one `WebEffect.handleWith` execution and child Scope.
+`CurrentRequest` and `CurrentAbortSignal` are available to the Program, custom
+request Layers are built once per request, and request resources are released
+before the handler Promise resolves. Root Layer resources belong to a managed
+manager until disposal; they are never released after an individual request.
+
+Request Layers may depend on Services from the managed root Layer:
 
 ```ts
-const http = NextEffect.make(runtime, {
-  requestLayer: (request, context) =>
-    Layer.scoped(
-      RequestId,
-      () => new RequestId(request.headers.get('x-request-id') ?? 'missing'),
-      (requestId, outcome) => {
-        console.log(requestId.value, outcome.status)
-        void context
-      }
-    )
+const AppNext = NextEffect.managed(AppLive, {
+  requestLayer: (request, context) => CurrentSession.requestLayer(request, context)
 })
 ```
 
-The Runtime remains application-owned; call `disposeAppRuntime()` from the
-actual application/server shutdown hook. Concurrent handlers keep their
-request Layers, requests, and route contexts isolated. Root Layer resources
-remain owned by the Runtime and are not released at the end of an individual
-request.
-
-For a deployment that cannot retain a long-lived Runtime, use the existing
-`Runtime.use` helper explicitly around the handler invocation. This opts into
-creating and disposing a Runtime for that invocation; `NextEffect` never does
-so implicitly:
-
-```ts
-export const GET = (request, context) =>
-  Runtime.use(AppLive, (runtime) =>
-    NextEffect.make(runtime).handler(() => getUser(context))(request, context)
-  )
-```
-
-The adapter does not add Edge-runtime support. Use it only on hosts supported
-by the configured better-effect Runtime.
+The Layer passed to `managed` should represent Services needed by requests, not
+another HTTP server competing with Next. Worker/background ownership and
+deployment-specific lifecycle remain the host application's responsibility.
 
 ## Responses and failures
 
-By default, a successful value is returned as `{ data: value }` JSON. A
-successful `Response` is passed through unchanged. A route may select at most
-one success policy: use `serialize` for a JSON-safe transformation, `respond`
-for complete Response control, or route-level `onSuccess` to replace the
-shared success policy:
+Successful values default to `{ data: value }` JSON. A successful `Response` is
+passed through unchanged. A route may choose one success policy: `serialize`
+for a JSON-safe transformation, `respond` for complete Response control, or a
+route-level `onSuccess` policy. Shared `onSuccess` and `onFailure` policies
+receive the native request and route context. Typed `Result.err` failures use
+`onFailure`; thrown defects remain rejected. Policies may be asynchronous but
+must return a standards-compatible Web `Response`.
 
-```ts
-export const GET = http.gen(
-  async function* () {
-    return Result.ok(await loadSummary())
-  },
-  {
-    serialize: (summary) => ({ id: summary.id, total: summary.total })
-  }
-)
+Install Next.js only when this subpath is used:
 
-export const HEAD = http.handler(() => headProgram, {
-  respond: () => new Response(null, { status: 204 })
-})
+```bash
+bun add better-effect better-result next
 ```
 
-Shared policies receive the native request and Route Handler context:
-
-```ts
-const http = NextEffect.make(runtime, {
-  onSuccess: ({ value }, request, context) =>
-    Response.json({ value, method: request.method, context: Boolean(context) }),
-  onFailure: (error, request, context) => {
-    console.error('request failed', request.url, context)
-    return Response.json({ error: 'Request failed' }, { status: 500 })
-  }
-})
-```
-
-`Result.err` uses `onFailure`; without a custom policy, non-Response failures
-are redacted to `{ error: 'Internal Server Error' }` with status 500. Thrown or
-rejected defects remain rejected rather than being exposed as response bodies.
-Response policies may be asynchronous but must return a standards-compatible
-Web `Response`. Serialization follows the strict rules documented for
-[`better-effect/web`](/docs/web): unsupported values are rejected instead of
-silently dropped or coerced.
+`next` is an optional peer dependency.

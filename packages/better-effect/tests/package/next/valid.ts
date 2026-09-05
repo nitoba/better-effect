@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Layer, Runtime, Service } from 'better-effect'
+import { Layer, Service } from 'better-effect'
 import { NextEffect } from 'better-effect/next'
 
 class RootService extends Service<RootService>()('PackedNextRoot') {
@@ -20,10 +20,9 @@ class Failure extends Error {
 }
 
 type Context = NextEffect.Context<{ readonly id: string }>
-// SAFETY: This declaration-only fixture never executes a Runtime.
-const runtime = {} as Runtime<RootService>
 const requestLayer = Layer.succeed(RequestService, new RequestService('request'))
-const http = NextEffect.make<RootService, Failure, typeof requestLayer, Context>(runtime, {
+const appLayer = Layer.make(RootService)
+const http = NextEffect.managed<typeof appLayer, Failure, typeof requestLayer, Context>(appLayer, {
   requestLayer: (_request, context) => {
     const params: Promise<{ readonly id: string }> = context.params
     void params

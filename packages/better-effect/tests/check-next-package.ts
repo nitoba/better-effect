@@ -81,7 +81,14 @@ const assertBuiltPackage = async (): Promise<void> => {
   )
 
   const nextDeclaration = await Bun.file(join(packageRoot, 'dist/next.d.mts')).text()
-  for (const member of ['Options', 'RouteOptions', 'Context', 'Handler']) {
+  for (const member of [
+    'Options',
+    'ManagedOptions',
+    'ManagedInspection',
+    'RouteOptions',
+    'Context',
+    'Handler'
+  ]) {
     assertCondition(
       new RegExp(`\\btype\\s+${member}(?:\\s*<|\\s*=)`).test(nextDeclaration),
       `Missing NextEffect.${member} declaration`
@@ -90,7 +97,20 @@ const assertBuiltPackage = async (): Promise<void> => {
 
   const nextRuntime = await import(pathToFileURL(join(packageRoot, 'dist/next.mjs')).href)
   assertCondition(nextRuntime.NextEffect !== undefined, 'Missing NextEffect runtime export')
-  for (const member of ['Options', 'RouteOptions', 'Context', 'Handler']) {
+  assertCondition(
+    nextRuntime.NextEffect.fromCurrent !== undefined,
+    'Missing NextEffect.fromCurrent'
+  )
+  assertCondition(nextRuntime.NextEffect.managed !== undefined, 'Missing NextEffect.managed')
+  assertCondition(nextRuntime.NextEffect.make === undefined, 'Removed NextEffect.make is present')
+  for (const member of [
+    'Options',
+    'ManagedOptions',
+    'ManagedInspection',
+    'RouteOptions',
+    'Context',
+    'Handler'
+  ]) {
     assertCondition(
       !Object.prototype.hasOwnProperty.call(nextRuntime.NextEffect, member),
       `NextEffect.${member} type alias leaked to runtime`

@@ -106,9 +106,19 @@ jobs:
             })
           )
 
-          if (typeof NextEffect.make !== 'function') {
-            throw new Error('packed NextEffect subpath smoke test failed')
+          if (
+            typeof NextEffect.fromCurrent !== 'function' ||
+            typeof NextEffect.managed !== 'function' ||
+            NextEffect.make !== undefined
+          ) {
+            throw new Error('packed NextEffect ownership API smoke test failed')
           }
+
+          const managedNext = NextEffect.managed(Layer.empty)
+          if (managedNext.inspect().state !== 'idle') {
+            throw new Error('packed managed NextEffect did not start lazily')
+          }
+          await managedNext.dispose()
 
           if (
             !Result.isOk(result) ||

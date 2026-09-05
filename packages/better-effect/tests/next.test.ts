@@ -1,9 +1,19 @@
+/* oxlint-disable typescript/await-thenable -- Bun's promise matchers are asynchronous despite their matcher return type. */
+
 import { expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
-import { CurrentAbortSignal, Effect, Layer, Runtime, Service, type ScopeOutcome } from '../src'
+import {
+  CurrentAbortSignal,
+  Effect,
+  Layer,
+  Runtime,
+  RuntimeExecutorNotConfiguredError,
+  Service,
+  type ScopeOutcome
+} from '../src'
 import { CurrentRequest } from '../src/standard-services'
-import { NextEffect } from '../src/next'
+import { NextEffect, NextEffectDisposedError } from '../src/next'
 import type { NextEffectProgram } from '../src/next'
 import { RecordedRuntimeObserver } from '../src/testing'
 
@@ -36,10 +46,10 @@ type RouteContext = {
 const request = (url: string, signal?: AbortSignal): Request =>
   new Request(`https://example.test${url}`, signal === undefined ? undefined : { signal })
 
-test('NextEffect runs one WebEffect boundary with explicit context, signal, and serialization', async () => {
+const context = (id = 'item'): RouteContext => ({ params: Promise.resolve({ id }) })
+
+test('NextEffect.managed runs one WebEffect boundary with serialization and request scope cleanup', async () => {
   const observer = RecordedRuntimeObserver.make()
-  const runtime = await Runtime.make(Layer.make(RootService), { observers: [observer] })
-  const controller = new AbortController()
   let requestLayerCalls = 0
   let released = false
   let serializedBeforeRelease = false
@@ -53,29 +63,27 @@ test('NextEffect runs one WebEffect boundary with explicit context, signal, and 
       released = true
     }
   )
-  const http = NextEffect.make<RootService, DomainFailure, typeof requestLayer, RouteContext>(
-    runtime,
-    {
-      requestLayer: (incoming, context) => {
-        requestLayerCalls += 1
-        expect(incoming).toBeInstanceOf(Request)
-        expect(context).toEqual({ params: expect.any(Promise) })
-        return requestLayer
-      },
-      onFailure: () => Response.json({ error: 'failed' }, { status: 500 })
-    }
-  )
+  const http = NextEffect.managed(Layer.make(RootService), {
+    requestLayer: (incoming, routeContext: RouteContext) => {
+      requestLayerCalls += 1
+      expect(incoming).toBeInstanceOf(Request)
+      expect(routeContext).toEqual({ params: expect.any(Promise) })
+      return requestLayer
+    },
+    onFailure: () => Response.json({ error: 'failed' }, { status: 500 }),
+    runtime: { observers: [observer] }
+  })
+  const controller = new AbortController()
 
   const handler = http.handler(
-    (incoming, context) =>
+    (incoming, routeContext: RouteContext) =>
       Effect.fn(async function* () {
         const root = yield* RootService
         const local = yield* RequestService
         const current = yield* CurrentRequest
         const signal = yield* CurrentAbortSignal
-        const { id } = await context.params
+        const { id } = await routeContext.params
 
-        // SAFETY: NextEffect supplies the native Request through CurrentRequest.
         expect(current.request).toBe(incoming)
         expect(signal.aborted).toBe(false)
 
@@ -89,224 +97,280 @@ test('NextEffect runs one WebEffect boundary with explicit context, signal, and 
     }
   )
 
-  try {
-    const responsePromise = handler(request('/items', controller.signal), {
-      params: Promise.resolve({ id: 'item-1' })
-    })
-    const response = await responsePromise
+  const response = await handler(request('/items', controller.signal), context('item-1'))
 
-    expect(await response.json()).toEqual({
-      data: { id: 'item-1', root: 'root', local: 'request-local' }
+  expect(await response.json()).toEqual({
+    data: { id: 'item-1', root: 'root', local: 'request-local' }
+  })
+  expect(response.status).toBe(200)
+  expect(requestLayerCalls).toBe(1)
+  expect(serializedBeforeRelease).toBe(true)
+  expect(released).toBe(true)
+  expect(requestOutcome?.status).toBe('success')
+  expect(observer.executionStarts).toHaveLength(1)
+  expect(observer.executionEnds).toHaveLength(1)
+
+  await http.dispose()
+})
+
+test('NextEffect.fromCurrent captures the active executor and propagates route requirements', async () => {
+  const runtime = await Runtime.make(Layer.make(RootService))
+  const next = NextEffect.fromCurrent()
+  const materialize = Effect.fn(async function* () {
+    const handler = yield* next.gen(async function* () {
+      const root = yield* RootService
+      return Result.ok(root.value())
     })
-    expect(response.status).toBe(200)
-    expect(requestLayerCalls).toBe(1)
-    expect(serializedBeforeRelease).toBe(true)
-    expect(released).toBe(true)
-    expect(requestOutcome?.status).toBe('success')
-    expect(observer.executionStarts).toHaveLength(1)
-    expect(observer.executionEnds).toHaveLength(1)
+
+    return Result.ok(handler)
+  })
+
+  try {
+    const handler = Result.unwrap(await runtime.run(materialize))
+    const response = await handler(request('/current'), context('current'))
+
+    expect(await response.json()).toEqual({ data: 'root' })
   } finally {
     await runtime.dispose()
   }
 })
 
-test('NextEffect maps typed failures, preserves defects, and keeps root ownership', async () => {
-  let rootReleases = 0
-  const runtime = await Runtime.make(
+test('NextEffect.fromCurrent fails explicitly outside a Runtime', () => {
+  const next = NextEffect.fromCurrent()
+  const operation = next.gen(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok('never')
+  })
+  const iterator = operation[Symbol.iterator]()
+
+  expect(() => iterator.next()).toThrow(RuntimeExecutorNotConfiguredError)
+})
+
+test('managed initialization is lazy and shared by concurrent first requests', async () => {
+  const signalListenersBefore = process.listenerCount('SIGINT') + process.listenerCount('SIGTERM')
+  let acquisitions = 0
+  let releaseAcquisition!: () => void
+  const acquisitionGate = new Promise<void>((resolve) => {
+    releaseAcquisition = resolve
+  })
+  const http = NextEffect.managed(
+    Layer.make(RootService, async () => {
+      acquisitions += 1
+      await acquisitionGate
+      return new RootService()
+    }),
+    { runtime: { warmup: true } }
+  )
+  const handler = http.gen(async function* () {
+    const root = yield* RootService
+    return Result.ok(root.value())
+  })
+
+  expect(http.inspect().state).toBe('idle')
+  const first = handler(request('/first'), context('first'))
+  const second = handler(request('/second'), context('second'))
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  expect(http.inspect().state).toBe('initializing')
+  expect(acquisitions).toBe(1)
+
+  releaseAcquisition()
+  const [firstResponse, secondResponse] = await Promise.all([first, second])
+
+  expect(await firstResponse.json()).toEqual({ data: 'root' })
+  expect(await secondResponse.json()).toEqual({ data: 'root' })
+  expect(acquisitions).toBe(1)
+  expect(http.inspect().state).toBe('ready')
+  expect(process.listenerCount('SIGINT') + process.listenerCount('SIGTERM')).toBe(
+    signalListenersBefore
+  )
+
+  await http.dispose()
+  expect(http.inspect().state).toBe('disposed')
+})
+
+test('managed propagates root cleanup failures and leaves the manager disposed', async () => {
+  const cleanupFailure = new Error('root cleanup failed')
+  const http = NextEffect.managed(
     Layer.scoped(
       RootService,
       () => new RootService(),
       () => {
-        rootReleases += 1
+        throw cleanupFailure
       }
-    )
+    ),
+    { runtime: { warmup: true } }
   )
-  const failure = new DomainFailure('private')
-  let failureRequest: Request | undefined
-  let failureContext: RouteContext | undefined
-  await runtime.warmup()
-  const http = NextEffect.make<
-    RootService,
-    DomainFailure,
-    ReturnType<typeof CurrentRequest.layer>,
-    RouteContext
-  >(runtime, {
-    onFailure: (error, incoming, context) => {
-      expect(error).toBe(failure)
-      failureRequest = incoming
-      failureContext = context
-      return Response.json({ error: 'safe' }, { status: 422 })
-    }
-  })
 
-  try {
-    const failureHandler = http.gen(async function* (_incoming, _context) {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
-      return Result.err(failure)
-    })
-    const failureResponse = await failureHandler(request('/failure'), {
-      params: Promise.resolve({ id: 'failure' })
-    })
-
-    expect(failureResponse.status).toBe(422)
-    expect(await failureResponse.json()).toEqual({ error: 'safe' })
-    expect(failureRequest?.url).toBe('https://example.test/failure')
-    expect(failureContext).toEqual({ params: expect.any(Promise) })
-
-    const defect = new Error('defect')
-    const rejectingProgram = async () => {
-      throw defect
-    }
-    // SAFETY: This fixture deliberately supplies a rejecting Program to preserve the original defect.
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the test intentionally erases the Program's phantom metadata.
-    const defectProgram = rejectingProgram as unknown as NextEffectProgram<never, never, never>
-    const defectHandler = http.handler(() => defectProgram)
-    let caughtDefect: unknown
-    try {
-      await defectHandler(request('/defect'), { params: Promise.resolve({ id: 'defect' }) })
-    } catch (cause) {
-      caughtDefect = cause
-    }
-    expect(caughtDefect).toBe(defect)
-  } finally {
-    await runtime.dispose()
-  }
-
-  expect(rootReleases).toBe(1)
+  await http.initialize()
+  await expect(http.dispose()).rejects.toThrow('Failed to dispose Layer')
+  expect(http.inspect().state).toBe('disposed')
 })
 
-test('NextEffect isolates concurrent request Layers and CurrentRequest values', async () => {
-  const runtime = await Runtime.make(Layer.make(RootService))
-  let arrived = 0
-  let allowRequests!: () => void
-  const bothArrived = new Promise<void>((resolve) => {
-    allowRequests = resolve
+test('managed initialization failure is memoized until disposal', async () => {
+  let attempts = 0
+  const failure = new Error('init failed')
+  const http = NextEffect.managed(
+    Layer.make(RootService, () => {
+      attempts += 1
+      throw failure
+    }),
+    { runtime: { warmup: true } }
+  )
+
+  let firstFailure: unknown
+  try {
+    await http.initialize()
+  } catch (cause) {
+    firstFailure = cause
+  }
+
+  let secondFailure: unknown
+  try {
+    await http.initialize()
+  } catch (cause) {
+    secondFailure = cause
+  }
+
+  expect(firstFailure).toBeInstanceOf(Error)
+  expect(secondFailure).toBe(firstFailure)
+  expect(attempts).toBe(1)
+  expect(http.inspect().state).toBe('failed')
+
+  await http.dispose()
+  await expect(http.dispose()).resolves.toBeUndefined()
+})
+
+test('dispose during initialization drains the shared initialization and is idempotent', async () => {
+  let releaseInitialization!: () => void
+  const initializationGate = new Promise<void>((resolve) => {
+    releaseInitialization = resolve
   })
+  const http = NextEffect.managed(
+    Layer.make(RootService, async () => {
+      await initializationGate
+      return new RootService()
+    }),
+    { runtime: { warmup: true } }
+  )
+
+  const initialized = http.initialize()
+  const firstDispose = http.dispose()
+  const secondDispose = http.dispose()
+
+  expect(firstDispose).toBe(secondDispose)
+  expect(http.inspect().state).toBe('disposing')
+  releaseInitialization()
+
+  await expect(initialized).resolves.toBeUndefined()
+  await expect(firstDispose).resolves.toBeUndefined()
+  expect(http.inspect().state).toBe('disposed')
+})
+
+test('dispose blocks new requests while admitted requests drain', async () => {
+  let allowRequest!: () => void
+  const requestGate = new Promise<void>((resolve) => {
+    allowRequest = resolve
+  })
+  const http = NextEffect.managed(Layer.make(RootService))
+  const handler = http.gen(async function* () {
+    yield* RootService
+    await requestGate
+    return Result.ok('done')
+  })
+
+  const active = handler(request('/active'), context('active'))
+  await Promise.resolve()
+  const disposing = http.dispose()
+
+  await expect(handler(request('/late'), context('late'))).rejects.toBeInstanceOf(
+    NextEffectDisposedError
+  )
+  allowRequest()
+
+  await expect(active).resolves.toBeInstanceOf(Response)
+  await expect(disposing).resolves.toBeUndefined()
+})
+
+test('managed request Layers remain isolated and compatible overrides work', async () => {
   let releases = 0
-  const http = NextEffect.make<RootService, unknown, Layer.Any, RouteContext>(runtime, {
-    requestLayer: (incoming) => {
-      // SAFETY: This test intentionally erases the request Layer to model the documented unchecked escape hatch.
-      return Layer.scoped(
+  const http = NextEffect.managed(Layer.make(RootService), {
+    requestLayer: (incoming: Request) =>
+      Layer.scoped(
         RequestService,
         () => new RequestService(new URL(incoming.url).pathname),
         () => {
           releases += 1
         }
-      ) as Layer.Any
-    }
+      )
   })
   const handler = http.handler((_incoming) =>
     Effect.fn(async function* () {
       const local = yield* RequestService
       const current = yield* CurrentRequest
-      arrived += 1
-      if (arrived === 2) {
-        allowRequests()
-      }
-      await bothArrived
-
-      // SAFETY: NextEffect supplies the native Request through CurrentRequest.
-      const currentRequest = current.request as Request
-      return Result.ok({ local: local.value, current: currentRequest.url })
+      // SAFETY: CurrentRequest is supplied by the Next WebEffect boundary with the native Request value.
+      return Result.ok({ local: local.value, current: (current.request as Request).url })
     })
   )
 
-  try {
-    const [first, second] = await Promise.all([
-      handler(request('/first'), { params: Promise.resolve({ id: 'first' }) }),
-      handler(request('/second'), { params: Promise.resolve({ id: 'second' }) })
-    ])
+  const [first, second] = await Promise.all([
+    handler(request('/first'), context('first')),
+    handler(request('/second'), context('second'))
+  ])
 
-    expect(await first.json()).toEqual({
-      data: {
-        local: '/first',
-        current: 'https://example.test/first'
-      }
-    })
-    expect(await second.json()).toEqual({
-      data: {
-        local: '/second',
-        current: 'https://example.test/second'
-      }
-    })
-    expect(releases).toBe(2)
-  } finally {
-    await runtime.dispose()
-  }
-})
+  expect(await first.json()).toEqual({
+    data: { local: '/first', current: 'https://example.test/first' }
+  })
+  expect(await second.json()).toEqual({
+    data: { local: '/second', current: 'https://example.test/second' }
+  })
+  expect(releases).toBe(2)
+  await http.dispose()
 
-test('NextEffect permits compatible same-tag request overrides', async () => {
-  const runtime = await Runtime.make(Layer.make(RootService))
-  const http = NextEffect.make(runtime, {
+  const override = NextEffect.managed(Layer.make(RootService), {
     requestLayer: () => Layer.succeed(RootOverride, new RootOverride())
   })
-
-  try {
-    const response = await http.handler(() =>
-      Effect.fn(async function* () {
-        const root = yield* RootService
-        return Result.ok(root.value())
-      })
-    )(request('/override'), { params: Promise.resolve({ id: 'override' }) })
-
-    expect(await response.json()).toEqual({ data: 'override' })
-  } finally {
-    await runtime.dispose()
-  }
+  const overrideHandler = override.handler(() =>
+    Effect.fn(async function* () {
+      const root = yield* RootService
+      return Result.ok(root.value())
+    })
+  )
+  const response = await overrideHandler(request('/override'), context('override'))
+  expect(await response.json()).toEqual({ data: 'override' })
+  await override.dispose()
 })
 
-test('NextEffect inherits WebEffect JSON success and redacted failure policies', async () => {
-  const runtime = await Runtime.make(Layer.empty)
-  const http = NextEffect.make(runtime)
+test('managed maps typed failures and preserves defects', async () => {
+  const failure = new DomainFailure('private')
+  const http = NextEffect.managed(Layer.empty, {
+    onFailure: (error: DomainFailure) => Response.json({ error: error.message }, { status: 422 })
+  })
 
-  try {
-    const success = http.gen(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
-      return Result.ok({ value: 'ok' })
-    })
-    const failure = http.gen(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
-      return Result.err(new Error('private detail'))
-    })
-    const invalidSerialization = http.gen(
-      async function* () {
-        yield* Result.await(Promise.resolve(Result.ok(undefined)))
-        return Result.ok('invalid')
-      },
-      {
-        // SAFETY: This runtime fixture verifies that the boundary rejects an invalid callback result.
-        serialize: () => new Date() as never
-      }
-    )
-    const context = { params: Promise.resolve({ id: 'policy' }) }
+  const failureHandler = http.gen(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.err(failure)
+  })
+  const failureResponse = await failureHandler(request('/failure'), context('failure'))
 
-    const successResponse = await success(request('/policy'), context)
-    const failureResponse = await failure(request('/policy-failure'), context)
+  expect(failureResponse.status).toBe(422)
+  expect(await failureResponse.json()).toEqual({ error: 'private' })
 
-    expect(successResponse.status).toBe(200)
-    expect(await successResponse.json()).toEqual({ data: { value: 'ok' } })
-    expect(failureResponse.status).toBe(500)
-    expect(await failureResponse.json()).toEqual({ error: 'Internal Server Error' })
-
-    let serializationError: unknown
-    try {
-      await invalidSerialization(request('/invalid'), context)
-    } catch (cause) {
-      serializationError = cause
-    }
-    expect(serializationError).toBeInstanceOf(TypeError)
-    // SAFETY: The preceding assertion narrows this caught cause to an Error instance.
-    expect((serializationError as Error).message).toContain(
-      'WebEffect default success serialization'
-    )
-  } finally {
-    await runtime.dispose()
+  const defect = new Error('defect')
+  const rejectingProgram = async () => {
+    throw defect
   }
+  // SAFETY: This fixture deliberately erases the Program's phantom metadata to preserve a thrown defect.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+  const defectProgram = rejectingProgram as unknown as NextEffectProgram<never, never, never>
+  const defectHandler = http.handler(() => defectProgram)
+
+  await expect(defectHandler(request('/defect'), context('defect'))).rejects.toBe(defect)
+  await http.dispose()
 })
 
-test('NextEffect rejects conflicting route success policies at runtime', async () => {
-  const runtime = await Runtime.make(Layer.empty)
-  const http = NextEffect.make(runtime)
+test('route success policies remain exclusive at runtime', async () => {
+  const http = NextEffect.managed(Layer.empty)
   const program = Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok('ok')
@@ -317,14 +381,12 @@ test('NextEffect rejects conflicting route success policies at runtime', async (
     { serialize: () => null, onSuccess: () => new Response('ok') }
   ]
 
-  try {
-    for (const options of conflictingPolicies) {
-      // SAFETY: This test deliberately erases the exclusive policy union to model JavaScript input.
-      expect(() => http.handler(() => program, options as never)).toThrow(
-        'at most one success policy'
-      )
-    }
-  } finally {
-    await runtime.dispose()
+  for (const options of conflictingPolicies) {
+    // SAFETY: This fixture erases the exclusive route option union to exercise JavaScript input validation.
+    expect(() => http.handler(() => program, options as never)).toThrow(
+      'at most one success policy'
+    )
   }
+
+  await http.dispose()
 })

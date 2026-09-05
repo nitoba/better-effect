@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Next.js integration
+
+- Replaced `NextEffect.make` with explicit `NextEffect.fromCurrent` and
+  `NextEffect.managed(layer)` ownership modes. Managed adapters lazily share one
+  Runtime per manager, expose initialize/inspect/dispose lifecycle controls, and
+  drain admitted requests without installing process signal handlers.
+
 ### Better Auth integration package
 
 The independent `better-effect-better-auth` package is prepared for its first

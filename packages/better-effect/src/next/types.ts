@@ -2,16 +2,26 @@ import type { Result as ResultType } from 'better-result'
 
 import type {
   EffectError,
+  EffectRequirements,
   EffectYield,
   Program as ProgramType,
-  ProgramFromGenerator
+  ProgramFromGenerator,
+  ServiceRequirement
 } from '../effect/types'
-import type { WebRequestLayerChecks } from '../web/types'
-import type { ExecutionMissing, LayerInput, ProvidedEnvironment } from '../layer/inference'
+import type {
+  ExecutionMissing,
+  LayerInput,
+  MissingServices,
+  ProvidedEnvironment,
+  RequiredEnvironment,
+  ValidateLayerInput,
+  ValidateOneOverride
+} from '../layer/inference'
+import type { RuntimeInspection, RuntimeOptions } from '../runtime'
 import type { AnyService } from '../service'
 import type { MissingDependencies } from '../internal/missing-dependencies'
 import type { CurrentRequest } from '../standard-services/current-request'
-import type { WebJsonValue } from '../web/types'
+import type { WebJsonValue, WebRequestLayerChecks } from '../web/types'
 
 /** Route parameters exposed by Next.js App Router contexts. */
 export type NextEffectParams = {
@@ -59,11 +69,15 @@ export type AvailableServices<Provided extends AnyService, RequestLayer extends 
   | InstanceType<typeof CurrentRequest>
   | ProvidedEnvironment<RequestLayer>
 
-/** Validate a request Layer against a Runtime and the built-in CurrentRequest provider. */
+/** Validate a request Layer against a managed Runtime and CurrentRequest. */
 export type NextRequestLayerChecks<
   Provided extends AnyService,
   RequestLayer extends LayerInput
 > = WebRequestLayerChecks<Provided, RequestLayer>
+
+/** Validate a request Layer for the embedded mode, whose root environment is external. */
+export type FromCurrentRequestLayerChecks<RequestLayer extends LayerInput> =
+  ValidateLayerInput<RequestLayer> & ValidateOneOverride<DefaultRequestLayer, RequestLayer>
 
 type InvalidFailure<Actual, Expected> = {
   readonly __betterEffectInvalidNextFailure: {
@@ -76,7 +90,22 @@ type FailureCheck<Failure, Actual> = [Actual] extends [Failure]
   ? unknown
   : InvalidFailure<Actual, Failure>
 
-/** Services and failures checked for one route Program. */
+/** Services supplied by the embedded request boundary itself. */
+type RequestBoundaryServices<RequestLayer extends LayerInput> = Extract<
+  InstanceType<typeof CurrentRequest> | ProvidedEnvironment<RequestLayer>,
+  AnyService
+>
+
+/** Requirements that must be supplied by the Runtime containing a fromCurrent builder. */
+export type FromCurrentRequirements<
+  Program extends AnyProgram,
+  RequestLayer extends LayerInput
+> = MissingServices<
+  Extract<EffectRequirements<Program> | RequiredEnvironment<RequestLayer>, AnyService>,
+  RequestBoundaryServices<RequestLayer>
+>
+
+/** Services and failures checked for one managed route Program. */
 export type NextProgramChecks<
   Provided extends AnyService,
   RequestLayer extends LayerInput,
@@ -95,7 +124,7 @@ export type CompleteNextProgram<
   Failure = unknown
 > = Program & NextProgramChecks<Provided, RequestLayer, Program, Failure>
 
-/** Convert a route Program factory into a checked factory at the public boundary. */
+/** Convert a managed route Program factory into a checked factory. */
 export type NextHandlerFactory<
   Context extends object,
   Provided extends AnyService,
@@ -111,6 +140,22 @@ export type NextHandlerFactory<
         request: Request,
         context: Context
       ) => CompleteNextProgram<Provided, RequestLayer, ReturnType<ProgramFactory>, Failure>)
+
+/** Convert an embedded route Program factory into a failure-checked factory. */
+export type FromCurrentHandlerFactory<
+  Context extends object,
+  Failure,
+  ProgramFactory extends (request: Request, context: Context) => AnyProgram
+> = ProgramFactory &
+  ([ReturnType<ProgramFactory>] extends [
+    ReturnType<ProgramFactory> & FailureCheck<Failure, EffectError<ReturnType<ProgramFactory>>>
+  ]
+    ? unknown
+    : (
+        request: Request,
+        context: Context
+      ) => ReturnType<ProgramFactory> &
+        FailureCheck<Failure, EffectError<ReturnType<ProgramFactory>>>)
 
 /** A generator body used by `NextEffect.gen`. */
 export type GeneratorBody<
@@ -138,6 +183,31 @@ export type NextEffectOptions<
   ) => ResponseLike
   /** Convert a typed Program failure to a native Response. */
   readonly onFailure?: (error: Failure, request: Request, context: Context) => ResponseLike
+}
+
+/** Runtime options accepted by a managed NextEffect, excluding backend ownership. */
+export type NextEffectManagedRuntimeOptions = Omit<RuntimeOptions, 'backend'>
+
+/** Options for `NextEffect.managed`. */
+export type NextEffectManagedOptions<
+  Failure = unknown,
+  RequestLayer extends LayerInput = DefaultRequestLayer,
+  Context extends object = NextEffectContext
+> = NextEffectOptions<Failure, RequestLayer, Context> & {
+  /** Runtime warmup, observers and host-specific context options. */
+  readonly runtime?: NextEffectManagedRuntimeOptions
+}
+
+/** A detached diagnostic snapshot of a managed NextEffect manager. */
+export type NextEffectManagedInspection = {
+  readonly state: 'idle' | 'initializing' | 'ready' | 'failed' | 'disposing' | 'disposed'
+  readonly runtime?: RuntimeInspection
+}
+
+/** A yieldable value returned by fromCurrent route materialization. */
+export type NextEffectYieldable<Value, Required extends AnyService = never> = {
+  [Symbol.iterator](): Generator<ServiceRequirement<Required>, Value, unknown>
+  [Symbol.asyncIterator](): AsyncGenerator<ServiceRequirement<Required>, Value, unknown>
 }
 
 /** Options for one typed route success policy. */
@@ -176,7 +246,7 @@ export type NextEffectRouteOptions<
   Context extends object = NextEffectContext
 > = NextEffectRouteSuccessPolicy<A, Context>
 
-/** Service and Failure checks for a generator-created route Program. */
+/** Service and Failure checks for a managed generator-created route Program. */
 export type NextGeneratorChecks<
   Provided extends AnyService,
   RequestLayer extends LayerInput,
@@ -184,3 +254,10 @@ export type NextGeneratorChecks<
   Returned extends AnyResult,
   Failure = unknown
 > = NextProgramChecks<Provided, RequestLayer, ProgramFromGenerator<Yield, Returned>, Failure>
+
+/** Failure checks for an embedded generator-created route Program. */
+export type FromCurrentGeneratorChecks<
+  Yield extends EffectYield,
+  Returned extends AnyResult,
+  Failure = unknown
+> = FailureCheck<Failure, EffectError<ProgramFromGenerator<Yield, Returned>>>

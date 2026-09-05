@@ -1,6 +1,6 @@
 import { Result } from 'better-result'
 
-import { Layer, Runtime, Service } from 'better-effect'
+import { Layer, Service } from 'better-effect'
 import { NextEffect } from 'better-effect/next'
 
 class ItemService extends Service<ItemService>()('NextFixtureItemService') {
@@ -9,8 +9,7 @@ class ItemService extends Service<ItemService>()('NextFixtureItemService') {
   }
 }
 
-const runtime = await Runtime.make(Layer.make(ItemService))
-const http = NextEffect.make(runtime)
+const http = NextEffect.managed(Layer.make(ItemService))
 
 const getItem = http.gen(
   async function* (_request, context: RouteContext<'/api/items/[id]'>) {
