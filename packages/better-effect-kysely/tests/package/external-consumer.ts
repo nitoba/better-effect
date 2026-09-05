@@ -180,23 +180,6 @@ const typecheck = (fixture: string): void => {
     run(['bun', 'x', 'tsc', '-p', 'tsconfig.json', '--pretty', 'false'], fixture),
     'External consumer current TypeScript typecheck'
   )
-  assertSuccess(
-    run(
-      [
-        'bunx',
-        '--bun',
-        '--package',
-        'typescript@5.7.2',
-        'tsc',
-        '-p',
-        'tsconfig.json',
-        '--pretty',
-        'false'
-      ],
-      fixture
-    ),
-    'External consumer TypeScript 5.7.2 typecheck'
-  )
 }
 
 const smoke = (runtime: 'bun' | 'node', fixture: string): void => {
@@ -213,10 +196,14 @@ const sqliteSmoke = (fixture: string, runtime: RuntimeName): void => {
   )
 }
 
-const assertNode24 = (): void => {
+const assertNodeLts = (): void => {
   const result = run(['node', '--version'], packageRoot)
   assertSuccess(result, 'Checking Node.js version')
-  assertCondition(result.output.trim().startsWith('v24.'), 'The smoke test requires Node.js 24')
+  const major = /^v(\d+)\./u.exec(result.output.trim())?.[1]
+  assertCondition(
+    major !== undefined && Number(major) >= 24,
+    'The smoke test requires the current Node.js LTS (24 or newer)'
+  )
 }
 
 const reportVersions = async (fixture: string, label: string): Promise<void> => {
@@ -304,7 +291,7 @@ const runImportConsumer = async (root: string, archives: ArchiveSet): Promise<vo
 }
 
 const main = async (): Promise<void> => {
-  assertNode24()
+  assertNodeLts()
   const root = await mkdtemp(join(tmpdir(), 'better-effect-kysely-consumer-'))
   const previousCache = process.env.BUN_INSTALL_CACHE_DIR
   process.env.BUN_INSTALL_CACHE_DIR = join(root, 'bun-cache')

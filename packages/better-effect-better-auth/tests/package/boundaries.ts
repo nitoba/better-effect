@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import * as ts from 'typescript'
+import { scanModuleSpecifiers } from '../../../../scripts/scan-module-specifiers.ts'
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const repositoryRoot = resolve(packageRoot, '../..')
@@ -24,7 +24,7 @@ const expectedPeers = {
   'better-effect': '>=0.12.0 <0.14.0',
   'better-result': '^3.0.0',
   hono: '>=4.0.0',
-  typescript: '>=5.7.0'
+  typescript: '>=6.0.0'
 } as const satisfies Record<string, string>
 
 const forbiddenPackagePrefixes = [
@@ -123,106 +123,8 @@ const collectFiles = async (root: string): Promise<string[]> => {
   return files.sort()
 }
 
-const scriptKindFor = (path: string): ts.ScriptKind => {
-  switch (extname(path)) {
-    case '.js':
-    case '.mjs':
-    case '.cjs':
-      return ts.ScriptKind.JS
-    case '.jsx':
-      return ts.ScriptKind.JSX
-    case '.tsx':
-      return ts.ScriptKind.TSX
-    default:
-      return ts.ScriptKind.TS
-  }
-}
-
-const staticModuleSpecifier = (node: ts.Node | undefined): string | undefined => {
-  if (node === undefined) {
-    return undefined
-  }
-
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return node.text
-  }
-
-  if (ts.isLiteralTypeNode(node)) {
-    return staticModuleSpecifier(node.literal)
-  }
-
-  if (ts.isParenthesizedExpression(node)) {
-    return staticModuleSpecifier(node.expression)
-  }
-
-  if (ts.isAsExpression(node)) {
-    return staticModuleSpecifier(node.expression)
-  }
-
-  if (ts.isTypeAssertionExpression(node)) {
-    return staticModuleSpecifier(node.expression)
-  }
-
-  if (ts.isSatisfiesExpression(node)) {
-    return staticModuleSpecifier(node.expression)
-  }
-
-  if (ts.isNonNullExpression(node)) {
-    return staticModuleSpecifier(node.expression)
-  }
-
-  return undefined
-}
-
-const moduleSpecifiers = (source: string, path: string): string[] => {
-  const sourceFile = ts.createSourceFile(
-    path,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKindFor(path)
-  )
-  const specifiers = new Set<string>()
-
-  const addDeclarationSpecifier = (node: ts.Node | undefined, kind: string): void => {
-    const specifier = staticModuleSpecifier(node)
-
-    assertCondition(specifier !== undefined, `Unverifiable ${kind} in ${path}`)
-    specifiers.add(specifier)
-  }
-
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) {
-      addDeclarationSpecifier(node.moduleSpecifier, 'import declaration')
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
-      addDeclarationSpecifier(node.moduleSpecifier, 'export declaration')
-    } else if (ts.isImportTypeNode(node)) {
-      addDeclarationSpecifier(node.argument, 'import type')
-    } else if (ts.isImportEqualsDeclaration(node)) {
-      const reference = node.moduleReference
-
-      if (ts.isExternalModuleReference(reference)) {
-        addDeclarationSpecifier(reference.expression, 'import-equals declaration')
-      }
-    } else if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const callName = ts.isIdentifier(node.expression) ? node.expression.text : undefined
-
-      if (isDynamicImport || callName === 'require' || callName === '__require') {
-        const kind = isDynamicImport
-          ? 'dynamic import'
-          : `${callName === '__require' ? 'emitted helper' : 'static'} require`
-        addDeclarationSpecifier(node.arguments[0], kind)
-      }
-    }
-
-    ts.forEachChild(node, visit)
-  }
-
-  visit(sourceFile)
-
-  return [...specifiers]
-}
+const moduleSpecifiers = (source: string, path: string): string[] =>
+  scanModuleSpecifiers(source, path)
 
 const isForbiddenPackage = (specifier: string): boolean =>
   specifier === 'node:sqlite' ||
@@ -393,7 +295,6 @@ const assertPackageManifest = (): void => {
     'build',
     'typecheck',
     'test:types',
-    'test:types:minimum',
     'test',
     'test:package-boundaries',
     'test:package-consumer',
@@ -425,7 +326,7 @@ const assertRepositoryIntegration = async (): Promise<void> => {
     'Root publint script must include better-effect-better-auth'
   )
   assertCondition(
-    repositoryManifest['packageManager'] === 'bun@1.3.14',
+    repositoryManifest['packageManager'] === 'bun@1.4.2',
     'Repository Bun version changed unexpectedly'
   )
 

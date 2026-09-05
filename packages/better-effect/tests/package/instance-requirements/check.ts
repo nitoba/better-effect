@@ -17,10 +17,6 @@ const compilers = [
   {
     name: 'current',
     command: ['bun', 'run', '--silent', 'tsc', '--']
-  },
-  {
-    name: 'ts5.7',
-    command: ['bunx', '--bun', '--package', 'typescript@5.7.2', 'tsc']
   }
 ] as const
 
@@ -126,7 +122,9 @@ try {
       'tests/package/instance-requirements/tsconfig.invalid-runtime.json'
     )
     assertCondition(
-      /MissingDependencies\s*<\s*Logger\s*\|\s*Cache\s*>/.test(runtimeOutput),
+      /MissingDependencies\s*<\s*(?:Logger\s*\|\s*Cache|Cache\s*\|\s*Logger)\s*>/.test(
+        runtimeOutput
+      ),
       `${compiler.name} Runtime diagnostic lost MissingDependencies<Logger | Cache>:\n${runtimeOutput}`
     )
     const layerOutput = requireFailure(

@@ -27,8 +27,7 @@ const performanceLock = join(
 )
 let fixtureCorePackageRoot = corePackageRoot
 let fixtureMqPackageRoot = mqPackageRoot
-const minimumTypeScriptVersion = '5.7.2'
-const currentTypeScriptVersion = '6.0.3'
+const currentTypeScriptVersion = '7.0.2'
 const performanceLockStaleAfterMs = 60_000
 
 const sizes = [10, 25, 50, 100] as const
@@ -62,7 +61,7 @@ const scenarios = [
   'kysely'
 ] as const
 type Scenario = (typeof scenarios)[number]
-type Compiler = 'current' | 'minimum'
+type Compiler = 'current'
 
 type Metrics = {
   readonly files: number
@@ -327,7 +326,7 @@ const stagePublicPackages = async (
           type: 'module',
           dependencies: Object.fromEntries(dependencies),
           devDependencies: {
-            '@types/bun': '1.3.14',
+            '@types/bun': '1.4.1',
             typescript: currentTypeScriptVersion
           }
         },
@@ -1386,13 +1385,9 @@ const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string
 
 const runTsc = async (
   fixture: string,
-  compiler: Compiler,
   usePublicDeclarations: boolean
 ): Promise<{ readonly metrics: Metrics; readonly error: string | undefined }> => {
-  const compilerCommand =
-    compiler === 'minimum'
-      ? ['bunx', '--bun', '--package', `typescript@${minimumTypeScriptVersion}`, 'tsc']
-      : await currentTscCommand(usePublicDeclarations)
+  const compilerCommand = await currentTscCommand(usePublicDeclarations)
   const typeRoots = usePublicDeclarations
     ? join(fixtureRoot, 'node_modules/@types')
     : join(repoRoot, 'packages/better-effect/node_modules/@types')
@@ -1515,14 +1510,7 @@ const formatRow = (result: Result): string => {
   ].join(' | ')
 }
 
-const compilersFor = (scenario: Scenario): readonly Compiler[] =>
-  scenario === 'better-auth' ||
-  scenario === 'job-registry' ||
-  scenario === 'job-store' ||
-  scenario === 'job-producer' ||
-  scenario === 'worker-handlers'
-    ? ['current', 'minimum']
-    : ['current']
+const compilersFor = (): readonly Compiler[] => ['current']
 
 const createIsolatedPackageRoot = async (sourceRoot: string, targetRoot: string): Promise<void> => {
   await mkdir(targetRoot, { recursive: true })
@@ -1717,8 +1705,8 @@ const runPreparedPerformance = async (
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)
-      for (const compiler of compilersFor(scenario)) {
-        const run = await runTsc(fixture, compiler, usePublicDeclarations)
+      for (const compiler of compilersFor()) {
+        const run = await runTsc(fixture, usePublicDeclarations)
         const budgetExceeded = budgetFailures(scenario, size, run.metrics)
 
         if (run.error) {

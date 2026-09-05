@@ -11,8 +11,8 @@ bun add better-effect better-result
 ```
 
 The published Runtime entrypoint is officially supported on Node.js and Bun.
-The tested runtime matrix is Node.js 24 and Bun 1.3.14, and the default runtime
-context uses Node/Bun async context propagation. `bun run check` also deletes
+The repository uses the latest Bun release by default and the current Node.js
+LTS for interoperability smoke tests. `bun run check` also deletes
 and rebuilds `dist`, packs the result into a temporary consumer, and runs the
 full Node/Bun `NodeRuntime` child-process suite.
 

@@ -980,8 +980,9 @@ bun add better-effect-mq better-effect better-result
 ```
 
 The package requires `better-effect` `>=0.13.0 <0.14.0` and
-`better-result` `^3.0.0`. TypeScript `5.7` or newer is supported, together
-with the Node.js and Bun runtime matrix used by this repository.
+`better-result` `^3.0.0`. TypeScript `6.0` or newer is supported, together
+with the latest Bun release used by default and Node.js LTS interoperability
+smoke tests.
 
 ### Repository validation
 

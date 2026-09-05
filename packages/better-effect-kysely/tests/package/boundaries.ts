@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import * as ts from 'typescript'
+import { scanModuleSpecifiers } from '../../../../scripts/scan-module-specifiers.ts'
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const repositoryRoot = resolve(packageRoot, '../..')
@@ -21,7 +21,7 @@ const expectedPeers = {
   'better-effect': '>=0.13.0 <0.14.0',
   'better-result': '^3.0.0',
   kysely: '>=0.29.5 <0.30.0',
-  typescript: '>=5.7.0'
+  typescript: '>=6.0.0'
 } as const
 
 const allowedExternalImports = new Set(['better-effect', 'better-result', 'kysely'])
@@ -91,63 +91,8 @@ const collectFiles = async (root: string): Promise<string[]> => {
   return files.sort()
 }
 
-const scriptKindFor = (path: string): ts.ScriptKind => {
-  switch (extname(path)) {
-    case '.js':
-    case '.mjs':
-    case '.cjs':
-      return ts.ScriptKind.JS
-    case '.jsx':
-      return ts.ScriptKind.JSX
-    case '.tsx':
-      return ts.ScriptKind.TSX
-    default:
-      return ts.ScriptKind.TS
-  }
-}
-
-const staticSpecifier = (node: ts.Node | undefined): string | undefined => {
-  if (node === undefined) return undefined
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
-  if (ts.isLiteralTypeNode(node)) return staticSpecifier(node.literal)
-  if (ts.isParenthesizedExpression(node)) return staticSpecifier(node.expression)
-  if (ts.isAsExpression(node)) return staticSpecifier(node.expression)
-  if (ts.isTypeAssertionExpression(node)) return staticSpecifier(node.expression)
-  if (ts.isSatisfiesExpression(node)) return staticSpecifier(node.expression)
-  if (ts.isNonNullExpression(node)) return staticSpecifier(node.expression)
-  return undefined
-}
-
-const moduleSpecifiers = (source: string, path: string): string[] => {
-  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKindFor(path))
-  const specifiers = new Set<string>()
-  const add = (node: ts.Node | undefined, kind: string): void => {
-    const specifier = staticSpecifier(node)
-    assertCondition(specifier !== undefined, `Unverifiable ${kind} in ${path}`)
-    specifiers.add(specifier)
-  }
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) add(node.moduleSpecifier, 'import declaration')
-    else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
-      add(node.moduleSpecifier, 'export declaration')
-    } else if (ts.isImportTypeNode(node)) add(node.argument, 'import type')
-    else if (
-      ts.isImportEqualsDeclaration(node) &&
-      ts.isExternalModuleReference(node.moduleReference)
-    ) {
-      add(node.moduleReference.expression, 'import-equals declaration')
-    } else if (ts.isCallExpression(node)) {
-      const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const name = ts.isIdentifier(node.expression) ? node.expression.text : undefined
-      if (dynamic || name === 'require' || name === '__require') {
-        add(node.arguments[0], dynamic ? 'dynamic import' : `${name} call`)
-      }
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(file)
-  return [...specifiers]
-}
+const moduleSpecifiers = (source: string, path: string): string[] =>
+  scanModuleSpecifiers(source, path)
 
 const isForbiddenPackage = (specifier: string): boolean =>
   forbiddenPackagePrefixes.some(

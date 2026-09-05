@@ -148,7 +148,7 @@ owned-vs-borrowed cleanup, lost responses, and layout migration. Use failpoints
 around every transaction/script commit and wake registration boundary.
 
 Before publishing, run typecheck and declarations with the project compiler and
-TypeScript 5.7.2, the complete `bun:test` suite, build, lint, format check,
+the current TypeScript 7.x compiler, the complete `bun:test` suite, build, lint, format check,
 publint, package boundaries, and the external tarball consumer. Inspect the
 archive and ensure it contains no source, tests, credentials, private client
 identifiers, or workspace/file references.

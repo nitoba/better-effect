@@ -3,7 +3,7 @@
 **Package:** `better-effect-zod@0.1.0`
 **Date:** 2026-09-02
 
-**Declared compatibility:** Zod `>=4.5.4 <5`, better-result `^3.0.0`, better-effect `>=0.13.0 <0.14.0`, TypeScript `>=5.7.0`, Node.js `>=20`, ESM only.
+**Declared compatibility:** Zod `>=4.5.4 <5`, better-result `^3.0.0`, better-effect `>=0.13.0 <0.14.0`, TypeScript `>=6.0.0`, Node.js LTS, ESM only.
 
 ## Verified behavior
 
@@ -75,9 +75,9 @@ bun run check
 The monorepo run must use the official workspace packages and should verify at least:
 
 ```text
-TypeScript 5.7.2 and the workspace current version
+TypeScript 6.0+ with the workspace current version
 Zod 4.5.4 and the current supported Zod 4 release
-Node.js 20, 22, and 24 where maintained by CI
+the current Node.js LTS used by CI
 Bun 1.3.x used by the repository
 ```
 

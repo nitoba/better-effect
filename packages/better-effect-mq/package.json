@@ -41,9 +41,7 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "typecheck:examples": "tsc -p examples/producer-only/tsconfig.json --pretty false && tsc -p examples/worker/tsconfig.json --pretty false && tsc -p examples/testing/tsconfig.json --pretty false",
-    "typecheck:examples:minimum": "bunx --bun --package typescript@5.7.2 tsc -p examples/producer-only/tsconfig.json --pretty false && bunx --bun --package typescript@5.7.2 tsc -p examples/worker/tsconfig.json --pretty false && bunx --bun --package typescript@5.7.2 tsc -p examples/testing/tsconfig.json --pretty false",
     "test:types": "tsc -p tests/types/tsconfig.json --pretty false",
-    "test:types:minimum": "bunx --bun --package typescript@5.7.2 tsc -p tests/types/tsconfig.json --pretty false",
     "test:types:performance": "cd ../.. && bun scripts/type-system-performance.ts --scenarios=job-registry,job-store,job-producer,worker-handlers --job-sizes=10,50,100,250 --producer-sizes=10,50,100 --worker-sizes=10,50,100 --check-budget",
     "test:types:performance:clean-dist": "cd ../.. && bun scripts/type-system-performance.ts --clean-dist --scenarios=job-registry,job-store,job-producer,worker-handlers --job-sizes=10,50,100,250 --producer-sizes=10,50,100 --worker-sizes=10,50,100 --check-budget",
     "test": "bun test",
@@ -55,12 +53,12 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "publint": "publint",
-    "check": "bun run typecheck && bun run test:types && bun run test:types:minimum && bun run test:types:performance:clean-dist && bun test && bun run format:check && bun run build && bun run typecheck:examples && bun run typecheck:examples:minimum && bun run test:examples && bun run test:package-boundaries && bun run test:package-consumer && bun run publint && bun run release:dry && bun run lint",
+    "check": "bun run typecheck && bun run test:types && bun run test:types:performance:clean-dist && bun test && bun run format:check && bun run build && bun run typecheck:examples && bun run test:examples && bun run test:package-boundaries && bun run test:package-consumer && bun run publint && bun run release:dry && bun run lint",
     "prepublishOnly": "bun run check",
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-mq"
   },
   "devDependencies": {
-    "@types/bun": "1.3.14",
+    "@types/bun": "1.4.1",
     "better-effect": "0.13.0",
     "better-result": "^3.0.0",
     "lefthook": "^2.1.10",
@@ -69,11 +67,11 @@
     "oxlint-tsgolint": "^7.0.2001",
     "publint": "^0.3.23",
     "tsdown": "^0.22.14",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "better-effect": ">=0.13.0 <0.14.0",
     "better-result": "^3.0.0",
-    "typescript": ">=5.7.0"
+    "typescript": ">=6.0.0"
   }
 }

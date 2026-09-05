@@ -40,9 +40,9 @@
   "devEngines": {
     "packageManager": {
       "name": "bun",
-      "version": "1.3.14",
+      "version": "1.4.2",
       "onFail": "warn"
     }
   },
-  "packageManager": "bun@1.3.14"
+  "packageManager": "bun@1.4.2"
 }
