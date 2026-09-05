@@ -53,7 +53,7 @@ bun add better-sqlite3
 | `better-effect` | `>=0.13.0 <0.14.0` |
 | `better-result` | `^3.0.0`           |
 | `kysely`        | `>=0.29.5 <0.30.0` |
-| TypeScript      | `>=5.7.0`          |
+| TypeScript      | `>=6.0.0`          |
 
 Drivers are application dependencies, not package dependencies. The package
 entrypoint can be imported without installing a database driver.
@@ -400,8 +400,8 @@ query compiler or driver boundary.
 
 The `0.1.x` line is tested with:
 
-- Bun `1.3.14` and Node.js `24`;
-- TypeScript `5.7.2` and the current repository compiler;
+- the latest Bun release and the current Node.js LTS;
+- TypeScript `6.0` or newer, with the repository using TypeScript 7.x;
 - Kysely `0.29.5` (the minimum and current tested version in this release);
 - Bun's built-in SQLite adapter and PGlite `0.5.8` for real database tests;
 - `better-sqlite3` `12.4.1` in the external Node.js consumer cell (the Bun

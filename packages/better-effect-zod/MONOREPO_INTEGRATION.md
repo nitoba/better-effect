@@ -22,7 +22,7 @@ The package expects these peers:
 better-effect >=0.13.0 <0.14.0
 better-result ^3.0.0
 zod >=4.5.4 <5
-typescript >=5.7.0
+typescript >=6.0.0
 ```
 
 ## 2. Run the package gate

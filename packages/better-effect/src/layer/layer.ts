@@ -1,7 +1,13 @@
 import type { ServiceRequirement } from '../effect/types'
 import { ServiceRuntime } from '../service'
 import { captureServiceTag } from '../service/tag'
-import type { AnyService, ServiceClass, ServiceContract, ServiceRequirements } from '../service'
+import type {
+  AnyService,
+  ServiceClass,
+  ServiceContract,
+  ServiceRequirements,
+  ServiceToken
+} from '../service'
 import { ResourceNotDisposableError } from '../scope'
 import { getDisposeFinalizer } from '../scope/disposable'
 
@@ -70,7 +76,7 @@ type InvalidUnionAliasToken = {
 
 type RejectUnionAliasToken<Token> = IsUnion<Token> extends true ? InvalidUnionAliasToken : unknown
 
-type LayerAliasOptions<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>> = {
+type LayerAliasOptions<From extends ServiceToken<any, any>, To extends ServiceToken<any, any>> = {
   readonly from: From
   readonly to: To
 } & RejectUnionAliasToken<From> &
@@ -126,19 +132,20 @@ export class Layer<
     service: S
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
 
-  static make<S extends ServiceClass<any, any>>(
+  static make<S extends ServiceToken<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
 
-  static make<S extends ServiceClass<any, any>>(
+  static make<S extends ServiceToken<any, any>>(
     service: S,
     acquire?: () => MaybePromise<ServiceContract<InstanceType<S>>>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
     const serviceTag = captureServiceTag(service)
     const defaultAcquire = (): InstanceType<S> => {
       // SAFETY: The no-argument overload constrains `service` to a default constructible class.
-      const Constructor = service as new () => InstanceType<S>
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the overload supplies the erased constructor guarantee.
+      const Constructor = service as unknown as new () => InstanceType<S>
 
       return new Constructor()
     }
@@ -156,7 +163,7 @@ export class Layer<
   }
 
   /** Create a Layer from an already-constructed Service instance. */
-  static succeed<S extends ServiceClass<any, any>>(
+  static succeed<S extends ServiceToken<any, any>>(
     service: S,
     instance: ServiceContract<InstanceType<S>>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
@@ -174,7 +181,7 @@ export class Layer<
   }
 
   /** Alias a source Service under a compatible target contract. */
-  static alias<From extends ServiceClass<any, any>, To extends ServiceClass<any, any>>(
+  static alias<From extends ServiceToken<any, any>, To extends ServiceToken<any, any>>(
     options: LayerAliasOptions<From, To>
   ): LayerResult<
     ProviderEntry<InstanceType<To>, InstanceType<From> | ServiceRequirements<InstanceType<To>>>
@@ -198,7 +205,7 @@ export class Layer<
   }
 
   /** Define a provider with Runtime-root cleanup. */
-  static scoped<S extends ServiceClass<any, any>>(
+  static scoped<S extends ServiceToken<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>,
     release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
@@ -220,7 +227,7 @@ export class Layer<
   }
 
   /** Define a provider with Runtime-root cleanup through its disposal protocol. */
-  static scopedDisposable<S extends ServiceClass<any, any>>(
+  static scopedDisposable<S extends ServiceToken<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>> & DisposableResource>
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
@@ -249,7 +256,7 @@ export class Layer<
   }
 
   /** Define a provider whose acquisition can yield contextual Services. */
-  static scopedGen<S extends ServiceClass<any, any>, Yield extends ServiceRequirement<unknown>>(
+  static scopedGen<S extends ServiceToken<any, any>, Yield extends ServiceRequirement<unknown>>(
     service: S,
     factory: LayerGenerator<S, Yield>,
     release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
@@ -271,7 +278,7 @@ export class Layer<
   }
 
   /** Define a provider whose acquisition can yield contextual Services. */
-  static gen<S extends ServiceClass<any, any>, Yield extends ServiceRequirement<unknown>>(
+  static gen<S extends ServiceToken<any, any>, Yield extends ServiceRequirement<unknown>>(
     service: S,
     factory: LayerGenerator<S, Yield>
   ): LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>> {
@@ -366,7 +373,7 @@ Object.defineProperty(Layer, 'empty', {
 })
 
 const normalizeAcquire =
-  <S extends ServiceClass<any, any>>(
+  <S extends ServiceToken<any, any>>(
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>
   ): (() => MaybePromise<InstanceType<S>>) =>
   () => {

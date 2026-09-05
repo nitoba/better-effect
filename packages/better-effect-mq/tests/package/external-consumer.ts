@@ -178,12 +178,6 @@ const typecheckFixture = (fixture: string): void => {
     packageRoot
   )
   assertSuccess(current, 'External fixture typecheck with the project TypeScript')
-
-  const minimum = run(
-    ['bunx', '--bun', '--package', 'typescript@5.7.2', 'tsc', '-p', tsconfig, '--pretty', 'false'],
-    fixture
-  )
-  assertSuccess(minimum, 'External fixture typecheck with TypeScript 5.7.2')
 }
 
 const smokeWith = (runtime: 'bun' | 'node', fixture: string): void => {
@@ -191,17 +185,18 @@ const smokeWith = (runtime: 'bun' | 'node', fixture: string): void => {
   assertSuccess(result, `External consumer smoke test with ${runtime}`)
 }
 
-const assertNode24 = (): void => {
+const assertNodeLts = (): void => {
   const result = run(['node', '--version'], packageRoot)
   assertSuccess(result, 'Checking the Node.js runtime')
+  const major = /^v(\d+)\./u.exec(result.output.trim())?.[1]
   assertCondition(
-    result.output.trim().startsWith('v24.'),
-    'The external Node smoke test requires Node.js 24'
+    major !== undefined && Number(major) >= 24,
+    'The external Node smoke test requires the current Node.js LTS (24 or newer)'
   )
 }
 
 const main = async (): Promise<void> => {
-  assertNode24()
+  assertNodeLts()
   const root = await makeFixture()
 
   try {

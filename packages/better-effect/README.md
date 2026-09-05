@@ -11,8 +11,8 @@ bun add better-effect better-result
 ```
 
 The published Runtime entrypoint is officially supported on Node.js and Bun.
-The tested runtime matrix is Node.js 24 and Bun 1.3.14, and the default runtime
-context uses Node/Bun async context propagation. `bun run check` also deletes
+The repository uses the latest Bun release by default and the current Node.js
+LTS for interoperability smoke tests. `bun run check` also deletes
 and rebuilds `dist`, packs the result into a temporary consumer, and runs the
 full Node/Bun `NodeRuntime` child-process suite.
 
@@ -148,6 +148,25 @@ const inspectDatabase = Effect.fn(async function* () {
 
 await runtime.run(inspectDatabase)
 ```
+
+Integration authors that need to trigger work later can capture the Runtime's
+non-owning executor capability from an execution or Layer acquisition:
+
+```ts
+const captureExecutor = Effect.fn(async function* () {
+  const executor = yield* Runtime.executor<Database>()
+  return Result.ok(executor)
+})
+
+const executor = (await runtime.run(captureExecutor)).unwrap()
+await executor.run(inspectDatabase)
+```
+
+`Runtime.Executor<R>` exposes only `run` and `runWith`. It always starts a new
+child execution on the same Runtime root, so it does not retain request-local
+Services or expose `dispose`, `warmup`, `inspect`, backend or Scope ownership.
+Applications normally use `runtime.run`; the contextual executor is mainly for
+framework adapters and long-lived components.
 
 Runtime boundaries inspect only nominal `better-result` values: `Result.err`
 becomes a failed execution, while a plain object with `status: 'error'` is

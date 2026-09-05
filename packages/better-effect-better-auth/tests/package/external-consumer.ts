@@ -218,7 +218,7 @@ const makeFixture = async (
     'better-auth': '1.7.0',
     'better-effect': coreVersion,
     'better-result': '3.0.0',
-    typescript: '6.0.3'
+    typescript: '7.0.2'
   }
   if (includeHono) {
     Object.assign(dependencies, { hono: 'file:./artifacts/hono.tgz' })
@@ -229,7 +229,7 @@ const makeFixture = async (
     type: 'module',
     dependencies,
     devDependencies: {
-      typescript: '6.0.3'
+      typescript: '7.0.2'
     },
     peerDependencies
   }
@@ -273,13 +273,13 @@ const assertFixtureManifest = async (
     'better-auth': '1.7.0',
     'better-effect': coreVersion,
     'better-result': '3.0.0',
-    typescript: '6.0.3'
+    typescript: '7.0.2'
   }
   if (includeHono) Object.assign(expectedPeers, { hono: honoVersion })
   for (const [name, version] of Object.entries(expectedPeers)) {
     assertCondition(peers[name] === version, `Consumer peer ${name} must be pinned to ${version}`)
   }
-  assertCondition(devDependencies['typescript'] === '6.0.3', 'Consumer TypeScript must be exact')
+  assertCondition(devDependencies['typescript'] === '7.0.2', 'Consumer TypeScript must be exact')
 }
 
 const assertInstalledPackage = async (
@@ -339,7 +339,7 @@ const installConsumer = async (
   await assertInstalledPackage(fixture, 'better-effect-better-auth', integrationVersion)
   await assertInstalledPackage(fixture, 'better-result', '3.0.0')
   if (includeHono) await assertInstalledPackage(fixture, 'hono', honoVersion)
-  await assertInstalledPackage(fixture, 'typescript', '6.0.3')
+  await assertInstalledPackage(fixture, 'typescript', '7.0.2')
 }
 
 const hasDeclarationFile = async (directory: string): Promise<boolean> => {
@@ -358,23 +358,6 @@ const declarationCheck = async (fixture: string, includeHono: boolean): Promise<
   assertSuccess(
     run(['bun', 'x', 'tsc', '-p', tsconfig, '--pretty', 'false'], fixture),
     'External declaration emit with the installed TypeScript'
-  )
-  assertSuccess(
-    run(
-      [
-        'bunx',
-        '--bun',
-        '--package',
-        'typescript@5.7.2',
-        'tsc',
-        '-p',
-        tsconfig,
-        '--pretty',
-        'false'
-      ],
-      fixture
-    ),
-    'External declaration emit with TypeScript 5.7.2'
   )
   assertCondition(
     await hasDeclarationFile(join(fixture, 'declarations')),
@@ -421,23 +404,6 @@ const typecheckFixture = (fixture: string, includeHono: boolean): void => {
   assertSuccess(
     run(['bun', 'x', 'tsc', '-p', tsconfig, '--pretty', 'false'], fixture),
     'External fixture typecheck with the installed TypeScript'
-  )
-  assertSuccess(
-    run(
-      [
-        'bunx',
-        '--bun',
-        '--package',
-        'typescript@5.7.2',
-        'tsc',
-        '-p',
-        tsconfig,
-        '--pretty',
-        'false'
-      ],
-      fixture
-    ),
-    'External fixture typecheck with TypeScript 5.7.2'
   )
 }
 
@@ -487,14 +453,18 @@ const exerciseFixture = async (
   console.log(`${label} external consumer checks passed`)
 }
 
-const assertNode24 = (): void => {
+const assertNodeLts = (): void => {
   const result = run(['node', '--version'], packageRoot)
   assertSuccess(result, 'Checking the Node.js runtime')
-  assertCondition(result.output.trim().startsWith('v24.'), 'The smoke test requires Node.js 24')
+  const major = /^v(\d+)\./u.exec(result.output.trim())?.[1]
+  assertCondition(
+    major !== undefined && Number(major) >= 24,
+    'The smoke test requires the current Node.js LTS (24 or newer)'
+  )
 }
 
 const main = async (): Promise<void> => {
-  assertNode24()
+  assertNodeLts()
   const root = await mkdtemp(join(tmpdir(), 'better-effect-better-auth-consumer-'))
 
   try {

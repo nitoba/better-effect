@@ -99,16 +99,13 @@ export function Service<Self>(): ServiceFactory<Self> {
         return implementation as Self
       }
 
-      /** Resolve this Service from a synchronous generator through its Layer runtime. */
+      /** Yield this Service as a runtime token for synchronous factory runners. */
       static *[Symbol.iterator](
         this: ServiceToken<Tag, Self & ServiceIdentity<Tag>>
       ): Generator<ServiceRequirement<Self>, Self, unknown> {
-        // SAFETY: Layer's synchronous generator runner replaces this token yield with the resolved Service instance.
-        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The requirement marker is declaration-only and has no runtime representation.
-        const resolved = yield this as unknown as ServiceRequirement<Self>
-
-        // SAFETY: The runner resumes this iterator only with the token's InstanceType.
-        return resolved as Self
+        // SAFETY: The marker is declaration-only; synchronous factory runners replace it with the resolved instance.
+        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the runtime token is represented by a phantom requirement yield.
+        return (yield this as unknown as ServiceRequirement<Self>) as Self
       }
 
       /** Resolve this Service from the resolver active in the current runtime. */

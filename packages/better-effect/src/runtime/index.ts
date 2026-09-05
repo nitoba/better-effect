@@ -4,7 +4,13 @@ export { RuntimeObserver } from './observer'
 
 export { CurrentAbortSignal } from './signal'
 
-export { RuntimeContextNotConfiguredError, RuntimeContextOverlapError } from './errors'
+export {
+  RuntimeContextNotConfiguredError,
+  RuntimeContextOverlapError,
+  RuntimeExecutorNotConfiguredError
+} from './errors'
+
+export type { RuntimeExecutor } from './executor'
 
 export type { RuntimeContext, RuntimeContextStorage } from './context'
 

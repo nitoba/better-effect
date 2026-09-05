@@ -1,12 +1,12 @@
 import { captureServiceTag } from '../service/tag'
-import type { AnyServiceToken, ServiceClass } from '../service'
+import type { AnyServiceToken } from '../service'
 import type { ScopeOutcome } from '../scope'
 
 type LayerCause = Extract<ScopeOutcome, { readonly status: 'failure' }>['cause']
 
 /** Thrown when a Layer registers the same Service tag more than once. */
 export class DuplicateServiceError extends Error {
-  constructor(readonly service: ServiceClass<any>) {
+  constructor(readonly service: AnyServiceToken) {
     super(`Duplicate service tag "${captureServiceTag(service)}"`)
 
     this.name = 'DuplicateServiceError'
@@ -31,7 +31,7 @@ export class ServiceTagCollisionError extends Error {
 /** Thrown when a backend fails while registering a Layer provider. */
 export class LayerRegistrationError extends Error {
   constructor(
-    readonly service: ServiceClass<any> | undefined,
+    readonly service: AnyServiceToken | undefined,
     readonly registrationCause: LayerCause,
     readonly cleanupCause?: LayerCause
   ) {
@@ -59,7 +59,7 @@ export class LayerDisposeError extends Error {
 
 /** Thrown when a Layer generator yields a value other than a Service requirement. */
 export class LayerGeneratorYieldError extends Error {
-  constructor(readonly service: ServiceClass<any>) {
+  constructor(readonly service: AnyServiceToken) {
     super(`Layer.gen("${captureServiceTag(service)}") yielded an unsupported value`)
 
     this.name = 'LayerGeneratorYieldError'

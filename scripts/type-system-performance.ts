@@ -27,8 +27,7 @@ const performanceLock = join(
 )
 let fixtureCorePackageRoot = corePackageRoot
 let fixtureMqPackageRoot = mqPackageRoot
-const minimumTypeScriptVersion = '5.7.2'
-const currentTypeScriptVersion = '6.0.3'
+const currentTypeScriptVersion = '7.0.2'
 const performanceLockStaleAfterMs = 60_000
 
 const sizes = [10, 25, 50, 100] as const
@@ -62,7 +61,7 @@ const scenarios = [
   'kysely'
 ] as const
 type Scenario = (typeof scenarios)[number]
-type Compiler = 'current' | 'minimum'
+type Compiler = 'current'
 
 type Metrics = {
   readonly files: number
@@ -327,7 +326,7 @@ const stagePublicPackages = async (
           type: 'module',
           dependencies: Object.fromEntries(dependencies),
           devDependencies: {
-            '@types/bun': '1.3.14',
+            '@types/bun': '1.4.1',
             typescript: currentTypeScriptVersion
           }
         },
@@ -852,7 +851,6 @@ void missing
 }
 
 const jobStoreFixtureSource = (size: number): string => {
-  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
   const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from({ length: size }, (_, index) => String(index + 1).padStart(3, '0'))
   const tokenDeclarations = names
@@ -870,8 +868,8 @@ const jobStoreFixtureSource = (size: number): string => {
   const jobs = names.map((name) => `Job${name}`).join(', ')
   const first = names[0]!
 
-  return `import { Effect, Layer, Runtime } from '${coreEntry}'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
+  return `import { Effect, Layer, Runtime } from 'better-effect'
+import { Result } from 'better-result'
 import { Codec, Job, JobRegistry, JobStore, Queue } from '${mqEntry}'
 
 const implementation = {} as JobStore.Contract
@@ -896,8 +894,6 @@ void Runtime.run(AppLive, () => program)
 }
 
 const jobProducerFixtureSource = (size: number): string => {
-  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
-  const coreServicesEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'standard-services.mjs')
   const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from(
     { length: size },
@@ -923,10 +919,10 @@ const jobProducerFixtureSource = (size: number): string => {
   Runtime,
   type EffectError,
   type EffectRequirements
-} from '${coreEntry}'
-import { Clock, ClockLive } from '${coreServicesEntry}'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
-import type { UnhandledException } from '../../../packages/better-effect/node_modules/better-result'
+} from 'better-effect'
+import { Clock, ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import type { UnhandledException } from 'better-result'
 import {
   Codec,
   Job,
@@ -1014,7 +1010,6 @@ void Runtime.run(AppLive, () => program)
 }
 
 const workerFixtureSource = (size: number): string => {
-  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
   const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from(
     { length: size },
@@ -1041,8 +1036,8 @@ const workerFixtureSource = (size: number): string => {
     .join('\n\n')
   const handlerTuple = names.map((name) => `${name}Handler`).join(', ')
 
-  return `import { Effect, Layer, Runtime, Service } from '${coreEntry}'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
+  return `import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { Result } from 'better-result'
 import { Codec, JobContext, JobStore, Queue, Worker, type WorkerRequirements } from '${mqEntry}'
 
 class WorkerRoot extends Service<WorkerRoot>()('WorkerBenchmarkRoot') {}
@@ -1372,7 +1367,7 @@ const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string
   if (usePublicDeclarations && process.env.TSC === undefined) {
     const stagedTsc = join(fixtureRoot, 'node_modules/typescript/bin/tsc')
     if (await Bun.file(stagedTsc).exists()) {
-      return ['node', stagedTsc]
+      return [process.execPath, stagedTsc]
     }
   }
 
@@ -1381,18 +1376,14 @@ const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string
     process.env.TSC ??
     ((await Bun.file(localTsc).exists()) ? localTsc : (Bun.which('tsc') ?? 'tsc'))
 
-  return [tsc]
+  return process.env.TSC === undefined ? [process.execPath, tsc] : [tsc]
 }
 
 const runTsc = async (
   fixture: string,
-  compiler: Compiler,
   usePublicDeclarations: boolean
 ): Promise<{ readonly metrics: Metrics; readonly error: string | undefined }> => {
-  const compilerCommand =
-    compiler === 'minimum'
-      ? ['bunx', '--bun', '--package', `typescript@${minimumTypeScriptVersion}`, 'tsc']
-      : await currentTscCommand(usePublicDeclarations)
+  const compilerCommand = await currentTscCommand(usePublicDeclarations)
   const typeRoots = usePublicDeclarations
     ? join(fixtureRoot, 'node_modules/@types')
     : join(repoRoot, 'packages/better-effect/node_modules/@types')
@@ -1515,14 +1506,7 @@ const formatRow = (result: Result): string => {
   ].join(' | ')
 }
 
-const compilersFor = (scenario: Scenario): readonly Compiler[] =>
-  scenario === 'better-auth' ||
-  scenario === 'job-registry' ||
-  scenario === 'job-store' ||
-  scenario === 'job-producer' ||
-  scenario === 'worker-handlers'
-    ? ['current', 'minimum']
-    : ['current']
+const compilersFor = (): readonly Compiler[] => ['current']
 
 const createIsolatedPackageRoot = async (sourceRoot: string, targetRoot: string): Promise<void> => {
   await mkdir(targetRoot, { recursive: true })
@@ -1697,6 +1681,11 @@ const runPreparedPerformance = async (
       'dir'
     )
     await symlink(fixtureCorePackageRoot, join(fixtureRoot, 'node_modules/better-effect'), 'dir')
+    await symlink(
+      join(repoRoot, 'packages/better-effect/node_modules/better-result'),
+      join(fixtureRoot, 'node_modules/better-result'),
+      'dir'
+    )
   }
 
   const results: Result[] = []
@@ -1717,8 +1706,8 @@ const runPreparedPerformance = async (
 
     for (const size of scenarioSizes) {
       const fixture = await writeFixture(scenario, size)
-      for (const compiler of compilersFor(scenario)) {
-        const run = await runTsc(fixture, compiler, usePublicDeclarations)
+      for (const compiler of compilersFor()) {
+        const run = await runTsc(fixture, usePublicDeclarations)
         const budgetExceeded = budgetFailures(scenario, size, run.metrics)
 
         if (run.error) {

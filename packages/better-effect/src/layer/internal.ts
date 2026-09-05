@@ -4,12 +4,12 @@ import { ServiceRuntime } from '../service'
 import { captureServiceTag } from '../service/tag'
 
 import type { ServiceRequirement } from '../effect/types'
-import type { AnyServiceToken, ServiceClass } from '../service'
+import type { AnyServiceToken, ServiceToken } from '../service'
 
 import type { LayerGenerator } from './types'
 
 export const runLayerGenerator = async <
-  S extends ServiceClass<any, any>,
+  S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown>
 >(
   service: S,

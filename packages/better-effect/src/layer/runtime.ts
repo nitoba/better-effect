@@ -12,6 +12,12 @@ import {
   type RuntimeContextStorage
 } from '../runtime/context'
 
+import {
+  createRuntimeExecutor,
+  eraseRuntimeExecutor,
+  type RuntimeExecutor
+} from '../runtime/executor'
+
 import { defaultRuntimeContextStorage } from '../runtime/default'
 
 import {
@@ -267,6 +273,7 @@ const bindProviderToScope = (
   contextStorage: RuntimeContextStorage,
   resolver: ServiceResolver,
   observers: readonly RuntimeObserver[],
+  executor: RuntimeExecutor<AnyService>,
   ownerExecutionId?: string
 ): LayerRegistration => ({
   service: provider.service,
@@ -280,7 +287,9 @@ const bindProviderToScope = (
       scope,
       current?.resolutionPath ?? [],
       current?.signal,
-      current
+      current,
+      undefined,
+      executor
     )
 
     return runRuntimeContext(contextStorage, context, () =>
@@ -408,7 +417,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly observers: readonly RuntimeObserver[],
     private readonly services: readonly AnyServiceToken[],
     serviceTags: readonly string[],
-    private readonly executionDependencies: RuntimeExecutionDependencies
+    private readonly executionDependencies: RuntimeExecutionDependencies,
+    private readonly executor: RuntimeExecutor<AnyService>
   ) {
     this.serviceTags = Object.freeze([...serviceTags])
   }
@@ -542,6 +552,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
                     this.contextStorage,
                     resolver,
                     this.observers,
+                    this.executor,
                     prepared.metadata.executionId
                   )
                 )
@@ -574,7 +585,15 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     try {
       warmup = runRuntimeContext(
         this.contextStorage,
-        makeRuntimeContext(this.resolver, this.rootScope, [], this.signal),
+        makeRuntimeContext(
+          this.resolver,
+          this.rootScope,
+          [],
+          this.signal,
+          undefined,
+          undefined,
+          this.executor
+        ),
         async () => {
           for (const service of this.services) {
             await this.resolver.resolve(service)
@@ -722,7 +741,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
           [],
           signal,
           undefined,
-          metadata.executionId
+          metadata.executionId,
+          this.executor
         )
       })
     } catch (cause) {
@@ -790,7 +810,15 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       try {
         await runRuntimeContext(
           this.contextStorage,
-          makeRuntimeContext(this.resolver, this.rootScope, [], signalLink.signal),
+          makeRuntimeContext(
+            this.resolver,
+            this.rootScope,
+            [],
+            signalLink.signal,
+            undefined,
+            undefined,
+            this.executor
+          ),
           () => this.rootScope.close(outcome)
         )
       } finally {
@@ -864,7 +892,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   layer: L & CompleteInput<L>,
   backend: LayerBackend,
   options: RuntimeOptions = {},
-  executionOverrides: RuntimeExecutionDependencyOverrides = {}
+  executionOverrides: RuntimeExecutionDependencyOverrides = {},
+  providedExecutor?: RuntimeExecutor<ProvidedEnvironment<L>>
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
   const services = layer.providers.map((provider) => provider.service)
   const serviceTags = layer.providers.map((provider) => captureLayerRegistrationTag(provider))
@@ -874,6 +903,14 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   const resolver = createResolutionResolver(backend, contextStorage, observers)
   const executionDependencies = makeRuntimeExecutionDependencies(executionOverrides)
   ScopeRuntime.bind(rootScope, contextStorage)
+  let handle!: RuntimeHandleImpl<ProvidedEnvironment<L>>
+  const executor =
+    providedExecutor ??
+    createRuntimeExecutor<ProvidedEnvironment<L>>({
+      run: (program, runOptions) => handle.run(program, runOptions),
+      runWith: (request, program, runOptions) => handle.runWith(request, program, runOptions)
+    })
+  const contextExecutor = eraseRuntimeExecutor(executor)
   let current: LayerProvider | undefined
 
   try {
@@ -881,7 +918,14 @@ export const createRuntimeHandle = async <L extends LayerInput>(
       current = provider
 
       await backend.register(
-        bindProviderToScope(provider, rootScope, contextStorage, resolver, observers)
+        bindProviderToScope(
+          provider,
+          rootScope,
+          contextStorage,
+          resolver,
+          observers,
+          contextExecutor
+        )
       )
     }
   } catch (registrationCause) {
@@ -894,7 +938,15 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     try {
       await runRuntimeContext(
         contextStorage,
-        makeRuntimeContext(resolver, rootScope, [], options.signal),
+        makeRuntimeContext(
+          resolver,
+          rootScope,
+          [],
+          options.signal,
+          undefined,
+          undefined,
+          contextExecutor
+        ),
         () => rootScope.close(outcome)
       )
     } catch (cause) {
@@ -926,7 +978,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     throw new LayerRegistrationError(current?.service, registrationCause, cleanupCause)
   }
 
-  return new RuntimeHandleImpl<ProvidedEnvironment<L>>(
+  handle = new RuntimeHandleImpl<ProvidedEnvironment<L>>(
     backend,
     resolver,
     rootScope,
@@ -936,6 +988,9 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     observers,
     services,
     serviceTags,
-    executionDependencies
+    executionDependencies,
+    contextExecutor
   )
+
+  return handle
 }

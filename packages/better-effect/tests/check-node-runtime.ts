@@ -65,8 +65,31 @@ const prepareFreshPackage = async (directory: string): Promise<void> => {
   await Promise.all(
     freshPackageFiles.map((file) => cp(join(packageRoot, file), join(directory, file)))
   )
-  await symlink(join(packageRoot, 'src'), join(directory, 'src'), 'dir')
-  await symlink(join(packageRoot, 'node_modules'), join(directory, 'node_modules'), 'dir')
+  await cp(join(packageRoot, 'src'), join(directory, 'src'), {
+    dereference: true,
+    recursive: true
+  })
+
+  const packageNodeModules = join(packageRoot, 'node_modules')
+  const freshNodeModules = join(directory, 'node_modules')
+  await mkdir(freshNodeModules, { recursive: true })
+  await Promise.all(
+    (await readdir(packageNodeModules, { withFileTypes: true }))
+      .filter((entry) => entry.name !== '.bin')
+      .map((entry) =>
+        symlink(
+          join(packageNodeModules, entry.name),
+          join(freshNodeModules, entry.name),
+          entry.isDirectory() ? 'dir' : 'file'
+        )
+      )
+  )
+  await symlink(join(packageNodeModules, '.bin'), join(freshNodeModules, '.bin'), 'dir')
+  await symlink(
+    join(packageRoot, '../../node_modules/.bun/node_modules/@typescript'),
+    join(freshNodeModules, '@typescript'),
+    'dir'
+  )
 }
 
 const runFreshPackedNodeRuntimeTests = async (): Promise<void> => {

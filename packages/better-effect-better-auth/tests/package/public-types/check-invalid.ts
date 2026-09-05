@@ -83,11 +83,9 @@ const main = async (): Promise<void> => {
 
   try {
     const current = [join(packageRoot, 'node_modules/.bin/tsc')]
-    const minimum = ['bunx', '--bun', '--package', 'typescript@5.7.2', 'tsc']
 
     for (const fixture of fixtures) {
       await checkFixture(fixture, current, 'current', tempRoot)
-      await checkFixture(fixture, minimum, 'minimum', tempRoot)
     }
   } finally {
     await rm(tempRoot, { force: true, recursive: true })

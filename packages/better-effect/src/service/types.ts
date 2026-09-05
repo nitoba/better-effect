@@ -18,12 +18,8 @@ export type ServiceStatics<out Tag extends string, in out Instance extends AnySe
   readonly name: string
   readonly serviceTag: Tag
 
+  /** Yield this Service from a synchronous generator factory. */
   readonly [Symbol.iterator]: () => Generator<ServiceRequirement<Instance>, Instance, unknown>
-  readonly [Symbol.asyncIterator]: () => AsyncGenerator<
-    ServiceRequirement<Instance>,
-    Instance,
-    unknown
-  >
 
   /** Type-check a structural implementation and return it unchanged. */
   readonly of: (this: void, implementation: ServiceContract<Instance>) => Instance

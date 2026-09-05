@@ -17,9 +17,11 @@ export type {
 } from './effect-api'
 export {
   BetterAuth,
+  type BetterAuthFactoryServiceToken,
   type BetterAuthService,
   type BetterAuthServiceInstance,
-  type BetterAuthServiceToken
+  type BetterAuthServiceToken,
+  type BetterAuthToken
 } from './service'
 export type {
   BetterAuthSessionApi,

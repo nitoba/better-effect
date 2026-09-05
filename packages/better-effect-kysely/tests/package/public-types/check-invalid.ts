@@ -43,10 +43,7 @@ const main = async (): Promise<void> => {
       })
     )
 
-    for (const compiler of [
-      [join(packageRoot, 'node_modules/.bin/tsc')],
-      ['bunx', '--bun', '--package', 'typescript@5.7.2', 'tsc']
-    ]) {
+    for (const compiler of [[join(packageRoot, 'node_modules/.bin/tsc')]]) {
       const result = run([...compiler, '--pretty', 'false', '-p', configPath], packageRoot)
       assertCondition(result.exitCode !== 0, 'functional-api unexpectedly compiled')
       assertCondition(
