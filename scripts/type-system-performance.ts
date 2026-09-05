@@ -851,7 +851,6 @@ void missing
 }
 
 const jobStoreFixtureSource = (size: number): string => {
-  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
   const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from({ length: size }, (_, index) => String(index + 1).padStart(3, '0'))
   const tokenDeclarations = names
@@ -869,8 +868,8 @@ const jobStoreFixtureSource = (size: number): string => {
   const jobs = names.map((name) => `Job${name}`).join(', ')
   const first = names[0]!
 
-  return `import { Effect, Layer, Runtime } from '${coreEntry}'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
+  return `import { Effect, Layer, Runtime } from 'better-effect'
+import { Result } from 'better-result'
 import { Codec, Job, JobRegistry, JobStore, Queue } from '${mqEntry}'
 
 const implementation = {} as JobStore.Contract
@@ -895,8 +894,6 @@ void Runtime.run(AppLive, () => program)
 }
 
 const jobProducerFixtureSource = (size: number): string => {
-  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
-  const coreServicesEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'standard-services.mjs')
   const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from(
     { length: size },
@@ -922,10 +919,10 @@ const jobProducerFixtureSource = (size: number): string => {
   Runtime,
   type EffectError,
   type EffectRequirements
-} from '${coreEntry}'
-import { Clock, ClockLive } from '${coreServicesEntry}'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
-import type { UnhandledException } from '../../../packages/better-effect/node_modules/better-result'
+} from 'better-effect'
+import { Clock, ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import type { UnhandledException } from 'better-result'
 import {
   Codec,
   Job,
@@ -1013,7 +1010,6 @@ void Runtime.run(AppLive, () => program)
 }
 
 const workerFixtureSource = (size: number): string => {
-  const coreEntry = fixtureModuleSpecifier(fixtureCorePackageRoot, 'index.mjs')
   const mqEntry = fixtureModuleSpecifier(fixtureMqPackageRoot, 'index.mjs')
   const names = Array.from(
     { length: size },
@@ -1040,8 +1036,8 @@ const workerFixtureSource = (size: number): string => {
     .join('\n\n')
   const handlerTuple = names.map((name) => `${name}Handler`).join(', ')
 
-  return `import { Effect, Layer, Runtime, Service } from '${coreEntry}'
-import { Result } from '../../../packages/better-effect/node_modules/better-result'
+  return `import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { Result } from 'better-result'
 import { Codec, JobContext, JobStore, Queue, Worker, type WorkerRequirements } from '${mqEntry}'
 
 class WorkerRoot extends Service<WorkerRoot>()('WorkerBenchmarkRoot') {}
@@ -1371,7 +1367,7 @@ const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string
   if (usePublicDeclarations && process.env.TSC === undefined) {
     const stagedTsc = join(fixtureRoot, 'node_modules/typescript/bin/tsc')
     if (await Bun.file(stagedTsc).exists()) {
-      return ['node', stagedTsc]
+      return [process.execPath, stagedTsc]
     }
   }
 
@@ -1380,7 +1376,7 @@ const currentTscCommand = async (usePublicDeclarations: boolean): Promise<string
     process.env.TSC ??
     ((await Bun.file(localTsc).exists()) ? localTsc : (Bun.which('tsc') ?? 'tsc'))
 
-  return [tsc]
+  return process.env.TSC === undefined ? [process.execPath, tsc] : [tsc]
 }
 
 const runTsc = async (
@@ -1685,6 +1681,11 @@ const runPreparedPerformance = async (
       'dir'
     )
     await symlink(fixtureCorePackageRoot, join(fixtureRoot, 'node_modules/better-effect'), 'dir')
+    await symlink(
+      join(repoRoot, 'packages/better-effect/node_modules/better-result'),
+      join(fixtureRoot, 'node_modules/better-result'),
+      'dir'
+    )
   }
 
   const results: Result[] = []
