@@ -4,7 +4,8 @@ import {
   type Result as ResultType,
   type UnhandledException
 } from 'better-result'
-import type { Context, MiddlewareHandler } from 'hono'
+import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import { validator } from 'hono/validator'
 
 import {
@@ -194,7 +195,6 @@ const validateJson = validator('json', (value: { name?: string } | null) => ({
 const routeMiddleware: MiddlewareHandler<RouteEnv, RoutePath> = async (_context, next) => {
   await next()
 }
-declare const honoRuntime: Runtime<never>
 declare const webRuntime: Runtime<never>
 const webProgram = Effect.fn(async function* () {
   const currentRequest = yield* CurrentRequest
@@ -223,29 +223,29 @@ const webResponseWithOptions = WebEffect.handleWith(
 void webResponse
 void webResponseWithOptions
 
-const validatorFirstHandler = HonoEffect.make(honoRuntime).gen(
-  validateJson,
-  routeMiddleware,
-  async function* (context) {
-    const apiKey: string = context.env.API_KEY
-    const userId: string = context.get('user').id
-    const input: { name: string } = context.req.valid('json')
-    const id: string = context.req.param('id')
-    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+const HonoApp = HonoEffect.app('@package/ValidHonoApp', {}, async function* (http) {
+  const validatorFirstHandler = yield* http.gen(
+    validateJson,
+    routeMiddleware,
+    async function* (context) {
+      const apiKey: string = context.env.API_KEY
+      const userId: string = context.get('user').id
+      const input: { name: string } = context.req.valid('json')
+      const id: string = context.req.param('id')
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
 
-    return Result.ok(`${apiKey}:${userId}:${input.name}:${id}`)
-  }
-)
+      return Result.ok(`${apiKey}:${userId}:${input.name}:${id}`)
+    }
+  )
 
-type HandlerContext = Parameters<typeof validatorFirstHandler>[0]
-type HandlerEnvironment =
-  HandlerContext extends Context<infer _Environment, infer _Path, infer _Input>
-    ? _Environment
-    : never
-type HandlerPath =
-  HandlerContext extends Context<infer _Environment, infer _Path, infer _Input> ? _Path : never
-export type ValidatorFirstEnvironment = Expect<Equal<HandlerEnvironment, RouteEnv>>
-export type ValidatorFirstPath = Expect<Equal<HandlerPath, RoutePath>>
+  const app = new Hono<RouteEnv>()
+  app.get('/work-orders/:id', validatorFirstHandler)
+  return app
+})
+void HonoApp
+
+export type ValidatorFirstEnvironment = RouteEnv
+export type ValidatorFirstPath = RoutePath
 
 const nodeRuntimeOptions: NodeRuntimeOptions<string, never> = {
   signals: ['SIGINT', 'SIGTERM'],

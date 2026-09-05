@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { Result } from 'better-result'
 
@@ -12,38 +12,47 @@ const cookieHeaderFromSetCookie = (headers: Headers): string =>
     .getSetCookie()
     .map((setCookie) => setCookie.split(';', 1)[0])
     .join('; ')
-const runtime = await Runtime.make(Auth.layer)
-const rawResult = await runtime.run(
-  Effect.fn(async function* () {
+const CurrentSession = BetterAuthHono.session('@example/CurrentSession', Auth)
+const App = HonoEffect.app(
+  '@example/HonoApp',
+  {
+    requestLayer: CurrentSession.requestLayer,
+    onFailure: (_error, context) => context.json({ error: 'Internal Server Error' }, 500)
+  },
+  async function* (http) {
     const auth = yield* Auth
-    return Result.ok(auth.raw)
+    const app = new Hono()
+
+    // rawAuth is configured with basePath: '/api/auth'; register it before catch-alls.
+    app.all('/api/auth/*', (context) => auth.raw.handler(context.req.raw))
+    app.use('*', yield* http.middleware())
+    app.use('/protected/*', yield* http.guard(CurrentSession.guard))
+
+    app.get(
+      '/protected/me',
+      yield* http.gen(async function* () {
+        const session = yield* CurrentSession.require()
+        return Result.ok(session)
+      })
+    )
+
+    return app
+  }
+)
+const runtime = await Runtime.make(Layer.merge(Auth.layer, App.layer))
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    const app = yield* App
+    const auth = yield* Auth
+    return Result.ok({ app, rawAuth: auth.raw })
   })
 )
 
-if (Result.isError(rawResult)) {
-  throw new Error(`Better Auth acquisition failed: ${String(rawResult.error)}`)
+if (Result.isError(appResult)) {
+  throw new Error(`Better Auth Hono app acquisition failed: ${String(appResult.error)}`)
 }
 
-const rawAuth = rawResult.value
-const CurrentSession = BetterAuthHono.session('@example/CurrentSession', Auth)
-const http = HonoEffect.make(runtime, {
-  requestLayer: CurrentSession.requestLayer,
-  onFailure: (_error, context) => context.json({ error: 'Internal Server Error' }, 500)
-})
-const app = new Hono()
-
-// rawAuth is configured with basePath: '/api/auth'; register it before catch-alls.
-app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
-app.use('*', http.middleware())
-app.use('/protected/*', http.guard(CurrentSession.guard))
-
-app.get(
-  '/protected/me',
-  http.gen(async function* () {
-    const session = yield* CurrentSession.require()
-    return Result.ok(session)
-  })
-)
+const { app, rawAuth } = appResult.value
 
 const main = async (): Promise<void> => {
   try {

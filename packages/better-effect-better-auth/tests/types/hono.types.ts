@@ -85,54 +85,85 @@ const program = Effect.fn(async function* () {
 expectTypeOf<Effect.Requirements<typeof program>>().toEqualTypeOf<CurrentInstance>()
 expectTypeOf<Effect.Error<typeof program>>().toEqualTypeOf<Failure | Unauthenticated>()
 
-const runtime = {} as Runtime<AuthInstance>
-const http = HonoEffect.make(runtime, {
-  requestLayer: CurrentSession.requestLayer,
-  onFailure: (_error: Failure | Unauthenticated) => new Response(null, { status: 500 })
-})
+const http = HonoEffect.app(
+  '@hono/HonoApp',
+  {
+    requestLayer: CurrentSession.requestLayer,
+    onFailure: (_error: Failure | Unauthenticated) => new Response(null, { status: 500 })
+  },
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      const session = yield* CurrentSession.require()
+      return Result.ok(session.user)
+    })
+    const guard = yield* builder.guard(CurrentSession.guard)
+    return { route, guard }
+  }
+)
 
-type Hono = HonoEffect<AuthInstance, Failure | Unauthenticated, CurrentLayer>
-expectTypeOf(http).toEqualTypeOf<Hono>()
-expectTypeOf(http.runtime).toEqualTypeOf<Runtime<AuthInstance>>()
-
-const route = http.gen(async function* () {
-  const session = yield* CurrentSession.require()
-  return Result.ok(session.user)
-})
-const guard = http.guard(CurrentSession.guard)
-void route
-void guard
+expectTypeOf<Layer.Required<typeof http.layer>>().toEqualTypeOf<AuthInstance>()
+expectTypeOf<Layer.Provided<typeof http.layer>>().toEqualTypeOf<InstanceType<typeof http>>()
 
 class Tenant extends Service<Tenant>()('@hono/Tenant') {}
 const tenantLayer = Layer.succeed(Tenant, new Tenant())
-const composedRuntime = {} as Runtime<AuthInstance | Tenant>
-const composed = HonoEffect.make(composedRuntime, {
-  requestLayer: (context) => Layer.merge(tenantLayer, CurrentSession.requestLayer(context))
-})
+const composed = HonoEffect.app(
+  '@hono/ComposedApp',
+  {
+    requestLayer: (context) => Layer.merge(tenantLayer, CurrentSession.requestLayer(context))
+  },
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      const tenant = yield* Tenant
+      const session = yield* CurrentSession.get()
+      return Result.ok({ tenant, session })
+    })
+    return { route }
+  }
+)
+expectTypeOf<Layer.Required<typeof composed.layer>>().toEqualTypeOf<AuthInstance>()
 void composed
 
-// @ts-expect-error CurrentSession must be provided by the request Layer.
-HonoEffect.make(runtime).gen(async function* () {
-  return Result.ok(yield* CurrentSession.get())
+const missingSession = HonoEffect.app('@hono/MissingSessionApp', {}, async function* (builder) {
+  const route = yield* builder.gen(async function* () {
+    return Result.ok(yield* CurrentSession.get())
+  })
+  return { route }
 })
+// @ts-expect-error CurrentSession must be provided by the request Layer.
+void Runtime.make(missingSession.layer)
 
 const otherRawAuth = betterAuth({})
 const OtherAuth = BetterAuth.service('@hono/OtherAuth', otherRawAuth)
 const OtherSession = BetterAuthHono.session('@hono/OtherSession', OtherAuth)
-const wrongRuntime = {} as Runtime<
-  BetterAuthServiceInstance<'@hono/OtherAuth', typeof otherRawAuth>
->
-// @ts-expect-error The request Layer requires the exact Auth Service, not a different concrete Auth.
-const wrongHono = HonoEffect.make(wrongRuntime, {
-  requestLayer: CurrentSession.requestLayer
-})
+const wrongHono = HonoEffect.app(
+  '@hono/WrongAuthApp',
+  {
+    requestLayer: CurrentSession.requestLayer,
+    onFailure: () => new Response(null, { status: 500 })
+  },
+  async function* (builder) {
+    const middleware = yield* builder.middleware()
+    return { middleware }
+  }
+)
 void wrongHono
+declare const otherLayer: Layer<InstanceType<typeof OtherAuth>, never>
+// @ts-expect-error The Runtime does not provide the Auth Service required by the app Layer.
+void Runtime.make(Layer.merge(otherLayer, wrongHono.layer))
 
-const both = HonoEffect.make(
-  {} as Runtime<AuthInstance | BetterAuthServiceInstance<'@hono/OtherAuth', typeof otherRawAuth>>,
+const both = HonoEffect.app(
+  '@hono/BothApp',
   {
     requestLayer: (context) =>
       Layer.merge(CurrentSession.requestLayer(context), OtherSession.requestLayer(context))
+  },
+  async function* (builder) {
+    const route = yield* builder.gen(async function* () {
+      const current = yield* CurrentSession.get()
+      const other = yield* OtherSession.get()
+      return Result.ok({ current, other })
+    })
+    return { route }
   }
 )
 void both

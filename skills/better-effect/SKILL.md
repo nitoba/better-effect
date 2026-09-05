@@ -158,24 +158,24 @@ Use `references/refactoring-rules.md` for the complete inventory and decision ru
 
 Use this as the default decision table:
 
-| Need | Prefer |
-| --- | --- |
-| value that can succeed or fail with an expected typed error | `Result<A, E>` |
-| Promise that may reject at an infrastructure boundary | normalize with `Result.tryPromise` / relevant `better-result` helper |
-| multi-step Result workflow with Service access inside an active Runtime/Scope | `Effect.gen` |
-| workflow that must begin only when a Runtime executes it | `Effect.fn` / `Program` |
-| contextual application capability | `Service<Self>()('Tag')` |
-| provider recipe or application environment | `Layer` |
-| long-lived process/server execution owner | long-lived `Runtime` |
-| one command/script execution | `Runtime.run` or `Runtime.use` |
-| per-execution provider/context | `runtime.runWith` or integration-specific request Layer |
-| application/root resource shared across executions | `Layer.scoped` / `Layer.scopedGen` |
-| resource owned by one Runtime execution | `Effect.acquireRelease` |
-| already-acquired disposable owned by current execution | `Effect.add` |
-| manually-owned hierarchy outside Runtime | `Scope.make` / `Scope.run` |
-| one local acquire/use/release transaction | `Resource.acquireUseRelease` when its simpler compatibility facade is the better fit |
-| short linear Result transformation | `pipe` + Effect combinators |
-| lazy collection of Programs with bounded parallelism | `Program.all` |
+| Need                                                                          | Prefer                                                                               |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| value that can succeed or fail with an expected typed error                   | `Result<A, E>`                                                                       |
+| Promise that may reject at an infrastructure boundary                         | normalize with `Result.tryPromise` / relevant `better-result` helper                 |
+| multi-step Result workflow with Service access inside an active Runtime/Scope | `Effect.gen`                                                                         |
+| workflow that must begin only when a Runtime executes it                      | `Effect.fn` / `Program`                                                              |
+| contextual application capability                                             | `Service<Self>()('Tag')`                                                             |
+| provider recipe or application environment                                    | `Layer`                                                                              |
+| long-lived process/server execution owner                                     | long-lived `Runtime`                                                                 |
+| one command/script execution                                                  | `Runtime.run` or `Runtime.use`                                                       |
+| per-execution provider/context                                                | `runtime.runWith` or integration-specific request Layer                              |
+| application/root resource shared across executions                            | `Layer.scoped` / `Layer.scopedGen`                                                   |
+| resource owned by one Runtime execution                                       | `Effect.acquireRelease`                                                              |
+| already-acquired disposable owned by current execution                        | `Effect.add`                                                                         |
+| manually-owned hierarchy outside Runtime                                      | `Scope.make` / `Scope.run`                                                           |
+| one local acquire/use/release transaction                                     | `Resource.acquireUseRelease` when its simpler compatibility facade is the better fit |
+| short linear Result transformation                                            | `pipe` + Effect combinators                                                          |
+| lazy collection of Programs with bounded parallelism                          | `Program.all`                                                                        |
 
 Plain functions and plain Promises remain valid. Do not convert pure calculations or simple async code to Effects when requirements, Result composition, Runtime boundaries, or ownership gain nothing.
 
@@ -301,7 +301,7 @@ For shared package contracts, prefer a namespaced tag such as `@acme/Logger`.
 Normal application code should prefer:
 
 ```ts
-const repository = yield* UserRepository
+const repository = yield * UserRepository
 ```
 
 This resolves through the active Runtime and contributes `UserRepository` to the Effect requirement channel.
@@ -347,10 +347,7 @@ Layers are recipes, not instances.
 `Layer.merge` rejects duplicate tags intentionally. Replacement must be visible:
 
 ```ts
-const AppTest = Layer.override(
-  AppLive,
-  Layer.succeed(Database, fakeDatabase)
-)
+const AppTest = Layer.override(AppLive, Layer.succeed(Database, fakeDatabase))
 ```
 
 Same-tag overrides must have bidirectionally compatible contracts.
@@ -445,7 +442,7 @@ single local acquire/use/release Result transaction
 Inside a Runtime execution:
 
 ```ts
-const scope = yield* Scope
+const scope = yield * Scope
 ```
 
 may register finalizers, acquire resources, and fork children, but it must not close the owner-managed execution Scope.
@@ -455,17 +452,19 @@ Use `Scope.make()` or `fork()` when the caller owns a closeable Scope.
 ### Use `Effect.acquireRelease` for acquisition
 
 ```ts
-const connection = yield* Effect.acquireRelease(
-  () => pool.connect(),
-  (connection, outcome) => connection.close(outcome)
-)
+const connection =
+  yield *
+  Effect.acquireRelease(
+    () => pool.connect(),
+    (connection, outcome) => connection.close(outcome)
+  )
 ```
 
 Use `Effect.add` only after a disposable object has already been acquired:
 
 ```ts
 const socket = await connectSocket()
-const managed = yield* Effect.add(socket)
+const managed = yield * Effect.add(socket)
 ```
 
 The object must implement callable `Symbol.asyncDispose` or `Symbol.dispose`.
@@ -501,7 +500,11 @@ For typed configuration, use Standard Schema-compatible validation through the C
 
 Use `better-effect/hono` when a Hono request should be one better-effect execution boundary.
 
-Create the Runtime once at application startup, then create `HonoEffect` from that Runtime. Install `http.middleware()` before any middleware/handler that needs Services, the request Scope, or request-local resources.
+Declare the Hono application with `HonoEffect.app` (or provide an existing
+Service with `HonoEffect.layer`), compose its `.layer` into one Runtime at
+application startup, and resolve the application token once. Install the
+captured `http.middleware()` before any middleware/handler that needs Services,
+the request Scope, or request-local resources.
 
 Prefer:
 

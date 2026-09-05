@@ -21,13 +21,13 @@ Result/defect policy, and request Scope cleanup for the whole request.
 
 ## Configure the request boundary
 
-Create the Runtime once during application startup and install the middleware
-before any `http.gen`, `http.handler` or `http.guard` handler:
+Declare the Hono application as a Layer and compose it into the Runtime once
+during application startup:
 
 ```ts
 import { Hono } from 'hono'
 import { Result } from 'better-result'
-import { Layer, Runtime, Service } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 
 class WorkOrderService extends Service<WorkOrderService>()('WorkOrderService') {
@@ -37,28 +37,45 @@ class WorkOrderService extends Service<WorkOrderService>()('WorkOrderService') {
 }
 
 const AppLive = Layer.make(WorkOrderService)
-const runtime = await Runtime.make(AppLive)
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)
+  },
+  async function* (http) {
+    const app = new Hono()
 
-const http = HonoEffect.make(runtime, {
-  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)
-})
+    app.use('/api/*', yield* http.middleware())
+    app.get(
+      '/api/work-orders',
+      yield* http.gen(async function* () {
+        const workOrders = yield* WorkOrderService
+        const items = yield* Result.await(workOrders.list())
 
-const app = new Hono()
+        return Result.ok(items)
+      })
+    )
 
-app.use('/api/*', http.middleware())
+    return app
+  }
+)
 
-app.get(
-  '/api/work-orders',
-  http.gen(async function* () {
-    const workOrders = yield* WorkOrderService
-    const items = yield* Result.await(workOrders.list())
-
-    return Result.ok(items)
+const runtime = await Runtime.make(Layer.merge(AppLive, App.layer))
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(appResult)) throw new Error(String(appResult.error))
+const app = appResult.value
 
 await runtime.dispose()
 ```
+
+The remaining route examples below are the contents of the `HonoEffect.app`
+factory, after its `const app = new Hono()` declaration. For an existing
+application Service, use `HonoEffect.layer(ServiceToken, options, factory)` and
+compose the returned Layer in the same way.
 
 The request boundary supplies `CurrentRequest` and links the request's
 `AbortSignal` to the Runtime execution. Services are resolved lazily through
@@ -112,13 +129,13 @@ app.get(
 )
 ```
 
-Both APIs validate the Program's Service requirements against the Runtime's
+Both APIs validate the Program's Service requirements against the application
 Layer. A route that yields a Service absent from `AppLive` fails at compile
 time; no manual Service catalog is needed. The `Failure` type passed to
-`onFailure` and the `RequestLayer` returned by `requestLayer` are part of the
-`HonoEffect` contract, so incompatible failure handlers or request Layers are
-rejected at the public boundary. Request-Layer external requirements must be
-provided by the Runtime.
+`onFailure` and the `RequestLayer` returned by `requestLayer` become Layer
+requirements, so incompatible failure handlers or request Layers are rejected
+at the public boundary. Request-Layer external requirements must be provided
+by the Runtime.
 
 ## Hono validation and Standard Schema
 
@@ -264,13 +281,28 @@ app.use(
 An `http.guard` that returns `Result.ok()` calls the next middleware. A
 `Result.err` uses the central failure policy and stops the chain.
 
-Request-local providers can be added without changing the application Runtime:
+Request-local providers can be declared in the application Layer:
 
 ```ts
-const http = HonoEffect.make(runtime, {
-  requestLayer: (c) =>
-    Layer.succeed(RequestId, new RequestId(c.req.header('X-Request-Id') ?? crypto.randomUUID()))
-})
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    requestLayer: (c) =>
+      Layer.succeed(RequestId, new RequestId(c.req.header('X-Request-Id') ?? crypto.randomUUID()))
+  },
+  async function* (http) {
+    const app = new Hono()
+    app.use('*', yield* http.middleware())
+    app.get(
+      '/request-id',
+      yield* http.gen(async function* () {
+        const requestId = yield* RequestId
+        return Result.ok(requestId)
+      })
+    )
+    return app
+  }
+)
 ```
 
 Those providers are closed with the request Scope. Shared infrastructure stays
@@ -292,14 +324,14 @@ bun add better-effect-better-auth better-auth hono
 ```
 
 Configure Better Auth's `basePath` to match the raw Hono route, then create one
-current-session token for the Better Auth Service and pass its request Layer to
-`HonoEffect.make`:
+current-session token for the Better Auth Service and include the Hono app Layer
+in the Runtime:
 
 ```ts
 import { betterAuth } from 'better-auth'
 import { memoryAdapter } from 'better-auth/adapters/memory'
 import { Hono } from 'hono'
-import { Layer, Runtime, Service } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { BetterAuth } from 'better-effect-better-auth'
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
@@ -322,25 +354,40 @@ const Auth = BetterAuth.from('@app/Auth', rawAuth)
 const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
   disableCookieCache: true
 })
-const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer))
-const http = HonoEffect.make(runtime, {
-  requestLayer: CurrentSession.requestLayer,
-  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)
-})
-const app = new Hono()
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    requestLayer: CurrentSession.requestLayer,
+    onFailure: (_error, c) => c.json({ error: 'Request failed' }, 500)
+  },
+  async function* (http) {
+    const app = new Hono()
 
-// Register Better Auth before the catch-all boundary; it receives the original Web Request.
-app.all('/api/auth/*', (c) => rawAuth.handler(c.req.raw))
-app.use('*', http.middleware())
-app.use('/api/private/*', http.guard(CurrentSession.guard))
+    // Register Better Auth before the catch-all boundary; it receives the original Web Request.
+    app.all('/api/auth/*', (c) => rawAuth.handler(c.req.raw))
+    app.use('*', yield* http.middleware())
+    app.use('/api/private/*', yield* http.guard(CurrentSession.guard))
 
-app.get(
-  '/api/private/me',
-  http.gen(async function* () {
-    const session = yield* CurrentSession.require()
-    return Result.ok({ userId: session.user.id })
+    app.get(
+      '/api/private/me',
+      yield* http.gen(async function* () {
+        const session = yield* CurrentSession.require()
+        return Result.ok({ userId: session.user.id })
+      })
+    )
+
+    return app
+  }
+)
+
+const runtime = await Runtime.make(Layer.merge(AppLive, Auth.layer, App.layer))
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(appResult)) throw new Error(String(appResult.error))
+const app = appResult.value
 ```
 
 The request Layer requires the exact `Auth` Service from the Runtime and

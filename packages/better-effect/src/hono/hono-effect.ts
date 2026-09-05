@@ -1,361 +1,167 @@
-import { Result } from 'better-result'
-import type { Context, Env, Handler, Input, MiddlewareHandler } from 'hono'
-
-import { Effect } from '../effect'
-import type { EffectSuccess, EffectYield, ProgramFromGenerator } from '../effect/types'
-import { Runtime } from '../runtime'
-import type { LayerInput } from '../layer/inference'
-import type { AnyService } from '../service'
-import {
-  makeRequestBoundary,
-  recordRequestFailure,
-  recordRequestSuccess,
-  type RequestState
-} from './request-boundary'
-import { assertResponse } from '../web/responses'
-import { defaultFailure, defaultSuccess } from './responses'
+import type { InferYieldRequirements, ServiceRequirement } from '../effect/types'
+import { Layer } from '../layer'
+import type { LayerInput, LayerResult } from '../layer/inference'
+import { Service } from '../service'
 import type {
-  AnyGeneratorBody,
-  AnyHonoMiddleware,
-  AnyProgram,
-  AnyProgramFactory,
-  AnyResult,
-  AnyRouteOptions,
-  AvailableServices,
-  CompleteProgram,
-  DefaultRequestLayer,
-  GeneratorBody,
-  GeneratorChecks,
-  HonoContext,
-  HonoEffectContext,
-  HonoEffectOptions,
-  HonoEffectRouteOptions,
-  HonoEffectSuccess,
-  HonoRequestLayerChecks,
-  MiddlewareEnvironment,
-  MiddlewareInputs,
-  MiddlewarePath
-} from './types'
+  AnyService,
+  ServiceContract,
+  ServiceIdentity,
+  ServiceRequirements,
+  ServiceToken
+} from '../service'
 
-type HonoRouteArguments<Middlewares extends readonly AnyHonoMiddleware[], Body, Options> =
-  | [...middlewares: Middlewares, body: Body]
-  | [...middlewares: Middlewares, body: Body, options: Options | undefined]
+import { HonoEffectBuilder } from './builder'
+import type { DefaultRequestLayer, HonoEffectOptions, HonoRequestLayerChecks } from './types'
 
-type HonoInternalHandler = (
-  context: HonoContext,
-  next: () => Promise<void>
-) => Promise<Response | void>
+type HonoFactoryFor<Builder, Returned extends object> = (
+  http: Builder
+) =>
+  | Generator<ServiceRequirement<unknown>, Returned, unknown>
+  | AsyncGenerator<ServiceRequirement<unknown>, Returned, unknown>
 
-type HonoHandlerFactory<
-  ContextType extends object,
-  Provided extends AnyService,
-  Failure,
-  ProgramFactory extends (context: ContextType) => AnyProgram
-> = ProgramFactory &
-  ([ReturnType<ProgramFactory>] extends [
-    CompleteProgram<Provided, ReturnType<ProgramFactory>, Failure>
-  ]
-    ? unknown
-    : (context: ContextType) => CompleteProgram<Provided, ReturnType<ProgramFactory>, Failure>)
+type HonoFactory<Builder> = HonoFactoryFor<Builder, object>
 
-/** Run Effect Programs inside one Runtime execution per Hono request. */
-export class HonoEffect<
-  Provided extends AnyService = any,
-  Failure = unknown,
-  RequestLayer extends LayerInput = DefaultRequestLayer
-> {
-  readonly runtime: Runtime<Provided>
+type HonoFactoryReturn<Factory> = Factory extends (...arguments_: any[]) => infer Iterator
+  ? Iterator extends Generator<any, infer Returned, any>
+    ? Returned extends object
+      ? Returned
+      : never
+    : Iterator extends AsyncGenerator<any, infer Returned, any>
+      ? Returned extends object
+        ? Returned
+        : never
+      : never
+  : never
 
-  private readonly states = new WeakMap<object, RequestState>()
+type HonoFactoryYield<Factory> = Factory extends (...arguments_: any[]) => infer Iterator
+  ? Iterator extends Generator<infer Yield, object, any>
+    ? Yield
+    : Iterator extends AsyncGenerator<infer Yield, object, any>
+      ? Yield
+      : never
+  : never
 
-  private readonly onSuccess: NonNullable<HonoEffectOptions<Failure, RequestLayer>['onSuccess']>
+/** A Hono application Layer with inferred Service requirements. */
+export type HonoEffectLayer<
+  Service extends ServiceToken<any, any>,
+  Yield extends ServiceRequirement<unknown>
+> = LayerResult<
+  import('../layer/metadata').ProviderEntry<
+    InstanceType<Service>,
+    Extract<ServiceRequirements<InstanceType<Service>> | InferYieldRequirements<Yield>, AnyService>
+  >
+>
 
-  private readonly onFailure: NonNullable<HonoEffectOptions<Failure, RequestLayer>['onFailure']>
-
-  private readonly requestLayer: HonoEffectOptions<Failure, RequestLayer>['requestLayer']
-
-  private constructor(
-    runtime: Runtime<Provided>,
-    options: HonoEffectOptions<Failure, RequestLayer>
-  ) {
-    this.runtime = runtime
-    this.onSuccess = options.onSuccess ?? defaultSuccess
-    this.onFailure = options.onFailure ?? defaultFailure
-    this.requestLayer = options.requestLayer
-  }
-
-  static make<
-    Provided extends AnyService,
-    Failure = unknown,
-    RequestLayer extends LayerInput = DefaultRequestLayer
-  >(
-    runtime: Runtime<Provided>,
-    options?: HonoEffectOptions<Failure, RequestLayer> &
-      HonoRequestLayerChecks<Provided, RequestLayer>
-  ): HonoEffect<Provided, Failure, RequestLayer> {
-    return new HonoEffect(runtime, options ?? {})
-  }
-
-  middleware<E extends Env = Env, Path extends string = string>(): MiddlewareHandler<E, Path> {
-    return makeRequestBoundary<Provided, RequestLayer, Failure, E, Path>({
-      runtime: this.runtime,
-      states: this.states,
-      requestLayer: this.requestLayer,
-      onSuccess: this.onSuccess,
-      onFailure: this.onFailure
-    })
-  }
-
-  handler<
-    E extends Env = Env,
-    Path extends string = string,
-    InputType extends Input = Input,
-    Program extends AnyProgram = AnyProgram
-  >(
-    makeProgram: (
-      context: Context<E, Path, InputType>
-    ) => CompleteProgram<AvailableServices<Provided, RequestLayer>, Program, Failure>,
-    options?: HonoEffectRouteOptions<EffectSuccess<Program>, Context<E, Path, InputType>>
-  ): Handler<E, Path, InputType, Promise<Response>>
-  handler<
-    const Middlewares extends readonly AnyHonoMiddleware[],
-    E extends Env = MiddlewareEnvironment<Middlewares>,
-    Path extends string = MiddlewarePath<Middlewares>,
-    const ProgramFactory extends (
-      context: HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>
-    ) => AnyProgram = (
-      context: HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>
-    ) => AnyProgram
-  >(
-    ...args: HonoRouteArguments<
-      Middlewares,
-      HonoHandlerFactory<
-        HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>,
-        AvailableServices<Provided, RequestLayer>,
-        Failure,
-        ProgramFactory
-      >,
-      HonoEffectRouteOptions<
-        EffectSuccess<ReturnType<ProgramFactory>>,
-        Context<E, Path, MiddlewareInputs<Middlewares>>
-      >
-    >
-  ): Handler<E, Path, MiddlewareInputs<Middlewares>, Promise<Response>>
-  handler(...args: unknown[]): Handler<any, any, any, Promise<Response>> {
-    const last = args.at(-1)
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
-    const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
-    // SAFETY: the overloads restrict the optional trailing argument to route options.
-    const options = ((hasOptions ? last : {}) ?? {}) as AnyRouteOptions
-    const bodyIndex = hasOptions ? args.length - 2 : args.length - 1
-    // SAFETY: the overloads place the program factory immediately before route options.
-    const makeProgram = args[bodyIndex] as AnyProgramFactory
-    let handler = this.makeHandler(makeProgram, options)
-
-    for (let index = bodyIndex - 1; index >= 0; index -= 1) {
-      // SAFETY: every argument before the program factory is an input middleware by the overloads.
-      handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
-    }
-
-    // SAFETY: The public overload retains HonoEffect's Promise<Response> source contract; Hono also accepts the internal Promise<void> completion.
-    return handler as Handler<any, any, any, Promise<Response>>
-  }
-
-  gen<
-    E extends Env = Env,
-    Path extends string = string,
-    InputType extends Input = Input,
-    const Yield extends EffectYield = EffectYield,
-    const Returned extends AnyResult = AnyResult
-  >(
-    body: GeneratorBody<Context<E, Path, InputType>, Yield, Returned> &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
-    options?: HonoEffectRouteOptions<
-      EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
-      Context<E, Path, InputType>
-    >
-  ): Handler<E, Path, InputType, Promise<Response>>
-  gen<
-    const Middlewares extends readonly AnyHonoMiddleware[],
-    E extends Env = MiddlewareEnvironment<Middlewares>,
-    Path extends string = MiddlewarePath<Middlewares>,
-    const Yield extends EffectYield = EffectYield,
-    const Returned extends AnyResult = AnyResult
-  >(
-    ...args: HonoRouteArguments<
-      Middlewares,
-      GeneratorBody<HonoEffectContext<E, Path, MiddlewareInputs<Middlewares>>, Yield, Returned> &
-        GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>,
-      HonoEffectRouteOptions<
-        EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
-        Context<E, Path, MiddlewareInputs<Middlewares>>
-      >
-    >
-  ): Handler<E, Path, MiddlewareInputs<Middlewares>, Promise<Response>>
-  gen(...args: unknown[]): Handler<any, any, any, Promise<Response>> {
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch distinguishes middleware from the generator body.
-    const last = args.at(-1)
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from function callbacks.
-    const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
-    // SAFETY: the overloads restrict the optional trailing argument to route options.
-    const options = ((hasOptions ? last : {}) ?? {}) as AnyRouteOptions
-    const bodyIndex = hasOptions ? args.length - 2 : args.length - 1
-    // SAFETY: the overloads place the generator body immediately before route options.
-    const body = args[bodyIndex] as AnyGeneratorBody
-
-    let handler = this.makeHandler((context) => {
-      // SAFETY: Effect.fn's runtime generator accepts both sync and async generators; the cast only joins its overloads.
-      const program = Effect.fn(
-        () => body(context) as AsyncGenerator<EffectYield, AnyResult, unknown>
-      )
-
-      // SAFETY: the public GeneratorChecks overload validates requirements before this erased boundary.
-      return program as AnyProgram
-    }, options)
-
-    for (let index = bodyIndex - 1; index >= 0; index -= 1) {
-      // SAFETY: every argument before the generator body is an input middleware by the overloads.
-      handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
-    }
-
-    // SAFETY: The public overload retains HonoEffect's Promise<Response> source contract; Hono also accepts the internal Promise<void> completion.
-    return handler as Handler<any, any, any, Promise<Response>>
-  }
-
-  guard<
-    E extends Env = Env,
-    Path extends string = string,
-    InputType extends Input = Input,
-    const Yield extends EffectYield = EffectYield,
-    const Returned extends AnyResult = AnyResult
-  >(
-    body: GeneratorBody<Context<E, Path, InputType>, Yield, Returned> &
-      GeneratorChecks<AvailableServices<Provided, RequestLayer>, Yield, Returned, Failure>
-  ): MiddlewareHandler<E, Path> {
-    return async (context, next) => {
-      const state = this.getState(context)
-      // SAFETY: Effect.fn accepts the sync or async generator supplied by the caller; this joins its overloads.
-      const program = Effect.fn(() => body(context) as AsyncGenerator<Yield, Returned, unknown>)
-      const result = await program()
-
-      if (Result.isError(result)) {
-        return await this.handleFailure(state, result.error, context)
-      }
-
-      await next()
-    }
-  }
-
-  private recordFailure(
-    state: RequestState,
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result errors are intentionally opaque until the WebEffect policy narrows them.
-    error: unknown
-  ): void {
-    recordRequestFailure(state, error)
-  }
-
-  private makeHandler(
-    makeProgram: (context: HonoContext) => AnyProgram,
-    options: HonoEffectRouteOptions<any, any>
-  ): HonoInternalHandler {
-    return async (context) => {
-      const state = this.getState(context)
-      const result = await makeProgram(context)()
-
-      if (Result.isError(result)) {
-        return await this.handleFailure(state, result.error, context)
-      }
-
-      recordRequestSuccess(state, result.value, options)
-      return await this.handleSuccess(result.value, options, context)
-    }
-  }
-
-  private async handleSuccess(
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Route values are intentionally opaque until the Hono success policy consumes them.
-    value: unknown,
-    options: AnyRouteOptions,
-    context: HonoContext
-  ): Promise<Response> {
-    if (options.respond !== undefined) {
-      return assertResponse(await options.respond(value, context))
-    }
-
-    const success: HonoEffectSuccess = { value }
-
-    if (options.status !== undefined) {
-      Object.assign(success, { status: options.status })
-    }
-
-    if (options.serialize !== undefined) {
-      Object.assign(success, { serialize: options.serialize })
-    }
-
-    return assertResponse(await this.onSuccess(success, context))
-  }
-
-  private async handleFailure(
-    state: RequestState,
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result errors are intentionally opaque until the Hono failure policy consumes them.
-    error: unknown,
-    context: HonoContext
-  ): Promise<Response> {
-    this.recordFailure(state, error)
-    // SAFETY: The public handler, generator, and guard constraints validate this error against Failure.
-    return assertResponse(await this.onFailure(error as Failure, context))
-  }
-
-  private composeInputMiddleware(
-    inputMiddleware: AnyHonoMiddleware,
-    handler: HonoInternalHandler
-  ): HonoInternalHandler {
-    return async (context, next) => {
-      let downstreamResponse: Response | undefined
-      let nextCalled = false
-
-      // Match Hono's compose guard: a middleware may advance the chain only once.
-      const nextOnce = async (): Promise<void> => {
-        if (nextCalled) {
-          throw new Error('next() called multiple times')
-        }
-
-        nextCalled = true
-        const response = await handler(context, next)
-
-        if (response !== undefined) {
-          downstreamResponse = response
-        }
-      }
-      const middlewareResponse = await inputMiddleware(context, nextOnce)
-
-      if (middlewareResponse instanceof Response) {
-        return middlewareResponse
-      }
-
-      if (downstreamResponse !== undefined) {
-        return downstreamResponse
-      }
-
-      if (context.finalized) {
-        return context.res
-      }
-    }
-  }
-
-  private getState(context: HonoContext): RequestState {
-    const state = this.states.get(context)
-
-    if (state === undefined) {
-      throw new HonoEffectBoundaryMissingError()
-    }
-
-    return state
-  }
+export type HonoApplicationToken<
+  Tag extends string,
+  App extends object,
+  Service extends ServiceToken<any, any>,
+  Yield extends ServiceRequirement<unknown>
+> = ServiceToken<Tag, App & ServiceIdentity<Tag>> & {
+  readonly layer: HonoEffectLayer<Service, Yield>
 }
 
-export class HonoEffectBoundaryMissingError extends Error {
-  constructor() {
-    super('Register HonoEffect.middleware() before better-effect handlers')
-    this.name = 'HonoEffectBoundaryMissingError'
+type HonoLiteralTag<Tag extends string> = string extends Tag ? never : Tag extends '' ? never : Tag
+
+const defineLayerProperty = <Token extends object, AppLayer extends LayerInput>(
+  token: Token,
+  layer: AppLayer
+): Token & { readonly layer: AppLayer } => {
+  Object.defineProperty(token, 'layer', {
+    configurable: false,
+    enumerable: true,
+    value: layer,
+    writable: false
+  })
+
+  // SAFETY: The property was defined above as a non-writable value with the exact Layer type.
+  return token as Token & { readonly layer: AppLayer }
+}
+
+const makeHonoLayer = <
+  Service extends ServiceToken<any, any>,
+  Failure,
+  RequestLayer extends LayerInput,
+  Factory extends HonoFactory<HonoEffectBuilder<Failure, RequestLayer>>
+>(
+  service: Service,
+  options: HonoEffectOptions<Failure, RequestLayer>,
+  factory: Factory
+): HonoEffectLayer<Service, Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>> => {
+  const layer = Layer.gen(service, () => {
+    const builder = new HonoEffectBuilder(options)
+
+    // SAFETY: the public factory is constrained to a Hono Service contract; this erasure only adapts it to Layer.gen's runtime-erased provider storage.
+    return factory(builder) as Generator<
+      ServiceRequirement<unknown>,
+      ServiceContract<InstanceType<Service>>,
+      unknown
+    >
+  })
+
+  // SAFETY: Layer.gen derives the same provider requirements from the factory's yield metadata.
+  return layer as HonoEffectLayer<
+    Service,
+    Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
+  >
+}
+
+/** Layer-first Hono integration. The application owns the Runtime composition. */
+export class HonoEffect {
+  private constructor() {}
+
+  /** Create a yieldable Hono application token and its Layer. */
+  static app<
+    const Tag extends string,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Failure = unknown,
+    const Factory extends HonoFactory<HonoEffectBuilder<Failure, RequestLayer>> = HonoFactory<
+      HonoEffectBuilder<Failure, RequestLayer>
+    >
+  >(
+    tag: Tag & HonoLiteralTag<Tag>,
+    options: HonoEffectOptions<Failure, RequestLayer> & HonoRequestLayerChecks<RequestLayer>,
+    factory: Factory
+  ): HonoApplicationToken<
+    Tag,
+    HonoFactoryReturn<Factory>,
+    ServiceToken<Tag, HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>,
+    Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
+  > {
+    const literalTag: HonoLiteralTag<Tag> = tag
+    const tokenFactory = Service<HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>()<Tag>
+    // SAFETY: Service's factory returns the class-backed token; this assertion restores the precise application instance contract.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the Service factory erases only the application instance contract.
+    const token = tokenFactory(literalTag) as unknown as ServiceToken<
+      Tag,
+      HonoFactoryReturn<Factory> & ServiceIdentity<Tag>
+    >
+    const layer = makeHonoLayer(token, options, factory)
+
+    // SAFETY: The token and Layer were created together above and the return type mirrors both exact values.
+    return defineLayerProperty(token, layer) as HonoApplicationToken<
+      Tag,
+      HonoFactoryReturn<Factory>,
+      ServiceToken<Tag, HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>,
+      Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
+    >
+  }
+
+  /** Provide an application-chosen Service token with a Hono Layer. */
+  static layer<
+    Service extends ServiceToken<any, any>,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Failure = unknown,
+    const Returned extends ServiceContract<InstanceType<Service>> = ServiceContract<
+      InstanceType<Service>
+    >,
+    const Factory extends HonoFactoryFor<HonoEffectBuilder<Failure, RequestLayer>, Returned> =
+      HonoFactoryFor<HonoEffectBuilder<Failure, RequestLayer>, Returned>
+  >(
+    service: Service,
+    options: HonoEffectOptions<Failure, RequestLayer> & HonoRequestLayerChecks<RequestLayer>,
+    factory: Factory
+  ): HonoEffectLayer<Service, Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>> {
+    return makeHonoLayer(service, options, factory)
   }
 }

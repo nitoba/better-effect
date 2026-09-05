@@ -90,46 +90,61 @@ describe('BetterAuthHono', () => {
       fixture.Auth,
       options
     )
-    const runtime = await Runtime.make(fixture.Auth.layer)
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/unused',
-      http.gen(async function* () {
-        yield* Result.ok(undefined)
-        return Result.ok('unused')
+    const HonoApp = HonoEffect.app(
+      '@hono-test/CurrentSessionApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/unused',
+          yield* http.gen(async function* () {
+            yield* Result.ok(undefined)
+            return Result.ok('unused')
+          })
+        )
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            const current = yield* CurrentSession
+            const readOptional = Effect.fn(async function* () {
+              return Result.ok(yield* current.get())
+            })
+            const readRequired = Effect.fn(async function* () {
+              return Result.ok(yield* current.require())
+            })
+            const [optionalResult, requiredResult] = await Promise.all([
+              readOptional(),
+              readRequired()
+            ])
+
+            if (Result.isError(optionalResult)) {
+              return Result.err(optionalResult.error)
+            }
+
+            if (Result.isError(requiredResult)) {
+              return Result.err(requiredResult.error)
+            }
+
+            return Result.ok({
+              optional: optionalResult.value,
+              required: requiredResult.value
+            })
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        const current = yield* CurrentSession
-        const readOptional = Effect.fn(async function* () {
-          return Result.ok(yield* current.get())
-        })
-        const readRequired = Effect.fn(async function* () {
-          return Result.ok(yield* current.require())
-        })
-        const [optionalResult, requiredResult] = await Promise.all([readOptional(), readRequired()])
-
-        if (Result.isError(optionalResult)) {
-          return Result.err(optionalResult.error)
-        }
-
-        if (Result.isError(requiredResult)) {
-          return Result.err(requiredResult.error)
-        }
-
-        return Result.ok({
-          optional: optionalResult.value,
-          required: requiredResult.value
-        })
-      })
-    )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const unused = await app.request('https://example.test/unused')
@@ -176,19 +191,31 @@ describe('BetterAuthHono', () => {
       return fixture.rawAuth
     })
     const CurrentSession = BetterAuthHono.session('@hono-test/LazyCurrentSession', Auth)
-    const runtime = await Runtime.make(Auth.layer)
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/lazy-session',
-      http.gen(async function* () {
-        return Result.ok(yield* CurrentSession.get())
+    const HonoApp = HonoEffect.app(
+      '@hono-test/LazySessionApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/lazy-session',
+          yield* http.gen(async function* () {
+            return Result.ok(yield* CurrentSession.get())
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       expect(factoryCalls).toBe(0)
@@ -208,41 +235,53 @@ describe('BetterAuthHono', () => {
   test('memoizes a missing session before require and later get calls', async () => {
     const fixture = makeAuth(async () => null)
     const CurrentSession = BetterAuthHono.session('@hono-test/NullSnapshot', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
     let optional: Session | null | undefined
     let repeated: Session | null | undefined
     let requiredError: unknown
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        const current = yield* CurrentSession
-        const optionalResult = await execute(current.get())
-        if (Result.isError(optionalResult)) {
-          throw new Error('Optional session lookup unexpectedly failed')
-        }
-        optional = optionalResult.value
+    const HonoApp = HonoEffect.app(
+      '@hono-test/NullSnapshotApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            const current = yield* CurrentSession
+            const optionalResult = await execute(current.get())
+            if (Result.isError(optionalResult)) {
+              throw new Error('Optional session lookup unexpectedly failed')
+            }
+            optional = optionalResult.value
 
-        const requiredResult = await execute(current.require())
-        if (Result.isOk(requiredResult)) {
-          throw new Error('Required session unexpectedly succeeded')
-        }
-        requiredError = requiredResult.error
+            const requiredResult = await execute(current.require())
+            if (Result.isOk(requiredResult)) {
+              throw new Error('Required session unexpectedly succeeded')
+            }
+            requiredError = requiredResult.error
 
-        const repeatedResult = await execute(current.get())
-        if (Result.isError(repeatedResult)) {
-          throw new Error('Repeated optional session lookup unexpectedly failed')
-        }
-        repeated = repeatedResult.value
+            const repeatedResult = await execute(current.get())
+            if (Result.isError(repeatedResult)) {
+              throw new Error('Repeated optional session lookup unexpectedly failed')
+            }
+            repeated = repeatedResult.value
 
-        return Result.ok('observed')
+            return Result.ok('observed')
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/session')
@@ -266,32 +305,44 @@ describe('BetterAuthHono', () => {
       throw apiCause
     })
     const CurrentSession = BetterAuthHono.session('@hono-test/ApiSnapshot', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
     const errors: unknown[] = []
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        const current = yield* CurrentSession
-        const first = await execute(current.get())
-        const second = await execute(current.require())
-        const repeated = await execute(current.get())
+    const HonoApp = HonoEffect.app(
+      '@hono-test/ApiSnapshotApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            const current = yield* CurrentSession
+            const first = await execute(current.get())
+            const second = await execute(current.require())
+            const repeated = await execute(current.get())
 
-        for (const result of [first, second, repeated]) {
-          if (Result.isOk(result)) {
-            throw new Error('Failed session lookup unexpectedly succeeded')
-          }
-          errors.push(result.error)
-        }
+            for (const result of [first, second, repeated]) {
+              if (Result.isOk(result)) {
+                throw new Error('Failed session lookup unexpectedly succeeded')
+              }
+              errors.push(result.error)
+            }
 
-        return Result.ok('observed')
+            return Result.ok('observed')
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/session')
@@ -315,32 +366,44 @@ describe('BetterAuthHono', () => {
       throw defect
     })
     const CurrentSession = BetterAuthHono.session('@hono-test/DefectSnapshot', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
     const errors: unknown[] = []
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        const current = yield* CurrentSession
-        const first = await execute(current.get())
-        const repeated = await execute(current.require())
-        const repeatedAgain = await execute(current.get())
+    const HonoApp = HonoEffect.app(
+      '@hono-test/DefectSnapshotApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            const current = yield* CurrentSession
+            const first = await execute(current.get())
+            const repeated = await execute(current.require())
+            const repeatedAgain = await execute(current.get())
 
-        for (const result of [first, repeated, repeatedAgain]) {
-          if (Result.isOk(result)) {
-            throw new Error('Defect session lookup unexpectedly succeeded')
-          }
-          errors.push(result.error)
-        }
+            for (const result of [first, repeated, repeatedAgain]) {
+              if (Result.isOk(result)) {
+                throw new Error('Defect session lookup unexpectedly succeeded')
+              }
+              errors.push(result.error)
+            }
 
-        return Result.ok('observed')
+            return Result.ok('observed')
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/session')
@@ -363,7 +426,28 @@ describe('BetterAuthHono', () => {
     const fixture = makeAuth(async () => successSession('closed'))
     const CurrentSession = BetterAuthHono.session('@hono-test/ClosedSnapshot', fixture.Auth)
     const released: unknown[] = []
-    const runtime = await Runtime.make(fixture.Auth.layer, {
+    let retained: BetterAuthHonoSessionValue<typeof fixture.rawAuth> | undefined
+    const app = new Hono()
+    const HonoApp = HonoEffect.app(
+      '@hono-test/ClosedSnapshotApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            const current = yield* CurrentSession
+            retained = current
+            return Result.ok(yield* current.get())
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer), {
       observers: [
         {
           onResourceRelease: ({ service }) => {
@@ -374,21 +458,12 @@ describe('BetterAuthHono', () => {
         }
       ]
     })
-    let retained: BetterAuthHonoSessionValue<typeof fixture.rawAuth> | undefined
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
-    const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        const current = yield* CurrentSession
-        retained = current
-        return Result.ok(yield* current.get())
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/session')
@@ -423,7 +498,6 @@ describe('BetterAuthHono', () => {
   test('closes each current-session acquisition when one request Layer is shared concurrently', async () => {
     const fixture = makeAuth(async () => successSession('shared'))
     const CurrentSession = BetterAuthHono.session('@hono-test/SharedLayer', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
     const retained: BetterAuthHonoSessionValue<typeof fixture.rawAuth>[] = []
     let sharedLayer: ReturnType<typeof CurrentSession.requestLayer> | undefined
     let acquiredCount = 0
@@ -435,29 +509,42 @@ describe('BetterAuthHono', () => {
     const bothAcquired = new Promise<void>((resolve) => {
       resolveBothAcquired = resolve
     })
-    const http = HonoEffect.make(runtime, {
-      requestLayer: (context) => {
-        sharedLayer ??= CurrentSession.requestLayer(context)
-        return sharedLayer
-      },
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        retained.push(yield* CurrentSession)
-        acquiredCount += 1
+    const HonoApp = HonoEffect.app(
+      '@hono-test/SharedLayerApp',
+      {
+        requestLayer: (context) => {
+          sharedLayer ??= CurrentSession.requestLayer(context)
+          return sharedLayer
+        },
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            retained.push(yield* CurrentSession)
+            acquiredCount += 1
 
-        if (acquiredCount === 2) {
-          resolveBothAcquired()
-        }
+            if (acquiredCount === 2) {
+              resolveBothAcquired()
+            }
 
-        await programsReleased
-        return Result.ok('held')
+            await programsReleased
+            return Result.ok('held')
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const requests = Promise.all([app.request('/session'), app.request('/session')])
@@ -487,29 +574,41 @@ describe('BetterAuthHono', () => {
     let currentSession: Session | null = successSession('before')
     const fixture = makeAuth(async () => currentSession)
     const CurrentSession = BetterAuthHono.session('@hono-test/StaleSnapshot', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: () => new Response('failure', { status: 500 })
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* (context) {
-        const snapshot = yield* CurrentSession.get()
-        currentSession = null
-        const auth = yield* fixture.Auth
-        const fresh = yield* auth.session.get(context.req.raw)
-        const cached = yield* CurrentSession.get()
+    const HonoApp = HonoEffect.app(
+      '@hono-test/StaleSnapshotApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: () => new Response('failure', { status: 500 })
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* (context) {
+            const snapshot = yield* CurrentSession.get()
+            currentSession = null
+            const auth = yield* fixture.Auth
+            const fresh = yield* auth.session.get(context.req.raw)
+            const cached = yield* CurrentSession.get()
 
-        return Result.ok({
-          cached: cached?.user.id ?? null,
-          fresh: fresh?.user.id ?? null,
-          snapshot: snapshot?.user.id ?? null
-        })
+            return Result.ok({
+              cached: cached?.user.id ?? null,
+              fresh: fresh?.user.id ?? null,
+              snapshot: snapshot?.user.id ?? null
+            })
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/session')
@@ -539,24 +638,36 @@ describe('BetterAuthHono', () => {
       return successSession(input.headers.get('x-user') ?? 'anonymous')
     })
     const CurrentSession = BetterAuthHono.session('@hono-test/Concurrent', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: (error) => {
-        if (error instanceof UnhandledException) {
-          return new Response('defect', { status: 503 })
-        }
-        return new Response('failure', { status: 500 })
-      }
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/session',
-      http.gen(async function* () {
-        return Result.ok(yield* CurrentSession.get())
+    const HonoApp = HonoEffect.app(
+      '@hono-test/ConcurrentApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: (error) => {
+          if (error instanceof UnhandledException) {
+            return new Response('defect', { status: 503 })
+          }
+          return new Response('failure', { status: 500 })
+        }
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/session',
+          yield* http.gen(async function* () {
+            return Result.ok(yield* CurrentSession.get())
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const [slow, fast] = await Promise.all([
@@ -594,31 +705,43 @@ describe('BetterAuthHono', () => {
       return null
     })
     const CurrentSession = BetterAuthHono.session('@hono-test/Failures', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
     const observed: unknown[] = []
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: (error) => {
-        observed.push(error)
-        if (error instanceof Unauthenticated) return new Response('login', { status: 401 })
-        if (error instanceof BetterAuthApiError) return new Response('api', { status: 502 })
-        return new Response('defect', { status: 503 })
-      }
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/optional',
-      http.gen(async function* () {
-        return Result.ok(yield* CurrentSession.get())
+    const HonoApp = HonoEffect.app(
+      '@hono-test/FailuresApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: (error) => {
+          observed.push(error)
+          if (error instanceof Unauthenticated) return new Response('login', { status: 401 })
+          if (error instanceof BetterAuthApiError) return new Response('api', { status: 502 })
+          return new Response('defect', { status: 503 })
+        }
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/optional',
+          yield* http.gen(async function* () {
+            return Result.ok(yield* CurrentSession.get())
+          })
+        )
+        app.get(
+          '/required',
+          yield* http.gen(async function* () {
+            return Result.ok(yield* CurrentSession.require())
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
-    app.get(
-      '/required',
-      http.gen(async function* () {
-        return Result.ok(yield* CurrentSession.require())
-      })
-    )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const optional = await app.request('/optional')
@@ -654,25 +777,37 @@ describe('BetterAuthHono', () => {
     let authenticated = true
     const fixture = makeAuth(async () => (authenticated ? successSession('guarded') : null))
     const CurrentSession = BetterAuthHono.session('@hono-test/Guard', fixture.Auth)
-    const runtime = await Runtime.make(fixture.Auth.layer)
     const policyCalls: unknown[] = []
-    const http = HonoEffect.make(runtime, {
-      requestLayer: CurrentSession.requestLayer,
-      onFailure: (error) => {
-        policyCalls.push(error)
-        return new Response('not authenticated', { status: 418 })
-      }
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.use('/private/*', http.guard(CurrentSession.guard))
-    app.get(
-      '/private/profile',
-      http.gen(async function* () {
-        const session = yield* CurrentSession.require()
-        return Result.ok(session.user.id)
+    const HonoApp = HonoEffect.app(
+      '@hono-test/GuardApp',
+      {
+        requestLayer: CurrentSession.requestLayer,
+        onFailure: (error) => {
+          policyCalls.push(error)
+          return new Response('not authenticated', { status: 418 })
+        }
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.use('/private/*', yield* http.guard(CurrentSession.guard))
+        app.get(
+          '/private/profile',
+          yield* http.gen(async function* () {
+            const session = yield* CurrentSession.require()
+            return Result.ok(session.user.id)
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/private/profile')
@@ -707,7 +842,6 @@ describe('BetterAuthHono', () => {
           released.push(resource.path)
         }
       )
-    const runtime = await Runtime.make(fixture.Auth.layer)
     const rawResponse = new Response('streamed', {
       headers: [
         ['location', '/target'],
@@ -722,19 +856,32 @@ describe('BetterAuthHono', () => {
     }
     const app = new Hono()
     app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
-    const http = HonoEffect.make(runtime, {
-      requestLayer: (context) =>
-        Layer.merge(CurrentSession.requestLayer(context), resourceLayer(context))
-    })
-    app.use('*', http.middleware())
-    app.get(
-      '/resource',
-      http.gen(async function* () {
-        const resource = yield* RequestResource
-        const session = yield* CurrentSession.get()
-        return Result.ok({ path: resource.path, session: session?.user.id })
+    const HonoApp = HonoEffect.app(
+      '@hono-test/ResourceApp',
+      {
+        requestLayer: (context) =>
+          Layer.merge(CurrentSession.requestLayer(context), resourceLayer(context))
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/resource',
+          yield* http.gen(async function* () {
+            const resource = yield* RequestResource
+            const session = yield* CurrentSession.get()
+            return Result.ok({ path: resource.path, session: session?.user.id })
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(Layer.merge(fixture.Auth.layer, HonoApp.layer))
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const raw = await app.request('/api/auth/redirect')
@@ -758,21 +905,35 @@ describe('BetterAuthHono', () => {
     const SecondAuth = BetterAuth.service('@hono-test/SecondAuth', second.rawAuth)
     const FirstSession = BetterAuthHono.session('@hono-test/FirstSession', FirstAuth)
     const SecondSession = BetterAuthHono.session('@hono-test/SecondSession', SecondAuth)
-    const runtime = await Runtime.make(Layer.merge(FirstAuth.layer, SecondAuth.layer))
-    const http = HonoEffect.make(runtime, {
-      requestLayer: (context) =>
-        Layer.merge(FirstSession.requestLayer(context), SecondSession.requestLayer(context))
-    })
     const app = new Hono()
-    app.use('*', http.middleware())
-    app.get(
-      '/both',
-      http.gen(async function* () {
-        const firstSession = yield* FirstSession.require()
-        const secondSession = yield* SecondSession.require()
-        return Result.ok({ first: firstSession.user.id, second: secondSession.user.id })
+    const HonoApp = HonoEffect.app(
+      '@hono-test/BothAuthApp',
+      {
+        requestLayer: (context) =>
+          Layer.merge(FirstSession.requestLayer(context), SecondSession.requestLayer(context))
+      },
+      async function* (http) {
+        app.use('*', yield* http.middleware())
+        app.get(
+          '/both',
+          yield* http.gen(async function* () {
+            const firstSession = yield* FirstSession.require()
+            const secondSession = yield* SecondSession.require()
+            return Result.ok({ first: firstSession.user.id, second: secondSession.user.id })
+          })
+        )
+        return app
+      }
+    )
+    const runtime = await Runtime.make(
+      Layer.merge(FirstAuth.layer, SecondAuth.layer, HonoApp.layer)
+    )
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* HonoApp)
       })
     )
+    if (Result.isError(appResult)) throw new Error(String(appResult.error))
 
     try {
       const response = await app.request('/both', { headers: { 'x-id': 'request' } })
