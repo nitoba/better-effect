@@ -323,7 +323,9 @@ const serviceSymbols = Object.getOwnPropertySymbols(service)
 const layerSymbols = Object.getOwnPropertySymbols(layer)
 
 assertCondition(
-  serviceSymbols.length === 1 && serviceSymbols[0] === Symbol.asyncIterator,
+  serviceSymbols.length === 2 &&
+    serviceSymbols.includes(Symbol.iterator) &&
+    serviceSymbols.includes(Symbol.asyncIterator),
   'Service variance metadata created an unexpected runtime symbol property'
 )
 assertCondition(

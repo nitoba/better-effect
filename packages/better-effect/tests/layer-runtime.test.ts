@@ -271,6 +271,26 @@ describe('createRuntimeHandle', () => {
     }
   })
 
+  test('resolves Service requirements yielded by a synchronous Layer generator', async () => {
+    const layer = Layer.merge(
+      Layer.succeed(ScopedDependency, new ScopedDependency()),
+      Layer.gen(ExampleService, function* () {
+        const dependency = yield* ScopedDependency
+        expect(dependency).toBeInstanceOf(ScopedDependency)
+        return new ExampleService()
+      })
+    )
+    const backend = new MemoryLayerBackend()
+    const runtime = await createRuntimeHandle(layer, backend)
+
+    try {
+      const service = await runtime.run(() => backend.resolve(ExampleService))
+      expect(service).toBeInstanceOf(ExampleService)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('keeps constructor tokens at runtime without emitting instance identity metadata', async () => {
     const layer = Layer.override(
       Layer.make(RuntimeDatabase, () => new RuntimeDatabase()),

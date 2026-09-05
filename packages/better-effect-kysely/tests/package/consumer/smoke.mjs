@@ -85,7 +85,7 @@ const ownedDatabase = new Kysely({
 })
 const ownedRuntime = await Runtime.make(
   Layer.merge(
-    Database.layer(() => ownedDatabase),
+    Database.scoped(() => ownedDatabase),
     Layer.succeed(Audit, audit)
   )
 )
@@ -199,7 +199,7 @@ const borrowedDatabase = new Kysely({
   dialect: new PGliteDialect({ pglite: borrowedPglite })
 })
 const BorrowedDatabase = KyselyEffect.service()('@external/BorrowedDatabase')
-const borrowedRuntime = await Runtime.make(BorrowedDatabase.succeed(borrowedDatabase))
+const borrowedRuntime = await Runtime.make(BorrowedDatabase.borrowed(() => borrowedDatabase))
 await borrowedRuntime.run(async () => {
   const database = await ServiceRuntime.resolve(BorrowedDatabase)
   await database.executeQuery(CompiledQuery.raw('select 1'))

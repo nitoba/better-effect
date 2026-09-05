@@ -24,7 +24,9 @@ export interface LayerRegistration {
 export type LayerGenerator<
   S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown> = ServiceRequirement<unknown>
-> = () => AsyncGenerator<Yield, ServiceContract<InstanceType<S>>, unknown>
+> = () =>
+  | Generator<Yield, ServiceContract<InstanceType<S>>, unknown>
+  | AsyncGenerator<Yield, ServiceContract<InstanceType<S>>, unknown>
 
 /** Service requirements inferred from a provider's methods and generator. */
 export type LayerGeneratorRequirements<

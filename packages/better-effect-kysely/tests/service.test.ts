@@ -2,7 +2,7 @@
 // oxlint-disable typescript/await-thenable -- Bun's promise matchers are awaited at test boundaries.
 
 import { expect, test } from 'bun:test'
-import { CurrentAbortSignal, Effect, Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service, ServiceRuntime } from 'better-effect'
 import { Result } from 'better-result'
 import {
   CompiledQuery,
@@ -74,6 +74,10 @@ const makeDatabase = (driver = new TrackingDriver()): Kysely<DatabaseSchema> =>
 
 type ActivatableDatabase = {
   executeQuery(query: CompiledQuery): Promise<object>
+}
+
+class DatabasePool extends Service<DatabasePool>()('@test/DatabasePool') {
+  readonly kind = 'shared-pool'
 }
 
 const activate = async (database: ActivatableDatabase): Promise<void> => {
@@ -161,7 +165,7 @@ test('lazily acquires one owned Kysely instance for concurrent resolutions', asy
   let acquisitions = 0
 
   const runtime = await Runtime.make(
-    Database.layer(async () => {
+    Database.scoped(async () => {
       acquisitions += 1
       await Promise.resolve()
       return raw
@@ -391,7 +395,7 @@ test('supports independent owned and borrowed databases with different tags', as
   const runtime = await Runtime.make(
     Layer.merge(
       Primary.layer(() => primary),
-      Analytics.succeed(analytics)
+      Analytics.borrowed(() => analytics)
     )
   )
 
@@ -409,4 +413,69 @@ test('supports independent owned and borrowed databases with different tags', as
   await runtime.dispose()
   expect(primaryDriver.destroyCalls).toBe(1)
   expect(analyticsDriver.destroyCalls).toBe(0)
+})
+
+test('lazily acquires a contextual scoped database once and destroys it once', async () => {
+  const Database = service<DatabaseSchema>()('@test/ContextualScopedDatabase')
+  const pool = new DatabasePool()
+  const driver = new TrackingDriver()
+  const raw = makeDatabase(driver)
+  let acquisitions = 0
+
+  const live = Layer.complete(
+    Layer.merge(
+      Layer.succeed(DatabasePool, pool),
+      Database.scoped(function* () {
+        const resolvedPool = yield* DatabasePool
+        expect(resolvedPool).toBe(pool)
+        acquisitions += 1
+        return raw
+      })
+    )
+  )
+  const runtime = await Runtime.make(live)
+
+  expect(acquisitions).toBe(0)
+
+  const resolved = await Promise.all(
+    Array.from({ length: 8 }, () => runtime.run(() => ServiceRuntime.resolve(Database)))
+  )
+
+  expect(acquisitions).toBe(1)
+  expect(resolved.every((database) => database === raw)).toBe(true)
+
+  await activate(raw)
+  await runtime.dispose()
+  expect(driver.destroyCalls).toBe(1)
+})
+
+test('resolves an async contextual borrowed database without destroying it', async () => {
+  const Database = service<DatabaseSchema>()('@test/ContextualBorrowedDatabase')
+  const pool = new DatabasePool()
+  const driver = new TrackingDriver()
+  const raw = makeDatabase(driver)
+  let acquisitions = 0
+
+  const live = Layer.complete(
+    Layer.merge(
+      Layer.succeed(DatabasePool, pool),
+      Database.borrowed(async function* () {
+        const resolvedPool = yield* DatabasePool
+        expect(resolvedPool).toBe(pool)
+        acquisitions += 1
+        await Promise.resolve()
+        return raw
+      })
+    )
+  )
+  const runtime = await Runtime.make(live)
+
+  expect(acquisitions).toBe(0)
+  const resolved = await runtime.run(() => ServiceRuntime.resolve(Database))
+
+  expect(acquisitions).toBe(1)
+  expect(resolved === raw).toBe(true)
+
+  await runtime.dispose()
+  expect(driver.destroyCalls).toBe(0)
 })

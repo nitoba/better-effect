@@ -1,4 +1,4 @@
-import { Effect, Layer } from 'better-effect'
+import { Effect, Layer, Service } from 'better-effect'
 import { sql } from 'kysely'
 import type { CompiledQuery, Kysely, QueryResult, Transaction } from 'kysely'
 import { KyselyEffect, KyselyQueryError, KyselyTransactionError } from 'better-effect-kysely'
@@ -30,6 +30,28 @@ interface DatabaseSchema {
 const Database = KyselyEffect.service<DatabaseSchema>()('@consumer/Database')
 declare const database: Kysely<DatabaseSchema>
 
+class DatabasePool extends Service<DatabasePool>()('@consumer/DatabasePool') {
+  constructor(readonly database: Kysely<DatabaseSchema>) {
+    super()
+  }
+}
+
+declare const pool: DatabasePool
+const contextualBorrowed = Database.borrowed(function* () {
+  const shared = yield* DatabasePool
+  return shared.database
+})
+type _ContextualBorrowedProvided = Assert<
+  Equal<Layer.Provided<typeof contextualBorrowed>, Instance>
+>
+type _ContextualBorrowedRequired = Assert<
+  Equal<Layer.Required<typeof contextualBorrowed>, DatabasePool>
+>
+const contextualApp = Layer.complete(
+  Layer.merge(Layer.succeed(DatabasePool, pool), contextualBorrowed)
+)
+type _ContextualApp = Assert<Equal<Layer.Required<typeof contextualApp>, never>>
+
 type Instance = KyselyServiceInstance<'@consumer/Database', DatabaseSchema>
 type _PublicToken = Assert<
   Equal<typeof Database, KyselyEffect.ServiceToken<'@consumer/Database', DatabaseSchema>>
@@ -41,6 +63,12 @@ type _ServiceContract = Assert<Equal<KyselyEffect.Service<DatabaseSchema>, Kysel
 type _OfInstance = Assert<Equal<ReturnType<typeof Database.of>, Instance>>
 type _LayerProvided = Assert<Equal<Layer.Provided<ReturnType<typeof Database.layer>>, Instance>>
 type _LayerRequired = Assert<Equal<Layer.Required<ReturnType<typeof Database.layer>>, never>>
+type _ScopedProvided = Assert<Equal<Layer.Provided<ReturnType<typeof Database.scoped>>, Instance>>
+type _ScopedRequired = Assert<Equal<Layer.Required<ReturnType<typeof Database.scoped>>, never>>
+type _BorrowedFactoryProvided = Assert<Equal<Layer.Provided<typeof contextualBorrowed>, Instance>>
+type _BorrowedFactoryRequired = Assert<
+  Equal<Layer.Required<typeof contextualBorrowed>, DatabasePool>
+>
 type _BorrowedProvided = Assert<
   Equal<Layer.Provided<ReturnType<typeof Database.succeed>>, Instance>
 >

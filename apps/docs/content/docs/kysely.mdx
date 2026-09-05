@@ -108,15 +108,18 @@ for composition and completeness checks.
 
 ## Owned and borrowed databases
 
-The two Layer helpers make ownership explicit:
+Choose ownership explicitly when defining the Layer. Factories are lazy and
+run once per Runtime when the provider is first resolved:
 
-| Layer                        | Acquire                                        | Runtime shutdown           | Use it when                            |
-| ---------------------------- | ---------------------------------------------- | -------------------------- | -------------------------------------- |
-| `Database.layer(factory)`    | Lazily creates one Kysely instance per Runtime | Calls `database.destroy()` | The Runtime owns creation and lifetime |
-| `Database.succeed(database)` | Uses the already-created instance              | Does not destroy it        | The caller, test or host owns lifetime |
+| Origin of the Kysely instance                            | API                          | Who calls `destroy()`?       |
+| -------------------------------------------------------- | ---------------------------- | ---------------------------- |
+| The Layer creates and owns the instance                  | `Database.scoped(factory)`   | Runtime root during shutdown |
+| The factory borrows a pool/driver owned by another Layer | `Database.borrowed(factory)` | The pool/driver owner        |
+| The caller already has the instance                      | `Database.succeed(database)` | The caller                   |
+| Existing owned API                                       | `Database.layer(factory)`    | Runtime root during shutdown |
 
 ```ts
-const ownedRuntime = await Runtime.make(Database.layer(makeDatabase))
+const ownedRuntime = await Runtime.make(Database.scoped(makeDatabase))
 await ownedRuntime.dispose() // destroys the owned Kysely instance
 
 const borrowedRuntime = await Runtime.make(Database.succeed(existingDatabase))
@@ -124,11 +127,35 @@ await borrowedRuntime.dispose() // existingDatabase remains usable
 await existingDatabase.destroy() // caller cleanup
 ```
 
-An owned provider is lazy and cached for the Runtime. It is released through
-the Runtime root `Scope`, including after a failed execution. A borrowed
-provider transfers neither acquisition nor disposal to the Runtime. Do not use
-`layer` for a pool managed by another owner, and do not use `succeed` when the
-application expects Runtime shutdown to close the database.
+`scoped` registers one root-Scope finalizer and reports `destroy()` failures as
+cleanup failures. `borrowed` and `succeed` never destroy their values. The
+deprecated `layer` helper remains an alias of `scoped` for source compatibility;
+it must not be used to imply borrowed ownership.
+
+### Contextual factories and shared pools
+
+`scoped` and `borrowed` accept synchronous or asynchronous generators. Services
+resolved with `yield*` become `Layer.Required`, so a Kysely facade can borrow a
+pool shared with another subsystem without adding a dialect-specific peer:
+
+```ts
+class DatabasePool extends Service<DatabasePool>()('@app/DatabasePool') {
+  constructor(readonly raw: Pool) {
+    super()
+  }
+}
+
+const DatabaseLive = Database.borrowed(function* () {
+  const pool = yield* DatabasePool
+  return createDatabaseFromPool(pool.raw)
+})
+
+const AppLive = Layer.merge(Layer.succeed(DatabasePool, databasePool), DatabaseLive)
+```
+
+The pool owner closes the pool after request/job executions drain. The borrowed
+Kysely and other facades release as no-ops, preventing a double-close or a
+facade from closing the shared pool before its owner.
 
 ## Query terminals
 
@@ -390,8 +417,8 @@ const PrimaryDatabase = KyselyEffect.service<PrimarySchema>()('@app/PrimaryDatab
 const AnalyticsDatabase = KyselyEffect.service<AnalyticsSchema>()('@app/AnalyticsDatabase')
 
 const AppLive = Layer.merge(
-  PrimaryDatabase.layer(createPrimaryDatabase),
-  AnalyticsDatabase.layer(createAnalyticsDatabase)
+  PrimaryDatabase.scoped(createPrimaryDatabase),
+  AnalyticsDatabase.scoped(createAnalyticsDatabase)
 )
 ```
 

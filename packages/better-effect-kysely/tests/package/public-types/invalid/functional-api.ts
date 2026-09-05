@@ -21,6 +21,8 @@ declare const validDatabase: Kysely<ValidSchema>
 
 Database.succeed(invalidDatabase)
 Database.layer(() => invalidDatabase)
+Database.scoped(() => invalidDatabase)
+Database.borrowed(() => invalidDatabase)
 KyselyEffect.service<string>()('')
 KyselyEffect.transaction(validDatabase, { isolationLevel: 'invalid' }, (_transaction) =>
   // oxlint-disable-next-line require-yield -- This negative fixture only exercises transaction option types.
