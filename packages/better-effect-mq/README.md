@@ -455,11 +455,12 @@ consumes the public `JobStore.Contract`.
 
 ## Worker supervisor
 
-`Worker` runs handlers over an already configured `better-effect` `Runtime`.
-The application owns the Runtime and its Layer resources; the Worker never
-configures global Service state, creates a parallel container, or exposes a
-`Worker.layer`. An explicit Runtime handle is required so every store operation
-and every handler attempt uses the same environment and lifecycle boundary.
+`Worker` runs handlers over an already configured `better-effect` runtime
+executor. The application owns the Runtime and its Layer resources; the Worker
+never configures global Service state, creates a parallel container, or exposes
+a `Worker.layer`. `Worker.startWith` is the capability-based entrypoint for
+framework and lifecycle integrations; the Runtime-first `Worker.start` and
+`Worker.use` overloads remain as deprecated compatibility shims.
 
 ```ts
 import { CurrentAbortSignal, Effect, Runtime } from 'better-effect'
@@ -487,6 +488,21 @@ await using worker = await Worker.start(runtime, {
 await worker.awaitIdle()
 ```
 
+For an integration that must not receive Runtime ownership, pass only its
+non-owning executor view:
+
+```ts
+await using worker = await Worker.startWith(runtime.executor, {
+  handlers: [SendEmailHandler],
+  concurrency: 8
+})
+```
+
+The executor preserves the same root Services and per-attempt execution
+boundary as `runtime.run`/`runtime.runWith`, while exposing no `dispose`,
+`warmup`, `inspect`, backend, or Scope operations. The application remains
+responsible for stopping the Worker before disposing the Runtime.
+
 `WorkerHandle.awaitIdle()` validates its timeout and AbortSignal before it
 registers a waiter. Invalid options throw `WorkerAwaitIdleError`; an abort or
 timeout rejects with the same focused error, and completed waits remove their
@@ -494,12 +510,12 @@ listeners and timers immediately.
 
 `Worker.handle` receives the decoded Job payload and returns an
 `Effect.Program<Success, Failure, Requirements>`. Its requirements are checked
-against the Runtime at `Worker.start`: `JobContext` is supplied per attempt and
+against the executor at `Worker.startWith`: `JobContext` is supplied per attempt and
 removed from the external requirement set, while the handler's root Services
 and the Job's bound `JobStore` must be provided by the Runtime. Handler
 registration and the returned inspectable handle are immutable.
 
-Each claimed Job runs through `runtime.runWith(JobContext.layer(context), ...)`
+Each claimed Job runs through `executor.runWith(JobContext.layer(context), ...)`
 with a fresh child Scope and attempt-local `AbortSignal`. Root Services remain
 shared, but contexts and Scope finalizers do not leak between overlapping
 attempts. A nominal `Result.err` becomes a typed failed settlement; a thrown or

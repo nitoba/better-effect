@@ -230,6 +230,34 @@ test('Worker rejects an incompatible JobStore descriptor before supervision', as
   }
 })
 
+test('Worker.startWith uses a non-owning executor and leaves Runtime ownership with the caller', async () => {
+  const store = MemoryJobStore.make()
+  const runtime = await runtimeFor(store)
+  const handler = Worker.handle(voidJob, () =>
+    Effect.fn(async function* () {
+      return Result.ok(undefined)
+    })
+  )
+
+  try {
+    const worker = await Worker.startWith(runtime.executor, {
+      handlers: [handler],
+      pollIntervalMs: 1
+    })
+
+    try {
+      expect(worker.state).toBe('running')
+      expect(await runtime.run(() => Result.ok('runtime remains available'))).toEqual(
+        Result.ok('runtime remains available')
+      )
+    } finally {
+      await worker.stop()
+    }
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('Worker executes a handler with root Services, JobContext, and CurrentAbortSignal', async () => {
   const store = MemoryJobStore.make()
   const runtime = await Runtime.make(

@@ -91,11 +91,21 @@ const complete = Worker.start(completeRuntime, {
   concurrency: 4
 })
 const namedComplete = Worker.start(namedCompleteRuntime, { handlers: [namedHandler] })
+const completeWithExecutor = Worker.startWith(completeRuntime.executor, {
+  handlers: [firstHandler, secondHandler]
+})
+const namedWithExecutor = Worker.startWith(namedCompleteRuntime.executor, {
+  handlers: [namedHandler]
+})
 
 // @ts-expect-error A Worker handler's root Service must be present in the Runtime.
 void Worker.start(storeOnlyRuntime, { handlers: [firstHandler] })
+// @ts-expect-error A Worker handler's root Service must be present in the executor.
+void Worker.startWith(storeOnlyRuntime.executor, { handlers: [firstHandler] })
 // @ts-expect-error A Job bound to a named store cannot run on another environment.
 void Worker.start(completeRuntime, { handlers: [namedHandler] })
+// @ts-expect-error A Job bound to a named store cannot run on another executor environment.
+void Worker.startWith(completeRuntime.executor, { handlers: [namedHandler] })
 // @ts-expect-error A Runtime with an unrelated Service does not satisfy the handler.
 void Worker.start(otherRuntime, { handlers: [firstHandler] })
 
@@ -130,5 +140,7 @@ void complete.then((handle) => (handle.id = 'mutable'))
 
 void complete
 void namedComplete
+void completeWithExecutor
+void namedWithExecutor
 void wrongFailure
 void wrongPayload

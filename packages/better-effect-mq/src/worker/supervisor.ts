@@ -6,7 +6,8 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are localized to checked runtime boundaries.
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
-import { Program, Runtime, ServiceRuntime } from 'better-effect'
+import { Program, ServiceRuntime } from 'better-effect'
+import type { RuntimeExecutor } from 'better-effect'
 import { Panic, Result, UnhandledException, type Result as ResultType } from 'better-result'
 
 import {
@@ -58,7 +59,7 @@ import type {
 } from './types'
 import type { JobObserver } from '../observability'
 
-type AnyRuntime = Runtime<any>
+type AnyExecutor = RuntimeExecutor<any>
 type UnknownResult = ResultType<unknown, unknown>
 type StoreOperation<Value> = JobStoreOperation<Value, JobStore.Error>
 
@@ -163,7 +164,9 @@ const monotonicNow = (): number => {
   return Number.isFinite(wallClock) ? wallClock : 0
 }
 
-export class WorkerSupervisor implements WorkerHandle {
+export class WorkerSupervisor<
+  Environment extends import('better-effect').AnyService = any
+> implements WorkerHandle {
   private readonly workerId: NormalizedWorkerOptions['id']
 
   private currentState: WorkerHandle['state'] = 'running'
@@ -182,7 +185,8 @@ export class WorkerSupervisor implements WorkerHandle {
   // after a handler finishes, even when shutdown has begun.
   private readonly shutdownController = new AbortController()
   private readonly groups: readonly ClaimGroup[]
-  private readonly runtime: AnyRuntime
+  private readonly executor: RuntimeExecutor<Environment>
+  private quiesced = false
   private readonly workerOptions: NormalizedWorkerOptions
   private readonly supervisionTasks = new Set<Promise<void>>()
   private readonly supervisionController = new AbortController()
@@ -191,11 +195,11 @@ export class WorkerSupervisor implements WorkerHandle {
   private nextClaimGeneration = 0
 
   constructor(
-    runtime: AnyRuntime,
+    executor: RuntimeExecutor<Environment>,
     handlers: readonly AnyWorkerHandler[],
     options: NormalizedWorkerOptions
   ) {
-    this.runtime = runtime
+    this.executor = executor
     this.workerOptions = options
     this.workerId = options.id
     this.groups = makeGroups(handlers, options)
@@ -237,6 +241,20 @@ export class WorkerSupervisor implements WorkerHandle {
 
   [Symbol.asyncDispose](): Promise<void> {
     return this.stop()
+  }
+
+  /**
+   * Stop accepting new claims while keeping active attempts and their leases alive.
+   * The next Worker Layer can call this before it releases the owning Runtime.
+   */
+  quiesce(): void {
+    if (this.quiesced || this.currentState !== 'running') return
+    this.quiesced = true
+    for (const lease of this.claimLeases) {
+      if (lease.lifecycle === 'pending') lease.lifecycle = 'abandoned'
+    }
+    this.claimController.abort()
+    this.notifySlots()
   }
 
   stop(options: WorkerStopOptions = {}): Promise<void> {
@@ -323,7 +341,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async runGroup(group: ClaimGroup): Promise<void> {
-    while (this.currentState === 'running') {
+    while (this.canAcceptWork()) {
       try {
         await this.runGroupIteration(group)
       } catch (cause) {
@@ -381,7 +399,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private planClaim(group: ClaimGroup): ClaimPlan | undefined {
-    if (this.currentState !== 'running') {
+    if (!this.canAcceptWork()) {
       return undefined
     }
 
@@ -494,11 +512,11 @@ export class WorkerSupervisor implements WorkerHandle {
       // Keep the Runtime boundary limited to token resolution. The exact client
       // is retained by the lease so compensation cannot resolve a disposed or
       // otherwise different provider.
-      store = await this.runtime.run(() => ServiceRuntime.resolve(plan.group.store))
+      store = await this.executor.run(() => ServiceRuntime.resolve(plan.group.store))
     } catch (cause) {
       return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<ClaimResult, unknown>
     }
-    if (this.currentState !== 'running' || this.claimController.signal.aborted) {
+    if (!this.canAcceptWork() || this.claimController.signal.aborted) {
       return Result.err(new StoreOperationTimeoutError('claim')) as ResultType<ClaimResult, unknown>
     }
 
@@ -567,7 +585,7 @@ export class WorkerSupervisor implements WorkerHandle {
 
   private async releaseClaimSnapshot(lease: ClaimLease, job: ActiveJobSnapshot): Promise<void> {
     const result = await runStoreOperation<import('../store').ReleaseResult>(
-      this.runtime,
+      this.executor,
       lease.plan.group.store,
       (store) => store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() }),
       undefined,
@@ -596,7 +614,7 @@ export class WorkerSupervisor implements WorkerHandle {
 
   private async dispatchJobs(group: ClaimGroup, jobs: readonly ActiveJobSnapshot[]): Promise<void> {
     for (const job of jobs) {
-      if (this.currentState !== 'running') {
+      if (!this.canAcceptWork()) {
         await this.releaseJob(group, job)
         continue
       }
@@ -825,7 +843,9 @@ export class WorkerSupervisor implements WorkerHandle {
     )
 
     try {
-      return await this.runtime.runWith(JobContext.layer(context), program, {
+      // SAFETY: handler requirements were checked by Worker.startWith before the
+      // heterogeneous handler tuple was erased inside this supervisor.
+      return await (this.executor as AnyExecutor).runWith(JobContext.layer(context), program, {
         signal: attempt.controller.signal,
         attributes
       })
@@ -876,7 +896,7 @@ export class WorkerSupervisor implements WorkerHandle {
     if (attempt !== undefined) attempt.state = 'settling'
     let submittedOutcome = outcome
     const result = await runStoreOperation<SettlementResult>(
-      this.runtime,
+      this.executor,
       group.store,
       (store) => {
         // runStoreOperation invokes this callback asynchronously. Re-check at that
@@ -1050,7 +1070,7 @@ export class WorkerSupervisor implements WorkerHandle {
   private async releaseJob(group: ClaimGroup, job: ActiveJobSnapshot): Promise<void> {
     const attempt = this.activeAttempts.get(JSON.stringify([group.key, job.id]))
     const result = await runStoreOperation<import('../store').ReleaseResult>(
-      this.runtime,
+      this.executor,
       group.store,
       (store) => store.release({ jobId: job.id, leaseToken: job.leaseToken, now: this.readNow() }),
       undefined,
@@ -1168,7 +1188,7 @@ export class WorkerSupervisor implements WorkerHandle {
         .map((attempt) => [heartbeatKey(attempt.job.id, attempt.job.leaseToken), attempt])
     )
     const result = await runStoreOperation<HeartbeatResult>(
-      this.runtime,
+      this.executor,
       store,
       (client) =>
         client.heartbeat({
@@ -1242,7 +1262,7 @@ export class WorkerSupervisor implements WorkerHandle {
 
   private async recoverStalled(store: AnyJobStoreToken): Promise<void> {
     const result = await runStoreOperation<RecoverStalledResult>(
-      this.runtime,
+      this.executor,
       store,
       (client) =>
         client.recoverStalled({
@@ -1303,7 +1323,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async waitForWork(group: ClaimGroup, claim: ClaimResult): Promise<void> {
-    if (this.currentState !== 'running') {
+    if (!this.canAcceptWork()) {
       return
     }
 
@@ -1315,7 +1335,7 @@ export class WorkerSupervisor implements WorkerHandle {
       controller.abort()
     }
 
-    const wake = runStoreOperation(this.runtime, group.store, (store) =>
+    const wake = runStoreOperation(this.executor, group.store, (store) =>
       store.awaitWake({
         queues: [group.queue],
         wakeToken: claim.wakeToken,
@@ -1359,7 +1379,7 @@ export class WorkerSupervisor implements WorkerHandle {
   }
 
   private async waitForSlot(): Promise<void> {
-    if (this.currentState !== 'running') {
+    if (!this.canAcceptWork()) {
       return
     }
 
@@ -1387,16 +1407,19 @@ export class WorkerSupervisor implements WorkerHandle {
     this.slotWaiters.clear()
   }
 
+  private canAcceptWork(): boolean {
+    return this.currentState === 'running' && !this.quiesced
+  }
+
   private isIdle(): boolean {
     if (this.currentState === 'stopped') {
       return this.active === 0 && this.reserved === 0
     }
 
     return (
-      this.currentState === 'running' &&
       this.active === 0 &&
       this.reserved === 0 &&
-      this.groups.every((group) => group.observedEmpty)
+      (this.quiesced || this.groups.every((group) => group.observedEmpty))
     )
   }
 
@@ -2003,7 +2026,7 @@ const encodeCodec = async (codec: CodecLike, value: unknown): Promise<CodecOutco
 }
 
 const runStoreOperation = async <Value>(
-  runtime: AnyRuntime,
+  executor: AnyExecutor,
   token: AnyJobStoreToken,
   operation: (store: JobStoreContract) => StoreOperation<Value>,
   signal?: AbortSignal,
@@ -2019,7 +2042,7 @@ const runStoreOperation = async <Value>(
       // Resolve only the token inside a completed Runtime execution. An arbitrary adapter
       // Promise is then invoked outside Runtime: Runtime cannot preempt it and must retain
       // its scope until settlement, so owning a hung adapter call would leak execution.
-      const store = resolvedStore ?? (await runtime.run(() => ServiceRuntime.resolve(token)))
+      const store = resolvedStore ?? (await executor.run(() => ServiceRuntime.resolve(token)))
       const pending = Promise.resolve().then(() => operation(store))
       // A timed-out adapter may reject later, but its late result cannot mutate Worker state.
       void pending.catch(() => undefined)
