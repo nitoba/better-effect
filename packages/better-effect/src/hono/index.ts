@@ -1,4 +1,5 @@
 export { HonoEffect } from './hono-effect'
+export type { HonoApplicationToken, HonoEffectLayer } from './hono-effect'
 export { HonoEffectBoundaryMissingError } from './builder'
 export type {
   HonoContext,

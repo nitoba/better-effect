@@ -41,7 +41,8 @@ type HonoFactoryYield<Factory> = Factory extends (...arguments_: any[]) => infer
       : never
   : never
 
-type HonoLayerResult<
+/** A Hono application Layer with inferred Service requirements. */
+export type HonoEffectLayer<
   Service extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown>
 > = LayerResult<
@@ -51,12 +52,13 @@ type HonoLayerResult<
   >
 >
 
-type HonoApplicationToken<
+export type HonoApplicationToken<
   Tag extends string,
   App extends object,
-  AppLayer extends LayerInput
+  Service extends ServiceToken<any, any>,
+  Yield extends ServiceRequirement<unknown>
 > = ServiceToken<Tag, App & ServiceIdentity<Tag>> & {
-  readonly layer: AppLayer
+  readonly layer: HonoEffectLayer<Service, Yield>
 }
 
 type HonoLiteralTag<Tag extends string> = string extends Tag ? never : Tag extends '' ? never : Tag
@@ -85,7 +87,7 @@ const makeHonoLayer = <
   service: Service,
   options: HonoEffectOptions<Failure, RequestLayer>,
   factory: Factory
-): HonoLayerResult<Service, Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>> => {
+): HonoEffectLayer<Service, Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>> => {
   const layer = Layer.gen(service, () => {
     const builder = new HonoEffectBuilder(options)
 
@@ -98,7 +100,7 @@ const makeHonoLayer = <
   })
 
   // SAFETY: Layer.gen derives the same provider requirements from the factory's yield metadata.
-  return layer as HonoLayerResult<
+  return layer as HonoEffectLayer<
     Service,
     Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
   >
@@ -123,10 +125,8 @@ export class HonoEffect {
   ): HonoApplicationToken<
     Tag,
     HonoFactoryReturn<Factory>,
-    HonoLayerResult<
-      ServiceToken<Tag, HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>,
-      Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
-    >
+    ServiceToken<Tag, HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>,
+    Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
   > {
     const literalTag: HonoLiteralTag<Tag> = tag
     const tokenFactory = Service<HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>()<Tag>
@@ -142,10 +142,8 @@ export class HonoEffect {
     return defineLayerProperty(token, layer) as HonoApplicationToken<
       Tag,
       HonoFactoryReturn<Factory>,
-      HonoLayerResult<
-        ServiceToken<Tag, HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>,
-        Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
-      >
+      ServiceToken<Tag, HonoFactoryReturn<Factory> & ServiceIdentity<Tag>>,
+      Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>
     >
   }
 
@@ -163,7 +161,7 @@ export class HonoEffect {
     service: Service,
     options: HonoEffectOptions<Failure, RequestLayer> & HonoRequestLayerChecks<RequestLayer>,
     factory: Factory
-  ): HonoLayerResult<Service, Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>> {
+  ): HonoEffectLayer<Service, Extract<HonoFactoryYield<Factory>, ServiceRequirement<unknown>>> {
     return makeHonoLayer(service, options, factory)
   }
 }
