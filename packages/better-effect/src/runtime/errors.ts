@@ -17,3 +17,12 @@ export class RuntimeContextOverlapError extends Error {
     this.name = 'RuntimeContextOverlapError'
   }
 }
+
+/** Thrown when a Runtime executor is requested without an active Runtime. */
+export class RuntimeExecutorNotConfiguredError extends Error {
+  constructor() {
+    super('No Runtime executor is available in the current execution context')
+
+    this.name = 'RuntimeExecutorNotConfiguredError'
+  }
+}

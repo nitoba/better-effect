@@ -29,6 +29,13 @@ import type { RuntimeExecutionInspection, RuntimeFor, RuntimeInspection } from '
 
 import type { RuntimeObserver } from './observer'
 
+import {
+  createRuntimeExecutor,
+  makeRuntimeExecutorRequest,
+  type RuntimeExecutor,
+  type RuntimeExecutorRequest
+} from './executor'
+
 type RuntimeOptionsInput = RuntimeOptions & RuntimeRunOptions
 
 type RuntimeBackendInput = LayerBackend | RuntimeOptionsInput | undefined
@@ -76,7 +83,14 @@ const resolveRuntimeConfig = (
  * @typeParam Provided The branded Service instances supplied by the Layer.
  */
 export class Runtime<Provided extends AnyService = any> {
-  private constructor(private readonly handle: RuntimeHandle<Provided>) {}
+  readonly executor: RuntimeExecutor<Provided>
+
+  private constructor(
+    private readonly handle: RuntimeHandle<Provided>,
+    executor: RuntimeExecutor<Provided>
+  ) {
+    this.executor = executor
+  }
 
   /**
    * Create a long-lived Runtime that owns its Layer resources.
@@ -105,8 +119,20 @@ export class Runtime<Provided extends AnyService = any> {
     legacyOptions?: RuntimeOptions
   ): Promise<Runtime<ProvidedEnvironment<L>>> {
     const { backend, options } = resolveRuntimeConfig(backendOrOptions, legacyOptions)
-    const handle = await createRuntimeHandle(layer, backend, options)
-    const runtime = new Runtime<ProvidedEnvironment<L>>(handle)
+    let handle!: RuntimeHandle<ProvidedEnvironment<L>>
+    const executor = createRuntimeExecutor<ProvidedEnvironment<L>>({
+      run: <A>(
+        program: CompleteExecution<ProvidedEnvironment<L>, A>,
+        runOptions?: RuntimeRunOptions
+      ) => handle.run(program, runOptions),
+      runWith: <Request extends LayerInput, A>(
+        request: Request & CompleteExecutionLayer<ProvidedEnvironment<L>, Request>,
+        program: CompleteExecution<ProvidedEnvironment<L> | ProvidedEnvironment<Request>, A>,
+        runOptions?: RuntimeRunOptions
+      ) => handle.runWith(request, program, runOptions)
+    })
+    handle = await createRuntimeHandle(layer, backend, options, {}, executor)
+    const runtime = new Runtime<ProvidedEnvironment<L>>(handle, executor)
 
     if (options.warmup) {
       await runtime.warmup()
@@ -265,6 +291,11 @@ export class Runtime<Provided extends AnyService = any> {
     return value
   }
 
+  /** Request the non-owning executor view from the current Runtime context. */
+  static executor<Requested extends AnyService>(): RuntimeExecutorRequest<Requested> {
+    return makeRuntimeExecutorRequest<Requested>()
+  }
+
   /** Resolve every Layer provider and dispose the Runtime if warmup fails. */
   async warmup(): Promise<void> {
     try {
@@ -352,4 +383,7 @@ export declare namespace Runtime {
 
   /** Detached diagnostic view of one active execution. */
   export type ExecutionInspection = RuntimeExecutionInspection
+
+  /** Non-owning view that can start child Runtime executions. */
+  export type Executor<Provided extends AnyService = any> = RuntimeExecutor<Provided>
 }

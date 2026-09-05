@@ -78,13 +78,14 @@ export { RuntimeObserver } from './runtime'
 
 export { CurrentAbortSignal } from './runtime'
 
-export { RuntimeContextNotConfiguredError } from './runtime'
+export { RuntimeContextNotConfiguredError, RuntimeExecutorNotConfiguredError } from './runtime'
 
 export type {
   CleanupFailureObserver,
   RuntimeDisposeOptions,
   RuntimeContext,
   RuntimeContextStorage,
+  RuntimeExecutor,
   RuntimeFor,
   RuntimeExecutionInspection,
   RuntimeInspection,

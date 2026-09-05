@@ -1,14 +1,18 @@
 import { RuntimeContextNotConfiguredError } from './errors'
 
 import type { Scope } from '../scope/scope'
-import type { AnyServiceToken, ServiceResolver } from '../service'
+import type { AnyService, AnyServiceToken, ServiceResolver } from '../service'
 import { isPromiseLike } from '../utils/runtime'
+
+import type { RuntimeExecutor } from './executor'
 
 /** Contextual state shared by Service, Scope and Layer resolution. */
 export interface RuntimeContext {
   readonly resolver?: ServiceResolver
   readonly scope?: Scope
   readonly signal?: AbortSignal
+  /** Non-owning executor view for the Runtime root of this context. */
+  readonly executor?: RuntimeExecutor<AnyService>
   readonly resolutionPath: readonly AnyServiceToken[]
   /** Runtime execution owner, omitted for warmup and Runtime-root activity. */
   readonly executionId?: string
@@ -76,7 +80,8 @@ export function makeRuntimeContext(
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
   parent?: RuntimeContext,
-  executionId?: string
+  executionId?: string,
+  executor?: RuntimeExecutor<AnyService>
 ): CompleteRuntimeContext
 export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
@@ -84,7 +89,8 @@ export function makeRuntimeContext(
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
   parent?: RuntimeContext,
-  executionId?: string
+  executionId?: string,
+  executor?: RuntimeExecutor<AnyService>
 ): RuntimeContext
 export function makeRuntimeContext(
   resolver: ServiceResolver | undefined,
@@ -92,10 +98,12 @@ export function makeRuntimeContext(
   resolutionPath: readonly AnyServiceToken[],
   signal: AbortSignal | undefined,
   parent?: RuntimeContext,
-  executionId?: string
+  executionId?: string,
+  executor?: RuntimeExecutor<AnyService>
 ): RuntimeContext {
   const context: RuntimeContext = { resolutionPath }
   const ownerExecutionId = executionId ?? parent?.executionId
+  const runtimeExecutor = executor ?? parent?.executor
 
   if (resolver !== undefined) {
     Object.assign(context, { resolver })
@@ -107,6 +115,10 @@ export function makeRuntimeContext(
 
   if (signal !== undefined) {
     Object.assign(context, { signal })
+  }
+
+  if (runtimeExecutor !== undefined) {
+    Object.assign(context, { executor: runtimeExecutor })
   }
 
   if (ownerExecutionId !== undefined) {

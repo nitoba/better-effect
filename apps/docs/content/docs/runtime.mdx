@@ -40,6 +40,28 @@ const result = await Runtime.use(AppLive, (runtime) => runtime.run(loadDashboard
 
 Both forms dispose the Runtime after the work settles.
 
+## Non-owning executor capability
+
+Framework adapters and other long-lived components can capture a restricted
+executor view from a Runtime execution:
+
+```ts
+const captureExecutor = Effect.fn(async function* () {
+  const executor = yield* Runtime.executor<Database>()
+  return Result.ok(executor)
+})
+
+const executor = (await runtime.run(captureExecutor)).unwrap()
+await executor.run(loadDashboard)
+```
+
+`Runtime.Executor<R>` exposes only `run` and `runWith`. Each call creates a new
+child execution on the same Runtime root and preserves the Runtime's resolver,
+signals, observers, metadata and cleanup semantics. Capturing it from a
+request does not capture that request's Scope or request-local Services, and
+the executor cannot dispose, warm up or inspect the owning Runtime. Ordinary
+application code can continue using `runtime.run` directly.
+
 ## Warmup and observability
 
 Layer providers are lazy by default. Servers that need configuration failures
