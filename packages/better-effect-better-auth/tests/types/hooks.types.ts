@@ -1,4 +1,5 @@
 import { expectTypeOf } from 'bun:test'
+import { betterAuth } from 'better-auth'
 import type { BetterAuthPlugin } from 'better-auth'
 import { APIError } from 'better-auth/api'
 import { Effect, Layer, Runtime, Service } from 'better-effect'
@@ -14,6 +15,8 @@ import {
   type BetterAuthMiddleware,
   type BetterAuthMiddlewareContext
 } from '../../src/hooks'
+
+import { BetterAuth } from '../../src'
 
 import type { Assert, Equal, IsAny, IsAssignable } from '../package/public-types/assert'
 
@@ -33,6 +36,66 @@ type Provided = PolicyInstance
 
 declare const runtime: Runtime<Provided>
 const Hooks = BetterAuthHooks.make('@types/HookContext', runtime)
+
+const DefinedHooks = BetterAuthHooks.define('@types/DefinedHookContext')
+
+const DefinedAuth = BetterAuth.make('@types/DefinedAuth', async function* () {
+  const middleware = yield* DefinedHooks.gen(async function* () {
+    const hook = yield* DefinedHooks.Context
+    const policy = yield* Policy
+
+    expectTypeOf(hook.context).toEqualTypeOf<BetterAuthMiddlewareContext>()
+    expectTypeOf(policy).toEqualTypeOf<PolicyInstance>()
+
+    return Result.ok()
+  })
+
+  return betterAuth({ hooks: { before: middleware } })
+})
+
+expectTypeOf<Layer.Required<typeof DefinedAuth.layer>>().toEqualTypeOf<PolicyInstance>()
+
+const DefinedLayerAuth = BetterAuth.make('@types/DefinedLayerAuth', async function* () {
+  const middleware = yield* DefinedHooks.gen(
+    async function* () {
+      const request = yield* RequestMetadata
+      const policy = yield* Policy
+      return Result.ok({ context: { path: `${policy.constructor.name}:${request.requestId}` } })
+    },
+    {
+      layer: (context) =>
+        Layer.gen(RequestMetadata, async function* () {
+          const policy = yield* Policy
+          return RequestMetadata.of({ requestId: `${context.path}:${policy.constructor.name}` })
+        })
+    }
+  )
+
+  return betterAuth({ hooks: { before: middleware } })
+})
+
+expectTypeOf<Layer.Required<typeof DefinedLayerAuth.layer>>().toEqualTypeOf<PolicyInstance>()
+
+const DefinedFailure = DefinedHooks.gen(
+  async function* () {
+    yield* Policy
+    return Result.err(new Denied({ message: 'denied' }))
+  },
+  {
+    onFailure: (failure) => {
+      expectTypeOf(failure).toEqualTypeOf<Denied>()
+      return new APIError('FORBIDDEN', { code: failure._tag, message: failure.message })
+    }
+  }
+)
+
+expectTypeOf(DefinedFailure).toMatchTypeOf<BetterAuthHooks.Operation<PolicyInstance>>()
+
+// @ts-expect-error Defined builders reject Better Auth-incompatible success values.
+DefinedHooks.gen(async function* () {
+  yield* []
+  return Result.ok(123)
+})
 
 const noFailure = Hooks.middleware((context) =>
   Effect.fn(async function* () {

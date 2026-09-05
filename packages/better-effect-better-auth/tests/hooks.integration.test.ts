@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { betterAuth, type BetterAuthPlugin } from 'better-auth'
 import { createAuthEndpoint } from 'better-auth/api'
 import { memoryAdapter } from 'better-auth/adapters/memory'
-import { CurrentAbortSignal, Effect, Layer, Runtime } from 'better-effect'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service, ServiceRuntime } from 'better-effect'
 import { Result } from 'better-result'
 
+import { BetterAuth } from '../src'
 import { BetterAuthHooks, type BetterAuthMiddlewareContext } from '../src/hooks'
 
 const baseURL = 'http://localhost:3000'
@@ -26,7 +27,43 @@ type HookObservation = {
   readonly responseHeaders: Headers | undefined
 }
 
+class HookMarker extends Service<HookMarker>()('@integration/HookMarker') {}
+
 describe('BetterAuthHooks with Better Auth', () => {
+  test('define binds middleware to the Runtime that acquires BetterAuth.make', async () => {
+    const hooks = BetterAuthHooks.define('@integration/DefinedHookContext')
+    const marker = new HookMarker()
+    let observedMarker: HookMarker | undefined
+    let observedPath: string | undefined
+
+    const Auth = BetterAuth.make('@integration/DefinedAuth', async function* () {
+      const before = yield* hooks.gen(async function* () {
+        const hook = yield* hooks.Context
+        observedMarker = yield* HookMarker
+        observedPath = hook.context.path
+        return Result.ok()
+      })
+
+      return betterAuth({
+        baseURL,
+        database: memoryAdapter(makeDatabase()),
+        hooks: { before },
+        secret: 'hooks-defined-secret-not-for-production-use'
+      })
+    })
+    const runtime = await Runtime.make(Layer.merge(Layer.succeed(HookMarker, marker), Auth.layer))
+
+    try {
+      const auth = await runtime.run(() => ServiceRuntime.resolve(Auth))
+      expect(observedMarker).toBeUndefined()
+      expect(await auth.raw.api.ok()).toEqual({ ok: true })
+      expect(observedMarker).toBe(marker)
+      expect(observedPath).toBe('/ok')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('dispatches global and plugin hooks through rawAuth.api while plugin middleware stays request-only', async () => {
     const runtime = await Runtime.make(Layer.empty)
     const hooks = BetterAuthHooks.make('@integration/BetterAuthHookContext', runtime)

@@ -12,7 +12,11 @@ import {
 } from 'better-effect'
 import { Result, TaggedError } from 'better-result'
 
-import { BetterAuthHooks, type BetterAuthMiddlewareContext } from '../src/hooks'
+import {
+  BetterAuthHooks,
+  type BetterAuthMiddleware,
+  type BetterAuthMiddlewareContext
+} from '../src/hooks'
 
 class Denied extends TaggedError('@hooks/Denied')<{
   readonly message: string
@@ -26,6 +30,12 @@ class RequestMetadata extends Service<RequestMetadata>()('@hooks/RequestMetadata
 
 class FailingService extends Service<FailingService>()('@hooks/FailingService') {}
 
+class CapturedAuth extends Service<CapturedAuth>()('@hooks/CapturedAuth') {
+  constructor(readonly middleware: BetterAuthMiddleware) {
+    super()
+  }
+}
+
 // oxlint-disable-next-line anti-slop/no-unknown-returns -- tests need to inspect arbitrary rejection causes.
 const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
   promise.then(
@@ -33,6 +43,40 @@ const captureRejection = async (promise: Promise<unknown>): Promise<unknown> =>
     (cause) => cause
   )
 describe('BetterAuthHooks', () => {
+  test('define captures the active Runtime executor during Layer acquisition', async () => {
+    const hooks = BetterAuthHooks.define('@test/DefinedHookContext')
+    let programCalls = 0
+    let capturedContext: BetterAuthMiddlewareContext | undefined
+
+    const authLayer = Layer.gen(CapturedAuth, async function* () {
+      const middleware = yield* hooks.gen(async function* () {
+        const hook = yield* hooks.Context
+        programCalls += 1
+        capturedContext = hook.context
+        return Result.ok({ context: { defined: true } })
+      })
+
+      return CapturedAuth.of({ middleware })
+    })
+    const runtime = await Runtime.make(authLayer)
+
+    try {
+      expect(Object.isFrozen(hooks)).toBe(true)
+      expect(programCalls).toBe(0)
+
+      const auth = await runtime.run(() => ServiceRuntime.resolve(CapturedAuth))
+      expect(programCalls).toBe(0)
+
+      const context = {}
+      expect(await auth.middleware(context)).toEqual({ context: { defined: true } })
+      expect(programCalls).toBe(1)
+      expect(capturedContext).toBeDefined()
+      expect(capturedContext?.request).toBeUndefined()
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('runs each middleware call in an isolated Context scope without owning the Runtime', async () => {
     const runtime = await Runtime.make(Layer.empty)
     const hooks = BetterAuthHooks.make('@test/HookContext', runtime)

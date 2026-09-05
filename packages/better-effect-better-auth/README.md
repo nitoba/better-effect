@@ -131,13 +131,14 @@ the application.
 ## Hooks and plugin middleware
 
 The optional public `better-effect-better-auth/hooks` subpath adapts Better Auth's
-public `createAuthMiddleware` contract to a caller-owned `Runtime`. The bridge
-never creates or disposes that Runtime:
+public `createAuthMiddleware` contract to `BetterAuth.make`. Define the bridge
+before the raw Better Auth instance; its yieldable builders capture the active
+`Runtime.Executor` while `Auth.layer` is acquired:
 
 ```ts
 import { betterAuth } from 'better-auth'
 import { APIError } from 'better-auth/api'
-import { Effect, Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { BetterAuth } from 'better-effect-better-auth'
 import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
 import { Result, TaggedError } from 'better-result'
@@ -146,63 +147,57 @@ class RegistrationDenied extends TaggedError('@app/RegistrationDenied')<{
   readonly message: string
 }> {}
 
-// Database and RegistrationPolicy are application Services. These values are
-// created and owned by the application, not acquired by either Runtime.
+// Database and RegistrationPolicy are application Services owned by the app.
 const database = createApplicationDatabase()
 const registrationPolicy = createRegistrationPolicy(database)
 const coreValues = Layer.merge(
   Layer.succeed(Database, database),
   Layer.succeed(RegistrationPolicy, registrationPolicy)
 )
-const coreRuntime = await Runtime.make(coreValues)
-const AuthHooks = BetterAuthHooks.make('@app/BetterAuthHookContext', coreRuntime)
+const AuthHooks = BetterAuthHooks.define('@app/BetterAuthHookContext')
 
-const rawAuth = betterAuth({
-  hooks: {
-    before: AuthHooks.middleware(
-      (context) =>
-        Effect.fn(async function* () {
-          const policy = yield* RegistrationPolicy
-          const allowed = yield* policy.canRegister(context.body?.email)
+const Auth = BetterAuth.make('@app/Auth', async function* () {
+  const beforeRegistration = yield* AuthHooks.gen(
+    async function* () {
+      const { context } = yield* AuthHooks.Context
+      const policy = yield* RegistrationPolicy
+      const allowed = yield* policy.canRegister(context.body?.email)
 
-          return allowed
-            ? Result.ok()
-            : Result.err(new RegistrationDenied({ message: 'Registration is not allowed' }))
-        }),
-      {
-        onFailure: (failure) =>
-          new APIError('FORBIDDEN', {
-            code: failure._tag,
-            message: failure.message
-          })
-      }
-    )
-  }
+      return allowed
+        ? Result.ok()
+        : Result.err(new RegistrationDenied({ message: 'Registration is not allowed' }))
+    },
+    {
+      onFailure: (failure) =>
+        new APIError('FORBIDDEN', {
+          code: failure._tag,
+          message: failure.message
+        })
+    }
+  )
+
+  return betterAuth({ hooks: { before: beforeRegistration } })
 })
-const Auth = BetterAuth.from('@app/Auth', rawAuth)
+
+// Auth.layer carries RegistrationPolicy in its requirements.
 const appRuntime = await Runtime.make(Layer.merge(coreValues, Auth.layer))
 ```
 
-`coreValues` is deliberately a value Layer: both Runtimes receive the same
-application-owned Service instances. Do not pass an acquiring or scoped
-`CoreLive` to multiple Runtimes, because each Runtime would own a separate
-acquisition and release. Keep hook Programs dependent on core services rather
-than the Better Auth Service itself; this avoids an Auth hook → Runtime → Auth
-cycle. The bridge does not create, replace, or dispose either caller-owned
-Runtime, and it does not own the Better Auth instance. A hook callback receives
-the exact Better Auth context, and
-deeper Programs can access the same reference through the execution-scoped
-`AuthHooks.Context` Service:
+`AuthHooks.define` is inert: it does not create a Runtime, execute a Program,
+store a context, or own Better Auth. A hook callback receives Better Auth's
+context, and deeper Programs can access the same reference through the
+execution-scoped `AuthHooks.Context` Service. Keep hook Programs dependent on
+application Services rather than the Better Auth Service itself; this avoids an
+Auth hook → Runtime → Auth bootstrap cycle.
 
 ```ts
-const audit = AuthHooks.middleware(() =>
-  Effect.fn(async function* () {
+const audit =
+  yield *
+  AuthHooks.gen(async function* () {
     const hook = yield* AuthHooks.Context
-    // hook.context is the original Better Auth middleware context.
     void hook.context.path
     return Result.ok()
   })
-)
 ```
 
 `Result.ok(...)` values cross the bridge unchanged, including `undefined`,
@@ -221,25 +216,22 @@ Cancellation remains cooperative; cleanup still belongs to the execution
 Scope. Direct server-side calls without a request run without an invented
 request signal.
 
-Shutdown ordering is application-owned too: stop accepting requests, then close
-the Runtime that serves Better Auth, close the core Runtime, and only then close
-the shared live resource. `Layer.succeed` does not register a disposer for that
-value:
+Shutdown ordering is application-owned: stop accepting requests, close the
+Runtime that serves Better Auth, and then close shared live resources. The value
+Layer does not register a disposer:
 
 ```ts
 await appRuntime.dispose()
-await coreRuntime.dispose()
 await database.close()
 ```
 
 This ordering prevents either Runtime or an in-flight hook from observing a
 closed shared resource.
 
-A middleware may also install a typed Layer for one Better Auth invocation. The
+A builder may also install a typed Layer for one Better Auth invocation. The
 factory runs once per invocation, receives the original context, and its Layer
 is merged with the hook Context Layer. Any scoped resources are owned by that
-execution and released before the middleware completes; the bridge still does
-not own the Runtime:
+execution and released before the middleware completes:
 
 ```ts
 import { Effect, Layer, Service } from 'better-effect'
@@ -249,16 +241,18 @@ class RequestMetadata extends Service<RequestMetadata>()('@app/RequestMetadata')
   readonly path!: string
 }
 
-const requestAware = AuthHooks.middleware(
-  () =>
-    Effect.fn(async function* () {
-      const metadata = yield* RequestMetadata
-      return Result.ok({ context: { path: metadata.path } })
-    }),
-  {
-    layer: (context) => Layer.succeed(RequestMetadata, RequestMetadata.of({ path: context.path }))
-  }
-)
+const requestAware =
+  yield *
+  AuthHooks.middleware(
+    () =>
+      Effect.fn(async function* () {
+        const metadata = yield* RequestMetadata
+        return Result.ok({ context: { path: metadata.path } })
+      }),
+    {
+      layer: (context) => Layer.succeed(RequestMetadata, RequestMetadata.of({ path: context.path }))
+    }
+  )
 ```
 
 The same middleware value can be used for global `before`/`after` hooks, plugin
@@ -267,13 +261,13 @@ hooks, or plugin `middlewares` without reimplementing matchers:
 ```ts
 import type { BetterAuthPlugin } from 'better-auth'
 
-const auditMiddleware = AuthHooks.middleware(() =>
-  Effect.fn(async function* () {
+const auditMiddleware =
+  yield *
+  AuthHooks.gen(async function* () {
     const hook = yield* AuthHooks.Context
     hook.context.context.runInBackground(Promise.resolve())
     return Result.ok()
   })
-)
 
 const auditPlugin = {
   id: 'audit-plugin',
@@ -290,6 +284,11 @@ configured global and plugin hooks, including for requestless server-side
 calls; plugin `middlewares` run only through a request handled by
 `auth.handler`. The bridge does not store contexts, create a global controller,
 run detached Runtime work, or provide framework adapters.
+
+`BetterAuthHooks.make(tag, runtime)` remains available as a deprecated
+compatibility API for applications that already bind hooks to a caller-owned
+Runtime. It exposes the same Context and non-yieldable builders; new code should
+use `define` with `BetterAuth.make`.
 
 ## Sessions
 
