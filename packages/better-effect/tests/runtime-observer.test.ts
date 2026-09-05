@@ -140,6 +140,9 @@ describe('RecordedRuntimeObserver', () => {
         executionStarts: [],
         executionEnds: [],
         resourceReleases: [],
+        lifecycleStarts: [],
+        lifecycleEnds: [],
+        lifecycleReleases: [],
         timeline: []
       })
       expect(firstSnapshot.executionStarts).toHaveLength(1)

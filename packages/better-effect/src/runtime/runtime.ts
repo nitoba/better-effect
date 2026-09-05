@@ -134,8 +134,20 @@ export class Runtime<Provided extends AnyService = any> {
     handle = await createRuntimeHandle(layer, backend, options, {}, executor)
     const runtime = new Runtime<ProvidedEnvironment<L>>(handle, executor)
 
-    if (options.warmup) {
-      await runtime.warmup()
+    try {
+      if (options.warmup) {
+        await runtime.warmup()
+      }
+
+      await handle.activateLifecycle()
+    } catch (cause) {
+      try {
+        await runtime.disposeWithOutcome({ status: 'failure', cause })
+      } catch {
+        // Lifecycle activation remains the primary Runtime.make failure.
+      }
+
+      throw cause
     }
 
     return runtime

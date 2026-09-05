@@ -60,6 +60,29 @@ export type RuntimeResourceReleaseEvent = {
   readonly executionId?: string
 }
 
+/** Metadata shared by lifecycle-only Layer events. */
+export type RuntimeLifecycleEventMetadata = {
+  readonly kind: 'lifecycle'
+  /** Stable identity for one lifecycle entry; no acquired resource is retained. */
+  readonly lifecycleId: symbol
+  readonly name?: string
+}
+
+/** Event emitted immediately before a lifecycle-only entry is acquired. */
+export type RuntimeLifecycleStartEvent = RuntimeLifecycleEventMetadata
+
+/** Event emitted after a lifecycle-only entry's acquisition settles. */
+export type RuntimeLifecycleEndEvent = RuntimeLifecycleEventMetadata & {
+  readonly outcome: ScopeOutcome
+  readonly error?: unknown
+}
+
+/** Event emitted after a lifecycle-only entry's release callback settles. */
+export type RuntimeLifecycleReleaseEvent = RuntimeLifecycleEventMetadata & {
+  readonly outcome: ScopeOutcome
+  readonly error?: unknown
+}
+
 /** Optional best-effort hooks for Runtime lifecycle and resolution events. */
 export type RuntimeObserver = {
   readonly onServiceResolve?: (event: RuntimeServiceResolveEvent) => MaybePromise<void>
@@ -67,6 +90,9 @@ export type RuntimeObserver = {
   readonly onExecutionStart?: (event: RuntimeExecutionStartEvent) => MaybePromise<void>
   readonly onExecutionEnd?: (event: RuntimeExecutionEndEvent) => MaybePromise<void>
   readonly onResourceRelease?: (event: RuntimeResourceReleaseEvent) => MaybePromise<void>
+  readonly onLifecycleStart?: (event: RuntimeLifecycleStartEvent) => MaybePromise<void>
+  readonly onLifecycleEnd?: (event: RuntimeLifecycleEndEvent) => MaybePromise<void>
+  readonly onLifecycleRelease?: (event: RuntimeLifecycleReleaseEvent) => MaybePromise<void>
 }
 
 /** Compose best-effort Runtime observers into one observer. */
@@ -86,6 +112,15 @@ export const RuntimeObserver = {
     },
     onResourceRelease: (event) => {
       notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, event)
+    },
+    onLifecycleStart: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onLifecycleStart, event)
+    },
+    onLifecycleEnd: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onLifecycleEnd, event)
+    },
+    onLifecycleRelease: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onLifecycleRelease, event)
     }
   })
 }

@@ -27,4 +27,10 @@ export type {
 
 export type { LayerBackend, LayerBackendDisposeOptions } from './backend'
 
-export type { LayerGenerator, LayerGeneratorRequirements, LayerRegistration } from './types'
+export type {
+  LayerDiscardGenerator,
+  LayerDiscardRequirements,
+  LayerGenerator,
+  LayerGeneratorRequirements,
+  LayerRegistration
+} from './types'

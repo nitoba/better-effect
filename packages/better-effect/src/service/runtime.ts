@@ -42,12 +42,13 @@ export class ServiceRuntime {
     storage: RuntimeContextStorage = defaultRuntimeContextStorage
   ): A {
     const current = getRuntimeContext(storage)
+    const sameResolver = current?.resolver === resolver
     const context = makeRuntimeContext(
       resolver,
       current?.scope,
-      current?.resolver === resolver ? current.resolutionPath : [],
+      sameResolver ? current.resolutionPath : [],
       current?.signal,
-      current?.resolver === resolver ? current : undefined,
+      current,
       current?.executionId
     )
 

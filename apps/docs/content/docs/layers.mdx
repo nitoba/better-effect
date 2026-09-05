@@ -99,6 +99,54 @@ The provider must return a disposable `Service.Contract` at the type boundary.
 release, so the resource remains available across executions and the DI backend
 only registers and resolves it.
 
+## Lifecycle-only Layers
+
+Use `Layer.scopedDiscard` when a component owns startup and shutdown work but
+does not need to be resolved as a Service:
+
+```ts
+const PollerLive = Layer.scopedDiscard(
+  () => startPoller(),
+  (poller, outcome) => poller.stop(outcome)
+)
+```
+
+Lifecycle-only Layers provide `never`, but their contextual requirements remain
+part of Layer completeness:
+
+```ts
+const PollerLive = Layer.scopedDiscard(
+  async function* () {
+    const config = yield* Config
+    return startPoller(config)
+  },
+  (poller, outcome) => poller.stop(outcome)
+)
+
+const ApplicationLive = Layer.complete(Layer.merge(ConfigLive, PollerLive))
+```
+
+Runtime activates lifecycle entries after all providers are registered and
+after requested warmup. Successful entries are released by the Runtime root
+Scope in reverse activation order. If activation fails, earlier entries are
+rolled back before the failure is propagated. Use `Layer.scopedDiscardGen` when
+you want to make the contextual generator overload explicit.
+
+For a startup `Effect.Program`, use `Layer.effectDiscard`:
+
+```ts
+const MetricsLive = Layer.effectDiscard(
+  Effect.fn(async function* () {
+    const registry = yield* MetricsRegistry
+    registry.register(defaultMetrics)
+    return Result.ok(undefined)
+  })
+)
+```
+
+`effectDiscard` requires a `void` success and `never` failure channel. Typed
+failures must be handled before the program is passed to this constructor.
+
 ## `Layer.gen` and `Layer.scopedGen`
 
 Provider factories can request contextual Services during acquisition:
