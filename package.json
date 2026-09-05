@@ -14,7 +14,7 @@
     "docs:build": "turbo run build --filter=@better-effect/docs",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "test:containers": "bun test scripts/mq-container-support.test.ts && bun scripts/test-mq-containers.ts",
+    "test:containers": "bun test scripts/mq-container-support.test.ts && bun run build --filter=better-effect-mq-mysql --filter=better-effect-mq-mongodb && bun scripts/test-mq-containers.ts",
     "lint": "turbo run lint && bun run lint:release",
     "format": "turbo run format",
     "format:check": "turbo run format:check",

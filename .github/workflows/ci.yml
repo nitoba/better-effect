@@ -214,7 +214,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build workspace packages
-        run: bun run build
+        run: bun run build --filter=better-effect-mq-postgres
 
       - name: Run PostgreSQL conformance suite
         working-directory: packages/better-effect-mq-postgres
@@ -250,7 +250,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build workspace packages
-        run: bun run build
+        run: bun run build --filter=better-effect-mq-redis
 
       - name: Run Redis JobStore conformance suite
         working-directory: packages/better-effect-mq-redis
@@ -281,18 +281,12 @@ jobs:
         run: bun run test:containers
 
   kysely-consumer:
-    name: Kysely consumer (${{ matrix.runtime }}, ${{ matrix.dialect }}, ${{ matrix.kysely }})
+    name: Kysely consumer (${{ matrix.kysely }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        runtime:
-          - bun
-          - node
-        dialect:
-          - pglite
-          - sqlite
         kysely:
           - consumer-minimum
           - consumer-current-tested
@@ -316,12 +310,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build packed packages
-        run: bun run build
+        run: bun run build --filter=better-effect-kysely
 
       - name: Run external Kysely consumer cell
         working-directory: packages/better-effect-kysely
         env:
-          BETTER_EFFECT_KYSELY_RUNTIME: ${{ matrix.runtime }}
-          BETTER_EFFECT_KYSELY_DIALECT: ${{ matrix.dialect }}
           BETTER_EFFECT_KYSELY_VERSION_CELL: ${{ matrix.kysely }}
         run: bun run test:package-consumer

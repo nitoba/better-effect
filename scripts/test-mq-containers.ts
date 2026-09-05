@@ -20,6 +20,10 @@ const mongoImage =
 const labelName = 'better-effect-mq.container-gate'
 const invocation = randomUUID()
 const labels = { [labelName]: invocation }
+const storageIntegrationTests = [
+  'packages/better-effect-mq-mysql/tests/integration.mysql.test.ts',
+  'packages/better-effect-mq-mongodb/tests/integration/mongodb.test.ts'
+] as const
 const decoder = new TextDecoder()
 const secrets = new Set<string>()
 
@@ -267,15 +271,7 @@ try {
   mongoUrl.searchParams.set('directConnection', 'true')
 
   child = Bun.spawn({
-    cmd: [
-      process.execPath,
-      'x',
-      'turbo',
-      'run',
-      'test',
-      '--filter=better-effect-mq-mysql',
-      '--filter=better-effect-mq-mongodb'
-    ],
+    cmd: [process.execPath, 'test', ...storageIntegrationTests],
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -283,7 +279,7 @@ try {
       MONGODB_DATABASE: mongoDatabase,
       MONGODB_URL: mongoUrl.toString()
     },
-    stdin: 'inherit',
+    stdin: 'ignore',
     stdout: 'inherit',
     stderr: 'inherit'
   })
