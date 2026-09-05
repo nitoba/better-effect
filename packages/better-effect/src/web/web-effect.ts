@@ -3,7 +3,7 @@ import { Result } from 'better-result'
 import { Layer } from '../layer'
 import type { LayerInput } from '../layer/inference'
 import { CurrentRequest } from '../standard-services/current-request'
-import type { Runtime } from '../runtime'
+import type { RuntimeExecutor } from '../runtime'
 import type { AnyService } from '../service'
 import type { EffectError, EffectSuccess } from '../effect/types'
 import { assertResponse, defaultFailure, defaultSuccess } from './responses'
@@ -27,7 +27,7 @@ const combineRequestLayer = <RequestLayer extends LayerInput>(
     return currentRequestLayer
   }
 
-  // SAFETY: WebEffect.handle validates the custom Layer's shape and override contract at its public boundary.
+  // SAFETY: WebEffect.handleWith validates the custom Layer's shape and override contract at its public boundary.
   return Layer.override(currentRequestLayer, customLayer as never)
 }
 
@@ -38,17 +38,17 @@ export class WebEffect {
   /**
    * Run one lazy Program and map its Result to a standard Web Response.
    *
-   * The request Layer and execution Scope are owned by the supplied Runtime;
-   * request resources close before this Promise resolves, while Runtime-root
-   * resources remain owned by the Runtime.
+   * The request Layer and execution Scope are owned by the Runtime behind the
+   * supplied executor; request resources close before this Promise resolves,
+   * while Runtime-root resources remain owned by that Runtime.
    */
-  static handle<
+  static handleWith<
     Provided extends AnyService,
     const Program extends AnyProgram,
     RequestLayer extends LayerInput,
     Failure = EffectError<Program>
   >(
-    runtime: Runtime<Provided>,
+    executor: RuntimeExecutor<Provided>,
     request: Request,
     program: Program,
     options: WebEffectOptions<NoInfer<Failure>, RequestLayer, EffectSuccess<Program>> & {
@@ -57,26 +57,26 @@ export class WebEffect {
       WebProgramChecks<Provided, RequestLayer, Program, NoInfer<Failure>>
   ): Promise<Response>
 
-  static handle<
+  static handleWith<
     Provided extends AnyService,
     const Program extends AnyProgram,
     Failure = EffectError<Program>
   >(
-    runtime: Runtime<Provided>,
+    executor: RuntimeExecutor<Provided>,
     request: Request,
     program: Program & CompleteWebProgram<Provided, DefaultRequestLayer, Program, NoInfer<Failure>>,
     options: WebEffectOptions<NoInfer<Failure>, DefaultRequestLayer, EffectSuccess<Program>>
   ): Promise<Response>
 
-  static handle<Provided extends AnyService, const Program extends AnyProgram>(
-    runtime: Runtime<Provided>,
+  static handleWith<Provided extends AnyService, const Program extends AnyProgram>(
+    executor: RuntimeExecutor<Provided>,
     request: Request,
     program: Program & CompleteWebProgram<Provided, DefaultRequestLayer, Program>,
     options?: undefined
   ): Promise<Response>
 
-  static async handle(
-    runtime: Runtime<AnyService>,
+  static async handleWith(
+    executor: RuntimeExecutor<AnyService>,
     request: Request,
     program: AnyProgram,
     options?: WebEffectOptions<unknown, LayerInput, unknown>
@@ -94,7 +94,7 @@ export class WebEffect {
     // A policy defect is rethrown after this Result settles so it cannot replace
     // the typed failure supplied to the request Scope.
     // SAFETY: Public overloads validate the request Layer before this erased Runtime boundary.
-    await runtime.runWith(
+    await executor.runWith(
       requestLayer as Layer.Any,
       async () => {
         const result = await program()
@@ -134,7 +134,7 @@ export class WebEffect {
 
 /** Type-level aliases for the framework-neutral Web boundary. */
 export declare namespace WebEffect {
-  /** Options used by `WebEffect.handle`. */
+  /** Options used by `WebEffect.handleWith`. */
   export type Options<
     Failure = unknown,
     RequestLayer extends LayerInput = DefaultRequestLayer,
@@ -149,7 +149,7 @@ export declare namespace WebEffect {
   /** A standard Web response or an asynchronous response. */
   export type ResponseLike = Response | PromiseLike<Response>
 
-  /** A lazy Result-valued Program accepted by `handle`. */
+  /** A lazy Result-valued Program accepted by `handleWith`. */
   export type Program<A = unknown, E = unknown, R extends AnyService = never> = WebEffectProgram<
     A,
     E,

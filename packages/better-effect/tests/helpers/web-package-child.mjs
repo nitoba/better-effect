@@ -10,8 +10,8 @@ let requestLayerCalls = 0
 let released = 0
 
 try {
-  const response = await WebEffect.handle(
-    runtime,
+  const response = await WebEffect.handleWith(
+    runtime.executor,
     new Request('https://example.test/packed-web'),
     Effect.fn(async function* () {
       const currentRequest = yield* CurrentRequest

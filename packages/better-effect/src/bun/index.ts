@@ -19,7 +19,7 @@ const runWebEffect = <Provided extends AnyService>(
   options: WebEffectOptions<unknown, LayerInput, unknown>
 ): Promise<Response> => {
   // SAFETY: BunHandlerFactory validates the Program; WebEffect owns this erased request boundary.
-  return WebEffect.handle(runtime, request, program, options as never)
+  return WebEffect.handleWith(runtime.executor, request, program, options as never)
 }
 
 type BunHandlerFactory<

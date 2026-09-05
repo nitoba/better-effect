@@ -56,8 +56,8 @@ test('WebEffect runs a lazy Program with CurrentRequest and the linked signal', 
   const controller = new AbortController()
 
   try {
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/items', controller.signal),
       Effect.fn(async function* () {
         programRuns += 1
@@ -88,6 +88,30 @@ test('WebEffect runs a lazy Program with CurrentRequest and the linked signal', 
   }
 })
 
+test('WebEffect.handleWith runs through a Runtime executor', async () => {
+  const runtime = await makeRuntime()
+  let programRuns = 0
+
+  try {
+    const response = await WebEffect.handleWith(
+      runtime.executor,
+      request('/executor'),
+      Effect.fn(async function* () {
+        programRuns += 1
+        const currentRequest = yield* CurrentRequest
+
+        // SAFETY: WebEffect supplies the Request object through CurrentRequest in this test.
+        return Result.ok((currentRequest.request as Request).url)
+      })
+    )
+
+    expect(programRuns).toBe(1)
+    expect(await response.json()).toEqual({ data: 'https://example.test/executor' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('WebEffect maps typed failures safely and closes request resources first', async () => {
   const runtime = await makeRuntime()
   const failure = new DomainFailure('private details')
@@ -105,8 +129,8 @@ test('WebEffect maps typed failures safely and closes request resources first', 
   )
 
   try {
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/failure'),
       Effect.fn(async function* () {
         const service = yield* RequestService
@@ -142,8 +166,8 @@ test('WebEffect passes a typed Response failure through the default policy', asy
   const failureResponse = new Response('not found', { status: 404 })
 
   try {
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/missing'),
       Effect.fn(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -164,16 +188,16 @@ test('WebEffect redacts non-Response failures and maps standard successes', asyn
   const failure = { secret: 'do not expose' }
 
   try {
-    const failureResponse = await WebEffect.handle(
-      runtime,
+    const failureResponse = await WebEffect.handleWith(
+      runtime.executor,
       request('/redacted'),
       Effect.fn(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
         return Result.err(failure)
       })
     )
-    const emptyResponse = await WebEffect.handle(
-      runtime,
+    const emptyResponse = await WebEffect.handleWith(
+      runtime.executor,
       request('/empty'),
       Effect.fn(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -181,8 +205,8 @@ test('WebEffect redacts non-Response failures and maps standard successes', asyn
       })
     )
     const responseValue = new Response('raw')
-    const passthroughResponse = await WebEffect.handle(
-      runtime,
+    const passthroughResponse = await WebEffect.handleWith(
+      runtime.executor,
       request('/passthrough'),
       Effect.fn(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -204,8 +228,8 @@ test('WebEffect accepts asynchronous response policies and rejects invalid polic
   const runtime = await Runtime.make(Layer.empty)
 
   try {
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/policy'),
       Effect.fn(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -219,8 +243,8 @@ test('WebEffect accepts asynchronous response policies and rejects invalid polic
     expect(response.status).toBe(201)
     expect(await response.text()).toBe('created')
 
-    const invalidPolicyCause = await WebEffect.handle(
-      runtime,
+    const invalidPolicyCause = await WebEffect.handleWith(
+      runtime.executor,
       request('/invalid-policy'),
       Effect.fn(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -239,8 +263,8 @@ test('WebEffect default success policy preserves the supported JSON value contra
   const runtime = await Runtime.make(Layer.empty)
 
   try {
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/json'),
       // oxlint-disable-next-line require-yield -- This fixture checks the default policy with a pure success value.
       Effect.fn(async function* () {
@@ -295,8 +319,8 @@ test('WebEffect default success policy rejects unsupported JSON values explicitl
 
   try {
     for (const [name, value, expectedDetail] of unsupported) {
-      const cause = await WebEffect.handle(
-        runtime,
+      const cause = await WebEffect.handleWith(
+        runtime.executor,
         request(`/unsupported/${name}`),
         // oxlint-disable-next-line require-yield -- This fixture deliberately returns each unsupported value directly.
         Effect.fn(async function* () {
@@ -381,40 +405,40 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
   const forgedResponse = Object.create(Response.prototype) as Response
 
   try {
-    const defaultSuccess = await WebEffect.handle(
-      runtime,
+    const defaultSuccess = await WebEffect.handleWith(
+      runtime.executor,
       request('/default-success'),
       // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
       Effect.fn(async function* () {
         return Result.ok(alternateResponse)
       })
     )
-    const defaultFailure = await WebEffect.handle(
-      runtime,
+    const defaultFailure = await WebEffect.handleWith(
+      runtime.executor,
       request('/default-failure'),
       // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
       Effect.fn(async function* () {
         return Result.err(alternateResponse)
       })
     )
-    const crossRealmSuccess = await WebEffect.handle(
-      runtime,
+    const crossRealmSuccess = await WebEffect.handleWith(
+      runtime.executor,
       request('/cross-realm-success'),
       // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
       Effect.fn(async function* () {
         return Result.ok(crossRealmResponse)
       })
     )
-    const crossRealmFailure = await WebEffect.handle(
-      runtime,
+    const crossRealmFailure = await WebEffect.handleWith(
+      runtime.executor,
       request('/cross-realm-failure'),
       // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy.
       Effect.fn(async function* () {
         return Result.err(crossRealmResponse)
       })
     )
-    const customSuccess = await WebEffect.handle(
-      runtime,
+    const customSuccess = await WebEffect.handleWith(
+      runtime.executor,
       request('/custom-success'),
       // oxlint-disable-next-line require-yield -- This fixture checks a custom Response policy.
       Effect.fn(async function* () {
@@ -422,8 +446,8 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
       }),
       { onSuccess: () => streamResponse }
     )
-    const customFailure = await WebEffect.handle(
-      runtime,
+    const customFailure = await WebEffect.handleWith(
+      runtime.executor,
       request('/custom-failure'),
       // oxlint-disable-next-line require-yield -- This fixture checks a custom Response policy.
       Effect.fn(async function* () {
@@ -440,24 +464,24 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
     expect(customFailure).toBe(alternateResponse)
 
     for (const [name, incompleteResponse] of incompleteResponses) {
-      const defaultSuccessCause = await WebEffect.handle(
-        runtime,
+      const defaultSuccessCause = await WebEffect.handleWith(
+        runtime.executor,
         request(`/default-invalid-success/${name}`),
         // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
         Effect.fn(async function* () {
           return Result.ok(incompleteResponse)
         })
       ).catch((cause) => cause)
-      const defaultFailure = await WebEffect.handle(
-        runtime,
+      const defaultFailure = await WebEffect.handleWith(
+        runtime.executor,
         request(`/default-invalid-failure/${name}`),
         // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
         Effect.fn(async function* () {
           return Result.err(incompleteResponse)
         })
       )
-      const successCause = await WebEffect.handle(
-        runtime,
+      const successCause = await WebEffect.handleWith(
+        runtime.executor,
         request(`/invalid-success/${name}`),
         // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
         Effect.fn(async function* () {
@@ -465,8 +489,8 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
         }),
         { onSuccess: () => incompleteResponse }
       ).catch((cause) => cause)
-      const failureCause = await WebEffect.handle(
-        runtime,
+      const failureCause = await WebEffect.handleWith(
+        runtime.executor,
         request(`/invalid-failure/${name}`),
         // oxlint-disable-next-line require-yield -- This fixture deliberately returns a malformed Response.
         Effect.fn(async function* () {
@@ -482,8 +506,8 @@ test('WebEffect accepts compatible alternate Web Responses across policies', asy
       expect(failureCause).toBeInstanceOf(TypeError)
     }
 
-    const forgedCause = await WebEffect.handle(
-      runtime,
+    const forgedCause = await WebEffect.handleWith(
+      runtime.executor,
       request('/forged'),
       // oxlint-disable-next-line require-yield -- This fixture returns a value through the forged Response policy.
       Effect.fn(async function* () {
@@ -519,9 +543,14 @@ test('WebEffect keeps thrown defects rejected and still closes request resources
   }) as WebEffect.Program
 
   try {
-    const defectCause = await WebEffect.handle(runtime, request('/defect'), defectProgram, {
-      requestLayer: () => requestLayer
-    }).catch((cause) => cause)
+    const defectCause = await WebEffect.handleWith(
+      runtime.executor,
+      request('/defect'),
+      defectProgram,
+      {
+        requestLayer: () => requestLayer
+      }
+    ).catch((cause) => cause)
     expect(defectCause).toBe(defect)
     expect(requestOutcome).toEqual({ status: 'failure', cause: defect })
   } finally {
@@ -536,8 +565,8 @@ test('WebEffect forwards an already-aborted request signal', async () => {
   controller.abort(reason)
 
   try {
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/aborted', controller.signal),
       Effect.fn(async function* () {
         const signal = yield* CurrentAbortSignal
@@ -566,8 +595,8 @@ test('WebEffect permits compatible request-local overrides without disposing roo
   try {
     await runtime.run(() => ServiceRuntime.resolve(RootService))
 
-    const response = await WebEffect.handle(
-      runtime,
+    const response = await WebEffect.handleWith(
+      runtime.executor,
       request('/override'),
       Effect.fn(async function* () {
         const root = yield* RootService
@@ -621,10 +650,10 @@ test('WebEffect keeps concurrent request Layers and CurrentRequest values isolat
 
   try {
     const [first, second] = await Promise.all([
-      WebEffect.handle(runtime, request('/first'), program, {
+      WebEffect.handleWith(runtime.executor, request('/first'), program, {
         requestLayer: () => requestLayer('first')
       }),
-      WebEffect.handle(runtime, request('/second'), program, {
+      WebEffect.handleWith(runtime.executor, request('/second'), program, {
         requestLayer: () => requestLayer('second')
       })
     ])

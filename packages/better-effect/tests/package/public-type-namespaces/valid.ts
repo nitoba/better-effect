@@ -200,14 +200,19 @@ const webProgram = Effect.fn(async function* () {
   const currentRequest = yield* CurrentRequest
   return Result.ok(currentRequest.request)
 })
-const webResponse = WebEffect.handle(webRuntime, new Request('https://example.test'), webProgram, {
-  onSuccess: ({ value }) => Response.json(value)
-})
+const webResponse = WebEffect.handleWith(
+  webRuntime.executor,
+  new Request('https://example.test'),
+  webProgram,
+  {
+    onSuccess: ({ value }) => Response.json(value)
+  }
+)
 const webOptions: WebEffectOptions<unknown> = {
   onFailure: () => new Response(null, { status: 500 })
 }
-const webResponseWithOptions = WebEffect.handle(
-  webRuntime,
+const webResponseWithOptions = WebEffect.handleWith(
+  webRuntime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
