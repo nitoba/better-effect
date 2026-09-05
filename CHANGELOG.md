@@ -13,7 +13,7 @@ README and released through the package-qualified tag route.
 
 ### Added
 
-- Framework-neutral `better-effect/web` with `WebEffect.handle`, typed
+- Framework-neutral `better-effect/web` with `WebEffect.handleWith`, typed
   request-local Layers, `CurrentRequest`/AbortSignal propagation, safe Response
   policies, and deterministic request Scope cleanup.
 - Optional `better-effect/opentelemetry` with `OpenTelemetryRuntimeObserver` for

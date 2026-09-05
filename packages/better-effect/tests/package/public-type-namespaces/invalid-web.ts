@@ -18,8 +18,8 @@ class IncompatibleRoot extends Service<IncompatibleRoot>()('PackageInvalidWebRoo
 declare const runtime: Runtime<Root>
 
 // The request provider collides with the concrete root provider under the same tag.
-const invalidRootOverride = WebEffect.handle(
-  runtime,
+const invalidRootOverride = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))

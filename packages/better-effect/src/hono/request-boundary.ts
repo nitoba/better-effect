@@ -171,7 +171,7 @@ export const makeRequestBoundary = <
       let response: Response
 
       if (options.requestLayer === undefined) {
-        response = await WebEffect.handle(options.runtime, context.req.raw, program, {
+        response = await WebEffect.handleWith(options.runtime.executor, context.req.raw, program, {
           onSuccess: boundaryOptions.onSuccess,
           onFailure: boundaryOptions.onFailure
         })
@@ -182,8 +182,8 @@ export const makeRequestBoundary = <
           requestLayer: (_request: Request) => options.requestLayer!(context)
         }
         // SAFETY: HonoEffect.make validates the concrete request Layer before this erased WebEffect dispatch.
-        response = await WebEffect.handle(
-          options.runtime,
+        response = await WebEffect.handleWith(
+          options.runtime.executor,
           context.req.raw,
           program,
           requestBoundaryOptions as never

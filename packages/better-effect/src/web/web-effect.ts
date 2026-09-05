@@ -3,7 +3,7 @@ import { Result } from 'better-result'
 import { Layer } from '../layer'
 import type { LayerInput } from '../layer/inference'
 import { CurrentRequest } from '../standard-services/current-request'
-import type { Runtime, RuntimeExecutor } from '../runtime'
+import type { RuntimeExecutor } from '../runtime'
 import type { AnyService } from '../service'
 import type { EffectError, EffectSuccess } from '../effect/types'
 import { assertResponse, defaultFailure, defaultSuccess } from './responses'
@@ -27,7 +27,7 @@ const combineRequestLayer = <RequestLayer extends LayerInput>(
     return currentRequestLayer
   }
 
-  // SAFETY: WebEffect.handle validates the custom Layer's shape and override contract at its public boundary.
+  // SAFETY: WebEffect.handleWith validates the custom Layer's shape and override contract at its public boundary.
   return Layer.override(currentRequestLayer, customLayer as never)
 }
 
@@ -129,54 +129,6 @@ export class WebEffect {
     }
 
     return response
-  }
-
-  /**
-   * @deprecated Use `WebEffect.handleWith(runtime.executor, ...)` so framework
-   * integrations retain only the Runtime's non-owning execution capability.
-   */
-  static handle<
-    Provided extends AnyService,
-    const Program extends AnyProgram,
-    RequestLayer extends LayerInput,
-    Failure = EffectError<Program>
-  >(
-    runtime: Runtime<Provided>,
-    request: Request,
-    program: Program,
-    options: WebEffectOptions<NoInfer<Failure>, RequestLayer, EffectSuccess<Program>> & {
-      readonly requestLayer: (request: Request) => RequestLayer
-    } & WebRequestLayerChecks<Provided, RequestLayer> &
-      WebProgramChecks<Provided, RequestLayer, Program, NoInfer<Failure>>
-  ): Promise<Response>
-
-  static handle<
-    Provided extends AnyService,
-    const Program extends AnyProgram,
-    Failure = EffectError<Program>
-  >(
-    runtime: Runtime<Provided>,
-    request: Request,
-    program: Program & CompleteWebProgram<Provided, DefaultRequestLayer, Program, NoInfer<Failure>>,
-    options: WebEffectOptions<NoInfer<Failure>, DefaultRequestLayer, EffectSuccess<Program>>
-  ): Promise<Response>
-
-  static handle<Provided extends AnyService, const Program extends AnyProgram>(
-    runtime: Runtime<Provided>,
-    request: Request,
-    program: Program & CompleteWebProgram<Provided, DefaultRequestLayer, Program>,
-    options?: undefined
-  ): Promise<Response>
-
-  static handle(
-    runtime: Runtime<AnyService>,
-    request: Request,
-    program: AnyProgram,
-    options?: WebEffectOptions<unknown, LayerInput, unknown>
-  ): Promise<Response> {
-    // SAFETY: The public overloads validate the legacy Runtime boundary before
-    // delegating to the single executor-based implementation.
-    return WebEffect.handleWith(runtime.executor, request, program, options as never)
   }
 }
 

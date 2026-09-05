@@ -32,9 +32,14 @@ const program = Effect.fn(async function* () {
   return Result.ok(requestValue.value)
 })
 
-const response = WebEffect.handle(runtime, new Request('https://example.test'), program, {
-  requestLayer: () => requestLayer
-})
+const response = WebEffect.handleWith(
+  runtime.executor,
+  new Request('https://example.test'),
+  program,
+  {
+    requestLayer: () => requestLayer
+  }
+)
 
 const executorResponse = WebEffect.handleWith(
   runtime.executor,
@@ -45,8 +50,8 @@ const executorResponse = WebEffect.handleWith(
   }
 )
 
-const compatibleResponse = WebEffect.handle(
-  runtime,
+const compatibleResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     const root = yield* Root
@@ -57,10 +62,15 @@ const compatibleResponse = WebEffect.handle(
   }
 )
 
-const unchecked = WebEffect.handle(runtime, new Request('https://example.test'), program, {
-  // SAFETY: This fixture intentionally opts into the public unchecked Layer.Any escape hatch.
-  requestLayer: () => Layer.succeed(RequestValue, new RequestValue('unchecked')) as Layer.Any
-})
+const unchecked = WebEffect.handleWith(
+  runtime.executor,
+  new Request('https://example.test'),
+  program,
+  {
+    // SAFETY: This fixture intentionally opts into the public unchecked Layer.Any escape hatch.
+    requestLayer: () => Layer.succeed(RequestValue, new RequestValue('unchecked')) as Layer.Any
+  }
+)
 
 type NamedProgram = WebEffect.Program<string, never, Root>
 type NamedOptions = WebEffect.Options<unknown, typeof requestLayer, string>

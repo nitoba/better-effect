@@ -65,20 +65,25 @@ const requestLayer = Layer.gen(RequestValue, async function* () {
   return new RequestValue('request')
 })
 
-const response = WebEffect.handle(runtime, new Request('https://example.test'), program, {
-  requestLayer: (request) => {
-    expectTypeOf(request).toEqualTypeOf<Request>()
-    return requestLayer
-  },
-  onSuccess: ({ value }) => {
-    expectTypeOf(value).toEqualTypeOf<{
-      available: Available
-      request: CurrentRequest
-      requestValue: RequestValue
-    }>()
-    return Response.json(value)
+const response = WebEffect.handleWith(
+  runtime.executor,
+  new Request('https://example.test'),
+  program,
+  {
+    requestLayer: (request) => {
+      expectTypeOf(request).toEqualTypeOf<Request>()
+      return requestLayer
+    },
+    onSuccess: ({ value }) => {
+      expectTypeOf(value).toEqualTypeOf<{
+        available: Available
+        request: CurrentRequest
+        requestValue: RequestValue
+      }>()
+      return Response.json(value)
+    }
   }
-})
+)
 
 expectTypeOf(response).toEqualTypeOf<Promise<Response>>()
 
@@ -132,8 +137,8 @@ const invalidExecutor = WebEffect.handleWith(
 )
 void invalidExecutor
 
-const defaultResponse = WebEffect.handle(
-  runtime,
+const defaultResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   // oxlint-disable-next-line require-yield -- This fixture checks the default Response policy type.
   Effect.fn(async function* () {
@@ -147,8 +152,8 @@ const failureProgram = Effect.fn(async function* () {
   return Result.err(new ExpectedFailure())
 })
 
-const failureResponse = WebEffect.handle(
-  runtime,
+const failureResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   failureProgram,
   {
@@ -165,8 +170,8 @@ const responseFailureProgram = Effect.fn(async function* () {
   yield* Result.await(Promise.resolve(Result.ok(undefined)))
   return Result.err(new Response('not found', { status: 404 }))
 })
-const responseFailureResponse = WebEffect.handle(
-  runtime,
+const responseFailureResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   responseFailureProgram
 )
@@ -190,16 +195,16 @@ const options: WebEffectOptions<ExpectedFailure, typeof requestLayer, string> & 
   }
 }
 
-const configuredResponse = WebEffect.handle(
-  runtime,
+const configuredResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   configuredProgram,
   options
 )
 expectTypeOf(configuredResponse).toEqualTypeOf<Promise<Response>>()
 
-const asynchronousConfiguredResponse = WebEffect.handle(
-  runtime,
+const asynchronousConfiguredResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   configuredProgram,
   {
@@ -215,8 +220,8 @@ const asynchronousConfiguredResponse = WebEffect.handle(
 )
 expectTypeOf(asynchronousConfiguredResponse).toEqualTypeOf<Promise<Response>>()
 
-const invalidPolicyResponse = WebEffect.handle(
-  runtime,
+const invalidPolicyResponse = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   configuredProgram,
   // @ts-expect-error Response policies must return a standard Response.
@@ -239,8 +244,8 @@ const invalidExecutorProgram = WebEffect.handleWith(
 )
 void invalidExecutorProgram
 
-const invalidProgram = WebEffect.handle(
-  runtime,
+const invalidProgram = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   // @ts-expect-error WebEffect Programs cannot require a Service absent from the root/request Layers.
   missingProgram
@@ -252,8 +257,8 @@ const requestNeedsMissing = Layer.gen(RequestValue, async function* () {
   return new RequestValue('missing')
 })
 
-const invalidRequestLayer = WebEffect.handle(
-  runtime,
+const invalidRequestLayer = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -273,20 +278,20 @@ expectTypeOf<EffectError<typeof unexpectedFailureProgram>>().toEqualTypeOf<Unexp
 const expectedFailurePolicy: WebEffectOptions<ExpectedFailure> = {
   onFailure: (error) => new Response(error.message)
 }
-const invalidFailure = WebEffect.handle(
-  runtime,
+const invalidFailure = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   unexpectedFailureProgram,
   // @ts-expect-error The typed failure channel must fit the configured Web failure policy.
   expectedFailurePolicy
 )
 void invalidFailure
-const explicitInvalidFailure = WebEffect.handle<
+const explicitInvalidFailure = WebEffect.handleWith<
   Available,
   typeof unexpectedFailureProgram,
   UnexpectedFailure
 >(
-  runtime,
+  runtime.executor,
   new Request('https://example.test'),
   unexpectedFailureProgram,
   // @ts-expect-error Explicitly selecting the unexpected failure channel also rejects the narrower policy.
@@ -295,8 +300,8 @@ const explicitInvalidFailure = WebEffect.handle<
 void explicitInvalidFailure
 
 const erasedRequestLayer: Layer.Any = Layer.succeed(RequestValue, new RequestValue('unchecked'))
-const unchecked = WebEffect.handle(
-  runtime,
+const unchecked = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     const value = yield* RequestValue
@@ -308,8 +313,8 @@ void unchecked
 
 // SAFETY: This declaration-only fixture models a partially erased Layer.
 const partialRequestLayer = {} as Layer<any, never>
-const invalidPartial = WebEffect.handle(
-  runtime,
+const invalidPartial = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -322,8 +327,8 @@ void invalidPartial
 
 const requestLayerUnion =
   Math.random() > 0.5 ? requestLayer : Layer.succeed(OtherRequestValue, new OtherRequestValue())
-const invalidUnion = WebEffect.handle(
-  runtime,
+const invalidUnion = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -340,8 +345,8 @@ const incompatibleCurrentRequest = Layer.succeed(
   new IncompatibleCurrentRequest()
 )
 
-const invalidOverride = WebEffect.handle(
-  runtime,
+const invalidOverride = WebEffect.handleWith(
+  runtime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -352,8 +357,8 @@ const invalidOverride = WebEffect.handle(
 )
 void invalidOverride
 
-const compatibleRootOverride = WebEffect.handle(
-  rootBoundaryRuntime,
+const compatibleRootOverride = WebEffect.handleWith(
+  rootBoundaryRuntime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     const service = yield* RootBoundaryService
@@ -365,8 +370,8 @@ const compatibleRootOverride = WebEffect.handle(
 )
 void compatibleRootOverride
 
-const invalidRootOverride = WebEffect.handle(
-  rootBoundaryRuntime,
+const invalidRootOverride = WebEffect.handleWith(
+  rootBoundaryRuntime.executor,
   new Request('https://example.test'),
   Effect.fn(async function* () {
     yield* Result.await(Promise.resolve(Result.ok(undefined)))

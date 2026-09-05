@@ -200,10 +200,10 @@ export class NextEffect<
       }
 
       // SAFETY: Public overloads validate the Program, request Layer, Failure, and Response policy before this erased WebEffect call.
-      return await WebEffect.handle(
+      return await WebEffect.handleWith(
         // SAFETY: The Runtime's concrete Service union is intentionally erased for WebEffect's internal heterogeneous boundary.
         // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- this is the adapter's single generic erasure.
-        this.runtime as unknown as Runtime<AnyService>,
+        (this.runtime as unknown as Runtime<AnyService>).executor,
         request,
         // SAFETY: The effective Program is either the checked Program or a private serializer wrapper that preserves its Result error channel.
         effectiveProgram as AnyProgram,
