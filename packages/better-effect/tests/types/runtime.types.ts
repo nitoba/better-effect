@@ -23,7 +23,9 @@ import {
   type RuntimeFor,
   type RuntimeObserver,
   type RuntimeOptions,
-  type RuntimeRunOptions
+  type RuntimeRunOptions,
+  type RuntimeTaskEndEvent,
+  type RuntimeTaskInspection
 } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
 import { NodeRuntime, type NodeRuntimeOptions } from '../../src/node'
@@ -106,6 +108,15 @@ const runtimeObserver: RuntimeObserver = {
     expectTypeOf(event.executionId).toEqualTypeOf<string>()
     expectTypeOf(event.durationMs).toEqualTypeOf<number>()
   },
+  onTaskStart: (event) => {
+    expectTypeOf(event.taskId).toEqualTypeOf<string>()
+    expectTypeOf(event.parentExecutionId).toEqualTypeOf<string | undefined>()
+    expectTypeOf(event.state).toEqualTypeOf<'running'>()
+  },
+  onTaskEnd: (event) => {
+    expectTypeOf(event).toEqualTypeOf<RuntimeTaskEndEvent>()
+    expectTypeOf(event.state).toEqualTypeOf<RuntimeTaskEndEvent['state']>()
+  },
   onResourceRelease: (event) => {
     expectTypeOf(event.service).toEqualTypeOf<AnyServiceToken>()
   }
@@ -123,6 +134,7 @@ expectTypeOf<Awaited<typeof configuredRuntimePromise>>().toEqualTypeOf<Runtime<D
 expectTypeOf<RuntimeFor<typeof AppLive>>().toEqualTypeOf<Runtime<Database | Logger>>()
 expectTypeOf<Runtime.Inspection>().toEqualTypeOf<RuntimeInspection>()
 expectTypeOf<Runtime.ExecutionInspection>().toEqualTypeOf<RuntimeExecutionInspection>()
+expectTypeOf<RuntimeTaskInspection['state']>().toEqualTypeOf<'running'>()
 expectTypeOf<ReturnType<Runtime<Database>['inspect']>>().toEqualTypeOf<RuntimeInspection>()
 expectTypeOf(warmupOptions).toEqualTypeOf<RuntimeOptions>()
 expectTypeOf<RuntimeExecutionMetadata['attributes']>().toEqualTypeOf<

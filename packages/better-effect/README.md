@@ -168,6 +168,39 @@ Services or expose `dispose`, `warmup`, `inspect`, backend or Scope ownership.
 Applications normally use `runtime.run`; the contextual executor is mainly for
 framework adapters and long-lived components.
 
+For work that must live only as long as the current execution or lifecycle
+Scope, use `Effect.forkScoped`. It returns immediately with a small task handle;
+the task inherits the current Services and resolver, receives its own
+cooperative-cancellation signal, and is interrupted and awaited before the
+parent Scope releases its resources:
+
+```ts
+const pollOutbox = Effect.fn(async function* () {
+  const signal = yield* CurrentAbortSignal
+
+  while (!signal.aborted) {
+    await pollOnce()
+  }
+
+  return Result.ok(undefined)
+})
+
+const OutboxLive = Layer.effectDiscard(
+  Effect.fn(async function* () {
+    const task = yield* Effect.forkScoped(pollOutbox)
+    await task.awaitExit()
+
+    return Result.ok(undefined)
+  })
+)
+```
+
+Use `task.await()` when the child Result should be returned or its defect should
+be thrown. Use `task.awaitExit()` when interruption and defects must be
+inspected without throwing. `Runtime.inspect()` reports active scoped tasks,
+and Runtime observers receive task start/end events linked to their parent
+execution; scoped tasks do not create independent Runtime executions.
+
 Runtime boundaries inspect only nominal `better-result` values: `Result.err`
 becomes a failed execution, while a plain object with `status: 'error'` is
 still a successful value. Intermediate Results do not close the execution

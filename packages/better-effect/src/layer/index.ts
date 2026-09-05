@@ -22,7 +22,10 @@ export type {
   RuntimeObserver,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
-  RuntimeServiceResolveEvent
+  RuntimeServiceResolveEvent,
+  RuntimeTaskEndEvent,
+  RuntimeTaskMetadata,
+  RuntimeTaskStartEvent
 } from '../runtime/observer'
 
 export type { LayerBackend, LayerBackendDisposeOptions } from './backend'

@@ -2,7 +2,7 @@ import { ScopeCloseError } from './errors'
 
 import { ScopeRuntime } from './runtime'
 
-import type { CloseableScope } from './scope'
+import type { CloseableScope, Scope } from './scope'
 
 import {
   runRuntimeContext,
@@ -11,6 +11,33 @@ import {
 } from '../runtime/context'
 
 import type { CleanupFailureDiagnostic, MaybePromise, ScopeOutcome } from './types'
+
+type ScopePreFinalizer = (outcome: ScopeOutcome) => MaybePromise<void>
+
+type ScopeImplementation = {
+  readonly addPreFinalizer: (finalizer: ScopePreFinalizer) => void
+}
+
+const scopeImplementations = new WeakMap<object, ScopeImplementation>()
+
+/** Register the private implementation hook used by lifecycle primitives. */
+export const registerScopeImplementation = (
+  scope: CloseableScope,
+  implementation: ScopeImplementation
+): void => {
+  scopeImplementations.set(scope, implementation)
+}
+
+/** Register work that must run before attached child Scopes close. */
+export const addScopePreFinalizer = (scope: Scope, finalizer: ScopePreFinalizer): void => {
+  const implementation = scopeImplementations.get(scope)
+
+  if (!implementation) {
+    throw new TypeError('Scope does not support internal pre-finalizers')
+  }
+
+  implementation.addPreFinalizer(finalizer)
+}
 
 export type OutcomeClassifier<A> = (value: A) => ScopeOutcome
 

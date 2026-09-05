@@ -8,6 +8,8 @@ import type { DisposableResource, MaybePromise, ScopeOutcome } from '../scope'
 
 import { setProgramName } from './program-metadata'
 import type { AnyService } from '../service'
+import { forkScoped } from './task'
+import type { ScopedTask, ScopedTaskExit } from './task'
 
 import type {
   AnyEffect,
@@ -425,6 +427,7 @@ type EffectNamespace = {
   readonly acquireReleaseResult: typeof acquireReleaseResult
   readonly acquireDisposable: typeof acquireDisposable
   readonly add: typeof add
+  readonly forkScoped: typeof forkScoped
   readonly map: typeof map
   readonly mapError: typeof mapError
   readonly andThen: typeof andThen
@@ -460,6 +463,8 @@ export const Effect: EffectNamespace = {
   acquireDisposable,
   /** Register an already-acquired disposable in the current Scope. */
   add,
+  /** Start a child Program owned by the current Scope. */
+  forkScoped,
   /** Map a successful Effect result. */
   map,
   /** Map an Effect error. */
@@ -518,4 +523,10 @@ export declare namespace Effect {
 
   /** An Effect with erased success, error, and requirements. */
   export type Any = AnyEffect
+
+  /** A small handle for a Scope-owned child task. */
+  export type Task<A, E> = ScopedTask<A, E>
+
+  /** The terminal observation returned by a Scope-owned child task. */
+  export type TaskExit<A, E> = ScopedTaskExit<A, E>
 }

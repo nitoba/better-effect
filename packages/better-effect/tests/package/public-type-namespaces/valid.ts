@@ -34,6 +34,7 @@ import {
   type RuntimeOptions,
   type RuntimeRunOptions,
   type RuntimeShutdownDiagnostic,
+  type ScopedTask,
   type ScopeFinalizer,
   type ScopeOutcome,
   type ServiceClass,
@@ -383,6 +384,15 @@ const packageExecutionOptions = {
   attributes: { requestId: 'package-request' }
 } satisfies RuntimeRunOptions
 const packageMetadataRun = Runtime.run(Layer.merge(), namedProgram, packageExecutionOptions)
+const packageTaskProgram = Effect.fn(async function* () {
+  yield* []
+  return Result.ok('package-task')
+})
+const packageTaskEffect = Effect.forkScoped(packageTaskProgram)
+export type PackageTaskEffect = Expect<
+  Equal<typeof packageTaskEffect, Effect<ScopedTask<string, never>, never>>
+>
+export type PackageTaskAlias = Expect<Equal<Effect.Task<string, never>, ScopedTask<string, never>>>
 declare const packageRuntime: Runtime<Database | Repository>
 const packageInspection = packageRuntime.inspect()
 export type RuntimeInspectionMethod = Expect<Equal<typeof packageInspection, RuntimeInspection>>

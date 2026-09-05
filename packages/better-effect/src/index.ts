@@ -44,6 +44,9 @@ export type {
   EffectSuccess,
   EffectYield,
   ProgramAllOptions,
+  ScopedTask,
+  ScopedTaskExit,
+  ScopedTaskState,
   ServiceRequirement
 } from './effect'
 
@@ -101,6 +104,10 @@ export type {
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
   RuntimeServiceResolveEvent,
+  RuntimeTaskEndEvent,
+  RuntimeTaskInspection,
+  RuntimeTaskMetadata,
+  RuntimeTaskStartEvent,
   RuntimeRunOptions,
   RuntimeShutdownDiagnostic
 } from './runtime'
