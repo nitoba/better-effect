@@ -1,6 +1,12 @@
-import { Layer, Service } from 'better-effect'
+import { Layer, Service, ServiceRuntime } from 'better-effect'
 
-import type { AnyService, ServiceClass, ServiceRequirement, ServiceToken } from 'better-effect'
+import type {
+  AnyService,
+  AnyServiceToken,
+  ServiceClass,
+  ServiceRequirement,
+  ServiceToken
+} from 'better-effect'
 
 import type { BetterAuthEffectApi, BetterAuthOperation } from './effect-api'
 import { makeBetterAuthServiceValue } from './internal/make-service-value'
@@ -32,6 +38,11 @@ type BetterAuthTokenMembers<
   Required extends AnyService
 > = {
   readonly layer: Layer<BetterAuthServiceInstance<Tag, Auth>, Required>
+  readonly [Symbol.iterator]: () => Generator<
+    ServiceRequirement<BetterAuthServiceInstance<Tag, Auth>>,
+    BetterAuthServiceInstance<Tag, Auth>,
+    unknown
+  >
   readonly [Symbol.asyncIterator]: () => AsyncGenerator<
     ServiceRequirement<BetterAuthServiceInstance<Tag, Auth>>,
     BetterAuthServiceInstance<Tag, Auth>,
@@ -60,7 +71,7 @@ export type BetterAuthFactoryServiceToken<
   Tag extends string,
   Auth extends BetterAuthInstance,
   Required extends AnyService = never
-> = BetterAuthServiceToken<Tag, Auth, Required>
+> = BetterAuthToken<Tag, Auth, Required>
 
 type BetterAuthLiteralTag<Tag extends string> = string extends Tag
   ? never
@@ -96,6 +107,14 @@ const isAsyncGenerator = <Yield, Auth>(
   iterator: Generator<Yield, Auth, unknown> | AsyncGenerator<Yield, Auth, unknown>
 ): iterator is AsyncGenerator<Yield, Auth, unknown> => Symbol.asyncIterator in iterator
 
+/* oxlint-disable anti-slop/no-unknown-parameters -- Generator values are validated at this private runtime boundary. */
+/* oxlint-disable anti-slop/no-runtime-typeof -- Generator values are validated at this private runtime boundary. */
+const isServiceToken = (value: unknown): value is AnyServiceToken => {
+  return (
+    typeof value === 'function' && 'serviceTag' in value && typeof value.serviceTag === 'string'
+  )
+}
+
 const runGeneratorFactory = async function* <
   Yield extends BetterAuthFactoryYield,
   Auth extends BetterAuthInstance
@@ -106,11 +125,18 @@ const runGeneratorFactory = async function* <
     return yield* iterator
   }
 
-  const state = iterator.next()
+  let state = iterator.next()
 
-  if (!state.done) {
-    yield state.value
-    throw new TypeError('Better Auth raw factories may only yield contextual Services')
+  while (!state.done) {
+    if (!isServiceToken(state.value)) {
+      throw new TypeError('Better Auth raw factories may only yield contextual Services')
+    }
+
+    // SAFETY: Service's synchronous iterator yields its token as a declaration-only requirement marker.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the Service iterator's runtime token is represented by a phantom yield type.
+    const token = state.value as unknown as AnyServiceToken
+    const resolved = await ServiceRuntime.resolve(token)
+    state = iterator.next(resolved)
   }
 
   return state.value

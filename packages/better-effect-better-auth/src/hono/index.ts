@@ -66,6 +66,13 @@ export type BetterAuthHonoSessionToken<
   AuthTag extends string,
   Auth extends BetterAuthInstance
 > = ServiceClass<Tag, BetterAuthHonoSessionInstance<Tag, Auth>> & {
+  readonly [Symbol.iterator]: (
+    this: import('better-effect').ServiceToken<Tag, BetterAuthHonoSessionInstance<Tag, Auth>>
+  ) => Generator<
+    ServiceRequirement<BetterAuthHonoSessionInstance<Tag, Auth>>,
+    BetterAuthHonoSessionInstance<Tag, Auth>,
+    unknown
+  >
   readonly requestLayer: (
     context: HonoContext
   ) => BetterAuthHonoSessionRequestLayer<Tag, AuthTag, Auth>
@@ -257,7 +264,8 @@ function betterAuthHonoSession<
   }
 
   // SAFETY: Service's static iterator is supplied by the factory; the cast restores the additional public helpers attached below.
-  const token = CurrentAuthSession as BetterAuthHonoSessionToken<Tag, AuthTag, Auth>
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the class gains request helpers below through the returned token API.
+  const token = CurrentAuthSession as unknown as BetterAuthHonoSessionToken<Tag, AuthTag, Auth>
 
   const requestLayer = (
     context: HonoContext

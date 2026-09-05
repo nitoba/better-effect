@@ -293,6 +293,54 @@ describe('BetterAuth.service', () => {
   })
 })
 
+describe('BetterAuth.make', () => {
+  test('forwards contextual Services through a synchronous generator factory', async () => {
+    class AuthConfig extends Service<AuthConfig>()('@test/SyncAuthConfig') {
+      readonly auth = new FakeAuth()
+    }
+
+    class AuthLabel extends Service<AuthLabel>()('@test/SyncAuthLabel') {
+      readonly value = 'sync'
+    }
+
+    let factoryCalls = 0
+    const Auth = BetterAuth.make('@test/SyncFactoryAuth', function* () {
+      const config = yield* AuthConfig
+      const label = yield* AuthLabel
+      factoryCalls += 1
+      if (label.value !== 'sync') {
+        throw new Error('Unexpected contextual label')
+      }
+      return config.auth
+    })
+    const config = new AuthConfig()
+    const label = new AuthLabel()
+    const runtime = await Runtime.make(
+      Layer.merge(Layer.succeed(AuthConfig, config), Layer.succeed(AuthLabel, label), Auth.layer)
+    )
+
+    try {
+      expect(factoryCalls).toBe(0)
+
+      const result = await runtime.run(
+        Effect.fn(async function* () {
+          const auth = yield* Auth
+          return Result.ok(auth)
+        })
+      )
+
+      expect(factoryCalls).toBe(1)
+      expect(Result.isOk(result)).toBe(true)
+
+      if (Result.isOk(result)) {
+        expect(result.value.raw).toBe(config.auth)
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+})
+
 describe('BetterAuth.make and BetterAuth.from', () => {
   test('keeps generator factories lazy and acquires one raw instance per Runtime', async () => {
     class AuthConfig extends Service<AuthConfig>()('@test/AuthConfig') {
@@ -310,7 +358,7 @@ describe('BetterAuth.make and BetterAuth.from', () => {
     const layer = Layer.merge(Layer.make(AuthConfig), Auth.layer)
 
     expect(factoryCalls).toBe(0)
-    expect(() => new Auth()).toThrow('factory-backed Better Auth Service')
+    expect(() => Reflect.construct(Auth, [])).toThrow('factory-backed Better Auth Service')
 
     const firstRuntime = await Runtime.make(layer)
     const first = await Promise.all([

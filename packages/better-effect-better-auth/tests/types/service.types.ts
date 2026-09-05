@@ -58,6 +58,11 @@ type Session = typeof rawAuth.$Infer.Session
 
 const constructed = new Auth()
 expectTypeOf(constructed).toEqualTypeOf<AuthInstance>()
+
+declare const generatedValue: GeneratedAuthInstance
+void Layer.succeed(GeneratedAuth, generatedValue)
+// @ts-expect-error factory-backed Better Auth tokens are not constructible.
+new GeneratedAuth()
 expectTypeOf(Auth.serviceTag).toEqualTypeOf<'@app/Auth'>()
 expectTypeOf(OtherAuth.serviceTag).toEqualTypeOf<'@app/OtherAuth'>()
 expectTypeOf<Layer.Provided<typeof Auth.layer>>().toEqualTypeOf<AuthInstance>()

@@ -1,11 +1,11 @@
 import type { InferYieldRequirements, ServiceRequirement } from '../effect/types'
-import type { ServiceClass, ServiceContract, ServiceRequirements } from '../service'
+import type { ServiceContract, ServiceRequirements, ServiceToken } from '../service'
 import type { MaybePromise } from '../utils/types'
 
 /** Runtime-facing provider registration supplied by a Layer backend. */
 export interface LayerRegistration {
   /** The class-backed Service token provided by this registration. */
-  readonly service: ServiceClass<any, any>
+  readonly service: ServiceToken<any, any>
 
   /**
    * The canonical tag captured when the provider was created.
@@ -22,12 +22,12 @@ export interface LayerRegistration {
 
 /** Generator shape used by `Layer.gen` and `Layer.scopedGen`. */
 export type LayerGenerator<
-  S extends ServiceClass<any, any>,
+  S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown> = ServiceRequirement<unknown>
 > = () => AsyncGenerator<Yield, ServiceContract<InstanceType<S>>, unknown>
 
 /** Service requirements inferred from a provider's methods and generator. */
 export type LayerGeneratorRequirements<
-  S extends ServiceClass<any, any>,
+  S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown>
 > = ServiceRequirements<InstanceType<S>> | InferYieldRequirements<Yield>
