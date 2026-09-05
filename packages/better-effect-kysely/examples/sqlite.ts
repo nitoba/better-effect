@@ -6,7 +6,7 @@ import { makeSqliteDatabase, type ExampleSchema } from './sqlite-support'
 
 const Database = KyselyEffect.service<ExampleSchema>()('@example/sqlite/Database')
 const { database, native } = makeSqliteDatabase()
-const runtime = await Runtime.make(Database.layer(() => database))
+const runtime = await Runtime.make(Database.scoped(() => database))
 
 try {
   const result = await runtime.run(

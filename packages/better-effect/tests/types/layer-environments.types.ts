@@ -42,10 +42,22 @@ const RepositoryLive = Layer.gen(UserRepository, async function* () {
   return new UserRepository()
 })
 
+const SyncRepositoryLive = Layer.gen(UserRepository, function* () {
+  const database = yield* Database
+  const config = yield* Config
+
+  void database
+  void config
+
+  return new UserRepository()
+})
+
 expectTypeOf<Layer.Provided<typeof DatabaseLive>>().toEqualTypeOf<Database>()
 expectTypeOf<Layer.Required<typeof DatabaseLive>>().toBeNever()
 expectTypeOf<Layer.Provided<typeof RepositoryLive>>().toEqualTypeOf<UserRepository>()
 expectTypeOf<Layer.Required<typeof RepositoryLive>>().toEqualTypeOf<Database | Config | Logger>()
+expectTypeOf<Layer.Provided<typeof SyncRepositoryLive>>().toEqualTypeOf<UserRepository>()
+expectTypeOf<Layer.Required<typeof SyncRepositoryLive>>().toEqualTypeOf<Database | Config>()
 
 const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
 

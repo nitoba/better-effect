@@ -1,12 +1,31 @@
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { Result } from 'better-result'
+import type { Kysely } from 'kysely'
 import { KyselyEffect } from 'better-effect-kysely'
 
 import { makeSqliteDatabase, type ExampleSchema } from './sqlite-support'
 
 const Database = KyselyEffect.service<ExampleSchema>()('@example/borrowed/Database')
 const { database, native } = makeSqliteDatabase()
-const runtime = await Runtime.make(Database.succeed(database))
+
+class DatabasePool extends Service<DatabasePool>()('@example/borrowed/DatabasePool') {
+  constructor(readonly database: Kysely<ExampleSchema>) {
+    super()
+  }
+}
+
+const pool = new DatabasePool(database)
+const runtime = await Runtime.make(
+  Layer.complete(
+    Layer.merge(
+      Layer.succeed(DatabasePool, pool),
+      Database.borrowed(function* () {
+        const shared = yield* DatabasePool
+        return shared.database
+      })
+    )
+  )
+)
 
 const result = await runtime.run(
   Effect.fn(async function* () {

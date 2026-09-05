@@ -100,23 +100,26 @@ yieldable: use one of the explicit `$call` terminals described below.
 
 ## Owned and borrowed lifecycle
 
-Choose ownership when defining the Layer:
+Choose ownership when defining the Layer. The factory is lazy and runs only
+when the Runtime first resolves the provider:
 
-| Helper                           | Runtime behavior                                              | Who calls `destroy()`?       |
-| -------------------------------- | ------------------------------------------------------------- | ---------------------------- |
-| `Database.layer(() => database)` | Acquires lazily and owns the Kysely instance                  | Runtime root during shutdown |
-| `Database.succeed(database)`     | Provides an existing instance without acquiring or closing it | The caller                   |
+| Origin of the Kysely instance                            | API                          | Who calls `destroy()`?       |
+| -------------------------------------------------------- | ---------------------------- | ---------------------------- |
+| The Layer creates and owns the instance                  | `Database.scoped(factory)`   | Runtime root during shutdown |
+| The factory borrows a pool/driver owned by another Layer | `Database.borrowed(factory)` | The pool/driver owner        |
+| The caller already has the instance                      | `Database.succeed(database)` | The caller                   |
+| Existing owned API                                       | `Database.layer(factory)`    | Runtime root during shutdown |
 
-An owned Layer is useful when the application creates the database as part of
-its composition root. A borrowed Layer is useful for tests, a host-managed
-pool, or an instance shared by another subsystem. Do not use `succeed` for a
-resource the Runtime must close, and do not use `layer` when the caller still
-owns the resource.
+Use `scoped` when the Layer creates the database and must close it. Use
+`borrowed` when Kysely is a facade over a pool or driver owned by another
+Service, such as a shared pool also used by an authentication subsystem. Use
+`succeed` for an already-created caller-owned value. Ownership is explicit and
+is never inferred from the Kysely type.
 
 ```ts
 import { Runtime } from 'better-effect'
 
-const ownedRuntime = await Runtime.make(Database.layer(() => database))
+const ownedRuntime = await Runtime.make(Database.scoped(() => database))
 await ownedRuntime.dispose() // calls database.destroy()
 
 const borrowedRuntime = await Runtime.make(Database.succeed(database))
@@ -124,9 +127,30 @@ await borrowedRuntime.dispose() // leaves database usable
 await database.destroy() // caller cleanup
 ```
 
-`layer` acquisition is lazy and occurs once per Runtime. Cleanup follows the
-normal root `Scope`, including shutdown after failed executions. The native
-Kysely instance and its private state remain untouched.
+Contextual factories can resolve other Services with `yield*`, in either a sync
+or async generator. Their requirements become `Layer.Required`:
+
+```ts
+class DatabasePool extends Service<DatabasePool>()('@app/DatabasePool') {
+  constructor(readonly raw: Pool) {
+    super()
+  }
+}
+
+const DatabaseLive = Database.borrowed(function* () {
+  const pool = yield* DatabasePool
+  return new Kysely<AppDatabase>({ dialect: makeDialect(pool.raw) })
+})
+```
+
+`scoped` registers `database.destroy()` exactly once after child executions
+finish. `borrowed` and `succeed` never register a destroy finalizer, so a
+shared pool remains open until its owning Layer releases it. The native Kysely
+instance and its private state remain untouched.
+
+`layer(factory)` remains temporarily available as a deprecated alias for
+`scoped(factory)`. Migrate owned resources to `scoped`; do not use `layer` for
+borrowed resources.
 
 ## Execute queries
 
@@ -340,8 +364,8 @@ const PrimaryDatabase = KyselyEffect.service<PrimarySchema>()('@app/PrimaryDatab
 const AnalyticsDatabase = KyselyEffect.service<AnalyticsSchema>()('@app/AnalyticsDatabase')
 
 const AppLive = Layer.merge(
-  PrimaryDatabase.layer(createPrimaryDatabase),
-  AnalyticsDatabase.layer(createAnalyticsDatabase)
+  PrimaryDatabase.scoped(createPrimaryDatabase),
+  AnalyticsDatabase.scoped(createAnalyticsDatabase)
 )
 ```
 

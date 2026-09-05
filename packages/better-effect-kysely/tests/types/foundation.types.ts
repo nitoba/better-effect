@@ -3,6 +3,7 @@ import {
   Effect,
   Layer,
   Runtime,
+  Service,
   ServiceRuntime,
   type RuntimeFor,
   type ServiceRequirement
@@ -44,8 +45,42 @@ expectTypeOf<typeof Database>().toEqualTypeOf<NamespacedToken>()
 expectTypeOf(Database.serviceTag).toEqualTypeOf<'@app/Database'>()
 const database = Database.of(raw)
 expectTypeOf(database).toEqualTypeOf<DatabaseInstance>()
+
+class Config extends Service<Config>()('@app/Config') {
+  constructor(readonly database: Kysely<DatabaseSchema>) {
+    super()
+  }
+}
+type ConfigInstance = Service.Instance<typeof Config>
+
+const syncScoped = Database.scoped(function* () {
+  const config = yield* Config
+  expectTypeOf(config).toEqualTypeOf<ConfigInstance>()
+  return raw
+})
+expectTypeOf<Layer.Provided<typeof syncScoped>>().toEqualTypeOf<DatabaseInstance>()
+expectTypeOf<Layer.Required<typeof syncScoped>>().toEqualTypeOf<ConfigInstance>()
+
+const asyncScoped = Database.scoped(async function* () {
+  const config = yield* Config
+  expectTypeOf(config).toEqualTypeOf<ConfigInstance>()
+  await Promise.resolve()
+  return raw
+})
+expectTypeOf<Layer.Provided<typeof asyncScoped>>().toEqualTypeOf<DatabaseInstance>()
+expectTypeOf<Layer.Required<typeof asyncScoped>>().toEqualTypeOf<ConfigInstance>()
+
+const syncBorrowed = Database.borrowed(function* () {
+  const config = yield* Config
+  return config.database
+})
+expectTypeOf<Layer.Provided<typeof syncBorrowed>>().toEqualTypeOf<DatabaseInstance>()
+expectTypeOf<Layer.Required<typeof syncBorrowed>>().toEqualTypeOf<ConfigInstance>()
+
 expectTypeOf(Database.layer(() => raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
 expectTypeOf(Database.succeed(raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
+expectTypeOf(Database.scoped(() => raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
+expectTypeOf(Database.borrowed(() => raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
 expectTypeOf<Layer.Provided<ReturnType<typeof Database.layer>>>().toEqualTypeOf<DatabaseInstance>()
 expectTypeOf<Layer.Required<ReturnType<typeof Database.layer>>>().toBeNever()
 expectTypeOf<

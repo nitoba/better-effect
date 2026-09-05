@@ -1,4 +1,4 @@
-import type { EffectRequirements } from '../effect/types'
+import type { EffectRequirements, ServiceRequirement } from '../effect/types'
 
 /** Internal type-only identity for the branded Service instance. */
 export declare const ServiceIdentityTypeId: unique symbol
@@ -17,6 +17,13 @@ export type ServiceContract<S> = S extends unknown ? Omit<S, typeof ServiceIdent
 export type ServiceStatics<out Tag extends string, in out Instance extends AnyService> = {
   readonly name: string
   readonly serviceTag: Tag
+
+  readonly [Symbol.iterator]: () => Generator<ServiceRequirement<Instance>, Instance, unknown>
+  readonly [Symbol.asyncIterator]: () => AsyncGenerator<
+    ServiceRequirement<Instance>,
+    Instance,
+    unknown
+  >
 
   /** Type-check a structural implementation and return it unchanged. */
   readonly of: (this: void, implementation: ServiceContract<Instance>) => Instance

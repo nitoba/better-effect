@@ -3,7 +3,7 @@
 
 import { Layer, Service } from 'better-effect'
 
-import type { ServiceClass } from 'better-effect'
+import type { ServiceRequirement } from 'better-effect'
 
 import { execute, executeWith } from './execute'
 import { executeQuery } from './execute-query'
@@ -24,6 +24,51 @@ import type {
   KyselyServiceTag,
   KyselyServiceToken
 } from './types'
+import { layerTokenFor } from './internal/layer-token'
+
+type KyselyServiceValueFactory<DB> = () => KyselyService<DB> | PromiseLike<KyselyService<DB>>
+
+type KyselyServiceGenerator<DB, Yield extends ServiceRequirement<unknown>> = () =>
+  | Generator<Yield, KyselyService<DB>, unknown>
+  | AsyncGenerator<Yield, KyselyService<DB>, unknown>
+
+type KyselyYieldRequirements<Yield> =
+  Yield extends ServiceRequirement<infer Requirement>
+    ? Requirement extends Service.Any
+      ? Requirement
+      : never
+    : never
+
+type KyselyServiceFactoryInput<DB, Yield extends ServiceRequirement<unknown>> =
+  | KyselyServiceValueFactory<DB>
+  | KyselyServiceGenerator<DB, Yield>
+
+type KyselyGeneratorResult<DB> =
+  | Generator<ServiceRequirement<unknown>, KyselyService<DB>, unknown>
+  | AsyncGenerator<ServiceRequirement<unknown>, KyselyService<DB>, unknown>
+
+const isGeneratorResult = <DB>(
+  value: KyselyService<DB> | PromiseLike<KyselyService<DB>> | KyselyGeneratorResult<DB>
+): value is KyselyGeneratorResult<DB> =>
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- This boundary distinguishes a lazy generator object from a Kysely value or Promise without invoking either.
+  typeof value === 'object' &&
+  value !== null &&
+  'next' in value &&
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Generator objects expose a callable next protocol.
+  typeof value.next === 'function'
+
+const normalizeFactory = <DB, Yield extends ServiceRequirement<unknown>>(
+  factory: KyselyServiceFactoryInput<DB, Yield>
+): (() => AsyncGenerator<Yield, KyselyService<DB>, unknown>) =>
+  async function* () {
+    const result = factory()
+
+    if (isGeneratorResult(result)) {
+      return yield* result
+    }
+
+    return await result
+  }
 
 /** Type of the curried Kysely Service factory. */
 export type KyselyServiceFactory<DB> = <const Tag extends string>(
@@ -33,8 +78,9 @@ export type KyselyServiceFactory<DB> = <const Tag extends string>(
 /**
  * Create a yieldable Service token for a Kysely database schema.
  *
- * The returned token is intentionally not constructible. Use `token.layer` for
- * a Runtime-owned database or `token.succeed` for a caller-owned database.
+ * The returned token is intentionally not constructible. Use `token.scoped` for
+ * a Runtime-owned database, or `token.borrowed`/`token.succeed` for caller-owned
+ * databases.
  */
 export function service<DB>(): KyselyServiceFactory<DB> {
   return function <const Tag extends string>(tag: KyselyServiceTag<Tag>) {
@@ -46,22 +92,69 @@ export function service<DB>(): KyselyServiceFactory<DB> {
     const token = class extends (baseToken as unknown as new () => Service.Identity<Tag>) {
       constructor() {
         super()
-        throw new TypeError('Kysely Service tokens are not constructible; use layer or succeed')
+        throw new TypeError(
+          'Kysely Service tokens are not constructible; use scoped, borrowed or succeed'
+        )
       }
     }
-    // SAFETY: Layer only calls the captured token for identity and resolution; the public token remains abstract and non-constructible.
-    const layerToken = token as unknown as ServiceClass<Tag, Instance>
+    // SAFETY: This is the single internal Service/Layer erasure boundary for the non-constructible token.
+    const layerToken = layerTokenFor(token as unknown as KyselyServiceToken<Tag, DB>)
 
-    const ownedLayer = (
-      acquire: () => KyselyService<DB> | PromiseLike<KyselyService<DB>>
-    ): Layer<Instance, never> => {
-      const layer = Layer.scoped(layerToken, acquire, (database) => database.destroy())
+    const makeScopedLayer = <Yield extends ServiceRequirement<unknown>>(
+      factory: KyselyServiceFactoryInput<DB, Yield>
+    ): Layer<Instance, KyselyYieldRequirements<Yield>> => {
+      const layer = Layer.scopedGen(layerToken, normalizeFactory(factory), (database) =>
+        database.destroy()
+      )
 
       // SAFETY: Kysely's generic builder methods can look like unresolved Effect metadata to Layer's conditional type; Kysely itself has no better-effect requirements.
-      return layer as Layer<Instance, never>
+      return layer as Layer<Instance, KyselyYieldRequirements<Yield>>
     }
 
-    const borrowedLayer = (database: KyselyService<DB>): Layer<Instance, never> => {
+    const makeBorrowedLayer = <Yield extends ServiceRequirement<unknown>>(
+      factory: KyselyServiceFactoryInput<DB, Yield>
+    ): Layer<Instance, KyselyYieldRequirements<Yield>> => {
+      const layer = Layer.gen(layerToken, normalizeFactory(factory))
+
+      // SAFETY: Kysely's generic builder methods can look like unresolved Effect metadata to Layer's conditional type; Kysely itself has no better-effect requirements.
+      return layer as Layer<Instance, KyselyYieldRequirements<Yield>>
+    }
+
+    function scoped<Yield extends ServiceRequirement<unknown>>(
+      factory: KyselyServiceGenerator<DB, Yield>
+    ): Layer<Instance, KyselyYieldRequirements<Yield>>
+    function scoped(factory: KyselyServiceValueFactory<DB>): Layer<Instance, never>
+    function scoped(
+      factory: KyselyServiceFactoryInput<DB, ServiceRequirement<unknown>>
+    ): Layer<Instance, Service.Any> {
+      return makeScopedLayer(factory)
+    }
+
+    function borrowed<Yield extends ServiceRequirement<unknown>>(
+      factory: KyselyServiceGenerator<DB, Yield>
+    ): Layer<Instance, KyselyYieldRequirements<Yield>>
+    function borrowed(factory: KyselyServiceValueFactory<DB>): Layer<Instance, never>
+    function borrowed(
+      factory: KyselyServiceFactoryInput<DB, ServiceRequirement<unknown>>
+    ): Layer<Instance, Service.Any> {
+      return makeBorrowedLayer(factory)
+    }
+
+    /**
+     * @deprecated Use scoped(factory) for Runtime-owned Kysely or
+     * borrowed(factory)/succeed(value) for caller-owned resources.
+     */
+    function layer<Yield extends ServiceRequirement<unknown>>(
+      factory: KyselyServiceGenerator<DB, Yield>
+    ): Layer<Instance, KyselyYieldRequirements<Yield>>
+    function layer(factory: KyselyServiceValueFactory<DB>): Layer<Instance, never>
+    function layer(
+      factory: KyselyServiceFactoryInput<DB, ServiceRequirement<unknown>>
+    ): Layer<Instance, Service.Any> {
+      return makeScopedLayer(factory)
+    }
+
+    const succeed = (database: KyselyService<DB>): Layer<Instance, never> => {
       const layer = Layer.succeed(layerToken, database)
 
       // SAFETY: Kysely's generic builder methods can look like unresolved Effect metadata to Layer's conditional type; Kysely itself has no better-effect requirements.
@@ -69,16 +162,28 @@ export function service<DB>(): KyselyServiceFactory<DB> {
     }
 
     Object.defineProperties(token, {
+      borrowed: {
+        configurable: false,
+        enumerable: true,
+        value: borrowed,
+        writable: false
+      },
       layer: {
         configurable: false,
         enumerable: true,
-        value: ownedLayer,
+        value: layer,
+        writable: false
+      },
+      scoped: {
+        configurable: false,
+        enumerable: true,
+        value: scoped,
         writable: false
       },
       succeed: {
         configurable: false,
         enumerable: true,
-        value: borrowedLayer,
+        value: succeed,
         writable: false
       }
     })

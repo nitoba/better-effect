@@ -10,7 +10,7 @@ class RollbackRequested extends TaggedError('RollbackRequested')<{
 
 const Database = KyselyEffect.service<ExampleSchema>()('@example/transactions/Database')
 const { database, native } = makeSqliteDatabase()
-const runtime = await Runtime.make(Database.layer(() => database))
+const runtime = await Runtime.make(Database.scoped(() => database))
 
 try {
   const committed = await runtime.run(

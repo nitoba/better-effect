@@ -31,6 +31,9 @@ interface ServiceFactory<Self> {
     readonly serviceTag: Tag
   } & {
     readonly of: Service.FactoryOf<Self, Tag>
+    readonly [Symbol.iterator]: (
+      this: ServiceToken<Tag, Self & ServiceIdentity<Tag>>
+    ) => Generator<ServiceRequirement<Self>, Self, unknown>
     readonly [Symbol.asyncIterator]: (
       this: ServiceToken<Tag, Self & ServiceIdentity<Tag>>
     ) => AsyncGenerator<ServiceRequirement<Self>, Self, unknown>
@@ -94,6 +97,18 @@ export function Service<Self>(): ServiceFactory<Self> {
       static of(this: void, implementation: ServiceContract<Self & ServiceIdentity<Tag>>): Self {
         // SAFETY: ServiceContract removes only the phantom marker; this boundary restores Self.
         return implementation as Self
+      }
+
+      /** Resolve this Service from a synchronous generator through its Layer runtime. */
+      static *[Symbol.iterator](
+        this: ServiceToken<Tag, Self & ServiceIdentity<Tag>>
+      ): Generator<ServiceRequirement<Self>, Self, unknown> {
+        // SAFETY: Layer's synchronous generator runner replaces this token yield with the resolved Service instance.
+        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The requirement marker is declaration-only and has no runtime representation.
+        const resolved = yield this as unknown as ServiceRequirement<Self>
+
+        // SAFETY: The runner resumes this iterator only with the token's InstanceType.
+        return resolved as Self
       }
 
       /** Resolve this Service from the resolver active in the current runtime. */

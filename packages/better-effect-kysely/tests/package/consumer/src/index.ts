@@ -1,4 +1,4 @@
-import { Effect, Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { Effect, Layer, Runtime, Service, ServiceRuntime } from 'better-effect'
 import { Result } from 'better-result'
 import { Kysely, sql } from 'kysely'
 import type { CompiledQuery, QueryResult } from 'kysely'
@@ -21,11 +21,29 @@ interface DatabaseSchema {
 const Database = KyselyEffect.service<DatabaseSchema>()('@external/Database')
 declare const database: Kysely<DatabaseSchema>
 
+class DatabasePool extends Service<DatabasePool>()('@external/DatabasePool') {
+  constructor(readonly database: Kysely<DatabaseSchema>) {
+    super()
+  }
+}
+
+declare const pool: DatabasePool
+const contextualBorrowed = Database.borrowed(function* () {
+  const shared = yield* DatabasePool
+  return shared.database
+})
+const contextualApp = Layer.complete(
+  Layer.merge(Layer.succeed(DatabasePool, pool), contextualBorrowed)
+)
+
 type ExpectedInstance = KyselyServiceInstance<'@external/Database', DatabaseSchema>
 expectToken(Database)
 expectInstance(Database.of(database))
 expectLayer(Database.layer(() => database))
+expectLayer(Database.scoped(() => database))
+expectLayer(Database.borrowed(() => database))
 expectLayer(Database.succeed(database))
+void contextualApp
 const query = database.selectFrom('users').selectAll()
 const executeOperation: KyselyOperation<DatabaseSchema['users'][], KyselyQueryError> = query.$call(
   KyselyEffect.execute

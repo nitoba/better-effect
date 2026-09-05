@@ -27,4 +27,8 @@ schema codecs and repository abstractions remain outside the package.
 
 ## Unreleased
 
-Future changes will be recorded here without promising a release date.
+- Add lazy `scoped` and `borrowed` Kysely factories with sync/async contextual
+  Service requirements.
+- Keep `succeed` caller-owned and make `layer` a deprecated alias of `scoped`.
+- Preserve Kysely schema/query/transaction inference and add shared-pool
+  ownership guidance.

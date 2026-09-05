@@ -75,7 +75,7 @@ const makeDatabase = async () => {
 
 const { native, database } = await makeDatabase()
 const Database = KyselyEffect.service()('@external-sqlite/Database')
-const runtime = await Runtime.make(Database.layer(() => database))
+const runtime = await Runtime.make(Database.scoped(() => database))
 
 const result = await runtime.run(
   Effect.fn(async function* () {
