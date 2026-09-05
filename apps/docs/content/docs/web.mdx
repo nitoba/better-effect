@@ -14,8 +14,8 @@ storage implementation.
 
 ## Handle a request
 
-Create a long-lived Runtime during application startup, then call
-`WebEffect.handle` from your framework's request callback:
+Create a long-lived Runtime during application startup, then pass its
+non-owning executor to `WebEffect.handleWith` from your framework's request callback:
 
 ```ts
 import { Result } from 'better-result'
@@ -32,8 +32,8 @@ class UserService extends Service<UserService>()('UserService') {
 const runtime = await Runtime.make(Layer.make(UserService))
 
 const handleRequest = (request: Request): Promise<Response> =>
-  WebEffect.handle(
-    runtime,
+  WebEffect.handleWith(
+    runtime.executor,
     request,
     Effect.fn(async function* () {
       const currentRequest = yield* CurrentRequest
@@ -55,7 +55,7 @@ const response = await handleRequest(new Request('https://example.test/users'))
 await runtime.dispose()
 ```
 
-`WebEffect.handle` invokes the lazy Program once. It supplies
+`WebEffect.handleWith` invokes the lazy Program once. It supplies
 `CurrentRequest` for the current request and forwards `request.signal` to
 `CurrentAbortSignal`. The request execution uses a child Scope; resources
 acquired by the Program are released before the returned Promise resolves.
@@ -130,8 +130,8 @@ class RequestId extends Service<RequestId>()('RequestId') {
   }
 }
 
-const response = await WebEffect.handle(
-  runtime,
+const response = await WebEffect.handleWith(
+  runtime.executor,
   request,
   Effect.fn(async function* () {
     const requestId = yield* RequestId
@@ -202,7 +202,7 @@ malformed value is rejected with `TypeError` before it is returned.
 Provide asynchronous policies when a framework needs its own response helper:
 
 ```ts
-const response = await WebEffect.handle(runtime, request, program, {
+const response = await WebEffect.handleWith(runtime.executor, request, program, {
   onSuccess: async ({ value }) => Response.json(value, { status: 201 }),
   onFailure: async (error) => {
     console.error(error)

@@ -88,6 +88,29 @@ test('WebEffect runs a lazy Program with CurrentRequest and the linked signal', 
   }
 })
 
+test('WebEffect.handleWith runs through a Runtime executor', async () => {
+  const runtime = await makeRuntime()
+  let programRuns = 0
+
+  try {
+    const response = await WebEffect.handleWith(
+      runtime.executor,
+      request('/executor'),
+      Effect.fn(async function* () {
+        programRuns += 1
+        const currentRequest = yield* CurrentRequest
+
+        return Result.ok((currentRequest.request as Request).url)
+      })
+    )
+
+    expect(programRuns).toBe(1)
+    expect(await response.json()).toEqual({ data: 'https://example.test/executor' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('WebEffect maps typed failures safely and closes request resources first', async () => {
   const runtime = await makeRuntime()
   const failure = new DomainFailure('private details')

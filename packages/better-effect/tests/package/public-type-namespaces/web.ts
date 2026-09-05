@@ -36,6 +36,15 @@ const response = WebEffect.handle(runtime, new Request('https://example.test'), 
   requestLayer: () => requestLayer
 })
 
+const executorResponse = WebEffect.handleWith(
+  runtime.executor,
+  new Request('https://example.test'),
+  program,
+  {
+    requestLayer: () => requestLayer
+  }
+)
+
 const compatibleResponse = WebEffect.handle(
   runtime,
   new Request('https://example.test'),
@@ -62,6 +71,7 @@ const options: NamedOptions = {
 }
 
 void response
+void executorResponse
 void compatibleResponse
 void unchecked
 void options

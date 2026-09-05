@@ -628,8 +628,8 @@ import { CurrentRequest } from 'better-effect/standard-services'
 import { WebEffect } from 'better-effect/web'
 
 const handleRequest = (request: Request) =>
-  WebEffect.handle(
-    runtime,
+  WebEffect.handleWith(
+    runtime.executor,
     request,
     Effect.fn(async function* () {
       const currentRequest = yield* CurrentRequest
@@ -646,7 +646,7 @@ const handleRequest = (request: Request) =>
   )
 ```
 
-`WebEffect.handle` supplies `CurrentRequest`, forwards `request.signal`, and
+`WebEffect.handleWith` supplies `CurrentRequest`, forwards `request.signal`, and
 runs one lazy Program in a child Scope. Request-local resources are released
 before the returned Promise resolves; Runtime-root resources remain owned by
 the Runtime. A `requestLayer` option can add per-request providers or

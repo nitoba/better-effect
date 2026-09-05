@@ -44,6 +44,8 @@ class IncompatibleRootBoundary extends Service<IncompatibleRootBoundary>()('WebR
 const runtime = {} as Runtime<Available>
 // SAFETY: This declaration-only fixture never executes a Runtime.
 const rootBoundaryRuntime = {} as Runtime<RootBoundaryService>
+// SAFETY: This declaration-only fixture never executes an executor.
+const executor = {} as Runtime.Executor<Available>
 
 const program = Effect.fn(async function* () {
   const available = yield* Available
@@ -79,6 +81,56 @@ const response = WebEffect.handle(runtime, new Request('https://example.test'), 
 })
 
 expectTypeOf(response).toEqualTypeOf<Promise<Response>>()
+
+const executorResponse = WebEffect.handleWith(
+  executor,
+  new Request('https://example.test'),
+  Effect.fn(async function* () {
+    const currentRequest = yield* CurrentRequest
+    const available = yield* Available
+
+    return Result.ok({
+      url: (currentRequest.request as Request).url,
+      value: available
+    })
+  }),
+  {
+    onSuccess: ({ value }) => {
+      expectTypeOf(value).toEqualTypeOf<{ url: string; value: Available }>()
+      return new Response(value.url)
+    }
+  }
+)
+
+expectTypeOf(executorResponse).toEqualTypeOf<Promise<Response>>()
+
+const executorRequestResponse = WebEffect.handleWith(
+  executor,
+  new Request('https://example.test'),
+  Effect.fn(async function* () {
+    const requestValue = yield* RequestValue
+    return Result.ok(requestValue.value)
+  }),
+  {
+    requestLayer: () => requestLayer
+  }
+)
+
+expectTypeOf(executorRequestResponse).toEqualTypeOf<Promise<Response>>()
+
+const incompleteExecutor = {
+  runWith: () => Promise.resolve(new Response())
+}
+
+const invalidExecutor = WebEffect.handleWith(
+  // @ts-expect-error WebEffect requires the branded Runtime.Executor capability, not an arbitrary structural runner.
+  incompleteExecutor,
+  new Request('https://example.test'),
+  Effect.fn(async function* () {
+    return Result.ok('invalid')
+  })
+)
+void invalidExecutor
 
 const defaultResponse = WebEffect.handle(
   runtime,
@@ -178,6 +230,14 @@ const missingProgram = Effect.fn(async function* () {
   const missing = yield* Missing
   return Result.ok(missing)
 })
+
+const invalidExecutorProgram = WebEffect.handleWith(
+  executor,
+  new Request('https://example.test'),
+  // @ts-expect-error Executor WebEffect Programs cannot require a Service absent from the root/request Layers.
+  missingProgram
+)
+void invalidExecutorProgram
 
 const invalidProgram = WebEffect.handle(
   runtime,
