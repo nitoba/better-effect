@@ -2,6 +2,7 @@ import type { AnyServiceToken } from '../service'
 import type { Scope } from '../scope'
 import type { ScopeCloseError, ScopeOutcome } from '../scope'
 import type { MaybePromise } from '../utils/types'
+import type { ScopedTaskState } from '../effect/task'
 
 /** Event emitted after a Service resolution attempt settles. */
 export type RuntimeServiceResolveEvent = {
@@ -51,6 +52,27 @@ export type RuntimeExecutionEndEvent = RuntimeExecutionMetadata & {
   readonly durationMs: number
 }
 
+/** Metadata shared by the start and end events for one Scope-owned task. */
+export type RuntimeTaskMetadata = {
+  readonly taskId: string
+  /** The execution that created the task, omitted for root lifecycle tasks. */
+  readonly parentExecutionId?: string
+  readonly name?: string
+  readonly startedAt: number
+}
+
+/** Event emitted immediately before a Scope-owned task starts. */
+export type RuntimeTaskStartEvent = RuntimeTaskMetadata & {
+  readonly state: 'running'
+}
+
+/** Event emitted after a Scope-owned task settles and its child Scope closes. */
+export type RuntimeTaskEndEvent = RuntimeTaskMetadata & {
+  readonly state: Exclude<ScopedTaskState, 'running'>
+  /** Child Scope cleanup failure, without changing the task's primary state. */
+  readonly cleanupFailure?: ScopeCloseError
+}
+
 /** Event emitted after a Layer provider release callback settles. */
 export type RuntimeResourceReleaseEvent = {
   readonly service: AnyServiceToken
@@ -89,6 +111,8 @@ export type RuntimeObserver = {
   readonly onServiceAcquire?: (event: RuntimeServiceAcquireEvent) => MaybePromise<void>
   readonly onExecutionStart?: (event: RuntimeExecutionStartEvent) => MaybePromise<void>
   readonly onExecutionEnd?: (event: RuntimeExecutionEndEvent) => MaybePromise<void>
+  readonly onTaskStart?: (event: RuntimeTaskStartEvent) => MaybePromise<void>
+  readonly onTaskEnd?: (event: RuntimeTaskEndEvent) => MaybePromise<void>
   readonly onResourceRelease?: (event: RuntimeResourceReleaseEvent) => MaybePromise<void>
   readonly onLifecycleStart?: (event: RuntimeLifecycleStartEvent) => MaybePromise<void>
   readonly onLifecycleEnd?: (event: RuntimeLifecycleEndEvent) => MaybePromise<void>
@@ -109,6 +133,12 @@ export const RuntimeObserver = {
     },
     onExecutionEnd: (event) => {
       notifyRuntimeObservers(observers, (observer) => observer.onExecutionEnd, event)
+    },
+    onTaskStart: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onTaskStart, event)
+    },
+    onTaskEnd: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onTaskEnd, event)
     },
     onResourceRelease: (event) => {
       notifyRuntimeObservers(observers, (observer) => observer.onResourceRelease, event)

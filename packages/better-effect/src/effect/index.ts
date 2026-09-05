@@ -1,5 +1,7 @@
 export { Effect, Program } from './effect'
 export type { ProgramAllOptions } from './effect'
+export { forkScoped } from './task'
+export type { ScopedTask, ScopedTaskExit, ScopedTaskState } from './task'
 
 export {
   all,

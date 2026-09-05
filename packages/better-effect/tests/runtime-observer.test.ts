@@ -139,6 +139,8 @@ describe('RecordedRuntimeObserver', () => {
         serviceAcquisitions: [],
         executionStarts: [],
         executionEnds: [],
+        taskStarts: [],
+        taskEnds: [],
         resourceReleases: [],
         lifecycleStarts: [],
         lifecycleEnds: [],

@@ -30,6 +30,7 @@ import {
 } from '../runtime/outcome'
 
 import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
+import { RuntimeTaskSupervisor } from '../runtime/task'
 
 import { LayerDisposeError, LayerRegistrationError } from './errors'
 import { captureLayerRegistrationTag } from './registration'
@@ -435,6 +436,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private readonly shutdownController = new AbortController()
 
+  private readonly taskSupervisor: RuntimeTaskSupervisor
+
   private state: 'active' | 'disposing' | 'disposed' = 'active'
 
   private warmupState: RuntimeInspection['warmup'] = 'idle'
@@ -454,9 +457,17 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly lifecycleEntries: readonly LayerLifecycleEntry[]
   ) {
     this.serviceTags = Object.freeze([...serviceTags])
+    this.taskSupervisor = new RuntimeTaskSupervisor(
+      () => this.executionDependencies.createExecutionId(),
+      () => this.executionDependencies.now(),
+      this.observers,
+      this.onCleanupFailure
+    )
+    this.taskSupervisor.bindScope(this.rootScope)
   }
 
   inspect(): RuntimeInspection {
+    const tasks = this.taskSupervisor.inspect()
     const executions = Object.freeze(
       [...this.executions].map(({ metadata }) => {
         const inspection: MutableRuntimeExecutionInspection = {
@@ -477,6 +488,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       warmup: this.warmupState,
       activeExecutions: executions.length,
       executions,
+      activeTasks: tasks.length,
+      tasks,
       services: Object.freeze([...this.serviceTags]),
       shutdownSignalAborted: this.shutdownController.signal.aborted
     })
@@ -513,6 +526,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
     try {
       executionScope = this.rootScope.fork()
+      this.taskSupervisor.bindScope(executionScope)
     } catch (cause) {
       prepared.signalLink.dispose()
       throw cause
@@ -564,6 +578,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
     try {
       executionScope = this.rootScope.fork()
+      this.taskSupervisor.bindScope(executionScope)
     } catch (cause) {
       prepared.signalLink.dispose()
       throw cause

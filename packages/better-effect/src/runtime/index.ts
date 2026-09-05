@@ -14,7 +14,12 @@ export type { RuntimeExecutor } from './executor'
 
 export type { RuntimeContext, RuntimeContextStorage } from './context'
 
-export type { RuntimeExecutionInspection, RuntimeFor, RuntimeInspection } from './types'
+export type {
+  RuntimeExecutionInspection,
+  RuntimeFor,
+  RuntimeInspection,
+  RuntimeTaskInspection
+} from './types'
 
 export type {
   CleanupFailureObserver,
@@ -35,5 +40,8 @@ export type {
   RuntimeLifecycleStartEvent,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
-  RuntimeServiceResolveEvent
+  RuntimeServiceResolveEvent,
+  RuntimeTaskEndEvent,
+  RuntimeTaskMetadata,
+  RuntimeTaskStartEvent
 } from './observer'

@@ -2,7 +2,7 @@ import { ResourceNotDisposableError, ScopeCloseError, ScopeClosedError } from '.
 
 import { getDisposeFinalizer } from './disposable'
 
-import { runScoped } from './internal'
+import { registerScopeImplementation, runScoped } from './internal'
 
 import { ScopeRuntime } from './runtime'
 
@@ -44,11 +44,17 @@ class ScopeImpl implements CloseableScope {
 
   private readonly finalizers: ScopeFinalizer[] = []
 
+  private readonly preFinalizers: ScopeFinalizer[] = []
+
   private closePromise: Promise<void> | undefined
 
   private closeOutcome: ScopeOutcome | undefined
 
-  constructor(private parent?: ScopeImpl) {}
+  constructor(private parent?: ScopeImpl) {
+    registerScopeImplementation(this, {
+      addPreFinalizer: (finalizer) => this.addPreFinalizer(finalizer)
+    })
+  }
 
   fork(): CloseableScope {
     this.assertOpen()
@@ -158,6 +164,22 @@ class ScopeImpl implements CloseableScope {
   private async closeInternal(outcome: ScopeOutcome): Promise<void> {
     const failures: unknown[] = []
 
+    const preFinalizers = this.preFinalizers.splice(0)
+
+    for (let index = preFinalizers.length - 1; index >= 0; index--) {
+      const finalizer = preFinalizers[index]
+
+      if (!finalizer) {
+        continue
+      }
+
+      try {
+        await finalizer(outcome)
+      } catch (cause) {
+        failures.push(cause)
+      }
+    }
+
     const children = [...this.children]
 
     this.children.clear()
@@ -218,6 +240,11 @@ class ScopeImpl implements CloseableScope {
     if (this.closePromise) {
       throw new ScopeClosedError()
     }
+  }
+
+  private addPreFinalizer(finalizer: ScopeFinalizer): void {
+    this.assertOpen()
+    this.preFinalizers.push(finalizer)
   }
 }
 

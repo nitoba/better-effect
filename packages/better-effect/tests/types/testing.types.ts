@@ -74,6 +74,12 @@ expectTypeOf(graphOptions).toMatchTypeOf<RuntimeGraphObserverOptions>()
 expectTypeOf<RecordedRuntimeObserverSnapshot['executionStarts']>().toEqualTypeOf<
   readonly RuntimeExecutionStartEvent[]
 >()
+expectTypeOf<RecordedRuntimeObserverSnapshot['taskStarts']>().toEqualTypeOf<
+  readonly import('../../src').RuntimeTaskStartEvent[]
+>()
+expectTypeOf<RecordedRuntimeObserverSnapshot['taskEnds']>().toEqualTypeOf<
+  readonly import('../../src').RuntimeTaskEndEvent[]
+>()
 expectTypeOf<RecordedRuntimeObserverSnapshot['timeline']>().toEqualTypeOf<
   readonly RuntimeObserverEvent[]
 >()
