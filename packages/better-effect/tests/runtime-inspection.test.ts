@@ -133,6 +133,8 @@ describe('Runtime.inspect', () => {
         warmup: 'idle',
         activeExecutions: 0,
         executions: [],
+        activeTasks: 0,
+        tasks: [],
         services: ['inspection.database', 'inspection.repository'],
         shutdownSignalAborted: false
       })
@@ -142,6 +144,7 @@ describe('Runtime.inspect', () => {
       expect(initial.services.every((tag) => typeof tag === 'string')).toBe(true)
       expect(Object.isFrozen(initial)).toBe(true)
       expect(Object.isFrozen(initial.executions)).toBe(true)
+      expect(Object.isFrozen(initial.tasks)).toBe(true)
       expect(Object.isFrozen(initial.services)).toBe(true)
 
       const second = runtime.inspect()
@@ -157,6 +160,8 @@ describe('Runtime.inspect', () => {
         'warmup',
         'activeExecutions',
         'executions',
+        'activeTasks',
+        'tasks',
         'services',
         'shutdownSignalAborted'
       ])

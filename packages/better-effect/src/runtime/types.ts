@@ -2,12 +2,18 @@ import type { Layer } from '../layer/layer'
 import type { LayerInput } from '../layer/inference'
 
 import type { Runtime } from './runtime'
+import type { RuntimeTaskMetadata } from './observer'
 
 /** A detached diagnostic view of one active Runtime execution. */
 export type RuntimeExecutionInspection = {
   readonly executionId: string
   readonly name?: string
   readonly startedAt: number
+}
+
+/** A detached diagnostic view of one active Scope-owned task. */
+export type RuntimeTaskInspection = RuntimeTaskMetadata & {
+  readonly state: 'running'
 }
 
 /**
@@ -22,6 +28,8 @@ export type RuntimeInspection = {
   readonly warmup: 'idle' | 'running' | 'completed' | 'failed'
   readonly activeExecutions: number
   readonly executions: readonly RuntimeExecutionInspection[]
+  readonly activeTasks: number
+  readonly tasks: readonly RuntimeTaskInspection[]
   readonly services: readonly string[]
   readonly shutdownSignalAborted: boolean
 }

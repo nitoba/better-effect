@@ -7,7 +7,9 @@ import type {
   RuntimeObserver,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
-  RuntimeServiceResolveEvent
+  RuntimeServiceResolveEvent,
+  RuntimeTaskEndEvent,
+  RuntimeTaskStartEvent
 } from '../runtime/observer'
 
 /** Every event emitted by a Runtime observer hook. */
@@ -16,6 +18,8 @@ export type RuntimeObserverEvent =
   | RuntimeServiceAcquireEvent
   | RuntimeExecutionStartEvent
   | RuntimeExecutionEndEvent
+  | RuntimeTaskStartEvent
+  | RuntimeTaskEndEvent
   | RuntimeResourceReleaseEvent
   | RuntimeLifecycleStartEvent
   | RuntimeLifecycleEndEvent
@@ -27,6 +31,8 @@ export type RecordedRuntimeObserverSnapshot = {
   readonly serviceAcquisitions: readonly RuntimeServiceAcquireEvent[]
   readonly executionStarts: readonly RuntimeExecutionStartEvent[]
   readonly executionEnds: readonly RuntimeExecutionEndEvent[]
+  readonly taskStarts: readonly RuntimeTaskStartEvent[]
+  readonly taskEnds: readonly RuntimeTaskEndEvent[]
   readonly resourceReleases: readonly RuntimeResourceReleaseEvent[]
   readonly lifecycleStarts: readonly RuntimeLifecycleStartEvent[]
   readonly lifecycleEnds: readonly RuntimeLifecycleEndEvent[]
@@ -43,6 +49,8 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
   private readonly serviceAcquisitionEvents: RuntimeServiceAcquireEvent[] = []
   private readonly executionStartEvents: RuntimeExecutionStartEvent[] = []
   private readonly executionEndEvents: RuntimeExecutionEndEvent[] = []
+  private readonly taskStartEvents: RuntimeTaskStartEvent[] = []
+  private readonly taskEndEvents: RuntimeTaskEndEvent[] = []
   private readonly resourceReleaseEvents: RuntimeResourceReleaseEvent[] = []
   private readonly lifecycleStartEvents: RuntimeLifecycleStartEvent[] = []
   private readonly lifecycleEndEvents: RuntimeLifecycleEndEvent[] = []
@@ -67,6 +75,14 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
 
   readonly onExecutionEnd = (event: RuntimeExecutionEndEvent): void => {
     this.record(this.executionEndEvents, event)
+  }
+
+  readonly onTaskStart = (event: RuntimeTaskStartEvent): void => {
+    this.record(this.taskStartEvents, event)
+  }
+
+  readonly onTaskEnd = (event: RuntimeTaskEndEvent): void => {
+    this.record(this.taskEndEvents, event)
   }
 
   readonly onResourceRelease = (event: RuntimeResourceReleaseEvent): void => {
@@ -101,6 +117,14 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
     return immutableView(this.executionEndEvents)
   }
 
+  get taskStarts(): readonly RuntimeTaskStartEvent[] {
+    return immutableView(this.taskStartEvents)
+  }
+
+  get taskEnds(): readonly RuntimeTaskEndEvent[] {
+    return immutableView(this.taskEndEvents)
+  }
+
   get resourceReleases(): readonly RuntimeResourceReleaseEvent[] {
     return immutableView(this.resourceReleaseEvents)
   }
@@ -126,6 +150,8 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
     this.serviceAcquisitionEvents.length = 0
     this.executionStartEvents.length = 0
     this.executionEndEvents.length = 0
+    this.taskStartEvents.length = 0
+    this.taskEndEvents.length = 0
     this.resourceReleaseEvents.length = 0
     this.lifecycleStartEvents.length = 0
     this.lifecycleEndEvents.length = 0
@@ -139,6 +165,8 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
       serviceAcquisitions: this.serviceAcquisitions,
       executionStarts: this.executionStarts,
       executionEnds: this.executionEnds,
+      taskStarts: this.taskStarts,
+      taskEnds: this.taskEnds,
       resourceReleases: this.resourceReleases,
       lifecycleStarts: this.lifecycleStarts,
       lifecycleEnds: this.lifecycleEnds,
