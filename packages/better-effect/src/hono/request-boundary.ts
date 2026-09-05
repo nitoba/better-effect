@@ -4,7 +4,7 @@ import type { Env, MiddlewareHandler } from 'hono'
 
 import { Effect } from '../effect'
 import type { LayerInput } from '../layer/inference'
-import { Runtime } from '../runtime'
+import type { RuntimeExecutor } from '../runtime'
 import type { AnyService } from '../service'
 import { WebEffect } from '../web'
 import type { AnyRouteOptions, HonoContext, HonoEffectSuccess, ResponseLike } from './types'
@@ -44,12 +44,8 @@ export const recordRequestSuccess = (
   state.outcome ??= { kind: 'success', value, options }
 }
 
-export type RequestBoundaryOptions<
-  Provided extends AnyService,
-  RequestLayer extends LayerInput,
-  Failure
-> = {
-  readonly runtime: Runtime<Provided>
+export type RequestBoundaryOptions<RequestLayer extends LayerInput, Failure> = {
+  readonly executor: RuntimeExecutor<AnyService>
   readonly states: WeakMap<object, RequestState>
   readonly requestLayer?: ((context: HonoContext) => RequestLayer) | undefined
   readonly onSuccess: (result: HonoEffectSuccess<any>, context: HonoContext) => ResponseLike
@@ -62,8 +58,8 @@ type BoundaryOptions<RequestLayer extends LayerInput> = {
   readonly onFailure: (error: unknown) => ResponseLike
 }
 
-const makeBoundaryOptions = <Provided extends AnyService, RequestLayer extends LayerInput, Failure>(
-  options: RequestBoundaryOptions<Provided, RequestLayer, Failure>,
+const makeBoundaryOptions = <RequestLayer extends LayerInput, Failure>(
+  options: RequestBoundaryOptions<RequestLayer, Failure>,
   state: RequestState,
   context: HonoContext
 ): BoundaryOptions<RequestLayer> => {
@@ -140,13 +136,12 @@ const selectBoundaryResult = (state: RequestState, context: HonoContext) => {
 }
 
 export const makeRequestBoundary = <
-  Provided extends AnyService,
-  RequestLayer extends LayerInput,
   Failure,
+  RequestLayer extends LayerInput,
   E extends Env = Env,
   Path extends string = string
 >(
-  options: RequestBoundaryOptions<Provided, RequestLayer, Failure>
+  options: RequestBoundaryOptions<RequestLayer, Failure>
 ): MiddlewareHandler<E, Path> => {
   // SAFETY: createMiddleware preserves the Hono handler contract; only the generic Context is restored here.
   return createMiddleware(async (context, next) => {
@@ -170,25 +165,13 @@ export const makeRequestBoundary = <
       const boundaryOptions = makeBoundaryOptions(options, state, context)
       let response: Response
 
-      if (options.requestLayer === undefined) {
-        response = await WebEffect.handleWith(options.runtime.executor, context.req.raw, program, {
-          onSuccess: boundaryOptions.onSuccess,
-          onFailure: boundaryOptions.onFailure
-        })
-      } else {
-        const requestBoundaryOptions = {
-          onSuccess: boundaryOptions.onSuccess,
-          onFailure: boundaryOptions.onFailure,
-          requestLayer: (_request: Request) => options.requestLayer!(context)
-        }
-        // SAFETY: HonoEffect.make validates the concrete request Layer before this erased WebEffect dispatch.
-        response = await WebEffect.handleWith(
-          options.runtime.executor,
-          context.req.raw,
-          program,
-          requestBoundaryOptions as never
-        )
-      }
+      // SAFETY: HonoEffect's public Layer boundary validates the request Layer before this erased WebEffect dispatch.
+      response = await WebEffect.handleWith(
+        options.executor,
+        context.req.raw,
+        program,
+        boundaryOptions as never
+      )
 
       if (!context.finalized || context.res !== response) {
         context.res = response

@@ -495,7 +495,7 @@ const assertBoundaryPathSafety = (coreFixture: string): void => {
   assertThrows(() => assertModuleBoundary(coreFixture, "import 'hono'"), 'Forbidden import hono')
   assertModuleBoundary(
     join(sourceRoot, 'hono', 'index.ts'),
-    "import type { Context } from 'hono'\nimport type { HonoEffect } from 'better-effect/hono'"
+    "import type { Context } from 'hono'\nimport type { HonoEffectOperation } from 'better-effect/hono'"
   )
 }
 

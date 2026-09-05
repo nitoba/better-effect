@@ -114,11 +114,11 @@ class UserNotFound extends TaggedError('UserNotFound')<{
 }> {}
 
 function loadUser(id: string) {
-  return repository.find(id).then((user) =>
-    user
-      ? Result.ok(user)
-      : Result.err(new UserNotFound({ id, message: 'User not found' }))
-  )
+  return repository
+    .find(id)
+    .then((user) =>
+      user ? Result.ok(user) : Result.err(new UserNotFound({ id, message: 'User not found' }))
+    )
 }
 ```
 
@@ -417,11 +417,7 @@ const TestLive = Layer.override(AppLive, DatabaseTest, ClockTest)
 ### Before
 
 ```ts
-const AppLive: Layer<AppServices, never> = Layer.merge(
-  DatabaseLive,
-  RepositoryLive,
-  ServicesLive
-)
+const AppLive: Layer<AppServices, never> = Layer.merge(DatabaseLive, RepositoryLive, ServicesLive)
 ```
 
 This is safe but can erase provider provenance needed for precise later overrides.
@@ -429,19 +425,16 @@ This is safe but can erase provider provenance needed for precise later override
 ### After
 
 ```ts
-const AppLive = Layer.merge(
-  DatabaseLive,
-  RepositoryLive,
-  ServicesLive
-) satisfies Layer<AppServices, never>
+const AppLive = Layer.merge(DatabaseLive, RepositoryLive, ServicesLive) satisfies Layer<
+  AppServices,
+  never
+>
 ```
 
 Or assert completeness at the root:
 
 ```ts
-const AppLive = Layer.complete(
-  Layer.merge(DatabaseLive, RepositoryLive, ServicesLive)
-)
+const AppLive = Layer.complete(Layer.merge(DatabaseLive, RepositoryLive, ServicesLive))
 ```
 
 Do not reach for `Layer.Any` to silence a completeness issue that can be modeled precisely.
@@ -517,10 +510,7 @@ class RequestContext extends Service<RequestContext>()('RequestContext') {
   declare readonly tenantId: string
 }
 
-const RequestLive = Layer.succeed(
-  RequestContext,
-  RequestContext.of({ requestId, tenantId })
-)
+const RequestLive = Layer.succeed(RequestContext, RequestContext.of({ requestId, tenantId }))
 
 const result = await runtime.runWith(RequestLive, program)
 ```
@@ -600,27 +590,47 @@ app.get('/users/:id', async (c) => {
 ### After
 
 ```ts
-const http = HonoEffect.make(runtime, {
-  onFailure: (_error, c) => c.json({ error: 'Request failed' }, 400)
-})
+const app = new Hono()
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    onFailure: (_error, c) => c.json({ error: 'Request failed' }, 400)
+  },
+  async function* (http) {
+    app.use('/api/*', yield* http.middleware())
 
-app.use('/api/*', http.middleware())
+    app.get(
+      '/api/users/:id',
+      yield* http.gen(async function* (c) {
+        const users = yield* UserService
+        const user = yield* Result.await(users.find(c.req.param('id')))
 
-app.get(
-  '/api/users/:id',
-  http.gen(async function* (c) {
-    const users = yield* UserService
-    const user = yield* Result.await(users.find(c.req.param('id')))
+        return Result.ok(user)
+      })
+    )
 
-    return Result.ok(user)
+    return app
+  }
+)
+
+const runtime = await Runtime.make(Layer.merge(AppLive, App.layer))
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(appResult)) throw appResult.error
+const app = appResult.value
 ```
 
-Use `http.handler` when the Program is defined outside HTTP:
+Use `http.handler` inside the application factory when the Program is defined
+outside HTTP:
 
 ```ts
-app.get('/api/users/:id', http.handler((c) => getUser(c.req.param('id'))))
+const App = HonoEffect.app('@app/HonoApp', {}, async function* (http) {
+  app.get('/api/users/:id', yield* http.handler((c) => getUser(c.req.param('id'))))
+  return app
+})
 ```
 
 Expected Result failures go through the configured failure policy. The default policy redacts exception messages; custom policies should expose only safe, intentional domain details. Thrown defects remain in Hono's error path.
@@ -635,9 +645,7 @@ app.use(
     const token = c.req.header('Authorization')
 
     if (!token) {
-      return Result.err(
-        new AuthenticationRequired({ message: 'Authentication required' })
-      )
+      return Result.err(new AuthenticationRequired({ message: 'Authentication required' }))
     }
 
     const user = yield* Result.await(auth.verify(token))

@@ -403,7 +403,7 @@ matching Auth Service remains in the application Runtime:
 
 ```ts
 import { Hono } from 'hono'
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
 import { Result } from 'better-result'
@@ -411,33 +411,40 @@ import { Result } from 'better-result'
 const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
   disableCookieCache: true
 })
-const runtime = await Runtime.make(Auth.layer)
-const http = HonoEffect.make(runtime, {
-  requestLayer: CurrentSession.requestLayer,
-  onFailure: (_error, context) => context.json({ error: 'Request failed' }, 500)
-})
-const app = new Hono()
+const App = HonoEffect.app(
+  '@app/HonoApp',
+  {
+    requestLayer: CurrentSession.requestLayer,
+    onFailure: (_error, context) => context.json({ error: 'Request failed' }, 500)
+  },
+  async function* (http) {
+    const auth = yield* Auth
+    const app = new Hono()
 
-// Match Better Auth's configured basePath and register it before catch-all middleware.
-app.all('/api/auth/*', async (context) => {
-  const result = await runtime.run(
-    Effect.fn(async function* () {
-      const auth = yield* Auth
-      return Result.ok(yield* auth.handle(context.req.raw))
-    })
-  )
+    // Match Better Auth's configured basePath and register it before catch-all middleware.
+    app.all('/api/auth/*', (context) => auth.raw.handler(context.req.raw))
+    app.use('*', yield* http.middleware())
+    app.use('/private/*', yield* http.guard(CurrentSession.guard))
+    app.get(
+      '/private/me',
+      yield* http.gen(async function* () {
+        const session = yield* CurrentSession.require()
+        return Result.ok({ userId: session.user.id })
+      })
+    )
 
-  return Result.isOk(result) ? result.value : new Response(null, { status: 500 })
-})
-app.use('*', http.middleware())
-app.use('/private/*', http.guard(CurrentSession.guard))
-app.get(
-  '/private/me',
-  http.gen(async function* () {
-    const session = yield* CurrentSession.require()
-    return Result.ok({ userId: session.user.id })
+    return app
+  }
+)
+
+const runtime = await Runtime.make(Layer.merge(Auth.layer, App.layer))
+const appResult = await runtime.run(
+  Effect.fn(async function* () {
+    return Result.ok(yield* App)
   })
 )
+if (Result.isError(appResult)) throw new Error(String(appResult.error))
+const app = appResult.value
 ```
 
 `CurrentSession.get()` returns the plugin-inferred session or `null`.
