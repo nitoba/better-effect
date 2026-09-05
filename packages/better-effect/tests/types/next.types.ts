@@ -1,12 +1,13 @@
 import { expectTypeOf } from 'bun:test'
 import { Result } from 'better-result'
 
-import { Effect, Layer, Runtime, Service } from '../../src'
+import { Effect, Layer, Service } from '../../src'
 import type { EffectRequirements } from '../../src/effect'
 import { NextEffect } from '../../src/next'
 import type {
   CompleteNextProgram,
   NextEffectContext,
+  NextEffectManagedOptions,
   NextEffectOptions,
   NextEffectRouteOptions,
   NextRouteHandler
@@ -25,39 +26,41 @@ class RequestService extends Service<RequestService>()('NextTypeRequest') {
 }
 
 class MissingService extends Service<MissingService>()('NextTypeMissing') {}
+
 class ExpectedFailure extends Error {
   readonly _tag = 'ExpectedFailure' as const
 }
+
 class UnexpectedFailure extends Error {
   readonly _tag = 'UnexpectedFailure' as const
 }
 
 type RouteContext = NextEffectContext<{ readonly id: string }>
 
-// SAFETY: This declaration-only fixture never executes a Runtime.
-const runtime = {} as Runtime<RootService>
-
+const appLayer = Layer.make(RootService)
 const requestLayer = Layer.gen(RequestService, async function* () {
   const root = yield* RootService
   return new RequestService(root.value())
 })
 
-const http = NextEffect.make<RootService, ExpectedFailure, typeof requestLayer, RouteContext>(
-  runtime,
-  {
-    requestLayer: (request, context) => {
-      expectTypeOf(request).toEqualTypeOf<Request>()
-      expectTypeOf(context).toEqualTypeOf<RouteContext>()
-      return requestLayer
-    },
-    onFailure: (error, request, context) => {
-      expectTypeOf(error).toEqualTypeOf<ExpectedFailure>()
-      expectTypeOf(request).toEqualTypeOf<Request>()
-      expectTypeOf(context).toEqualTypeOf<RouteContext>()
-      return new Response(error.message, { status: 422 })
-    }
+const managed = NextEffect.managed<
+  typeof appLayer,
+  ExpectedFailure,
+  typeof requestLayer,
+  RouteContext
+>(appLayer, {
+  requestLayer: (request, context) => {
+    expectTypeOf(request).toEqualTypeOf<Request>()
+    expectTypeOf(context).toEqualTypeOf<RouteContext>()
+    return requestLayer
+  },
+  onFailure: (error, request, context) => {
+    expectTypeOf(error).toEqualTypeOf<ExpectedFailure>()
+    expectTypeOf(request).toEqualTypeOf<Request>()
+    expectTypeOf(context).toEqualTypeOf<RouteContext>()
+    return new Response(error.message, { status: 422 })
   }
-)
+})
 
 const successProgram = Effect.fn(async function* () {
   const root = yield* RootService
@@ -65,7 +68,7 @@ const successProgram = Effect.fn(async function* () {
   return Result.ok({ root: root.value(), request: request.value })
 })
 
-const handler = http.handler(
+const managedHandler = managed.handler(
   (request, context) => {
     expectTypeOf(request).toEqualTypeOf<Request>()
     expectTypeOf(context.params).toEqualTypeOf<Promise<{ readonly id: string }>>()
@@ -80,19 +83,9 @@ const handler = http.handler(
     }
   }
 )
-expectTypeOf(handler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
+expectTypeOf(managedHandler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
 
-const contextInferredHandler = NextEffect.make<RootService>(runtime).handler(
-  (_request, context: RouteContext) =>
-    Effect.fn(async function* () {
-      const { id } = await context.params
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
-      return Result.ok(id)
-    })
-)
-expectTypeOf(contextInferredHandler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
-
-const responseHandler = http.handler(
+const responseHandler = managed.handler(
   () =>
     Effect.fn(async function* () {
       yield* Result.await(Promise.resolve(Result.ok(undefined)))
@@ -108,6 +101,65 @@ const responseHandler = http.handler(
   }
 )
 expectTypeOf(responseHandler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
+
+const generatedHandler = managed.gen(async function* (request, context) {
+  const { id } = await context.params
+  const requestValue = yield* RequestService
+  expectTypeOf(request).toEqualTypeOf<Request>()
+  expectTypeOf(requestValue).toEqualTypeOf<RequestService>()
+  return Result.ok({ id, request: requestValue.value })
+})
+expectTypeOf(generatedHandler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
+
+const current = NextEffect.fromCurrent<ExpectedFailure, typeof requestLayer, RouteContext>({
+  requestLayer: () => requestLayer,
+  onFailure: (error, request, context) => {
+    expectTypeOf(error).toEqualTypeOf<ExpectedFailure>()
+    expectTypeOf(request).toEqualTypeOf<Request>()
+    expectTypeOf(context).toEqualTypeOf<RouteContext>()
+    return new Response(error.message)
+  }
+})
+
+const embeddedProgram = Effect.fn(async function* () {
+  const root = yield* RootService
+  const request = yield* RequestService
+  return Result.ok(`${root.value()}:${request.value}`)
+})
+const embeddedMaterialized = current.handler(() => embeddedProgram)
+const embeddedOuter = Effect.fn(async function* () {
+  const handler = yield* embeddedMaterialized
+  return Result.ok(handler)
+})
+expectTypeOf<EffectRequirements<typeof embeddedOuter>>().toEqualTypeOf<RootService>()
+
+const currentGenerated = current.gen(async function* () {
+  const root = yield* RootService
+  return Result.ok(root.value())
+})
+const currentOuter = Effect.fn(async function* () {
+  return Result.ok(yield* currentGenerated)
+})
+expectTypeOf<EffectRequirements<typeof currentOuter>>().toEqualTypeOf<RootService>()
+
+const missingProgram = Effect.fn(async function* () {
+  const missing = yield* MissingService
+  return Result.ok(missing)
+})
+expectTypeOf<EffectRequirements<typeof missingProgram>>().toEqualTypeOf<MissingService>()
+
+// @ts-expect-error Managed route Programs cannot require a Service absent from the Layer/request Layers.
+const invalidManagedProgram = managed.handler(() => missingProgram)
+void invalidManagedProgram
+
+const invalidFailureProgram = Effect.fn(async function* () {
+  yield* Result.await(Promise.resolve(Result.ok(undefined)))
+  return Result.err(new UnexpectedFailure())
+})
+
+// @ts-expect-error The Program Failure channel must fit the configured failure policy.
+const invalidFailure = managed.handler(() => invalidFailureProgram)
+void invalidFailure
 
 const responsePolicy = () => new Response('ok')
 const serializePolicy = () => null
@@ -136,15 +188,6 @@ void invalidRespondSerialize
 void invalidRespondOnSuccess
 void invalidSerializeOnSuccess
 
-const generatorHandler = http.gen(async function* (request, context) {
-  const { id } = await context.params
-  const requestValue = yield* RequestService
-  expectTypeOf(request).toEqualTypeOf<Request>()
-  expectTypeOf(requestValue).toEqualTypeOf<RequestService>()
-  return Result.ok({ id, request: requestValue.value })
-})
-expectTypeOf(generatorHandler).toEqualTypeOf<NextRouteHandler<RouteContext>>()
-
 const options: NextEffectOptions<ExpectedFailure, typeof requestLayer, RouteContext> = {
   requestLayer: () => requestLayer,
   onSuccess: ({ value }, request, context) => {
@@ -157,38 +200,26 @@ const options: NextEffectOptions<ExpectedFailure, typeof requestLayer, RouteCont
 }
 void options
 
-const missingProgram = Effect.fn(async function* () {
-  const missing = yield* MissingService
-  return Result.ok(missing)
-})
-expectTypeOf<EffectRequirements<typeof missingProgram>>().toEqualTypeOf<MissingService>()
-// @ts-expect-error The checked Program type carries its missing dependency diagnostic.
-const checkedMissing: CompleteNextProgram<RootService, typeof requestLayer, typeof missingProgram> =
-  missingProgram
-void checkedMissing
+const managedOptions: NextEffectManagedOptions<ExpectedFailure, typeof requestLayer, RouteContext> =
+  {
+    ...options,
+    runtime: { warmup: true }
+  }
+void managedOptions
 
-// @ts-expect-error Route Programs cannot require a Service absent from the Runtime/request Layers.
-const invalidProgram = http.handler(() => missingProgram)
-void invalidProgram
+const incomplete = NextEffect.managed(
+  // @ts-expect-error Concrete Layer completeness is enforced by managed construction.
+  Layer.gen(RequestService, async function* () {
+    const root = yield* RootService
+    return new RequestService(root.value())
+  })
+)
+void incomplete
 
-const invalidFailureProgram = Effect.fn(async function* () {
-  yield* Result.await(Promise.resolve(Result.ok(undefined)))
-  return Result.err(new UnexpectedFailure())
-})
-
-// @ts-expect-error The Program Failure channel must fit the configured failure policy.
-const invalidFailure = http.handler(() => invalidFailureProgram)
-void invalidFailure
-
-const invalidResponse = http.handler(() => successProgram, {
-  // @ts-expect-error Success policies must return a native Response.
-  respond: () => ({})
-})
-void invalidResponse
-
-// SAFETY: This declaration-only fixture models the explicit unchecked Layer escape hatch.
 const uncheckedLayer: Layer.Any = requestLayer
-const uncheckedHttp = NextEffect.make<RootService, unknown, Layer.Any, RouteContext>(runtime, {
-  requestLayer: () => uncheckedLayer
-})
-void uncheckedHttp
+const uncheckedCurrent = NextEffect.fromCurrent({ requestLayer: () => uncheckedLayer })
+void uncheckedCurrent
+
+const complete: CompleteNextProgram<RootService, typeof requestLayer, typeof successProgram> =
+  successProgram
+void complete

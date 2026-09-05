@@ -697,7 +697,7 @@ from the core or main entrypoint:
 
 ```ts
 import { Result } from 'better-result'
-import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { Effect, Layer, Service } from 'better-effect'
 import { NextEffect } from 'better-effect/next'
 
 class UserService extends Service<UserService>()('UserService') {
@@ -706,8 +706,7 @@ class UserService extends Service<UserService>()('UserService') {
   }
 }
 
-const runtime = await Runtime.make(Layer.make(UserService))
-const http = NextEffect.make(runtime)
+const http = NextEffect.managed(Layer.make(UserService))
 
 export const GET = http.gen(async function* (_request, context: RouteContext<'/api/users/[id]'>) {
   const { id } = await context.params
@@ -717,45 +716,66 @@ export const GET = http.gen(async function* (_request, context: RouteContext<'/a
 })
 ```
 
-`NextEffect.gen` and `NextEffect.handler` return the native
+Managed builders' `gen` and `handler` methods return the native
 `(request, context) => Promise<Response>` shape expected by App Router route
 files. The context is typed with Next's asynchronous `params`; `handler` is
 useful when the complete `Effect.fn` Program already exists.
 
-For a long-lived App Router application, keep the Runtime in an
-application-owned module and expose explicit disposal for the host lifecycle:
+`managed` is lazy and host-owned: each manager creates at most one Runtime,
+shares concurrent first-request initialization, and keeps root Layer resources
+until explicit disposal. It never installs process signal handlers or creates a
+Runtime per request:
 
 ```ts
 // app/runtime.ts
-export const appRuntime = await Runtime.make(AppLive)
+export const appNext = NextEffect.managed(AppLive, {
+  runtime: { warmup: true }
+})
 
 // Call this from the actual host/server shutdown hook.
-export const disposeAppRuntime = (): Promise<void> => appRuntime.dispose()
+export const initializeApp = (): Promise<void> => appNext.initialize()
+export const disposeApp = (): Promise<void> => appNext.dispose()
 ```
 
-Route modules import that Runtime and bind it to the adapter:
+Route modules import the manager directly:
 
 ```ts
 // app/api/users/[id]/route.ts
-import { appRuntime } from '@/app/runtime'
+import { appNext } from '@/app/runtime'
 
-const http = NextEffect.make(appRuntime)
+export const GET = appNext.gen(async function* (
+  _request,
+  context: RouteContext<'/api/users/[id]'>
+) {
+  const { id } = await context.params
+  const users = yield* UserService
+
+  return Result.ok(users.find(id))
+})
 ```
 
-Do not put this long-lived Runtime in an `await using` scope that ends during
-module initialization; that would dispose it before exported handlers serve
-requests. `NextEffect.make` stores only the Runtime supplied by the caller: it
-does not create a process-global singleton or mutate hidden adapter state.
-Sharing `appRuntime` is an application ownership choice. If a deployment
-requires per-invocation ownership instead, use the existing `Runtime.use`
-helper explicitly; the adapter never creates a Runtime per request by default:
+For code already being built inside a better-effect Runtime, use the inert
+`fromCurrent` builder. Its `handler` and `gen` operations are yieldable, so
+route requirements become requirements of the surrounding Program:
 
 ```ts
-export const GET = (request, context) =>
-  Runtime.use(AppLive, (runtime) =>
-    NextEffect.make(runtime).handler(() => getUser(context))(request, context)
-  )
+const next = NextEffect.fromCurrent()
+
+const makeRoutes = Effect.fn(async function* () {
+  const GET = yield* next.gen(async function* (_request, context) {
+    const { id } = await context.params
+    const users = yield* UserService
+    return Result.ok(users.find(id))
+  })
+
+  return Result.ok(GET)
+})
 ```
+
+`fromCurrent` does not create or own a Runtime and fails explicitly outside an
+active Runtime execution. `managed` is the App Router/module-scope mode. The
+adapter does not promise automatic HMR cleanup, Edge-runtime compatibility, or
+ownership of workers and other ingress resources in the supplied Layer.
 
 Each request creates one WebEffect execution and child Scope, installs
 `CurrentRequest` and `CurrentAbortSignal`, and releases request-local Layers

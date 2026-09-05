@@ -1,226 +1,198 @@
-/* oxlint-disable anti-slop/no-object-parameters -- the private boundary erases arbitrary framework context types after public overload validation. */
-/* oxlint-disable anti-slop/no-unknown-parameters -- response policy values are opaque until WebEffect validates them. */
-/* oxlint-disable anti-slop/no-unsafe-dictionary-type -- the private WebEffect options object is populated only by checked policies. */
-
-import { Result } from 'better-result'
+/* oxlint-disable anti-slop/no-object-parameters -- private route boundaries erase framework context after public overload validation. */
+/* oxlint-disable anti-slop/no-chained-type-assertions -- these are localized adapter erasures after overload checks. */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are confined to checked overload implementations. */
 
 import { Effect } from '../effect'
 import type { EffectSuccess, EffectYield, ProgramFromGenerator } from '../effect/types'
-import type { LayerInput } from '../layer/inference'
-import type { Runtime } from '../runtime'
+import type { CompleteInput, LayerInput, ProvidedEnvironment } from '../layer/inference'
+import { Runtime } from '../runtime'
+import type { RuntimeExecutor } from '../runtime'
 import type { AnyService } from '../service'
-import { WebEffect } from '../web'
 import type {
   AnyProgram,
   AnyResult,
   DefaultRequestLayer,
+  FromCurrentGeneratorChecks,
+  FromCurrentHandlerFactory,
+  FromCurrentRequirements,
+  FromCurrentRequestLayerChecks,
   GeneratorBody,
   NextEffectContext,
+  NextEffectManagedInspection,
+  NextEffectManagedOptions,
   NextEffectOptions,
   NextEffectParams,
   NextEffectRouteOptions,
-  NextGeneratorChecks,
-  CompleteNextProgram,
-  NextHandlerFactory,
-  NextRequestLayerChecks,
+  NextEffectSuccess,
+  NextEffectYieldable,
   NextRouteHandler
 } from './types'
+import { ManagedNextEffect } from './lifecycle'
+import { makeNextRouteHandler } from './route-builder'
 
-const routeSuccessPolicyNames = ['respond', 'serialize', 'onSuccess'] as const
+/** The two explicit ownership modes for the Next.js adapter. */
+export class NextEffect {
+  private constructor() {}
 
-const assertExclusiveRouteSuccessPolicy = (
-  options: NextEffectRouteOptions<unknown, object>
-): void => {
-  const configuredPolicies = routeSuccessPolicyNames.filter((name) => options[name] !== undefined)
-
-  if (configuredPolicies.length > 1) {
-    throw new TypeError(
-      `NextEffect route options must configure at most one success policy; received ${configuredPolicies.join(', ')}`
-    )
-  }
-}
-
-/** Run Result-valued Programs inside one Runtime boundary per Next request. */
-export class NextEffect<
-  Provided extends AnyService = AnyService,
-  Failure = unknown,
-  RequestLayer extends LayerInput = DefaultRequestLayer,
-  Context extends object = NextEffectContext
-> {
-  readonly runtime: Runtime<Provided>
-
-  private readonly onSuccess: NextEffectOptions<Failure, RequestLayer, Context>['onSuccess']
-
-  private readonly onFailure: NextEffectOptions<Failure, RequestLayer, Context>['onFailure']
-
-  private readonly requestLayer: NextEffectOptions<Failure, RequestLayer, Context>['requestLayer']
-
-  private constructor(
-    runtime: Runtime<Provided>,
-    options: NextEffectOptions<Failure, RequestLayer, Context>
-  ) {
-    this.runtime = runtime
-    this.onSuccess = options.onSuccess
-    this.onFailure = options.onFailure
-    this.requestLayer = options.requestLayer
-  }
-
-  /** Bind an application-owned Runtime to App Router Route Handler factories. */
-  static make<
-    Provided extends AnyService,
+  /** Build an inert adapter whose handlers capture the current Runtime executor when yielded. */
+  static fromCurrent<
     Failure = unknown,
     RequestLayer extends LayerInput = DefaultRequestLayer,
     Context extends object = NextEffectContext
   >(
-    runtime: Runtime<Provided>,
     options?: NextEffectOptions<Failure, RequestLayer, Context> &
-      NextRequestLayerChecks<Provided, RequestLayer>
-  ): NextEffect<Provided, Failure, RequestLayer, Context> {
-    return new NextEffect(runtime, options ?? {})
+      FromCurrentRequestLayerChecks<RequestLayer>
+  ): NextEffect.FromCurrent<Failure, RequestLayer, Context> {
+    return new FromCurrentNextEffect(options ?? {})
   }
 
-  /** Create a native Route Handler from an explicit Request/context Program factory. */
+  /** Build a host-owned adapter with one lazy Runtime for the supplied complete Layer. */
+  static managed<
+    Layer extends LayerInput,
+    Failure = unknown,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Context extends object = NextEffectContext
+  >(
+    layer: Layer & CompleteInput<Layer>,
+    options?: NextEffectManagedOptions<Failure, RequestLayer, Context> &
+      import('./types').NextRequestLayerChecks<ProvidedEnvironment<Layer>, RequestLayer>
+  ): NextEffect.Managed<Layer, Failure, RequestLayer, Context> {
+    return new ManagedNextEffect(layer, options ?? {})
+  }
+}
+
+class FromCurrentNextEffect<Failure, RequestLayer extends LayerInput, Context extends object> {
+  constructor(private readonly options: NextEffectOptions<Failure, RequestLayer, Context>) {}
+
+  /** Materialize a route while resolving only the current Runtime executor. */
   handler<Program extends AnyProgram>(
-    makeProgram: (
-      request: Request,
-      context: Context
-    ) => CompleteNextProgram<Provided, RequestLayer, Program, Failure>,
+    makeProgram: FromCurrentHandlerFactory<
+      Context,
+      Failure,
+      (request: Request, context: Context) => Program
+    >,
     options?: NextEffectRouteOptions<EffectSuccess<Program>, Context>
-  ): NextRouteHandler<Context>
+  ): NextEffectYieldable<NextRouteHandler<Context>, FromCurrentRequirements<Program, RequestLayer>>
   handler<
     const HandlerContext extends object,
     const ProgramFactory extends (request: Request, context: HandlerContext) => AnyProgram
   >(
-    makeProgram: NextHandlerFactory<
-      HandlerContext,
-      Provided,
-      RequestLayer,
-      Failure,
-      ProgramFactory
-    >,
+    makeProgram: FromCurrentHandlerFactory<HandlerContext, Failure, ProgramFactory>,
     options?: NextEffectRouteOptions<EffectSuccess<ReturnType<ProgramFactory>>, HandlerContext>
-  ): NextRouteHandler<HandlerContext>
-  handler(...args: unknown[]): NextRouteHandler<object> {
-    // SAFETY: The public overloads restrict the first argument to a checked Program factory.
+  ): NextEffectYieldable<
+    NextRouteHandler<HandlerContext>,
+    FromCurrentRequirements<ReturnType<ProgramFactory>, RequestLayer>
+  >
+  handler(...args: unknown[]): any {
     const makeProgram = args[0] as (request: Request, context: object) => AnyProgram
-    // SAFETY: The public overloads restrict the optional second argument to route options.
     const options = (args[1] ?? {}) as NextEffectRouteOptions<unknown, object>
 
-    return this.makeHandler(makeProgram, options)
+    return this.materialize((executor) =>
+      makeNextRouteHandler(
+        () => executor,
+        this.options as unknown as NextEffectOptions<unknown, LayerInput, object>,
+        makeProgram,
+        options
+      )
+    )
   }
 
-  /** Create a native Route Handler from a Request/context generator body. */
+  /** Materialize a generator route while preserving its external Service requirements. */
   gen<
     const HandlerContext extends object = Context,
     const Yield extends EffectYield = EffectYield,
     const Returned extends AnyResult = AnyResult
   >(
     body: GeneratorBody<HandlerContext, Yield, Returned> &
-      NextGeneratorChecks<Provided, RequestLayer, Yield, Returned, Failure>,
+      FromCurrentGeneratorChecks<Yield, Returned, Failure>,
     options?: NextEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<Yield, Returned>>,
       HandlerContext
     >
-  ): NextRouteHandler<HandlerContext>
+  ): NextEffectYieldable<
+    NextRouteHandler<HandlerContext>,
+    FromCurrentRequirements<ProgramFromGenerator<Yield, Returned>, RequestLayer>
+  >
   gen<
     const CustomContext extends object,
     const CustomYield extends EffectYield,
     const CustomReturned extends AnyResult
   >(
     body: GeneratorBody<CustomContext, CustomYield, CustomReturned> &
-      NextGeneratorChecks<Provided, RequestLayer, CustomYield, CustomReturned, Failure>,
+      FromCurrentGeneratorChecks<CustomYield, CustomReturned, Failure>,
     options?: NextEffectRouteOptions<
       EffectSuccess<ProgramFromGenerator<CustomYield, CustomReturned>>,
       CustomContext
     >
-  ): NextRouteHandler<CustomContext>
-  gen(...args: unknown[]): NextRouteHandler<object> {
-    // SAFETY: The public overloads restrict the first argument to a checked generator body.
+  ): NextEffectYieldable<
+    NextRouteHandler<CustomContext>,
+    FromCurrentRequirements<ProgramFromGenerator<CustomYield, CustomReturned>, RequestLayer>
+  >
+  gen(...args: unknown[]): any {
     const body = args[0] as GeneratorBody<object, EffectYield, AnyResult>
-    // SAFETY: The public overloads restrict the optional second argument to route options.
     const options = (args[1] ?? {}) as NextEffectRouteOptions<unknown, object>
 
-    return this.makeHandler((request, context) => {
-      // SAFETY: Effect.fn accepts the sync or async generator supplied by the public overload.
-      const program = Effect.fn(
-        // SAFETY: The public overloads accept both sync and async generator bodies; the runtime invokes the resulting Program asynchronously.
-        () => body(request, context) as AsyncGenerator<EffectYield, AnyResult, unknown>
+    return this.materialize((executor) =>
+      makeNextRouteHandler(
+        () => executor,
+        this.options as unknown as NextEffectOptions<unknown, LayerInput, object>,
+        (request, context) =>
+          Effect.fn(
+            () => body(request, context) as AsyncGenerator<EffectYield, AnyResult, unknown>
+          ) as AnyProgram,
+        options
       )
-
-      // SAFETY: The public overloads validate the generator's Result, failure, and Service channels.
-      return program as AnyProgram
-    }, options)
+    )
   }
 
-  private makeHandler(
-    makeProgram: (request: Request, context: object) => AnyProgram,
-    routeOptions: NextEffectRouteOptions<unknown, object>
-  ): NextRouteHandler<object> {
-    assertExclusiveRouteSuccessPolicy(routeOptions)
-
-    return async (request, context) => {
-      const program = makeProgram(request, context)
-      const shouldSerialize = routeOptions.serialize !== undefined
-      const effectiveProgram = shouldSerialize
-        ? async () => {
-            const result = await program()
-
-            if (Result.isError(result)) {
-              return result
-            }
-
-            return Result.ok(routeOptions.serialize!(result.value, request, context))
-          }
-        : program
-      const webOptions: Record<string, unknown> = {}
-
-      if (this.requestLayer !== undefined) {
-        // SAFETY: The public handler overloads pair this runtime context with the configured Context type.
-        webOptions.requestLayer = () => this.requestLayer!(request, context as Context)
+  private materialize<Value>(
+    build: (executor: RuntimeExecutor<AnyService>) => Value
+  ): NextEffectYieldable<Value, AnyService> {
+    return {
+      *[Symbol.iterator]() {
+        const executor = yield* Runtime.executor<AnyService>()
+        return build(executor)
+      },
+      async *[Symbol.asyncIterator]() {
+        const executor = yield* Runtime.executor<AnyService>()
+        return build(executor)
       }
-
-      if (routeOptions.respond !== undefined) {
-        webOptions.onSuccess = ({ value }: { readonly value: unknown }) =>
-          routeOptions.respond!(value, request, context)
-      } else if (routeOptions.onSuccess !== undefined) {
-        webOptions.onSuccess = (result: { readonly value: unknown }) =>
-          routeOptions.onSuccess!(result, request, context)
-      } else if (this.onSuccess !== undefined) {
-        webOptions.onSuccess = (result: { readonly value: unknown }) => {
-          // SAFETY: The public handler overloads pair this runtime context with the configured Context type.
-          return this.onSuccess!(result, request, context as Context)
-        }
-      }
-
-      if (this.onFailure !== undefined) {
-        webOptions.onFailure = (error: unknown) => {
-          // SAFETY: Runtime WebEffect failures are the checked Failure channel of the route Program.
-          return this.onFailure!(error as Failure, request, context as Context)
-        }
-      }
-
-      // SAFETY: Public overloads validate the Program, request Layer, Failure, and Response policy before this erased WebEffect call.
-      return await WebEffect.handleWith(
-        // SAFETY: The Runtime's concrete Service union is intentionally erased for WebEffect's internal heterogeneous boundary.
-        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- this is the adapter's single generic erasure.
-        (this.runtime as unknown as Runtime<AnyService>).executor,
-        request,
-        // SAFETY: The effective Program is either the checked Program or a private serializer wrapper that preserves its Result error channel.
-        effectiveProgram as AnyProgram,
-        // SAFETY: The erased WebEffect options are built exclusively from the validated route policies above.
-        webOptions as never
-      )
     }
   }
 }
 
 export declare namespace NextEffect {
-  /** Options shared by all handlers created from a bound Runtime. */
+  /** The inert embedded adapter returned by `fromCurrent`. */
+  export type FromCurrent<
+    Failure = unknown,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Context extends object = NextEffectContext
+  > = FromCurrentNextEffect<Failure, RequestLayer, Context>
+
+  /** The host-owned adapter returned by `managed`. */
+  export type Managed<
+    Layer extends LayerInput,
+    Failure = unknown,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Context extends object = NextEffectContext
+  > = ManagedNextEffect<Layer, Failure, RequestLayer, Context>
+
+  /** Options shared by all handlers created from a NextEffect builder. */
   export type Options<
     Failure = unknown,
     RequestLayer extends LayerInput = DefaultRequestLayer,
     Context extends object = NextEffectContext
   > = NextEffectOptions<Failure, RequestLayer, Context>
+
+  /** Options for a host-owned managed adapter. */
+  export type ManagedOptions<
+    Failure = unknown,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Context extends object = NextEffectContext
+  > = NextEffectManagedOptions<Failure, RequestLayer, Context>
+
+  /** The lifecycle inspection returned by a managed adapter. */
+  export type ManagedInspection = NextEffectManagedInspection
 
   /** A typed per-route success policy. */
   export type RouteOptions<A, Context extends object = NextEffectContext> = NextEffectRouteOptions<
@@ -233,4 +205,7 @@ export declare namespace NextEffect {
 
   /** The native handler returned by `handler` and `gen`. */
   export type Handler<Context extends object = NextEffectContext> = NextRouteHandler<Context>
+
+  /** A native success policy value. */
+  export type Success<A = unknown> = NextEffectSuccess<A>
 }
