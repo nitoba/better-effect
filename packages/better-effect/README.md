@@ -1003,6 +1003,42 @@ low-level provider metadata names.
 `Layer.complete(layer)` is a runtime identity that checks a composition root
 immediately, so missing Services are reported where the Layer is assembled.
 
+### Lifecycle-only Layers
+
+Use `Layer.scopedDiscard` for application components that need startup and
+shutdown ownership but are not themselves a Service:
+
+```ts
+const PollerLive = Layer.scopedDiscard(
+  () => startPoller(),
+  (poller, outcome) => poller.stop(outcome)
+)
+
+const AppLive = Layer.complete(Layer.merge(ConfigLive, PollerLive))
+```
+
+The acquisition runs once when `Runtime.make` activates the Layer, after
+provider registration and optional warmup. The release belongs to the Runtime
+root Scope, runs in reverse activation order, and receives the final
+`ScopeOutcome`. A contextual acquisition can use `yield*` with
+`Layer.scopedDiscard` (or the explicit `Layer.scopedDiscardGen`) and retains
+those Service requirements even though the Layer provides `never`:
+
+```ts
+const PollerLive = Layer.scopedDiscard(
+  async function* () {
+    const config = yield* Config
+    return startPoller(config)
+  },
+  (poller, outcome) => poller.stop(outcome)
+)
+```
+
+For startup programs, `Layer.effectDiscard` accepts only
+`Effect.Program<void, never, R>`-compatible programs. A typed failure must be
+handled by the program before it is made a lifecycle entry; it is not silently
+converted into a Runtime defect.
+
 ---
 
 ## Why better-effect?

@@ -33,3 +33,12 @@ export type LayerGeneratorRequirements<
   S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown>
 > = ServiceRequirements<InstanceType<S>> | InferYieldRequirements<Yield>
+
+/** Generator shape used by lifecycle-only Layer entries. */
+export type LayerDiscardGenerator<Yield extends ServiceRequirement<unknown>, Acquired> = () =>
+  | Generator<Yield, Acquired, unknown>
+  | AsyncGenerator<Yield, Acquired, unknown>
+
+/** Service requirements inferred from a lifecycle-only generator. */
+export type LayerDiscardRequirements<Yield extends ServiceRequirement<unknown>> =
+  InferYieldRequirements<Yield>

@@ -33,6 +33,7 @@ import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
 
 import { LayerDisposeError, LayerRegistrationError } from './errors'
 import { captureLayerRegistrationTag } from './registration'
+import { getLayerEntries, type LayerLifecycleEntry } from './layer'
 
 import { createResolutionResolver } from './resolution'
 
@@ -51,6 +52,9 @@ import type {
   RuntimeExecutionAttributes,
   RuntimeExecutionEndEvent,
   RuntimeExecutionMetadata,
+  RuntimeLifecycleEndEvent,
+  RuntimeLifecycleReleaseEvent,
+  RuntimeLifecycleStartEvent,
   RuntimeObserver,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent
@@ -97,6 +101,9 @@ interface RuntimeHandleCore<Provided extends AnyService> {
 
   /** Resolve every registered provider before accepting normal executions. */
   warmup(): Promise<void>
+
+  /** Activate lifecycle-only Layer entries after provider registration and warmup. */
+  activateLifecycle(): Promise<void>
 
   /** Return a detached diagnostic snapshot without changing Runtime state. */
   inspect(): RuntimeInspection
@@ -267,6 +274,31 @@ const releaseLayerResource = async (
   }
 }
 
+const lifecycleEventMetadata = (entry: LayerLifecycleEntry) => ({
+  kind: 'lifecycle' as const,
+  lifecycleId: entry.id
+})
+
+const releaseLifecycleResource = async (
+  entry: LayerLifecycleEntry,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources have no Service contract by design.
+  resource: unknown,
+  outcome: ScopeOutcome,
+  observers: readonly RuntimeObserver[]
+): Promise<void> => {
+  const metadata = lifecycleEventMetadata(entry)
+
+  try {
+    await entry.release(resource, outcome)
+    const event: RuntimeLifecycleReleaseEvent = { ...metadata, outcome }
+    notifyRuntimeObservers(observers, (observer) => observer.onLifecycleRelease, event)
+  } catch (cause) {
+    const event: RuntimeLifecycleReleaseEvent = { ...metadata, outcome, error: cause }
+    notifyRuntimeObservers(observers, (observer) => observer.onLifecycleRelease, event)
+    throw cause
+  }
+}
+
 const bindProviderToScope = (
   provider: LayerProvider,
   scope: CloseableScope,
@@ -418,7 +450,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     private readonly services: readonly AnyServiceToken[],
     serviceTags: readonly string[],
     private readonly executionDependencies: RuntimeExecutionDependencies,
-    private readonly executor: RuntimeExecutor<AnyService>
+    private readonly executor: RuntimeExecutor<AnyService>,
+    private readonly lifecycleEntries: readonly LayerLifecycleEntry[]
   ) {
     this.serviceTags = Object.freeze([...serviceTags])
   }
@@ -623,6 +656,68 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     )
 
     return warmup
+  }
+
+  activateLifecycle(): Promise<void> {
+    this.assertActive()
+
+    if (this.lifecycleEntries.length === 0) {
+      return Promise.resolve()
+    }
+
+    return runRuntimeContext(
+      this.contextStorage,
+      makeRuntimeContext(
+        this.resolver,
+        this.rootScope,
+        [],
+        this.signal,
+        undefined,
+        undefined,
+        this.executor
+      ),
+      () =>
+        ScopeRuntime.run(this.rootScope, async () => {
+          for (const entry of this.lifecycleEntries) {
+            const metadata = lifecycleEventMetadata(entry)
+            const startEvent: RuntimeLifecycleStartEvent = Object.freeze({ ...metadata })
+            notifyRuntimeObservers(
+              this.observers,
+              (observer) => observer.onLifecycleStart,
+              startEvent
+            )
+
+            try {
+              await this.rootScope.acquire(
+                () => entry.acquire(),
+                (resource, outcome) =>
+                  releaseLifecycleResource(entry, resource, outcome, this.observers)
+              )
+              const endEvent: RuntimeLifecycleEndEvent = Object.freeze({
+                ...metadata,
+                outcome: SCOPE_SUCCESS
+              })
+              notifyRuntimeObservers(
+                this.observers,
+                (observer) => observer.onLifecycleEnd,
+                endEvent
+              )
+            } catch (cause) {
+              const endEvent: RuntimeLifecycleEndEvent = Object.freeze({
+                ...metadata,
+                outcome: { status: 'failure', cause },
+                error: cause
+              })
+              notifyRuntimeObservers(
+                this.observers,
+                (observer) => observer.onLifecycleEnd,
+                endEvent
+              )
+              throw cause
+            }
+          }
+        })
+    )
   }
 
   private startExecution<A>(
@@ -895,8 +990,11 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   executionOverrides: RuntimeExecutionDependencyOverrides = {},
   providedExecutor?: RuntimeExecutor<ProvidedEnvironment<L>>
 ): Promise<RuntimeHandle<ProvidedEnvironment<L>>> => {
-  const services = layer.providers.map((provider) => provider.service)
-  const serviceTags = layer.providers.map((provider) => captureLayerRegistrationTag(provider))
+  const entries = getLayerEntries(layer)
+  const providers = entries.filter((entry): entry is LayerProvider => !isLifecycleEntry(entry))
+  const lifecycleEntries = entries.filter(isLifecycleEntry)
+  const services = providers.map((provider) => provider.service)
+  const serviceTags = providers.map((provider) => captureLayerRegistrationTag(provider))
   const rootScope = Scope.make()
   const contextStorage = options.contextStorage ?? defaultRuntimeContextStorage
   const observers = options.observers ?? []
@@ -914,7 +1012,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   let current: LayerProvider | undefined
 
   try {
-    for (const provider of layer.providers) {
+    for (const provider of providers) {
       current = provider
 
       await backend.register(
@@ -989,8 +1087,13 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     services,
     serviceTags,
     executionDependencies,
-    contextExecutor
+    contextExecutor,
+    lifecycleEntries
   )
 
   return handle
 }
+
+const isLifecycleEntry = (
+  entry: LayerProvider | LayerLifecycleEntry
+): entry is LayerLifecycleEntry => 'kind' in entry && entry.kind === 'lifecycle'

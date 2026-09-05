@@ -29,6 +29,10 @@ export type {
   RuntimeExecutionEndEvent,
   RuntimeExecutionMetadata,
   RuntimeExecutionStartEvent,
+  RuntimeLifecycleEndEvent,
+  RuntimeLifecycleEventMetadata,
+  RuntimeLifecycleReleaseEvent,
+  RuntimeLifecycleStartEvent,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
   RuntimeServiceResolveEvent

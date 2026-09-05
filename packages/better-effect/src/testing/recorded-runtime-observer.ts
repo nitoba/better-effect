@@ -1,6 +1,9 @@
 import type {
   RuntimeExecutionEndEvent,
   RuntimeExecutionStartEvent,
+  RuntimeLifecycleEndEvent,
+  RuntimeLifecycleReleaseEvent,
+  RuntimeLifecycleStartEvent,
   RuntimeObserver,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
@@ -14,6 +17,9 @@ export type RuntimeObserverEvent =
   | RuntimeExecutionStartEvent
   | RuntimeExecutionEndEvent
   | RuntimeResourceReleaseEvent
+  | RuntimeLifecycleStartEvent
+  | RuntimeLifecycleEndEvent
+  | RuntimeLifecycleReleaseEvent
 
 /** Immutable views of events recorded by a {@link RecordedRuntimeObserver}. */
 export type RecordedRuntimeObserverSnapshot = {
@@ -22,6 +28,9 @@ export type RecordedRuntimeObserverSnapshot = {
   readonly executionStarts: readonly RuntimeExecutionStartEvent[]
   readonly executionEnds: readonly RuntimeExecutionEndEvent[]
   readonly resourceReleases: readonly RuntimeResourceReleaseEvent[]
+  readonly lifecycleStarts: readonly RuntimeLifecycleStartEvent[]
+  readonly lifecycleEnds: readonly RuntimeLifecycleEndEvent[]
+  readonly lifecycleReleases: readonly RuntimeLifecycleReleaseEvent[]
   readonly timeline: readonly RuntimeObserverEvent[]
 }
 
@@ -35,6 +44,9 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
   private readonly executionStartEvents: RuntimeExecutionStartEvent[] = []
   private readonly executionEndEvents: RuntimeExecutionEndEvent[] = []
   private readonly resourceReleaseEvents: RuntimeResourceReleaseEvent[] = []
+  private readonly lifecycleStartEvents: RuntimeLifecycleStartEvent[] = []
+  private readonly lifecycleEndEvents: RuntimeLifecycleEndEvent[] = []
+  private readonly lifecycleReleaseEvents: RuntimeLifecycleReleaseEvent[] = []
   private readonly timelineEvents: RuntimeObserverEvent[] = []
 
   static make(): RecordedRuntimeObserver {
@@ -61,6 +73,18 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
     this.record(this.resourceReleaseEvents, event)
   }
 
+  readonly onLifecycleStart = (event: RuntimeLifecycleStartEvent): void => {
+    this.record(this.lifecycleStartEvents, event)
+  }
+
+  readonly onLifecycleEnd = (event: RuntimeLifecycleEndEvent): void => {
+    this.record(this.lifecycleEndEvents, event)
+  }
+
+  readonly onLifecycleRelease = (event: RuntimeLifecycleReleaseEvent): void => {
+    this.record(this.lifecycleReleaseEvents, event)
+  }
+
   get serviceResolutions(): readonly RuntimeServiceResolveEvent[] {
     return immutableView(this.serviceResolutionEvents)
   }
@@ -81,6 +105,18 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
     return immutableView(this.resourceReleaseEvents)
   }
 
+  get lifecycleStarts(): readonly RuntimeLifecycleStartEvent[] {
+    return immutableView(this.lifecycleStartEvents)
+  }
+
+  get lifecycleEnds(): readonly RuntimeLifecycleEndEvent[] {
+    return immutableView(this.lifecycleEndEvents)
+  }
+
+  get lifecycleReleases(): readonly RuntimeLifecycleReleaseEvent[] {
+    return immutableView(this.lifecycleReleaseEvents)
+  }
+
   get timeline(): readonly RuntimeObserverEvent[] {
     return immutableView(this.timelineEvents)
   }
@@ -91,6 +127,9 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
     this.executionStartEvents.length = 0
     this.executionEndEvents.length = 0
     this.resourceReleaseEvents.length = 0
+    this.lifecycleStartEvents.length = 0
+    this.lifecycleEndEvents.length = 0
+    this.lifecycleReleaseEvents.length = 0
     this.timelineEvents.length = 0
   }
 
@@ -101,6 +140,9 @@ export class RecordedRuntimeObserver implements RuntimeObserver {
       executionStarts: this.executionStarts,
       executionEnds: this.executionEnds,
       resourceReleases: this.resourceReleases,
+      lifecycleStarts: this.lifecycleStarts,
+      lifecycleEnds: this.lifecycleEnds,
+      lifecycleReleases: this.lifecycleReleases,
       timeline: this.timeline
     })
   }

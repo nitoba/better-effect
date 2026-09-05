@@ -1,4 +1,12 @@
-import type { ServiceRequirement } from '../effect/types'
+import { Result } from 'better-result'
+
+import type {
+  EffectError,
+  EffectRequirements,
+  EffectSuccess,
+  Program,
+  ServiceRequirement
+} from '../effect/types'
 import { ServiceRuntime } from '../service'
 import { captureServiceTag } from '../service/tag'
 import type {
@@ -16,7 +24,12 @@ import type { Covariant, Invariant } from '../internal/variance'
 import type { MaybePromise } from '../utils/types'
 
 import { DuplicateServiceError, ServiceTagCollisionError } from './errors'
-import { runLayerGenerator } from './internal'
+import {
+  runLayerDiscardGenerator,
+  runLayerDiscardIterator,
+  runLayerGenerator,
+  type LayerDiscardIterator
+} from './internal'
 import { captureLayerRegistrationTag } from './registration'
 
 import type {
@@ -32,7 +45,13 @@ import type {
   RequiredEnvironment
 } from './inference'
 import type { ProviderEntry } from './metadata'
-import type { LayerGenerator, LayerGeneratorRequirements, LayerRegistration } from './types'
+import type {
+  LayerDiscardGenerator,
+  LayerDiscardRequirements,
+  LayerGenerator,
+  LayerGeneratorRequirements,
+  LayerRegistration
+} from './types'
 
 declare const LayerTypeId: unique symbol
 
@@ -57,6 +76,38 @@ interface LayerProvider extends LayerRegistration {
   /** Capture acquisition-local cleanup without retaining the acquired instance. */
   readonly acquireWithRelease?: () => MaybePromise<CapturedLayerAcquisition>
 }
+
+/** Internal lifecycle entry that deliberately has no Service identity. */
+export interface LayerLifecycleEntry {
+  readonly kind: 'lifecycle'
+  readonly id: symbol
+  readonly acquire: () => MaybePromise<unknown>
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources are intentionally opaque to the Layer runtime.
+  readonly release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+}
+
+type LayerEntry = LayerProvider | LayerLifecycleEntry
+
+const layerEntries = new WeakMap<object, readonly LayerEntry[]>()
+
+const isLifecycleEntry = (entry: LayerEntry): entry is LayerLifecycleEntry =>
+  'kind' in entry && entry.kind === 'lifecycle'
+
+/** Read all entries while keeping lifecycle storage out of the public declaration. */
+export const getLayerEntries = (layer: LayerInput): readonly LayerEntry[] =>
+  layerEntries.get(layer) ?? layer.providers
+
+type AnyProgram = Program<any, any, AnyService>
+
+type EffectDiscardValidation<P extends AnyProgram> = [EffectSuccess<P>] extends [void]
+  ? [EffectError<P>] extends [never]
+    ? unknown
+    : {
+        readonly __betterEffectDiscardTypedFailure: unique symbol
+      }
+  : {
+      readonly __betterEffectDiscardSuccessMustBeVoid: unique symbol
+    }
 
 /** A Service class whose constructor can be called without arguments. */
 type DefaultConstructibleServiceClass<
@@ -110,18 +161,43 @@ export class Layer<
 > {
   declare readonly [LayerTypeId]: LayerVariance<Provided, Required>
 
-  /** The provider registrations retained by this Layer. */
+  /** The Service provider registrations retained by this Layer. */
   readonly providers: readonly LayerProvider[]
 
-  private constructor(providers: readonly LayerProvider[]) {
-    this.providers = Object.freeze(
-      providers.map((provider) =>
-        Object.freeze({
-          ...provider,
-          serviceTag: captureLayerRegistrationTag(provider)
+  private constructor(entries: readonly LayerEntry[]) {
+    const frozenEntries = Object.freeze(
+      entries.map((entry) => {
+        if (isLifecycleEntry(entry)) {
+          return Object.freeze({ ...entry })
+        }
+
+        return Object.freeze({
+          ...entry,
+          serviceTag: captureLayerRegistrationTag(entry)
         })
-      )
+      })
     )
+
+    layerEntries.set(this, frozenEntries)
+    this.providers = Object.freeze(
+      frozenEntries.filter((entry): entry is LayerProvider => !isLifecycleEntry(entry))
+    )
+  }
+
+  private static makeLifecycleLayer<RawRequired extends AnyService>(
+    acquire: () => MaybePromise<unknown>,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources are intentionally opaque to the Layer runtime.
+    release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+  ): LayerResult<ProviderEntry<never, RawRequired>> {
+    // SAFETY: Lifecycle entries have no public Service environment; the typed requirements are declaration-only provenance.
+    return new Layer([
+      {
+        kind: 'lifecycle',
+        id: Symbol('better-effect.lifecycle'),
+        acquire,
+        release
+      }
+    ]) as LayerResult<ProviderEntry<never, RawRequired>>
   }
 
   /** A stable provider-free Layer for composition roots with no Services. */
@@ -294,19 +370,89 @@ export class Layer<
     ]) as LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>>
   }
 
+  /** Define a lifecycle-only entry with direct acquisition and root cleanup. */
+  static scopedDiscard<Yield extends ServiceRequirement<unknown>, Acquired>(
+    acquire: LayerDiscardGenerator<Yield, Acquired>,
+    release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+  ): LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>>
+
+  static scopedDiscard<Acquired>(
+    acquire: () => MaybePromise<Acquired>,
+    release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+  ): LayerResult<ProviderEntry<never, never>>
+
+  static scopedDiscard(
+    acquire:
+      | (() => MaybePromise<unknown>)
+      | LayerDiscardGenerator<ServiceRequirement<unknown>, unknown>,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources are intentionally opaque to the Layer runtime.
+    release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+  ): LayerResult<ProviderEntry<never, AnyService>> {
+    return Layer.makeLifecycleLayer(() => {
+      const acquired = acquire()
+
+      if (isIteratorLike(acquired)) {
+        return runLayerDiscardIterator(acquired)
+      }
+
+      return acquired
+    }, release)
+  }
+
+  /** Define a lifecycle-only entry whose acquisition can yield contextual Services. */
+  static scopedDiscardGen<Yield extends ServiceRequirement<unknown>, Acquired>(
+    acquire: LayerDiscardGenerator<Yield, Acquired>,
+    release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+  ): LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>> {
+    // SAFETY: Lifecycle generator requirements are carried only in declaration metadata; runtime storage is intentionally erased.
+    return Layer.makeLifecycleLayer(
+      () => runLayerDiscardGenerator(acquire),
+      (instance, outcome) => {
+        // SAFETY: The overload constrains this resource to Acquired before the erased Layer boundary.
+        return release(instance as Acquired, outcome)
+      }
+    ) as LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>>
+  }
+
+  /** Run a no-failure Effect Program as a lifecycle-only entry. */
+  static effectDiscard<P extends AnyProgram>(
+    program: P & EffectDiscardValidation<P>
+  ): LayerResult<ProviderEntry<never, Extract<EffectRequirements<P>, AnyService>>> {
+    // SAFETY: The public validation preserves the no-failure Program contract while the Layer entry erases its unit resource.
+    return Layer.makeLifecycleLayer<Extract<EffectRequirements<P>, AnyService>>(
+      async () => {
+        const result = await program()
+
+        if (Result.isError(result)) {
+          throw result.error
+        }
+      },
+      async () => {}
+    ) as LayerResult<ProviderEntry<never, Extract<EffectRequirements<P>, AnyService>>>
+  }
+
   /** Compose Layers without replacing providers. */
   static merge<const Layers extends readonly LayerInput[]>(
     ...layers: Layers & ValidateLayerTuple<Layers>
   ): MergeResult<Layers> {
-    const providers = new Map<string, LayerProvider>()
+    const entries = new Map<string | symbol, LayerEntry>()
 
     for (const layer of layers) {
-      for (const provider of layer.providers) {
-        const service = provider.service
-        const serviceTag = captureLayerRegistrationTag(provider)
-        const existing = providers.get(serviceTag)
+      for (const entry of getLayerEntries(layer)) {
+        if (isLifecycleEntry(entry)) {
+          entries.set(entry.id, entry)
+          continue
+        }
+
+        const service = entry.service
+        const serviceTag = captureLayerRegistrationTag(entry)
+        const existing = entries.get(serviceTag)
 
         if (existing) {
+          if (isLifecycleEntry(existing)) {
+            throw new Error('Layer lifecycle entry identity collided with a Service tag')
+          }
+
           if (existing.service !== service) {
             throw new ServiceTagCollisionError(existing.service, service)
           }
@@ -314,12 +460,12 @@ export class Layer<
           throw new DuplicateServiceError(service)
         }
 
-        providers.set(serviceTag, provider)
+        entries.set(serviceTag, entry)
       }
     }
 
     // SAFETY: The heterogeneous provider list is erased only at this internal storage boundary.
-    return new Layer([...providers.values()]) as MergeResult<Layers>
+    return new Layer([...entries.values()]) as MergeResult<Layers>
   }
 
   /** Mark a Layer composition root as complete without changing its runtime value. */
@@ -346,20 +492,20 @@ export class Layer<
   ): OverrideLayerResult<Base, Overrides>
 
   static override(base: LayerInput, ...overrides: readonly LayerInput[]): Layer<any, any> {
-    const providers = new Map<string, LayerProvider>()
+    const entries = new Map<string | symbol, LayerEntry>()
 
-    for (const provider of base.providers) {
-      providers.set(captureLayerRegistrationTag(provider), provider)
+    for (const entry of getLayerEntries(base)) {
+      entries.set(isLifecycleEntry(entry) ? entry.id : captureLayerRegistrationTag(entry), entry)
     }
 
     for (const layer of overrides) {
-      for (const provider of layer.providers) {
-        providers.set(captureLayerRegistrationTag(provider), provider)
+      for (const entry of getLayerEntries(layer)) {
+        entries.set(isLifecycleEntry(entry) ? entry.id : captureLayerRegistrationTag(entry), entry)
       }
     }
 
     // SAFETY: Runtime provider replacement preserves the computed override metadata.
-    return new Layer([...providers.values()]) as Layer<any, any>
+    return new Layer([...entries.values()]) as Layer<any, any>
   }
 }
 
@@ -380,6 +526,15 @@ const normalizeAcquire =
     // SAFETY: ServiceContract removes only the declaration-only identity; runtime values are unchanged.
     return acquire() as MaybePromise<InstanceType<S>>
   }
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle factories are runtime-erased at this boundary.
+const isIteratorLike = (value: unknown): value is LayerDiscardIterator => {
+  if (!(value instanceof Object) || !('next' in value)) {
+    return false
+  }
+
+  return value.next instanceof Function
+}
 
 /** Type-level aliases for inspecting Layer environments and completeness. */
 export declare namespace Layer {
