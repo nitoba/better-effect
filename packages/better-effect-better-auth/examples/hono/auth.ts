@@ -1,1 +1,1 @@
-export { Auth, credentials, rawAuth } from '../vanilla-server/auth'
+export { Auth, credentials } from '../vanilla-server/auth'

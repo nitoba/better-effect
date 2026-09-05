@@ -1,13 +1,25 @@
 import { Effect, Runtime } from 'better-effect'
 import { Result } from 'better-result'
 
-import { Auth, credentials, rawAuth } from './auth'
+import { Auth, credentials } from './auth'
 import { readAuthenticatedSession } from './programs'
 
 const main = async (): Promise<void> => {
   const runtime = await Runtime.make(Auth.layer)
 
   try {
+    const rawResult = await runtime.run(
+      Effect.fn(async function* () {
+        const auth = yield* Auth
+        return Result.ok(auth.raw)
+      })
+    )
+
+    if (Result.isError(rawResult)) {
+      throw new Error(`Better Auth acquisition failed: ${String(rawResult.error)}`)
+    }
+
+    const rawAuth = rawResult.value
     await rawAuth.api.signUpEmail({
       body: credentials
     })

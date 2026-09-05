@@ -26,10 +26,15 @@ const rawAuth = betterAuth({
   plugins: [admin()]
 })
 const Auth = BetterAuth.service('@hono/Auth', rawAuth)
+// oxlint-disable-next-line require-yield -- this fixture covers a requirement-free lazy token.
+const LazyAuth = BetterAuth.make('@hono/LazyAuth', async function* () {
+  return rawAuth
+})
 const CurrentSession = BetterAuthHono.session('@hono/CurrentSession', Auth, {
   disableCookieCache: true,
   disableRefresh: false
 })
+const LazyCurrentSession = BetterAuthHono.session('@hono/LazyCurrentSession', LazyAuth)
 
 type AuthInstance = BetterAuthServiceInstance<'@hono/Auth', typeof rawAuth>
 type Session = typeof rawAuth.$Infer.Session
@@ -42,6 +47,7 @@ type CurrentLayer = BetterAuthHonoSessionRequestLayer<
 >
 
 expectTypeOf(CurrentSession.serviceTag).toEqualTypeOf<'@hono/CurrentSession'>()
+expectTypeOf(LazyCurrentSession.serviceTag).toEqualTypeOf<'@hono/LazyCurrentSession'>()
 expectTypeOf<
   Layer.Provided<ReturnType<typeof CurrentSession.requestLayer>>
 >().toEqualTypeOf<CurrentInstance>()

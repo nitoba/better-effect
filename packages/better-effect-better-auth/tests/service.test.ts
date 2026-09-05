@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { APIError } from 'better-auth/api'
-import { Effect, Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { Result, UnhandledException } from 'better-result'
 
 import { BetterAuth, BetterAuthApiError, Unauthenticated, type BetterAuthOperation } from '../src'
@@ -290,6 +290,156 @@ describe('BetterAuth.service', () => {
 
     await overrideRuntime.dispose()
     await liveRuntime.dispose()
+  })
+})
+
+describe('BetterAuth.make and BetterAuth.from', () => {
+  test('keeps generator factories lazy and acquires one raw instance per Runtime', async () => {
+    class AuthConfig extends Service<AuthConfig>()('@test/AuthConfig') {
+      readonly baseURL = 'https://auth.example.test'
+    }
+
+    let factoryCalls = 0
+    let configuredURL: string | undefined
+    const Auth = BetterAuth.make('@test/LazyAuth', async function* () {
+      const config = yield* AuthConfig
+      factoryCalls += 1
+      configuredURL = config.baseURL
+      return new FakeAuth()
+    })
+    const layer = Layer.merge(Layer.make(AuthConfig), Auth.layer)
+
+    expect(factoryCalls).toBe(0)
+    expect(() => new Auth()).toThrow('factory-backed Better Auth Service')
+
+    const firstRuntime = await Runtime.make(layer)
+    const first = await Promise.all([
+      firstRuntime.run(
+        Effect.fn(async function* () {
+          return Result.ok(yield* Auth)
+        })
+      ),
+      firstRuntime.run(
+        Effect.fn(async function* () {
+          return Result.ok(yield* Auth)
+        })
+      )
+    ])
+
+    expect(factoryCalls).toBe(1)
+    expect(configuredURL).toBe('https://auth.example.test')
+    expect(Result.isOk(first[0])).toBe(true)
+    expect(Result.isOk(first[1])).toBe(true)
+
+    const secondRuntime = await Runtime.make(layer)
+    const second = await secondRuntime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* Auth)
+      })
+    )
+
+    expect(factoryCalls).toBe(2)
+    expect(Result.isOk(second)).toBe(true)
+
+    if (Result.isOk(first[0]) && Result.isOk(first[1]) && Result.isOk(second)) {
+      expect(first[0].value.raw).toBe(first[1].value.raw)
+      expect(first[0].value.raw).not.toBe(second.value.raw)
+    }
+
+    await firstRuntime.dispose()
+    await secondRuntime.dispose()
+  })
+
+  test('adapts caller-owned instances through from without changing ownership', async () => {
+    const raw = new FakeAuth()
+    const Auth = BetterAuth.from('@test/FromAuth', raw)
+    const runtime = await Runtime.make(Auth.layer)
+
+    const result = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* Auth)
+      })
+    )
+
+    expect(Result.isOk(result)).toBe(true)
+
+    if (Result.isOk(result)) {
+      expect(result.value.raw).toBe(raw)
+    }
+
+    await runtime.dispose()
+  })
+
+  test('allows Layer.override test doubles for factory-backed tokens', async () => {
+    const raw = new FakeAuth()
+    // oxlint-disable-next-line require-yield -- this factory intentionally has no external requirements.
+    const Auth = BetterAuth.make('@test/OverrideFactoryAuth', async function* () {
+      return raw
+    })
+    const liveRuntime = await Runtime.make(Auth.layer)
+    const live = await liveRuntime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* Auth)
+      })
+    )
+
+    expect(Result.isOk(live)).toBe(true)
+
+    if (Result.isError(live)) {
+      await liveRuntime.dispose()
+      throw new Error('Factory-backed Auth Service did not resolve')
+    }
+
+    const replacementRaw = new FakeAuth()
+    const replacement = Auth.of({
+      api: live.value.api,
+      session: live.value.session,
+      handle: live.value.handle,
+      raw: replacementRaw
+    })
+    const overrideRuntime = await Runtime.make(
+      Layer.override(Auth.layer, Layer.succeed(Auth, replacement))
+    )
+    const overridden = await overrideRuntime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* Auth)
+      })
+    )
+
+    expect(Result.isOk(overridden)).toBe(true)
+
+    if (Result.isOk(overridden)) {
+      expect(overridden.value).toBe(replacement)
+      expect(overridden.value.raw).toBe(replacementRaw)
+    }
+
+    await overrideRuntime.dispose()
+    await liveRuntime.dispose()
+  })
+
+  test('fails acquisition when a lazy factory throws', async () => {
+    const defect = new Error('invalid Better Auth configuration')
+    // oxlint-disable-next-line require-yield -- this factory terminates with the acquisition defect.
+    const Auth = BetterAuth.make('@test/ThrowingAuth', async function* () {
+      throw defect
+    })
+    const runtime = await Runtime.make(Auth.layer)
+
+    let failure: unknown
+
+    try {
+      await runtime.run(
+        Effect.fn(async function* () {
+          return Result.ok(yield* Auth)
+        })
+      )
+    } catch (cause) {
+      failure = cause
+    }
+
+    expect(failure).toBeDefined()
+
+    await runtime.dispose()
   })
 })
 

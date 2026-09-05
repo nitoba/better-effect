@@ -84,7 +84,10 @@ const rawAuth = betterAuth({
   plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin()],
   secret: 'external-consumer-secret-not-for-production-use'
 })
-export const Auth = BetterAuth.service('@consumer/Auth', rawAuth)
+// oxlint-disable-next-line require-yield -- the consumer fixture intentionally has no external requirements.
+export const Auth = BetterAuth.make('@consumer/Auth', async function* () {
+  return rawAuth
+})
 
 export type AuthType = typeof rawAuth
 export type AuthInstance = BetterAuthServiceInstance<'@consumer/Auth', AuthType>

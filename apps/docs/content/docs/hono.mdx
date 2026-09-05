@@ -318,7 +318,7 @@ const rawAuth = betterAuth({
   emailAndPassword: { enabled: true },
   secret: 'replace-this-example-secret'
 })
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const Auth = BetterAuth.from('@app/Auth', rawAuth)
 const CurrentSession = BetterAuthHono.session('@app/CurrentSession', Auth, {
   disableCookieCache: true
 })

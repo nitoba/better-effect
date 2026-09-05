@@ -9,10 +9,11 @@ Web-standard handler. This package adapts those public server APIs to the
 `better-result` and `better-effect` programming model without adding Better
 Auth to the core package.
 
-The framework-neutral API adapts an existing Better Auth instance with
-`BetterAuth.service(...)`. Its generated Service exposes yieldable
+The framework-neutral API starts with `BetterAuth.make(...)` when Better Auth
+depends on contextual Services. Its generated Service exposes yieldable
 `auth.api.*` endpoints, session helpers, and the Web-standard handler while
-retaining the original instance as `auth.raw`.
+retaining the concrete instance as `auth.raw`. Use `BetterAuth.from(...)` for
+an already-created, caller-owned instance.
 
 ## Installation
 
@@ -31,20 +32,28 @@ These dependencies remain owned by the application.
 
 ## Effectful Better Auth service
 
-Create a Service token from an existing Better Auth instance and provide its
-immutable Layer to a `better-effect` Runtime:
+Declare a lazy Better Auth Service and provide its immutable Layer to a
+`better-effect` Runtime:
 
 ```ts
 import { betterAuth } from 'better-auth'
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { BetterAuth } from 'better-effect-better-auth'
 import { Result } from 'better-result'
 
-const rawAuth = betterAuth({
-  basePath: '/api/auth',
-  emailAndPassword: { enabled: true }
+class AppConfig extends Service<AppConfig>()('@app/AppConfig') {
+  readonly baseURL = 'https://example.test'
+}
+
+const Auth = BetterAuth.make('@app/Auth', async function* () {
+  const config = yield* AppConfig
+
+  return betterAuth({
+    baseURL: config.baseURL,
+    basePath: '/api/auth',
+    emailAndPassword: { enabled: true }
+  })
 })
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
 const request = new Request('https://example.test/api/auth/session')
 
 const program = Effect.fn(async function* () {
@@ -57,7 +66,9 @@ const program = Effect.fn(async function* () {
   return Result.ok({ session, response })
 })
 
-const runtime = await Runtime.make(Auth.layer)
+const runtime = await Runtime.make(
+  Layer.merge(Layer.succeed(AppConfig, new AppConfig()), Auth.layer)
+)
 const result = await runtime.run(program)
 await runtime.dispose()
 ```
@@ -77,24 +88,41 @@ the same Result-oriented operation boundary.
 
 ## Plugins and inferred fields
 
-Create and configure plugins on the Better Auth instance as usual. When
-`BetterAuth.service` receives the concrete instance, plugin endpoints, plugin
-user/session fields, and plugin `$ERROR_CODES` remain visible to TypeScript:
+Create and configure plugins inside the lazy factory as usual. Plugin
+endpoints, plugin user/session fields, and plugin `$ERROR_CODES` remain visible
+to TypeScript:
 
 ```ts
 import { admin } from 'better-auth/plugins'
 
-const auth = betterAuth({
-  // ...database and normal Better Auth options
-  plugins: [admin()]
+const Auth = BetterAuth.make('@app/Auth', async function* () {
+  return betterAuth({
+    // ...database and normal Better Auth options
+    plugins: [admin()]
+  })
 })
-const Auth = BetterAuth.service('@app/Auth', auth)
 
 const listUsers = Effect.fn(async function* () {
   const service = yield* Auth
   return Result.ok(yield* service.api.listUsers({ query: { limit: 10 } }))
 })
 ```
+
+## Prebuilt and caller-owned instances
+
+`BetterAuth.from(tag, rawAuth)` adapts an instance that the application has
+already created. It uses `Layer.succeed`, returns the exact same `auth.raw`
+reference, and never closes, reconfigures, or otherwise owns the instance or
+resources captured by its options:
+
+```ts
+const rawAuth = betterAuth({ emailAndPassword: { enabled: true } })
+const Auth = BetterAuth.from('@app/Auth', rawAuth)
+```
+
+`BetterAuth.service(tag, rawAuth)` remains as a deprecated compatibility alias
+for `BetterAuth.from`. New Layer-first code should use `make`; use `from` when
+the raw instance is intentionally constructed outside the Layer.
 
 The adapter does not create plugin configuration or add framework-specific
 helpers. Keep Better Auth's plugins, database adapter, cookies, and handler in
@@ -151,7 +179,7 @@ const rawAuth = betterAuth({
     )
   }
 })
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
+const Auth = BetterAuth.from('@app/Auth', rawAuth)
 const appRuntime = await Runtime.make(Layer.merge(coreValues, Auth.layer))
 ```
 
@@ -381,7 +409,7 @@ matching Auth Service remains in the application Runtime:
 
 ```ts
 import { Hono } from 'hono'
-import { Runtime } from 'better-effect'
+import { Effect, Runtime } from 'better-effect'
 import { HonoEffect } from 'better-effect/hono'
 import { BetterAuthHono } from 'better-effect-better-auth/hono'
 import { Result } from 'better-result'
@@ -397,7 +425,16 @@ const http = HonoEffect.make(runtime, {
 const app = new Hono()
 
 // Match Better Auth's configured basePath and register it before catch-all middleware.
-app.all('/api/auth/*', (context) => rawAuth.handler(context.req.raw))
+app.all('/api/auth/*', async (context) => {
+  const result = await runtime.run(
+    Effect.fn(async function* () {
+      const auth = yield* Auth
+      return Result.ok(yield* auth.handle(context.req.raw))
+    })
+  )
+
+  return Result.isOk(result) ? result.value : new Response(null, { status: 500 })
+})
 app.use('*', http.middleware())
 app.use('/private/*', http.guard(CurrentSession.guard))
 app.get(

@@ -146,7 +146,10 @@ const makeAuth = (options = {}) => {
 }
 
 const { rawAuth, signals } = makeAuth()
-const Auth = BetterAuth.service('@consumer/Auth', rawAuth)
+// oxlint-disable-next-line require-yield -- the consumer smoke factory intentionally has no external requirements.
+const Auth = BetterAuth.make('@consumer/Auth', async function* () {
+  return rawAuth
+})
 
 const execute = (operation) =>
   Result.gen(async function* () {

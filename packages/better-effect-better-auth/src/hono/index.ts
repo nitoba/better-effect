@@ -6,11 +6,7 @@ import type { Err, Result as ResultType } from 'better-result'
 
 import { Unauthenticated } from '../errors'
 import type { BetterAuthOperation } from '../effect-api'
-import type {
-  BetterAuthService,
-  BetterAuthServiceInstance,
-  BetterAuthServiceToken
-} from '../service'
+import type { BetterAuthService, BetterAuthServiceInstance, BetterAuthToken } from '../service'
 import type { BetterAuthErrorCode, BetterAuthFailure, BetterAuthInstance } from '../types'
 import type { BetterAuthSessionReadOptions, BetterAuthSessionOf } from '../session'
 
@@ -243,7 +239,7 @@ function betterAuthHonoSession<
   Auth extends BetterAuthInstance
 >(
   tag: BetterAuthHonoLiteralTag<Tag>,
-  auth: BetterAuthServiceToken<AuthTag, Auth>,
+  auth: BetterAuthToken<AuthTag, Auth>,
   options?: BetterAuthHonoSessionOptions
 ): BetterAuthHonoSessionToken<Tag, AuthTag, Auth> {
   type Instance = BetterAuthHonoSessionInstance<Tag, Auth>
