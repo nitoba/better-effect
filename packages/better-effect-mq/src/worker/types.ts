@@ -85,7 +85,7 @@ export type JobFailureEvent = {
 }[SerializedJobFailure['kind']]
 export type JobFailureHandler = (event: JobFailureEvent) => void | PromiseLike<void>
 
-/** Options shared by the Worker start and use entrypoints. */
+/** Options shared by the Worker startWith entrypoint. */
 export interface WorkerOptions<
   Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]
 > extends WorkerReliabilityOptions {
@@ -104,7 +104,7 @@ export interface WorkerOptions<
   readonly onJobFailure?: JobFailureHandler
 }
 
-/** Public lifecycle handle returned by Worker.start. */
+/** Public lifecycle handle returned by Worker.startWith. */
 export interface WorkerHandle extends AsyncDisposable {
   readonly id: WorkerId
   readonly state: 'running' | 'stopping' | 'stopped'

@@ -47,7 +47,7 @@ The harness assertions are oldest-first and readonly:
 `settle` and `release` call the public contract with explicit lease tokens.
 Named stores use `TestJobStore.makeFor(namedToken, options)`.
 
-For Worker scenarios, start the real `Worker` over `testRuntime.runtime` and
+For Worker scenarios, start the real `Worker` over `testRuntime.runtime.executor` and
 use `ClockTest`, a deterministic random source and a zero-delay persisted
 backoff. Assert the completed/failed record and attempt ledger after
 `awaitIdle`; advance the test clock for delayed Jobs instead of replacing

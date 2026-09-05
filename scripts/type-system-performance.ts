@@ -1058,11 +1058,7 @@ const AppLive = Layer.merge(
 declare const runtime: Runtime.For<typeof AppLive>
 void requirements
 void reverseRequirements
-void Worker.start(runtime, { handlers, concurrency: 8 })
-void Worker.use(runtime, { handlers }, async (worker) => {
-  await worker.awaitIdle()
-  return worker.state
-})
+void Worker.startWith(runtime.executor, { handlers, concurrency: 8 })
 `
 }
 

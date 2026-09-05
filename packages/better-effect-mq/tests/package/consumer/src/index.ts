@@ -49,7 +49,9 @@ const workerHandler = Worker.handle(workerJob, (input) =>
   })
 )
 declare const workerRuntime: Runtime<WorkerRoot | AnyService>
-const workerStarted = Worker.start(workerRuntime, { handlers: [workerHandler] as const })
+const workerStarted = Worker.startWith(workerRuntime.executor, {
+  handlers: [workerHandler] as const
+})
 const registry = JobRegistry.make([job] as const)
 const found = registry.lookup(job.identity)
 const namedStore = JobStore.named('external')

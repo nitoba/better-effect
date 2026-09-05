@@ -4,7 +4,7 @@ export type { JobContextInput } from './context'
 export { WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 export type { WorkerAwaitIdleErrorReason } from './errors'
 
-export { Worker, handle, start, use } from './worker'
+export { Worker, handle, startWith } from './worker'
 export { JobTimeoutError } from './errors'
 export type {
   AnyWorkerHandler,

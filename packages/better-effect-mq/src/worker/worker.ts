@@ -4,7 +4,8 @@
 // oxlint-disable anti-slop/no-chained-type-assertions -- generic handler details are erased only after runtime validation.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions are confined to validated public boundaries.
 
-import { Effect, Runtime } from 'better-effect'
+import { Effect } from 'better-effect'
+import type { RuntimeExecutor } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
 import { Job, type AnyJobDefinition } from '../job'
@@ -52,59 +53,34 @@ export function handle<
   }) as unknown as WorkerHandler<Definition, Effect.Requirements<Program>>
 }
 
-/** Start a Worker over an already configured Runtime. */
-export function start<
+/** Start a Worker over a non-owning Runtime executor capability. */
+export function startWith<
   Provided extends import('better-effect').AnyService,
   const Handlers extends readonly AnyWorkerHandler[]
 >(
-  runtime: Runtime<Provided>,
+  executor: RuntimeExecutor<Provided>,
   options: CompleteWorkerOptions<Provided, Handlers>
 ): Promise<WorkerHandle>
-export async function start(
-  runtime: Runtime<any>,
+export async function startWith<Provided extends import('better-effect').AnyService>(
+  executor: RuntimeExecutor<Provided>,
   options: WorkerOptions<readonly AnyWorkerHandler[]>
 ): Promise<WorkerHandle> {
-  validateRuntime(runtime)
+  validateExecutor(executor)
   validateOptionsObject(options, 'options')
   const handlersField = readOwnField(options, 'handlers', 'options.handlers')
   const normalizedHandlers = normalizeHandlers(
     handlersField.present ? handlersField.value : undefined
   )
   const normalizedOptions = normalizeWorkerOptions(options)
-  await assertStoresAvailable(runtime, normalizedHandlers)
+  await assertStoresAvailable(executor, normalizedHandlers)
 
-  const supervisor = new WorkerSupervisor(runtime, normalizedHandlers, normalizedOptions)
+  const supervisor = new WorkerSupervisor(executor, normalizedHandlers, normalizedOptions)
   supervisor.start()
   return supervisor
 }
 
-/** Run a callback with a Worker and always stop it before returning. */
-export function use<
-  Provided extends import('better-effect').AnyService,
-  const Handlers extends readonly AnyWorkerHandler[],
-  Value
->(
-  runtime: Runtime<Provided>,
-  options: CompleteWorkerOptions<Provided, Handlers>,
-  callback: (worker: WorkerHandle) => Value | PromiseLike<Value>
-): Promise<Awaited<Value>>
-export async function use(
-  runtime: Runtime<any>,
-  options: WorkerOptions<readonly AnyWorkerHandler[]>,
-  callback: (worker: WorkerHandle) => unknown
-): Promise<unknown> {
-  validateHandler(callback, 'callback')
-  const worker = await start(runtime, options)
-
-  try {
-    return await callback(worker)
-  } finally {
-    await worker.stop()
-  }
-}
-
 /** Worker entrypoints and the immutable handler constructor. */
-export const Worker = Object.freeze({ handle, start, use } as const)
+export const Worker = Object.freeze({ handle, startWith } as const)
 
 export namespace Worker {
   export type Handler<
@@ -128,9 +104,24 @@ const validateOptionsObject = (value: unknown, field: string): void => {
   }
 }
 
-const validateRuntime: (runtime: unknown) => asserts runtime is Runtime<any> = (runtime) => {
-  if (!(runtime instanceof Runtime)) {
-    throw new JobDefinitionError({ field: 'runtime', message: 'must be a Runtime instance' })
+const validateExecutor: (executor: unknown) => asserts executor is RuntimeExecutor<any> = (
+  executor
+) => {
+  if (executor === null || typeof executor !== 'object') {
+    throw new JobDefinitionError({ field: 'executor', message: 'must be a Runtime.Executor' })
+  }
+
+  let run: unknown
+  let runWith: unknown
+  try {
+    run = (executor as { readonly run?: unknown }).run
+    runWith = (executor as { readonly runWith?: unknown }).runWith
+  } catch {
+    throw new JobDefinitionError({ field: 'executor', message: 'could not read executor' })
+  }
+
+  if (typeof run !== 'function' || typeof runWith !== 'function') {
+    throw new JobDefinitionError({ field: 'executor', message: 'must implement run and runWith' })
   }
 }
 
@@ -274,7 +265,7 @@ const identityKeyFor = (job: Pick<AnyJobDefinition, 'queue' | 'name' | 'version'
   JSON.stringify([job.queue, job.name, job.version])
 
 const assertStoresAvailable = async (
-  runtime: Runtime<any>,
+  executor: RuntimeExecutor<any>,
   handlers: readonly AnyWorkerHandler[]
 ): Promise<void> => {
   const stores = new Map<string, AnyJobStoreToken>()
@@ -284,15 +275,15 @@ const assertStoresAvailable = async (
   }
 
   for (const store of stores.values()) {
-    await assertStoreAvailable(runtime, store)
+    await assertStoreAvailable(executor, store)
   }
 }
 
 const assertStoreAvailable = async (
-  runtime: Runtime<any>,
+  executor: RuntimeExecutor<any>,
   token: AnyJobStoreToken
 ): Promise<void> => {
-  const result = (await runtime.run(
+  const result = (await executor.run(
     () =>
       Effect.gen(async function* () {
         const store = yield* token

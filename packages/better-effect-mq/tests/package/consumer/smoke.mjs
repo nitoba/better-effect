@@ -119,7 +119,7 @@ const workerHandler = Worker.handle(workerJob, (input) =>
     return Result.ok(undefined)
   })
 )
-const worker = await Worker.start(workerRuntime, {
+const worker = await Worker.startWith(workerRuntime.executor, {
   handlers: [workerHandler],
   concurrency: 2,
   pollIntervalMs: 1
