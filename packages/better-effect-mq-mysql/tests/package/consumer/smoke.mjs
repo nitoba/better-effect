@@ -1,13 +1,19 @@
 import { Layer } from 'better-effect'
-import { MySqlJobStore, loadMySqlMigrations, quoteIdentifier } from 'better-effect-mq-mysql'
+import {
+  MySqlJobScheduleStore,
+  MySqlJobStore,
+  loadMySqlMigrations,
+  quoteIdentifier
+} from 'better-effect-mq-mysql'
 
 const migrations = await loadMySqlMigrations()
 if (
-  migrations.length !== 2 ||
+  migrations.length !== 3 ||
   !migrations[0].sql.includes('ENGINE=InnoDB') ||
-  !migrations[1].sql.includes('dedupe_hash')
+  !migrations[1].sql.includes('dedupe_hash') ||
+  !migrations[2].sql.includes('better_effect_mq_schedules')
 ) {
-  throw new Error('Expected the initial InnoDB migration and forward-only upgrade')
+  throw new Error('Expected the initial InnoDB migration and forward-only upgrades')
 }
 if (quoteIdentifier('billing') !== '`billing`') throw new Error('Identifier quoting failed')
 
@@ -23,3 +29,5 @@ const pool = {
 }
 const layer = MySqlJobStore.layer({ pool, validateSchema: false })
 if (!(layer instanceof Layer)) throw new Error('Expected a better-effect Layer')
+const scheduleLayer = MySqlJobScheduleStore.layer({ pool, validateSchema: false })
+if (!(scheduleLayer instanceof Layer)) throw new Error('Expected a schedule Layer')

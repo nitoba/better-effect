@@ -8,8 +8,8 @@ import {
   type Pool
 } from '../src'
 
-test('the immutable initial migration and forward-only InnoDB upgrade are shipped', async () => {
-  const [migration, upgrade] = await loadMySqlMigrations()
+test('the immutable initial migration and forward-only InnoDB upgrades are shipped', async () => {
+  const [migration, upgrade, schedules] = await loadMySqlMigrations()
   expect(migration?.sql).toContain('ENGINE=InnoDB')
   expect(migration?.sql).toContain('AUTO_INCREMENT')
   expect(migration?.sql).not.toMatch(/NOW\(\)|CURRENT_TIMESTAMP/u)
@@ -18,11 +18,13 @@ test('the immutable initial migration and forward-only InnoDB upgrade are shippe
   )
   expect(upgrade?.version).toBe(2)
   expect(upgrade?.sql).toContain('dedupe_hash')
+  expect(schedules?.version).toBe(3)
+  expect(schedules?.sql).toContain('better_effect_mq_schedules')
 })
 
 test('schema validation performs the mandatory version, SQL-mode, engine, and protocol handshake', async () => {
   const migrations = await loadMySqlMigrations()
-  const checksum = migrationManifestChecksum(migrations, 2)
+  const checksum = migrationManifestChecksum(migrations, 3)
   const queries: string[] = []
   const pool: Pool = {
     getConnection: async () => ({
@@ -38,10 +40,10 @@ test('schema validation performs the mandatory version, SQL-mode, engine, and pr
               table_name,
               engine: 'InnoDB'
             })),
-            rowCount: 4
+            rowCount: Object.values(MYSQL_TABLES).length
           }
         if (sql.includes('SELECT version, checksum'))
-          return { rows: [{ version: 2, checksum }], rowCount: 1 }
+          return { rows: [{ version: 3, checksum }], rowCount: 1 }
         return { rows: [], rowCount: 0 }
       },
       execute: async () => ({ rows: [], rowCount: 0 }),
@@ -55,7 +57,7 @@ test('schema validation performs the mandatory version, SQL-mode, engine, and pr
   const validation = await MySqlMigrator.validate(pool)
   expect(validation).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 2
+    version: 3
   })
   expect(queries.some((sql) => sql.includes('VERSION()'))).toBe(true)
   expect(queries.some((sql) => sql.includes('information_schema.tables'))).toBe(true)

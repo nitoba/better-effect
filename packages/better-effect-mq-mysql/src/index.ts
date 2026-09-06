@@ -1,6 +1,7 @@
 export { MySqlClient } from './client'
 export { MySqlMigrator } from './migrator'
 export { MySqlJobStore } from './layer'
+export { MySqlJobScheduleStore } from './layer'
 export {
   MIGRATION_COMPONENT,
   MYSQL_INDEXES,
@@ -41,3 +42,4 @@ export type {
   MySqlPoolConnection,
   MySqlSchemaValidationResult
 } from './migrator'
+export type { MySqlJobScheduleStoreOptions } from './schedule'

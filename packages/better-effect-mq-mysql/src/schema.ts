@@ -10,6 +10,7 @@ export const MYSQL_TABLES = Object.freeze({
   jobs: 'better_effect_mq_jobs',
   orderingSequences: 'better_effect_mq_ordering_sequences',
   queues: 'better_effect_mq_queues',
+  schedules: 'better_effect_mq_schedules',
   schemaVersions: 'better_effect_mq_schema_versions'
 })
 export const MYSQL_INDEXES = Object.freeze([
@@ -19,7 +20,10 @@ export const MYSQL_INDEXES = Object.freeze([
   'better_effect_mq_jobs_recent_idx',
   'better_effect_mq_jobs_run_at_idx',
   'better_effect_mq_jobs_terminal_idx',
-  'better_effect_mq_jobs_idempotency_idx'
+  'better_effect_mq_jobs_idempotency_idx',
+  'better_effect_mq_schedules_due_idx',
+  'better_effect_mq_schedules_group_idx',
+  'better_effect_mq_schedules_key_idx'
 ])
 export interface MySqlMigration {
   readonly version: number
