@@ -1,133 +1,146 @@
-import { Layer } from '../layer'
-import { WebEffect } from '../web'
-import type { AnyService } from '../service'
+import { Service } from '../service'
+import type { AnyService, ServiceIdentity, ServiceToken } from '../service'
 import type { LayerInput } from '../layer/inference'
-import type { Runtime } from '../runtime'
+import type { DefaultRequestLayer } from '../web/types'
+
+import { makeBunHandler } from './handler'
+import { makeBunLayer, makeBunServer } from './server'
 import type {
   BunAnyProgram,
+  BunEffectLayer,
+  BunEffectOperation,
   BunEffectOptions,
   BunFetchHandler,
-  BunHandlerProgram,
-  BunRequestLayerChecks
+  BunHandlerFactory,
+  BunHandlerRequirements,
+  BunLiteralTag,
+  BunRequestLayerChecks,
+  BunServer,
+  BunServerFactory,
+  BunServerFactoryCheck,
+  BunServerLayerFactory,
+  BunServerToken,
+  BunServerDataFor,
+  BunServerRouteFor,
+  InferGeneratorYield
 } from './types'
-import type { DefaultRequestLayer, WebEffectOptions } from '../web/types'
 
-const runWebEffect = <Provided extends AnyService>(
-  runtime: Runtime<Provided>,
-  request: Request,
-  program: BunAnyProgram,
-  options: WebEffectOptions<unknown, LayerInput, unknown>
-): Promise<Response> => {
-  // SAFETY: BunHandlerFactory validates the Program; WebEffect owns this erased request boundary.
-  return WebEffect.handleWith(runtime.executor, request, program, options as never)
-}
+/** Layer-first Bun integration for effectful handlers and owned servers. */
+export class BunEffect {
+  private constructor() {}
 
-type BunHandlerFactory<
-  Provided extends AnyService,
-  RequestLayer extends LayerInput,
-  Failure,
-  WebSocketData,
-  ProgramFactory extends (request: Request, server: Bun.Server<WebSocketData>) => BunAnyProgram
-> = ProgramFactory &
-  ([ReturnType<ProgramFactory>] extends [
-    BunHandlerProgram<Provided, RequestLayer, ReturnType<ProgramFactory>, Failure>
-  ]
-    ? unknown
-    : (
-        request: Request,
-        server: Bun.Server<WebSocketData>
-      ) => BunHandlerProgram<Provided, RequestLayer, ReturnType<ProgramFactory>, Failure>)
-
-/** Bind a Runtime and WebEffect policy to a Bun.serve fetch handler. */
-export class BunEffect<
-  Provided extends AnyService = never,
-  Failure = unknown,
-  RequestLayer extends LayerInput = DefaultRequestLayer
-> {
-  readonly runtime: Runtime<Provided>
-
-  private readonly onSuccess: BunEffectOptions<Failure, RequestLayer>['onSuccess']
-
-  private readonly onFailure: BunEffectOptions<Failure, RequestLayer>['onFailure']
-
-  private readonly requestLayer: BunEffectOptions<Failure, RequestLayer>['requestLayer']
-
-  private constructor(
-    runtime: Runtime<Provided>,
-    options: BunEffectOptions<Failure, RequestLayer>
-  ) {
-    this.runtime = runtime
-    this.onSuccess = options.onSuccess
-    this.onFailure = options.onFailure
-    this.requestLayer = options.requestLayer
-  }
-
-  static make<
-    Provided extends AnyService,
-    Failure = unknown,
-    RequestLayer extends LayerInput = DefaultRequestLayer
-  >(
-    runtime: Runtime<Provided>,
-    options?: BunEffectOptions<Failure, RequestLayer> &
-      BunRequestLayerChecks<Provided, RequestLayer>
-  ): BunEffect<Provided, Failure, RequestLayer> {
-    return new BunEffect(runtime, options ?? {})
-  }
-
-  handler<
+  /** Build a fetch handler by capturing the active Runtime executor. */
+  static handler<
     WebSocketData = undefined,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Failure = unknown,
     const ProgramFactory extends (
       request: Request,
       server: Bun.Server<WebSocketData>
     ) => BunAnyProgram = (request: Request, server: Bun.Server<WebSocketData>) => BunAnyProgram
   >(
-    makeProgram: BunHandlerFactory<Provided, RequestLayer, Failure, WebSocketData, ProgramFactory>
-  ): BunFetchHandler<WebSocketData> {
-    return async (request, server) => {
-      // SAFETY: the public factory check validates the returned Program before this erased wrapper.
-      const program = (() => makeProgram(request, server)()) as BunAnyProgram
+    options: BunEffectOptions<Failure, RequestLayer> & BunRequestLayerChecks<RequestLayer>,
+    makeProgram: BunHandlerFactory<Failure, WebSocketData, ProgramFactory>
+  ): BunEffectOperation<
+    BunFetchHandler<WebSocketData>,
+    BunHandlerRequirements<RequestLayer, ReturnType<ProgramFactory>>
+  >
 
-      return runWebEffect(this.runtime, request, program, this.makeWebOptions(request))
-    }
+  static handler<
+    WebSocketData = undefined,
+    RequestLayer extends LayerInput = DefaultRequestLayer,
+    Failure = unknown,
+    const ProgramFactory extends (
+      request: Request,
+      server: Bun.Server<WebSocketData>
+    ) => BunAnyProgram = (request: Request, server: Bun.Server<WebSocketData>) => BunAnyProgram
+  >(
+    makeProgram: BunHandlerFactory<Failure, WebSocketData, ProgramFactory>
+  ): BunEffectOperation<
+    BunFetchHandler<WebSocketData>,
+    BunHandlerRequirements<RequestLayer, ReturnType<ProgramFactory>>
+  >
+
+  static handler(...args: unknown[]): BunEffectOperation<unknown, AnyService> {
+    // SAFETY: The overloads validate the argument tuple before this erased implementation.
+    return makeBunHandler(...(args as never)) as BunEffectOperation<unknown, AnyService>
   }
 
-  private makeWebOptions(request: Request): WebEffectOptions<unknown, LayerInput, unknown> & {
-    readonly requestLayer: (request: Request) => LayerInput
-  } {
-    type MutableWebOptions = {
-      -readonly [Key in keyof WebEffectOptions<unknown, LayerInput, unknown>]?: WebEffectOptions<
-        unknown,
-        LayerInput,
-        unknown
-      >[Key]
-    }
-    const options: MutableWebOptions & {
-      requestLayer: (request: Request) => LayerInput
-    } = {
-      requestLayer: this.requestLayer ?? (() => Layer.empty)
-    }
+  /** Create a raw Bun server Service and its lifecycle-owning Layer. */
+  static server<
+    const Tag extends string,
+    WebSocketData = never,
+    Route extends string = never,
+    const Factory extends BunServerFactory<any, any> = BunServerFactory<any, any>
+  >(
+    tag: Tag & BunLiteralTag<Tag>,
+    factory: Factory & BunServerFactoryCheck<WebSocketData, Route, Factory>
+  ): BunServerToken<
+    Tag,
+    BunServerDataFor<WebSocketData, Factory>,
+    BunServerRouteFor<Route, Factory>,
+    InferGeneratorYield<Factory>
+  > {
+    type Data = BunServerDataFor<WebSocketData, Factory>
+    type RouteType = BunServerRouteFor<Route, Factory>
+    const tokenFactory = Service<BunServer<Data> & ServiceIdentity<Tag>>()<Tag>(tag)
+    // SAFETY: Service() returns the class-backed token; this assertion restores the exact Bun server contract.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+    const token = tokenFactory as unknown as ServiceToken<
+      Tag,
+      BunServer<Data> & ServiceIdentity<Tag>
+    >
+    // SAFETY: The factory check validates explicit generics; inferred Data and Route come from its native Bun options.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+    const typedFactory = factory as unknown as BunServerFactory<Data, RouteType>
+    const built = makeBunServer<Tag, Data, RouteType, typeof typedFactory, typeof token>(
+      typedFactory,
+      token
+    )
 
-    const onSuccess = this.onSuccess
+    Object.defineProperty(built.token, 'layer', {
+      configurable: false,
+      enumerable: true,
+      value: built.layer,
+      writable: false
+    })
 
-    if (onSuccess !== undefined) {
-      options.onSuccess = (result) => onSuccess(result, request)
-    }
+    // SAFETY: makeBunServer constructs the matching token and Layer pair for these exact generic arguments.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+    return built.token as unknown as BunServerToken<
+      Tag,
+      Data,
+      RouteType,
+      InferGeneratorYield<Factory>
+    >
+  }
 
-    const onFailure = this.onFailure
-
-    if (onFailure !== undefined) {
-      // SAFETY: the public handler check ties this wrapper to the configured Failure channel.
-      options.onFailure = (error) => onFailure(error as Failure, request)
-    }
-
-    return options
+  /** Provide an application-chosen Service token backed by a native Bun server. */
+  static layer<
+    Service extends ServiceToken<any, any>,
+    WebSocketData = undefined,
+    Route extends string = string,
+    const Factory extends BunServerLayerFactory<Service, WebSocketData, Route> =
+      BunServerLayerFactory<Service, WebSocketData, Route>
+  >(service: Service, factory: Factory): BunEffectLayer<Service, InferGeneratorYield<Factory>> {
+    return makeBunLayer<Service, WebSocketData, Route, typeof factory>(service, factory)
   }
 }
 
 export type {
+  BunEffectLayer,
+  BunEffectOperation,
   BunEffectOptions,
   BunEffectProgram,
   BunFetchHandler,
+  BunHandlerFactory,
+  BunHandlerRequirements,
+  BunRequestLayerChecks,
   BunServer,
+  BunServerFactory,
+  BunServerLayerFactory,
+  BunServerLayerSpec,
+  BunServerToken,
+  BunServeOptions,
   ResponseLike
 } from './types'
