@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, expectTypeOf, test } from 'bun:test'
 
 import { Effect, Layer, Runtime, ServiceRuntime } from 'better-effect'
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
@@ -15,9 +15,11 @@ import {
   WorkerId,
   makeJobId,
   makeLeaseToken,
+  validatePreparedEnqueue,
   type EnqueueRequest,
   type JobStoreError,
-  type JobStoreOperation
+  type JobStoreOperation,
+  type TransactionalEnqueue
 } from '../src'
 
 const resolve = async <Value>(
@@ -67,6 +69,25 @@ test('MemoryJobStore instances and snapshots are isolated and detached', async (
   expect(Object.isFrozen(created.job.payload)).toBe(true)
   expect((await resolve(second.counts())).total).toBe(0)
   expect((await resolve(first.counts())).total).toBe(1)
+})
+
+test('MemoryJobStore exposes prepared enqueue as an atomic extension without changing JobStore v1', async () => {
+  const store = MemoryJobStore.make()
+  const prepared = validatePreparedEnqueue({
+    protocolVersion: 1,
+    identity: { queue: 'jobs', name: 'prepared', version: 1 },
+    payload: { label: 'prepared' },
+    metadata: {},
+    priority: 0,
+    runAt: 1,
+    attemptsMax: 1,
+    now: 1
+  }).unwrap()
+
+  const result = await resolve(store.enqueuePrepared(prepared))
+  expect(result.job.id).toBeDefined()
+  expect(result.job.payload).toEqual({ label: 'prepared' })
+  expectTypeOf(store).toMatchTypeOf<TransactionalEnqueue>()
 })
 
 test('MemoryJobStore gives explicit IDs precedence over idempotency keys', async () => {

@@ -34,6 +34,7 @@ import type { JobObserver } from '../observability/observer'
 
 import { hasUnpairedSurrogate } from '../internal/validation'
 import type { QueueDefinition } from './queue'
+import type { PreparedEnqueue } from './prepared'
 import { isQueueDefinition } from './queue'
 import {
   isCallable,
@@ -177,7 +178,8 @@ export interface JobDefinition<
   CodecInputOf<PayloadCodec>,
   CodecValueOf<NonNullable<ResultCodec>>,
   FailureValueOf<FailureCodec>,
-  Store
+  Store,
+  PreparedEnqueue<Queue, Name, Version>
 > {
   readonly [JobDefinitionTypeId]: 'JobDefinition'
   readonly queue: Queue
@@ -2147,6 +2149,18 @@ export declare namespace Job {
     readonly identity: Identity<Current>
     readonly job?: never
   }
+  export type PreparedEnqueue<Current extends Any = Any> =
+    Current extends JobDefinition<
+      infer Queue,
+      infer Name,
+      infer Version,
+      infer _PayloadCodec,
+      infer _ResultCodec,
+      infer _FailureCodec,
+      infer _Store
+    >
+      ? import('./prepared').PreparedEnqueue<Queue, Name, Version>
+      : never
   export type IdempotencyKey<_Current extends Any = Any> = string | undefined
   export type Metadata<_Current extends Any = Any> = Readonly<Record<string, string>>
   export type EnqueueOptions<_Current extends Any = Any> = import('./application').JobEnqueueOptions

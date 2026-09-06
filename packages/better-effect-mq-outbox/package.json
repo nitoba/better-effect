@@ -1,0 +1,71 @@
+{
+  "name": "better-effect-mq-outbox",
+  "version": "0.1.0",
+  "description": "Storage-neutral durable outbox foundations for better-effect-mq.",
+  "keywords": [
+    "at-least-once",
+    "better-effect",
+    "better-effect-mq",
+    "outbox",
+    "typescript"
+  ],
+  "homepage": "https://github.com/nitoba/better-effect#readme",
+  "bugs": {
+    "url": "https://github.com/nitoba/better-effect/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nitoba/better-effect.git"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./testing": "./dist/testing.mjs",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:package-boundaries": "bun tests/package/boundaries.ts",
+    "lint": "oxlint --type-aware .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "publint": "publint",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run test:package-boundaries && bun run publint && bun run release:dry && bun run lint",
+    "prepublishOnly": "bun run check",
+    "release:dry": "bun run ../../scripts/release-artifact.ts --package better-effect-mq-outbox"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.1",
+    "better-effect": "0.13.0",
+    "better-effect-mq": "0.1.0",
+    "better-result": "^3.0.0",
+    "lefthook": "^2.1.10",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "publint": "^0.3.23",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "better-effect": ">=0.13.0 <0.14.0",
+    "better-effect-mq": ">=0.1.0 <0.2.0",
+    "better-result": "^3.0.0",
+    "typescript": ">=6.0.0"
+  }
+}

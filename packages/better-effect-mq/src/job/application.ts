@@ -29,6 +29,7 @@ import {
   makeJobName,
   makePersistedBackoff,
   makeQueueName,
+  protocolVersion,
   validateDuration,
   validateOptionalDuration,
   validateTimestamp
@@ -64,6 +65,7 @@ import type {
 } from '../store'
 
 import type { CodecLike, JobDefaults, JobIdentity } from './job'
+import type { PreparedEnqueue } from './prepared'
 import { freezeJobEvent } from '../observability/events'
 import type { JobObserver } from '../observability/observer'
 import { notifyJobObserver } from '../observability/observer'
@@ -169,6 +171,14 @@ export type JobEnqueueError =
   | JobDefinitionError
   | import('../store').JobStoreEnqueueError
   | import('better-result').UnhandledException
+
+export type JobPrepareError =
+  | JobDecodeFailure
+  | JobEncodeFailure
+  | JobDefinitionError
+  | UnhandledException
+
+export type JobPrepareOperation<Success> = JobOperation<Success, JobPrepareError, never, true>
 
 export type JobPollError =
   | JobStoreGetJobError
@@ -328,8 +338,13 @@ export interface JobBoundOperations<
   PayloadInput,
   Success,
   Failure,
-  Store extends AnyJobStoreToken
+  Store extends AnyJobStoreToken,
+  Prepared extends PreparedEnqueue = PreparedEnqueue
 > {
+  readonly prepare: (
+    payload: PayloadInput,
+    options?: JobEnqueueOptions
+  ) => JobPrepareOperation<Prepared>
   readonly enqueue: (
     payload: PayloadInput,
     options?: JobEnqueueOptions
@@ -374,7 +389,13 @@ export interface JobBoundOperations<
 /** `undefined` is the runtime result of a completed Job without a result codec. */
 type JobAwaitResultSuccess<Success> = [Success] extends [never] ? Success | undefined : Success
 
-type ErasedOperations = JobBoundOperations<unknown, unknown, unknown, AnyJobStoreToken>
+type ErasedOperations = JobBoundOperations<
+  unknown,
+  unknown,
+  unknown,
+  AnyJobStoreToken,
+  PreparedEnqueue
+>
 type ErasedView = JobRecordView<unknown, unknown>
 type ErasedAttemptView = JobAttemptView<unknown, unknown>
 type ErasedAwaitError = JobAwaitResultError<unknown>
@@ -802,7 +823,7 @@ const makeEnqueueRequest = async (
   materialized: unknown,
   encoded: JsonValue,
   now: number
-): Promise<ResultType<import('../store').EnqueueRequest, JobEnqueueError>> => {
+): Promise<ResultType<PreparedEnqueue, JobPrepareError>> => {
   const schedule = normalizeSchedule(fields, now)
   if (Result.isError(schedule)) return schedule
 
@@ -868,6 +889,7 @@ const makeEnqueueRequest = async (
   if (Result.isError(idempotency)) return idempotency
 
   const request: MutableRecord = {
+    protocolVersion,
     identity: definition.identity,
     payload: encoded,
     metadata,
@@ -888,7 +910,7 @@ const makeEnqueueRequest = async (
   if (timeout.value !== undefined) request.timeoutMs = timeout.value
   if (idempotency.value !== undefined) request.idempotencyKey = idempotency.value
 
-  return Result.ok(request as import('../store').EnqueueRequest)
+  return Result.ok(Object.freeze(request) as PreparedEnqueue)
 }
 
 const prepareEnqueue = async (
@@ -896,7 +918,7 @@ const prepareEnqueue = async (
   payload: unknown,
   options: unknown,
   now: number
-): Promise<ResultType<import('../store').EnqueueRequest, JobEnqueueError>> => {
+): Promise<ResultType<PreparedEnqueue, JobPrepareError>> => {
   const fields = readFields(options, enqueueFields, 'options')
   if (Result.isError(fields)) return fields
 
@@ -907,6 +929,25 @@ const prepareEnqueue = async (
   if (Result.isError(encoded)) return encoded
 
   return await makeEnqueueRequest(definition, fields.value, materialized.value, encoded.value, now)
+}
+
+const toEnqueueRequest = (prepared: PreparedEnqueue): import('../store').EnqueueRequest => {
+  const { protocolVersion: _protocolVersion, ...request } = prepared
+  return request
+}
+
+const runPrepare = async function* (
+  definition: JobOperationDescriptor,
+  payload: unknown,
+  options: unknown
+): JobPrepareOperation<PreparedEnqueue> {
+  const fields = readFields(options, enqueueFields, 'options')
+  const checkedFields = yield* Result.await(Promise.resolve(fields))
+  const clock = yield* Clock
+  const now = yield* Result.await(Promise.resolve(clockNow(clock)))
+  return yield* Result.await(
+    Promise.resolve(prepareEnqueue(definition, payload, checkedFields, now))
+  )
 }
 
 const copyKnownFields = (
@@ -1007,7 +1048,12 @@ const runEnqueue = async function* (
   )
   const result = yield* Result.await(
     Promise.resolve(
-      observedStoreOperation(store.enqueue(request), definition.observer, 'enqueue', now)
+      observedStoreOperation(
+        store.enqueue(toEnqueueRequest(request)),
+        definition.observer,
+        'enqueue',
+        now
+      )
     )
   )
   emitEnqueued(definition.observer, result.job, result.duplicate, now)
@@ -1064,7 +1110,7 @@ const runEnqueueMany = async function* (
       const request = yield* Result.await(
         Promise.resolve(prepareEnqueue(definition, item.payload, mergedOptions, now))
       )
-      requests.push(request)
+      requests.push(toEnqueueRequest(request))
     }
 
     const results = yield* Result.await(
@@ -1975,6 +2021,7 @@ const makeAdminClient = <Store extends AnyJobStoreToken>(
 
 const makeOperations = (definition: JobOperationDescriptor): ErasedOperations => {
   const operations: ErasedOperations = {
+    prepare: (payload, options) => runPrepare(definition, payload, options),
     enqueue: (payload, options) => runEnqueue(definition, payload, options),
     enqueueMany: (values, options) => runEnqueueMany(definition, values, options),
     poll: (jobId) => runPoll(definition, jobId),

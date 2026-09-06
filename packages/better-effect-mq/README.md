@@ -29,6 +29,16 @@ The package uses [`better-effect`](https://github.com/nitoba/better-effect)'s
 Service type and [`better-result`](https://github.com/nitoba/better-result)'s
 Result model; it does not depend on the full Effect library.
 
+## Prepared enqueue and same-storage transactions
+
+`Job.prepare(payload, options)` runs the producer codec and normalizes the
+durable request without resolving a `JobStore`. The resulting immutable
+`PreparedEnqueue` contains only JSON-safe, versioned data and can be handed to
+an adapter-specific transaction helper. The core package does not expose a
+generic transaction handle; `TransactionalEnqueue` is the optional prepared
+request capability implemented by `MemoryJobStore` and concrete adapters can
+provide their own typed `enqueueIn(tx, prepared)` extension.
+
 ## Protocol version and delivery guarantee
 
 ```ts

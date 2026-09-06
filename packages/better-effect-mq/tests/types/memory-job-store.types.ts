@@ -7,7 +7,8 @@ import {
   MemoryJobStore,
   type MemoryJobStoreClock,
   type MemoryJobStoreIdGenerator,
-  type MemoryJobStoreOptions
+  type MemoryJobStoreOptions,
+  type TransactionalEnqueue
 } from '../../src'
 
 const clock: MemoryJobStoreClock = {
@@ -22,7 +23,7 @@ const defaultLayer = MemoryJobStore.layerWith(options)
 const named = JobStore.named('memory-types')
 const namedLayer = MemoryJobStore.layerFor(named, options)
 
-expectTypeOf(defaultStore).toEqualTypeOf<JobStore.Contract>()
+expectTypeOf(defaultStore).toEqualTypeOf<JobStore.Contract & TransactionalEnqueue>()
 expectTypeOf(defaultLayer).toMatchTypeOf<Layer<JobStore.Instance, never>>()
 expectTypeOf(namedLayer).toMatchTypeOf<Layer<JobStore.Instance<'memory-types'>, never>>()
 

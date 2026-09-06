@@ -15,6 +15,7 @@ export {
 export { Queue } from './queue'
 export { JobRegistry, makeJobRegistry } from './registry'
 export { JobAdmin } from './application'
+export { makePreparedEnqueue, validatePreparedEnqueue } from './prepared'
 
 export type {
   AnyJobDefinition,
@@ -58,9 +59,12 @@ export type {
   JobEnqueueOptions,
   JobExecuteOptions,
   JobOperation,
+  JobPrepareError,
+  JobPrepareOperation,
   JobPollError,
   JobPromoteError,
   JobRecordView,
   JobRetryError,
   JobRetryOptions
 } from './application'
+export type { PreparedEnqueue } from './prepared'

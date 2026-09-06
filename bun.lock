@@ -215,6 +215,29 @@
         "mysql2",
       ],
     },
+    "packages/better-effect-mq-outbox": {
+      "name": "better-effect-mq-outbox",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "1.4.1",
+        "better-effect": "0.13.0",
+        "better-effect-mq": "0.1.0",
+        "better-result": "^3.0.0",
+        "lefthook": "^2.1.10",
+        "oxfmt": "^0.63.0",
+        "oxlint": "^1.78.0",
+        "oxlint-tsgolint": "^7.0.2001",
+        "publint": "^0.3.23",
+        "tsdown": "^0.22.14",
+        "typescript": "^7.0.2",
+      },
+      "peerDependencies": {
+        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect-mq": ">=0.1.0 <0.2.0",
+        "better-result": "^3.0.0",
+        "typescript": ">=6.0.0",
+      },
+    },
     "packages/better-effect-mq-postgres": {
       "name": "better-effect-mq-postgres",
       "version": "0.1.0",
@@ -1084,6 +1107,8 @@
     "better-effect-mq-mongodb": ["better-effect-mq-mongodb@workspace:packages/better-effect-mq-mongodb"],
 
     "better-effect-mq-mysql": ["better-effect-mq-mysql@workspace:packages/better-effect-mq-mysql"],
+
+    "better-effect-mq-outbox": ["better-effect-mq-outbox@workspace:packages/better-effect-mq-outbox"],
 
     "better-effect-mq-postgres": ["better-effect-mq-postgres@workspace:packages/better-effect-mq-postgres"],
 

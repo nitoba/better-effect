@@ -120,12 +120,16 @@ export type {
   JobEnqueueOptions,
   JobExecuteOptions,
   JobOperation,
+  JobPrepareError,
+  JobPrepareOperation,
   JobPollError,
   JobPromoteError,
   JobRecordView,
   JobRetryError,
   JobRetryOptions
 } from './job/application'
+export { makePreparedEnqueue, validatePreparedEnqueue } from './job/prepared'
+export type { PreparedEnqueue } from './job/prepared'
 
 export type {
   CodecCallbackResult,
@@ -309,6 +313,7 @@ export type {
   EnqueueManyResult,
   EnqueueRequest,
   EnqueueResult,
+  TransactionalEnqueue,
   GetAttemptsRequest,
   GetJobRequest,
   HeartbeatLease,

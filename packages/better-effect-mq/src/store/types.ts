@@ -2,6 +2,7 @@ import type { AnyService, Effect } from 'better-effect'
 
 import type { AnyJobRegistry, RegisteredJobIdentity } from '../job'
 import type { JobIdentity } from '../job'
+import type { PreparedEnqueue } from '../job/prepared'
 import type {
   ActiveLease,
   AttemptRecord,
@@ -115,6 +116,11 @@ export type EnqueueRequest = {
 export interface EnqueueResult {
   readonly job: JobRecord
   readonly duplicate: boolean
+}
+
+/** Optional adapter capability for inserting an already prepared request atomically. */
+export interface TransactionalEnqueue {
+  enqueuePrepared(request: PreparedEnqueue): JobStoreOperation<EnqueueResult, JobStoreEnqueueError>
 }
 
 /** The output of `enqueueMany`, in exactly the input order. */
