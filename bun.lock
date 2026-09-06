@@ -323,9 +323,12 @@
         "typescript": ">=6.0.0",
       },
     },
-    "packages/better-effect-zod": {
-      "name": "better-effect-zod",
+    "packages/better-effect-schema": {
+      "name": "better-effect-schema",
       "version": "0.1.0",
+      "dependencies": {
+        "@standard-schema/spec": "^1.1.0",
+      },
       "devDependencies": {
         "better-effect": "0.13.0",
         "better-result": "3.0.1",
@@ -1122,7 +1125,7 @@
 
     "better-effect-mq-sqlite": ["better-effect-mq-sqlite@workspace:packages/better-effect-mq-sqlite"],
 
-    "better-effect-zod": ["better-effect-zod@workspace:packages/better-effect-zod"],
+    "better-effect-schema": ["better-effect-schema@workspace:packages/better-effect-schema"],
 
     "better-result": ["better-result@3.0.1", "", {}, "sha512-rnCeqEXkKPHmz5MO5ZroPRDyHe4YvlNPyy7qj8cVcWs/GnvSvC3086G74/220W+wWcIWlXgzvcjskFV0A4blUQ=="],
 
@@ -2166,7 +2169,7 @@
 
     "better-effect-mq-sqlite/@types/node": ["@types/node@24.13.3", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q=="],
 
-    "better-effect-zod/zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
+    "better-effect-schema/zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
     "bl/buffer": ["buffer@5.7.1", "", { "dependencies": { "base64-js": "^1.3.1", "ieee754": "^1.1.13" } }, "sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ=="],
 

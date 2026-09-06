@@ -39,10 +39,10 @@
       "initialRelease": true
     },
     {
-      "name": "better-effect-zod",
-      "directory": "packages/better-effect-zod",
-      "changelog": "packages/better-effect-zod/CHANGELOG.md",
-      "tagPrefix": "better-effect-zod-v",
+      "name": "better-effect-schema",
+      "directory": "packages/better-effect-schema",
+      "changelog": "packages/better-effect-schema/CHANGELOG.md",
+      "tagPrefix": "better-effect-schema-v",
       "initialRelease": true,
       "additionalFiles": [
         "MIGRATION.md",
