@@ -6,9 +6,36 @@
 caller-owned pool does not load `pg`; `PostgresClient.fromConfig` loads it
 lazily when it creates an owned pool. The shipped migration requires PostgreSQL
 12 or newer because it uses `jsonb_path_exists` for metadata constraints. The
-adapter implements protocol v1; its JobStore descriptor reports layout `1`,
+JobStore preserves protocol v1; its descriptor reports layout `1`,
 `metadataIndex: 'indexed'`, transactional enqueue, and native batch claim/enqueue.
 See the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
+
+## Flow protocol v2
+
+Migration `004_flows_v2.sql` is an additive, forward-only extension. It leaves
+migrations 001–003 and the v1 `OutboxStore` layout unchanged, adds the v2 flow
+columns to `better_effect_mq_jobs`, and creates the dedicated
+`better_effect_mq_flow_children` and `better_effect_mq_flow_outbox` tables.
+Flow reports never share the generic outbox table.
+
+`PostgresFlowStore.make()` performs a v2 handshake before returning the store:
+it requires the current migration manifest and both flow tables. A v1-only
+schema is rejected with `PostgresFlowProtocolMismatchError`; the flow store
+does not silently reinterpret a v1 record as `waiting-children` or flow data.
+
+The store implements the core `FlowStoreV2` operations with one PostgreSQL
+transaction per atomic mutation. FanOut writes the complete parent-owned
+manifest and dependency rows before moving the parent to `waiting-children`;
+replaying the same manifest is acknowledged and a conflicting replay fails.
+Child reports are pending-only and idempotent. Continue mode returns the parent
+to `waiting` after all reports; fail-fast settles the parent first and marks
+remaining dependencies for external cancellation. Parent cancellation and
+cascade acknowledgement never call another store inside the transaction.
+
+Dependency rows are locked before the parent row (`flow_children -> parent`).
+Cross-store enqueue, relay, and cancellation remain at-least-once operations
+performed by the Worker integration; this adapter never opens a transaction
+across stores.
 
 ```ts
 import { PostgresJobStore } from 'better-effect-mq-postgres'

@@ -77,9 +77,10 @@ cancelled. `cancel` performs the corresponding local cascade without calling a
 child store. `markCascaded` acknowledges each child at most once.
 
 `reconcile` reports missing children for enqueue, terminal observations for
-`recordChildResults`, and uncascaded cancelled children for cascade work. These
-operations are synchronous and return `better-result` `Result` values; they do
-not add a runtime or transaction abstraction.
+`recordChildResults`, and uncascaded cancelled children for cascade work. The
+contract accepts either an immediate `better-result` `Result` or a
+`PromiseLike` of one so in-memory and SQL-backed stores can share the same
+protocol without adding a runtime or transaction abstraction.
 
 PostgreSQL, Redis, cross-store enqueue/outbox delivery, result aggregation,
 and Worker supervision are intentionally left to later waves.

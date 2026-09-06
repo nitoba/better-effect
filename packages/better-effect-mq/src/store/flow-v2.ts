@@ -36,7 +36,9 @@ export type FlowStoreV2Error =
   | LeaseLostError
   | SettlementConflictError
 
-export type FlowStoreV2Operation<Success> = ResultType<Success, FlowStoreV2Error>
+export type FlowStoreV2Operation<Success> =
+  | ResultType<Success, FlowStoreV2Error>
+  | PromiseLike<ResultType<Success, FlowStoreV2Error>>
 
 export type FlowParentState = Extract<
   JobStateV2,

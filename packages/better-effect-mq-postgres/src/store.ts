@@ -15,7 +15,8 @@ import {
   JobStoreWakeAbortedError,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace,
-  type JobStoreDescriptor
+  type JobStoreDescriptor,
+  type SettlementOutcome
 } from 'better-effect-mq'
 import {
   makeJobRecord,
@@ -46,7 +47,12 @@ import {
 } from 'better-effect-mq'
 import { PostgresClient } from './client'
 import { hasUnpairedSurrogate } from './internal/text'
-import { quoteIdentifier, POSTGRES_TABLES } from './schema'
+import {
+  validateFlowChildReport,
+  validateParentEnvelope,
+  type FlowChildReport
+} from 'better-effect-mq'
+import { quoteIdentifier, POSTGRES_FLOW_TABLES, POSTGRES_TABLES } from './schema'
 import {
   normalizePostgresJobStoreConfig,
   normalizePostgresJobStoreConnectionConfig,
@@ -77,7 +83,7 @@ const postgresDescriptor = (queueFilteredNotifications: boolean): JobStoreDescri
 const maxRetries = 3
 
 type Row = Record<string, unknown>
-type StoreResult<T> = ResultType<T, any>
+type StoreResult<T> = ResultType<T, unknown>
 type Tx = PoolClient & {
   query<Row = unknown>(
     text: string,
@@ -855,10 +861,93 @@ const encodeRecord = (r: JobRecord): unknown[] => [
   r.failure === undefined ? null : json(r.failure)
 ]
 
+const appendFlowReport = async (
+  tx: Tx,
+  source: Row,
+  jobId: string,
+  attemptSequence: number,
+  outcome: SettlementOutcome,
+  now: number,
+  schema: string,
+  namespace: string
+): Promise<void> => {
+  const parentValue = optionalJson(source.parent)
+  if (parentValue === undefined) return
+  const parent = validateParentEnvelope(parentValue)
+  if (Result.isError(parent)) throw parent.error
+
+  let report: FlowChildReport | undefined
+  switch (outcome.type) {
+    case 'complete':
+      report = {
+        flowId: parent.value.flowId,
+        childKey: parent.value.childKey,
+        outcome: 'completed',
+        result: outcome.result,
+        failure: undefined
+      }
+      break
+    case 'fail':
+      report = {
+        flowId: parent.value.flowId,
+        childKey: parent.value.childKey,
+        outcome: 'failed',
+        result: undefined,
+        failure: outcome.failure
+      }
+      break
+    case 'cancelled':
+      report = {
+        flowId: parent.value.flowId,
+        childKey: parent.value.childKey,
+        outcome: 'cancelled',
+        result: undefined,
+        failure: outcome.failure
+      }
+      break
+    case 'retry':
+      return
+  }
+  if (report === undefined) return
+  const checked = validateFlowChildReport(report)
+  if (Result.isError(checked)) throw checked.error
+  await tx.query(
+    `INSERT INTO ${quoteIdentifier(schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
+      (namespace, id, flow_name, parent_store_key, report, created_at_ms)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+     ON CONFLICT (namespace, id) DO NOTHING`,
+    [
+      namespace,
+      `flow-report/${jobId}/${attemptSequence}`,
+      parent.value.flowName,
+      parent.value.parentStoreKey,
+      json(checked.value),
+      now
+    ]
+  )
+}
+
+const settlementOutcomeForAttempt = (
+  attempt: AttemptRecord | undefined
+): SettlementOutcome | undefined => {
+  if (attempt?.outcome === 'completed')
+    return attempt.result === undefined
+      ? { type: 'complete' }
+      : { type: 'complete', result: attempt.result }
+  if (attempt?.outcome === 'failed' && attempt.failure !== undefined)
+    return { type: 'fail', failure: attempt.failure }
+  if (attempt?.outcome === 'cancelled')
+    return attempt.failure === undefined
+      ? { type: 'cancelled' }
+      : { type: 'cancelled', failure: attempt.failure }
+  return undefined
+}
+
 class PostgresJobStoreImplementation {
   private descriptorValue = postgresDescriptor(false)
   private readonly channel: string
   private closed = false
+  private flowReportsEnabled = false
   private listener:
     | {
         readonly client: EventClient
@@ -1032,6 +1121,31 @@ class PostgresJobStoreImplementation {
     integer(result.rows[0].wake_version, 'wake_version')
     await this.emitNotification(tx, queue)
   }
+  private async flowReportsAvailable(tx: Tx): Promise<boolean> {
+    if (this.flowReportsEnabled) return true
+    const result = await tx.query<Row>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+          WHERE table_schema=$1 AND table_name=$2
+       ) AND EXISTS (
+         SELECT 1 FROM information_schema.tables
+          WHERE table_schema=$1 AND table_name=$3
+       ) AS flow_tables,
+       EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema=$1 AND table_name=$4 AND column_name='parent'
+       ) AS parent_column`,
+      [
+        this.client.schema,
+        POSTGRES_FLOW_TABLES.children,
+        POSTGRES_FLOW_TABLES.outbox,
+        POSTGRES_TABLES.jobs
+      ]
+    )
+    const row = result.rows[0]
+    this.flowReportsEnabled = row?.flow_tables === true && row.parent_column === true
+    return this.flowReportsEnabled
+  }
   private async emitNotification(tx: Tx, queue: string): Promise<void> {
     try {
       await tx.query('SAVEPOINT better_effect_mq_notify')
@@ -1172,7 +1286,7 @@ class PostgresJobStoreImplementation {
   private async transition(
     operation: string,
     request: { jobId: string; now: number },
-    command: (record: JobRecord) => ResultType<JobTransition, any>
+    command: (record: JobRecord) => ResultType<JobTransition, unknown>
   ): Promise<StoreResult<JobTransition>> {
     return this.withTx(operation, async (tx) => {
       const current = await this.row(tx, request.jobId, true)
@@ -1184,6 +1298,23 @@ class PostgresJobStoreImplementation {
       if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
       if (transition.attempt !== undefined)
         await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
+      const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
+      if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
+        const parent = await tx.query<Row>(
+          `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+          [this.client.namespace, current.id]
+        )
+        await appendFlowReport(
+          tx,
+          parent.rows[0] ?? {},
+          current.id,
+          transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+          flowOutcome,
+          request.now,
+          this.client.schema,
+          this.client.namespace
+        )
+      }
       await this.notify(tx, transition.record.queue, request.now)
       return transition
     })
@@ -1566,6 +1697,22 @@ class PostgresJobStoreImplementation {
             transition.attempt!.attemptSequence ?? transition.attempt!.attempt
           ]
         )
+        if (await this.flowReportsAvailable(tx)) {
+          const parent = await tx.query<Row>(
+            `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+            [this.client.namespace, current.id]
+          )
+          await appendFlowReport(
+            tx,
+            parent.rows[0] ?? {},
+            current.id,
+            transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+            settlementOutcome,
+            now,
+            this.client.schema,
+            this.client.namespace
+          )
+        }
         await this.notify(tx, current.queue, now)
         return { record: transition.record, attempt: transition.attempt!, status: 'applied' }
       }) as Promise<StoreResult<JobStoreNamespace.SettlementResult>>
@@ -1599,7 +1746,7 @@ class PostgresJobStoreImplementation {
               reason: 'missing-lease',
               leaseToken: leaseToken.value
             })
-          ) as ResultType<JobTransition, any>
+          ) as ResultType<JobTransition, unknown>
         return reduceJob(r, {
           type: 'release',
           jobId: r.id,
@@ -1767,12 +1914,29 @@ class PostgresJobStoreImplementation {
             r as never,
             { type: 'recover-stalled', jobId: r.id, now } as never,
             r.stalledCount >= maximum
-          ) as unknown as ResultType<JobTransition, any>
+          ) as unknown as ResultType<JobTransition, unknown>
           if (Result.isError(n)) throw n.error
           const transition = await this.prepareTransition(tx, r, n.value)
           await this.save(tx, transition.record)
           if (transition.attempt)
             await this.insertAttempt(tx, transition.attempt, r.id, r.leaseOwner)
+          const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
+          if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
+            const parent = await tx.query<Row>(
+              `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+              [this.client.namespace, r.id]
+            )
+            await appendFlowReport(
+              tx,
+              parent.rows[0] ?? {},
+              r.id,
+              transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+              flowOutcome,
+              now,
+              this.client.schema,
+              this.client.namespace
+            )
+          }
           await this.notify(tx, r.queue, now)
           transitions.push(transition)
         }

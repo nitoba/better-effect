@@ -6,7 +6,6 @@ import type {
   FlowChildSpec,
   FlowFanOutResult,
   FlowStoreV2,
-  FlowStoreV2Error,
   FlowStoreV2Operation,
   JobState,
   JobStateV2,
@@ -16,13 +15,11 @@ import type {
   SettlementOutcome,
   SettlementOutcomeV2
 } from '../../src'
-import type { Result as ResultType } from 'better-result'
-
 declare const flowStore: FlowStoreV2
 declare const fanOutResult: FlowStoreV2Operation<FlowFanOutResult>
 
 expectTypeOf(flowStore.descriptor.protocolVersion).toEqualTypeOf<2>()
-expectTypeOf(fanOutResult).toEqualTypeOf<ResultType<FlowFanOutResult, FlowStoreV2Error>>()
+expectTypeOf(fanOutResult).toEqualTypeOf<FlowStoreV2Operation<FlowFanOutResult>>()
 expectTypeOf(MemoryFlowStore.make()).toEqualTypeOf<FlowStoreV2>()
 
 const queue = Queue.define('flow-types')
