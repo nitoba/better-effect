@@ -72,17 +72,21 @@ export class OutboxStoreFailure extends TaggedError('OutboxStoreFailure')<{
   readonly operation: string
   readonly retryable: boolean
   readonly message: string
+  readonly cause?: unknown
 }> {
   constructor(args: {
     readonly operation: string
     readonly retryable: boolean
     readonly message?: string
+    readonly cause?: unknown
   }) {
-    super({
+    const payload = {
       operation: args.operation,
       retryable: args.retryable,
-      message: messageOr(args.message, `Outbox store operation failed: ${args.operation}`)
-    })
+      message: messageOr(args.message, `Outbox store operation failed: ${args.operation}`),
+      cause: args.cause
+    }
+    super(payload)
   }
 
   static override is<C extends TaggedErrorConstructor>(

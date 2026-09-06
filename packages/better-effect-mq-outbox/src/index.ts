@@ -58,8 +58,15 @@ export type {
   OutboxRetryRequest,
   OutboxSettlementError,
   OutboxSettlementResult,
-  OutboxStore,
   OutboxStoreDescriptor,
+  AnyOutboxStoreToken,
+  DefaultOutboxStoreToken,
+  OutboxStoreInstance,
+  OutboxStoreNameLiteral,
+  OutboxStoreTag,
+  OutboxStoreToken,
   OutboxStoreProtocolError,
   LeasedOutboxRecord
 } from './OutboxStore'
+
+export { OutboxStore, isOutboxStoreToken, outboxStoreTag } from './OutboxStore'

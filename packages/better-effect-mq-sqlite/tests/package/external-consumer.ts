@@ -40,8 +40,13 @@ try {
   await mkdir(archiveRoot, { recursive: true })
 
   const coreArchive = await pack('core', join(repositoryRoot, 'packages/better-effect'))
+  const outboxArchive = await pack(
+    'outbox',
+    join(repositoryRoot, 'packages/better-effect-mq-outbox')
+  )
   const sqliteArchive = await pack('sqlite', packageRoot)
   await installArchive(coreArchive, 'better-effect')
+  await installArchive(outboxArchive, 'better-effect-mq-outbox')
   await installArchive(sqliteArchive, 'better-effect-mq-sqlite')
 
   run(
