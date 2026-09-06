@@ -38,9 +38,11 @@ import {
   type FlowStoreV2Error,
   type JsonValue,
   type GetFlowRequest,
+  InvalidJobTransitionError,
   JobDefinitionError,
   JobNotFoundError,
   JobStoreFailure,
+  LeaseLostError,
   type MarkCascadedRequest,
   type MarkCascadedResult,
   type ReconcileFlowRequest,
@@ -58,8 +60,7 @@ import {
   canonicalFlowJson,
   decodeFlowChildEntry,
   decodeFlowParent,
-  encodeFlowChildEntry,
-  encodeFlowParent
+  encodeFlowChildEntry
 } from './flow-codec'
 import { decodeFlowChildIndexMember, encodeFlowChildIndexMember, encodeFlowReference } from './keys'
 import { ensureRedisFlowLayout } from './layout'
@@ -189,14 +190,17 @@ const mapFailure = (
       return invalid(operation, 'Redis flow request exceeds the protocol limits')
     }
   }
-  if (cause instanceof Error && (cause as { readonly _tag?: unknown })._tag !== undefined) {
-    return cause as FlowStoreV2Error
-  }
+  if (JobStoreFailure.is(cause)) return cause
+  if (JobDefinitionError.is(cause)) return cause
+  if (JobNotFoundError.is(cause)) return cause
+  if (InvalidJobTransitionError.is(cause)) return cause
+  if (LeaseLostError.is(cause)) return cause
+  if (SettlementConflictError.is(cause)) return cause
   return new JobStoreFailure({
     operation,
     retryable: isRetryable(cause),
     message: `Redis ${operation} failed`
-  }) as never
+  })
 }
 
 const sortBytes = (left: string, right: string): number =>
@@ -587,7 +591,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     try {
       normalized = normalizeFanOut(request)
     } catch (cause) {
-      return fail(cause as FlowStoreV2Error)
+      return fail(mapFailure('flow-fanout', cause))
     }
     return this.operation(
       'flow-fanout',
@@ -602,7 +606,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
           ],
           {
             mode: 'flow-fanout',
-            parent: JSON.parse(encodeFlowParent(normalized.parentRecord)),
+            parent: normalized.parentRecord,
             digest: normalized.digest,
             now: normalized.now,
             children: normalized.items
@@ -639,7 +643,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     try {
       normalized = normalizeReports(request)
     } catch (cause) {
-      return fail(cause as FlowStoreV2Error)
+      return fail(mapFailure('flow-record-child-results', cause))
     }
     return this.operation(
       'flow-record-child-results',
@@ -691,7 +695,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     try {
       normalized = normalizeCancel(request)
     } catch (cause) {
-      return fail(cause as FlowStoreV2Error)
+      return fail(mapFailure('flow-cancel', cause))
     }
     return this.operation(
       'flow-cancel',
@@ -735,7 +739,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     try {
       normalized = normalizeReconcile(request)
     } catch (cause) {
-      return fail(cause as FlowStoreV2Error)
+      return fail(mapFailure('flow-reconcile', cause))
     }
     return this.operation(
       'flow-reconcile',
@@ -770,7 +774,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     try {
       normalized = normalizeMarkCascaded(request)
     } catch (cause) {
-      return fail(cause as FlowStoreV2Error)
+      return fail(mapFailure('flow-mark-cascaded', cause))
     }
     return this.operation(
       'flow-mark-cascaded',
@@ -804,7 +808,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     try {
       fields = readFields(request, ['flowId'], 'request')
     } catch (cause) {
-      return fail(cause as FlowStoreV2Error)
+      return fail(mapFailure('flow-get', cause))
     }
     const flowId = makeJobId(required(fields, 'flowId', 'request'))
     if (Result.isError(flowId)) return fail(flowId.error)
