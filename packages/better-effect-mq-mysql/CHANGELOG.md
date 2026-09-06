@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add the MySQL durable outbox v1 table, typed transactional append, Layer-first
+  default/named outbox stores, fenced leases, recovery, settlement, and admin
+  inspection operations.
 - Add the MySQL `JobScheduleStore` adapter and schedules migration.
 - Add atomic, deterministic schedule ticks with durable queue wake versions.
 

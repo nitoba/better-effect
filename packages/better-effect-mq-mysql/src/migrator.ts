@@ -71,13 +71,71 @@ const databaseName = async (connection: PoolConnection): Promise<string | undefi
   )
   return result.rows[0]?.database_name ?? undefined
 }
-const statements = (sql: string): readonly string[] =>
-  sql
-    // Shipped migrations contain ordinary DDL only; splitting avoids requiring
-    // mysql2's unsafe multiStatements option for a migration connection.
-    .split(/;\s*(?:\r?\n|$)/u)
-    .map((statement) => statement.trim())
-    .filter(Boolean)
+const statements = (sql: string): readonly string[] => {
+  // Shipped migrations contain ordinary DDL only; splitting avoids requiring
+  // mysql2's unsafe multiStatements option for a migration connection. Track
+  // comments and quoted values so their semicolons are not treated as DDL.
+  const output: string[] = []
+  let start = 0
+  let quote: "'" | '"' | '`' | undefined
+  let lineComment = false
+  let blockComment = false
+  for (let index = 0; index < sql.length; index += 1) {
+    const current = sql[index]!
+    const next = sql[index + 1]
+    if (lineComment) {
+      if (current === '\n') lineComment = false
+      continue
+    }
+    if (blockComment) {
+      if (current === '*' && next === '/') {
+        blockComment = false
+        index += 1
+      }
+      continue
+    }
+    if (quote !== undefined) {
+      if (current === '\\') {
+        index += 1
+        continue
+      }
+      if (current === quote) {
+        if (next === quote) {
+          index += 1
+          continue
+        }
+        quote = undefined
+      }
+      continue
+    }
+    if (current === '-' && next === '-') {
+      lineComment = true
+      index += 1
+      continue
+    }
+    if (current === '#') {
+      lineComment = true
+      continue
+    }
+    if (current === '/' && next === '*') {
+      blockComment = true
+      index += 1
+      continue
+    }
+    if (current === "'" || current === '"' || current === '`') {
+      quote = current
+      continue
+    }
+    if (current === ';') {
+      const statement = sql.slice(start, index).trim()
+      if (statement.length > 0) output.push(statement)
+      start = index + 1
+    }
+  }
+  const trailing = sql.slice(start).trim()
+  if (trailing.length > 0) output.push(trailing)
+  return output
+}
 const bootstrapInitialSql = (sql: string): string =>
   sql
     .replace(
@@ -246,6 +304,57 @@ const scheduleIndexes = Object.freeze({
     { non_unique: 1, column_name: 'schedule_group', sub_part: 191, collation: 'A' }
   ]
 } satisfies Readonly<Record<string, readonly IndexPart[]>>)
+const outboxIndexes = Object.freeze({
+  better_effect_mq_outbox_claim_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'state', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'run_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'ordering_sequence', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_outbox_active_lease_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'state', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'lease_expires_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'ordering_sequence', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_outbox_target_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'target', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'state', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'run_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'ordering_sequence', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_outbox_recent_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'created_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'ordering_sequence', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'A' }
+  ]
+} satisfies Readonly<Record<string, readonly IndexPart[]>>)
+const outboxColumns = [
+  'namespace',
+  'id',
+  'protocol_version',
+  'target',
+  'state',
+  'request',
+  'metadata',
+  'request_digest',
+  'attempts_max',
+  'attempts_made',
+  'run_at_ms',
+  'created_at_ms',
+  'updated_at_ms',
+  'published_at_ms',
+  'lease_owner',
+  'lease_token',
+  'lease_expires_at_ms',
+  'failure',
+  'ordering_sequence'
+] as const
 const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
   const ddl = statements(migration.sql)
   if (migration.version === 1) return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
@@ -257,8 +366,45 @@ const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
     throw new MySqlMigrationError(
       'MySQL migration 003 reconciliation metadata does not match its DDL'
     )
-  if (migration.version !== 2 && migration.version !== 3)
+  if (migration.version === 4 && ddl.length !== 5)
+    throw new MySqlMigrationError(
+      'MySQL migration 004 reconciliation metadata does not match its DDL'
+    )
+  if (migration.version !== 2 && migration.version !== 3 && migration.version !== 4)
     return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
+  if (migration.version === 4)
+    return [
+      {
+        sql: ddl[0]!,
+        isSatisfied: async (connection) => {
+          const result = await connection.query<{ engine: string | null }>(
+            'SELECT engine AS engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [MYSQL_TABLES.outbox]
+          )
+          if (result.rows[0] === undefined) return false
+          if (result.rows[0].engine?.toLowerCase() !== 'innodb')
+            throw new MySqlMigrationError('existing outbox table is not InnoDB')
+          const columns = await connection.query<{ column_name: string }>(
+            'SELECT column_name AS column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?',
+            [MYSQL_TABLES.outbox]
+          )
+          const found = new Set(columns.rows.map((row) => row.column_name))
+          const missing = outboxColumns.filter((name) => !found.has(name))
+          if (missing.length > 0)
+            throw new MySqlMigrationError(
+              `existing outbox table is missing columns: ${missing.join(', ')}`
+            )
+          return true
+        }
+      },
+      ...Object.entries(outboxIndexes).map(([name, parts], index) => ({
+        sql: ddl[index + 1]!,
+        isSatisfied: async (connection: PoolConnection) =>
+          matchesIndexes(await indexes(connection, MYSQL_TABLES.outbox, [name]), {
+            [name]: parts
+          })
+      }))
+    ]
   if (migration.version === 3)
     return [
       {

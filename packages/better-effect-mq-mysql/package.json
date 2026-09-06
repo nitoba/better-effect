@@ -1,7 +1,7 @@
 {
   "name": "better-effect-mq-mysql",
   "version": "0.1.0",
-  "description": "MySQL JobStore adapter, schema, and migrations for better-effect-mq.",
+  "description": "MySQL JobStore and durable outbox adapters, schema, and migrations for better-effect-mq.",
   "keywords": [
     "better-effect",
     "better-result",
@@ -57,6 +57,7 @@
     "@types/node": "^22.0.0",
     "better-effect": "0.13.0",
     "better-effect-mq": "0.1.0",
+    "better-effect-mq-outbox": "0.1.0",
     "better-result": "^3.0.0",
     "mysql2": "^3.16.2",
     "oxfmt": "^0.63.0",
@@ -68,6 +69,7 @@
   "peerDependencies": {
     "better-effect": ">=0.13.0 <0.14.0",
     "better-effect-mq": ">=0.1.0 <0.2.0",
+    "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
     "better-result": "^3.0.0",
     "mysql2": ">=3.0.0 <4.0.0",
     "typescript": ">=6.0.0"

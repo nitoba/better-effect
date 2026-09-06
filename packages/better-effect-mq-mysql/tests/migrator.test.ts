@@ -9,7 +9,7 @@ import {
 } from '../src'
 
 test('the immutable initial migration and forward-only InnoDB upgrades are shipped', async () => {
-  const [migration, upgrade, schedules] = await loadMySqlMigrations()
+  const [migration, upgrade, schedules, outbox] = await loadMySqlMigrations()
   expect(migration?.sql).toContain('ENGINE=InnoDB')
   expect(migration?.sql).toContain('AUTO_INCREMENT')
   expect(migration?.sql).not.toMatch(/NOW\(\)|CURRENT_TIMESTAMP/u)
@@ -20,11 +20,103 @@ test('the immutable initial migration and forward-only InnoDB upgrades are shipp
   expect(upgrade?.sql).toContain('dedupe_hash')
   expect(schedules?.version).toBe(3)
   expect(schedules?.sql).toContain('better_effect_mq_schedules')
+  expect(outbox?.version).toBe(4)
+  expect(outbox?.sql).toContain('better_effect_mq_outbox')
+  expect(outbox?.sql).toContain('metadata JSON NOT NULL')
+  expect(outbox?.sql).toContain('request_digest LONGTEXT NOT NULL')
+  expect(outbox?.sql).toContain('lease_token VARCHAR(255) NULL')
+  expect(outbox?.sql).toContain('ordering_sequence BIGINT UNSIGNED NOT NULL AUTO_INCREMENT')
+  expect(outbox?.sql).toContain('better_effect_mq_outbox_claim_idx')
+})
+
+test('runs migration 004 when its SQL comments contain semicolons', async () => {
+  const migrations = await loadMySqlMigrations()
+  const checksums = {
+    3: migrationManifestChecksum(migrations, 3),
+    4: migrationManifestChecksum(migrations, 4)
+  }
+  const queries: string[] = []
+  let versionQueries = 0
+  const pool: Pool = {
+    getConnection: async () => ({
+      query: async (sql: string) => {
+        queries.push(sql)
+        if (sql.includes('DATABASE() AS database_name'))
+          return { rows: [{ database_name: 'better_effect_mq_test' }], rowCount: 1 }
+        if (sql.includes('GET_LOCK')) return { rows: [{ acquired: 1 }], rowCount: 1 }
+        if (sql.includes('RELEASE_LOCK')) return { rows: [], rowCount: 0 }
+        if (sql.includes('SELECT version, checksum')) {
+          versionQueries += 1
+          const version = versionQueries === 1 ? 3 : 4
+          return { rows: [{ version, checksum: checksums[version] }], rowCount: 1 }
+        }
+        if (sql.includes('VERSION()'))
+          return { rows: [{ version: '8.0.36', comment: 'MySQL Community Server' }], rowCount: 1 }
+        if (sql.includes('@@sql_mode'))
+          return { rows: [{ sql_mode: 'STRICT_TRANS_TABLES' }], rowCount: 1 }
+        if (sql.includes('information_schema.tables'))
+          return sql.includes('table_name IN')
+            ? {
+                rows: Object.values(MYSQL_TABLES).map((table_name) => ({
+                  table_name,
+                  engine: 'InnoDB'
+                })),
+                rowCount: Object.values(MYSQL_TABLES).length
+              }
+            : { rows: [], rowCount: 0 }
+        if (sql.includes('information_schema.columns'))
+          return {
+            rows: [
+              'namespace',
+              'id',
+              'protocol_version',
+              'target',
+              'state',
+              'request',
+              'metadata',
+              'request_digest',
+              'attempts_max',
+              'attempts_made',
+              'run_at_ms',
+              'created_at_ms',
+              'updated_at_ms',
+              'published_at_ms',
+              'lease_owner',
+              'lease_token',
+              'lease_expires_at_ms',
+              'failure',
+              'ordering_sequence'
+            ].map((column_name) => ({ column_name })),
+            rowCount: 19
+          }
+        if (sql.includes('information_schema.statistics')) return { rows: [], rowCount: 0 }
+        return { rows: [], rowCount: 0 }
+      },
+      execute: async () => ({ rows: [], rowCount: 0 }),
+      beginTransaction: async () => undefined,
+      commit: async () => undefined,
+      rollback: async () => undefined,
+      release: () => undefined
+    })
+  }
+
+  const result = await MySqlMigrator.run(pool, { appliedAtMs: 1_700_000_000_000 })
+
+  expect(result).toEqual({
+    component: MIGRATION_COMPONENT,
+    version: 4,
+    applied: [4]
+  })
+  expect(
+    queries.filter(
+      (sql) => sql.includes('better_effect_mq_outbox') && /(?:CREATE|ALTER) TABLE/u.test(sql)
+    )
+  ).toHaveLength(5)
 })
 
 test('schema validation performs the mandatory version, SQL-mode, engine, and protocol handshake', async () => {
   const migrations = await loadMySqlMigrations()
-  const checksum = migrationManifestChecksum(migrations, 3)
+  const checksum = migrationManifestChecksum(migrations, 4)
   const queries: string[] = []
   const pool: Pool = {
     getConnection: async () => ({
@@ -42,8 +134,33 @@ test('schema validation performs the mandatory version, SQL-mode, engine, and pr
             })),
             rowCount: Object.values(MYSQL_TABLES).length
           }
+        if (sql.includes('information_schema.columns'))
+          return {
+            rows: [
+              'namespace',
+              'id',
+              'protocol_version',
+              'target',
+              'state',
+              'request',
+              'metadata',
+              'request_digest',
+              'attempts_max',
+              'attempts_made',
+              'run_at_ms',
+              'created_at_ms',
+              'updated_at_ms',
+              'published_at_ms',
+              'lease_owner',
+              'lease_token',
+              'lease_expires_at_ms',
+              'failure',
+              'ordering_sequence'
+            ].map((column_name) => ({ column_name })),
+            rowCount: 19
+          }
         if (sql.includes('SELECT version, checksum'))
-          return { rows: [{ version: 3, checksum }], rowCount: 1 }
+          return { rows: [{ version: 4, checksum }], rowCount: 1 }
         return { rows: [], rowCount: 0 }
       },
       execute: async () => ({ rows: [], rowCount: 0 }),
@@ -57,7 +174,7 @@ test('schema validation performs the mandatory version, SQL-mode, engine, and pr
   const validation = await MySqlMigrator.validate(pool)
   expect(validation).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 3
+    version: 4
   })
   expect(queries.some((sql) => sql.includes('VERSION()'))).toBe(true)
   expect(queries.some((sql) => sql.includes('information_schema.tables'))).toBe(true)

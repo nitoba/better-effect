@@ -8,6 +8,7 @@ export const MIGRATION_COMPONENT = 'better-effect-mq' as const
 export const MYSQL_TABLES = Object.freeze({
   attempts: 'better_effect_mq_attempts',
   jobs: 'better_effect_mq_jobs',
+  outbox: 'better_effect_mq_outbox',
   orderingSequences: 'better_effect_mq_ordering_sequences',
   queues: 'better_effect_mq_queues',
   schedules: 'better_effect_mq_schedules',
@@ -21,6 +22,10 @@ export const MYSQL_INDEXES = Object.freeze([
   'better_effect_mq_jobs_run_at_idx',
   'better_effect_mq_jobs_terminal_idx',
   'better_effect_mq_jobs_idempotency_idx',
+  'better_effect_mq_outbox_claim_idx',
+  'better_effect_mq_outbox_active_lease_idx',
+  'better_effect_mq_outbox_target_idx',
+  'better_effect_mq_outbox_recent_idx',
   'better_effect_mq_schedules_due_idx',
   'better_effect_mq_schedules_group_idx',
   'better_effect_mq_schedules_key_idx'
