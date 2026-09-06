@@ -117,7 +117,9 @@ const sanitizeIssue = (value: unknown): SchemaIssue => {
 
 /** Convert a provider issue collection to a bounded, safe representation. */
 export const sanitizeSchemaIssues = (error: unknown): readonly SchemaIssue[] => {
-  const issues = readDataProperty(error, 'issues')
+  const issues = Array.isArray(error)
+    ? { present: true, value: error }
+    : readDataProperty(error, 'issues')
   if (!issues.present || !Array.isArray(issues.value)) {
     return Object.freeze([{ message: 'Validation failed' }] satisfies SchemaIssue[])
   }

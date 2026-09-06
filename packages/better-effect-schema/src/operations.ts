@@ -1,9 +1,11 @@
 import * as z from 'zod'
 import { Result } from 'better-result'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 import {
   SchemaConstructionFailure,
   SchemaDecodeFailure,
+  SchemaDefinitionFailure,
   SchemaEncodeFailure,
   SchemaAsyncRequired,
   SchemaExecutionFailure
@@ -12,17 +14,31 @@ import type { AnySchemaClass } from './is-schema-class.js'
 import type { Instance, Props } from './types.js'
 import { invokeAsync, invokeSync } from './internal/execution.js'
 import { schemaFailure, schemaSuccess } from './internal/result.js'
+import {
+  validateStandardAsync,
+  validateStandardSync,
+  type StandardSchema,
+  type StandardValidation
+} from './internal/standard.js'
 import type { SchemaEffect } from './schema-effect.js'
 
 export type { SchemaEffect } from './schema-effect.js'
 
 type AnySchema = z.ZodType
+type AnyStandardSchema = StandardSchema
 
-type DecodeFailure = SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired
+type DecodeFailure =
+  | SchemaDecodeFailure
+  | SchemaDefinitionFailure
+  | SchemaExecutionFailure
+  | SchemaAsyncRequired
 type EncodeFailure = SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired
 type ConstructionFailure = SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired
 
-type DecodeOperation<Schema extends AnySchema> = SchemaEffect<z.output<Schema>, DecodeFailure>
+type DecodeOperation<Schema extends AnyStandardSchema> = SchemaEffect<
+  StandardSchemaV1.InferOutput<Schema>,
+  DecodeFailure
+>
 
 type EncodeOperation<Schema extends AnySchema> = SchemaEffect<z.input<Schema>, EncodeFailure>
 
@@ -40,7 +56,11 @@ const classRuntime = <Class extends AnySchemaClass>(
   schemaClass: Class
 ): SchemaClassRuntime<Class> => schemaClass as unknown as SchemaClassRuntime<Class>
 
-const identifierOf = (schema: AnySchema): string => {
+const identifierOf = (schema: unknown): string => {
+  if ((typeof schema !== 'object' || schema === null) && typeof schema !== 'function') {
+    return 'ZodSchema'
+  }
+
   try {
     const identifier = Reflect.get(schema, 'identifier') as unknown
     if (typeof identifier === 'string' && identifier.trim().length > 0) {
@@ -53,18 +73,21 @@ const identifierOf = (schema: AnySchema): string => {
   return 'ZodSchema'
 }
 
-const decodeResult = <Schema extends AnySchema>(
-  schema: Schema,
-  result: z.ZodSafeParseResult<z.output<Schema>>
-): DecodeOperation<Schema> =>
-  result.success
-    ? schemaSuccess<z.output<Schema>, DecodeFailure>(result.data)
-    : schemaFailure<z.output<Schema>, DecodeFailure>(
-        new SchemaDecodeFailure({
-          identifier: identifierOf(schema),
-          cause: result.error
-        })
+const decodeResult = <Schema extends AnyStandardSchema>(
+  identifier: string,
+  result: StandardValidation<StandardSchemaV1.InferOutput<Schema>>
+): DecodeOperation<Schema> => {
+  switch (result._tag) {
+    case 'success':
+      return schemaSuccess<StandardSchemaV1.InferOutput<Schema>, DecodeFailure>(result.value)
+    case 'definition':
+      return schemaFailure<StandardSchemaV1.InferOutput<Schema>, DecodeFailure>(result.failure)
+    case 'failure':
+      return schemaFailure<StandardSchemaV1.InferOutput<Schema>, DecodeFailure>(
+        new SchemaDecodeFailure({ identifier, issues: result.issues, cause: result.issues })
       )
+  }
+}
 
 const encodeResult = <Schema extends AnySchema>(
   schema: Schema,
@@ -80,95 +103,141 @@ const encodeResult = <Schema extends AnySchema>(
       )
 
 /** Decode an unknown value with a typed failure instead of throwing a ZodError. */
-export function decodeUnknown<Schema extends AnySchema>(
+export function decodeUnknown<Schema extends AnyStandardSchema>(
   schema: Schema
 ): (input: unknown) => DecodeOperation<Schema>
-export function decodeUnknown<Schema extends AnySchema>(
+export function decodeUnknown<Schema extends AnyStandardSchema>(
   schema: Schema,
   input: unknown
 ): DecodeOperation<Schema>
-export function decodeUnknown<Schema extends AnySchema>(
+export function decodeUnknown<Schema extends AnyStandardSchema>(
   schema: Schema,
-  input?: unknown
+  input: unknown,
+  options: StandardSchemaV1.Options
+): DecodeOperation<Schema>
+export function decodeUnknown<Schema extends AnyStandardSchema>(
+  schema: Schema,
+  input?: unknown,
+  options?: StandardSchemaV1.Options
 ): DecodeOperation<Schema> | ((input: unknown) => DecodeOperation<Schema>) {
   const run = (value: unknown): DecodeOperation<Schema> =>
     (() => {
-      const result = invokeSync('decodeUnknown', () => z.safeParse(schema, value))
+      const result = validateStandardSync(
+        schema,
+        value,
+        identifierOf(schema),
+        'decodeUnknown',
+        options
+      )
       return Result.isError(result)
         ? (result as DecodeOperation<Schema>)
-        : decodeResult(schema, result.value)
+        : decodeResult(identifierOf(schema), result.value)
     })()
 
   return arguments.length === 1 ? run : run(input)
 }
 
 /** Decode a statically typed encoded value with a typed failure. */
-export function decode<Schema extends AnySchema>(
+export function decode<Schema extends AnyStandardSchema>(
   schema: Schema
-): (input: z.input<Schema>) => DecodeOperation<Schema>
-export function decode<Schema extends AnySchema>(
+): (input: StandardSchemaV1.InferInput<Schema>) => DecodeOperation<Schema>
+export function decode<Schema extends AnyStandardSchema>(
   schema: Schema,
-  input: z.input<Schema>
+  input: StandardSchemaV1.InferInput<Schema>
 ): DecodeOperation<Schema>
-export function decode<Schema extends AnySchema>(
+export function decode<Schema extends AnyStandardSchema>(
   schema: Schema,
-  input?: z.input<Schema>
-): DecodeOperation<Schema> | ((input: z.input<Schema>) => DecodeOperation<Schema>) {
-  const run = (value: z.input<Schema>): DecodeOperation<Schema> =>
+  input: StandardSchemaV1.InferInput<Schema>,
+  options: StandardSchemaV1.Options
+): DecodeOperation<Schema>
+export function decode<Schema extends AnyStandardSchema>(
+  schema: Schema,
+  input?: StandardSchemaV1.InferInput<Schema>,
+  options?: StandardSchemaV1.Options
+):
+  | DecodeOperation<Schema>
+  | ((input: StandardSchemaV1.InferInput<Schema>) => DecodeOperation<Schema>) {
+  const run = (value: StandardSchemaV1.InferInput<Schema>): DecodeOperation<Schema> =>
     (() => {
-      const result = invokeSync('decode', () => z.safeDecode(schema, value))
+      const result = validateStandardSync(schema, value, identifierOf(schema), 'decode', options)
       return Result.isError(result)
         ? (result as DecodeOperation<Schema>)
-        : decodeResult(schema, result.value)
+        : decodeResult(identifierOf(schema), result.value)
     })()
 
-  return arguments.length === 1 ? run : run(input as z.input<Schema>)
+  return arguments.length === 1 ? run : run(input as StandardSchemaV1.InferInput<Schema>)
 }
 
 /** Asynchronously decode an unknown value with a typed failure. */
-export function decodeUnknownAsync<Schema extends AnySchema>(
+export function decodeUnknownAsync<Schema extends AnyStandardSchema>(
   schema: Schema
 ): (input: unknown) => Promise<DecodeOperation<Schema>>
-export function decodeUnknownAsync<Schema extends AnySchema>(
+export function decodeUnknownAsync<Schema extends AnyStandardSchema>(
   schema: Schema,
   input: unknown
 ): Promise<DecodeOperation<Schema>>
-export function decodeUnknownAsync<Schema extends AnySchema>(
+export function decodeUnknownAsync<Schema extends AnyStandardSchema>(
   schema: Schema,
-  input?: unknown
+  input: unknown,
+  options: StandardSchemaV1.Options
+): Promise<DecodeOperation<Schema>>
+export function decodeUnknownAsync<Schema extends AnyStandardSchema>(
+  schema: Schema,
+  input?: unknown,
+  options?: StandardSchemaV1.Options
 ): Promise<DecodeOperation<Schema>> | ((input: unknown) => Promise<DecodeOperation<Schema>>) {
   const run = async (value: unknown): Promise<DecodeOperation<Schema>> => {
-    const result = await invokeAsync('decodeUnknownAsync', () => z.safeParseAsync(schema, value))
+    const result = await validateStandardAsync(
+      schema,
+      value,
+      identifierOf(schema),
+      'decodeUnknownAsync',
+      options
+    )
     return Result.isError(result)
       ? (result as DecodeOperation<Schema>)
-      : decodeResult(schema, result.value)
+      : decodeResult(identifierOf(schema), result.value)
   }
 
   return arguments.length === 1 ? run : run(input)
 }
 
 /** Asynchronously decode a statically typed encoded value with a typed failure. */
-export function decodeAsync<Schema extends AnySchema>(
+export function decodeAsync<Schema extends AnyStandardSchema>(
   schema: Schema
-): (input: z.input<Schema>) => Promise<DecodeOperation<Schema>>
-export function decodeAsync<Schema extends AnySchema>(
+): (input: StandardSchemaV1.InferInput<Schema>) => Promise<DecodeOperation<Schema>>
+export function decodeAsync<Schema extends AnyStandardSchema>(
   schema: Schema,
-  input: z.input<Schema>
+  input: StandardSchemaV1.InferInput<Schema>
 ): Promise<DecodeOperation<Schema>>
-export function decodeAsync<Schema extends AnySchema>(
+export function decodeAsync<Schema extends AnyStandardSchema>(
   schema: Schema,
-  input?: z.input<Schema>
+  input: StandardSchemaV1.InferInput<Schema>,
+  options: StandardSchemaV1.Options
+): Promise<DecodeOperation<Schema>>
+export function decodeAsync<Schema extends AnyStandardSchema>(
+  schema: Schema,
+  input?: StandardSchemaV1.InferInput<Schema>,
+  options?: StandardSchemaV1.Options
 ):
   | Promise<DecodeOperation<Schema>>
-  | ((input: z.input<Schema>) => Promise<DecodeOperation<Schema>>) {
-  const run = async (value: z.input<Schema>): Promise<DecodeOperation<Schema>> => {
-    const result = await invokeAsync('decodeAsync', () => z.safeDecodeAsync(schema, value))
+  | ((input: StandardSchemaV1.InferInput<Schema>) => Promise<DecodeOperation<Schema>>) {
+  const run = async (
+    value: StandardSchemaV1.InferInput<Schema>
+  ): Promise<DecodeOperation<Schema>> => {
+    const result = await validateStandardAsync(
+      schema,
+      value,
+      identifierOf(schema),
+      'decodeAsync',
+      options
+    )
     return Result.isError(result)
       ? (result as DecodeOperation<Schema>)
-      : decodeResult(schema, result.value)
+      : decodeResult(identifierOf(schema), result.value)
   }
 
-  return arguments.length === 1 ? run : run(input as z.input<Schema>)
+  return arguments.length === 1 ? run : run(input as StandardSchemaV1.InferInput<Schema>)
 }
 
 /** Encode a decoded value with a typed failure instead of throwing a ZodError. */
