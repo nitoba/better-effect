@@ -79,6 +79,15 @@ const LoggerLive = Layer.succeed(Logger, new Logger())
 
 const AppLive = Layer.merge(DatabaseLive, LoggerLive)
 const AppWithTestDatabase = Layer.override(AppLive, Layer.succeed(Database, new Database()))
+const IncompleteApp = Layer.merge(
+  Layer.scopedDiscard(
+    async function* () {
+      const database = yield* Database
+      return database
+    },
+    () => {}
+  )
+)
 
 expectTypeOf<Layer.Provided<typeof AppLive>>().toEqualTypeOf<Database | Logger>()
 expectTypeOf<Layer.Provided<typeof AppWithTestDatabase>>().toEqualTypeOf<Database | Logger>()
@@ -119,6 +128,23 @@ const runtimeObserver: RuntimeObserver = {
   },
   onResourceRelease: (event) => {
     expectTypeOf(event.service).toEqualTypeOf<AnyServiceToken>()
+  },
+  onShutdown: (event) => {
+    expectTypeOf(event.phase).toEqualTypeOf<
+      | 'shutdown-requested'
+      | 'quiesce-start'
+      | 'quiesce-end'
+      | 'drain-start'
+      | 'drain-end'
+      | 'abort-active'
+      | 'release-start'
+      | 'release-end'
+      | 'shutdown-complete'
+      | 'shutdown-failure'
+    >()
+    expectTypeOf(event.reason.kind).toEqualTypeOf<
+      'dispose' | 'signal' | 'external-abort' | 'main-settled'
+    >()
   }
 }
 
@@ -221,6 +247,12 @@ const configuredManagedByUse = Runtime.use(
   (runtime) => runtime.run(requiresDatabaseAndLogger),
   { backend: new MapLayerBackend() }
 )
+const launched = NodeRuntime.launch(AppLive, {
+  warmup: true,
+  shutdown: { gracePeriod: 10, abortAfterGracePeriod: true }
+})
+// @ts-expect-error NodeRuntime.launch requires a complete Layer.
+void NodeRuntime.launch(IncompleteApp)
 const explicitlyTypedOneShot = Runtime.run<CompleteProgram, typeof AppLive>(
   AppLive,
   backend,
@@ -243,6 +275,7 @@ expectTypeOf(configuredOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProg
 expectTypeOf(trailingOptionsOneShotResult).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(managedByUse).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf(configuredManagedByUse).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
+expectTypeOf(launched).toEqualTypeOf<Promise<void>>()
 expectTypeOf(explicitlyTypedOneShot).toEqualTypeOf<Promise<Awaited<CompleteProgram>>>()
 expectTypeOf<Awaited<typeof runtimePromise>>().toMatchTypeOf<AsyncDisposable>()
 

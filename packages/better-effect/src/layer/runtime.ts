@@ -26,7 +26,8 @@ import {
   type RuntimeDisposeOptions,
   type RuntimeOptions,
   type RuntimeRunOptions,
-  type RuntimeShutdownDiagnostic
+  type RuntimeShutdownDiagnostic,
+  type RuntimeShutdownReason
 } from '../runtime/outcome'
 
 import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
@@ -58,7 +59,8 @@ import type {
   RuntimeLifecycleStartEvent,
   RuntimeObserver,
   RuntimeResourceReleaseEvent,
-  RuntimeServiceAcquireEvent
+  RuntimeServiceAcquireEvent,
+  RuntimeShutdownEvent
 } from '../runtime/observer'
 
 import type { RuntimeInspection } from '../runtime/types'
@@ -83,6 +85,7 @@ import type {
   ScopeFinalizer,
   ScopeOutcome
 } from '../scope'
+import type { MaybePromise } from '../utils/types'
 
 type LayerProvider = LayerInput['providers'][number]
 
@@ -139,16 +142,26 @@ const isScopeOutcome = (
 ): input is ScopeOutcome => input !== undefined && 'status' in input
 
 const validateDisposeOptions = (options: RuntimeDisposeOptions): void => {
-  const { gracePeriod } = options
+  const { gracePeriod, abortAfterGracePeriod } = options
 
   if (gracePeriod !== undefined && (!Number.isFinite(gracePeriod) || gracePeriod < 0)) {
     throw new RangeError('Runtime dispose gracePeriod must be a finite non-negative number')
+  }
+
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate untyped shutdown options at the public Runtime boundary.
+  if (abortAfterGracePeriod !== undefined && typeof abortAfterGracePeriod !== 'boolean') {
+    throw new TypeError('Runtime dispose abortAfterGracePeriod must be a boolean')
   }
 }
 
 type ActiveExecution = {
   readonly promise: Promise<unknown>
   readonly metadata: RuntimeExecutionMetadata
+}
+
+type RootQuiesceRegistration = {
+  readonly quiesce: (reason: RuntimeShutdownReason) => MaybePromise<void>
+  started: boolean
 }
 
 type MutableRuntimeExecutionInspection = {
@@ -307,12 +320,16 @@ const bindProviderToScope = (
   resolver: ServiceResolver,
   observers: readonly RuntimeObserver[],
   executor: RuntimeExecutor<AnyService>,
-  ownerExecutionId?: string
+  ownerExecutionId?: string,
+  beforeAcquire?: () => void,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- provider instances are erased at the backend boundary.
+  onAcquired?: (instance: unknown) => void
 ): LayerRegistration => ({
   service: provider.service,
   serviceTag: provider.serviceTag,
 
   acquire: () => {
+    beforeAcquire?.()
     const current = getRuntimeContext(contextStorage)
     const executionId = current?.executionId ?? ownerExecutionId
     const context = makeRuntimeContext(
@@ -357,6 +374,8 @@ const bindProviderToScope = (
                       )
                   )
                 : await provider.acquire()
+
+            onAcquired?.(instance)
 
             const event: RuntimeServiceAcquireEvent = {
               service: provider.service,
@@ -432,13 +451,15 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private readonly executions = new Set<ActiveExecution>()
 
+  private readonly rootQuiesces: RootQuiesceRegistration[] = []
+
   private readonly serviceTags: readonly string[]
 
   private readonly shutdownController = new AbortController()
 
   private readonly taskSupervisor: RuntimeTaskSupervisor
 
-  private state: 'active' | 'disposing' | 'disposed' = 'active'
+  private state: RuntimeInspection['state'] = 'active'
 
   private warmupState: RuntimeInspection['warmup'] = 'idle'
 
@@ -464,6 +485,62 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       this.onCleanupFailure
     )
     this.taskSupervisor.bindScope(this.rootScope)
+  }
+
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- provider instances are erased after the public Layer contract check.
+  registerRootQuiesce(provider: LayerProvider, instance: unknown): void {
+    if (!provider.quiesce) {
+      return
+    }
+
+    this.rootQuiesces.push({
+      started: false,
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- the provider instance is erased after the public Layer contract check.
+      quiesce: (reason) => provider.quiesce!(instance, reason)
+    })
+  }
+
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- provider instances are erased after the public Layer contract check.
+  private registerLifecycleQuiesce(entry: LayerLifecycleEntry, instance: unknown): void {
+    if (!entry.quiesce) {
+      return
+    }
+
+    this.rootQuiesces.push({
+      started: false,
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are intentionally opaque to Runtime internals.
+      quiesce: (reason) => entry.quiesce!(instance, reason)
+    })
+  }
+
+  assertRootAcquisitionAllowed(): void {
+    if (this.state !== 'active') {
+      throw new RuntimeHandleDisposedError()
+    }
+  }
+
+  private emitShutdown(event: RuntimeShutdownEvent): void {
+    notifyRuntimeObservers(this.observers, (observer) => observer.onShutdown, event)
+  }
+
+  private async quiesceResources(reason: RuntimeShutdownReason): Promise<readonly unknown[]> {
+    const failures: unknown[] = []
+
+    for (;;) {
+      const registration = [...this.rootQuiesces].reverse().find((candidate) => !candidate.started)
+
+      if (!registration) {
+        return failures
+      }
+
+      registration.started = true
+
+      try {
+        await registration.quiesce(reason)
+      } catch (cause) {
+        failures.push(cause)
+      }
+    }
   }
 
   inspect(): RuntimeInspection {
@@ -703,11 +780,12 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
             )
 
             try {
-              await this.rootScope.acquire(
+              const resource = await this.rootScope.acquire(
                 () => entry.acquire(),
                 (resource, outcome) =>
                   releaseLifecycleResource(entry, resource, outcome, this.observers)
               )
+              this.registerLifecycleQuiesce(entry, resource)
               const endEvent: RuntimeLifecycleEndEvent = Object.freeze({
                 ...metadata,
                 outcome: SCOPE_SUCCESS
@@ -895,25 +973,46 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     const options = isScopeOutcome(input) || input === undefined ? {} : input
 
     validateDisposeOptions(options)
-    this.state = 'disposing'
+    const reason = Object.freeze(options.reason ?? { kind: 'dispose' as const })
+    this.state = 'quiescing'
+    this.emitShutdown({ phase: 'shutdown-requested', reason })
 
-    const executions = [...this.executions]
-
-    this.disposePromise = this.performDispose(executions, outcome, options)
+    this.disposePromise = this.performDispose(outcome, options, reason)
 
     return this.disposePromise
   }
 
   private async performDispose(
-    executions: readonly ActiveExecution[],
     outcome: ScopeOutcome,
-    options: RuntimeDisposeOptions
+    options: RuntimeDisposeOptions,
+    reason: RuntimeShutdownReason
   ): Promise<void> {
     const failures: unknown[] = []
 
     await Promise.allSettled(this.warmupPromise ? [this.warmupPromise] : [])
-    await this.waitForExecutions(executions, options)
 
+    const quiesceStartedAt = Date.now()
+    this.emitShutdown({ phase: 'quiesce-start', reason })
+    failures.push(...(await this.quiesceResources(reason)))
+    this.emitShutdown({
+      phase: 'quiesce-end',
+      reason,
+      durationMs: Math.max(0, Date.now() - quiesceStartedAt)
+    })
+
+    this.state = 'draining'
+    const executions = [...this.executions]
+    this.emitShutdown({
+      phase: 'drain-start',
+      reason,
+      activeExecutions: executions.length
+    })
+    await this.waitForExecutions(executions, options, reason)
+    failures.push(...(await this.quiesceResources(reason)))
+    this.emitShutdown({ phase: 'drain-end', reason, activeExecutions: this.executions.size })
+
+    this.state = 'releasing'
+    this.emitShutdown({ phase: 'release-start', reason })
     try {
       const signalLink = linkAbortSignals(this.signal, this.shutdownController.signal)
 
@@ -946,8 +1045,12 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
     this.state = 'disposed'
 
+    this.emitShutdown({ phase: 'release-end', reason })
+
     if (failures.length > 0) {
       const error = new LayerDisposeError(failures.flatMap(normalizeDisposeCauses))
+
+      this.emitShutdown({ phase: 'shutdown-failure', reason, error })
 
       await notifyShutdownFailure(this.onCleanupFailure, {
         outcome,
@@ -956,11 +1059,14 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
       throw error
     }
+
+    this.emitShutdown({ phase: 'shutdown-complete', reason })
   }
 
   private async waitForExecutions(
     executions: readonly ActiveExecution[],
-    options: RuntimeDisposeOptions
+    options: RuntimeDisposeOptions,
+    reason: RuntimeShutdownReason
   ): Promise<void> {
     const settled = Promise.allSettled(executions.map((execution) => execution.promise))
 
@@ -984,7 +1090,21 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     }
 
     if (timedOut && !this.shutdownController.signal.aborted) {
-      this.shutdownController.abort(new Error('Runtime shutdown grace period exceeded'))
+      const abortCause =
+        reason.kind === 'signal'
+          ? reason.signal
+          : (reason.cause ?? new Error('Runtime shutdown grace period exceeded'))
+      this.state = 'aborting'
+      this.emitShutdown({
+        phase: 'abort-active',
+        reason: {
+          kind: 'external-abort',
+          // oxlint-disable-next-line anti-slop/no-conditional-empty-object-spread -- preserve an optional safe abort diagnostic.
+          ...(abortCause === undefined ? {} : { cause: abortCause })
+        },
+        activeExecutions: this.executions.size
+      })
+      this.shutdownController.abort(abortCause)
     }
 
     await settled
@@ -1016,12 +1136,13 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   const resolver = createResolutionResolver(backend, contextStorage, observers)
   const executionDependencies = makeRuntimeExecutionDependencies(executionOverrides)
   ScopeRuntime.bind(rootScope, contextStorage)
-  let handle!: RuntimeHandleImpl<ProvidedEnvironment<L>>
+  let handle: RuntimeHandleImpl<ProvidedEnvironment<L>> | undefined
+  const pendingRootQuiesces: Array<{ provider: LayerProvider; instance: unknown }> = []
   const executor =
     providedExecutor ??
     createRuntimeExecutor<ProvidedEnvironment<L>>({
-      run: (program, runOptions) => handle.run(program, runOptions),
-      runWith: (request, program, runOptions) => handle.runWith(request, program, runOptions)
+      run: (program, runOptions) => handle!.run(program, runOptions),
+      runWith: (request, program, runOptions) => handle!.runWith(request, program, runOptions)
     })
   const contextExecutor = eraseRuntimeExecutor(executor)
   let current: LayerProvider | undefined
@@ -1037,7 +1158,16 @@ export const createRuntimeHandle = async <L extends LayerInput>(
           contextStorage,
           resolver,
           observers,
-          contextExecutor
+          contextExecutor,
+          undefined,
+          () => handle?.assertRootAcquisitionAllowed(),
+          (instance) => {
+            if (handle === undefined) {
+              pendingRootQuiesces.push({ provider, instance })
+            } else {
+              handle.registerRootQuiesce(provider, instance)
+            }
+          }
         )
       )
     }
@@ -1105,6 +1235,10 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     contextExecutor,
     lifecycleEntries
   )
+
+  for (const { provider, instance } of pendingRootQuiesces) {
+    handle.registerRootQuiesce(provider, instance)
+  }
 
   return handle
 }

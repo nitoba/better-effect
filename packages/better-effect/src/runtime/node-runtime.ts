@@ -11,9 +11,7 @@ import type {
   ProvidedEnvironment
 } from '../layer/inference'
 import { Runtime } from './runtime'
-import { linkAbortSignals } from './signal'
-
-import type { RuntimeOptions } from './outcome'
+import type { RuntimeDisposeOptions, RuntimeOptions, RuntimeShutdownReason } from './outcome'
 import type { RuntimeExecutionEndEvent, RuntimeObserver } from './observer'
 import type { ScopeOutcome } from '../scope'
 
@@ -39,7 +37,15 @@ export type NodeRuntimeOptions<Success = unknown, Failure = unknown> = RuntimeOp
   readonly onFailure?: NodeRuntimeFailureHandler<Failure>
   /** Observe a defect. Defects are rethrown after the handler runs. */
   readonly onDefect?: NodeRuntimeDefectHandler
+  /** Runtime shutdown policy used after a signal or main-program settlement. */
+  readonly shutdown?: Omit<RuntimeDisposeOptions, 'reason'>
 }
+
+/** Options for the Layer-first `NodeRuntime.launch` entrypoint. */
+export type NodeRuntimeLaunchOptions = Omit<
+  NodeRuntimeOptions<never, never>,
+  'onSuccess' | 'onFailure'
+>
 
 type NonResultMainSuccess<Value> = Value extends ResultType<any, any> ? never : Value
 
@@ -55,6 +61,11 @@ const DEFAULT_SIGNALS = ['SIGINT', 'SIGTERM'] as const satisfies readonly NodeRu
 
 type InstalledSignalListener = {
   readonly signal: NodeRuntimeSignal
+  readonly listener: () => void
+}
+
+type InstalledAbortListener = {
+  readonly signal: AbortSignal
   readonly listener: () => void
 }
 
@@ -137,6 +148,29 @@ const validateRuntimeOptions = <Success, Failure>(
   }
 }
 
+const validateShutdownOptions = <Success, Failure>(
+  shutdown: NodeRuntimeOptions<Success, Failure>['shutdown']
+): void => {
+  if (shutdown === undefined) {
+    return
+  }
+
+  if (
+    shutdown.gracePeriod !== undefined &&
+    (!Number.isFinite(shutdown.gracePeriod) || shutdown.gracePeriod < 0)
+  ) {
+    throw new RangeError('NodeRuntime shutdown gracePeriod must be a finite non-negative number')
+  }
+
+  if (
+    shutdown.abortAfterGracePeriod !== undefined &&
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate untyped shutdown options at the public Node boundary.
+    typeof shutdown.abortAfterGracePeriod !== 'boolean'
+  ) {
+    throw new TypeError('NodeRuntime shutdown abortAfterGracePeriod must be a boolean')
+  }
+}
+
 const validateCallbacks = <Success, Failure>(
   options: NodeRuntimeOptions<Success, Failure>
 ): void => {
@@ -165,6 +199,7 @@ const validateOptions = <Success, Failure>(options: NodeRuntimeOptions<Success, 
   validateSignals(options.signals)
   validateRuntimeOptions(options)
   validateCallbacks(options)
+  validateShutdownOptions(options.shutdown)
 
   if (options.observers !== undefined && !Array.isArray(options.observers)) {
     throw new TypeError('NodeRuntime observers must be an array')
@@ -197,6 +232,19 @@ const removeSignalListeners = (listeners: InstalledSignalListener[]): readonly u
   listeners.length = 0
 
   return failures
+}
+
+const removeAbortListener = (listener: InstalledAbortListener | undefined): readonly unknown[] => {
+  if (!listener) {
+    return []
+  }
+
+  try {
+    listener.signal.removeEventListener('abort', listener.listener)
+    return []
+  } catch (cause) {
+    return [cause]
+  }
 }
 
 const combineFailures = (failures: readonly unknown[]): readonly unknown[] => {
@@ -307,16 +355,17 @@ export class NodeRuntime {
     const normalizedOptions = (options ?? {}) as MainOptions<A>
     validateOptions(normalizedOptions)
 
-    const shutdownController = new AbortController()
     const configuredSignals = normalizeSignals(normalizedOptions.signals)
     const {
       onSuccess,
       onFailure,
       onDefect,
       signal: callerSignal,
+      shutdown: shutdownOptions,
       ...runtimeOptions
     } = normalizedOptions
-    const signalLink = linkAbortSignals(callerSignal, shutdownController.signal)
+    const shutdownPolicy =
+      shutdownOptions ?? ({ gracePeriod: 0, abortAfterGracePeriod: true } as const)
     const listeners: InstalledSignalListener[] = []
     const cleanupFailures: unknown[] = []
 
@@ -332,14 +381,21 @@ export class NodeRuntime {
     let executionOutcome: ScopeOutcome | undefined
     let programSettled = false
     let programValue!: Awaited<A>
+    let externalAbortListener: InstalledAbortListener | undefined
+    let pendingShutdownReason: RuntimeShutdownReason | undefined
 
-    const requestDispose = (): Promise<void> => {
+    const requestDispose = (reason: RuntimeShutdownReason): Promise<void> => {
       if (disposalPromise) {
         return disposalPromise
       }
 
+      if (!runtime) {
+        pendingShutdownReason = reason
+        return Promise.resolve()
+      }
+
       try {
-        disposalPromise = runtime!.dispose()
+        disposalPromise = runtime!.dispose({ ...shutdownPolicy, reason })
       } catch (cause) {
         disposalPromise = Promise.reject(cause)
       }
@@ -355,7 +411,11 @@ export class NodeRuntime {
       disposalObserved = true
 
       try {
-        await requestDispose()
+        await requestDispose({
+          kind: 'main-settled',
+          // oxlint-disable-next-line anti-slop/no-conditional-empty-object-spread -- preserve optional safe diagnostic metadata.
+          ...(programFailure === undefined ? {} : { cause: programFailure })
+        })
       } catch (cause) {
         cleanupFailures.push(cause)
       }
@@ -368,11 +428,17 @@ export class NodeRuntime {
 
       firstSignal = signal
 
-      try {
-        shutdownController.abort(signal)
-      } finally {
-        void requestDispose().catch(() => {})
-      }
+      void requestDispose({ kind: 'signal', signal }).catch(() => {})
+    }
+
+    const onExternalAbort = (): void => {
+      const cause = callerSignal?.reason
+
+      void requestDispose({
+        kind: 'external-abort',
+        // oxlint-disable-next-line anti-slop/no-conditional-empty-object-spread -- preserve optional caller diagnostics without exposing a signal object.
+        ...(cause === undefined ? {} : { cause })
+      }).catch(() => {})
     }
 
     try {
@@ -383,15 +449,27 @@ export class NodeRuntime {
       }
       const runtimeOptionsWithSignal: RuntimeOptions = {
         ...runtimeOptions,
-        observers: [executionObserver, ...(runtimeOptions.observers ?? [])],
-        signal: signalLink.signal
+        observers: [executionObserver, ...(runtimeOptions.observers ?? [])]
+      }
+
+      installSignalListeners(configuredSignals, listeners, onSignal)
+      if (callerSignal !== undefined) {
+        const listener = onExternalAbort
+        externalAbortListener = { signal: callerSignal, listener }
+        callerSignal.addEventListener('abort', listener, { once: true })
+
+        if (callerSignal.aborted) {
+          onExternalAbort()
+        }
       }
 
       runtime = backend
         ? await Runtime.make(layer, backend, runtimeOptionsWithSignal)
         : await Runtime.make(layer, runtimeOptionsWithSignal)
 
-      installSignalListeners(configuredSignals, listeners, onSignal)
+      if (pendingShutdownReason !== undefined) {
+        void requestDispose(pendingShutdownReason).catch(() => {})
+      }
 
       try {
         programValue = await runtime.run(program)
@@ -413,11 +491,7 @@ export class NodeRuntime {
       await observeDisposal()
       cleanupFailures.push(...removeSignalListeners(listeners))
 
-      try {
-        signalLink.dispose()
-      } catch (cause) {
-        cleanupFailures.push(cause)
-      }
+      cleanupFailures.push(...removeAbortListener(externalAbortListener))
     }
 
     const cleanupFailureValues = combineFailures(cleanupFailures)
@@ -487,6 +561,157 @@ export class NodeRuntime {
 
     return programValue
   }
+
+  /**
+   * Start a complete application Layer and keep it running until a configured
+   * process signal or caller AbortSignal requests shutdown.
+   */
+  static launch<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    backend: LayerBackend,
+    options?: NodeRuntimeLaunchOptions
+  ): Promise<void>
+
+  static launch<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    options?: NodeRuntimeLaunchOptions
+  ): Promise<void>
+
+  static async launch<L extends LayerInput>(
+    layer: L & CompleteInput<L>,
+    backendOrOptions?: LayerBackend | NodeRuntimeLaunchOptions,
+    legacyOptions?: NodeRuntimeLaunchOptions
+  ): Promise<void> {
+    const backend = isLayerBackend(backendOrOptions) ? backendOrOptions : undefined
+    const options = (backend ? legacyOptions : backendOrOptions) ?? {}
+
+    if (!isOptionsObject(options)) {
+      throw new TypeError('NodeRuntime options must be a non-array object')
+    }
+
+    // SAFETY: isOptionsObject established the runtime shape before restoring the public launch option type.
+    const normalizedOptions = options as NodeRuntimeLaunchOptions
+    validateOptions(normalizedOptions)
+
+    const configuredSignals = normalizeSignals(normalizedOptions.signals)
+    const {
+      signals: _signals,
+      signal: callerSignal,
+      shutdown: shutdownOptions,
+      onDefect,
+      ...runtimeOptions
+    } = normalizedOptions
+    const shutdownPolicy =
+      shutdownOptions ?? ({ gracePeriod: 0, abortAfterGracePeriod: true } as const)
+    const listeners: InstalledSignalListener[] = []
+    const cleanupFailures: unknown[] = []
+    let runtime: Runtime<ProvidedEnvironment<L>> | undefined
+    let externalAbortListener: InstalledAbortListener | undefined
+    let firstSignal: NodeRuntimeSignal | undefined
+    let disposalPromise: Promise<void> | undefined
+    let pendingShutdownReason: RuntimeShutdownReason | undefined
+    let resolveShutdownRequested!: () => void
+    const shutdownRequested = new Promise<void>((resolve) => {
+      resolveShutdownRequested = resolve
+    })
+
+    const requestShutdown = (reason: RuntimeShutdownReason): Promise<void> => {
+      if (disposalPromise) {
+        return disposalPromise
+      }
+
+      if (!runtime) {
+        pendingShutdownReason = reason
+        return Promise.resolve()
+      }
+
+      resolveShutdownRequested()
+
+      try {
+        disposalPromise = runtime!.dispose({ ...shutdownPolicy, reason })
+      } catch (cause) {
+        disposalPromise = Promise.reject(cause)
+      }
+
+      return disposalPromise
+    }
+
+    const onSignal = (signal: NodeRuntimeSignal): void => {
+      if (firstSignal !== undefined) {
+        return
+      }
+
+      firstSignal = signal
+      void requestShutdown({ kind: 'signal', signal }).catch(() => {})
+    }
+
+    const onExternalAbort = (): void => {
+      const cause = callerSignal?.reason
+      void requestShutdown({
+        kind: 'external-abort',
+        // oxlint-disable-next-line anti-slop/no-conditional-empty-object-spread -- preserve optional caller diagnostics without exposing a signal object.
+        ...(cause === undefined ? {} : { cause })
+      }).catch(() => {})
+    }
+
+    let failure: unknown
+
+    try {
+      installSignalListeners(configuredSignals, listeners, onSignal)
+
+      if (callerSignal !== undefined) {
+        const listener = onExternalAbort
+        externalAbortListener = { signal: callerSignal, listener }
+        callerSignal.addEventListener('abort', listener, { once: true })
+
+        if (callerSignal.aborted) {
+          onExternalAbort()
+        }
+      }
+
+      runtime = backend
+        ? await Runtime.make(layer, backend, runtimeOptions)
+        : await Runtime.make(layer, runtimeOptions)
+
+      if (pendingShutdownReason !== undefined) {
+        void requestShutdown(pendingShutdownReason).catch(() => {})
+      }
+
+      process.stdin.resume()
+      await shutdownRequested
+      await disposalPromise
+    } catch (cause) {
+      failure = cause
+
+      if (runtime && !disposalPromise) {
+        try {
+          await runtime.dispose({
+            ...shutdownPolicy,
+            reason: { kind: 'main-settled', cause }
+          })
+        } catch (cleanupCause) {
+          failure = cleanupCause
+        }
+      }
+    } finally {
+      cleanupFailures.push(...removeSignalListeners(listeners))
+      cleanupFailures.push(...removeAbortListener(externalAbortListener))
+      process.stdin.pause()
+    }
+
+    if (failure !== undefined) {
+      reportDefect(failure, onDefect)
+      throw failure
+    }
+
+    if (cleanupFailures.length > 0) {
+      const cleanupFailure = combineFailures(cleanupFailures)[0]
+      reportDefect(cleanupFailure, onDefect)
+      throw cleanupFailure
+    }
+
+    setExitCode(0)
+  }
 }
 
 /** Type-level aliases for the Node.js/Bun process boundary. */
@@ -496,4 +721,7 @@ export declare namespace NodeRuntime {
 
   /** A process signal accepted by `NodeRuntime.runMain`. */
   export type Signal = NodeRuntimeSignal
+
+  /** Options for `NodeRuntime.launch`. */
+  export type LaunchOptions = NodeRuntimeLaunchOptions
 }

@@ -31,7 +31,13 @@ export {
   ServiceTagCollisionError
 } from './layer'
 
-export type { LayerBackend, LayerBackendDisposeOptions, LayerRegistration } from './layer'
+export type {
+  LayerBackend,
+  LayerBackendDisposeOptions,
+  LayerLifecycle,
+  LayerQuiesce,
+  LayerRegistration
+} from './layer'
 
 export { Effect, Program } from './effect'
 
@@ -109,5 +115,8 @@ export type {
   RuntimeTaskMetadata,
   RuntimeTaskStartEvent,
   RuntimeRunOptions,
-  RuntimeShutdownDiagnostic
+  RuntimeShutdownDiagnostic,
+  RuntimeShutdownEvent,
+  RuntimeShutdownPhase,
+  RuntimeShutdownReason
 } from './runtime'

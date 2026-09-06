@@ -24,7 +24,14 @@ export type RuntimeTaskInspection = RuntimeTaskMetadata & {
  * primitive or readiness guarantee.
  */
 export type RuntimeInspection = {
-  readonly state: 'active' | 'disposing' | 'disposed'
+  readonly state:
+    | 'active'
+    | 'disposing'
+    | 'quiescing'
+    | 'draining'
+    | 'aborting'
+    | 'releasing'
+    | 'disposed'
   readonly warmup: 'idle' | 'running' | 'completed' | 'failed'
   readonly activeExecutions: number
   readonly executions: readonly RuntimeExecutionInspection[]

@@ -631,11 +631,40 @@ await NodeRuntime.runMain(AppLive, main, {
 remain rejected and may be reported with `onDefect`. Cleanup-only failures use
 `onCleanupFailure`, remain observable, and still set a non-zero
 `process.exitCode` after successful work. The first `SIGINT` or `SIGTERM`
-immediately aborts `CurrentAbortSignal`; Runtime disposal then waits
-cooperatively for the main execution. Listeners are removed in `finally`,
-repeated signals are ignored, and the helper never calls `process.exit()`.
-The Node boundary intentionally does not expose a second grace-period policy;
-use `Runtime.dispose` directly when a managed Runtime needs one.
+requests Runtime quiesce; the default Node policy keeps the historical
+immediate cooperative abort, while an explicit `shutdown` policy can allow a
+grace period. Listeners are installed before Layer activation, removed in
+`finally`, repeated signals are ignored, and the helper never calls
+`process.exit()`:
+
+```ts
+await NodeRuntime.runMain(AppLive, main, {
+  shutdown: {
+    gracePeriod: 10_000,
+    abortAfterGracePeriod: true
+  }
+})
+```
+
+Scoped Layers may separate admission shutdown from final release. The
+`quiesce` callback receives a safe `RuntimeShutdownReason`; `release` still
+receives the final `ScopeOutcome` and runs only after active executions drain:
+
+```ts
+const ServerLive = Layer.scopedGen(Server, acquireServer, {
+  quiesce: (server) => server.stopAccepting(),
+  release: (server, outcome) => server.close(outcome)
+})
+```
+
+For applications fully represented by a complete Layer graph, use the Layer-first
+entrypoint. It waits for a process or caller signal without running a polling loop:
+
+```ts
+await NodeRuntime.launch(ApplicationLive, {
+  shutdown: { gracePeriod: 10_000, abortAfterGracePeriod: true }
+})
+```
 
 For request-local context or overrides, add a Layer only to that execution:
 

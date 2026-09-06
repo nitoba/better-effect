@@ -2,7 +2,7 @@ import { Result } from 'better-result'
 
 import { describe, expect, test } from 'bun:test'
 
-import { Effect, Layer, Runtime, Scope, Service, type ScopeOutcome } from '../src'
+import { Effect, Layer, Runtime, Scope, Service, ServiceRuntime, type ScopeOutcome } from '../src'
 import { RecordedRuntimeObserver } from '../src/testing'
 
 class LifecycleConfig extends Service<LifecycleConfig>()('LifecycleConfig') {
@@ -12,6 +12,120 @@ class LifecycleConfig extends Service<LifecycleConfig>()('LifecycleConfig') {
 }
 
 describe('Layer lifecycle-only entries', () => {
+  test('runs quiesce callbacks before LIFO release for Service and discard resources', async () => {
+    const events: string[] = []
+    let releaseExecution!: () => void
+    let markExecutionStarted!: () => void
+    const executionReady = new Promise<void>((resolve) => {
+      releaseExecution = resolve
+    })
+    const executionStarted = new Promise<void>((resolve) => {
+      markExecutionStarted = resolve
+    })
+
+    class Server extends Service<Server>()('LifecycleServer') {}
+
+    const runtime = await Runtime.make(
+      Layer.merge(
+        Layer.scoped(Server, () => new Server(), {
+          quiesce: () => {
+            events.push('server quiesce')
+          },
+          release: () => {
+            events.push('server release')
+          }
+        }),
+        Layer.scopedDiscard(() => ({ stop: () => {} }), {
+          quiesce: () => {
+            events.push('worker quiesce')
+          },
+          release: () => {
+            events.push('worker release')
+          }
+        })
+      )
+    )
+
+    const execution = runtime.run(async () => {
+      await ServiceRuntime.resolve(Server)
+      markExecutionStarted()
+      await executionReady
+      return undefined
+    })
+    await executionStarted
+    const disposal = runtime.dispose()
+    while (events.length < 2) {
+      await Promise.resolve()
+    }
+
+    expect(runtime.inspect().state).toBe('quiescing')
+    expect(events).toEqual(['server quiesce', 'worker quiesce'])
+
+    releaseExecution()
+    await Promise.all([execution, disposal])
+
+    expect(events).toEqual(['server quiesce', 'worker quiesce', 'server release', 'worker release'])
+  })
+
+  test('continues quiescing and releasing when one hook fails', async () => {
+    const quiesceFailure = new Error('quiesce failed')
+    const events: string[] = []
+    class QuiescingA extends Service<QuiescingA>()('QuiescingA') {}
+    class QuiescingB extends Service<QuiescingB>()('QuiescingB') {}
+
+    const runtime = await Runtime.make(
+      Layer.merge(
+        Layer.scoped(QuiescingA, () => new QuiescingA(), {
+          quiesce: () => {
+            events.push('a quiesce')
+            throw quiesceFailure
+          },
+          release: () => {
+            events.push('a release')
+          }
+        }),
+        Layer.scoped(QuiescingB, () => new QuiescingB(), {
+          quiesce: () => {
+            events.push('b quiesce')
+          },
+          release: () => {
+            events.push('b release')
+          }
+        })
+      ),
+      { warmup: true }
+    )
+
+    const failure = await runtime.dispose().then(
+      () => undefined,
+      (cause) => cause
+    )
+
+    expect(events).toEqual(['b quiesce', 'a quiesce', 'b release', 'a release'])
+    expect(failure).toBeDefined()
+    expect(runtime.inspect().state).toBe('disposed')
+  })
+
+  test('rejects new executions after the quiesce gate opens', async () => {
+    let runtime!: Runtime<never>
+    let rejected = false
+    const lifecycle = Layer.scopedDiscard(() => ({ stop: () => {} }), {
+      quiesce: () => {
+        try {
+          void runtime.run(() => undefined)
+        } catch {
+          rejected = true
+        }
+      },
+      release: () => {}
+    })
+
+    runtime = await Runtime.make(lifecycle)
+    await runtime.dispose()
+
+    expect(rejected).toBe(true)
+  })
+
   test('acquires at Runtime.make and releases with the Runtime root outcome', async () => {
     const acquired: string[] = []
     const released: ScopeOutcome[] = []

@@ -27,6 +27,7 @@ type ChildData = {
   readonly sigtermListeners?: number
   readonly exitCode?: number | null
   readonly processExitCalled?: boolean
+  readonly quiesced?: number
 }
 
 type ChildResult = {
@@ -417,6 +418,36 @@ for (const target of targets) {
         reason: 'SIGINT',
         released: 1,
         backendDisposals: 1,
+        exitCode: 0
+      })
+      expectNoProcessExit(result)
+    })
+
+    test('launches a complete Layer and quiesces it on a process signal', async () => {
+      const result = await runChild(target, 'launch', ['SIGTERM'])
+
+      expect(result.code).toBe(0)
+      expect(result.signal).toBeNull()
+      expect(result.data).toMatchObject({
+        kind: 'launch',
+        status: 'ok',
+        quiesced: 1,
+        released: 1,
+        exitCode: 0
+      })
+      expectNoProcessExit(result)
+    })
+
+    test('launches a complete Layer and shuts down on a caller signal', async () => {
+      const result = await runChild(target, 'caller-abort')
+
+      expect(result.code).toBe(0)
+      expect(result.signal).toBeNull()
+      expect(result.data).toMatchObject({
+        kind: 'caller-abort',
+        status: 'ok',
+        quiesced: 1,
+        released: 1,
         exitCode: 0
       })
       expectNoProcessExit(result)

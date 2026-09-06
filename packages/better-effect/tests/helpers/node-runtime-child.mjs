@@ -362,6 +362,62 @@ try {
       sigtermListeners: process.listenerCount('SIGTERM'),
       exitCode: process.exitCode ?? null
     })
+  } else if (scenario === 'launch') {
+    let quiesced = 0
+    let released = 0
+    const layer = Layer.scopedDiscard(
+      () => {
+        process.stdout.write('READY\n')
+        return { close: () => {} }
+      },
+      {
+        quiesce: () => {
+          quiesced += 1
+        },
+        release: () => {
+          released += 1
+        }
+      }
+    )
+
+    await NodeRuntime.launch(layer, {
+      shutdown: { gracePeriod: 0, abortAfterGracePeriod: true }
+    })
+
+    print({
+      kind: 'launch',
+      status: 'ok',
+      quiesced,
+      released,
+      sigintListeners: process.listenerCount('SIGINT'),
+      sigtermListeners: process.listenerCount('SIGTERM'),
+      exitCode: process.exitCode ?? null
+    })
+  } else if (scenario === 'caller-abort') {
+    let quiesced = 0
+    let released = 0
+    const caller = new AbortController()
+    const layer = Layer.scopedDiscard(() => ({ close: () => {} }), {
+      quiesce: () => {
+        quiesced += 1
+      },
+      release: () => {
+        released += 1
+      }
+    })
+
+    setTimeout(() => caller.abort(new Error('caller shutdown')), 10)
+    await NodeRuntime.launch(layer, { signal: caller.signal })
+
+    print({
+      kind: 'caller-abort',
+      status: 'ok',
+      quiesced,
+      released,
+      sigintListeners: process.listenerCount('SIGINT'),
+      sigtermListeners: process.listenerCount('SIGTERM'),
+      exitCode: process.exitCode ?? null
+    })
   } else if (scenario === 'sequential') {
     const first = await NodeRuntime.runMain(Layer.empty, () => Result.ok('first'), {
       signals: [],

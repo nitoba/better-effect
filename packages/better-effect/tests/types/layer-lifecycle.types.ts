@@ -7,6 +7,7 @@ import { Layer } from '../../src/layer'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { Runtime } from '../../src/runtime'
 import type { ScopeOutcome } from '../../src/scope'
+import type { RuntimeShutdownReason } from '../../src/runtime'
 import { Service } from '../../src/service'
 
 class Config extends Service<Config>()('LifecycleConfig') {
@@ -58,6 +59,48 @@ const contextualAlias = Layer.scopedDiscardGen(
 
 expectTypeOf<Layer.Provided<typeof contextualAlias>>().toBeNever()
 expectTypeOf<Layer.Required<typeof contextualAlias>>().toEqualTypeOf<Config>()
+
+const serviceLifecycle = Layer.scopedGen(
+  Database,
+  // oxlint-disable-next-line require-yield -- the generator return value is the acquired Service.
+  async function* () {
+    return new Database()
+  },
+  {
+    quiesce: (instance, reason) => {
+      expectTypeOf(instance).toEqualTypeOf<Database>()
+      expectTypeOf(reason).toEqualTypeOf<RuntimeShutdownReason>()
+    },
+    release: (instance, outcome) => {
+      expectTypeOf(instance).toEqualTypeOf<Database>()
+      expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+    }
+  }
+)
+
+const discardLifecycle = Layer.scopedDiscard(() => ({ stop: () => {} }), {
+  quiesce: (instance, reason) => {
+    expectTypeOf(instance).toEqualTypeOf<{ stop: () => void }>()
+    expectTypeOf(reason).toEqualTypeOf<RuntimeShutdownReason>()
+  },
+  release: (instance, outcome) => {
+    expectTypeOf(instance).toEqualTypeOf<{ stop: () => void }>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+  }
+})
+
+expectTypeOf<Layer.Provided<typeof serviceLifecycle>>().toEqualTypeOf<Database>()
+expectTypeOf<Layer.Provided<typeof discardLifecycle>>().toBeNever()
+
+Layer.scopedGen(
+  Database,
+  // oxlint-disable-next-line require-yield -- the generator return value is the acquired Service.
+  async function* () {
+    return new Database()
+  },
+  // @ts-expect-error Lifecycle object forms require a release callback.
+  { quiesce: () => {} }
+)
 
 const ConfigLive = Layer.succeed(Config, new Config(250))
 const DatabaseLive = Layer.succeed(Database, new Database())
