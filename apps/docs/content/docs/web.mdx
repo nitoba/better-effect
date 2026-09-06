@@ -64,25 +64,23 @@ and are released by `runtime.dispose()`.
 
 ## Bun.serve adapter
 
-For Bun applications, `better-effect/bun` provides the same boundary as a
-Bun.serve `fetch` handler. The adapter is intentionally thin: the application
-owns the long-lived Runtime and the Bun server, while the route factory gets
-both Bun values explicitly.
+For Bun applications, `better-effect/bun` is Layer-first. `BunEffect.handler`
+captures the active `Runtime.Executor` while its enclosing Layer is acquired,
+and each native Bun request crosses one `WebEffect` boundary.
+
+`BunEffect.server` owns one `Bun.serve` acquisition and exposes the raw server
+as a Service with a `.layer`:
 
 ```ts
 import { Result } from 'better-result'
-import { CurrentAbortSignal, Effect, Layer, Runtime, Service } from 'better-effect'
-import { CurrentRequest } from 'better-effect/standard-services'
+import { CurrentAbortSignal, Effect, Layer, Runtime, Service, ServiceRuntime } from 'better-effect'
 import { BunEffect } from 'better-effect/bun'
+import { CurrentRequest } from 'better-effect/standard-services'
 
 class AppService extends Service<AppService>()('AppService') {}
 
-const runtime = await Runtime.make(Layer.make(AppService))
-const http = BunEffect.make(runtime)
-
-const server = Bun.serve({
-  port: 3000,
-  fetch: http.handler((request, server) =>
+const ApiServer = BunEffect.server('@docs/ApiServer', async function* () {
+  const fetch = yield* BunEffect.handler((request, server) =>
     Effect.fn(async function* () {
       const app = yield* AppService
       const currentRequest = yield* CurrentRequest
@@ -97,25 +95,27 @@ const server = Bun.serve({
       })
     })
   )
+
+  return { port: 3000, fetch }
 })
+
+const runtime = await Runtime.make(Layer.merge(Layer.make(AppService), ApiServer.layer))
+const server = await runtime.run(() => ServiceRuntime.resolve(ApiServer))
 ```
 
-`BunEffect.handler` delegates one request to `WebEffect`: it supplies
-`CurrentRequest`, forwards `request.signal`, applies request Layers and response
-policies, keeps defects rejected, and releases request resources before the
-handler Promise resolves. Runtime-root Services remain shared across requests.
-
-The adapter does not own server or Runtime shutdown. On graceful shutdown,
-stop accepting new requests before releasing root resources, then dispose the
-Runtime:
+The handler supplies `CurrentRequest`, forwards `request.signal` to
+`CurrentAbortSignal`, composes request Layers, applies response policies, keeps
+thrown defects rejected, and releases request resources before its Promise
+resolves. Runtime shutdown quiesces Bun, drains active requests, and releases
+the server and root Layers. Repeated `runtime.dispose()` calls share one
+Promise:
 
 ```ts
-await server.stop()
 await runtime.dispose()
 ```
 
-If shutdown can be requested more than once, share one application-owned
-shutdown Promise. This optional entrypoint is Bun-specific and makes no Node
+Use `BunEffect.layer(service, factory)` when the server should be mapped into an
+application-chosen Service. This Bun-specific entrypoint makes no Node
 compatibility claim.
 
 ## Request-local Layers

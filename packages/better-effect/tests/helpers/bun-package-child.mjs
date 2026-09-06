@@ -1,21 +1,25 @@
 import { Result } from 'better-result'
 
 import { BunEffect } from 'better-effect/bun'
-import { Effect, Layer, Runtime } from 'better-effect'
+import { Effect, Runtime, ServiceRuntime } from 'better-effect'
 
-const runtime = await Runtime.make(Layer.empty)
-const adapter = BunEffect.make(runtime)
-const handler = adapter.handler(() =>
-  Effect.fn(async function* () {
-    yield* []
-    return Result.ok(new Response('packed BunEffect', { status: 201 }))
-  })
-)
-const server = Bun.serve({
-  hostname: '127.0.0.1',
-  port: 0,
-  fetch: handler
+const serverToken = BunEffect.server('@package/PackedBunServer', async function* () {
+  const fetch = yield* BunEffect.handler(() =>
+    // oxlint-disable-next-line require-yield -- the packed smoke program intentionally needs no Services.
+    Effect.fn(async function* () {
+      return Result.ok(new Response('packed BunEffect', { status: 201 }))
+    })
+  )
+
+  return {
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch
+  }
 })
+
+const runtime = await Runtime.make(serverToken.layer)
+const server = await runtime.run(() => ServiceRuntime.resolve(serverToken))
 
 try {
   if (server.port === undefined) {
@@ -28,7 +32,6 @@ try {
     throw new Error('Packed BunEffect adapter did not execute through Bun.serve')
   }
 } finally {
-  await server.stop()
   await runtime.dispose()
 }
 

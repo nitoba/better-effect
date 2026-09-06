@@ -488,6 +488,11 @@ export class Layer<
 
   static scopedDiscardGen<Yield extends ServiceRequirement<unknown>, Acquired>(
     acquire: LayerDiscardGenerator<Yield, Acquired>,
+    lifecycle: LayerLifecycle<Acquired>
+  ): LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>>
+
+  static scopedDiscardGen<Yield extends ServiceRequirement<unknown>, Acquired>(
+    acquire: LayerDiscardGenerator<Yield, Acquired>,
     lifecycleOrRelease: LifecycleCallback<Acquired>
   ): LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>> {
     const normalized = normalizeLifecycle(lifecycleOrRelease)

@@ -55,17 +55,24 @@ const assertCoreGraphIsolation = async (): Promise<void> => {
   }
 
   const bunDeclarations = await readGraph(join(packageRoot, 'dist/bun.d.mts'), true)
+  const bunEntryDeclarations = await readFile(join(packageRoot, 'dist/bun.d.mts'), 'utf8')
 
   if (!/\bBun\.Server\b/u.test(bunDeclarations)) {
     throw new Error('Bun declaration graph does not expose Bun server types')
   }
 
-  if (
-    !/declare class BunEffect<Provided extends AnyService = never,\s*Failure = unknown,/u.test(
-      bunDeclarations
-    )
-  ) {
-    throw new Error('BunEffect declarations lost the safe never environment default')
+  if (!/declare class BunEffect\s*\{/u.test(bunEntryDeclarations)) {
+    throw new Error('BunEffect declarations are not Layer-first')
+  }
+
+  for (const method of ['handler', 'server', 'layer']) {
+    if (!new RegExp(`static ${method}\\b`, 'u').test(bunEntryDeclarations)) {
+      throw new Error(`BunEffect declarations do not expose static ${method}()`)
+    }
+  }
+
+  if (/static make\b/u.test(bunEntryDeclarations)) {
+    throw new Error('BunEffect declarations still expose the removed Runtime-first make() API')
   }
 }
 

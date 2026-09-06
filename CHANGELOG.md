@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Bun integration
+
+- Replaced the Runtime-first `BunEffect.make` adapter with Layer-first
+  `BunEffect.handler`, `BunEffect.server`, and `BunEffect.layer` APIs. Bun
+  servers now participate in Runtime quiesce, drain, and release lifecycle.
+
 ### Next.js integration
 
 - Replaced `NextEffect.make` with explicit `NextEffect.fromCurrent` and
