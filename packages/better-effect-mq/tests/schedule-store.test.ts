@@ -118,7 +118,7 @@ test('tickSchedule CAS-enqueues a deterministic occurrence before advancing', as
   ])
   const fired = first.status === 'fired' ? first : second
   const stale = first.status === 'stale' ? first : second
-  const checkedJobId = makeJobId('sched/billing/monthly/2000')
+  const checkedJobId = makeJobId('sched/monthly/2000')
   if (Result.isError(checkedJobId)) throw checkedJobId.error
   const jobId = checkedJobId.value
 

@@ -342,9 +342,7 @@ const normalizeRecord = (value: unknown): ResultType<ScheduleRecord, ScheduleSto
 }
 
 const deterministicJobId = (record: ScheduleRecord, slotMs: number): JobId =>
-  makeJobId(
-    `sched/${encodeURIComponent(record.group)}/${encodeURIComponent(record.key)}/${slotMs}`
-  ).unwrap()
+  makeJobId(`sched/${encodeURIComponent(record.key)}/${slotMs}`).unwrap()
 
 const scheduleResult = (
   status: TickScheduleResult['status'],
