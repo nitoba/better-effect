@@ -4,8 +4,8 @@
 // oxlint-disable anti-slop/no-chained-type-assertions -- generic handler details are erased only after runtime validation.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions are confined to validated public boundaries.
 
-import { Effect } from 'better-effect'
-import type { RuntimeExecutor } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
+import type { AnyService, RuntimeExecutor, ServiceRequirement, ServiceToken } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
 import { Job, type AnyJobDefinition } from '../job'
@@ -16,11 +16,16 @@ import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from '../store'
 import { normalizeWorkerOptions, WorkerSupervisor } from './supervisor'
 import type {
   AnyWorkerHandler,
-  CompleteWorkerOptions,
   WorkerHandler,
   WorkerHandlerOptions,
   WorkerHandle,
-  WorkerOptions
+  WorkerLayerRequirements,
+  WorkerOptions,
+  WorkerServiceGeneratorFactory,
+  WorkerServiceInstance,
+  WorkerServiceTag,
+  WorkerServiceToken,
+  WorkerRequirements
 } from './types'
 
 /** Register one immutable, typed Job handler descriptor. */
@@ -53,18 +58,144 @@ export function handle<
   }) as unknown as WorkerHandler<Definition, Effect.Requirements<Program>>
 }
 
-/** Start a Worker over a non-owning Runtime executor capability. */
-export function startWith<
-  Provided extends import('better-effect').AnyService,
-  const Handlers extends readonly AnyWorkerHandler[]
+type WorkerServiceValueFactory<Handlers extends readonly AnyWorkerHandler[]> = () =>
+  | WorkerOptions<Handlers>
+  | PromiseLike<WorkerOptions<Handlers>>
+
+type WorkerServiceFactoryInput<
+  Handlers extends readonly AnyWorkerHandler[],
+  Yield extends ServiceRequirement<unknown>
+> = WorkerServiceGeneratorFactory<Handlers, Yield> | WorkerServiceValueFactory<Handlers>
+
+type WorkerServiceGeneratorResult<
+  Handlers extends readonly AnyWorkerHandler[],
+  Yield extends ServiceRequirement<unknown>
+> =
+  | Generator<Yield, WorkerOptions<Handlers>, unknown>
+  | AsyncGenerator<Yield, WorkerOptions<Handlers>, unknown>
+
+// oxlint-disable-next-line anti-slop/no-runtime-typeof -- this boundary distinguishes a factory generator from an options Promise/value.
+const isWorkerServiceGeneratorResult = <
+  Handlers extends readonly AnyWorkerHandler[],
+  Yield extends ServiceRequirement<unknown>
 >(
-  executor: RuntimeExecutor<Provided>,
-  options: CompleteWorkerOptions<Provided, Handlers>
-): Promise<WorkerHandle>
-export async function startWith<Provided extends import('better-effect').AnyService>(
-  executor: RuntimeExecutor<Provided>,
+  value:
+    | WorkerOptions<Handlers>
+    | PromiseLike<WorkerOptions<Handlers>>
+    | WorkerServiceGeneratorResult<Handlers, Yield>
+): value is WorkerServiceGeneratorResult<Handlers, Yield> =>
+  typeof value === 'object' &&
+  value !== null &&
+  'next' in value &&
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- generator protocol validation at the factory boundary.
+  typeof value.next === 'function'
+
+const normalizeWorkerServiceFactory = <
+  Handlers extends readonly AnyWorkerHandler[],
+  Yield extends ServiceRequirement<unknown>
+>(
+  factory: WorkerServiceFactoryInput<Handlers, Yield>
+): (() => AsyncGenerator<Yield, WorkerOptions<Handlers>, unknown>) =>
+  async function* () {
+    const result = factory()
+
+    if (isWorkerServiceGeneratorResult<Handlers, Yield>(result)) {
+      return yield* result
+    }
+
+    return await result
+  }
+
+const quiesceWorker = (worker: WorkerHandle): void => {
+  // SAFETY: only WorkerSupervisor instances reach this callback; test doubles use Worker.succeed and have no lifecycle callback.
+  const supervisor = worker as WorkerHandle & { readonly quiesce: () => void }
+  supervisor.quiesce()
+}
+
+/** Create a non-constructible, yieldable Worker Service token. */
+export function service<const Tag extends string>(
+  tag: WorkerServiceTag<Tag>
+): WorkerServiceToken<Tag> {
+  type Instance = WorkerServiceInstance<Tag>
+
+  const baseToken = Service<Instance>()(tag)
+  // SAFETY: the generated token is used only as a Service identity; its constructor rejects manual ownership.
+  const token = class extends (baseToken as unknown as new () => Service.Identity<Tag>) {
+    constructor() {
+      super()
+      throw new TypeError('Worker Service tokens are not constructible; use layer or succeed')
+    }
+  }
+  // SAFETY: this is the single token erasure boundary for the non-constructible Service class.
+  const layerToken = token as unknown as ServiceToken<Tag, Instance>
+
+  const makeLayer = <
+    const Handlers extends readonly AnyWorkerHandler[],
+    Yield extends ServiceRequirement<unknown>
+  >(
+    factory: WorkerServiceFactoryInput<Handlers, Yield>
+  ): Layer<Instance, WorkerLayerRequirements<Handlers, Yield>> => {
+    const layer = Layer.scopedGen(
+      layerToken,
+      async function* () {
+        const options = yield* normalizeWorkerServiceFactory(factory)()
+        // Runtime.executor is contextual and deliberately erased from Layer.Required: the Runtime owns this capability.
+        const executor = yield* Runtime.executor<AnyService>()
+        const worker = await startWorkerWithExecutor(executor, options)
+        return layerToken.of(worker)
+      },
+      {
+        quiesce: quiesceWorker,
+        release: (worker) => worker.stop()
+      }
+    )
+
+    // SAFETY: Runtime.executor is acquired from the active Runtime context rather than a Layer Service; only factory and handler requirements remain public.
+    return layer as Layer<Instance, WorkerLayerRequirements<Handlers, Yield>>
+  }
+
+  function layer<
+    const Handlers extends readonly AnyWorkerHandler[],
+    Yield extends ServiceRequirement<unknown>
+  >(
+    factory: WorkerServiceGeneratorFactory<Handlers, Yield>
+  ): Layer<Instance, WorkerLayerRequirements<Handlers, Yield>>
+  function layer<const Handlers extends readonly AnyWorkerHandler[]>(
+    factory: WorkerServiceValueFactory<Handlers>
+  ): Layer<Instance, WorkerRequirements<Handlers>>
+  function layer(
+    factory: WorkerServiceFactoryInput<readonly AnyWorkerHandler[], ServiceRequirement<unknown>>
+  ): Layer<Instance, AnyService> {
+    return makeLayer(factory)
+  }
+
+  const succeed = (worker: WorkerHandle): Layer<Instance, never> =>
+    // SAFETY: Worker.succeed is the caller-owned test-double boundary and does not register a release callback.
+    Layer.succeed(layerToken, worker) as unknown as Layer<Instance, never>
+
+  Object.defineProperties(token, {
+    layer: {
+      configurable: false,
+      enumerable: true,
+      value: layer,
+      writable: false
+    },
+    succeed: {
+      configurable: false,
+      enumerable: true,
+      value: succeed,
+      writable: false
+    }
+  })
+
+  // SAFETY: locked helpers restore the precise token type after the constructor and Layer storage erasures.
+  return token as unknown as WorkerServiceToken<Tag>
+}
+
+const startWorkerWithExecutor = async (
+  executor: RuntimeExecutor<any>,
   options: WorkerOptions<readonly AnyWorkerHandler[]>
-): Promise<WorkerHandle> {
+): Promise<WorkerSupervisor<any>> => {
   validateExecutor(executor)
   validateOptionsObject(options, 'options')
   const handlersField = readOwnField(options, 'handlers', 'options.handlers')
@@ -80,7 +211,7 @@ export async function startWith<Provided extends import('better-effect').AnyServ
 }
 
 /** Worker entrypoints and the immutable handler constructor. */
-export const Worker = Object.freeze({ handle, startWith } as const)
+export const Worker = Object.freeze({ handle, service } as const)
 
 export namespace Worker {
   export type Handler<
@@ -91,11 +222,13 @@ export namespace Worker {
   export type Options<Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]> =
     WorkerOptions<Handlers>
   export type ReliabilityOptions = import('./types').WorkerReliabilityOptions
-  export type CompleteOptions<
-    Provided extends import('better-effect').AnyService,
-    Handlers extends readonly AnyWorkerHandler[]
-  > = CompleteWorkerOptions<Provided, Handlers>
   export type Handle = WorkerHandle
+  export type ServiceInstance<Tag extends string> = WorkerServiceInstance<Tag>
+  export type ServiceToken<Tag extends string> = WorkerServiceToken<Tag>
+  export type LayerRequirements<
+    Handlers extends readonly AnyWorkerHandler[],
+    Yield extends ServiceRequirement<unknown>
+  > = WorkerLayerRequirements<Handlers, Yield>
 }
 
 const validateOptionsObject = (value: unknown, field: string): void => {

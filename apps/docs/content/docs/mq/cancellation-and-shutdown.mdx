@@ -16,25 +16,30 @@ controller.abort(new Error('request closed'))
 await waiting
 ```
 
-A graceful long-lived process owns its resources in this order:
+A graceful long-lived process owns Layer-first Worker resources in this order:
 
 1. stop accepting new work;
-2. stop the Worker, optionally with `{ abortActive: true }`;
+2. quiesce Worker admission;
 3. await active attempts and store settlements/releases;
-4. dispose the Runtime and its root resources.
+4. release the Worker and dispose the Runtime root resources.
 
 ```ts
+const AppWorker = Worker.service('@app/Worker')
+const AppWorkerLive = AppWorker.layer(() => ({ handlers }))
+const application = Layer.complete(Layer.merge(AppLive, AppWorkerLive))
+const runtime = await Runtime.make(application)
+
 try {
-  await using worker = await Worker.startWith(runtime.executor, { handlers })
   await serveRequests()
 } finally {
-  // `worker` is stopped here before Runtime disposal.
+  // Runtime disposal quiesces, drains and releases AppWorker.
   await runtime.dispose()
 }
 ```
 
-`Worker.stop()` is idempotent. It stops claim loops, waits for active attempts
-according to the configured shutdown policy and cleans supervision resources.
+Layer-owned Worker release is idempotent. It stops claim loops, waits for active
+attempts according to the configured shutdown policy and cleans supervision
+resources.
 Runtime disposal rejects new executions, waits for active executions, closes
 root scopes and disposes the backend last. Do not replace this sequence with a
 forced process exit: in-flight settlement can otherwise be delivered again.

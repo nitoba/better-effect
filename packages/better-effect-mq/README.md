@@ -6,7 +6,7 @@
 Worker supervisor for `better-effect`. Version 0.1 exposes JSON-safe records,
 nominal identities, deterministic claim ordering, persisted failure envelopes,
 pure state transitions, explicit JSON/Standard Schema conversion, the
-storage-neutral `JobStore` Service contract, and `Worker.startWith`.
+storage-neutral `JobStore` Service contract, and Layer-first Worker Services.
 It does not open connections or provide a storage adapter.
 
 ## Normative protocol documentation
@@ -455,52 +455,54 @@ consumes the public `JobStore.Contract`.
 
 ## Worker supervisor
 
-`Worker` runs handlers over an already configured `better-effect` runtime
-executor. The application owns the Runtime and its Layer resources; the Worker
-never configures global Service state, creates a parallel container, or exposes
-a `Worker.layer`. `Worker.startWith` is the capability-based entrypoint for
-framework and lifecycle integrations.
+`Worker` runs handlers over an already configured `better-effect` Runtime. The
+recommended API is a named Worker Service whose Layer owns startup and release:
 
 ```ts
-import { CurrentAbortSignal, Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { Result } from 'better-result'
 import { JobContext, Worker } from 'better-effect-mq'
 
+const AppWorker = Worker.service('@app/EmailWorker')
 const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    const mailer = yield* Mailer
     const context = yield* JobContext
-    const signal = yield* CurrentAbortSignal
-    const sent = yield* Result.await(
-      mailer.send(payload, { idempotencyKey: context.jobId, signal })
-    )
-    return Result.ok(sent)
+    void context
+    return Result.ok(`sent:${payload.recipient}`)
   })
 )
 
-await using runtime = await Runtime.make(AppLive)
-await using worker = await Worker.startWith(runtime.executor, {
-  handlers: [SendEmailHandler],
-  concurrency: 8
+const AppWorkerLive = AppWorker.layer(async function* () {
+  const config = yield* AppConfig
+  return {
+    handlers: [SendEmailHandler] as const,
+    concurrency: config.workerConcurrency,
+    pollIntervalMs: 50
+  }
 })
 
-await worker.awaitIdle()
+const ApplicationLive = Layer.complete(Layer.merge(AppLive, AppWorkerLive))
+const runtime = await Runtime.make(ApplicationLive)
+await runtime.warmup()
+
+const workerResult = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const worker = yield* AppWorker
+    return Result.ok(worker)
+  })
+)
 ```
 
-For an integration that must not receive Runtime ownership, pass only its
-non-owning executor view:
+`Worker.service(tag)` returns a non-constructible, yieldable control token.
+Its factory is lazy, runs once per provider/runtime and may yield contextual
+Services. The Layer requirements include the factory's Services, handler
+requirements and every bound JobStore; `JobContext` and `Runtime.Executor`
+remain internal. `AppWorker.succeed(testDouble)` provides a caller-owned fake
+without registering startup or release lifecycle.
 
-```ts
-await using worker = await Worker.startWith(runtime.executor, {
-  handlers: [SendEmailHandler],
-  concurrency: 8
-})
-```
-
-The executor preserves the same root Services and per-attempt execution
-boundary as `runtime.run`/`runtime.runWith`, while exposing no `dispose`,
-`warmup`, `inspect`, backend, or Scope operations. The application remains
-responsible for stopping the Worker before disposing the Runtime.
+The Runtime quiesces Layer-owned Workers before draining attempts and releases
+each Worker after those attempts settle. A Layer-owned Worker therefore does
+not need a separate startup or shutdown sequence.
 
 `WorkerHandle.awaitIdle()` validates its timeout and AbortSignal before it
 registers a waiter. Invalid options throw `WorkerAwaitIdleError`; an abort or
@@ -509,10 +511,10 @@ listeners and timers immediately.
 
 `Worker.handle` receives the decoded Job payload and returns an
 `Effect.Program<Success, Failure, Requirements>`. Its requirements are checked
-against the executor at `Worker.startWith`: `JobContext` is supplied per attempt and
-removed from the external requirement set, while the handler's root Services
-and the Job's bound `JobStore` must be provided by the Runtime. Handler
-registration and the returned inspectable handle are immutable.
+against the Runtime when the Layer-owned Worker starts: `JobContext` is supplied
+per attempt and removed from the external requirement set, while the handler's
+root Services and the Job's bound `JobStore` must be provided by the Runtime.
+Handler registration and the returned inspectable handle are immutable.
 
 Each claimed Job runs through `executor.runWith(JobContext.layer(context), ...)`
 with a fresh child Scope and attempt-local `AbortSignal`. Root Services remain
@@ -601,10 +603,14 @@ const observer = JobObserver.compose(
   JobObserver.metrics(metricsSink)
 )
 
-await using worker = await Worker.startWith(runtime.executor, {
+const ObservedWorker = Worker.service('@app/ObservedWorker')
+const ObservedWorkerLive = ObservedWorker.layer(() => ({
   handlers: [SendEmailHandler],
   observer
-})
+}))
+const ObservedApplication = Layer.complete(Layer.merge(AppLive, ObservedWorkerLive))
+const runtime = await Runtime.make(ObservedApplication)
+await runtime.warmup()
 ```
 
 Observer callbacks are synchronous from the Worker’s perspective and are never

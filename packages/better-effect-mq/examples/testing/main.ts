@@ -1,4 +1,4 @@
-import { Effect } from 'better-effect'
+import { Effect, Layer } from 'better-effect'
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { TestRuntime } from 'better-effect/testing'
 import { Result } from 'better-result'
@@ -10,10 +10,34 @@ import { SendEmail } from '../shared/jobs'
 const clock = new ClockTest(Date.UTC(2026, 0, 1))
 const ids = IdGeneratorTest.from((index) => `test-${index + 1}`)
 const testStore = TestJobStore.make({ clock, ids })
-const runtime = await TestRuntime.make(testStore.layer, {
-  clock,
-  idGenerator: ids
-})
+const AppWorker = Worker.service('@examples/TestWorker')
+const handler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    if (context.attempt === 1) {
+      return Result.err({ code: 'temporary-failure' })
+    }
+
+    return Result.ok(`sent:${payload.recipient}`)
+  })
+)
+const AppWorkerLive = AppWorker.layer(() => ({
+  handlers: [handler] as const,
+  concurrency: 1,
+  pollIntervalMs: 1,
+  leaseDurationMs: 100,
+  heartbeatIntervalMs: 10,
+  stalledIntervalMs: 100,
+  now: () => clock.now(),
+  random: () => 0.5
+}))
+const runtime = await TestRuntime.make(
+  Layer.complete(Layer.merge(testStore.layer, AppWorkerLive)),
+  {
+    clock,
+    idGenerator: ids
+  }
+)
 
 try {
   const observed = testStore.observe(SendEmail)
@@ -36,32 +60,16 @@ try {
     throw jobId.error
   }
 
-  const handler = Worker.handle(SendEmail, (payload) =>
-    Effect.fn(async function* () {
-      const context = yield* JobContext
-      if (context.attempt === 1) {
-        return Result.err({ code: 'temporary-failure' })
-      }
-
-      return Result.ok(`sent:${payload.recipient}`)
+  const workerResult = await runtime.runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* AppWorker)
     })
   )
-
-  const worker = await Worker.startWith(runtime.runtime.executor, {
-    handlers: [handler],
-    concurrency: 1,
-    pollIntervalMs: 1,
-    leaseDurationMs: 100,
-    heartbeatIntervalMs: 10,
-    stalledIntervalMs: 100,
-    now: () => clock.now(),
-    random: () => 0.5
-  })
-  try {
-    await worker.awaitIdle({ timeoutMs: 2_000 })
-  } finally {
-    await worker.stop()
+  if (Result.isError(workerResult)) {
+    throw workerResult.error
   }
+
+  await workerResult.value.awaitIdle({ timeoutMs: 2_000 })
 
   const completed = await testStore.job(jobId.value)
   if (completed?.state !== 'completed' || completed.result !== 'sent:ada@example.test') {

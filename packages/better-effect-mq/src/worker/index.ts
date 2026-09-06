@@ -4,11 +4,10 @@ export type { JobContextInput } from './context'
 export { WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 export type { WorkerAwaitIdleErrorReason } from './errors'
 
-export { Worker, handle, startWith } from './worker'
+export { Worker, handle, service } from './worker'
 export { JobTimeoutError } from './errors'
 export type {
   AnyWorkerHandler,
-  CompleteWorkerOptions,
   WorkerAwaitIdleOptions,
   WorkerClock,
   WorkerErrorHandler,
@@ -17,9 +16,14 @@ export type {
   WorkerHandler,
   WorkerHandlerOptions,
   WorkerHandle,
+  WorkerLayerRequirements,
   WorkerReliabilityOptions,
   WorkerOptions,
   WorkerRandom,
+  WorkerServiceGeneratorFactory,
+  WorkerServiceInstance,
+  WorkerServiceTag,
+  WorkerServiceToken,
   WorkerStopOptions,
   WorkerRequirements
 } from './types'

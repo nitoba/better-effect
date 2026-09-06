@@ -193,13 +193,12 @@ void observedSendEmail
 
 ## Run and stop a Worker
 
-Workers run handlers over an already configured `better-effect` Runtime (such
-as the `runtime` from the producer example, or your durable `AppLive`). The
-application owns that Runtime and its resources; a Worker does not create a
-parallel container or provide a `Worker.layer`.
+Workers run handlers over a named `Worker.service(tag).layer(factory)` in the
+same Layer graph as the application, so the Runtime owns startup, quiesce and
+release.
 
 ```ts
-import { Effect, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { Result } from 'better-result'
 import { Worker } from 'better-effect-mq'
 
@@ -211,34 +210,26 @@ const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
   })
 )
 
-const worker = await Worker.startWith(runtime.executor, {
+const AppWorker = Worker.service('@app/EmailWorker')
+const AppWorkerLive = AppWorker.layer(() => ({
   handlers: [SendEmailHandler],
   concurrency: 8
-})
+}))
+const application = Layer.complete(Layer.merge(AppLive, AppWorkerLive))
+const runtime = await Runtime.make(application)
+await runtime.warmup()
 
-await worker.awaitIdle()
-await worker.stop()
-await runtime.dispose()
+const workerResult = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(yield* AppWorker)
+  })
+)
 ```
 
-When a callback-scoped worker is preferable, keep the same ownership explicit:
-
-```ts
-const worker = await Worker.startWith(runtime.executor, {
-  handlers: [SendEmailHandler]
-})
-try {
-  await worker.awaitIdle()
-} finally {
-  await worker.stop()
-}
-```
-
-`Worker.stop()` is idempotent. It stops new claims, interrupts claim waits,
-waits for active attempts according to the shutdown policy and clears local
-supervision resources. `{ abortActive: true }` cooperatively aborts active
-attempts. With a long-lived Runtime, stop the Worker before disposing the
-Runtime so in-flight store operations still have their environment.
+`Worker.stop()` remains idempotent for an acquired handle when an application
+needs to quiesce one Worker early. Normal application shutdown should dispose
+the owning Runtime, which quiesces, drains and releases its Layer-owned
+Workers.
 
 ## Retry, backoff and timeout
 
@@ -254,7 +245,7 @@ cooperatively and is persisted as a timeout failure; a Promise that ignores its
 signal cannot be forcibly killed.
 
 ```ts
-const worker = await Worker.startWith(runtime.executor, {
+const WorkerLive = AppWorker.layer(() => ({
   handlers: [SendEmailHandler],
   retryDefects: false,
   leaseDurationMs: 30_000,
@@ -265,7 +256,7 @@ const worker = await Worker.startWith(runtime.executor, {
     gracePeriodMs: 5_000,
     abortAfterGracePeriod: true
   }
-})
+}))
 ```
 
 The lease must remain valid while the attempt runs. Workers heartbeat active

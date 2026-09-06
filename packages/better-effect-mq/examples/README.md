@@ -9,7 +9,7 @@ bun run test:examples
 ```
 
 - `producer-only` enqueues an idempotent Job without starting a Worker.
-- `worker` reuses the shared Job definition and shuts down the real Worker
-  before its Runtime.
+- `worker` reuses the shared Job definition and owns the real Worker through a
+  Layer-first Service.
 - `testing` uses `TestRuntime`, `ClockTest`, `IdGeneratorTest`, and
   `TestJobStore` to assert an attempt ledger without real sleeps.

@@ -49,9 +49,15 @@ const workerHandler = Worker.handle(workerJob, (input) =>
   })
 )
 declare const workerRuntime: Runtime<WorkerRoot | AnyService>
-const workerStarted = Worker.startWith(workerRuntime.executor, {
+const workerService = Worker.service('ExternalWorker')
+const workerLayer = workerService.layer(() => ({
   handlers: [workerHandler] as const
-})
+}))
+const workerStarted = workerRuntime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(yield* workerService)
+  })
+)
 const registry = JobRegistry.make([job] as const)
 const found = registry.lookup(job.identity)
 const namedStore = JobStore.named('external')
@@ -85,6 +91,7 @@ void recordState
 void encoded
 void found
 void workerStarted
+void workerLayer
 void namedStore
 void bound
 void boundAgain
