@@ -8,6 +8,11 @@ export { JobStoreConformanceError, jobStoreContract } from './job-store-contract
 export { jobStoreGoldenTrace, runJobStoreGoldenTrace } from './golden-trace'
 export type { JobStoreGoldenTraceCommand, JobStoreGoldenTraceStep } from './golden-trace'
 
+export {
+  JobScheduleStoreConformanceError,
+  jobScheduleStoreContract
+} from './job-schedule-store-contract'
+
 export type {
   ContractScenario,
   JobStoreContractBarrier,
@@ -37,3 +42,24 @@ export type {
   JobStoreContractSynchronization,
   JobStoreContractSuite
 } from './job-store-contract'
+
+export type {
+  JobScheduleStoreContractClient,
+  JobScheduleStoreContractClock,
+  JobScheduleStoreContractContext,
+  JobScheduleStoreContractExtension,
+  JobScheduleStoreContractFixtures,
+  JobScheduleStoreContractHooks,
+  JobScheduleStoreContractMaybePromise,
+  JobScheduleStoreContractMultiStoreClient,
+  JobScheduleStoreContractMultiStoreTokens,
+  JobScheduleStoreContractOptions,
+  JobScheduleStoreContractReport,
+  JobScheduleStoreContractScenario,
+  JobScheduleStoreContractScenarioContext,
+  JobScheduleStoreContractScenarioInfo,
+  JobScheduleStoreContractScheduleContext,
+  JobScheduleStoreContractStoreContext,
+  JobScheduleStoreContractSuite,
+  ScheduleContractScenario
+} from './job-schedule-store-contract'
