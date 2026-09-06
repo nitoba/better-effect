@@ -45,4 +45,8 @@ if (!migration.includes('{{SCHEMA}}')) throw new Error('Migration schema placeho
 if (!migration.includes('better_effect_mq_jobs_claim_idx')) {
   throw new Error('Claim index is missing from the migration')
 }
+const schedulesMigration = await readFile(join(packageRoot, 'migrations/002_schedules.sql'), 'utf8')
+if (!schedulesMigration.includes('better_effect_mq_schedules')) {
+  throw new Error('Schedule migration is missing')
+}
 console.log('PostgreSQL package boundaries passed')

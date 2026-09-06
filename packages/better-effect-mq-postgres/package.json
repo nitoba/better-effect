@@ -1,7 +1,7 @@
 {
   "name": "better-effect-mq-postgres",
   "version": "0.1.0",
-  "description": "PostgreSQL JobStore adapter, schema, and migrations for better-effect-mq.",
+  "description": "PostgreSQL JobStore and JobScheduleStore adapters, schema, and migrations for better-effect-mq.",
   "keywords": [
     "better-effect",
     "better-result",
