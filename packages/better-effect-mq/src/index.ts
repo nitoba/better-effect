@@ -89,16 +89,25 @@ export type {
 
 export type {
   AnyFlowDefinition,
+  AnyFlowHandler,
   FlowChildDefinition,
   FlowChildGroup,
+  FlowChildGroupFor,
+  FlowChildCounts,
   FlowChildInput,
   FlowChildOptions,
   FlowChildren,
   FlowDefinition,
   FlowDefinitionOptions,
   FlowFailurePolicy,
+  FlowHandler,
+  FlowHandlerRequirements,
   FlowName,
-  FlowParent
+  FlowParent,
+  FlowResults,
+  FlowSettledChild,
+  FlowChildPage,
+  FlowStoreRequirements
 } from './flow'
 
 export type {
@@ -251,12 +260,23 @@ export type {
 } from './protocol'
 
 export {
+  FlowStore,
+  flowStoreTag,
+  isFlowStoreToken,
   JobStore,
   JobStoreWakeAbortedError,
   MemoryFlowStore,
   MemoryJobStore,
   assertJobStoreProtocolCompatible,
   isJobStoreDescriptor
+} from './store'
+
+export type {
+  AnyFlowStoreToken,
+  DefaultFlowStoreToken,
+  FlowStoreInstance,
+  FlowStoreTag,
+  FlowStoreToken
 } from './store'
 
 export type {

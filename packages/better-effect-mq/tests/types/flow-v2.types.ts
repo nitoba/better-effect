@@ -1,10 +1,14 @@
 import { expectTypeOf } from 'bun:test'
 
-import { Codec, Flow, MemoryFlowStore, Queue } from '../../src'
+import { Effect, Service } from 'better-effect'
+import { Result } from 'better-result'
+import { Codec, Flow, FlowStore, JobStore, MemoryFlowStore, Queue } from '../../src'
 import type {
   FlowChildReport,
   FlowChildSpec,
   FlowFanOutResult,
+  FlowHandler,
+  FlowHandlerRequirements,
   FlowStoreV2,
   FlowStoreV2Operation,
   JobState,
@@ -23,13 +27,42 @@ expectTypeOf(fanOutResult).toEqualTypeOf<FlowStoreV2Operation<FlowFanOutResult>>
 expectTypeOf(MemoryFlowStore.make()).toEqualTypeOf<FlowStoreV2>()
 
 const queue = Queue.define('flow-types')
-const parentJob = queue.job('parent', { version: 1, payload: Codec.json<{ day: string }>() })
+const parentJob = queue.job('parent', {
+  version: 1,
+  payload: Codec.json<{ day: string }>(),
+  result: Codec.json<{ count: number; prefix: string }>()
+})
 const childJob = queue.job('child', { version: 1, payload: Codec.json<{ userId: string }>() })
 const flow = Flow.define('daily-digest', {
   parent: parentJob,
   children: [childJob] as const,
   onChildFailure: 'continue'
 })
+
+class FlowDependency extends Service<FlowDependency>()('FlowTypesDependency') {
+  readonly prefix!: string
+}
+
+const handled = Flow.handle(flow, {
+  fanOut: () =>
+    Effect.fn(async function* () {
+      const dependency = yield* FlowDependency
+      return Result.ok([
+        Flow.children(childJob, [{ key: `${dependency.prefix}:1`, payload: { userId: '1' } }])
+      ])
+    }),
+  collect: (_payload, results) =>
+    Effect.fn(async function* () {
+      const dependency = yield* FlowDependency
+      return Result.ok({ count: results.counts.completed, prefix: dependency.prefix })
+    })
+})
+
+expectTypeOf(handled).toMatchTypeOf<FlowHandler<typeof flow, FlowDependency, FlowDependency>>()
+expectTypeOf<FlowHandlerRequirements<typeof flow, FlowDependency, FlowDependency>>().toMatchTypeOf<
+  FlowDependency | JobStore.Instance | FlowStore.Instance
+>()
+expectTypeOf(FlowStore.for(JobStore).serviceTag).toEqualTypeOf<'@better-effect/mq/FlowStore'>()
 const children = Flow.children(childJob, [{ key: 'user:1', payload: { userId: '1' } }])
 
 expectTypeOf(flow.parent).toEqualTypeOf<typeof parentJob>()
@@ -68,3 +101,6 @@ const validV2State: JobStateV2 = 'waiting-children'
 void v1State
 void invalidV1State
 void validV2State
+void handled
+void FlowStore
+void FlowDependency

@@ -84,3 +84,38 @@ protocol without adding a runtime or transaction abstraction.
 
 PostgreSQL and Redis adapters provide durable flow storage. Cross-store enqueue,
 outbox delivery, result aggregation, and Worker supervision remain later waves.
+
+## Worker Layer composition
+
+Flow phases are registered declaratively alongside ordinary Worker handlers and
+are started from the same `Runtime` root:
+
+```ts
+const DigestRoute = Flow.handle(Digest, { fanOut, collect })
+
+const WorkerLive = AppWorker.layer(() => ({
+  handlers: [SendEmailHandler] as const,
+  flows: [DigestRoute] as const
+}))
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    JobStoreLive,
+    Layer.succeed(FlowStore, FlowStore.of(MemoryFlowStore.make())),
+    WorkerLive
+  )
+)
+```
+
+`FlowStore.for(parent.store)` is the associated v2 capability for a flow's
+parent store. The Worker Layer requirement includes the phase callback
+Services, the parent and child JobStore tokens, and that associated FlowStore
+token. Startup resolves and validates all of them before polling. Flow names
+must be unique within one Worker, and a flow parent cannot also be registered
+as a plain Worker handler.
+
+This is a composition and validation slice. The Worker does not yet execute
+fan-out/collect phases or own relay and sweeper loops because the current public
+v1 JobStore contract does not expose the required atomic parent settlement,
+outbox scan/ack, and child terminal-report operations. No cross-store
+transaction is implied: adapters retain ownership of those future operations.

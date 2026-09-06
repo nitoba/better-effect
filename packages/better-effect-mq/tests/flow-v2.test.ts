@@ -1,11 +1,15 @@
 import { expect, test } from 'bun:test'
+import { Effect } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 
 import {
   Codec,
   Flow,
+  FlowStore,
+  isFlowStoreToken,
   JobDefinitionError,
   JobId,
+  JobStore,
   LeaseToken,
   MemoryFlowStore,
   makeFlowChildId,
@@ -129,7 +133,8 @@ test('flow child specs require the deterministic job ID in their prepared reques
 const flowQueue = Queue.define('flow-tests')
 const Parent = flowQueue.job('parent', {
   version: 1,
-  payload: Codec.json<{ readonly day: string }>()
+  payload: Codec.json<{ readonly day: string }>(),
+  result: Codec.json<{ readonly day: string }>()
 })
 const Child = flowQueue.job('child', {
   version: 1,
@@ -158,6 +163,52 @@ test('Flow.define and Flow.children create inert immutable descriptors', () => {
   expect(flow.maxDepth).toBe(8)
   expect(children.job).toBe(Child)
   expect(children.items[0]?.key).toBe('user:1')
+})
+
+test('FlowStore exposes a stable associated token for each JobStore', () => {
+  const namedJobStore = JobStore.named('flow-runtime')
+  const associated = FlowStore.for(namedJobStore)
+
+  expect(FlowStore.serviceTag).toBe('@better-effect/mq/FlowStore')
+  expect(associated.serviceTag).toBe('@better-effect/mq/FlowStore/flow-runtime')
+  expect(associated.jobStore).toBe(namedJobStore)
+  expect(associated.store).toBe(namedJobStore)
+  expect(isFlowStoreToken(FlowStore)).toBe(true)
+  expect(isFlowStoreToken(associated)).toBe(true)
+})
+
+test('Flow.handle creates an immutable phase descriptor without executing callbacks', () => {
+  let fanOutCalls = 0
+  let collectCalls = 0
+  const flow = Flow.define('handled-digest', {
+    parent: Parent,
+    children: [Child],
+    onChildFailure: 'continue'
+  })
+  const handler = Flow.handle(flow, {
+    fanOut: () => {
+      fanOutCalls += 1
+      return Effect.fn(async function* () {
+        yield* []
+        return Result.ok([Flow.children(Child, [{ key: 'user:1', payload: { userId: '1' } }])])
+      })
+    },
+    collect: (_payload, _results) => {
+      collectCalls += 1
+      return Effect.fn(async function* () {
+        yield* []
+        return Result.ok({ day: 'done' })
+      })
+    }
+  })
+
+  expect(handler.flow).toBe(flow)
+  expect(handler.definition).toBe(flow)
+  expect(handler.fanOut).toBeTypeOf('function')
+  expect(handler.collect).toBeTypeOf('function')
+  expect(Object.isFrozen(handler)).toBe(true)
+  expect(fanOutCalls).toBe(0)
+  expect(collectCalls).toBe(0)
 })
 
 test('Flow.define and Flow.children reject invalid identities and child keys', () => {

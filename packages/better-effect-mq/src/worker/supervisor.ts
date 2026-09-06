@@ -48,6 +48,7 @@ import { scheduleDeadline } from './timer'
 import { JobTimeoutError, WorkerAwaitIdleError, WorkerRuntimeOwnershipError } from './errors'
 import type {
   AnyWorkerHandler,
+  WorkerFlowRegistration,
   WorkerAwaitIdleOptions,
   WorkerErrorHandler,
   JobFailureEvent,
@@ -1562,7 +1563,7 @@ const validateObserver = (value: unknown): void => {
 }
 
 export const normalizeWorkerOptions = (
-  options: WorkerOptions<readonly AnyWorkerHandler[]>
+  options: WorkerOptions<readonly AnyWorkerHandler[], readonly WorkerFlowRegistration[]>
 ): NormalizedWorkerOptions => {
   const concurrency = positiveInteger(
     readOption(options, 'concurrency') ?? defaultConcurrency,

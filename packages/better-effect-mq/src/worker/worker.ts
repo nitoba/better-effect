@@ -9,9 +9,16 @@ import type { AnyService, RuntimeExecutor, ServiceRequirement, ServiceToken } fr
 import { Result, type Result as ResultType } from 'better-result'
 
 import { Job, type AnyJobDefinition } from '../job'
+import { Flow } from '../flow'
+import type { AnyFlowHandler } from '../flow'
 import { JobDefinitionError } from '../protocol'
-import { assertJobStoreProtocolCompatible } from '../store'
-import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from '../store'
+import { FlowStore, assertJobStoreProtocolCompatible } from '../store'
+import type {
+  AnyFlowStoreToken,
+  AnyJobStoreToken,
+  FlowStore as FlowStoreNamespace,
+  JobStore as JobStoreNamespace
+} from '../store'
 
 import { normalizeWorkerOptions, WorkerSupervisor } from './supervisor'
 import type {
@@ -25,7 +32,7 @@ import type {
   WorkerServiceInstance,
   WorkerServiceTag,
   WorkerServiceToken,
-  WorkerRequirements
+  WorkerFlowRegistration
 } from './types'
 
 /** Register one immutable, typed Job handler descriptor. */
@@ -58,32 +65,38 @@ export function handle<
   }) as unknown as WorkerHandler<Definition, Effect.Requirements<Program>>
 }
 
-type WorkerServiceValueFactory<Handlers extends readonly AnyWorkerHandler[]> = () =>
-  | WorkerOptions<Handlers>
-  | PromiseLike<WorkerOptions<Handlers>>
+type WorkerServiceValueFactory<
+  Handlers extends readonly AnyWorkerHandler[],
+  Flows extends readonly WorkerFlowRegistration[]
+> = () => WorkerOptions<Handlers, Flows> | PromiseLike<WorkerOptions<Handlers, Flows>>
 
 type WorkerServiceFactoryInput<
   Handlers extends readonly AnyWorkerHandler[],
-  Yield extends ServiceRequirement<unknown>
-> = WorkerServiceGeneratorFactory<Handlers, Yield> | WorkerServiceValueFactory<Handlers>
+  Yield extends ServiceRequirement<unknown>,
+  Flows extends readonly WorkerFlowRegistration[]
+> =
+  | WorkerServiceGeneratorFactory<Handlers, Yield, Flows>
+  | WorkerServiceValueFactory<Handlers, Flows>
 
 type WorkerServiceGeneratorResult<
   Handlers extends readonly AnyWorkerHandler[],
-  Yield extends ServiceRequirement<unknown>
+  Yield extends ServiceRequirement<unknown>,
+  Flows extends readonly WorkerFlowRegistration[]
 > =
-  | Generator<Yield, WorkerOptions<Handlers>, unknown>
-  | AsyncGenerator<Yield, WorkerOptions<Handlers>, unknown>
+  | Generator<Yield, WorkerOptions<Handlers, Flows>, unknown>
+  | AsyncGenerator<Yield, WorkerOptions<Handlers, Flows>, unknown>
 
 // oxlint-disable-next-line anti-slop/no-runtime-typeof -- this boundary distinguishes a factory generator from an options Promise/value.
 const isWorkerServiceGeneratorResult = <
   Handlers extends readonly AnyWorkerHandler[],
-  Yield extends ServiceRequirement<unknown>
+  Yield extends ServiceRequirement<unknown>,
+  Flows extends readonly WorkerFlowRegistration[]
 >(
   value:
-    | WorkerOptions<Handlers>
-    | PromiseLike<WorkerOptions<Handlers>>
-    | WorkerServiceGeneratorResult<Handlers, Yield>
-): value is WorkerServiceGeneratorResult<Handlers, Yield> =>
+    | WorkerOptions<Handlers, Flows>
+    | PromiseLike<WorkerOptions<Handlers, Flows>>
+    | WorkerServiceGeneratorResult<Handlers, Yield, Flows>
+): value is WorkerServiceGeneratorResult<Handlers, Yield, Flows> =>
   typeof value === 'object' &&
   value !== null &&
   'next' in value &&
@@ -92,14 +105,15 @@ const isWorkerServiceGeneratorResult = <
 
 const normalizeWorkerServiceFactory = <
   Handlers extends readonly AnyWorkerHandler[],
-  Yield extends ServiceRequirement<unknown>
+  Yield extends ServiceRequirement<unknown>,
+  Flows extends readonly WorkerFlowRegistration[]
 >(
-  factory: WorkerServiceFactoryInput<Handlers, Yield>
-): (() => AsyncGenerator<Yield, WorkerOptions<Handlers>, unknown>) =>
+  factory: WorkerServiceFactoryInput<Handlers, Yield, Flows>
+): (() => AsyncGenerator<Yield, WorkerOptions<Handlers, Flows>, unknown>) =>
   async function* () {
     const result = factory()
 
-    if (isWorkerServiceGeneratorResult<Handlers, Yield>(result)) {
+    if (isWorkerServiceGeneratorResult<Handlers, Yield, Flows>(result)) {
       return yield* result
     }
 
@@ -131,10 +145,11 @@ export function service<const Tag extends string>(
 
   const makeLayer = <
     const Handlers extends readonly AnyWorkerHandler[],
+    const Flows extends readonly WorkerFlowRegistration[],
     Yield extends ServiceRequirement<unknown>
   >(
-    factory: WorkerServiceFactoryInput<Handlers, Yield>
-  ): Layer<Instance, WorkerLayerRequirements<Handlers, Yield>> => {
+    factory: WorkerServiceFactoryInput<Handlers, Yield, Flows>
+  ): Layer<Instance, WorkerLayerRequirements<Handlers, Yield, Flows>> => {
     const layer = Layer.scopedGen(
       layerToken,
       async function* () {
@@ -151,20 +166,28 @@ export function service<const Tag extends string>(
     )
 
     // SAFETY: Runtime.executor is acquired from the active Runtime context rather than a Layer Service; only factory and handler requirements remain public.
-    return layer as Layer<Instance, WorkerLayerRequirements<Handlers, Yield>>
+    return layer as Layer<Instance, WorkerLayerRequirements<Handlers, Yield, Flows>>
   }
 
   function layer<
     const Handlers extends readonly AnyWorkerHandler[],
+    const Flows extends readonly WorkerFlowRegistration[],
     Yield extends ServiceRequirement<unknown>
   >(
-    factory: WorkerServiceGeneratorFactory<Handlers, Yield>
-  ): Layer<Instance, WorkerLayerRequirements<Handlers, Yield>>
-  function layer<const Handlers extends readonly AnyWorkerHandler[]>(
-    factory: WorkerServiceValueFactory<Handlers>
-  ): Layer<Instance, WorkerRequirements<Handlers>>
+    factory: WorkerServiceGeneratorFactory<Handlers, Yield, Flows>
+  ): Layer<Instance, WorkerLayerRequirements<Handlers, Yield, Flows>>
+  function layer<
+    const Handlers extends readonly AnyWorkerHandler[],
+    const Flows extends readonly WorkerFlowRegistration[] = readonly []
+  >(
+    factory: WorkerServiceValueFactory<Handlers, Flows>
+  ): Layer<Instance, WorkerLayerRequirements<Handlers, never, Flows>>
   function layer(
-    factory: WorkerServiceFactoryInput<readonly AnyWorkerHandler[], ServiceRequirement<unknown>>
+    factory: WorkerServiceFactoryInput<
+      readonly AnyWorkerHandler[],
+      ServiceRequirement<unknown>,
+      readonly []
+    >
   ): Layer<Instance, AnyService> {
     return makeLayer(factory)
   }
@@ -194,7 +217,7 @@ export function service<const Tag extends string>(
 
 const startWorkerWithExecutor = async (
   executor: RuntimeExecutor<any>,
-  options: WorkerOptions<readonly AnyWorkerHandler[]>
+  options: WorkerOptions<readonly AnyWorkerHandler[], readonly WorkerFlowRegistration[]>
 ): Promise<WorkerSupervisor<any>> => {
   validateExecutor(executor)
   validateOptionsObject(options, 'options')
@@ -202,8 +225,10 @@ const startWorkerWithExecutor = async (
   const normalizedHandlers = normalizeHandlers(
     handlersField.present ? handlersField.value : undefined
   )
+  const flowsField = readOwnField(options, 'flows', 'options.flows')
+  const normalizedFlows = normalizeFlows(flowsField.present ? flowsField.value : undefined)
   const normalizedOptions = normalizeWorkerOptions(options)
-  await assertStoresAvailable(executor, normalizedHandlers)
+  await assertStoresAvailable(executor, normalizedHandlers, normalizedFlows)
 
   const supervisor = new WorkerSupervisor(executor, normalizedHandlers, normalizedOptions)
   supervisor.start()
@@ -219,16 +244,19 @@ export namespace Worker {
     Requirements extends import('better-effect').AnyService = import('better-effect').AnyService
   > = import('./types').WorkerHandler<Definition, Requirements>
   export type AnyHandler = AnyWorkerHandler
-  export type Options<Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]> =
-    WorkerOptions<Handlers>
+  export type Options<
+    Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[],
+    Flows extends readonly WorkerFlowRegistration[] = readonly []
+  > = WorkerOptions<Handlers, Flows>
   export type ReliabilityOptions = import('./types').WorkerReliabilityOptions
   export type Handle = WorkerHandle
   export type ServiceInstance<Tag extends string> = WorkerServiceInstance<Tag>
   export type ServiceToken<Tag extends string> = WorkerServiceToken<Tag>
   export type LayerRequirements<
     Handlers extends readonly AnyWorkerHandler[],
-    Yield extends ServiceRequirement<unknown>
-  > = WorkerLayerRequirements<Handlers, Yield>
+    Yield extends ServiceRequirement<unknown>,
+    Flows extends readonly WorkerFlowRegistration[] = readonly []
+  > = WorkerLayerRequirements<Handlers, Yield, Flows>
 }
 
 const validateOptionsObject = (value: unknown, field: string): void => {
@@ -342,6 +370,63 @@ const normalizeHandler = (candidate: unknown, index: number): AnyWorkerHandler =
   }) as AnyWorkerHandler
 }
 
+const normalizeFlows = (value: unknown): readonly WorkerFlowRegistration[] => {
+  if (value === undefined) return Object.freeze([])
+  if (!Array.isArray(value)) {
+    throw new JobDefinitionError({ field: 'flows', message: 'must be an array' })
+  }
+
+  const seen = new Set<string>()
+  const flows: WorkerFlowRegistration[] = []
+
+  for (const [index, candidate] of value.entries()) {
+    const flow = Flow.is(candidate)
+      ? candidate
+      : normalizeFlowHandler(candidate, `flows[${index}]`).flow
+    if (seen.has(flow.name)) {
+      throw new JobDefinitionError({
+        field: `flows[${index}]`,
+        message: `duplicate Flow registration ${flow.name}`
+      })
+    }
+    seen.add(flow.name)
+    flows.push(candidate as WorkerFlowRegistration)
+  }
+
+  return Object.freeze(flows)
+}
+
+const normalizeFlowHandler = (candidate: unknown, field: string): AnyFlowHandler => {
+  if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new JobDefinitionError({ field, message: 'must be a Flow definition or handler' })
+  }
+  const flowField = readOwnField(candidate, 'flow', `${field}.flow`)
+  const definitionField = readOwnField(candidate, 'definition', `${field}.definition`)
+  const fanOutField = readOwnField(candidate, 'fanOut', `${field}.fanOut`)
+  const collectField = readOwnField(candidate, 'collect', `${field}.collect`)
+  const flow = flowField.present
+    ? flowField.value
+    : definitionField.present
+      ? definitionField.value
+      : undefined
+  if (flowField.present && definitionField.present && flowField.value !== definitionField.value) {
+    throw new JobDefinitionError({
+      field,
+      message: 'flow and definition aliases must refer to the same Flow'
+    })
+  }
+  if (!Flow.is(flow)) {
+    throw new JobDefinitionError({ field: `${field}.flow`, message: 'must be a Flow definition' })
+  }
+  if (!fanOutField.present || typeof fanOutField.value !== 'function') {
+    throw new JobDefinitionError({ field: `${field}.fanOut`, message: 'must be callable' })
+  }
+  if (!collectField.present || typeof collectField.value !== 'function') {
+    throw new JobDefinitionError({ field: `${field}.collect`, message: 'must be callable' })
+  }
+  return candidate as AnyFlowHandler
+}
+
 function validateJob(job: unknown, field = 'job'): asserts job is AnyJobDefinition {
   if (!Job.is(job)) {
     throw new JobDefinitionError({ field, message: 'must be a valid Job definition' })
@@ -399,16 +484,45 @@ const identityKeyFor = (job: Pick<AnyJobDefinition, 'queue' | 'name' | 'version'
 
 const assertStoresAvailable = async (
   executor: RuntimeExecutor<any>,
-  handlers: readonly AnyWorkerHandler[]
+  handlers: readonly AnyWorkerHandler[],
+  flows: readonly WorkerFlowRegistration[]
 ): Promise<void> => {
   const stores = new Map<string, AnyJobStoreToken>()
+  const flowStores = new Map<string, AnyFlowStoreToken>()
+  const handlerJobs = new Set(handlers.map((handler) => identityKeyFor(handler.job)))
+
+  for (const [index, registration] of flows.entries()) {
+    const flow = Flow.is(registration) ? registration : registration.flow
+    if (handlerJobs.has(identityKeyFor(flow.parent))) {
+      throw new JobDefinitionError({
+        field: `flows[${index}]`,
+        message: `Flow parent ${identityKeyFor(flow.parent)} is already registered as a plain handler`
+      })
+    }
+  }
 
   for (const handler of handlers) {
     stores.set(handler.job.store.serviceTag, handler.job.store)
   }
 
+  for (const registration of flows) {
+    const flow = Flow.is(registration) ? registration : registration.flow
+    stores.set(flow.parent.store.serviceTag, flow.parent.store)
+    // SAFETY: every flow parent store is validated as an AnyJobStoreToken by Job definitions.
+    flowStores.set(
+      flow.parent.store.serviceTag,
+      FlowStore.for(flow.parent.store) as AnyFlowStoreToken
+    )
+    for (const child of flow.children) {
+      stores.set(child.store.serviceTag, child.store)
+    }
+  }
+
   for (const store of stores.values()) {
     await assertStoreAvailable(executor, store)
+  }
+  for (const flowStore of flowStores.values()) {
+    await assertFlowStoreAvailable(executor, flowStore)
   }
 }
 
@@ -429,4 +543,25 @@ const assertStoreAvailable = async (
   }
 
   assertJobStoreProtocolCompatible(result.value.descriptor)
+}
+
+const assertFlowStoreAvailable = async (
+  executor: RuntimeExecutor<any>,
+  token: AnyFlowStoreToken
+): Promise<void> => {
+  const result = (await executor.run(
+    () =>
+      Effect.gen(async function* () {
+        const store = yield* token
+        return Result.ok(store)
+      }) as never
+  )) as ResultType<FlowStoreNamespace, unknown>
+
+  if (Result.isError(result)) throw result.error
+  if (result.value.descriptor.protocolVersion !== 2) {
+    throw new JobDefinitionError({
+      field: 'flows',
+      message: 'FlowStore must implement protocol version 2'
+    })
+  }
 }

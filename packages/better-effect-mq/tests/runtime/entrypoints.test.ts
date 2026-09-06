@@ -6,6 +6,8 @@ import * as testing from '../../src/testing/index'
 const expectedCoreRuntimeExports = [
   'Codec',
   'Flow',
+  'FlowStore',
+  'flowStoreTag',
   'InvalidJobTransitionError',
   'Job',
   'JobAdmin',
@@ -54,6 +56,7 @@ const expectedCoreRuntimeExports = [
   'defaultFlowMaxDepth',
   'assertJobStoreProtocolCompatible',
   'isJobStoreDescriptor',
+  'isFlowStoreToken',
   'isUnrecoverableFailure',
   'bindJob',
   'makeJobId',

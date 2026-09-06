@@ -13,6 +13,14 @@ export type {
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'
 export { MemoryFlowStore } from './memory-flow'
+export { FlowStore, flowStoreTag, isFlowStoreToken } from './flow-store'
+export type {
+  AnyFlowStoreToken,
+  DefaultFlowStoreToken,
+  FlowStoreInstance,
+  FlowStoreTag,
+  FlowStoreToken
+} from './flow-store'
 export type {
   CancelFlowRequest,
   CancelFlowResult,

@@ -27,9 +27,10 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
 
 The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
-flow contracts, pure `Flow.define`/`Flow.children` descriptors, and the
-reference `MemoryFlowStore`; durable cross-store delivery and Worker
-supervision remain future integrations.
+flow contracts, pure `Flow.define`/`Flow.children`/`Flow.handle` descriptors,
+the reference `MemoryFlowStore`, and Layer-first Worker route validation.
+Durable cross-store delivery and flow execution supervision remain future
+integrations.
 
 ## Schedule-store conformance
 
@@ -583,6 +584,28 @@ against the Runtime when the Layer-owned Worker starts: `JobContext` is supplied
 per attempt and removed from the external requirement set, while the handler's
 root Services and the Job's bound `JobStore` must be provided by the Runtime.
 Handler registration and the returned inspectable handle are immutable.
+
+Flow routes compose into the same Worker Layer and Runtime root:
+
+```ts
+const DigestRoute = Flow.handle(Digest, { fanOut, collect })
+
+const AppWorkerLive = AppWorker.layer(() => ({
+  handlers: [SendEmailHandler] as const,
+  flows: [DigestRoute] as const
+}))
+```
+
+`Flow.handle` is a pure, immutable phase descriptor. A flow registration adds
+the phase Services, the parent and child JobStore requirements, and the
+associated `FlowStore` requirement to the Layer contract. Provide the v2 store
+explicitly, for example with `Layer.succeed(FlowStore,
+FlowStore.of(MemoryFlowStore.make()))`. Worker startup validates the associated
+store's v2 descriptor in the same Runtime root and rejects duplicate flow names
+or a flow parent also registered as a plain Worker handler. This slice does not
+claim children, deliver a durable outbox, or run relay/sweeper loops yet; those
+operations require the corresponding atomic v2 JobStore settlement and outbox
+scan/ack contracts.
 
 Each claimed Job runs through `executor.runWith(JobContext.layer(context), ...)`
 with a fresh child Scope and attempt-local `AbortSignal`. Root Services remain
