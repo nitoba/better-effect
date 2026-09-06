@@ -23,7 +23,8 @@ export const redisScriptNames = [
   'retry',
   'remove',
   'pause',
-  'resume'
+  'resume',
+  'tick-schedule'
 ] as const
 
 export type RedisScriptName = (typeof redisScriptNames)[number]

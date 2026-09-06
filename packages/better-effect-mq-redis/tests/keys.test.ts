@@ -46,6 +46,10 @@ describe('Redis key layout', () => {
       layout.created,
       layout.runAt,
       layout.finishedAt,
+      layout.schedule('billing', 'monthly/invoices'),
+      layout.scheduleGroup('billing'),
+      layout.scheduleGroups,
+      layout.scheduleDue,
       layout.layout
     ]
 

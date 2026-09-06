@@ -254,6 +254,10 @@ export interface RedisKeyLayout {
   readonly created: string
   readonly runAt: string
   readonly finishedAt: string
+  readonly schedule: (group: string, key: string) => string
+  readonly scheduleGroup: (group: string) => string
+  readonly scheduleGroups: string
+  readonly scheduleDue: string
   readonly layout: string
 }
 
@@ -307,6 +311,14 @@ export const makeRedisKeyLayout = (prefixValue: string, namespaceValue: string):
     created: suffix('created'),
     runAt: suffix('runat'),
     finishedAt: suffix('finished-at'),
+    schedule: (group: string, key: string) =>
+      suffix(
+        `schedule:${encodeKeySegment(validateKeySegment(group, 'schedule group'))}:${encodeKeySegment(validateKeySegment(key, 'schedule key'))}`
+      ),
+    scheduleGroup: (group: string) =>
+      suffix(`schedule-group:${encodeKeySegment(validateKeySegment(group, 'schedule group'))}`),
+    scheduleGroups: suffix('schedule-groups'),
+    scheduleDue: suffix('schedule-due'),
     layout: suffix('layout')
   }
   return Object.freeze(layout)
