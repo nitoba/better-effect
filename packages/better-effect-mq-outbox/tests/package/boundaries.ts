@@ -57,7 +57,10 @@ const testing = await import(pathToFileURL(join(packageRoot, 'dist/testing.mjs')
 for (const name of ['MemoryOutboxStore', 'makeOutboxRecord', 'OutboxId']) {
   if (!(name in core)) throw new Error(`Missing core export: ${name}`)
 }
-if (Object.keys(testing).join(',') !== 'MemoryOutboxStore') {
+if (
+  JSON.stringify(Object.keys(testing).sort()) !==
+  JSON.stringify(['MemoryOutboxStore', 'outboxStoreContract'].sort())
+) {
   throw new Error('Unexpected testing exports')
 }
 
