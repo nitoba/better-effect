@@ -51,3 +51,37 @@ await outbox.append(record)
 `OutboxId` deduplication is idempotent for the same canonical prepared
 request and returns `OutboxConflictError` when the same ID is reused for a
 different request.
+
+## Conformance kit
+
+The `./testing` subpath exports a runner-agnostic contract suite for adapters:
+
+```ts
+import { MemoryOutboxStore } from 'better-effect-mq-outbox'
+import { outboxStoreContract } from 'better-effect-mq-outbox/testing'
+
+const suite = outboxStoreContract({
+  makeOutboxStore: (name) => MemoryOutboxStore.make(),
+  clock: () => {
+    let current = 0
+    return {
+      now: () => current,
+      advance: (milliseconds: number) => {
+        current += milliseconds
+      }
+    }
+  }
+})
+
+for (const scenario of suite) {
+  await scenario.run()
+}
+```
+
+Each scenario creates an isolated store and covers append idempotency/conflicts,
+claim ordering, leases/fencing, heartbeat/recovery, settlement and lost
+responses, poison failures, list/counts, retry redrive, and named outbox
+isolation. A test runner only needs to register `scenario.run`; the suite does
+not use a database, publisher, timers, or Runtime. Transactional append
+commit/rollback remains adapter-specific, and delivery remains at-least-once,
+not exactly-once.
