@@ -22,8 +22,14 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 - [Time and leases](./docs/protocol/time-and-leases-v1.md)
 - [Capabilities](./docs/protocol/capabilities-v1.md)
 - [Compatibility](./docs/protocol/compatibility-v1.md)
+- [Flow protocol v2](./docs/protocol/flows-v2.md)
 
 These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
+
+The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
+flow contracts, pure `Flow.define`/`Flow.children` descriptors, and the
+reference `MemoryFlowStore`; durable database adapters, cross-store delivery,
+and Worker supervision remain future integrations.
 
 ## Schedule-store conformance
 

@@ -53,6 +53,31 @@ export {
 
 export { protocolVersion } from './types'
 
+export {
+  defaultFlowLimits,
+  defaultFlowMaxChildren,
+  defaultFlowMaxDepth,
+  flowLayoutVersion,
+  hardFlowMaxChildren,
+  hardFlowMaxDepth,
+  makeFlowChildId,
+  makeFlowMigration,
+  maxFlowChildIdLength,
+  maxFlowChildKeyLength,
+  maxFlowNameLength,
+  maxFlowStoreKeyLength,
+  protocolVersionV2,
+  validateFanOutOutcome,
+  validateFlowChildRecord,
+  validateFlowChildReport,
+  validateFlowChildSpec,
+  validateFlowLimits,
+  validateFlowMigration,
+  validateFlowManifest,
+  validateFlowState,
+  validateParentEnvelope
+} from './v2'
+
 export type {
   AttemptOutcome,
   AttemptRecord,
@@ -83,5 +108,25 @@ export type {
   SettleCommand,
   SettlementOutcome
 } from './types'
+
+export type {
+  FanOutOutcome,
+  FlowChildRecord,
+  FlowChildReport,
+  FlowChildReportOutcome,
+  FlowChildSpec,
+  FlowChildStatus,
+  FlowLayoutVersion,
+  FlowLimits,
+  FlowMigration,
+  FlowMigrationStatus,
+  FlowOutboxEntry,
+  FlowState,
+  JobRecordV2,
+  JobStateV2,
+  ParentEnvelope,
+  ProtocolVersionV2,
+  SettlementOutcomeV2
+} from './v2'
 
 export type { JobTransitionFailure } from './transitions'

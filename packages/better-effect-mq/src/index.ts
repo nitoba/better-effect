@@ -14,6 +14,7 @@ export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
 export { Retry } from './retry'
+export { Flow } from './flow'
 export { JobMetricNames, JobObserver, makeJobDepthSampler } from './observability'
 export type {
   JobEvent,
@@ -85,6 +86,20 @@ export type {
   RegistryIdentityInput,
   RetryableCallback
 } from './job'
+
+export type {
+  AnyFlowDefinition,
+  FlowChildDefinition,
+  FlowChildGroup,
+  FlowChildInput,
+  FlowChildOptions,
+  FlowChildren,
+  FlowDefinition,
+  FlowDefinitionOptions,
+  FlowFailurePolicy,
+  FlowName,
+  FlowParent
+} from './flow'
 
 export type {
   RetryContext,
@@ -162,6 +177,8 @@ export {
   makeJobName,
   makeJobRecord,
   makeLeaseToken,
+  makeFlowChildId,
+  makeFlowMigration,
   makePersistedBackoff,
   makePersistedJobFailure,
   makeQueueName,
@@ -170,6 +187,7 @@ export {
   orderJobs,
   promoteJob,
   protocolVersion,
+  protocolVersionV2,
   recoverStalledJob,
   recoverStalledWithPolicy,
   retryJob,
@@ -181,6 +199,14 @@ export {
   transitionJob,
   validateAttemptRecord,
   validateDuration,
+  validateFanOutOutcome,
+  validateFlowChildRecord,
+  validateFlowChildReport,
+  validateFlowChildSpec,
+  validateFlowLimits,
+  validateFlowMigration,
+  validateFlowManifest,
+  validateFlowState,
   validateJobRecord,
   validateOptionalDuration,
   validateOptionalTimestamp,
@@ -191,11 +217,69 @@ export {
 } from './protocol'
 
 export {
+  defaultFlowLimits,
+  defaultFlowMaxChildren,
+  defaultFlowMaxDepth,
+  flowLayoutVersion,
+  hardFlowMaxChildren,
+  hardFlowMaxDepth,
+  maxFlowChildIdLength,
+  maxFlowChildKeyLength,
+  maxFlowNameLength,
+  maxFlowStoreKeyLength,
+  validateParentEnvelope
+} from './protocol'
+
+export type {
+  FanOutOutcome,
+  FlowChildRecord,
+  FlowChildReport,
+  FlowChildReportOutcome,
+  FlowChildSpec,
+  FlowChildStatus,
+  FlowLayoutVersion,
+  FlowLimits,
+  FlowMigration,
+  FlowMigrationStatus,
+  FlowOutboxEntry,
+  FlowState,
+  JobRecordV2,
+  JobStateV2,
+  ParentEnvelope,
+  ProtocolVersionV2,
+  SettlementOutcomeV2
+} from './protocol'
+
+export {
   JobStore,
   JobStoreWakeAbortedError,
+  MemoryFlowStore,
   MemoryJobStore,
   assertJobStoreProtocolCompatible,
   isJobStoreDescriptor
+} from './store'
+
+export type {
+  CancelFlowRequest,
+  CancelFlowResult,
+  FlowChildObservation,
+  FlowChildObservationState,
+  FlowFanOutRequest,
+  FlowFanOutResult,
+  FlowParentRecord,
+  FlowParentState,
+  FlowSnapshot,
+  FlowStoreV2,
+  FlowStoreV2Descriptor,
+  FlowStoreV2Error,
+  FlowStoreV2Operation,
+  GetFlowRequest,
+  MarkCascadedRequest,
+  MarkCascadedResult,
+  ReconcileFlowRequest,
+  ReconcileFlowResult,
+  RecordChildResultsRequest,
+  RecordChildResultsResult
 } from './store'
 
 export {

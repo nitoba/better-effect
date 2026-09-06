@@ -12,6 +12,29 @@ export type {
 
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'
+export { MemoryFlowStore } from './memory-flow'
+export type {
+  CancelFlowRequest,
+  CancelFlowResult,
+  FlowChildObservation,
+  FlowChildObservationState,
+  FlowFanOutRequest,
+  FlowFanOutResult,
+  FlowParentRecord,
+  FlowParentState,
+  FlowSnapshot,
+  FlowStoreV2,
+  FlowStoreV2Descriptor,
+  FlowStoreV2Error,
+  FlowStoreV2Operation,
+  GetFlowRequest,
+  MarkCascadedRequest,
+  MarkCascadedResult,
+  ReconcileFlowRequest,
+  ReconcileFlowResult,
+  RecordChildResultsRequest,
+  RecordChildResultsResult
+} from './flow-v2'
 export type {
   MemoryJobStoreClock,
   MemoryJobStoreIdGenerator,

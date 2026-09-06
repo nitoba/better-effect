@@ -23,6 +23,7 @@
     "worker.types.ts",
     "worker-layer.types.ts",
     "scheduler.types.ts",
-    "observability.types.ts"
+    "observability.types.ts",
+    "flow-v2.types.ts"
   ]
 }

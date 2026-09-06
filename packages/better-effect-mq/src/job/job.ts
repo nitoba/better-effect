@@ -28,11 +28,11 @@ import { normalizeRetryPolicy } from '../retry'
 import type { RetryPolicy } from '../retry'
 import { JobStore, isJobStoreToken } from '../store'
 import type { AnyJobStoreToken, DefaultJobStoreToken } from '../store'
+import { normalizeIdempotencyKey, normalizeMetadata } from './normalization'
 import { makeJobOperations } from './application'
 import type { JobBoundOperations, JobOperationDescriptor } from './application'
 import type { JobObserver } from '../observability/observer'
 
-import { hasUnpairedSurrogate } from '../internal/validation'
 import type { QueueDefinition } from './queue'
 import type { PreparedEnqueue } from './prepared'
 import { isQueueDefinition } from './queue'
@@ -1691,66 +1691,7 @@ export const bindJob = <Definition extends AnyJobDefinition, Store extends AnyJo
   return Object.freeze(bound) as unknown as Job.Bound<Definition, Store>
 }
 
-export const normalizeIdempotencyKey = (
-  value: unknown
-): ResultType<string | undefined, JobDefinitionError> => {
-  if (value === undefined) {
-    return Result.ok(undefined)
-  }
-
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.includes('\u0000') ||
-    hasUnpairedSurrogate(value)
-  ) {
-    return invalid(
-      'idempotencyKey',
-      'must be a non-empty well-formed string without NUL or undefined'
-    )
-  }
-
-  return Result.ok(value)
-}
-
-export const normalizeMetadata = (
-  value: unknown
-): ResultType<Readonly<Record<string, string>>, JobDefinitionError> => {
-  if (!isPlainObject(value)) {
-    return invalid('metadata', 'must be a plain object with string values')
-  }
-
-  try {
-    const metadata: Record<string, string> = {}
-
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string') {
-        return invalid('metadata', 'must contain only string keys and values')
-      }
-
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-
-      if (descriptor === undefined || !('value' in descriptor)) {
-        return invalid('metadata', 'must contain only data properties')
-      }
-
-      if (typeof descriptor.value !== 'string') {
-        return invalid('metadata', 'must contain only string keys and values')
-      }
-
-      Object.defineProperty(metadata, key, {
-        configurable: true,
-        enumerable: true,
-        value: descriptor.value,
-        writable: true
-      })
-    }
-
-    return Result.ok(Object.freeze(metadata))
-  } catch {
-    return invalid('metadata', 'could not read callback output')
-  }
-}
+export { normalizeIdempotencyKey, normalizeMetadata } from './normalization'
 
 const callbackFailure = (field: string): ResultType<never, JobDefinitionError> =>
   invalid(field, 'callback failed')
