@@ -17,7 +17,7 @@ import { makeJobId, makeJobName, makeQueueName } from '../protocol/brands'
 import { JobDefinitionError } from '../protocol/errors'
 import { protocolVersion } from '../protocol/types'
 import type { JsonValue, PersistedBackoff, ProtocolVersion } from '../protocol/types'
-import { normalizeIdempotencyKey, normalizeMetadata } from './job'
+import { normalizeIdempotencyKey, normalizeMetadata } from './normalization'
 import type { JobIdentity } from './job'
 
 export type PreparedEnqueue<

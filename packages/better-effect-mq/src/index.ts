@@ -204,6 +204,7 @@ export {
   validateFlowChildReport,
   validateFlowChildSpec,
   validateFlowLimits,
+  validateFlowMigration,
   validateFlowManifest,
   validateFlowState,
   validateJobRecord,
@@ -252,6 +253,7 @@ export type {
 export {
   JobStore,
   JobStoreWakeAbortedError,
+  MemoryFlowStore,
   MemoryJobStore,
   assertJobStoreProtocolCompatible,
   isJobStoreDescriptor

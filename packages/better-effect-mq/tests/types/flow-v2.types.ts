@@ -1,6 +1,6 @@
 import { expectTypeOf } from 'bun:test'
 
-import { Codec, Flow, Queue } from '../../src'
+import { Codec, Flow, MemoryFlowStore, Queue } from '../../src'
 import type {
   FlowChildReport,
   FlowChildSpec,
@@ -23,6 +23,7 @@ declare const fanOutResult: FlowStoreV2Operation<FlowFanOutResult>
 
 expectTypeOf(flowStore.descriptor.protocolVersion).toEqualTypeOf<2>()
 expectTypeOf(fanOutResult).toEqualTypeOf<ResultType<FlowFanOutResult, FlowStoreV2Error>>()
+expectTypeOf(MemoryFlowStore.make()).toEqualTypeOf<FlowStoreV2>()
 
 const queue = Queue.define('flow-types')
 const parentJob = queue.job('parent', { version: 1, payload: Codec.json<{ day: string }>() })

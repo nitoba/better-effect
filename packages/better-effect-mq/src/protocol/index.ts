@@ -72,6 +72,7 @@ export {
   validateFlowChildReport,
   validateFlowChildSpec,
   validateFlowLimits,
+  validateFlowMigration,
   validateFlowManifest,
   validateFlowState,
   validateParentEnvelope

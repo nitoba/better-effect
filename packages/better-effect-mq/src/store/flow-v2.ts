@@ -8,7 +8,6 @@ import type {
   FlowOutboxEntry,
   FlowState,
   JobStateV2,
-  ParentEnvelope,
   ProtocolVersionV2,
   SerializedJobFailure
 } from '../protocol'
@@ -18,6 +17,7 @@ import type {
   JobDefinitionError,
   JobNotFoundError,
   JobStoreFailure,
+  LeaseLostError,
   SettlementConflictError
 } from '../protocol'
 import type { JsonValue } from '../protocol'
@@ -33,6 +33,7 @@ export type FlowStoreV2Error =
   | JobDefinitionError
   | JobNotFoundError
   | InvalidJobTransitionError
+  | LeaseLostError
   | SettlementConflictError
 
 export type FlowStoreV2Operation<Success> = ResultType<Success, FlowStoreV2Error>

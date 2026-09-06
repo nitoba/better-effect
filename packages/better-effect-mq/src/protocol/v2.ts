@@ -1,3 +1,8 @@
+// oxlint-disable anti-slop/no-unknown-parameters -- protocol validators are untyped persistence boundaries.
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- fixed protocol fields are assembled after validation.
+// oxlint-disable anti-slop/no-runtime-typeof -- validators narrow external protocol values before use.
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- counters are narrowed by validateCounters.
+
 import { Result, type Result as ResultType } from 'better-result'
 
 import { parseJsonValue, readObjectFields } from '../internal/json'
@@ -163,6 +168,7 @@ const flowChildRecordFields = [
 const flowChildReportFields = ['flowId', 'childKey', 'outcome', 'result', 'failure'] as const
 const fanOutFields = ['type', 'failFast', 'children'] as const
 const flowLimitsFields = ['maxChildren', 'maxDepth'] as const
+const migrationFields = ['status', 'from', 'to'] as const
 
 const invalid = <Value>(field: string, message: string): ResultType<Value, JobDefinitionError> =>
   Result.err(new JobDefinitionError({ field, message }))
@@ -258,6 +264,42 @@ export const validateFlowLimits = (
   }
 
   return Result.ok(Object.freeze({ maxChildren: maxChildren.value, maxDepth: maxDepth.value }))
+}
+
+const validateMigrationVersion = (
+  value: unknown,
+  field: string,
+  optional: boolean
+): ResultType<number | string | undefined, JobDefinitionError> => {
+  if (optional && value === undefined) return Result.ok(undefined)
+  if (typeof value === 'number') return validatePositiveIntegerValue(value, field)
+  return validateBoundedText(value, field, maxFlowNameLength)
+}
+
+export const validateFlowMigration = (
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- migration metadata crosses an adapter boundary.
+  value: unknown
+): ResultType<FlowMigration, JobDefinitionError> => {
+  const fields = readObjectFields(value, migrationFields, 'migration')
+  if (Result.isError(fields)) return fields
+  for (const field of migrationFields) {
+    const present = required(fields.value, field)
+    if (Result.isError(present)) return present
+  }
+  const status = fields.value.status
+  if (
+    status !== 'not-required' &&
+    status !== 'required' &&
+    status !== 'in-progress' &&
+    status !== 'complete'
+  ) {
+    return invalid('status', 'must be not-required, required, in-progress, or complete')
+  }
+  const from = validateMigrationVersion(fields.value.from, 'from', true)
+  const to = validateMigrationVersion(fields.value.to, 'to', false)
+  if (Result.isError(from)) return from
+  if (Result.isError(to)) return to
+  return Result.ok(Object.freeze({ status, from: from.value, to: to.value! }))
 }
 
 export const validateParentEnvelope = (

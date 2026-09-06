@@ -1,11 +1,14 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- Flow constructors validate untyped descriptor boundaries.
 // oxlint-disable anti-slop/no-unknown-parameters -- Flow constructors accept user-provided DTOs.
 // oxlint-disable anti-slop/no-chained-type-assertions -- immutable generic snapshots are narrowed after validation.
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- metadata is normalized by the existing Job boundary.
+// oxlint-disable anti-slop/no-known-value-widening -- generic descriptor snapshots preserve validated input types.
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts restore generic types after runtime validation.
 
 import { Result } from 'better-result'
 
 import { readObjectFields } from './internal/json'
-import { normalizeMetadata, Job, type AnyJobDefinition, type JobDefinition } from './job'
+import { normalizeMetadata, Job, type AnyJobDefinition } from './job'
 import {
   defaultFlowMaxChildren,
   defaultFlowMaxDepth,
@@ -14,18 +17,17 @@ import {
   maxFlowNameLength,
   validateFlowLimits
 } from './protocol'
-import { JobDefinitionError, validatePersistedBackoff } from './protocol'
+import { JobDefinitionError } from './protocol'
+import { normalizeRetryPolicy, type RetryPolicy } from './retry'
 import {
   validatePositiveIntegerValue,
   validatePriorityValue,
   validateTextValue
 } from './internal/validation'
-import type { PersistedBackoff } from './protocol'
-
 export type FlowChildOptions = {
   readonly priority?: number
   readonly attempts?: number
-  readonly backoff?: PersistedBackoff
+  readonly backoff?: RetryPolicy
   readonly timeoutMs?: number
   readonly metadata?: Readonly<Record<string, string>>
 }
@@ -125,8 +127,8 @@ const validateOptions = (
       : validatePositiveIntegerValue(fields.value.attempts, 'options.attempts')
   const backoff =
     fields.value.backoff === undefined
-      ? Result.ok<PersistedBackoff | undefined>(undefined)
-      : validatePersistedBackoff(fields.value.backoff)
+      ? Result.ok<RetryPolicy | undefined>(undefined)
+      : normalizeRetryPolicy(fields.value.backoff)
   const timeoutMs =
     fields.value.timeoutMs === undefined
       ? Result.ok<number | undefined>(undefined)
@@ -277,7 +279,12 @@ const makeChildren = <
 export const Flow = Object.freeze({
   TypeId: flowTypeId,
   is(value: unknown): value is AnyFlowDefinition {
-    return typeof value === 'object' && value !== null && flowTypeId in value
+    if (typeof value !== 'object' || value === null) return false
+    try {
+      return flowTypeId in value
+    } catch {
+      return false
+    }
   },
   define: buildFlow,
   children: makeChildren

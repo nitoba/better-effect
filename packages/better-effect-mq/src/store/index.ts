@@ -12,6 +12,7 @@ export type {
 
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'
+export { MemoryFlowStore } from './memory-flow'
 export type {
   CancelFlowRequest,
   CancelFlowResult,
