@@ -8,13 +8,18 @@ import {
   SQLITE_INDEXES,
   SQLITE_TABLES,
   migrationSql,
-  scheduleMigrationSql
+  scheduleMigrationSql,
+  outboxMigrationSql
 } from './schema'
 
 const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
 const scheduleChecksum = createHash('sha256').update(scheduleMigrationSql, 'utf8').digest('hex')
-const checksum = createHash('sha256')
+const outboxChecksum = createHash('sha256').update(outboxMigrationSql, 'utf8').digest('hex')
+const versionTwoChecksum = createHash('sha256')
   .update(`1:${initialChecksum}\n2:${scheduleChecksum}\n`, 'utf8')
+  .digest('hex')
+const checksum = createHash('sha256')
+  .update(`1:${initialChecksum}\n2:${scheduleChecksum}\n3:${outboxChecksum}\n`, 'utf8')
   .digest('hex')
 
 export interface SqliteMigrationOptions {
@@ -24,7 +29,7 @@ export interface SqliteMigrationOptions {
 
 export interface SqliteMigrationResult {
   readonly component: typeof MIGRATION_COMPONENT
-  readonly version: 2
+  readonly version: 3
   readonly applied: readonly number[]
 }
 
@@ -60,6 +65,10 @@ export const SqliteMigrator = {
             throw new SqliteMigrationError('migration checksum mismatch')
           }
         } else if (version === 2) {
+          if (existing.checksum !== versionTwoChecksum) {
+            throw new SqliteMigrationError('migration checksum mismatch')
+          }
+        } else if (version === 3) {
           if (existing.checksum !== checksum) {
             throw new SqliteMigrationError('migration checksum mismatch')
           }
@@ -83,8 +92,17 @@ export const SqliteMigrator = {
           .run(2, appliedAtMs, checksum, MIGRATION_COMPONENT)
         applied.push(2)
       }
+      if (existing == null || Number(existing.version) < 3) {
+        database.exec(outboxMigrationSql)
+        database
+          .prepare(
+            `UPDATE ${SQLITE_TABLES.schemaVersions} SET version = ?, applied_at_ms = ?, checksum = ? WHERE component = ?`
+          )
+          .run(3, appliedAtMs, checksum, MIGRATION_COMPONENT)
+        applied.push(3)
+      }
       database.exec('COMMIT')
-      return { component: MIGRATION_COMPONENT, version: 2, applied }
+      return { component: MIGRATION_COMPONENT, version: 3, applied }
     } catch (cause) {
       rollback(database)
       if (cause instanceof SqliteMigrationError) throw cause
@@ -92,7 +110,7 @@ export const SqliteMigrator = {
     }
   },
 
-  validate(database: SqliteDatabase): { readonly version: 2 } {
+  validate(database: SqliteDatabase): { readonly version: 3 } {
     try {
       const names = new Set(
         database
@@ -130,6 +148,27 @@ export const SqliteMigrator = {
           'last_job_id',
           'created_at_ms',
           'updated_at_ms'
+        ],
+        [SQLITE_TABLES.outbox]: [
+          'row_sequence',
+          'namespace',
+          'id',
+          'target',
+          'state',
+          'protocol_version',
+          'request_json',
+          'request_digest',
+          'attempts_max',
+          'attempts_made',
+          'run_at_ms',
+          'created_at_ms',
+          'updated_at_ms',
+          'published_at_ms',
+          'lease_owner',
+          'lease_token',
+          'lease_expires_at_ms',
+          'failure',
+          'ordering_sequence'
         ]
       }
       for (const [table, columns] of Object.entries(requiredColumns)) {
@@ -158,12 +197,12 @@ export const SqliteMigrator = {
           `SELECT version, checksum FROM ${SQLITE_TABLES.schemaVersions} WHERE component = ?`
         )
         .get(MIGRATION_COMPONENT)
-      if (row == null || Number(row.version) !== 2 || row.checksum !== checksum) {
+      if (row == null || Number(row.version) !== 3 || row.checksum !== checksum) {
         throw new SqliteSchemaValidationError(
           'schema is not migrated to the supported SQLite layout'
         )
       }
-      return { version: 2 }
+      return { version: 3 }
     } catch (cause) {
       if (cause instanceof SqliteSchemaValidationError) throw cause
       throw new SqliteSchemaValidationError('SQLite schema validation failed')

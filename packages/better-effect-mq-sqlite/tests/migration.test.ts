@@ -12,7 +12,8 @@ import {
   SQLITE_TABLES,
   SqliteMigrator,
   SqliteSchemaValidationError,
-  migrationSql
+  migrationSql,
+  scheduleMigrationSql
 } from '../src'
 
 const databases: Database[] = []
@@ -30,17 +31,17 @@ const open = (): Database => {
 type CatalogRow = { readonly name?: unknown }
 type VersionRow = { readonly version?: unknown }
 
-test('migration 2 installs schedules and is idempotent', () => {
+test('migration 3 installs schedules and outbox tables and is idempotent', () => {
   const database = open()
 
   expect(SqliteMigrator.migrate({ database, appliedAtMs: 7 })).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 2,
-    applied: [1, 2]
+    version: 3,
+    applied: [1, 2, 3]
   })
   expect(SqliteMigrator.migrate({ database, appliedAtMs: 8 })).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 2,
+    version: 3,
     applied: []
   })
 
@@ -53,6 +54,7 @@ test('migration 2 installs schedules and is idempotent', () => {
     ).flatMap((row) => (typeof row?.name === 'string' ? [row.name] : []))
   )
   expect(tables.has(SQLITE_TABLES.schedules)).toBe(true)
+  expect(tables.has(SQLITE_TABLES.outbox)).toBe(true)
   const indexes = new Set(
     (
       database.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as readonly (
@@ -61,12 +63,12 @@ test('migration 2 installs schedules and is idempotent', () => {
       )[]
     ).flatMap((row) => (typeof row?.name === 'string' ? [row.name] : []))
   )
-  for (const index of SQLITE_INDEXES.slice(-3)) expect(indexes.has(index)).toBe(true)
+  for (const index of SQLITE_INDEXES.slice(-4)) expect(indexes.has(index)).toBe(true)
   const version = database.prepare(`SELECT version FROM ${SQLITE_TABLES.schemaVersions}`).get() as
     | VersionRow
     | null
     | undefined
-  expect(version?.version).toBe(2)
+  expect(version?.version).toBe(3)
 })
 
 test('migration 2 upgrades a version-one layout', () => {
@@ -79,11 +81,30 @@ test('migration 2 upgrades a version-one layout', () => {
     )
     .run(MIGRATION_COMPONENT, 1, 1, initialChecksum)
 
-  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([2])
-  expect(SqliteMigrator.validate(database).version).toBe(2)
+  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([2, 3])
+  expect(SqliteMigrator.validate(database).version).toBe(3)
 })
 
-describe('migration 2 layout validation', () => {
+test('migration 2 upgrades to migration 3 without changing the v2 checksum', () => {
+  const database = open()
+  database.exec(migrationSql)
+  const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
+  const scheduleChecksum = createHash('sha256').update(scheduleMigrationSql, 'utf8').digest('hex')
+  const versionTwoChecksum = createHash('sha256')
+    .update(`1:${initialChecksum}\n2:${scheduleChecksum}\n`, 'utf8')
+    .digest('hex')
+  database.exec(scheduleMigrationSql)
+  database
+    .prepare(
+      `INSERT INTO ${SQLITE_TABLES.schemaVersions}(component, version, applied_at_ms, checksum) VALUES(?, ?, ?, ?)`
+    )
+    .run(MIGRATION_COMPONENT, 2, 1, versionTwoChecksum)
+
+  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([3])
+  expect(SqliteMigrator.validate(database).version).toBe(3)
+})
+
+describe('migration 3 layout validation', () => {
   test('rejects a missing schedule index', () => {
     const database = open()
     SqliteMigrator.migrate({ database })

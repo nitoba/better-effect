@@ -35,7 +35,13 @@ for (const [name, target] of Object.entries({
   if (exports[name] !== target) throw new Error(`Unexpected ${name} export`)
 }
 const peers = manifest.peerDependencies as Record<string, unknown>
-for (const peer of ['better-effect', 'better-effect-mq', 'better-result', 'typescript']) {
+for (const peer of [
+  'better-effect',
+  'better-effect-mq',
+  'better-effect-mq-outbox',
+  'better-result',
+  'typescript'
+]) {
   if (peers[peer] === undefined) throw new Error(`Missing ${peer} peer`)
 }
 
@@ -51,13 +57,14 @@ if (
 )
   throw new Error('Host-specific SQLite driver leaked into the generic entrypoint')
 
-const migration = await readFile(join(packageRoot, 'migrations/002_schedules.sql'), 'utf8')
+const migration = await readFile(join(packageRoot, 'migrations/003_outbox.sql'), 'utf8')
 for (const required of [
-  'better_effect_mq_schedules',
-  'better_effect_mq_schedules_due_idx',
-  'better_effect_mq_schedules_group_idx',
-  'better_effect_mq_schedules_key_idx'
+  'better_effect_mq_outbox',
+  'better_effect_mq_outbox_claim_idx',
+  'better_effect_mq_outbox_active_lease_idx',
+  'better_effect_mq_outbox_target_state_idx',
+  'better_effect_mq_outbox_recent_idx'
 ]) {
-  if (!migration.includes(required)) throw new Error(`Schedule migration is missing ${required}`)
+  if (!migration.includes(required)) throw new Error(`Outbox migration is missing ${required}`)
 }
 console.log('SQLite package boundaries passed')
