@@ -1046,7 +1046,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     this.state = 'draining'
     const executions = [...this.executions]
     this.emitShutdown({ phase: 'drain-start', reason, activeExecutions: executions.length })
-    await this.waitForExecutions(executions, options)
+    await this.waitForExecutions(executions, options, reason)
     // A just-admitted execution can finish a root acquisition during drain.
     // Quiesce such late resources before the root Scope is released.
     failures.push(...(await this.quiesceResources(reason)))
@@ -1106,7 +1106,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private async waitForExecutions(
     executions: readonly ActiveExecution[],
-    options: RuntimeDisposeOptions
+    options: RuntimeDisposeOptions,
+    reason: RuntimeShutdownReason
   ): Promise<void> {
     const settled = Promise.allSettled(executions.map((execution) => execution.promise))
 
@@ -1133,7 +1134,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       this.state = 'aborting'
       this.emitShutdown({
         phase: 'abort-active',
-        reason: options.reason ?? { kind: 'dispose' },
+        reason,
         activeExecutions: this.executions.size
       })
       this.shutdownController.abort(new Error('Runtime shutdown grace period exceeded'))

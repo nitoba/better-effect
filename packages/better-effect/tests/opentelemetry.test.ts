@@ -27,7 +27,12 @@ import {
   Service,
   ServiceRuntime
 } from '../src'
-import { OpenTelemetryRuntimeObserver } from '../src/opentelemetry'
+import {
+  OpenTelemetryRuntimeObserver,
+  type LifecycleTelemetryMode,
+  type ShutdownTelemetryMode
+} from '../src/opentelemetry'
+import { NodeRuntime } from '../src/node'
 import { RecordedRuntimeObserver } from '../src/testing'
 
 class TelemetryService extends Service<TelemetryService>()('TelemetryService') {}
@@ -910,4 +915,346 @@ describe('OpenTelemetryRuntimeObserver', () => {
     expect(recorded.executionStarts).toHaveLength(1)
     expect(recorded.executionEnds).toHaveLength(1)
   })
+
+  test('observes executor.run and runWith as normal executions without capture spans', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      executionAttributeAllowlist: ['requestId']
+    })
+    const runtime = await Runtime.make(Layer.empty, { observers: [observer] })
+
+    try {
+      const first = await runtime.executor.run(
+        Program.named(
+          'executor.run',
+          Effect.fn(async function* () {
+            yield* []
+            return Result.ok('run')
+          })
+        )
+      )
+      const second = await runtime.executor.runWith(
+        Layer.empty,
+        Program.named(
+          'executor.runWith',
+          Effect.fn(async function* () {
+            yield* []
+            return Result.err('runWith-failure')
+          })
+        ),
+        { attributes: { requestId: 'executor-request' } }
+      )
+
+      expect(Result.isOk(first)).toBe(true)
+      expect(Result.isError(second)).toBe(true)
+    } finally {
+      await runtime.dispose()
+    }
+
+    const spans = telemetry.exporter.getFinishedSpans()
+    expect(spans).toHaveLength(2)
+    expect(spans.map((span) => span.name)).toEqual(['executor.run', 'executor.runWith'])
+    expect(spans[1]?.attributes['requestId']).toBe('executor-request')
+    expect(spans[1]?.status.code).toBe(SpanStatusCode.ERROR)
+  })
+
+  test('records lifecycle activation and release as opt-in phase spans', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      lifecycle: 'spans'
+    })
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => ({ stop: () => {} }),
+        () => {}
+      ),
+      { observers: [observer] }
+    )
+
+    expect(telemetry.exporter.getFinishedSpans().map((span) => span.name)).toEqual([
+      'better-effect.lifecycle.activate'
+    ])
+
+    await runtime.dispose()
+
+    const spans = telemetry.exporter.getFinishedSpans()
+    expect(spans.map((span) => span.name)).toEqual([
+      'better-effect.lifecycle.activate',
+      'better-effect.lifecycle.release'
+    ])
+    expect(spans.every((span) => span.attributes['better_effect.lifecycle_phase'])).toBe(true)
+  })
+
+  test('keeps lifecycle and shutdown telemetry disabled by default', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({ tracer: telemetry.tracer })
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => ({ stop: () => {} }),
+        () => {}
+      ),
+      { observers: [observer] }
+    )
+
+    await runtime.dispose()
+
+    expect(telemetry.exporter.getFinishedSpans()).toHaveLength(0)
+  })
+
+  test('records lifecycle phases as one bounded event carrier when configured for events', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      lifecycle: 'events'
+    })
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => ({ stop: () => {} }),
+        () => {}
+      ),
+      { observers: [observer] }
+    )
+
+    await runtime.dispose()
+
+    const spans = telemetry.exporter.getFinishedSpans()
+    expect(spans).toHaveLength(1)
+    expect(spans[0]?.name).toBe('better-effect.lifecycle')
+    expect(spans[0]?.events.map((event) => event.name)).toEqual([
+      'better-effect.lifecycle.activate',
+      'better-effect.lifecycle.activate',
+      'better-effect.lifecycle.release'
+    ])
+  })
+
+  test('records shutdown phases for NodeRuntime.launch without nesting them in an execution span', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      shutdown: 'events'
+    })
+    const controller = new AbortController()
+    const launch = NodeRuntime.launch(Layer.empty, {
+      signal: controller.signal,
+      signals: [],
+      observers: [observer]
+    })
+
+    controller.abort()
+    await launch
+
+    const spans = telemetry.exporter.getFinishedSpans()
+    expect(spans).toHaveLength(1)
+    expect(spans[0]?.name).toBe('better-effect.shutdown')
+    expect(spans[0]?.parentSpanContext).toBeUndefined()
+    expect(spans[0]?.events.map((event) => event.name)).toEqual([
+      'better-effect.shutdown.requested',
+      'better-effect.shutdown.quiesce',
+      'better-effect.shutdown.quiesce',
+      'better-effect.shutdown.drain',
+      'better-effect.shutdown.drain',
+      'better-effect.shutdown.release',
+      'better-effect.shutdown.release',
+      'better-effect.shutdown.complete'
+    ])
+  })
+
+  test('marks shutdown failure and records only sanitized release details', async () => {
+    const telemetry = makeTelemetry()
+    const releaseFailure = new Error('release-secret')
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      shutdown: 'events',
+      recordFailures: true,
+      sanitizeFailure: () => ({ message: 'safe-release', attributes: { code: 'CLEANUP' } })
+    })
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => 'resource',
+        () => {
+          throw releaseFailure
+        }
+      ),
+      { observers: [observer] }
+    )
+
+    const disposalFailure = await captureRejection(runtime.dispose())
+    expect(disposalFailure).toBeInstanceOf(Error)
+
+    const span = telemetry.exporter.getFinishedSpans()[0]
+    if (!span) {
+      throw new Error('Expected a shutdown span')
+    }
+
+    expect(span.status.code).toBe(SpanStatusCode.ERROR)
+    expect(span.events.some((event) => event.name === 'better-effect.failure')).toBe(true)
+    expect(serializedValues([span])).not.toContain('release-secret')
+    expect(serializedValues([span])).toContain('safe-release')
+  })
+
+  test('records shutdown phase spans, including abort, under the root shutdown span', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      shutdown: 'spans'
+    })
+    let releaseExecution!: () => void
+    let markExecutionStarted!: () => void
+    const shutdownReasons: unknown[] = []
+    const executionGate = new Promise<void>((resolve) => {
+      releaseExecution = resolve
+    })
+    const executionStarted = new Promise<void>((resolve) => {
+      markExecutionStarted = resolve
+    })
+    const phases: string[] = []
+    const runtime = await Runtime.make(Layer.empty, {
+      observers: [
+        RuntimeObserver.compose(observer, {
+          onShutdown: (event) => {
+            phases.push(event.phase)
+            shutdownReasons.push(event.reason)
+
+            if (event.phase === 'abort-active') {
+              releaseExecution()
+            }
+          }
+        })
+      ]
+    })
+
+    try {
+      const execution = runtime.run(async () => {
+        markExecutionStarted()
+        await executionGate
+        return Result.ok('aborted-after-observation')
+      })
+      await executionStarted
+      await runtime.dispose({ abortAfterGracePeriod: true, gracePeriod: 0 })
+      await execution
+    } finally {
+      releaseExecution()
+      await runtime.dispose()
+    }
+
+    const spans = telemetry.exporter.getFinishedSpans()
+    const shutdownSpan = spans.find((span) => span.name === 'better-effect.shutdown')
+    const phaseSpans = spans.filter((span) => span.name.startsWith('better-effect.shutdown.'))
+
+    if (!shutdownSpan) {
+      throw new Error('Expected a root shutdown span')
+    }
+
+    expect(phases).toEqual([
+      'shutdown-requested',
+      'quiesce-start',
+      'quiesce-end',
+      'drain-start',
+      'abort-active',
+      'drain-end',
+      'release-start',
+      'release-end',
+      'shutdown-complete'
+    ])
+    expect(new Set(shutdownReasons).size).toBe(1)
+    expect(phaseSpans.map((span) => span.name).sort()).toEqual(
+      [
+        'better-effect.shutdown.quiesce',
+        'better-effect.shutdown.drain',
+        'better-effect.shutdown.abort',
+        'better-effect.shutdown.release'
+      ].sort()
+    )
+    expect(
+      phaseSpans.every(
+        (span) => span.parentSpanContext?.spanId === shutdownSpan.spanContext().spanId
+      )
+    ).toBe(true)
+  })
+
+  test('records sanitized lifecycle release failures without exposing the resource or cause', async () => {
+    const telemetry = makeTelemetry()
+    const releaseFailure = new Error('lifecycle-release-secret')
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      lifecycle: 'spans',
+      recordFailures: true,
+      sanitizeFailure: () => ({ message: 'safe-lifecycle-release' })
+    })
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => ({ privateHandle: 'hidden' }),
+        () => {
+          throw releaseFailure
+        }
+      ),
+      { observers: [observer] }
+    )
+
+    const disposalFailure = await captureRejection(runtime.dispose())
+    expect(disposalFailure).toBeInstanceOf(Error)
+
+    const spans = telemetry.exporter
+      .getFinishedSpans()
+      .filter((span) => span.name.startsWith('better-effect.lifecycle.'))
+    const releaseSpan = spans.find((span) => span.name === 'better-effect.lifecycle.release')
+
+    if (!releaseSpan) {
+      throw new Error('Expected a lifecycle release span')
+    }
+
+    expect(releaseSpan.status.code).toBe(SpanStatusCode.ERROR)
+    expect(serializedValues([releaseSpan])).toContain('safe-lifecycle-release')
+    expect(serializedValues([releaseSpan])).not.toContain('lifecycle-release-secret')
+    expect(serializedValues([releaseSpan])).not.toContain('hidden')
+  })
+
+  test('does not retain lifecycle or shutdown state after settlement and ignores late events', async () => {
+    const telemetry = makeTelemetry()
+    const observer = OpenTelemetryRuntimeObserver.make({
+      tracer: telemetry.tracer,
+      lifecycle: 'spans',
+      shutdown: 'spans'
+    })
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => ({ stop: () => {} }),
+        () => {}
+      ),
+      { observers: [observer] }
+    )
+
+    await runtime.dispose()
+    const settledCount = telemetry.exporter.getFinishedSpans().length
+
+    observer.onLifecycleEnd({
+      kind: 'lifecycle',
+      lifecycleId: Symbol('late'),
+      outcome: { status: 'success' }
+    })
+    observer.onShutdown({
+      phase: 'shutdown-complete',
+      reason: { kind: 'dispose' }
+    })
+    observer.dispose()
+
+    expect(telemetry.exporter.getFinishedSpans()).toHaveLength(settledCount)
+  })
+
+  test('keeps old RuntimeObserver implementations structurally compatible', () => {
+    const observer: RuntimeObserver = {
+      onExecutionStart: () => {},
+      onExecutionEnd: () => {},
+      onServiceResolve: () => {}
+    }
+
+    expect(observer).toBeDefined()
+  })
 })
+
+const lifecycleMode: LifecycleTelemetryMode = 'events'
+const shutdownMode: ShutdownTelemetryMode = 'spans'
+expect(lifecycleMode).toBe('events')
+expect(shutdownMode).toBe('spans')

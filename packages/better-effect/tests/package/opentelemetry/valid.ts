@@ -4,6 +4,8 @@ import {
   OpenTelemetryRuntimeObserver,
   type OpenTelemetryAttributes,
   type OpenTelemetryFailure,
+  type LifecycleTelemetryMode,
+  type ShutdownTelemetryMode,
   type ServiceTelemetryMode
 } from 'better-effect/opentelemetry'
 
@@ -19,6 +21,8 @@ type Equal<Left, Right> =
 type Expect<Value extends true> = Value
 
 const modes: readonly ServiceTelemetryMode[] = ['off', 'events', 'spans']
+const lifecycleModes: readonly LifecycleTelemetryMode[] = ['off', 'events', 'spans']
+const shutdownModes: readonly ShutdownTelemetryMode[] = ['off', 'events', 'spans']
 const safeAttributes: OpenTelemetryAttributes = {
   requestId: 'request-1',
   retry: 2
@@ -30,6 +34,8 @@ const safeFailure: OpenTelemetryFailure = {
 const direct = OpenTelemetryRuntimeObserver.make({
   tracer,
   serviceResolution: modes[0],
+  lifecycle: lifecycleModes[1],
+  shutdown: shutdownModes[2],
   executionAttributeAllowlist: ['requestId'],
   sanitizeExecutionAttributes: (input) => {
     const requestId = input.requestId
@@ -48,6 +54,19 @@ const fromProvider = OpenTelemetryRuntimeObserver.make({
 const _directObserver: RuntimeObserver = direct
 const providerObserver: RuntimeObserver = fromProvider
 
+const legacyObserver: RuntimeObserver = {
+  onExecutionStart: () => {},
+  onExecutionEnd: () => {},
+  onServiceResolve: () => {}
+}
+
+// @ts-expect-error OpenTelemetry lifecycle mode is deliberately closed.
+OpenTelemetryRuntimeObserver.make({ tracer, lifecycle: 'invalid' })
+
+// @ts-expect-error OpenTelemetry shutdown mode is deliberately closed.
+OpenTelemetryRuntimeObserver.make({ tracer, shutdown: 'invalid' })
+
 export type DirectObserver = Expect<Equal<typeof direct, OpenTelemetryRuntimeObserver>>
 export type ProviderObserver = typeof providerObserver
 export type AttributesInput = Expect<Equal<typeof attributes, RuntimeExecutionAttributes>>
+export type LegacyObserver = Expect<Equal<typeof legacyObserver, RuntimeObserver>>
