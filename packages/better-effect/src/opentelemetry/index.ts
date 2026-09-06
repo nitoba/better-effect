@@ -14,11 +14,22 @@ import type {
   RuntimeExecutionAttributes,
   RuntimeExecutionEndEvent,
   RuntimeExecutionStartEvent,
+  RuntimeLifecycleEndEvent,
+  RuntimeLifecycleEventMetadata,
+  RuntimeLifecycleReleaseEvent,
+  RuntimeLifecycleStartEvent,
   RuntimeObserver,
   RuntimeResourceReleaseEvent,
+  RuntimeShutdownEvent,
   RuntimeServiceAcquireEvent,
   RuntimeServiceResolveEvent
 } from '../runtime/observer'
+
+import { LifecycleTelemetry, type LifecyclePhase, type LifecycleTelemetryMode } from './lifecycle'
+import { ShutdownTelemetry, type ShutdownPhase, type ShutdownTelemetryMode } from './shutdown'
+
+export type { LifecycleTelemetryMode } from './lifecycle'
+export type { ShutdownTelemetryMode } from './shutdown'
 
 /** Controls how Service lifecycle events are represented in telemetry. */
 export type ServiceTelemetryMode = 'off' | 'events' | 'spans'
@@ -53,6 +64,10 @@ type OpenTelemetryRuntimeObserverBaseOptions = {
   readonly tracerVersion?: string
   /** Service resolution policy. Defaults to `off`. */
   readonly serviceResolution?: ServiceTelemetryMode
+  /** Lifecycle-only Layer entry policy. Defaults to `off`. */
+  readonly lifecycle?: LifecycleTelemetryMode
+  /** Runtime shutdown policy. Defaults to `off`. */
+  readonly shutdown?: ShutdownTelemetryMode
   /** Record explicitly sanitized failure details in addition to setting status. */
   readonly recordFailures?: boolean
   /** Explicitly sanitize arbitrary execution attributes. */
@@ -98,6 +113,12 @@ const SERVICE_TAG_ATTRIBUTE = 'better_effect.service_tag'
 const RESOLUTION_PATH_ATTRIBUTE = 'better_effect.resolution_path'
 const RESOLUTION_PATH_TRUNCATED_ATTRIBUTE = 'better_effect.resolution_path_truncated'
 const LIBRARY_ATTRIBUTE = 'better_effect.library'
+const LIFECYCLE_NAME_ATTRIBUTE = 'better_effect.lifecycle_name'
+const LIFECYCLE_PHASE_ATTRIBUTE = 'better_effect.lifecycle_phase'
+const SHUTDOWN_PHASE_ATTRIBUTE = 'better_effect.shutdown_phase'
+const SHUTDOWN_REASON_ATTRIBUTE = 'better_effect.shutdown_reason'
+const SHUTDOWN_SIGNAL_ATTRIBUTE = 'better_effect.shutdown_signal'
+const DURATION_ATTRIBUTE = 'better_effect.duration_ms'
 const FAILURE_EVENT_NAME = 'better-effect.failure'
 
 type AttributeMap = Record<string, AttributeValue>
@@ -149,6 +170,96 @@ const isStartedExecutionSpan = (execution: ExecutionSpan): execution is StartedE
 
 const isActiveExecutionSpan = (execution: ExecutionSpan): execution is ActiveExecutionSpan =>
   isStartedExecutionSpan(execution) && execution.executionContext !== undefined
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Validate JavaScript callers at the optional adapter boundary.
+const isTelemetryMode = (value: unknown): value is ServiceTelemetryMode =>
+  value === 'off' || value === 'events' || value === 'spans'
+
+const boundedDuration = (value: number | undefined): number | undefined =>
+  value !== undefined && Number.isFinite(value) && value >= 0
+    ? Math.min(value, 2 ** 31 - 1)
+    : undefined
+
+const addOutcomeAttribute = (
+  attributes: AttributeMap,
+  outcome: 'success' | 'failure' | undefined,
+  limit: number
+): void => {
+  if (outcome !== undefined) {
+    addAttribute(attributes, OUTCOME_ATTRIBUTE, outcome, limit)
+  }
+}
+
+const addDurationAttribute = (
+  attributes: AttributeMap,
+  durationMs: number | undefined,
+  limit: number
+): void => {
+  const duration = boundedDuration(durationMs)
+
+  if (duration !== undefined) {
+    addAttribute(attributes, DURATION_ATTRIBUTE, duration, limit)
+  }
+}
+
+const makeLifecycleAttributes = (
+  event: RuntimeLifecycleEventMetadata,
+  phase: LifecyclePhase,
+  outcome: 'success' | 'failure' | undefined,
+  durationMs: number | undefined,
+  limits: Limits
+): AttributeMap => {
+  const attributes: AttributeMap = {}
+  const name = boundedNonEmptyString(event.name, limits.maxAttributeLength)
+
+  if (name !== undefined) {
+    addAttribute(attributes, LIFECYCLE_NAME_ATTRIBUTE, name, limits.maxAttributeCount)
+  }
+
+  addAttribute(attributes, LIFECYCLE_PHASE_ATTRIBUTE, phase, limits.maxAttributeCount)
+  addOutcomeAttribute(attributes, outcome, limits.maxAttributeCount)
+  addDurationAttribute(attributes, durationMs, limits.maxAttributeCount)
+
+  // oxlint-disable-next-line anti-slop/no-known-value-widening -- Return the private validated OTel attribute owner.
+  return attributes
+}
+
+const makeShutdownAttributes = (
+  event: RuntimeShutdownEvent,
+  phase: ShutdownPhase,
+  durationMs: number | undefined,
+  limits: Limits
+): AttributeMap => {
+  const attributes: AttributeMap = {}
+  const reason = event.reason
+
+  addAttribute(attributes, SHUTDOWN_PHASE_ATTRIBUTE, phase, limits.maxAttributeCount)
+  addAttribute(attributes, SHUTDOWN_REASON_ATTRIBUTE, reason.kind, limits.maxAttributeCount)
+
+  if (reason.signal === 'SIGINT' || reason.signal === 'SIGTERM') {
+    addAttribute(attributes, SHUTDOWN_SIGNAL_ATTRIBUTE, reason.signal, limits.maxAttributeCount)
+  }
+
+  if (event.activeExecutions !== undefined && Number.isSafeInteger(event.activeExecutions)) {
+    addAttribute(
+      attributes,
+      'better_effect.active_executions',
+      Math.max(0, event.activeExecutions),
+      limits.maxAttributeCount
+    )
+  }
+
+  addDurationAttribute(attributes, durationMs ?? event.durationMs, limits.maxAttributeCount)
+
+  if (event.phase === 'shutdown-complete') {
+    addOutcomeAttribute(attributes, 'success', limits.maxAttributeCount)
+  } else if (event.phase === 'shutdown-failure') {
+    addOutcomeAttribute(attributes, 'failure', limits.maxAttributeCount)
+  }
+
+  // oxlint-disable-next-line anti-slop/no-known-value-widening -- Return the private validated OTel attribute owner.
+  return attributes
+}
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- This private guard validates untrusted values before scalar validation.
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -696,6 +807,10 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
 
   private readonly serviceResolution: ServiceTelemetryMode
 
+  private readonly lifecycleTelemetry: LifecycleTelemetry
+
+  private readonly shutdownTelemetry: ShutdownTelemetry
+
   private readonly recordFailures: boolean
 
   private disposed = false
@@ -707,9 +822,42 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
     this.serviceResolution = options.serviceResolution ?? 'off'
     this.recordFailures = options.recordFailures === true
 
-    if (!['off', 'events', 'spans'].includes(this.serviceResolution)) {
+    if (!isTelemetryMode(this.serviceResolution)) {
       throw new TypeError('serviceResolution must be off, events, or spans')
     }
+
+    const lifecycle = options.lifecycle ?? 'off'
+
+    if (!isTelemetryMode(lifecycle)) {
+      throw new TypeError('lifecycle must be off, events, or spans')
+    }
+
+    const shutdown = options.shutdown ?? 'off'
+
+    if (!isTelemetryMode(shutdown)) {
+      throw new TypeError('shutdown must be off, events, or spans')
+    }
+
+    this.lifecycleTelemetry = new LifecycleTelemetry({
+      mode: lifecycle,
+      recordFailures: this.recordFailures,
+      getParentContext: () => readActiveContext() ?? ROOT_CONTEXT,
+      startSpan: this.startSpan.bind(this),
+      makeAttributes: (event, phase, outcome, durationMs) =>
+        makeLifecycleAttributes(event, phase, outcome, durationMs, this.limits),
+      getFailureDetails: (cause) =>
+        makeFailureDetails(cause, this.options.sanitizeFailure, this.limits)
+    })
+    this.shutdownTelemetry = new ShutdownTelemetry({
+      mode: shutdown,
+      recordFailures: this.recordFailures,
+      rootContext: ROOT_CONTEXT,
+      startSpan: this.startSpan.bind(this),
+      makeAttributes: (event, phase, durationMs) =>
+        makeShutdownAttributes(event, phase, durationMs, this.limits),
+      getFailureDetails: (cause) =>
+        makeFailureDetails(cause, this.options.sanitizeFailure, this.limits)
+    })
   }
 
   static make(options: OpenTelemetryRuntimeObserverOptions): OpenTelemetryRuntimeObserver {
@@ -736,6 +884,22 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
     this.safely(() => this.observeService('better-effect.service.release', event))
   }
 
+  readonly onLifecycleStart = (event: RuntimeLifecycleStartEvent): void => {
+    this.safely(() => this.lifecycleTelemetry.onStart(event))
+  }
+
+  readonly onLifecycleEnd = (event: RuntimeLifecycleEndEvent): void => {
+    this.safely(() => this.lifecycleTelemetry.onEnd(event))
+  }
+
+  readonly onLifecycleRelease = (event: RuntimeLifecycleReleaseEvent): void => {
+    this.safely(() => this.lifecycleTelemetry.onRelease(event))
+  }
+
+  readonly onShutdown = (event: RuntimeShutdownEvent): void => {
+    this.safely(() => this.shutdownTelemetry.onEvent(event))
+  }
+
   /** End any spans whose malformed or missing end event left them pending. */
   dispose(): void {
     if (this.disposed) {
@@ -755,6 +919,9 @@ export class OpenTelemetryRuntimeObserver implements RuntimeObserver {
 
       this.endExecutionSpan(execution, span)
     }
+
+    this.lifecycleTelemetry.dispose()
+    this.shutdownTelemetry.dispose()
   }
 
   [Symbol.dispose](): void {

@@ -516,6 +516,8 @@ const observer = OpenTelemetryRuntimeObserver.make({
   // An existing provider can be passed instead with `provider` and `tracerName`.
   tracer: trace.getTracer('acme.application'),
   serviceResolution: 'events',
+  lifecycle: 'events',
+  shutdown: 'events',
   recordFailures: true,
   executionAttributeAllowlist: ['requestId'],
   sanitizeFailure: (cause) =>
@@ -524,6 +526,11 @@ const observer = OpenTelemetryRuntimeObserver.make({
 
 const runtime = await Runtime.make(AppLive, { observers: [observer] })
 ```
+
+The same observer can be passed to `NodeRuntime.runMain` or
+`NodeRuntime.launch`. Executions started through `runtime.executor.run` and
+`runtime.executor.runWith` use the same execution pipeline and produce one
+execution span each; capturing an executor never creates a separate span.
 
 The adapter starts one span for each execution, keyed only by the Runtime's
 `executionId`. The Program name is the span name, with
@@ -553,6 +560,27 @@ adapter with recorded, graph and application observers, and a tracer failure is
 isolated from every Runtime result. Call `observer.dispose()` when an observer
 may outlive its Runtime to end state left by malformed or missing end events;
 normal execution spans are ended exactly once by their matching `executionId`.
+
+Lifecycle and shutdown telemetry are also explicit and default to `off`:
+
+- `lifecycle: 'events'` records activation and release on one
+  `better-effect.lifecycle` span; `lifecycle: 'spans'` creates phase spans
+  named `better-effect.lifecycle.activate` and
+  `better-effect.lifecycle.release`.
+- The public Runtime observer currently exposes lifecycle activation and
+  release, but not a per-entry quiesce callback. The adapter does not invent a
+  quiesce event; Runtime shutdown quiesce phases remain available through
+  `onShutdown`.
+- `shutdown: 'events'` records the public shutdown phases as events on one
+  root `better-effect.shutdown` span. `shutdown: 'spans'` keeps that root span
+  and adds bounded phase spans for quiesce, drain, abort and release.
+- Shutdown spans use an explicit root parent, never an arbitrary active
+  execution span. Shutdown failure marks the root span as `ERROR`; failure
+  details are recorded only when `recordFailures: true` and `sanitizeFailure`
+  returns them.
+
+All lifecycle and shutdown metadata is bounded and excludes resource
+instances, server handles, configuration, payloads and raw causes.
 
 Telemetry is privacy-preserving by default. The adapter records only bounded
 library, execution ID, Program/outcome, Service-tag and resolution-path data.
