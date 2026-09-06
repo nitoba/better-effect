@@ -71,13 +71,71 @@ const databaseName = async (connection: PoolConnection): Promise<string | undefi
   )
   return result.rows[0]?.database_name ?? undefined
 }
-const statements = (sql: string): readonly string[] =>
-  sql
-    // Shipped migrations contain ordinary DDL only; splitting avoids requiring
-    // mysql2's unsafe multiStatements option for a migration connection.
-    .split(/;\s*(?:\r?\n|$)/u)
-    .map((statement) => statement.trim())
-    .filter(Boolean)
+const statements = (sql: string): readonly string[] => {
+  // Shipped migrations contain ordinary DDL only; splitting avoids requiring
+  // mysql2's unsafe multiStatements option for a migration connection. Track
+  // comments and quoted values so their semicolons are not treated as DDL.
+  const output: string[] = []
+  let start = 0
+  let quote: "'" | '"' | '`' | undefined
+  let lineComment = false
+  let blockComment = false
+  for (let index = 0; index < sql.length; index += 1) {
+    const current = sql[index]!
+    const next = sql[index + 1]
+    if (lineComment) {
+      if (current === '\n') lineComment = false
+      continue
+    }
+    if (blockComment) {
+      if (current === '*' && next === '/') {
+        blockComment = false
+        index += 1
+      }
+      continue
+    }
+    if (quote !== undefined) {
+      if (current === '\\') {
+        index += 1
+        continue
+      }
+      if (current === quote) {
+        if (next === quote) {
+          index += 1
+          continue
+        }
+        quote = undefined
+      }
+      continue
+    }
+    if (current === '-' && next === '-') {
+      lineComment = true
+      index += 1
+      continue
+    }
+    if (current === '#') {
+      lineComment = true
+      continue
+    }
+    if (current === '/' && next === '*') {
+      blockComment = true
+      index += 1
+      continue
+    }
+    if (current === "'" || current === '"' || current === '`') {
+      quote = current
+      continue
+    }
+    if (current === ';') {
+      const statement = sql.slice(start, index).trim()
+      if (statement.length > 0) output.push(statement)
+      start = index + 1
+    }
+  }
+  const trailing = sql.slice(start).trim()
+  if (trailing.length > 0) output.push(trailing)
+  return output
+}
 const bootstrapInitialSql = (sql: string): string =>
   sql
     .replace(
