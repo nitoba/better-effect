@@ -133,7 +133,74 @@ const schemas = {
     paused: { bsonType: 'bool' },
     wakeVersion: { bsonType: ['int', 'long', 'double'], minimum: 0 },
     updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
-  })
+  }),
+  schedules: validator(
+    [
+      '_id',
+      'namespace',
+      'scheduleKey',
+      'group',
+      'job',
+      'queue',
+      'payload',
+      'metadataEntries',
+      'priority',
+      'attemptsMax',
+      'misfire',
+      'overlap',
+      'paused',
+      'revision',
+      'nextRunAtMs',
+      'createdAtMs',
+      'updatedAtMs'
+    ],
+    {
+      _id: { bsonType: 'string' },
+      namespace: { bsonType: 'string', minLength: 1 },
+      scheduleKey: { bsonType: 'string', minLength: 1 },
+      group: { bsonType: 'string', minLength: 1 },
+      job: {
+        bsonType: 'object',
+        required: ['queue', 'name', 'version'],
+        properties: {
+          queue: { bsonType: 'string', minLength: 1 },
+          name: { bsonType: 'string', minLength: 1 },
+          version: { bsonType: ['int', 'long', 'double'], minimum: 1 }
+        },
+        additionalProperties: false
+      },
+      queue: { bsonType: 'string', minLength: 1 },
+      cron: { bsonType: 'string', minLength: 1 },
+      everyMs: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      timeZone: { bsonType: 'string', minLength: 1 },
+      payload: {},
+      metadataEntries: {
+        bsonType: 'array',
+        items: {
+          bsonType: 'object',
+          required: ['key', 'value'],
+          properties: {
+            key: { bsonType: 'string' },
+            value: { bsonType: 'string' }
+          },
+          additionalProperties: false
+        }
+      },
+      priority: { bsonType: ['int', 'long', 'double'] },
+      attemptsMax: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      backoff: {},
+      timeoutMs: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      misfire: { bsonType: 'object' },
+      overlap: { enum: ['allow', 'skip'] },
+      paused: { bsonType: 'bool' },
+      revision: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      nextRunAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      lastScheduledAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      lastJobId: { bsonType: 'string', minLength: 1 },
+      createdAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+    }
+  )
 } as const
 
 const indexes = (prefix: string) => ({
@@ -175,6 +242,19 @@ const indexes = (prefix: string) => ({
   ],
   [`${prefix}_attempts`]: [
     { key: { namespace: 1, jobId: 1, ledgerSequence: 1 }, name: 'attempt_ledger', unique: true }
+  ],
+  [`${prefix}_schedules`]: [
+    {
+      key: { namespace: 1, group: 1, scheduleKey: 1 },
+      name: 'schedule_identity',
+      unique: true
+    },
+    {
+      key: { namespace: 1, paused: 1, nextRunAtMs: 1, group: 1, scheduleKey: 1 },
+      name: 'schedule_due'
+    },
+    { key: { namespace: 1, group: 1, scheduleKey: 1 }, name: 'schedule_group' },
+    { key: { namespace: 1, scheduleKey: 1, group: 1 }, name: 'schedule_key' }
   ]
 })
 
@@ -208,7 +288,7 @@ const ensureCollection = async (
 export const MongoJobStoreMigrator = Object.freeze({
   async migrate(
     options: MongoMigrationOptions
-  ): Promise<{ readonly version: 1; readonly applied: boolean }> {
+  ): Promise<{ readonly version: typeof MONGODB_LAYOUT_VERSION; readonly applied: boolean }> {
     const prefix = validateCollectionPrefix(options.collectionPrefix ?? 'better_effect_mq')
     const db = normalizeMongoJobStoreConfig({ db: options.db, collectionPrefix: prefix }).db
     const collections = mongoCollections(db, prefix)
@@ -216,7 +296,9 @@ export const MongoJobStoreMigrator = Object.freeze({
     if (
       existingLayout !== null &&
       (existingLayout.protocolVersion !== MONGODB_PROTOCOL_VERSION ||
-        existingLayout.layoutVersion !== MONGODB_LAYOUT_VERSION)
+        typeof existingLayout.layoutVersion !== 'number' ||
+        existingLayout.layoutVersion > MONGODB_LAYOUT_VERSION ||
+        existingLayout.layoutVersion < 1)
     )
       throw new MongoJobStoreLayoutError(
         'MongoDB namespace layout is incompatible; migration cannot overwrite another protocol or layout version',
@@ -257,6 +339,7 @@ export const MongoJobStoreMigrator = Object.freeze({
       await ensureCollection(db, names[2]!, schemas.queues)
       await ensureCollection(db, names[3]!, undefined)
       await ensureCollection(db, names[4]!, undefined)
+      await ensureCollection(db, names[5]!, schemas.schedules)
       const declared = indexes(prefix)
       for (const [name, definition] of Object.entries(declared))
         await db.collection(name).createIndexes(definition)
@@ -271,7 +354,7 @@ export const MongoJobStoreMigrator = Object.freeze({
         },
         { upsert: true }
       )
-      return Object.freeze({ version: 1 as const, applied: true })
+      return Object.freeze({ version: MONGODB_LAYOUT_VERSION, applied: true })
     } finally {
       await collections.migrations.updateOne(
         { _id: 'migration-lock', owner },

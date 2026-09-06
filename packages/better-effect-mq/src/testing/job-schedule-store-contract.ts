@@ -1067,8 +1067,10 @@ const builtInScenarios = (): readonly ScenarioDefinition[] => [
         }),
         { nowMs: baseTime, removal: 'group', removeAfterMs: 100 }
       )
-      for (let index = 0; index < 10 && client.clock.pendingSleeps === 0; index += 1)
-        await Promise.resolve()
+      // Remote adapters may need several event-loop turns before the reconcile
+      // operation reaches its deterministic Clock sleep.
+      for (let index = 0; index < 500 && client.clock.pendingSleeps === 0; index += 1)
+        await new Promise<void>((resolve) => setTimeout(resolve, 0))
       if (client.clock.pendingSleeps === 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0))
       }

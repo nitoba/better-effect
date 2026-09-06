@@ -1,6 +1,6 @@
 # better-effect-mq-mongodb
 
-MongoDB adapter for the protocol-v1 [`better-effect-mq`](../better-effect-mq) `JobStore`.
+MongoDB adapter for the protocol-v1 [`better-effect-mq`](../better-effect-mq) `JobStore` and its schedules extension.
 
 `mongodb` is an optional peer: importing this package and using a caller-owned
 `Db` does not load the driver. The adapter requires MongoDB transactions, so a
@@ -10,7 +10,8 @@ deployment. Sharded deployments are not claimed as officially supported until
 they have dedicated integration coverage.
 
 ```ts
-import { MongoJobStore } from 'better-effect-mq-mongodb'
+import { JobScheduleStore, JobStore } from 'better-effect-mq'
+import { MongoJobScheduleStore, MongoJobStore } from 'better-effect-mq-mongodb'
 
 const StoreLive = MongoJobStore.layer({
   db,
@@ -18,6 +19,23 @@ const StoreLive = MongoJobStore.layer({
   collectionPrefix: 'better_effect_mq'
 })
 ```
+
+Schedules use the associated `JobStore` token and are provided as a separate
+Layer. Named stores therefore remain isolated in MongoDB namespaces:
+
+```ts
+const Durable = JobStore.named('durable')
+const DurableSchedules = JobScheduleStore.for(Durable)
+const StoreLive = MongoJobStore.layerFor(Durable, { db })
+const ScheduleLive = MongoJobScheduleStore.layerFor(DurableSchedules, { db })
+```
+
+`tickSchedule` performs compare-and-set, deterministic occurrence insertion,
+queue wake-up, and schedule advancement in one MongoDB transaction. The adapter
+requires a replica set or transaction-capable mongos; standalone MongoDB is
+rejected during Layer acquisition. MongoDB's transaction retry policy is
+bounded, and an unknown commit result is safe to replay because the schedule
+revision and occurrence ID are both deterministic.
 
 The caller retains ownership of `db.client`. For an adapter-owned client:
 
@@ -36,11 +54,13 @@ migrate automatically:
 await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
 ```
 
-Migration creates validated `jobs`, `attempts`, `queues`, `counters`, and
-`migrations` collections plus claim, idempotency, lease, list, ledger, and
-metadata indexes. Validation uses `moderate`/`error` to support expand/migrate/
-contract rollouts; it is additional protection, not a replacement for document
-decoding at the adapter boundary.
+Migration creates validated `jobs`, `attempts`, `queues`, `counters`,
+`migrations`, and `schedules` collections plus claim, idempotency, lease, list,
+ledger, metadata, and due-schedule indexes. The schedules extension advances
+the MongoDB layout marker from 1 to 2 without deleting or rewriting existing
+protocol-v1 data. Validation uses `moderate`/`error` to support
+expand/migrate/contract rollouts; it is additional protection, not a
+replacement for document decoding at the adapter boundary.
 
 Every mutating operation runs in a short snapshot transaction with majority
 write concern. The persisted queue `wakeVersion` is authoritative. Change

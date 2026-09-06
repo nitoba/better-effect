@@ -5,7 +5,7 @@ import { Layer, Runtime, ServiceRuntime } from 'better-effect'
 import { JobStore, type AnyJobStoreToken, type JobStore as JobStoreType } from 'better-effect-mq'
 import { jobStoreContract, type JobStoreContractSynchronization } from 'better-effect-mq/testing'
 import { MongoClient } from 'mongodb'
-import { MongoJobStore } from '../../src/index'
+import { MongoJobStore, mongoCollections } from '../../src/index'
 
 const uri = process.env.MONGODB_URL
 const integration = uri === undefined ? test.skip : test
@@ -101,10 +101,46 @@ describe('MongoDB JobStore protocol v1 conformance on a replica set', () => {
   }, 30_000)
 
   integration('migrates a transaction-capable replica-set layout', async () => {
-    await expect(MongoJobStore.migrate({ db: configuredDatabase() })).resolves.toEqual({
+    const collections = mongoCollections(configuredDatabase(), 'better_effect_mq')
+    const sentinelId = `${namespace}:migration-sentinel`
+    await collections.jobs.deleteOne({ _id: sentinelId })
+    await collections.jobs.insertOne({
+      _id: sentinelId,
+      namespace,
+      id: 'migration-sentinel',
+      identity: 'migration-sentinel\u0000job\u00001',
+      queue: 'migration',
+      name: 'sentinel',
       version: 1,
+      state: 'waiting',
+      payload: null,
+      metadataEntries: [],
+      priority: 0,
+      runAtMs: 0,
+      orderSequence: 1,
+      attemptsMax: 1,
+      attemptsMade: 0,
+      attemptSequence: 0,
+      deliveryCount: 0,
+      stalledCount: 0,
+      cancelRequested: false,
+      createdAtMs: 0,
+      updatedAtMs: 0,
+      ledgerCount: 0
+    })
+    await collections.migrations.updateOne(
+      { _id: 'layout' },
+      { $set: { protocolVersion: 1, layoutVersion: 1 } },
+      { upsert: true }
+    )
+    await expect(MongoJobStore.migrate({ db: configuredDatabase() })).resolves.toEqual({
+      version: 2,
       applied: true
     })
+    await expect(collections.jobs.findOne({ _id: sentinelId })).resolves.toMatchObject({
+      id: 'migration-sentinel'
+    })
+    await collections.jobs.deleteOne({ _id: sentinelId })
   })
   for (const scenario of suite)
     integration(scenario.name, async () => {
