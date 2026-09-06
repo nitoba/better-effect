@@ -2,7 +2,7 @@ import { expectTypeOf } from 'bun:test'
 import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { Result } from 'better-result'
 
-import { Codec, JobStore, Queue, Worker, makeWorkerId } from '../../src'
+import { Codec, Flow, FlowStore, JobStore, Queue, Worker, makeWorkerId } from '../../src'
 import type { WorkerHandle } from '../../src'
 
 class WorkerLayerConfig extends Service<WorkerLayerConfig>()('WorkerLayerConfig') {
@@ -70,6 +70,43 @@ const fake: WorkerHandle = {
 const testDouble = workerService.succeed(fake)
 expectTypeOf<Layer.Required<typeof testDouble>>().toEqualTypeOf<never>()
 expectTypeOf(workerService.of(fake)).toEqualTypeOf<Worker.ServiceInstance<'TypedWorker'>>()
+
+const flowParent = queue.job('flow-parent', {
+  version: 1,
+  payload: Codec.json<{ readonly id: string }>(),
+  result: Codec.json<{ readonly complete: boolean }>()
+})
+const flowChild = queue.job('flow-child', {
+  version: 1,
+  payload: Codec.json<{ readonly id: string }>(),
+  result: Codec.boolean
+})
+const flow = Flow.define('typed-worker-flow', {
+  parent: flowParent,
+  children: [flowChild] as const,
+  onChildFailure: 'continue'
+})
+const flowHandler = Flow.handle(flow, {
+  fanOut: () =>
+    Effect.fn(async function* () {
+      yield* []
+      return Result.ok([Flow.children(flowChild, [{ key: 'child:1', payload: { id: '1' } }])])
+    }),
+  collect: (_payload, results) =>
+    Effect.fn(async function* () {
+      yield* []
+      return Result.ok({ complete: results.counts.failed === 0 })
+    })
+})
+const flowWorker = Worker.service('TypedFlowWorker')
+const flowWorkerLayer = flowWorker.layer(() => ({
+  handlers: [handler] as const,
+  flows: [flowHandler] as const
+}))
+expectTypeOf<Layer.Required<typeof flowWorkerLayer>>().toEqualTypeOf<
+  WorkerLayerConfig | JobStore.Instance | FlowStore.Instance
+>()
+void FlowStore
 
 // @ts-expect-error Worker layers cannot be made into a Runtime before their Services are provided.
 void Runtime.make(workerLayer)

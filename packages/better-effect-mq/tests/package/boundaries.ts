@@ -23,6 +23,8 @@ type Entrypoint = 'core' | 'testing'
 const expectedCoreRuntimeExports = [
   'Codec',
   'Flow',
+  'FlowStore',
+  'flowStoreTag',
   'InvalidJobTransitionError',
   'Job',
   'JobRegistry',
@@ -71,6 +73,7 @@ const expectedCoreRuntimeExports = [
   'defaultFlowMaxDepth',
   'assertJobStoreProtocolCompatible',
   'isJobStoreDescriptor',
+  'isFlowStoreToken',
   'isUnrecoverableFailure',
   'bindJob',
   'makeJobId',

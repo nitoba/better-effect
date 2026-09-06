@@ -5,6 +5,9 @@ import { Result } from 'better-result'
 
 import {
   Codec,
+  Flow,
+  FlowStore,
+  MemoryFlowStore,
   JobStore,
   MemoryJobStore,
   Queue,
@@ -159,4 +162,157 @@ test('Worker.succeed provides caller-owned test doubles without registering life
   expect(resolved.value as WorkerHandle).toBe(fake)
   await runtime.dispose()
   expect(stopCalls).toBe(0)
+})
+
+test('Worker.service validates FlowStoreV2 routes during Layer startup', async () => {
+  const flowQueue = Queue.define('worker-flow-layer-tests')
+  const parent = flowQueue.job('parent', {
+    version: 1,
+    payload: Codec.json<{ readonly id: string }>(),
+    result: Codec.json<{ readonly done: boolean }>()
+  })
+  const child = flowQueue.job('child', {
+    version: 1,
+    payload: Codec.json<{ readonly id: string }>(),
+    result: Codec.json<{ readonly done: boolean }>()
+  })
+  const flow = Flow.define('worker-flow', {
+    parent,
+    children: [child] as const,
+    onChildFailure: 'continue'
+  })
+  const flowHandler = Flow.handle(flow, {
+    fanOut: () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok([Flow.children(child, [{ key: 'child:1', payload: { id: '1' } }])])
+      }),
+    collect: () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok({ done: true })
+      })
+  })
+  const childHandler = Worker.handle(child, () =>
+    Effect.fn(async function* () {
+      yield* []
+      return Result.ok({ done: true })
+    })
+  )
+  const workerService = Worker.service('WorkerFlowLayerControl')
+  const workerLayer = workerService.layer(() => ({
+    handlers: [childHandler] as const,
+    flows: [flowHandler] as const,
+    pollIntervalMs: 1,
+    now: () => Date.now()
+  }))
+  const runtime = await Runtime.make(
+    Layer.complete(
+      Layer.merge(
+        Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+        Layer.succeed(FlowStore, FlowStore.of(MemoryFlowStore.make())),
+        workerLayer
+      )
+    )
+  )
+
+  try {
+    await runtime.warmup()
+    const resolved = await runtime.run(() =>
+      Effect.gen(async function* () {
+        return Result.ok(yield* workerService)
+      })
+    )
+    expect(Result.isError(resolved)).toBe(false)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('Worker.service rejects duplicate Flow names during Layer startup', async () => {
+  const flowQueue = Queue.define('worker-flow-duplicate-tests')
+  const parent = flowQueue.job('parent', {
+    version: 1,
+    payload: Codec.json<{ readonly id: string }>(),
+    result: Codec.json<{ readonly done: boolean }>()
+  })
+  const secondParent = flowQueue.job('second-parent', {
+    version: 1,
+    payload: Codec.json<{ readonly id: string }>(),
+    result: Codec.json<{ readonly done: boolean }>()
+  })
+  const child = flowQueue.job('child', {
+    version: 1,
+    payload: Codec.json<{ readonly id: string }>(),
+    result: Codec.json<{ readonly done: boolean }>()
+  })
+  const flow = Flow.define('duplicate-flow', {
+    parent,
+    children: [child] as const,
+    onChildFailure: 'continue'
+  })
+  const flowHandler = Flow.handle(flow, {
+    fanOut: () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok([Flow.children(child, [{ key: 'child:1', payload: { id: '1' } }])])
+      }),
+    collect: () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok({ done: true })
+      })
+  })
+  const secondFlow = Flow.define('duplicate-flow', {
+    parent: secondParent,
+    children: [child] as const,
+    onChildFailure: 'continue'
+  })
+  const secondFlowHandler = Flow.handle(secondFlow, {
+    fanOut: () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok([Flow.children(child, [{ key: 'child:2', payload: { id: '2' } }])])
+      }),
+    collect: () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok({ done: true })
+      })
+  })
+  const childHandler = Worker.handle(child, () =>
+    Effect.fn(async function* () {
+      yield* []
+      return Result.ok({ done: true })
+    })
+  )
+  const workerService = Worker.service('WorkerFlowDuplicateControl')
+  const workerLayer = workerService.layer(() => ({
+    handlers: [childHandler] as const,
+    flows: [flowHandler, secondFlowHandler] as const,
+    pollIntervalMs: 1
+  }))
+  const runtime = await Runtime.make(
+    Layer.complete(
+      Layer.merge(
+        Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+        Layer.succeed(FlowStore, FlowStore.of(MemoryFlowStore.make())),
+        workerLayer
+      )
+    )
+  )
+
+  try {
+    const error = await runtime.warmup().then(
+      () => undefined,
+      (cause) => cause
+    )
+    expect(error).toBeInstanceOf(Error)
+    // SAFETY: LayerRegistrationError exposes the original startup cause through Error.cause.
+    expect((error as Error & { readonly cause?: Error }).cause?.message).toContain(
+      'duplicate Flow registration duplicate-flow'
+    )
+  } finally {
+    await runtime.dispose()
+  }
 })

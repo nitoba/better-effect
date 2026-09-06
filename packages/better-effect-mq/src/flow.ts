@@ -5,6 +5,7 @@
 // oxlint-disable anti-slop/no-known-value-widening -- generic descriptor snapshots preserve validated input types.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts restore generic types after runtime validation.
 
+import type { AnyService, Effect } from 'better-effect'
 import { Result } from 'better-result'
 
 import { readObjectFields } from './internal/json'
@@ -19,6 +20,7 @@ import {
 } from './protocol'
 import { JobDefinitionError } from './protocol'
 import { normalizeRetryPolicy, type RetryPolicy } from './retry'
+import type { FlowStoreInstance, FlowStoreV2Error } from './store'
 import {
   validatePositiveIntegerValue,
   validatePriorityValue,
@@ -50,6 +52,56 @@ export interface FlowChildGroup<
 
 export type FlowFailurePolicy = 'continue' | 'fail'
 
+export type FlowChildGroupFor<Current extends AnyFlowDefinition> =
+  FlowChildDefinition<Current> extends infer Definition
+    ? Definition extends AnyJobDefinition
+      ? FlowChildGroup<Definition>
+      : never
+    : never
+
+export interface FlowChildCounts {
+  readonly pending: number
+  readonly completed: number
+  readonly failed: number
+  readonly cancelled: number
+}
+
+export interface FlowSettledChild<Current extends AnyFlowDefinition> {
+  readonly childKey: string
+  readonly definition: FlowChildDefinition<Current>
+  readonly outcome: 'completed' | 'failed' | 'cancelled'
+  readonly result: Job.Success<FlowChildDefinition<Current>> | undefined
+  readonly failure: Job.Failure<FlowChildDefinition<Current>> | undefined
+}
+
+export interface FlowChildPage<Current extends AnyFlowDefinition> {
+  readonly items: readonly FlowSettledChild<Current>[]
+  readonly nextCursor: string | undefined
+}
+
+export interface FlowResults<Current extends AnyFlowDefinition> {
+  readonly counts: FlowChildCounts
+  readonly page: (options?: {
+    readonly cursor?: string
+    readonly limit?: number
+  }) => Effect.Program<FlowChildPage<Current>, FlowStoreV2Error, FlowStoreRequirements<Current>>
+  readonly all: (options?: {
+    readonly maxItems?: number
+  }) => Effect.Program<
+    readonly FlowSettledChild<Current>[],
+    FlowStoreV2Error,
+    FlowStoreRequirements<Current>
+  >
+  readonly forEach: <Requirements extends AnyService, Failure>(
+    fn: (child: FlowSettledChild<Current>) => Effect.Program<void, Failure, Requirements>,
+    options?: { readonly pageSize?: number; readonly concurrency?: number }
+  ) => Effect.Program<
+    void,
+    FlowStoreV2Error | Failure,
+    FlowStoreRequirements<Current> | Requirements
+  >
+}
+
 export interface FlowDefinition<
   Parent extends AnyJobDefinition,
   Children extends readonly AnyJobDefinition[],
@@ -64,6 +116,50 @@ export interface FlowDefinition<
 }
 
 export type AnyFlowDefinition = FlowDefinition<AnyJobDefinition, readonly AnyJobDefinition[]>
+
+export type FlowDefinitionRequirements<Current extends AnyFlowDefinition> =
+  | FlowStoreRequirements<Current>
+  | Job.Requirements<Current['parent']>
+  | Job.Requirements<FlowChildDefinition<Current>>
+
+export type FlowStoreRequirements<Current extends AnyFlowDefinition> =
+  Current['parent']['store'] extends infer Store
+    ? Store extends import('./store').AnyJobStoreToken
+      ? FlowStoreInstance<Store>
+      : never
+    : never
+
+export type FlowHandlerRequirements<
+  Current extends AnyFlowDefinition,
+  PhaseRequirements extends AnyService,
+  CollectRequirements extends AnyService
+> = PhaseRequirements | CollectRequirements | FlowDefinitionRequirements<Current>
+
+export interface FlowHandler<
+  Definition extends AnyFlowDefinition = AnyFlowDefinition,
+  FanOutRequirements extends AnyService = AnyService,
+  CollectRequirements extends AnyService = AnyService
+> {
+  readonly flow: Definition
+  readonly definition: Definition
+  readonly fanOut: (
+    payload: Job.Payload<Definition['parent']>
+  ) => Effect.Program<
+    readonly FlowChildGroupFor<Definition>[],
+    Job.Failure<Definition['parent']>,
+    FanOutRequirements
+  >
+  readonly collect: (
+    payload: Job.Payload<Definition['parent']>,
+    results: FlowResults<Definition>
+  ) => Effect.Program<
+    Job.Success<Definition['parent']>,
+    Job.Failure<Definition['parent']>,
+    CollectRequirements
+  >
+}
+
+export type AnyFlowHandler = FlowHandler<any, any, any>
 
 export type FlowDefinitionOptions<
   Parent extends AnyJobDefinition,
@@ -287,8 +383,69 @@ export const Flow = Object.freeze({
     }
   },
   define: buildFlow,
-  children: makeChildren
+  children: makeChildren,
+  handle: makeFlowHandler
 })
+
+function makeFlowHandler<
+  const Definition extends AnyFlowDefinition,
+  const FanOutProgram extends Effect.Program<
+    readonly FlowChildGroupFor<Definition>[],
+    Job.Failure<Definition['parent']>,
+    AnyService
+  >,
+  const CollectProgram extends Effect.Program<
+    Job.Success<Definition['parent']>,
+    Job.Failure<Definition['parent']>,
+    AnyService
+  >
+>(
+  flow: Definition,
+  phases: {
+    readonly fanOut: (payload: Job.Payload<Definition['parent']>) => FanOutProgram
+    readonly collect: (
+      payload: Job.Payload<Definition['parent']>,
+      results: FlowResults<Definition>
+    ) => CollectProgram
+  }
+): FlowHandler<
+  Definition,
+  Effect.Requirements<FanOutProgram>,
+  Effect.Requirements<CollectProgram>
+> {
+  if (!Flow.is(flow)) {
+    throw new JobDefinitionError({ field: 'flow', message: 'must be a Flow definition' })
+  }
+  if (phases === null || typeof phases !== 'object' || Array.isArray(phases)) {
+    throw new JobDefinitionError({ field: 'phases', message: 'must be an object' })
+  }
+
+  const fields = readObjectFields(phases, ['fanOut', 'collect'], 'phases')
+  if (Result.isError(fields)) throw fields.error
+
+  if (typeof fields.value.fanOut !== 'function') {
+    throw new JobDefinitionError({ field: 'phases.fanOut', message: 'must be callable' })
+  }
+  if (typeof fields.value.collect !== 'function') {
+    throw new JobDefinitionError({ field: 'phases.collect', message: 'must be callable' })
+  }
+
+  // SAFETY: `readObjectFields` has validated these fixed fields as callable data values.
+  const fanOut = fields.value.fanOut as typeof phases.fanOut
+  // SAFETY: `readObjectFields` has validated these fixed fields as callable data values.
+  const collect = fields.value.collect as typeof phases.collect
+
+  return Object.freeze({
+    flow,
+    definition: flow,
+    fanOut,
+    collect
+  }) as unknown as FlowHandler<
+    Definition,
+    Effect.Requirements<FanOutProgram>,
+    Effect.Requirements<CollectProgram>
+  >
+}
 
 export type FlowParent<Current extends AnyFlowDefinition> = Current['parent']
 export type FlowChildren<Current extends AnyFlowDefinition> = Current['children']

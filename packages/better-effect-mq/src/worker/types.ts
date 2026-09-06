@@ -2,6 +2,13 @@ import type { Effect, Layer, Service, ServiceRequirement } from 'better-effect'
 
 import type { AnyService, ServiceContract, ServiceToken } from 'better-effect'
 import type { AnyJobDefinition, Job } from '../job'
+import type {
+  AnyFlowDefinition,
+  AnyFlowHandler,
+  FlowDefinitionRequirements,
+  FlowHandler,
+  FlowHandlerRequirements
+} from '../flow'
 import type { JobContext } from './context'
 import type { WorkerId, JobRecord, SerializedJobFailure } from '../protocol'
 import type { JobObserver } from '../observability'
@@ -87,9 +94,12 @@ export type JobFailureHandler = (event: JobFailureEvent) => void | PromiseLike<v
 
 /** Options used to configure a Worker Service layer. */
 export interface WorkerOptions<
-  Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[]
+  Handlers extends readonly AnyWorkerHandler[] = readonly AnyWorkerHandler[],
+  Flows extends readonly WorkerFlowRegistration[] = readonly []
 > extends WorkerReliabilityOptions {
   readonly handlers: Handlers
+  /** Flow handlers or immutable Flow definitions validated at Worker startup. */
+  readonly flows?: Flows
   readonly concurrency?: number
   /** Optional per-queue cap; the most restrictive global, queue, and handler cap wins. */
   readonly queueConcurrency?: number | Readonly<Record<string, number>>
@@ -123,17 +133,16 @@ export type WorkerServiceTag<Tag extends string> = string extends Tag
     ? never
     : Tag
 
-type WorkerServiceValueFactory<Handlers extends readonly AnyWorkerHandler[]> = () =>
-  | WorkerOptions<Handlers>
-  | PromiseLike<WorkerOptions<Handlers>>
+export type WorkerFlowRegistration = AnyFlowDefinition | AnyFlowHandler
 
 /** A factory that may resolve contextual Services before producing Worker options. */
 export type WorkerServiceGeneratorFactory<
   Handlers extends readonly AnyWorkerHandler[],
-  Yield extends ServiceRequirement<unknown>
+  Yield extends ServiceRequirement<unknown>,
+  Flows extends readonly WorkerFlowRegistration[] = readonly []
 > = () =>
-  | Generator<Yield, WorkerOptions<Handlers>, unknown>
-  | AsyncGenerator<Yield, WorkerOptions<Handlers>, unknown>
+  | Generator<Yield, WorkerOptions<Handlers, Flows>, unknown>
+  | AsyncGenerator<Yield, WorkerOptions<Handlers, Flows>, unknown>
 
 type WorkerFactoryYieldRequirements<Yield extends ServiceRequirement<unknown>> =
   Yield extends ServiceRequirement<infer Requirement>
@@ -145,16 +154,41 @@ type WorkerFactoryYieldRequirements<Yield extends ServiceRequirement<unknown>> =
 /** Requirements needed by a Worker Layer factory and its registered handlers. */
 export type WorkerLayerRequirements<
   Handlers extends readonly AnyWorkerHandler[],
-  Yield extends ServiceRequirement<unknown>
-> = WorkerRequirements<Handlers> | WorkerFactoryYieldRequirements<Yield>
+  Yield extends ServiceRequirement<unknown>,
+  Flows extends readonly WorkerFlowRegistration[] = readonly []
+> =
+  | WorkerRequirements<Handlers>
+  | WorkerFlowRequirements<Flows>
+  | WorkerFactoryYieldRequirements<Yield>
+
+type WorkerFlowRequirement<Registration extends WorkerFlowRegistration> =
+  Registration extends FlowHandler<
+    infer Definition,
+    infer FanOutRequirements,
+    infer CollectRequirements
+  >
+    ? FlowHandlerRequirements<Definition, FanOutRequirements, CollectRequirements>
+    : Registration extends AnyFlowDefinition
+      ? FlowDefinitionRequirements<Registration>
+      : never
+
+export type WorkerFlowRequirements<Flows extends readonly WorkerFlowRegistration[]> =
+  number extends Flows['length'] ? never : WorkerFlowRequirement<Flows[number]>
 
 type WorkerServiceLayerMethod<Tag extends string> = {
-  <const Handlers extends readonly AnyWorkerHandler[], Yield extends ServiceRequirement<unknown>>(
-    factory: WorkerServiceGeneratorFactory<Handlers, Yield>
-  ): Layer<WorkerServiceInstance<Tag>, WorkerLayerRequirements<Handlers, Yield>>
-  <const Handlers extends readonly AnyWorkerHandler[]>(
-    factory: WorkerServiceValueFactory<Handlers>
-  ): Layer<WorkerServiceInstance<Tag>, WorkerRequirements<Handlers>>
+  <
+    const Handlers extends readonly AnyWorkerHandler[],
+    const Flows extends readonly WorkerFlowRegistration[],
+    Yield extends ServiceRequirement<unknown>
+  >(
+    factory: WorkerServiceGeneratorFactory<Handlers, Yield, Flows>
+  ): Layer<WorkerServiceInstance<Tag>, WorkerLayerRequirements<Handlers, Yield, Flows>>
+  <
+    const Handlers extends readonly AnyWorkerHandler[],
+    const Flows extends readonly WorkerFlowRegistration[] = readonly []
+  >(
+    factory: () => WorkerOptions<Handlers, Flows> | PromiseLike<WorkerOptions<Handlers, Flows>>
+  ): Layer<WorkerServiceInstance<Tag>, WorkerLayerRequirements<Handlers, never, Flows>>
 }
 
 /** A non-constructible Worker Service token with Runtime-owned Layer startup. */

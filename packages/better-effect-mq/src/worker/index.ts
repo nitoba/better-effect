@@ -8,6 +8,8 @@ export { Worker, handle, service } from './worker'
 export { JobTimeoutError } from './errors'
 export type {
   AnyWorkerHandler,
+  WorkerFlowRegistration,
+  WorkerFlowRequirements,
   WorkerAwaitIdleOptions,
   WorkerClock,
   WorkerErrorHandler,
