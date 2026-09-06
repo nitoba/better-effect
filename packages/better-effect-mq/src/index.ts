@@ -257,6 +257,29 @@ export {
   isJobStoreDescriptor
 } from './store'
 
+export type {
+  CancelFlowRequest,
+  CancelFlowResult,
+  FlowChildObservation,
+  FlowChildObservationState,
+  FlowFanOutRequest,
+  FlowFanOutResult,
+  FlowParentRecord,
+  FlowParentState,
+  FlowSnapshot,
+  FlowStoreV2,
+  FlowStoreV2Descriptor,
+  FlowStoreV2Error,
+  FlowStoreV2Operation,
+  GetFlowRequest,
+  MarkCascadedRequest,
+  MarkCascadedResult,
+  ReconcileFlowRequest,
+  ReconcileFlowResult,
+  RecordChildResultsRequest,
+  RecordChildResultsResult
+} from './store'
+
 export {
   DuplicateScheduleError,
   JobScheduler,

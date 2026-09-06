@@ -4,6 +4,10 @@ import { Codec, Flow, Queue } from '../../src'
 import type {
   FlowChildReport,
   FlowChildSpec,
+  FlowFanOutResult,
+  FlowStoreV2,
+  FlowStoreV2Error,
+  FlowStoreV2Operation,
   JobState,
   JobStateV2,
   ParentEnvelope,
@@ -12,6 +16,13 @@ import type {
   SettlementOutcome,
   SettlementOutcomeV2
 } from '../../src'
+import type { Result as ResultType } from 'better-result'
+
+declare const flowStore: FlowStoreV2
+declare const fanOutResult: FlowStoreV2Operation<FlowFanOutResult>
+
+expectTypeOf(flowStore.descriptor.protocolVersion).toEqualTypeOf<2>()
+expectTypeOf(fanOutResult).toEqualTypeOf<ResultType<FlowFanOutResult, FlowStoreV2Error>>()
 
 const queue = Queue.define('flow-types')
 const parentJob = queue.job('parent', { version: 1, payload: Codec.json<{ day: string }>() })
