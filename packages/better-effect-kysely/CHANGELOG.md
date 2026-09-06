@@ -5,7 +5,7 @@
 Initial release of `better-effect-kysely`.
 
 - Add yieldable Kysely Service tokens with schema-preserving inference.
-- Add explicit owned (`layer`) and borrowed (`succeed`) database Layers.
+- Add explicit owned (`scoped`) and borrowed (`borrowed`, `succeed`) database Layers.
 - Add lazy Effect `$call` terminals for queries, first-row reads, and raw or
   compiled `QueryResult` values.
 - Forward Runtime-linked cancellation through Kysely's native abort strategy
@@ -16,19 +16,12 @@ Initial release of `better-effect-kysely`.
   settings.
 - Validate the bridge with real Bun SQLite and PGlite integrations, plus
   type-only coverage for PostgreSQL, MySQL and SQLite Kysely dialects.
-- Validate packed external consumers across Bun and Node.js 24 with Bun SQLite,
-  `better-sqlite3`, PGlite, TypeScript 5.7.2 and the current compiler.
+- Validate packed external consumers across the latest Bun release and current
+  Node.js LTS with Bun SQLite, `better-sqlite3`, PGlite and the current
+  TypeScript 7.x compiler; the public peer range begins at TypeScript 6.0.
 - Document the compatibility matrix, ownership model and cancellation limits.
 
 This release does not certify every Kysely dialect or driver combination,
 does not provide universal server-side cancellation, and is not a drop-in
 replacement for Kysely. Migrations, streaming, controlled transactions,
 schema codecs and repository abstractions remain outside the package.
-
-## Unreleased
-
-- Add lazy `scoped` and `borrowed` Kysely factories with sync/async contextual
-  Service requirements.
-- Keep `succeed` caller-owned and make `layer` a deprecated alias of `scoped`.
-- Preserve Kysely schema/query/transaction inference and add shared-pool
-  ownership guidance.

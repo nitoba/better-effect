@@ -108,7 +108,6 @@ when the Runtime first resolves the provider:
 | The Layer creates and owns the instance                  | `Database.scoped(factory)`   | Runtime root during shutdown |
 | The factory borrows a pool/driver owned by another Layer | `Database.borrowed(factory)` | The pool/driver owner        |
 | The caller already has the instance                      | `Database.succeed(database)` | The caller                   |
-| Existing owned API                                       | `Database.layer(factory)`    | Runtime root during shutdown |
 
 Use `scoped` when the Layer creates the database and must close it. Use
 `borrowed` when Kysely is a facade over a pool or driver owned by another
@@ -148,9 +147,8 @@ finish. `borrowed` and `succeed` never register a destroy finalizer, so a
 shared pool remains open until its owning Layer releases it. The native Kysely
 instance and its private state remain untouched.
 
-`layer(factory)` remains temporarily available as a deprecated alias for
-`scoped(factory)`. Migrate owned resources to `scoped`; do not use `layer` for
-borrowed resources.
+There is intentionally no `Database.layer` compatibility alias. Choose
+`scoped`, `borrowed` or `succeed` so ownership is explicit at the call site.
 
 ## Execute queries
 

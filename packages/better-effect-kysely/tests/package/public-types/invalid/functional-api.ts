@@ -21,6 +21,7 @@ declare const validDatabase: Kysely<ValidSchema>
 
 Database.succeed(invalidDatabase)
 Database.layer(() => invalidDatabase)
+Database.layer(() => validDatabase)
 Database.scoped(() => invalidDatabase)
 Database.borrowed(() => invalidDatabase)
 KyselyEffect.service<string>()('')

@@ -76,7 +76,7 @@ const makeRuntime = async (): Promise<{
   readonly runtime: Runtime<ReturnType<typeof Database.of>>
 }> => {
   const database = await makeDatabase()
-  const runtime = await Runtime.make(Database.layer(() => database))
+  const runtime = await Runtime.make(Database.scoped(() => database))
   return { database, runtime }
 }
 

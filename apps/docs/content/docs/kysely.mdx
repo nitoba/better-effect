@@ -116,7 +116,6 @@ run once per Runtime when the provider is first resolved:
 | The Layer creates and owns the instance                  | `Database.scoped(factory)`   | Runtime root during shutdown |
 | The factory borrows a pool/driver owned by another Layer | `Database.borrowed(factory)` | The pool/driver owner        |
 | The caller already has the instance                      | `Database.succeed(database)` | The caller                   |
-| Existing owned API                                       | `Database.layer(factory)`    | Runtime root during shutdown |
 
 ```ts
 const ownedRuntime = await Runtime.make(Database.scoped(makeDatabase))
@@ -129,8 +128,8 @@ await existingDatabase.destroy() // caller cleanup
 
 `scoped` registers one root-Scope finalizer and reports `destroy()` failures as
 cleanup failures. `borrowed` and `succeed` never destroy their values. The
-deprecated `layer` helper remains an alias of `scoped` for source compatibility;
-it must not be used to imply borrowed ownership.
+package intentionally has no `Database.layer` compatibility alias; ownership
+must be selected explicitly with `scoped`, `borrowed` or `succeed`.
 
 ### Contextual factories and shared pools
 

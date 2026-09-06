@@ -39,10 +39,12 @@ const contextualApp = Layer.complete(
 type ExpectedInstance = KyselyServiceInstance<'@external/Database', DatabaseSchema>
 expectToken(Database)
 expectInstance(Database.of(database))
-expectLayer(Database.layer(() => database))
 expectLayer(Database.scoped(() => database))
 expectLayer(Database.borrowed(() => database))
 expectLayer(Database.succeed(database))
+
+// @ts-expect-error the legacy layer helper is intentionally absent from the packed API
+Database.layer(() => database)
 void contextualApp
 const query = database.selectFrom('users').selectAll()
 const executeOperation: KyselyOperation<DatabaseSchema['users'][], KyselyQueryError> = query.$call(

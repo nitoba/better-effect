@@ -74,7 +74,7 @@ const withOwnedDatabase = async <A>(
   options?: IntegrationFixtureOptions
 ): Promise<A> => {
   const created = await fixture.make(options)
-  const runtime = await Runtime.make(Database.layer(() => created.database))
+  const runtime = await Runtime.make(Database.scoped(() => created.database))
 
   try {
     return await callback(created.database, runtime, created)
@@ -367,7 +367,7 @@ for (const fixture of fixtures) {
       const context = new TransactionContext()
       const runtime = await Runtime.make(
         Layer.merge(
-          Database.layer(() => created.database),
+          Database.scoped(() => created.database),
           Layer.succeed(TransactionContext, context)
         )
       )
@@ -460,9 +460,9 @@ for (const fixture of fixtures) {
       })
     })
 
-    test('owns and destroys only databases provided through layer', async () => {
+    test('owns and destroys only databases provided through scoped', async () => {
       const owned = await fixture.make()
-      const ownedRuntime = await Runtime.make(Database.layer(() => owned.database))
+      const ownedRuntime = await Runtime.make(Database.scoped(() => owned.database))
       await ownedRuntime.run(async () => {
         const database = await ServiceRuntime.resolve(Database)
         await database.executeQuery(CompiledQuery.raw('select 1'))
