@@ -2,7 +2,15 @@ import { Result } from 'better-result'
 
 import { describe, expect, test } from 'bun:test'
 
-import { Effect, Layer, Runtime, Scope, Service, type ScopeOutcome } from '../src'
+import {
+  Effect,
+  Layer,
+  LayerDisposeError,
+  Runtime,
+  Scope,
+  Service,
+  type ScopeOutcome
+} from '../src'
 import { RecordedRuntimeObserver } from '../src/testing'
 
 class LifecycleConfig extends Service<LifecycleConfig>()('LifecycleConfig') {
@@ -12,6 +20,108 @@ class LifecycleConfig extends Service<LifecycleConfig>()('LifecycleConfig') {
 }
 
 describe('Layer lifecycle-only entries', () => {
+  test('quiesces root resources before draining and releases afterward', async () => {
+    const events: string[] = []
+    let releaseExecution!: () => void
+    let executionStarted!: () => void
+    const executionGate = new Promise<void>((resolve) => {
+      releaseExecution = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      executionStarted = resolve
+    })
+    const server = Layer.scopedDiscard(() => ({ accepting: true }), {
+      quiesce: (resource, reason) => {
+        resource.accepting = false
+        events.push(`quiesce:${reason.kind}`)
+      },
+      release: () => {
+        events.push('release')
+      }
+    })
+    const runtime = await Runtime.make(server)
+
+    const execution = runtime.run(async () => {
+      executionStarted()
+      await executionGate
+    })
+    await started
+
+    const disposal = runtime.dispose()
+    expect(events).toEqual(['quiesce:dispose'])
+    expect(() => runtime.run(() => undefined)).toThrow(
+      'Cannot run a program using a disposed Layer'
+    )
+
+    releaseExecution()
+    await execution
+    await disposal
+    expect(events).toEqual(['quiesce:dispose', 'release'])
+  })
+
+  test('runs every quiesce hook and still releases when one fails', async () => {
+    const events: string[] = []
+    const failure = new Error('quiesce failed')
+    const first = Layer.scopedDiscard(() => 'first', {
+      quiesce: () => {
+        events.push('first-quiesce')
+      },
+      release: () => {
+        events.push('first-release')
+      }
+    })
+    const second = Layer.scopedDiscard(() => 'second', {
+      quiesce: () => {
+        events.push('second-quiesce')
+        throw failure
+      },
+      release: () => {
+        events.push('second-release')
+      }
+    })
+    const runtime = await Runtime.make(Layer.merge(first, second))
+
+    const disposal = runtime.dispose()
+    const disposalFailure = await disposal.then(
+      () => undefined,
+      (cause) => cause
+    )
+    expect(disposalFailure).toBeInstanceOf(LayerDisposeError)
+    expect(events).toEqual(['second-quiesce', 'first-quiesce', 'second-release', 'first-release'])
+  })
+
+  test('reports the ordered Runtime shutdown phases', async () => {
+    const phases: string[] = []
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => 'resource',
+        () => {}
+      ),
+      {
+        observers: [
+          {
+            onShutdown: (event) => {
+              phases.push(event.phase)
+            }
+          }
+        ]
+      }
+    )
+
+    await runtime.dispose()
+
+    expect(phases).toEqual([
+      'shutdown-requested',
+      'quiesce-start',
+      'quiesce-end',
+      'drain-start',
+      'drain-end',
+      'release-start',
+      'release-end',
+      'shutdown-complete'
+    ])
+  })
+
   test('acquires at Runtime.make and releases with the Runtime root outcome', async () => {
     const acquired: string[] = []
     const released: ScopeOutcome[] = []

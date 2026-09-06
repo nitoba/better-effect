@@ -1162,6 +1162,29 @@ describe('createRuntimeHandle', () => {
     expect(released).toBe(1)
   })
 
+  test('shares disposal with a re-entrant shutdown observer', async () => {
+    let reentrantDisposal: Promise<void> | undefined
+    let requestReentrantDisposal!: () => Promise<void>
+
+    const runtime = await createRuntimeHandle(Layer.merge(), new MemoryLayerBackend(), {
+      observers: [
+        {
+          onShutdown: (event) => {
+            if (event.phase === 'shutdown-requested') {
+              reentrantDisposal = requestReentrantDisposal()
+            }
+          }
+        }
+      ]
+    })
+    requestReentrantDisposal = () => runtime.dispose()
+
+    const disposal = runtime.dispose()
+
+    expect(reentrantDisposal).toBe(disposal)
+    await disposal
+  })
+
   test('classifies Result errors at the Runtime boundary', async () => {
     const programFailure = new Error('program failed')
     const cleanupFailure = new Error('cleanup failed')

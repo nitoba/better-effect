@@ -6,6 +6,7 @@ import { Effect } from '../../src/effect'
 import { Layer } from '../../src/layer'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { Runtime } from '../../src/runtime'
+import type { RuntimeShutdownReason } from '../../src/runtime'
 import type { ScopeOutcome } from '../../src/scope'
 import { Service } from '../../src/service'
 
@@ -27,6 +28,33 @@ const direct = Layer.scopedDiscard(
     expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
   }
 )
+
+const phased = Layer.scopedDiscard(() => ({ stop: () => {} }), {
+  quiesce: (resource, reason) => {
+    expectTypeOf(resource).toEqualTypeOf<{ stop: () => void }>()
+    expectTypeOf(reason).toEqualTypeOf<RuntimeShutdownReason>()
+  },
+  release: (resource, outcome) => {
+    expectTypeOf(resource).toEqualTypeOf<{ stop: () => void }>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+  }
+})
+
+const servicePhased = Layer.scoped(Database, () => new Database(), {
+  quiesce: (service, reason) => {
+    expectTypeOf(service).toEqualTypeOf<Database>()
+    expectTypeOf(reason).toEqualTypeOf<RuntimeShutdownReason>()
+  },
+  release: (service, outcome) => {
+    expectTypeOf(service).toEqualTypeOf<Database>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+  }
+})
+
+expectTypeOf<Layer.Provided<typeof phased>>().toBeNever()
+expectTypeOf<Layer.Required<typeof phased>>().toBeNever()
+expectTypeOf<Layer.Provided<typeof servicePhased>>().toEqualTypeOf<Database>()
+expectTypeOf<Layer.Required<typeof servicePhased>>().toBeNever()
 
 expectTypeOf<Layer.Provided<typeof direct>>().toBeNever()
 expectTypeOf<Layer.Required<typeof direct>>().toBeNever()

@@ -4,6 +4,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { describe, expect, test } from 'bun:test'
 
+import { Layer } from '../src'
+import { NodeRuntime } from '../src/node'
+
 type ChildData = {
   readonly artifact?: string
   readonly kind?: string
@@ -423,3 +426,26 @@ for (const target of targets) {
     })
   })
 }
+
+test('NodeRuntime.launch waits for caller abort and quiesces before release', async () => {
+  const events: string[] = []
+  const controller = new AbortController()
+  const application = Layer.scopedDiscard(() => 'application', {
+    quiesce: (_resource, reason) => {
+      events.push(`quiesce:${reason.kind}`)
+    },
+    release: () => {
+      events.push('release')
+    }
+  })
+
+  const launch = NodeRuntime.launch(application, {
+    signals: [],
+    signal: controller.signal
+  })
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  controller.abort(new Error('stop application'))
+
+  await launch
+  expect(events).toEqual(['quiesce:external-abort', 'release'])
+})

@@ -162,6 +162,7 @@ child explicitly when the batch ends.
 `NodeRuntime.runMain()`. That boundary owns the one application Runtime: the
 main Program seeds the database, starts the server with its resolver context,
 and stops the server when `CurrentAbortSignal` is aborted. The helper installs
-`SIGINT`/`SIGTERM` handlers only while the main Program is running, waits for
-cleanup, removes its listeners, sets `process.exitCode`, and never calls
-`process.exit()`.
+`SIGINT`/`SIGTERM` handlers only while the main Program is running, quiesces
+root resources before draining the main Program, applies the configured
+shutdown grace period, removes its listeners, sets `process.exitCode`, and
+never calls `process.exit()`.

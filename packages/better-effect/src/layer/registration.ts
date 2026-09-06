@@ -36,9 +36,18 @@ export const normalizeLayerRegistration = (registration: LayerRegistration): Lay
   const acquire = registration.acquire
   const serviceTag = validateRegistrationTag(service, registrationTag)
 
+  if (registration.quiesce === undefined) {
+    return Object.freeze({
+      service,
+      serviceTag,
+      acquire
+    })
+  }
+
   return Object.freeze({
     service,
     serviceTag,
-    acquire
+    acquire,
+    quiesce: registration.quiesce
   })
 }

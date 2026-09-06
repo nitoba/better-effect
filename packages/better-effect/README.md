@@ -445,11 +445,12 @@ resolves Services, warms the Runtime, creates Scopes, invokes observers or
 exposes providers, instances, signals, attributes or backend state. Execution
 entries remain present until their execution Scope cleanup settles. Warmup is
 reported as `idle`, `running`, `completed` or `failed`, and `state` reports
-`active`, `disposing` or `disposed`.
+`active`, `quiescing`, `draining`, `aborting`, `releasing` or `disposed`.
 
 `inspect()` is diagnostic information, not a lock, synchronization primitive or
 readiness guarantee. It cannot cancel or force shutdown of any execution; use
 `dispose()` and cooperative `AbortSignal` handling for lifecycle coordination.
+New executions are rejected as soon as quiescing begins.
 
 Missing, circular, and provider-construction failures use the logical Service
 tags in `ServiceNotFoundError`, `CircularDependencyError`, and
@@ -606,9 +607,9 @@ const cancellableProgram = Effect.fn(async function* () {
 ```
 
 For a Node.js or Bun CLI, use the host-specific `better-effect/node` entrypoint.
-`NodeRuntime.runMain` validates its signal and callback options before installing
-`SIGINT`/`SIGTERM` listeners, links the first signal to `CurrentAbortSignal`,
-and disposes the Runtime exactly once:
+`NodeRuntime.runMain` validates its signal, callback and shutdown options before
+installing `SIGINT`/`SIGTERM` listeners, links the first signal to
+`CurrentAbortSignal`, and disposes the Runtime exactly once:
 
 ```ts
 import { NodeRuntime } from 'better-effect/node'
@@ -623,7 +624,11 @@ await NodeRuntime.runMain(AppLive, main, {
     console.error(error)
     return 1
   },
-  onSuccess: () => 0
+  onSuccess: () => 0,
+  shutdown: {
+    gracePeriod: 10_000,
+    abortAfterGracePeriod: true
+  }
 })
 ```
 
@@ -631,11 +636,21 @@ await NodeRuntime.runMain(AppLive, main, {
 remain rejected and may be reported with `onDefect`. Cleanup-only failures use
 `onCleanupFailure`, remain observable, and still set a non-zero
 `process.exitCode` after successful work. The first `SIGINT` or `SIGTERM`
-immediately aborts `CurrentAbortSignal`; Runtime disposal then waits
-cooperatively for the main execution. Listeners are removed in `finally`,
-repeated signals are ignored, and the helper never calls `process.exit()`.
-The Node boundary intentionally does not expose a second grace-period policy;
-use `Runtime.dispose` directly when a managed Runtime needs one.
+immediately aborts `CurrentAbortSignal`; Runtime disposal then quiesces root
+resources and applies the configured drain policy. Listeners are removed in
+`finally`, repeated signals are ignored, and the helper never calls
+`process.exit()`.
+
+For long-lived applications whose startup and shutdown are completely
+represented by a Layer graph, `NodeRuntime.launch` owns the Runtime and waits
+for a process signal or caller `AbortSignal`:
+
+```ts
+await NodeRuntime.launch(AppLive, {
+  warmup: true,
+  shutdown: { gracePeriod: 10_000, abortAfterGracePeriod: true }
+})
+```
 
 For request-local context or overrides, add a Layer only to that execution:
 
@@ -1101,6 +1116,11 @@ const PollerLive = Layer.scopedDiscard(
   () => startPoller(),
   (poller, outcome) => poller.stop(outcome)
 )
+
+const ServerLive = Layer.scopedDiscard(() => startServer(), {
+  quiesce: (server) => server.stopAccepting(),
+  release: (server, outcome) => server.close(outcome)
+})
 
 const AppLive = Layer.complete(Layer.merge(ConfigLive, PollerLive))
 ```
