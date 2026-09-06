@@ -575,6 +575,48 @@ describe('createRuntimeHandle', () => {
     expect(oneShotOutcome).toEqual({ status: 'failure', cause: programFailure })
   })
 
+  test('quiesces acquired Service providers before draining active executions', async () => {
+    const events: string[] = []
+    let releaseExecution!: () => void
+    let executionStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      executionStarted = resolve
+    })
+    const gate = new Promise<void>((resolve) => {
+      releaseExecution = resolve
+    })
+
+    const runtime = await createRuntimeHandle(
+      Layer.scoped(ExampleService, () => new ExampleService(), {
+        quiesce: (_service, reason) => {
+          events.push(`quiesce:${reason.kind}`)
+        },
+        release: () => {
+          events.push('release')
+        }
+      }),
+      new MemoryLayerBackend()
+    )
+
+    const execution = runtime.run(async () => {
+      await ServiceRuntime.resolve(ExampleService)
+      executionStarted()
+      await gate
+    })
+
+    await started
+    const disposal = runtime.dispose()
+
+    expect(runtime.inspect().state).toBe('quiescing')
+    expect(events).toEqual(['quiesce:dispose'])
+
+    releaseExecution()
+    await execution
+    await disposal
+
+    expect(events).toEqual(['quiesce:dispose', 'release'])
+  })
+
   test('releases dependent scoped generators in LIFO order', async () => {
     const events: string[] = []
     const runtime = await createRuntimeHandle(

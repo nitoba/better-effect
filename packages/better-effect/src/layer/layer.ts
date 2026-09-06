@@ -50,6 +50,7 @@ import type {
   LayerDiscardRequirements,
   LayerGenerator,
   LayerGeneratorRequirements,
+  LayerProviderQuiesce,
   LayerRegistration
 } from './types'
 
@@ -73,6 +74,15 @@ interface LayerProvider extends LayerRegistration {
   // oxlint-disable-next-line anti-slop/no-unknown-parameters
   readonly release?: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
 
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Provider instances are erased at the storage boundary.
+  readonly quiesce?:
+    | ((
+        // oxlint-disable-next-line anti-slop/no-unknown-parameters -- provider values are erased only inside Layer storage.
+        instance: unknown,
+        reason: import('../runtime/outcome').RuntimeShutdownReason
+      ) => MaybePromise<void>)
+    | undefined
+
   /** Capture acquisition-local cleanup without retaining the acquired instance. */
   readonly acquireWithRelease?: () => MaybePromise<CapturedLayerAcquisition>
 }
@@ -82,6 +92,7 @@ export interface LayerLifecycleEntry {
   readonly kind: 'lifecycle'
   readonly id: symbol
   readonly acquire: () => MaybePromise<unknown>
+  readonly quiesce?: LayerProviderQuiesce<unknown>
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources are intentionally opaque to the Layer runtime.
   readonly release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
 }
@@ -187,17 +198,21 @@ export class Layer<
   private static makeLifecycleLayer<RawRequired extends AnyService>(
     acquire: () => MaybePromise<unknown>,
     // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources are intentionally opaque to the Layer runtime.
-    release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+    release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>,
+    quiesce?: LayerProviderQuiesce<unknown>
   ): LayerResult<ProviderEntry<never, RawRequired>> {
     // SAFETY: Lifecycle entries have no public Service environment; the typed requirements are declaration-only provenance.
-    return new Layer([
-      {
-        kind: 'lifecycle',
-        id: Symbol('better-effect.lifecycle'),
-        acquire,
-        release
-      }
-    ]) as LayerResult<ProviderEntry<never, RawRequired>>
+    const entry = {
+      kind: 'lifecycle',
+      id: Symbol('better-effect.lifecycle'),
+      acquire,
+      release
+    } satisfies LayerLifecycleEntry
+
+    const lifecycleEntry = quiesce ? { ...entry, quiesce } : entry
+
+    // SAFETY: The lifecycle entry exposes no Service, while RawRequired is retained only as declaration-time provenance.
+    return new Layer([lifecycleEntry]) as LayerResult<ProviderEntry<never, RawRequired>>
   }
 
   /** A stable provider-free Layer for composition roots with no Services. */
@@ -284,11 +299,20 @@ export class Layer<
   static scoped<S extends ServiceToken<any, any>>(
     service: S,
     acquire: () => MaybePromise<ServiceContract<InstanceType<S>>>,
-    release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
+    release:
+      | ((instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>)
+      | {
+          readonly quiesce?: LayerProviderQuiesce<InstanceType<S>>
+          readonly release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
+        }
   ): LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>> {
     const serviceTag = captureServiceTag(service)
 
     // SAFETY: The public callbacks constrain acquisition and release to the requested Service.
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload normalization distinguishes callback and lifecycle-object forms.
+    const lifecycle = typeof release === 'function' ? { release } : release
+
+    // SAFETY: The public overloads validate the provider callbacks before the heterogeneous Layer storage boundary.
     return new Layer([
       {
         service,
@@ -296,8 +320,15 @@ export class Layer<
         acquire: normalizeAcquire<S>(acquire),
         release: (instance, outcome) => {
           // SAFETY: The backend invokes release with the instance acquired for this token.
-          return release(instance as InstanceType<S>, outcome)
-        }
+          // SAFETY: The public callback is checked against the requested Service before storage erases the instance type.
+          return lifecycle.release(instance as InstanceType<S>, outcome)
+        },
+        quiesce: lifecycle.quiesce
+          ? (instance, reason) => {
+              // SAFETY: The public callback is checked against the requested Service before storage erases the instance type.
+              return lifecycle.quiesce!(instance as InstanceType<S>, reason)
+            }
+          : undefined
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, ServiceRequirements<InstanceType<S>>>>
   }
@@ -335,11 +366,20 @@ export class Layer<
   static scopedGen<S extends ServiceToken<any, any>, Yield extends ServiceRequirement<unknown>>(
     service: S,
     factory: LayerGenerator<S, Yield>,
-    release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
+    release:
+      | ((instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>)
+      | {
+          readonly quiesce?: LayerProviderQuiesce<InstanceType<S>>
+          readonly release: (instance: InstanceType<S>, outcome: ScopeOutcome) => MaybePromise<void>
+        }
   ): LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>> {
     const serviceTag = captureServiceTag(service)
 
     // SAFETY: The generator and release callback are checked against the requested Service.
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload normalization distinguishes callback and lifecycle-object forms.
+    const lifecycle = typeof release === 'function' ? { release } : release
+
+    // SAFETY: The public overloads validate the provider callbacks before the heterogeneous Layer storage boundary.
     return new Layer([
       {
         service,
@@ -347,8 +387,15 @@ export class Layer<
         acquire: () => runLayerGenerator(service, factory),
         release: (instance, outcome) => {
           // SAFETY: The backend invokes release with the instance acquired for this token.
-          return release(instance as InstanceType<S>, outcome)
-        }
+          // SAFETY: The public callback is checked against the requested Service before storage erases the instance type.
+          return lifecycle.release(instance as InstanceType<S>, outcome)
+        },
+        quiesce: lifecycle.quiesce
+          ? (instance, reason) => {
+              // SAFETY: The public callback is checked against the requested Service before storage erases the instance type.
+              return lifecycle.quiesce!(instance as InstanceType<S>, reason)
+            }
+          : undefined
       }
     ]) as LayerResult<ProviderEntry<InstanceType<S>, LayerGeneratorRequirements<S, Yield>>>
   }
@@ -373,12 +420,30 @@ export class Layer<
   /** Define a lifecycle-only entry with direct acquisition and root cleanup. */
   static scopedDiscard<Yield extends ServiceRequirement<unknown>, Acquired>(
     acquire: LayerDiscardGenerator<Yield, Acquired>,
-    release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+    release:
+      | ((instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>)
+      | {
+          // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+          readonly quiesce?: (
+            instance: Acquired,
+            reason: import('../runtime/outcome').RuntimeShutdownReason
+          ) => MaybePromise<void>
+          readonly release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+        }
   ): LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>>
 
   static scopedDiscard<Acquired>(
     acquire: () => MaybePromise<Acquired>,
-    release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+    release:
+      | ((instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>)
+      | {
+          // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+          readonly quiesce?: (
+            instance: Acquired,
+            reason: import('../runtime/outcome').RuntimeShutdownReason
+          ) => MaybePromise<void>
+          readonly release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+        }
   ): LayerResult<ProviderEntry<never, never>>
 
   static scopedDiscard(
@@ -386,31 +451,71 @@ export class Layer<
       | (() => MaybePromise<unknown>)
       | LayerDiscardGenerator<ServiceRequirement<unknown>, unknown>,
     // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Lifecycle resources are intentionally opaque to the Layer runtime.
-    release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+    release:
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+      | ((instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>)
+      | {
+          // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+          readonly quiesce?: (
+            // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+            instance: unknown,
+            reason: import('../runtime/outcome').RuntimeShutdownReason
+          ) => MaybePromise<void>
+          // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+          readonly release: (instance: unknown, outcome: ScopeOutcome) => MaybePromise<void>
+        }
   ): LayerResult<ProviderEntry<never, AnyService>> {
-    return Layer.makeLifecycleLayer(() => {
-      const acquired = acquire()
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload normalization distinguishes callback and lifecycle-object forms.
+    const lifecycle = typeof release === 'function' ? { release } : release
 
-      if (isIteratorLike(acquired)) {
-        return runLayerDiscardIterator(acquired)
-      }
+    // SAFETY: The overloads validate Acquired callbacks before the lifecycle-only Layer erases the resource type.
+    return Layer.makeLifecycleLayer(
+      () => {
+        const acquired = acquire()
 
-      return acquired
-    }, release)
+        if (isIteratorLike(acquired)) {
+          return runLayerDiscardIterator(acquired)
+        }
+
+        return acquired
+      },
+      lifecycle.release,
+      lifecycle.quiesce
+    )
   }
 
   /** Define a lifecycle-only entry whose acquisition can yield contextual Services. */
   static scopedDiscardGen<Yield extends ServiceRequirement<unknown>, Acquired>(
     acquire: LayerDiscardGenerator<Yield, Acquired>,
-    release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+    release:
+      | ((instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>)
+      | {
+          // oxlint-disable-next-line anti-slop/no-unknown-parameters -- lifecycle resources are erased only at the implementation boundary.
+          readonly quiesce?: (
+            instance: Acquired,
+            reason: import('../runtime/outcome').RuntimeShutdownReason
+          ) => MaybePromise<void>
+          readonly release: (instance: Acquired, outcome: ScopeOutcome) => MaybePromise<void>
+        }
   ): LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>> {
     // SAFETY: Lifecycle generator requirements are carried only in declaration metadata; runtime storage is intentionally erased.
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload normalization distinguishes callback and lifecycle-object forms.
+    const lifecycle = typeof release === 'function' ? { release } : release
+
+    // SAFETY: The overloads validate Acquired callbacks before the lifecycle-only Layer erases the resource type.
     return Layer.makeLifecycleLayer(
       () => runLayerDiscardGenerator(acquire),
       (instance, outcome) => {
         // SAFETY: The overload constrains this resource to Acquired before the erased Layer boundary.
-        return release(instance as Acquired, outcome)
-      }
+        // SAFETY: The public callback is checked against Acquired before storage erases the instance type.
+        return lifecycle.release(instance as Acquired, outcome)
+      },
+      lifecycle.quiesce
+        ? (instance, reason) => {
+            // SAFETY: The public callback is checked against Acquired before storage erases the instance type.
+            return lifecycle.quiesce!(instance as Acquired, reason)
+          }
+        : undefined
     ) as LayerResult<ProviderEntry<never, LayerDiscardRequirements<Yield>>>
   }
 

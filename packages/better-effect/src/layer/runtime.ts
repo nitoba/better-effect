@@ -26,7 +26,8 @@ import {
   type RuntimeDisposeOptions,
   type RuntimeOptions,
   type RuntimeRunOptions,
-  type RuntimeShutdownDiagnostic
+  type RuntimeShutdownDiagnostic,
+  type RuntimeShutdownReason
 } from '../runtime/outcome'
 
 import { linkAbortSignals, type AbortSignalLink } from '../runtime/signal'
@@ -61,7 +62,12 @@ import type {
   RuntimeServiceAcquireEvent
 } from '../runtime/observer'
 
-import type { RuntimeInspection } from '../runtime/types'
+import type {
+  RuntimeInspection,
+  RuntimeShutdownPhase,
+  RuntimeShutdownPhaseEvent,
+  RuntimeState
+} from '../runtime/types'
 
 import type { LayerBackend } from './backend'
 
@@ -85,6 +91,11 @@ import type {
 } from '../scope'
 
 type LayerProvider = LayerInput['providers'][number]
+
+type QuiesceRegistration = {
+  readonly run: (reason: RuntimeShutdownReason) => PromiseLike<void> | void
+  started: boolean
+}
 
 interface RuntimeHandleCore<Provided extends AnyService> {
   /** The backend used to resolve this Layer's providers. */
@@ -139,10 +150,22 @@ const isScopeOutcome = (
 ): input is ScopeOutcome => input !== undefined && 'status' in input
 
 const validateDisposeOptions = (options: RuntimeDisposeOptions): void => {
-  const { gracePeriod } = options
+  const { gracePeriod, abortAfterGracePeriod, reason } = options
 
   if (gracePeriod !== undefined && (!Number.isFinite(gracePeriod) || gracePeriod < 0)) {
     throw new RangeError('Runtime dispose gracePeriod must be a finite non-negative number')
+  }
+
+  if (
+    abortAfterGracePeriod !== undefined &&
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- validate untyped options at the Runtime boundary.
+    typeof abortAfterGracePeriod !== 'boolean'
+  ) {
+    throw new TypeError('Runtime dispose abortAfterGracePeriod must be a boolean')
+  }
+
+  if (reason !== undefined && !reason.kind) {
+    throw new TypeError('Runtime dispose reason must include a kind')
   }
 }
 
@@ -307,7 +330,8 @@ const bindProviderToScope = (
   resolver: ServiceResolver,
   observers: readonly RuntimeObserver[],
   executor: RuntimeExecutor<AnyService>,
-  ownerExecutionId?: string
+  ownerExecutionId?: string,
+  registerQuiesce?: (run: QuiesceRegistration['run']) => void
 ): LayerRegistration => ({
   service: provider.service,
   serviceTag: provider.serviceTag,
@@ -357,6 +381,10 @@ const bindProviderToScope = (
                       )
                   )
                 : await provider.acquire()
+
+            if (provider.quiesce !== undefined && registerQuiesce !== undefined) {
+              registerQuiesce((reason) => provider.quiesce!(instance, reason))
+            }
 
             const event: RuntimeServiceAcquireEvent = {
               service: provider.service,
@@ -438,7 +466,15 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
 
   private readonly taskSupervisor: RuntimeTaskSupervisor
 
-  private state: 'active' | 'disposing' | 'disposed' = 'active'
+  private state: RuntimeState = 'active'
+
+  private readonly quiesceRegistrations: QuiesceRegistration[]
+
+  private quiesceReason: RuntimeShutdownReason | undefined
+
+  private quiesceStarted = false
+
+  private readonly lateQuiesce = new Set<Promise<void>>()
 
   private warmupState: RuntimeInspection['warmup'] = 'idle'
 
@@ -454,9 +490,11 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     serviceTags: readonly string[],
     private readonly executionDependencies: RuntimeExecutionDependencies,
     private readonly executor: RuntimeExecutor<AnyService>,
-    private readonly lifecycleEntries: readonly LayerLifecycleEntry[]
+    private readonly lifecycleEntries: readonly LayerLifecycleEntry[],
+    quiesceRegistrations: QuiesceRegistration[]
   ) {
     this.serviceTags = Object.freeze([...serviceTags])
+    this.quiesceRegistrations = quiesceRegistrations
     this.taskSupervisor = new RuntimeTaskSupervisor(
       () => this.executionDependencies.createExecutionId(),
       () => this.executionDependencies.now(),
@@ -464,6 +502,76 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       this.onCleanupFailure
     )
     this.taskSupervisor.bindScope(this.rootScope)
+  }
+
+  private notifyShutdownPhase(
+    phase: RuntimeShutdownPhase,
+    reason: RuntimeShutdownReason,
+    startedAt?: number
+  ): void {
+    const event: RuntimeShutdownPhaseEvent = { phase, reason }
+
+    if (startedAt !== undefined) {
+      try {
+        Object.assign(event, {
+          durationMs: Math.max(0, this.executionDependencies.now() - startedAt)
+        })
+      } catch {
+        // Shutdown observability is best effort and must not change cleanup behavior.
+      }
+    }
+
+    notifyRuntimeObservers(this.observers, (observer) => observer.onShutdownPhase, event)
+  }
+
+  private registerQuiesce(run: QuiesceRegistration['run']): void {
+    const registration: QuiesceRegistration = { run, started: false }
+    this.quiesceRegistrations.push(registration)
+
+    if (!this.quiesceStarted || this.quiesceReason === undefined) {
+      return
+    }
+
+    registration.started = true
+    const promise = Promise.resolve().then(() => run(this.quiesceReason!))
+    this.lateQuiesce.add(promise)
+    void promise.then(
+      () => this.lateQuiesce.delete(promise),
+      () => this.lateQuiesce.delete(promise)
+    )
+  }
+
+  private async quiesce(reason: RuntimeShutdownReason): Promise<readonly unknown[]> {
+    this.quiesceStarted = true
+    this.quiesceReason = reason
+    const failures: unknown[] = []
+
+    while (true) {
+      let registration: QuiesceRegistration | undefined
+
+      for (let index = this.quiesceRegistrations.length - 1; index >= 0; index -= 1) {
+        const candidate = this.quiesceRegistrations[index]
+
+        if (candidate !== undefined && !candidate.started) {
+          registration = candidate
+          break
+        }
+      }
+
+      if (registration === undefined) {
+        break
+      }
+
+      registration.started = true
+
+      try {
+        await registration.run(reason)
+      } catch (cause) {
+        failures.push(cause)
+      }
+    }
+
+    return failures
   }
 
   inspect(): RuntimeInspection {
@@ -703,11 +811,14 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
             )
 
             try {
-              await this.rootScope.acquire(
+              const resource = await this.rootScope.acquire(
                 () => entry.acquire(),
                 (resource, outcome) =>
                   releaseLifecycleResource(entry, resource, outcome, this.observers)
               )
+              if (entry.quiesce !== undefined) {
+                this.registerQuiesce((reason) => entry.quiesce!(resource, reason))
+              }
               const endEvent: RuntimeLifecycleEndEvent = Object.freeze({
                 ...metadata,
                 outcome: SCOPE_SUCCESS
@@ -895,24 +1006,52 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     const options = isScopeOutcome(input) || input === undefined ? {} : input
 
     validateDisposeOptions(options)
-    this.state = 'disposing'
-
-    const executions = [...this.executions]
-
-    this.disposePromise = this.performDispose(executions, outcome, options)
+    this.state = 'quiescing'
+    const reason = options.reason ?? { kind: 'dispose' }
+    this.notifyShutdownPhase('shutdown-requested', reason)
+    this.disposePromise = this.performDispose(outcome, options, reason)
 
     return this.disposePromise
   }
 
   private async performDispose(
-    executions: readonly ActiveExecution[],
     outcome: ScopeOutcome,
-    options: RuntimeDisposeOptions
+    options: RuntimeDisposeOptions,
+    reason: RuntimeShutdownReason
   ): Promise<void> {
     const failures: unknown[] = []
+    let quiesceStartedAt: number | undefined
+
+    try {
+      quiesceStartedAt = this.executionDependencies.now()
+    } catch {
+      quiesceStartedAt = undefined
+    }
+
+    this.notifyShutdownPhase('quiesce-start', reason)
+    failures.push(...(await this.quiesce(reason)))
+    this.notifyShutdownPhase('quiesce-end', reason, quiesceStartedAt)
+
+    this.state = 'draining'
+    this.notifyShutdownPhase('drain-start', reason)
 
     await Promise.allSettled(this.warmupPromise ? [this.warmupPromise] : [])
-    await this.waitForExecutions(executions, options)
+    await this.waitForExecutions(options, reason)
+    this.notifyShutdownPhase('drain-end', reason)
+
+    failures.push(...(await this.quiesce(reason)))
+
+    if (this.lateQuiesce.size > 0) {
+      const lateFailures = await Promise.allSettled(this.lateQuiesce)
+      for (const result of lateFailures) {
+        if (result.status === 'rejected') {
+          failures.push(result.reason)
+        }
+      }
+    }
+
+    this.state = 'releasing'
+    this.notifyShutdownPhase('release-start', reason)
 
     try {
       const signalLink = linkAbortSignals(this.signal, this.shutdownController.signal)
@@ -938,6 +1077,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       failures.push(cause)
     }
 
+    this.notifyShutdownPhase('release-end', reason)
+
     try {
       await this.backend.disposeAll()
     } catch (cause) {
@@ -954,14 +1095,19 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
         error
       })
 
+      this.notifyShutdownPhase('shutdown-failure', reason)
+
       throw error
     }
+
+    this.notifyShutdownPhase('shutdown-complete', reason)
   }
 
   private async waitForExecutions(
-    executions: readonly ActiveExecution[],
-    options: RuntimeDisposeOptions
+    options: RuntimeDisposeOptions,
+    reason: RuntimeShutdownReason
   ): Promise<void> {
+    const executions = [...this.executions]
     const settled = Promise.allSettled(executions.map((execution) => execution.promise))
 
     if (options.abortAfterGracePeriod !== true || executions.length === 0) {
@@ -984,7 +1130,17 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     }
 
     if (timedOut && !this.shutdownController.signal.aborted) {
-      this.shutdownController.abort(new Error('Runtime shutdown grace period exceeded'))
+      this.state = 'aborting'
+      const abortCause =
+        reason.kind === 'signal'
+          ? reason.signal
+          : (reason.cause ?? new Error('Runtime shutdown grace period exceeded'))
+      this.notifyShutdownPhase('abort-active', {
+        ...reason,
+        kind: reason.kind,
+        cause: abortCause
+      })
+      this.shutdownController.abort(abortCause)
     }
 
     await settled
@@ -1015,6 +1171,7 @@ export const createRuntimeHandle = async <L extends LayerInput>(
   const observers = options.observers ?? []
   const resolver = createResolutionResolver(backend, contextStorage, observers)
   const executionDependencies = makeRuntimeExecutionDependencies(executionOverrides)
+  const quiesceRegistrations: QuiesceRegistration[] = []
   ScopeRuntime.bind(rootScope, contextStorage)
   let handle!: RuntimeHandleImpl<ProvidedEnvironment<L>>
   const executor =
@@ -1037,7 +1194,9 @@ export const createRuntimeHandle = async <L extends LayerInput>(
           contextStorage,
           resolver,
           observers,
-          contextExecutor
+          contextExecutor,
+          undefined,
+          (run) => quiesceRegistrations.push({ run, started: false })
         )
       )
     }
@@ -1103,7 +1262,8 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     serviceTags,
     executionDependencies,
     contextExecutor,
-    lifecycleEntries
+    lifecycleEntries,
+    quiesceRegistrations
   )
 
   return handle

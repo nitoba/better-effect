@@ -11,6 +11,7 @@ export type { RuntimeContext, RuntimeContextStorage } from './runtime/node-conte
 export type {
   NodeRuntimeDefectHandler,
   NodeRuntimeFailureHandler,
+  NodeRuntimeLaunchOptions,
   NodeRuntimeOptions,
   NodeRuntimeSignal,
   NodeRuntimeSuccessHandler

@@ -445,7 +445,7 @@ resolves Services, warms the Runtime, creates Scopes, invokes observers or
 exposes providers, instances, signals, attributes or backend state. Execution
 entries remain present until their execution Scope cleanup settles. Warmup is
 reported as `idle`, `running`, `completed` or `failed`, and `state` reports
-`active`, `disposing` or `disposed`.
+`active`, `quiescing`, `draining`, `aborting`, `releasing` or `disposed`.
 
 `inspect()` is diagnostic information, not a lock, synchronization primitive or
 readiness guarantee. It cannot cancel or force shutdown of any execution; use
@@ -607,8 +607,8 @@ const cancellableProgram = Effect.fn(async function* () {
 
 For a Node.js or Bun CLI, use the host-specific `better-effect/node` entrypoint.
 `NodeRuntime.runMain` validates its signal and callback options before installing
-`SIGINT`/`SIGTERM` listeners, links the first signal to `CurrentAbortSignal`,
-and disposes the Runtime exactly once:
+`SIGINT`/`SIGTERM` listeners and disposes the Runtime exactly once. Configure the
+shutdown grace period explicitly when the main Program should be allowed to finish:
 
 ```ts
 import { NodeRuntime } from 'better-effect/node'
@@ -623,19 +623,30 @@ await NodeRuntime.runMain(AppLive, main, {
     console.error(error)
     return 1
   },
-  onSuccess: () => 0
+  onSuccess: () => 0,
+  shutdown: {
+    gracePeriod: 10_000,
+    abortAfterGracePeriod: true
+  }
 })
 ```
 
 `Result.err` uses `onFailure` (or exit code `1` by default), while thrown defects
 remain rejected and may be reported with `onDefect`. Cleanup-only failures use
 `onCleanupFailure`, remain observable, and still set a non-zero
-`process.exitCode` after successful work. The first `SIGINT` or `SIGTERM`
-immediately aborts `CurrentAbortSignal`; Runtime disposal then waits
-cooperatively for the main execution. Listeners are removed in `finally`,
+`process.exitCode` after successful work. Shutdown first quiesces Layer resources,
+rejects new executions, drains admitted work, optionally aborts after the grace
+period, and then releases the root Scope. Listeners are removed in `finally`,
 repeated signals are ignored, and the helper never calls `process.exit()`.
-The Node boundary intentionally does not expose a second grace-period policy;
-use `Runtime.dispose` directly when a managed Runtime needs one.
+
+For applications whose behavior is entirely represented by the Layer graph, use
+`NodeRuntime.launch` instead of creating a waiting Program:
+
+```ts
+await NodeRuntime.launch(AppLive, {
+  shutdown: { gracePeriod: 10_000, abortAfterGracePeriod: true }
+})
+```
 
 For request-local context or overrides, add a Layer only to that execution:
 
@@ -1097,10 +1108,10 @@ Use `Layer.scopedDiscard` for application components that need startup and
 shutdown ownership but are not themselves a Service:
 
 ```ts
-const PollerLive = Layer.scopedDiscard(
-  () => startPoller(),
-  (poller, outcome) => poller.stop(outcome)
-)
+const PollerLive = Layer.scopedDiscard(() => startPoller(), {
+  quiesce: (poller) => poller.stopAccepting(),
+  release: (poller, outcome) => poller.close(outcome)
+})
 
 const AppLive = Layer.complete(Layer.merge(ConfigLive, PollerLive))
 ```
@@ -1108,7 +1119,8 @@ const AppLive = Layer.complete(Layer.merge(ConfigLive, PollerLive))
 The acquisition runs once when `Runtime.make` activates the Layer, after
 provider registration and optional warmup. The release belongs to the Runtime
 root Scope, runs in reverse activation order, and receives the final
-`ScopeOutcome`. A contextual acquisition can use `yield*` with
+`ScopeOutcome`. `quiesce` runs before active executions drain, receives a safe
+`RuntimeShutdownReason`, and is distinct from final release. A contextual acquisition can use `yield*` with
 `Layer.scopedDiscard` (or the explicit `Layer.scopedDiscardGen`) and retains
 those Service requirements even though the Layer provides `never`:
 

@@ -279,7 +279,7 @@ void NodeRuntime.runMain(Layer.empty, mixedNodeMain, {
   onSuccess: (value: string) => value.length
 })
 
-// @ts-expect-error NodeRuntime has no separate grace-period cancellation policy.
+// @ts-expect-error Shutdown policy belongs under the explicit shutdown option.
 const removedNodeGraceOptions: NodeRuntimeOptions = { gracePeriod: 5_000 }
 void removedNodeGraceOptions
 
@@ -311,6 +311,11 @@ const MailerLive = Layer.gen(Mailer, async function* () {
 })
 const AppLive = Layer.merge(DatabaseLive, RepositoryLive)
 const MixedLive = Layer.merge(RepositoryLive, MailerLive)
+
+const launched = NodeRuntime.launch(AppLive, {
+  shutdown: { gracePeriod: 10_000, abortAfterGracePeriod: true }
+})
+void launched
 
 declare const taggedEffect: Effect<number, PackageNotFound | PackageDenied>
 const asyncTapped = Effect.tapBothAsync(taggedEffect, {

@@ -18,6 +18,9 @@ export type {
   RuntimeExecutionInspection,
   RuntimeFor,
   RuntimeInspection,
+  RuntimeShutdownPhase,
+  RuntimeShutdownPhaseEvent,
+  RuntimeState,
   RuntimeTaskInspection
 } from './types'
 
@@ -26,7 +29,8 @@ export type {
   RuntimeDisposeOptions,
   RuntimeOptions,
   RuntimeRunOptions,
-  RuntimeShutdownDiagnostic
+  RuntimeShutdownDiagnostic,
+  RuntimeShutdownReason
 } from './outcome'
 
 export type {

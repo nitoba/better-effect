@@ -149,7 +149,7 @@ connection lease, so this example does not register a fake execution resource wi
 no-op release.
 
 Each request handled by the server receives its own child execution scope. During
-shutdown, `NodeRuntime.runMain()` stops accepting new executions, waits for the
+shutdown, `NodeRuntime.runMain()` quiesces ingress resources, stops accepting new executions, waits for the
 main Program and active requests to finish, and then closes the root scope that
 owns the database layer. Real request-local resources can use
 `Effect.acquireRelease()` and are closed with that request's execution scope. For

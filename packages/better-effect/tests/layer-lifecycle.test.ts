@@ -11,7 +11,59 @@ class LifecycleConfig extends Service<LifecycleConfig>()('LifecycleConfig') {
   }
 }
 
+type Deferred = {
+  readonly promise: Promise<void>
+  readonly resolve: () => void
+}
+
+const deferred = (): Deferred => {
+  let resolve!: () => void
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+
+  return { promise, resolve }
+}
+
 describe('Layer lifecycle-only entries', () => {
+  test('quiesces lifecycle resources before draining executions', async () => {
+    const events: string[] = []
+    const started = deferred()
+    const finish = deferred()
+    const lifecycle = Layer.scopedDiscard(() => ({ stopAccepting: () => events.push('quiesce') }), {
+      quiesce: (resource, reason) => {
+        expect(reason.kind).toBe('dispose')
+        resource.stopAccepting()
+      },
+      release: () => {
+        events.push('release')
+      }
+    })
+
+    const runtime = await Runtime.make(lifecycle)
+    const execution = runtime.run(
+      // oxlint-disable-next-line require-yield -- Effect.fn preserves the generator-shaped Program contract.
+      Effect.fn(async function* () {
+        started.resolve()
+        await finish.promise
+        return Result.ok('done')
+      })
+    )
+
+    await started.promise
+    const disposal = runtime.dispose()
+
+    expect(runtime.inspect().state).toBe('quiescing')
+    expect(events).toEqual(['quiesce'])
+    expect(() => runtime.run(() => Result.ok('rejected'))).toThrow()
+
+    finish.resolve()
+    await execution
+    await disposal
+
+    expect(events).toEqual(['quiesce', 'release'])
+  })
+
   test('acquires at Runtime.make and releases with the Runtime root outcome', async () => {
     const acquired: string[] = []
     const released: ScopeOutcome[] = []
@@ -85,6 +137,39 @@ describe('Layer lifecycle-only entries', () => {
     await runtime.dispose()
 
     expect(releases).toEqual(['second', 'first'])
+  })
+
+  test('continues quiescing and releasing after a quiesce failure', async () => {
+    const quiesceFailure = new Error('quiesce failed')
+    const events: string[] = []
+    const first = Layer.scopedDiscard(() => 'first', {
+      quiesce: () => {
+        events.push('quiesce:first')
+        throw quiesceFailure
+      },
+      release: () => {
+        events.push('release:first')
+      }
+    })
+    const second = Layer.scopedDiscard(() => 'second', {
+      quiesce: () => {
+        events.push('quiesce:second')
+      },
+      release: () => {
+        events.push('release:second')
+      }
+    })
+
+    const runtime = await Runtime.make(Layer.merge(first, second))
+    const failure = await runtime.dispose().then(
+      () => undefined,
+      (cause) => cause
+    )
+
+    expect(failure).toBeInstanceOf(Error)
+    // SAFETY: Runtime disposal failures expose their aggregated causes through LayerDisposeError.
+    expect((failure as { readonly causes: readonly unknown[] }).causes).toContain(quiesceFailure)
+    expect(events).toEqual(['quiesce:second', 'quiesce:first', 'release:second', 'release:first'])
   })
 
   test('rolls back earlier entries when activation fails', async () => {

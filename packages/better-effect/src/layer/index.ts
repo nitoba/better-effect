@@ -35,5 +35,7 @@ export type {
   LayerDiscardRequirements,
   LayerGenerator,
   LayerGeneratorRequirements,
+  LayerProviderQuiesce,
+  LayerQuiesce,
   LayerRegistration
 } from './types'

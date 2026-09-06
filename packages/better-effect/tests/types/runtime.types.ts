@@ -24,11 +24,13 @@ import {
   type RuntimeObserver,
   type RuntimeOptions,
   type RuntimeRunOptions,
+  type RuntimeShutdownPhaseEvent,
+  type RuntimeShutdownReason,
   type RuntimeTaskEndEvent,
   type RuntimeTaskInspection
 } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
-import { NodeRuntime, type NodeRuntimeOptions } from '../../src/node'
+import { NodeRuntime, type NodeRuntimeLaunchOptions, type NodeRuntimeOptions } from '../../src/node'
 import { Service, type AnyServiceToken, type ServiceResolver } from '../../src/service'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import type { CompleteExecution, ExecutionMissing } from '../../src/layer/inference'
@@ -119,6 +121,11 @@ const runtimeObserver: RuntimeObserver = {
   },
   onResourceRelease: (event) => {
     expectTypeOf(event.service).toEqualTypeOf<AnyServiceToken>()
+  },
+  onShutdownPhase: (event) => {
+    expectTypeOf(event).toEqualTypeOf<RuntimeShutdownPhaseEvent>()
+    expectTypeOf(event.reason).toEqualTypeOf<RuntimeShutdownReason>()
+    expectTypeOf(event.phase).toEqualTypeOf<RuntimeShutdownPhaseEvent['phase']>()
   }
 }
 
@@ -251,6 +258,17 @@ const disposeOptions: RuntimeDisposeOptions = {
   gracePeriod: 5_000,
   abortAfterGracePeriod: true
 }
+
+const launchOptions: NodeRuntimeLaunchOptions = {
+  warmup: true,
+  shutdown: {
+    gracePeriod: 10_000,
+    abortAfterGracePeriod: true
+  }
+}
+
+const launchResult = NodeRuntime.launch(AppLive, launchOptions)
+expectTypeOf(launchResult).toEqualTypeOf<Promise<void>>()
 
 void typedRuntime.run(readsAbortSignal, runOptions)
 void typedRuntime.dispose(disposeOptions)

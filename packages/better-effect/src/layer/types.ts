@@ -1,6 +1,7 @@
 import type { InferYieldRequirements, ServiceRequirement } from '../effect/types'
 import type { ServiceContract, ServiceRequirements, ServiceToken } from '../service'
 import type { MaybePromise } from '../utils/types'
+import type { RuntimeShutdownReason } from '../runtime/outcome'
 
 /** Runtime-facing provider registration supplied by a Layer backend. */
 export interface LayerRegistration {
@@ -33,6 +34,15 @@ export type LayerGeneratorRequirements<
   S extends ServiceToken<any, any>,
   Yield extends ServiceRequirement<unknown>
 > = ServiceRequirements<InstanceType<S>> | InferYieldRequirements<Yield>
+
+/** Quiesce callback for a lifecycle-only resource. */
+export type LayerQuiesce = (reason: RuntimeShutdownReason) => MaybePromise<void>
+
+/** Quiesce callback for a Service provider with access to its instance. */
+export type LayerProviderQuiesce<Instance> = (
+  instance: Instance,
+  reason: RuntimeShutdownReason
+) => MaybePromise<void>
 
 /** Generator shape used by lifecycle-only Layer entries. */
 export type LayerDiscardGenerator<Yield extends ServiceRequirement<unknown>, Acquired> = () =>

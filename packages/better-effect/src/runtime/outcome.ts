@@ -10,12 +10,19 @@ import type { RuntimeContextStorage } from './context'
 
 import type { RuntimeExecutionAttributes, RuntimeObserver } from './observer'
 
-/** Aggregated cleanup information reported during Runtime shutdown. */
+/** Aggregated quiesce, root-Scope and backend failures reported during shutdown. */
 export type RuntimeShutdownDiagnostic = {
   /** Final outcome supplied to the Runtime root Scope. */
   readonly outcome: ScopeOutcome
-  /** Aggregated root-Scope and backend cleanup failure. */
+  /** Aggregated shutdown failure, including quiesce and release failures. */
   readonly error: LayerDisposeError
+}
+
+/** Safe metadata describing why a Runtime shutdown was requested. */
+export type RuntimeShutdownReason = {
+  readonly kind: 'dispose' | 'signal' | 'external-abort' | 'main-settled'
+  readonly signal?: 'SIGINT' | 'SIGTERM'
+  readonly cause?: unknown
 }
 
 /** Observer notified about cleanup failures without changing primary results. */
@@ -52,6 +59,8 @@ export type RuntimeDisposeOptions = {
   readonly gracePeriod?: number
   /** Abort active execution signals after the grace period expires. */
   readonly abortAfterGracePeriod?: boolean
+  /** Internal shutdown metadata propagated by process lifecycle boundaries. */
+  readonly reason?: RuntimeShutdownReason
 }
 
 /** Classify only a nominal better-result Err as a failed Runtime outcome. */

@@ -3,6 +3,15 @@ import type { LayerInput } from '../layer/inference'
 
 import type { Runtime } from './runtime'
 import type { RuntimeTaskMetadata } from './observer'
+import type { RuntimeShutdownReason } from './outcome'
+
+export type RuntimeState =
+  | 'active'
+  | 'quiescing'
+  | 'draining'
+  | 'aborting'
+  | 'releasing'
+  | 'disposed'
 
 /** A detached diagnostic view of one active Runtime execution. */
 export type RuntimeExecutionInspection = {
@@ -24,7 +33,7 @@ export type RuntimeTaskInspection = RuntimeTaskMetadata & {
  * primitive or readiness guarantee.
  */
 export type RuntimeInspection = {
-  readonly state: 'active' | 'disposing' | 'disposed'
+  readonly state: RuntimeState
   readonly warmup: 'idle' | 'running' | 'completed' | 'failed'
   readonly activeExecutions: number
   readonly executions: readonly RuntimeExecutionInspection[]
@@ -32,6 +41,26 @@ export type RuntimeInspection = {
   readonly tasks: readonly RuntimeTaskInspection[]
   readonly services: readonly string[]
   readonly shutdownSignalAborted: boolean
+}
+
+/** Public shutdown phase names emitted by Runtime observers. */
+export type RuntimeShutdownPhase =
+  | 'shutdown-requested'
+  | 'quiesce-start'
+  | 'quiesce-end'
+  | 'drain-start'
+  | 'drain-end'
+  | 'abort-active'
+  | 'release-start'
+  | 'release-end'
+  | 'shutdown-complete'
+  | 'shutdown-failure'
+
+/** Detached lifecycle event that contains no Service or resource instances. */
+export type RuntimeShutdownPhaseEvent = {
+  readonly phase: RuntimeShutdownPhase
+  readonly reason: RuntimeShutdownReason
+  readonly durationMs?: number
 }
 
 /**

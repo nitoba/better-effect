@@ -328,7 +328,7 @@ describe('Runtime.inspect', () => {
     }
   })
 
-  test('transitions to disposing before waiting and exposes shutdown aborts', async () => {
+  test('transitions through quiescing before waiting and exposes shutdown aborts', async () => {
     let runtime!: Runtime<never>
     let abortedInspection: RuntimeInspection | undefined
     runtime = await Runtime.make(Layer.empty)
@@ -357,10 +357,10 @@ describe('Runtime.inspect', () => {
       abortAfterGracePeriod: true
     })
 
-    expect(runtime.inspect().state).toBe('disposing')
+    expect(runtime.inspect().state).toBe('quiescing')
     await Promise.all([execution, disposal])
     expect(abortedInspection).toMatchObject({
-      state: 'disposing',
+      state: 'aborting',
       activeExecutions: 1,
       shutdownSignalAborted: true
     })
@@ -394,5 +394,37 @@ describe('Runtime.inspect', () => {
       state: 'disposed',
       activeExecutions: 0
     })
+  })
+
+  test('observes shutdown phases without exposing runtime resources', async () => {
+    const phases: string[] = []
+    const runtime = await Runtime.make(
+      Layer.scopedDiscard(
+        () => ({}),
+        () => {}
+      ),
+      {
+        observers: [
+          {
+            onShutdownPhase: ({ phase, reason }) => {
+              phases.push(`${phase}:${reason.kind}`)
+            }
+          }
+        ]
+      }
+    )
+
+    await runtime.dispose()
+
+    expect(phases).toEqual([
+      'shutdown-requested:dispose',
+      'quiesce-start:dispose',
+      'quiesce-end:dispose',
+      'drain-start:dispose',
+      'drain-end:dispose',
+      'release-start:dispose',
+      'release-end:dispose',
+      'shutdown-complete:dispose'
+    ])
   })
 })

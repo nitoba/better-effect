@@ -7,6 +7,7 @@ import { Layer } from '../../src/layer'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import { Runtime } from '../../src/runtime'
 import type { ScopeOutcome } from '../../src/scope'
+import type { RuntimeShutdownReason } from '../../src/runtime'
 import { Service } from '../../src/service'
 
 class Config extends Service<Config>()('LifecycleConfig') {
@@ -27,6 +28,40 @@ const direct = Layer.scopedDiscard(
     expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
   }
 )
+
+const lifecycleObject = Layer.scopedDiscard(() => ({ stop: () => {} }), {
+  quiesce: (resource, reason) => {
+    expectTypeOf(resource).toEqualTypeOf<{ stop: () => void }>()
+    expectTypeOf(reason).toEqualTypeOf<RuntimeShutdownReason>()
+  },
+  release: (resource, outcome) => {
+    expectTypeOf(resource).toEqualTypeOf<{ stop: () => void }>()
+    expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+  }
+})
+
+expectTypeOf<Layer.Provided<typeof lifecycleObject>>().toBeNever()
+expectTypeOf<Layer.Required<typeof lifecycleObject>>().toBeNever()
+
+const serviceLifecycleObject = Layer.scopedGen(
+  Config,
+  // oxlint-disable-next-line require-yield -- the generator shape is part of the Layer.scopedGen contract.
+  async function* () {
+    return new Config(500)
+  },
+  {
+    quiesce: (instance, reason) => {
+      expectTypeOf(instance).toEqualTypeOf<Config>()
+      expectTypeOf(reason).toEqualTypeOf<RuntimeShutdownReason>()
+    },
+    release: (instance, outcome) => {
+      expectTypeOf(instance).toEqualTypeOf<Config>()
+      expectTypeOf(outcome).toEqualTypeOf<ScopeOutcome>()
+    }
+  }
+)
+
+expectTypeOf<Layer.Provided<typeof serviceLifecycleObject>>().toEqualTypeOf<Config>()
 
 expectTypeOf<Layer.Provided<typeof direct>>().toBeNever()
 expectTypeOf<Layer.Required<typeof direct>>().toBeNever()
