@@ -24,9 +24,32 @@ export {
   OutboxLeaseLostError,
   OutboxNotFoundError,
   OutboxProtocolMismatchError,
+  OutboxRouteMissingError,
   OutboxStoreFailure
 } from './errors'
 export type { OutboxLeaseLossReason, OutboxStoreError } from './errors'
+
+export { OutboxRoutes } from './routing'
+export type { OutboxRouteEntry, OutboxRouteMap, OutboxRouteStores } from './routing'
+
+export { OutboxPublisher } from './OutboxPublisher'
+export type {
+  AnyOutboxStoreTokenLike,
+  OutboxPublisherClock,
+  OutboxPublisherErrorHandler,
+  OutboxPublisherEvent,
+  OutboxPublisherGeneratorFactory,
+  OutboxPublisherHandle,
+  OutboxPublisherLayerRequirements,
+  OutboxPublisherObserver,
+  OutboxPublisherOptions,
+  OutboxPublisherRequirements,
+  OutboxPublisherReliabilityOptions,
+  OutboxPublisherServiceInstance,
+  OutboxPublisherServiceTag,
+  OutboxPublisherServiceToken,
+  OutboxStoreTokenLike
+} from './OutboxPublisher'
 
 export {
   OutboxId,
