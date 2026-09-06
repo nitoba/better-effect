@@ -42,9 +42,14 @@ try {
   await mkdir(archiveRoot, { recursive: true })
 
   const coreArchive = await pack('core', join(repositoryRoot, 'packages/better-effect'))
+  const mqOutboxArchive = await pack(
+    'mq-outbox',
+    join(repositoryRoot, 'packages/better-effect-mq-outbox')
+  )
   const postgresArchive = await pack('postgres', packageRoot)
   await Bun.write(join(nodeModules, '.keep'), '')
   await installArchive(coreArchive, 'better-effect')
+  await installArchive(mqOutboxArchive, 'better-effect-mq-outbox')
   await installArchive(postgresArchive, 'better-effect-mq-postgres')
 
   run(

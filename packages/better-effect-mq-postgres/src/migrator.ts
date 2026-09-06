@@ -170,6 +170,26 @@ const requiredColumns = {
     'created_at_ms',
     'updated_at_ms'
   ],
+  [POSTGRES_TABLES.outbox]: [
+    'namespace',
+    'id',
+    'target',
+    'protocol_version',
+    'state',
+    'request',
+    'request_digest',
+    'attempts_max',
+    'attempts_made',
+    'run_at_ms',
+    'sequence',
+    'created_at_ms',
+    'updated_at_ms',
+    'published_at_ms',
+    'lease_owner',
+    'lease_token',
+    'lease_expires_at_ms',
+    'failure'
+  ],
   [POSTGRES_TABLES.schemaVersions]: ['component', 'version', 'applied_at_ms', 'checksum']
 } as const satisfies Record<string, readonly string[]>
 
@@ -252,6 +272,24 @@ const expectedColumnTypes = {
   [`${POSTGRES_TABLES.schedules}.last_job_id`]: 'text',
   [`${POSTGRES_TABLES.schedules}.created_at_ms`]: 'bigint',
   [`${POSTGRES_TABLES.schedules}.updated_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.id`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.target`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.protocol_version`]: 'integer',
+  [`${POSTGRES_TABLES.outbox}.state`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.request`]: 'jsonb',
+  [`${POSTGRES_TABLES.outbox}.request_digest`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.attempts_max`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.attempts_made`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.run_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.sequence`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.created_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.updated_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.published_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.lease_owner`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.lease_token`]: 'text',
+  [`${POSTGRES_TABLES.outbox}.lease_expires_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.outbox}.failure`]: 'jsonb',
   [`${POSTGRES_TABLES.schemaVersions}.component`]: 'text',
   [`${POSTGRES_TABLES.schemaVersions}.version`]: 'integer',
   [`${POSTGRES_TABLES.schemaVersions}.applied_at_ms`]: 'bigint',
@@ -287,7 +325,12 @@ const nullableColumns = new Set([
   `${POSTGRES_TABLES.schedules}.backoff`,
   `${POSTGRES_TABLES.schedules}.timeout_ms`,
   `${POSTGRES_TABLES.schedules}.last_scheduled_at_ms`,
-  `${POSTGRES_TABLES.schedules}.last_job_id`
+  `${POSTGRES_TABLES.schedules}.last_job_id`,
+  `${POSTGRES_TABLES.outbox}.published_at_ms`,
+  `${POSTGRES_TABLES.outbox}.lease_owner`,
+  `${POSTGRES_TABLES.outbox}.lease_token`,
+  `${POSTGRES_TABLES.outbox}.lease_expires_at_ms`,
+  `${POSTGRES_TABLES.outbox}.failure`
 ])
 
 type PostgresIndexName = (typeof POSTGRES_INDEXES)[number]
@@ -343,7 +386,38 @@ const expectedIndexFragments = {
     'schedule_key COLLATE "C"'
   ],
   [POSTGRES_INDEXES[9]]: ['namespace', 'schedule_group COLLATE "C"', 'schedule_key COLLATE "C"'],
-  [POSTGRES_INDEXES[10]]: ['namespace', 'schedule_key COLLATE "C"', 'schedule_group COLLATE "C"']
+  [POSTGRES_INDEXES[10]]: ['namespace', 'schedule_key COLLATE "C"', 'schedule_group COLLATE "C"'],
+  [POSTGRES_INDEXES[11]]: [
+    'namespace',
+    'state',
+    'run_at_ms',
+    'sequence',
+    'id COLLATE "C"',
+    'WHERE',
+    'state =',
+    'pending'
+  ],
+  [POSTGRES_INDEXES[12]]: [
+    'namespace',
+    'lease_expires_at_ms',
+    'sequence',
+    'id COLLATE "C"',
+    'WHERE',
+    'state =',
+    'active'
+  ],
+  [POSTGRES_INDEXES[13]]: ['namespace', 'target COLLATE "C"', 'state', 'run_at_ms', 'sequence'],
+  [POSTGRES_INDEXES[14]]: ['namespace', 'created_at_ms DESC', 'sequence DESC', 'id COLLATE "C"'],
+  [POSTGRES_INDEXES[15]]: ['namespace', 'request_digest COLLATE "C"'],
+  [POSTGRES_INDEXES[16]]: [
+    'namespace',
+    'published_at_ms DESC',
+    'sequence DESC',
+    'id COLLATE "C"',
+    'WHERE',
+    'state =',
+    'published'
+  ]
 } as const satisfies Partial<Record<PostgresIndexName, readonly string[]>>
 
 const requiredConstraints = [
@@ -378,7 +452,17 @@ const requiredConstraints = [
   'better_effect_mq_schedules_metadata_values',
   'better_effect_mq_schedules_overlap',
   'better_effect_mq_schedules_payload',
-  'better_effect_mq_schedules_misfire'
+  'better_effect_mq_schedules_misfire',
+  'better_effect_mq_outbox_pkey',
+  'better_effect_mq_outbox_nonempty',
+  'better_effect_mq_outbox_protocol',
+  'better_effect_mq_outbox_state',
+  'better_effect_mq_outbox_counters',
+  'better_effect_mq_outbox_epoch_ms',
+  'better_effect_mq_outbox_json',
+  'better_effect_mq_outbox_tokens',
+  'better_effect_mq_outbox_active_lease',
+  'better_effect_mq_outbox_published_time'
 ] as const
 
 type PostgresConstraintName = (typeof requiredConstraints)[number]
@@ -389,7 +473,8 @@ const expectedConstraintTypes = {
   better_effect_mq_attempts_job_fk: 'f',
   better_effect_mq_queues_pkey: 'p',
   better_effect_mq_schema_versions_pkey: 'p',
-  better_effect_mq_schedules_pkey: 'p'
+  better_effect_mq_schedules_pkey: 'p',
+  better_effect_mq_outbox_pkey: 'p'
 } satisfies Partial<Record<PostgresConstraintName, 'p' | 'f'>>
 
 const expectedConstraintColumns = {
@@ -401,7 +486,8 @@ const expectedConstraintColumns = {
   },
   better_effect_mq_queues_pkey: { local: ['namespace', 'queue'] },
   better_effect_mq_schema_versions_pkey: { local: ['component'] },
-  better_effect_mq_schedules_pkey: { local: ['namespace', 'schedule_group', 'schedule_key'] }
+  better_effect_mq_schedules_pkey: { local: ['namespace', 'schedule_group', 'schedule_key'] },
+  better_effect_mq_outbox_pkey: { local: ['namespace', 'id'] }
 } satisfies Partial<
   Record<
     PostgresConstraintName,
@@ -435,7 +521,16 @@ const expectedConstraintDefinitions = {
   better_effect_mq_schedules_metadata_values: `CHECK (((jsonb_typeof(metadata) = 'object') AND (NOT jsonb_path_exists(metadata, '$.*?(@.type() != "string")'))))`,
   better_effect_mq_schedules_overlap: `CHECK ((overlap = ANY (ARRAY['allow', 'skip'])))`,
   better_effect_mq_schedules_payload: `CHECK ((jsonb_typeof(payload) IS NOT NULL))`,
-  better_effect_mq_schedules_misfire: `CHECK ((jsonb_typeof(misfire) = 'object'))`
+  better_effect_mq_schedules_misfire: `CHECK ((jsonb_typeof(misfire) = 'object'))`,
+  better_effect_mq_outbox_nonempty: `CHECK (((namespace <> '') AND (id <> '') AND (target <> '') AND (request_digest <> '')))`,
+  better_effect_mq_outbox_protocol: `CHECK ((protocol_version = 1))`,
+  better_effect_mq_outbox_state: `CHECK ((state = ANY (ARRAY['pending', 'active', 'published', 'failed'])))`,
+  better_effect_mq_outbox_counters: `CHECK (((attempts_max >= 1) AND (attempts_made >= 0) AND (attempts_made <= attempts_max)))`,
+  better_effect_mq_outbox_epoch_ms: `CHECK ((((run_at_ms >= 0) AND (run_at_ms <= '9007199254740991')) AND ((created_at_ms >= 0) AND (created_at_ms <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991')) AND ((published_at_ms IS NULL) OR ((published_at_ms >= 0) AND (published_at_ms <= '9007199254740991'))) AND ((lease_expires_at_ms IS NULL) OR ((lease_expires_at_ms >= 0) AND (lease_expires_at_ms <= '9007199254740991')))))`,
+  better_effect_mq_outbox_json: `CHECK (((jsonb_typeof(request) = 'object') AND ((failure IS NULL) OR (jsonb_typeof(failure) = 'object'))))`,
+  better_effect_mq_outbox_tokens: `CHECK ((((lease_owner IS NULL) OR (lease_owner <> '')) AND ((lease_token IS NULL) OR (lease_token <> ''))))`,
+  better_effect_mq_outbox_active_lease: `CHECK ((((state = 'active') AND (lease_owner IS NOT NULL) AND (lease_token IS NOT NULL) AND (lease_expires_at_ms IS NOT NULL)) OR ((state <> 'active') AND (lease_owner IS NULL) AND (lease_token IS NULL) AND (lease_expires_at_ms IS NULL))))`,
+  better_effect_mq_outbox_published_time: `CHECK ((((state = 'published') AND (published_at_ms IS NOT NULL)) OR ((state <> 'published') AND (published_at_ms IS NULL))))`
 } satisfies Partial<Record<PostgresConstraintName, string>>
 
 const expectedConstraintType = (constraint: PostgresConstraintName): 'p' | 'f' | undefined => {
@@ -498,6 +593,7 @@ const rowTableForConstraint = (constraint: string): string => {
   if (constraint.startsWith('better_effect_mq_attempts_')) return POSTGRES_TABLES.attempts
   if (constraint.startsWith('better_effect_mq_queues_')) return POSTGRES_TABLES.queues
   if (constraint.startsWith('better_effect_mq_schedules_')) return POSTGRES_TABLES.schedules
+  if (constraint.startsWith('better_effect_mq_outbox_')) return POSTGRES_TABLES.outbox
   return POSTGRES_TABLES.schemaVersions
 }
 
@@ -842,11 +938,12 @@ const findSchemaProblems = async (
         problems.push(`incompatible nullability ${key}`)
       }
       if (
-        (name === 'sequence' && table === POSTGRES_TABLES.jobs) ||
+        (name === 'sequence' &&
+          (table === POSTGRES_TABLES.jobs || table === POSTGRES_TABLES.outbox)) ||
         (name === 'ledger_sequence' && table === POSTGRES_TABLES.attempts)
       ) {
         const expectedIdentity =
-          name === 'sequence' && table === POSTGRES_TABLES.jobs ? 'BY DEFAULT' : 'ALWAYS'
+          name === 'ledger_sequence' && table === POSTGRES_TABLES.attempts ? 'ALWAYS' : 'BY DEFAULT'
         if (column.identity !== undefined && column.identity !== expectedIdentity) {
           problems.push(`incompatible identity ${key}`)
         }
@@ -898,12 +995,14 @@ const findSchemaProblems = async (
         return true
       })
     const incompatibleDefinition = definition === undefined || !fragmentsInOrder
-    const scheduleIndex =
-      index === POSTGRES_INDEXES[8] ||
-      index === POSTGRES_INDEXES[9] ||
-      index === POSTGRES_INDEXES[10]
+    const scheduleIndex = index.startsWith('better_effect_mq_schedules_')
     const incompatibleCatalog =
-      entry.table !== (scheduleIndex ? POSTGRES_TABLES.schedules : POSTGRES_TABLES.jobs) ||
+      entry.table !==
+        (scheduleIndex
+          ? POSTGRES_TABLES.schedules
+          : index.startsWith('better_effect_mq_outbox_')
+            ? POSTGRES_TABLES.outbox
+            : POSTGRES_TABLES.jobs) ||
       entry.valid !== true ||
       entry.ready !== true ||
       entry.accessMethod !== (index === POSTGRES_INDEXES[6] ? 'gin' : 'btree') ||

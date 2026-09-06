@@ -1,7 +1,7 @@
 {
   "name": "better-effect-mq-postgres",
   "version": "0.1.0",
-  "description": "PostgreSQL JobStore and JobScheduleStore adapters, schema, and migrations for better-effect-mq.",
+  "description": "PostgreSQL JobStore, JobScheduleStore, and OutboxStore adapters, schema, and migrations for better-effect-mq.",
   "keywords": [
     "better-effect",
     "better-result",
@@ -59,6 +59,7 @@
     "@types/pg": "^8.15.5",
     "better-effect": "0.13.0",
     "better-effect-mq": "0.1.0",
+    "better-effect-mq-outbox": "0.1.0",
     "better-result": "^3.0.0",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0",
@@ -71,6 +72,7 @@
   "peerDependencies": {
     "better-effect": ">=0.13.0 <0.14.0",
     "better-effect-mq": ">=0.1.0 <0.2.0",
+    "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
     "better-result": "^3.0.0",
     "pg": ">=8.11.0 <9.0.0",
     "typescript": ">=6.0.0"

@@ -607,9 +607,9 @@ describe('PostgreSQL foundation via PGlite', () => {
     const client = PostgresClient.fromPool({ pool, schema })
     try {
       await expect(client.migrate({ appliedAtMs: 1 })).resolves.toMatchObject({
-        applied: [1, 2],
+        applied: [1, 2, 3],
         schema,
-        version: 2
+        version: 3
       })
       const historyBefore = await database.query(
         `SELECT applied_at_ms, checksum FROM "${schema}".better_effect_mq_schema_versions WHERE component = $1`,
@@ -621,7 +621,7 @@ describe('PostgreSQL foundation via PGlite', () => {
         ['better-effect-mq']
       )
       expect(historyAfter.rows).toEqual(historyBefore.rows)
-      await expect(client.validate()).resolves.toMatchObject({ schema, version: 2 })
+      await expect(client.validate()).resolves.toMatchObject({ schema, version: 3 })
     } finally {
       await database.close()
     }
@@ -654,7 +654,7 @@ describe('PostgreSQL foundation via PGlite', () => {
       )
 
       const migrated = await client.migrate({ appliedAtMs: 2 })
-      expect(migrated).toMatchObject({ applied: [1, 2], schema, version: 2 })
+      expect(migrated).toMatchObject({ applied: [1, 2, 3], schema, version: 3 })
       const history = await database.query(
         `SELECT version,applied_at_ms,checksum
          FROM "${schema}".better_effect_mq_schema_versions WHERE component=$1`,
@@ -663,12 +663,12 @@ describe('PostgreSQL foundation via PGlite', () => {
       const migrations = await loadPostgresMigrations()
       expect(history.rows).toEqual([
         {
-          version: 2,
+          version: 3,
           applied_at_ms: 2,
-          checksum: migrationManifestChecksum(migrations, 2)
+          checksum: migrationManifestChecksum(migrations, 3)
         }
       ])
-      await expect(client.validate()).resolves.toMatchObject({ schema, version: 2 })
+      await expect(client.validate()).resolves.toMatchObject({ schema, version: 3 })
     } finally {
       await database.close()
     }
@@ -686,8 +686,8 @@ describe('PostgreSQL foundation via PGlite', () => {
         results
           .map((result) => result.applied)
           .sort((left, right) => (left[0] ?? 0) - (right[0] ?? 0))
-      ).toEqual([[], [1, 2]])
-      await expect(client.validate()).resolves.toMatchObject({ version: 2 })
+      ).toEqual([[], [1, 2, 3]])
+      await expect(client.validate()).resolves.toMatchObject({ version: 3 })
     } finally {
       await database.close()
     }
@@ -729,7 +729,7 @@ describe('PostgreSQL foundation via PGlite', () => {
     try {
       await expect(client.migrate({ component: 'alternate-component' })).resolves.toMatchObject({
         component: 'alternate-component',
-        applied: [1, 2]
+        applied: [1, 2, 3]
       })
       // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
       await expect(client.migrate({ component: MIGRATION_COMPONENT })).rejects.toBeInstanceOf(

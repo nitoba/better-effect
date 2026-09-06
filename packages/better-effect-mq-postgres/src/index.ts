@@ -3,6 +3,20 @@ export { PostgresMigrator } from './migrator'
 export { PostgresJobStore } from './layer'
 export { PostgresJobScheduleStore } from './layer'
 export {
+  isPostgresOutboxToken,
+  PostgresOutbox,
+  PostgresOutboxStore,
+  postgresOutboxTag
+} from './outbox'
+export type {
+  AnyPostgresOutboxToken,
+  DefaultPostgresOutboxToken,
+  PostgresOutboxAppendOptions,
+  PostgresOutboxInstance,
+  PostgresOutboxTag,
+  PostgresOutboxToken
+} from './outbox'
+export {
   MIGRATION_COMPONENT,
   MIGRATION_SCHEMA_PLACEHOLDER,
   POSTGRES_INDEXES,
