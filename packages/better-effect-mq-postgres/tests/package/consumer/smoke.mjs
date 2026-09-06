@@ -11,7 +11,7 @@ import {
 } from 'better-effect-mq-postgres'
 
 const migrations = await loadPostgresMigrations()
-if (migrations.length !== 3) throw new Error('Expected the shipped migrations')
+if (migrations.length !== 4) throw new Error('Expected the shipped migrations')
 if (!migrationSql(migrations[0], 'public').includes('"public"')) {
   throw new Error('Migration schema placeholder was not rendered')
 }

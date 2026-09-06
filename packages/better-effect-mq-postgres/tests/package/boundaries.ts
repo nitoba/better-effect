@@ -56,4 +56,11 @@ const outboxMigration = await readFile(join(packageRoot, 'migrations/003_outbox.
 if (!outboxMigration.includes('better_effect_mq_outbox')) {
   throw new Error('Outbox migration is missing')
 }
+const flowMigration = await readFile(join(packageRoot, 'migrations/004_flows_v2.sql'), 'utf8')
+if (!flowMigration.includes('better_effect_mq_flow_children')) {
+  throw new Error('Flow v2 migration is missing')
+}
+if (!flowMigration.includes('better_effect_mq_flow_outbox')) {
+  throw new Error('Flow v2 outbox migration is missing')
+}
 console.log('PostgreSQL package boundaries passed')

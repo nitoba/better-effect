@@ -2,6 +2,8 @@ export { PostgresClient } from './client'
 export { PostgresMigrator } from './migrator'
 export { PostgresJobStore } from './layer'
 export { PostgresJobScheduleStore } from './layer'
+export { PostgresFlowStore } from './flow'
+export type { PostgresFlowStoreInstance } from './flow'
 export {
   isPostgresOutboxToken,
   PostgresOutbox,
@@ -19,6 +21,8 @@ export type {
 export {
   MIGRATION_COMPONENT,
   MIGRATION_SCHEMA_PLACEHOLDER,
+  POSTGRES_FLOW_INDEXES,
+  POSTGRES_FLOW_TABLES,
   POSTGRES_INDEXES,
   POSTGRES_TABLES,
   loadPostgresMigrations,
@@ -40,6 +44,7 @@ export {
   PostgresAdapterError,
   PostgresConfigurationError,
   PostgresMigrationError,
+  PostgresFlowProtocolMismatchError,
   PostgresSchemaValidationError,
   redactedPostgresError
 } from './errors'

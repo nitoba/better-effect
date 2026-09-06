@@ -132,11 +132,11 @@ describe('PostgreSQL JobStore conformance on PostgreSQL', () => {
     try {
       await configuredPgPool().query(`DROP SCHEMA IF EXISTS "${migrationSchema}" CASCADE`)
       const migrated = await client.migrate()
-      expect(migrated.version).toBe(3)
-      expect(migrated.applied).toEqual([1, 2, 3])
+      expect(migrated.version).toBe(4)
+      expect(migrated.applied).toEqual([1, 2, 3, 4])
       await expect(client.validate()).resolves.toMatchObject({
         schema: migrationSchema,
-        version: 3
+        version: 4
       })
       await expect(client.migrate()).resolves.toMatchObject({ applied: [] })
     } finally {

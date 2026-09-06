@@ -17,6 +17,12 @@ export const POSTGRES_TABLES = {
   schemaVersions: 'better_effect_mq_schema_versions'
 } as const
 
+/** Flow v2 tables are intentionally separate from the v1/outbox table set. */
+export const POSTGRES_FLOW_TABLES = {
+  children: 'better_effect_mq_flow_children',
+  outbox: 'better_effect_mq_flow_outbox'
+} as const
+
 export const POSTGRES_INDEXES = [
   'better_effect_mq_jobs_claim_idx',
   'better_effect_mq_jobs_active_lease_idx',
@@ -35,6 +41,15 @@ export const POSTGRES_INDEXES = [
   'better_effect_mq_outbox_recent_idx',
   'better_effect_mq_outbox_digest_idx',
   'better_effect_mq_outbox_published_idx'
+] as const
+
+export const POSTGRES_FLOW_INDEXES = [
+  'better_effect_mq_jobs_waiting_children_idx',
+  'better_effect_mq_flow_children_job_idx',
+  'better_effect_mq_flow_children_pending_idx',
+  'better_effect_mq_flow_children_cascade_idx',
+  'better_effect_mq_flow_outbox_claim_idx',
+  'better_effect_mq_flow_outbox_route_idx'
 ] as const
 
 export interface PostgresMigration {

@@ -47,6 +47,26 @@ export class PostgresSchemaValidationError extends PostgresAdapterError {
   }
 }
 
+export class PostgresFlowProtocolMismatchError extends PostgresAdapterError {
+  readonly expectedProtocolVersion: number
+  readonly actualProtocolVersion: number | undefined
+  readonly actualLayoutVersion: number | undefined
+
+  constructor(args: {
+    readonly expectedProtocolVersion: number
+    readonly actualProtocolVersion?: number
+    readonly actualLayoutVersion?: number
+  }) {
+    super(
+      `PostgreSQL flow protocol mismatch: expected v${args.expectedProtocolVersion} with layout v1, found protocol v${args.actualProtocolVersion ?? 'unknown'} and migration layout ${args.actualLayoutVersion ?? 'unknown'}`
+    )
+    this.name = 'PostgresFlowProtocolMismatchError'
+    this.expectedProtocolVersion = args.expectedProtocolVersion
+    this.actualProtocolVersion = args.actualProtocolVersion
+    this.actualLayoutVersion = args.actualLayoutVersion
+  }
+}
+
 export const redactedPostgresError = (operation: string, cause: unknown): PostgresAdapterError => {
   if (cause instanceof PostgresAdapterError) return cause
   return new PostgresAdapterError(`PostgreSQL ${operation} failed`, { cause })

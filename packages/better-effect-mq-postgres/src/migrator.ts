@@ -497,7 +497,7 @@ const expectedConstraintColumns = {
 
 const expectedConstraintDefinitions = {
   [requiredConstraints[1]]: `CHECK (((namespace <> '') AND (id <> '') AND (queue <> '') AND (name <> '')))`,
-  [requiredConstraints[2]]: `CHECK ((state = ANY (ARRAY['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])))`,
+  [requiredConstraints[2]]: `CHECK ((state = ANY (ARRAY['waiting', 'delayed', 'active', 'waiting-children', 'completed', 'failed', 'cancelled'])))`,
   [requiredConstraints[3]]: `CHECK ((version > 0))`,
   [requiredConstraints[4]]: `CHECK (((attempts_max >= 1) AND (attempts_made >= 0) AND (attempts_made <= attempts_max) AND (attempts_made <= delivery_count) AND (delivery_count >= 0) AND (stalled_count >= 0) AND (attempt_sequence >= attempts_made) AND ((state <> ALL (ARRAY['waiting', 'delayed', 'active'])) OR (attempts_made < attempts_max)) AND ((state <> 'active') OR (attempts_made < delivery_count))))`,
   [requiredConstraints[5]]: `CHECK ((((run_at_ms >= 0) AND (run_at_ms <= '9007199254740991')) AND ((created_at_ms >= 0) AND (created_at_ms <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991')) AND ((timeout_ms IS NULL) OR ((timeout_ms >= 1) AND (timeout_ms <= '9007199254740991'))) AND ((processed_at_ms IS NULL) OR ((processed_at_ms >= 0) AND (processed_at_ms <= '9007199254740991'))) AND ((finished_at_ms IS NULL) OR ((finished_at_ms >= 0) AND (finished_at_ms <= '9007199254740991'))) AND ((lease_expires_at_ms IS NULL) OR ((lease_expires_at_ms >= 0) AND (lease_expires_at_ms <= '9007199254740991'))) AND ((cancellation_requested_at_ms IS NULL) OR ((cancellation_requested_at_ms >= 0) AND (cancellation_requested_at_ms <= '9007199254740991')))))`,

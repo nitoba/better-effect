@@ -22,12 +22,16 @@ import {
 } from '../src'
 import type { FlowChildSpec } from '../src'
 
-const unwrap = <Value, Failure>(result: ResultType<Value, Failure>): Value => {
+const unwrapResult = <Value, Failure>(result: ResultType<Value, Failure>): Value => {
   if (Result.isError(result)) throw result.error
   return result.value
 }
 
-const flowId = unwrap(JobId.make('parent-1'))
+const unwrap = async <Value, Failure>(
+  result: ResultType<Value, Failure> | PromiseLike<ResultType<Value, Failure>>
+): Promise<Value> => unwrapResult(await result)
+
+const flowId = unwrapResult(JobId.make('parent-1'))
 
 const makeSpec = (
   childKey: string,
@@ -37,7 +41,7 @@ const makeSpec = (
     childKey
   }).unwrap()
 ): FlowChildSpec => {
-  const request = unwrap(
+  const request = unwrapResult(
     makePreparedEnqueue({
       protocolVersion,
       identity: { queue: 'notifications', name: 'send-email', version: 1 },
@@ -96,8 +100,8 @@ test('flow protocol v2 has an explicit version and accepts waiting-children only
 })
 
 test('flow child IDs use an unambiguous, versioned encoding', () => {
-  const first = unwrap(makeFlowChildId({ parentStoreKey: 'ab', flowId, childKey: 'c' }))
-  const second = unwrap(makeFlowChildId({ parentStoreKey: 'a', flowId, childKey: 'bc' }))
+  const first = unwrapResult(makeFlowChildId({ parentStoreKey: 'ab', flowId, childKey: 'c' }))
+  const second = unwrapResult(makeFlowChildId({ parentStoreKey: 'a', flowId, childKey: 'bc' }))
 
   expect(first).not.toBe(second)
   expect(first.startsWith('flow-v2/')).toBe(true)
@@ -116,7 +120,7 @@ test('manifest validation rejects duplicate child keys before persistence', () =
 test('flow child specs require the deterministic job ID in their prepared request', () => {
   const invalid: FlowChildSpec = {
     ...makeSpec('email:1'),
-    childJobId: unwrap(JobId.make('different-id'))
+    childJobId: unwrapResult(JobId.make('different-id'))
   }
 
   expect(validateFlowChildSpec(invalid).isErr()).toBe(true)
@@ -196,54 +200,54 @@ const fanOutRequest = (
   flowName: 'daily-digest',
   parentStoreKey: 'parent-store',
   depth: 1,
-  leaseToken: unwrap(LeaseToken.make('parent-lease')),
+  leaseToken: LeaseToken.make('parent-lease').unwrap(),
   failFast: false,
   children: [makeSpec('email:1'), makeSpec('email:2')],
   now: 0,
   ...overrides
 })
 
-test('MemoryFlowStore applies FanOut atomically and acknowledges an identical replay', () => {
+test('MemoryFlowStore applies FanOut atomically and acknowledges an identical replay', async () => {
   const store = MemoryFlowStore.make()
-  const first = unwrap(store.fanOut(fanOutRequest()))
+  const first = await unwrap(store.fanOut(fanOutRequest()))
 
   expect(first.status).toBe('applied')
   expect(first.parent.state).toBe('waiting-children')
   expect(first.parent.flow).toMatchObject({ pending: 2, completed: 0, failed: 0, cancelled: 0 })
   expect(first.children.map((child) => child.status)).toEqual(['pending', 'pending'])
 
-  const replay = unwrap(store.fanOut(fanOutRequest()))
+  const replay = await unwrap(store.fanOut(fanOutRequest()))
   expect(replay.status).toBe('already-applied')
-  expect(unwrap(store.getFlow({ flowId }))?.children).toHaveLength(2)
+  expect((await unwrap(store.getFlow({ flowId })))?.children).toHaveLength(2)
 
-  const conflict = store.fanOut(fanOutRequest({ children: [makeSpec('different')] }))
-  expect(conflict.isErr()).toBe(true)
+  const conflict = await store.fanOut(fanOutRequest({ children: [makeSpec('different')] }))
+  expect(Result.isError(conflict)).toBe(true)
 })
 
-test('MemoryFlowStore rejects the complete manifest before creating any flow rows', () => {
+test('MemoryFlowStore rejects the complete manifest before creating any flow rows', async () => {
   const store = MemoryFlowStore.make()
-  const rejected = store.fanOut(fanOutRequest({ maxChildren: 1 }))
+  const rejected = await store.fanOut(fanOutRequest({ maxChildren: 1 }))
 
-  expect(rejected.isErr()).toBe(true)
-  expect(unwrap(store.getFlow({ flowId }))).toBeUndefined()
+  expect(Result.isError(rejected)).toBe(true)
+  expect(await unwrap(store.getFlow({ flowId }))).toBeUndefined()
 })
 
-test('MemoryFlowStore sends an empty manifest directly to collect-ready waiting', () => {
-  const result = unwrap(MemoryFlowStore.make().fanOut(fanOutRequest({ children: [] })))
+test('MemoryFlowStore sends an empty manifest directly to collect-ready waiting', async () => {
+  const result = await unwrap(MemoryFlowStore.make().fanOut(fanOutRequest({ children: [] })))
 
   expect(result.parent.state).toBe('waiting')
   expect(result.parent.flow.pending).toBe(0)
   expect(result.children).toEqual([])
 })
 
-test('MemoryFlowStore records continue reports idempotently and becomes collect-ready', () => {
+test('MemoryFlowStore records continue reports idempotently and becomes collect-ready', async () => {
   const store = MemoryFlowStore.make()
-  unwrap(store.fanOut(fanOutRequest()))
-  const failure = unwrap(
+  await unwrap(store.fanOut(fanOutRequest()))
+  const failure = unwrapResult(
     makeSerializedJobFailure({ kind: 'typed', message: 'blocked', retryable: false, recordedAt: 1 })
   )
 
-  const failed = unwrap(
+  const failed = await unwrap(
     store.recordChildResults({
       flowId,
       now: 1,
@@ -254,7 +258,7 @@ test('MemoryFlowStore records continue reports idempotently and becomes collect-
   expect(failed.parentSettled).toBe(false)
   expect(failed.parent.flow).toMatchObject({ pending: 1, failed: 1 })
 
-  const duplicate = unwrap(
+  const duplicate = await unwrap(
     store.recordChildResults({
       flowId,
       now: 2,
@@ -263,7 +267,7 @@ test('MemoryFlowStore records continue reports idempotently and becomes collect-
   )
   expect(duplicate.applied).toBe(0)
 
-  const completed = unwrap(
+  const completed = await unwrap(
     store.recordChildResults({
       flowId,
       now: 3,
@@ -284,10 +288,10 @@ test('MemoryFlowStore records continue reports idempotently and becomes collect-
   expect(completed.parent.flow).toMatchObject({ pending: 0, completed: 1, failed: 1 })
 })
 
-test('MemoryFlowStore fail-fast wins and marks remaining children for cascade', () => {
+test('MemoryFlowStore fail-fast wins and marks remaining children for cascade', async () => {
   const store = MemoryFlowStore.make()
-  unwrap(store.fanOut(fanOutRequest({ failFast: true })))
-  const failure = unwrap(
+  await unwrap(store.fanOut(fanOutRequest({ failFast: true })))
+  const failure = unwrapResult(
     makeSerializedJobFailure({
       kind: 'typed',
       message: 'failed child',
@@ -296,7 +300,7 @@ test('MemoryFlowStore fail-fast wins and marks remaining children for cascade', 
     })
   )
 
-  const settled = unwrap(
+  const settled = await unwrap(
     store.recordChildResults({
       flowId,
       now: 1,
@@ -311,7 +315,7 @@ test('MemoryFlowStore fail-fast wins and marks remaining children for cascade', 
     cascaded: false
   })
 
-  const late = unwrap(
+  const late = await unwrap(
     store.recordChildResults({
       flowId,
       now: 2,
@@ -329,11 +333,11 @@ test('MemoryFlowStore fail-fast wins and marks remaining children for cascade', 
   expect(late.applied).toBe(0)
 })
 
-test('MemoryFlowStore cancellation and cascade acknowledgement are idempotent', () => {
+test('MemoryFlowStore cancellation and cascade acknowledgement are idempotent', async () => {
   const store = MemoryFlowStore.make()
-  unwrap(store.fanOut(fanOutRequest()))
+  await unwrap(store.fanOut(fanOutRequest()))
 
-  const cancelled = unwrap(store.cancel({ flowId, now: 1 }))
+  const cancelled = await unwrap(store.cancel({ flowId, now: 1 }))
   expect(cancelled.parentSettled).toBe(true)
   expect(cancelled.parent.state).toBe('cancelled')
   expect(cancelled.cancelled).toBe(2)
@@ -341,16 +345,16 @@ test('MemoryFlowStore cancellation and cascade acknowledgement are idempotent', 
     true
   )
 
-  const acknowledged = unwrap(store.markCascaded({ flowId, childKeys: ['email:1'] }))
+  const acknowledged = await unwrap(store.markCascaded({ flowId, childKeys: ['email:1'] }))
   expect(acknowledged.marked).toBe(1)
   expect(acknowledged.children.find((child) => child.childKey === 'email:1')?.cascaded).toBe(true)
-  expect(unwrap(store.markCascaded({ flowId, childKeys: ['email:1'] })).marked).toBe(0)
+  expect((await unwrap(store.markCascaded({ flowId, childKeys: ['email:1'] }))).marked).toBe(0)
 })
 
-test('MemoryFlowStore reconciliation returns deterministic enqueue, terminal reports, and cascade work', () => {
+test('MemoryFlowStore reconciliation returns deterministic enqueue, terminal reports, and cascade work', async () => {
   const store = MemoryFlowStore.make()
-  unwrap(store.fanOut(fanOutRequest()))
-  const reconciliation = unwrap(
+  await unwrap(store.fanOut(fanOutRequest()))
+  const reconciliation = await unwrap(
     store.reconcile({
       flowId,
       now: 10,
@@ -372,7 +376,7 @@ test('MemoryFlowStore reconciliation returns deterministic enqueue, terminal rep
     }
   ])
   expect(reconciliation.cascade).toEqual([])
-  expect(unwrap(store.getFlow({ flowId }))?.children[0]?.pendingSinceMs).toBe(10)
+  expect((await unwrap(store.getFlow({ flowId })))?.children[0]?.pendingSinceMs).toBe(10)
 })
 
 void Parent

@@ -140,7 +140,7 @@ const validColumnNames = {
 
 const validConstraintDefinitions = {
   better_effect_mq_jobs_nonempty: `CHECK (((namespace <> '') AND (id <> '') AND (queue <> '') AND (name <> '')))`,
-  better_effect_mq_jobs_state: `CHECK ((state = ANY (ARRAY['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])))`,
+  better_effect_mq_jobs_state: `CHECK ((state = ANY (ARRAY['waiting', 'delayed', 'active', 'waiting-children', 'completed', 'failed', 'cancelled'])))`,
   better_effect_mq_jobs_version: `CHECK ((version > 0))`,
   better_effect_mq_jobs_counters: `CHECK (((attempts_max >= 1) AND (attempts_made >= 0) AND (attempts_made <= attempts_max) AND (attempts_made <= delivery_count) AND (delivery_count >= 0) AND (stalled_count >= 0) AND (attempt_sequence >= attempts_made) AND ((state <> ALL (ARRAY['waiting', 'delayed', 'active'])) OR (attempts_made < attempts_max)) AND ((state <> 'active') OR (attempts_made < delivery_count))))`,
   better_effect_mq_jobs_epoch_ms: `CHECK ((((run_at_ms >= 0) AND (run_at_ms <= '9007199254740991')) AND ((created_at_ms >= 0) AND (created_at_ms <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991')) AND ((timeout_ms IS NULL) OR ((timeout_ms >= 1) AND (timeout_ms <= '9007199254740991'))) AND ((processed_at_ms IS NULL) OR ((processed_at_ms >= 0) AND (processed_at_ms <= '9007199254740991'))) AND ((finished_at_ms IS NULL) OR ((finished_at_ms >= 0) AND (finished_at_ms <= '9007199254740991'))) AND ((lease_expires_at_ms IS NULL) OR ((lease_expires_at_ms >= 0) AND (lease_expires_at_ms <= '9007199254740991'))) AND ((cancellation_requested_at_ms IS NULL) OR ((cancellation_requested_at_ms >= 0) AND (cancellation_requested_at_ms <= '9007199254740991')))))`,
@@ -385,13 +385,15 @@ describe('Postgres foundation', () => {
 
   test('loads the shipped migration with a stable checksum', async () => {
     const migrations = await loadPostgresMigrations()
-    expect(migrations).toHaveLength(3)
+    expect(migrations).toHaveLength(4)
     expect(migrations[0]?.version).toBe(1)
     expect(migrations[0]?.sql).toContain('better_effect_mq_jobs')
     expect(migrations[1]?.version).toBe(2)
     expect(migrations[1]?.sql).toContain('better_effect_mq_schedules')
     expect(migrations[2]?.version).toBe(3)
     expect(migrations[2]?.sql).toContain('better_effect_mq_outbox')
+    expect(migrations[3]?.version).toBe(4)
+    expect(migrations[3]?.sql).toContain('better_effect_mq_flow_children')
     expect(migrations[0]?.checksum).toMatch(/^[0-9a-f]{64}$/u)
   })
 
@@ -477,7 +479,7 @@ describe('Postgres foundation', () => {
   test('migration is locked, explicit, and idempotency metadata is bound', async () => {
     const { pool, queries } = fakePool({ validSchema: true })
     const first = await PostgresMigrator.run(pool, { appliedAtMs: 1 })
-    expect(first).toMatchObject({ applied: [1, 2, 3], version: 3, schema: 'public' })
+    expect(first).toMatchObject({ applied: [1, 2, 3, 4], version: 4, schema: 'public' })
     expect(queries.some(({ sql }) => sql.includes('pg_advisory_xact_lock'))).toBe(true)
     expect(queries.some(({ sql }) => sql.includes('DROP TABLE'))).toBe(false)
     const lock = queries.find(({ sql }) => sql.includes('pg_advisory_xact_lock'))
