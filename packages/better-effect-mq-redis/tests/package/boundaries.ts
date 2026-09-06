@@ -57,7 +57,8 @@ for (const name of [
   'retry',
   'remove',
   'pause',
-  'resume'
+  'resume',
+  'tick-schedule'
 ]) {
   const script = await readFile(join(scriptDirectory, `${name}.lua`), 'utf8')
   if (!script.includes('KEYS') || !script.includes('ARGV')) {

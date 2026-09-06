@@ -1,4 +1,5 @@
 export { RedisJobStore } from './store'
+export { RedisJobScheduleStore } from './schedule-store'
 export {
   RedisClient,
   createRedisClient,
