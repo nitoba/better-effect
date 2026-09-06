@@ -18,6 +18,7 @@ import {
   MemoryOutboxStore,
   OutboxId,
   OutboxPublisher,
+  OutboxRouteMissingError,
   type OutboxPublisherEvent,
   type OutboxPublisherServiceToken,
   OutboxRoutes,
@@ -92,9 +93,11 @@ const makeLayer = <
   jobsToken: JobsToken,
   jobs: JobStoreContract,
   routes: OutboxRoutes<Routes>,
-  events: { readonly push: (event: OutboxPublisherEvent) => number }
-) =>
-  publisher.layer(() => ({
+  events: { readonly push: (event: OutboxPublisherEvent) => number },
+  onError?: (cause: unknown) => void
+) => {
+  const reportError = onError ?? (() => undefined)
+  return publisher.layer(() => ({
     outboxes: [outboxToken] as const,
     routes,
     concurrency: 1,
@@ -106,8 +109,10 @@ const makeLayer = <
       onEvent: (event: OutboxPublisherEvent): void => {
         events.push(event)
       }
-    }
+    },
+    onError: reportError
   }))
+}
 
 test('OutboxPublisher claims, enqueues, and fences markPublished', async () => {
   const outbox = MemoryOutboxStore.make()
@@ -200,6 +205,7 @@ test('missing routes and permanent enqueue failures remain inspectable', async (
   const missingJobsToken = JobStore.named('publisher-missing')
   const missingPublisher = OutboxPublisher.service('PublisherMissing')
   const missingEvents: OutboxPublisherEvent[] = []
+  const missingErrors: unknown[] = []
   const missingRuntime = await Runtime.make(
     Layer.complete(
       Layer.merge(
@@ -211,7 +217,8 @@ test('missing routes and permanent enqueue failures remain inspectable', async (
           missingJobsToken,
           {} as import('better-effect-mq').JobStore.Contract,
           OutboxRoutes.make({}),
-          missingEvents
+          missingEvents,
+          (cause) => missingErrors.push(cause)
         )
       )
     )
@@ -225,6 +232,8 @@ test('missing routes and permanent enqueue failures remain inspectable', async (
       'failed'
     )
     expect(failed.failure?.kind).toBe('target-missing')
+    expect(missingEvents.some((event) => event.type === 'route-missing')).toBe(true)
+    expect(missingErrors.some((cause) => OutboxRouteMissingError.is(cause))).toBe(true)
   } finally {
     await missingRuntime.dispose()
   }

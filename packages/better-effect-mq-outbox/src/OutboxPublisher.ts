@@ -45,6 +45,7 @@ import type { LeasedOutboxRecord, OutboxOperation, OutboxStore } from './OutboxS
 
 export type OutboxStoreTokenLike = (abstract new (...args: never[]) => OutboxStore & AnyService) & {
   readonly serviceTag: string
+  readonly [Symbol.iterator]: AnyServiceToken[typeof Symbol.iterator]
 }
 export type AnyOutboxStoreTokenLike = OutboxStoreTokenLike
 
@@ -77,6 +78,13 @@ export type OutboxPublisherEvent =
       readonly outboxId: string
       readonly target: string
       readonly duplicate: boolean
+    }
+  | {
+      readonly type: 'route-missing'
+      readonly recordedAt: number
+      readonly workerId: OutboxWorkerId
+      readonly outboxId: string
+      readonly target: string
     }
   | {
       readonly type: 'retry-scheduled'
@@ -460,6 +468,13 @@ class OutboxPublisherSupervisor implements OutboxPublisherHandle {
         target: active.record.target,
         outboxId: active.record.id
       })
+      this.emit({
+        type: 'route-missing',
+        recordedAt: this.readNow(),
+        workerId: this.id,
+        outboxId: active.record.id,
+        target: active.record.target
+      })
       await this.settleFailure(active, 'target-missing', true, missing)
       return
     }
@@ -553,6 +568,7 @@ class OutboxPublisherSupervisor implements OutboxPublisherHandle {
     cause: unknown
   ): Promise<void> {
     if (active.lost) return
+    this.report(cause)
     const nowMs = this.readNow()
     const failure = serializeFailure(kind, retryable, cause, nowMs)
     if (retryable && active.record.attemptsMade < active.record.attemptsMax) {
@@ -791,6 +807,18 @@ const normalizeOptions = <
   options: OutboxPublisherOptions<Outboxes, Routes>
 ): Omit<NormalizedPublisherOptions, 'outboxes' | 'routes' | 'routeStores'> => {
   validateOptionsObject(options)
+  if (!Array.isArray(options.outboxes)) {
+    throw new OutboxDefinitionError({
+      field: 'outboxes',
+      message: 'must be an array of store tokens'
+    })
+  }
+  if (!(options.routes instanceof OutboxRoutes)) {
+    throw new OutboxDefinitionError({
+      field: 'routes',
+      message: 'must be an OutboxRoutes registry'
+    })
+  }
   const concurrency = positiveOption(options.concurrency, defaultConcurrency, 'concurrency')
   const leaseDurationMs = positiveOption(
     options.leaseDurationMs,

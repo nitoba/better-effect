@@ -39,6 +39,12 @@ export class OutboxRoutes<Routes extends OutboxRouteMap = OutboxRouteMap> {
     routes: Entries
   ): OutboxRoutes<RouteMapFromEntries<Entries>>
   static make(routes: OutboxRouteMap | readonly OutboxRouteEntry[]): OutboxRoutes<OutboxRouteMap> {
+    if (routes === null || typeof routes !== 'object') {
+      throw new OutboxDefinitionError({
+        field: 'routes',
+        message: 'must be an object map or an ordered entry list'
+      })
+    }
     const entries = Array.isArray(routes)
       ? routes.map((entry, index) => {
           if (!isRouteEntry(entry)) {
@@ -69,7 +75,12 @@ export class OutboxRoutes<Routes extends OutboxRouteMap = OutboxRouteMap> {
       stores.set(entry.target, entry.store)
     }
 
-    return new OutboxRoutes(Object.freeze(entries.slice()), stores)
+    return new OutboxRoutes(
+      Object.freeze(
+        entries.map((entry) => Object.freeze({ target: entry.target, store: entry.store }))
+      ),
+      stores
+    )
   }
 
   get<Target extends keyof Routes & string>(target: Target): Routes[Target] | undefined
