@@ -22,18 +22,22 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
+    "test:types": "tsc -p tests/types/tsconfig.json --pretty false",
+    "test:package-boundaries": "bun tests/package/boundaries.ts",
+    "test:package-consumer": "bun tests/package/external-consumer.ts",
     "test": "bun test",
     "lint": "oxlint --type-aware .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "publint": "publint",
-    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run publint && bun run lint"
+    "check": "bun run typecheck && bun run test:types && bun test && bun run format:check && bun run build && bun run publint && bun run test:package-boundaries && bun run test:package-consumer && bun run lint"
   },
   "devDependencies": {
     "@types/bun": "1.4.1",
     "@types/node": "^22.0.0",
     "better-effect": "0.13.0",
     "better-effect-mq": "0.1.0",
+    "better-effect-mq-outbox": "0.1.0",
     "better-result": "^3.0.0",
     "mongodb": "^6.21.0",
     "oxfmt": "^0.63.0",
@@ -45,6 +49,7 @@
   "peerDependencies": {
     "better-effect": ">=0.13.0 <0.14.0",
     "better-effect-mq": ">=0.1.0 <0.2.0",
+    "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
     "better-result": "^3.0.0",
     "mongodb": ">=6.0.0 <8.0.0",
     "typescript": ">=6.0.0"
