@@ -46,6 +46,7 @@ import type {
   JobListOrder,
   JobListOrderBy,
   JobStoreCapabilities,
+  JobStoreContract,
   JobStoreDescriptor,
   JobStoreOperation,
   JobIdRequest,
@@ -85,6 +86,19 @@ export interface MemoryJobStoreOptions {
 }
 
 type Operation<Value> = JobStoreOperation<Value, JobStoreError>
+
+/** Internal synchronous bridge used only by the Memory schedule extension. */
+export interface MemoryJobStoreInternals {
+  readonly runCriticalSection: <Value>(callback: () => Value) => Value
+  readonly enqueueManyWithinCritical: (
+    requests: readonly EnqueueRequest[]
+  ) => ResultType<JobStoreNamespace.EnqueueManyResult, JobStoreError>
+  readonly getJobWithinCritical: (
+    jobId: JobStoreNamespace.GetJobRequest['jobId']
+  ) => ResultType<JobRecord | undefined, JobStoreError>
+}
+
+const memoryJobStoreInternals = new WeakMap<object, MemoryJobStoreInternals>()
 type MemoryIdentity = {
   readonly queue: string
   readonly name: string
@@ -454,11 +468,40 @@ class MemoryJobStoreImplementation {
   private readonly clock: MemoryJobStoreOptions['clock']
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
   private claimInProgress = false
+  private criticalSectionDepth = 0
 
   constructor(options: MemoryJobStoreOptions = {}) {
     this.clock = options.clock
     this.idGenerator = options.idGenerator
     this.validateOptions(options)
+  }
+
+  runCriticalSection<Value>(callback: () => Value): Value {
+    if (this.criticalSectionDepth > 0) {
+      return callback()
+    }
+
+    this.criticalSectionDepth += 1
+    try {
+      return callback()
+    } finally {
+      this.criticalSectionDepth -= 1
+    }
+  }
+
+  enqueueManyWithinCritical(
+    requests: readonly EnqueueRequest[]
+  ): ResultType<JobStoreNamespace.EnqueueManyResult, JobStoreError> {
+    return this.enqueueMany(requests) as ResultType<
+      JobStoreNamespace.EnqueueManyResult,
+      JobStoreError
+    >
+  }
+
+  getJobWithinCritical(
+    jobId: JobStoreNamespace.GetJobRequest['jobId']
+  ): ResultType<JobRecord | undefined, JobStoreError> {
+    return this.getJob({ jobId }) as ResultType<JobRecord | undefined, JobStoreError>
   }
 
   enqueue(request: EnqueueRequest): Operation<JobStoreNamespace.EnqueueResult> {
@@ -2059,9 +2102,17 @@ class MemoryJobStoreImplementation {
   }
 }
 
-const makeMemoryJobStore = (options?: MemoryJobStoreOptions): JobStoreNamespace.Contract =>
+const makeMemoryJobStore = (options?: MemoryJobStoreOptions): JobStoreNamespace.Contract => {
+  const implementation = new MemoryJobStoreImplementation(options)
   // SAFETY: MemoryJobStoreImplementation implements every operation in JobStore.Contract; JobStore.of restores the structural Service contract.
-  JobStore.of(new MemoryJobStoreImplementation(options) as never)
+  const contract = JobStore.of(implementation as never)
+  memoryJobStoreInternals.set(contract as object, implementation)
+  return contract
+}
+
+export const getMemoryJobStoreInternals = (
+  store: JobStoreContract
+): MemoryJobStoreInternals | undefined => memoryJobStoreInternals.get(store as object)
 
 const makeMemoryLayer = <Token extends AnyJobStoreToken>(
   token: Token,
