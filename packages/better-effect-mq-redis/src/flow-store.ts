@@ -60,6 +60,7 @@ import {
   canonicalFlowJson,
   decodeFlowChildEntry,
   decodeFlowParent,
+  decodeFlowParentRecord,
   encodeFlowChildEntry
 } from './flow-codec'
 import { decodeFlowChildIndexMember, encodeFlowChildIndexMember, encodeFlowReference } from './keys'
@@ -236,7 +237,8 @@ const decodeReports = (value: unknown): readonly FlowChildReport[] => {
 }
 
 const decodeParent = (value: unknown): FlowParentRecord => {
-  const checked = decodeFlowParent(value)
+  const checked =
+    typeof value === 'string' ? decodeFlowParentRecord(value) : decodeFlowParent(value)
   if (Result.isError(checked)) throw checked.error
   return checked.value
 }
@@ -613,11 +615,10 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
           }
         )
         if (
-          values.length !== 4 ||
+          values.length !== 3 ||
           typeof values[0] !== 'string' ||
           typeof values[1] !== 'string' ||
-          typeof values[2] !== 'string' ||
-          typeof values[3] !== 'string'
+          typeof values[2] !== 'string'
         ) {
           throw new RedisLayoutError(
             'flow-fanout returned an invalid reply',
@@ -659,12 +660,11 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
           { mode: 'flow-record-child-results', reports: normalized.reports, now: normalized.now }
         )
         if (
-          values.length !== 5 ||
+          values.length !== 4 ||
           typeof values[0] !== 'string' ||
           typeof values[1] !== 'string' ||
           typeof values[2] !== 'string' ||
-          typeof values[3] !== 'string' ||
-          typeof values[4] !== 'string'
+          typeof values[3] !== 'string'
         ) {
           throw new RedisLayoutError(
             'flow report returned an invalid reply',

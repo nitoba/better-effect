@@ -162,6 +162,16 @@ export const decodeFlowParent = (fields: unknown): RedisFlowDecodeResult<FlowPar
   }
 }
 
+export const decodeFlowParentRecord = (value: string): RedisFlowDecodeResult<FlowParentRecord> => {
+  try {
+    return Result.ok(validateParentRecord(parseJson(value, 'parent.record')))
+  } catch (cause) {
+    return Result.err(
+      cause instanceof RedisLayoutError ? cause : invalid('parent.record', 'could not decode')
+    )
+  }
+}
+
 export const encodeFlowChildEntry = (
   spec: FlowChildSpec,
   record: FlowChildRecord,
