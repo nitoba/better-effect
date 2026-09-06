@@ -1,18 +1,31 @@
 # better-effect-mq-mysql
 
-`better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore` adapter for
-[`better-effect-mq`](../better-effect-mq). It implements protocol v1 with short
-transactions, fenced leases, durable attempt records, keyset inspection queries,
+`better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore` and
+`JobScheduleStore` adapters for [`better-effect-mq`](../better-effect-mq). It
+implements protocol v1 and schedules v1 with short transactions, fenced leases,
+durable attempt records, deterministic occurrence IDs, keyset inspection queries,
 and a per-process wake notifier backed by durable queue wake versions.
 
 ```ts
-import { MySqlJobStore } from 'better-effect-mq-mysql'
+import { Layer } from 'better-effect'
+import { JobScheduleStore, JobStore } from 'better-effect-mq'
+import { MySqlJobScheduleStore, MySqlJobStore } from 'better-effect-mq-mysql'
 
-const StoreLive = MySqlJobStore.layer({
-  pool,
-  namespace: 'billing',
-  validateSchema: true
-})
+const StoreLive = Layer.merge(
+  MySqlJobStore.layer({ pool, namespace: 'billing', validateSchema: true }),
+  MySqlJobScheduleStore.layer({ pool, namespace: 'billing', validateSchema: true })
+)
+```
+
+Named stores retain their association explicitly:
+
+```ts
+const Durable = JobStore.named('durable')
+const DurableSchedules = JobScheduleStore.for(Durable)
+const StoreLive = Layer.merge(
+  MySqlJobStore.layerFor(Durable, { pool, namespace: 'billing' }),
+  MySqlJobScheduleStore.layerFor(DurableSchedules, { pool, namespace: 'billing' })
+)
 ```
 
 The caller-owned `mysql2/promise` pool is never closed. To let the layer own its
@@ -26,7 +39,8 @@ handshake rejects MariaDB, unsupported server versions, non-InnoDB tables, and
 an incompatible or incomplete protocol layout. `validateSchema: false` skips the
 full catalog check but never skips the MySQL-version/SQL-mode handshake.
 
-Migrations are explicit and are never run while acquiring a layer:
+Migrations are explicit and are never run while acquiring a layer. Migration 3
+adds the schedules table and due/group/key indexes:
 
 ```ts
 import { MySqlMigrator } from 'better-effect-mq-mysql'
@@ -38,6 +52,11 @@ await MySqlMigrator.validate(pool)
 The migrator holds a MySQL `GET_LOCK`, applies idempotent statements in order,
 and records a migration only after all of its DDL succeeds. Since MySQL DDL can
 commit implicitly, an interrupted migration remains detectable and safe to rerun.
+
+Schedule ticks lock the schedule row, compare revision/`next_run_at_ms`, enqueue
+deterministic `sched/<encoded-key>/<slot-ms>` jobs, update the schedule, and
+advance the durable queue wake version in the same transaction. Duplicate
+occurrence IDs are safe to retry, including after a lost response.
 
 Claims use `SELECT … FOR UPDATE SKIP LOCKED` under short transactions. No
 connection or transaction is held while a worker handler executes. MySQL has no

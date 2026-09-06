@@ -227,13 +227,58 @@ const compatibilityIndexes = Object.freeze({
     { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'D' }
   ]
 } satisfies Readonly<Record<string, readonly IndexPart[]>>)
+const scheduleIndexes = Object.freeze({
+  better_effect_mq_schedules_due_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'paused', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'next_run_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'schedule_group', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'schedule_key', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_schedules_group_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'schedule_group', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'schedule_key', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_schedules_key_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'schedule_key', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'schedule_group', sub_part: 191, collation: 'A' }
+  ]
+} satisfies Readonly<Record<string, readonly IndexPart[]>>)
 const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
   const ddl = statements(migration.sql)
-  if (migration.version !== 2) return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
-  if (ddl.length !== 4)
+  if (migration.version === 1) return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
+  if (migration.version === 2 && ddl.length !== 4)
     throw new MySqlMigrationError(
       'MySQL migration 002 reconciliation metadata does not match its DDL'
     )
+  if (migration.version === 3 && ddl.length !== 4)
+    throw new MySqlMigrationError(
+      'MySQL migration 003 reconciliation metadata does not match its DDL'
+    )
+  if (migration.version !== 2 && migration.version !== 3)
+    return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
+  if (migration.version === 3)
+    return [
+      {
+        sql: ddl[0]!,
+        isSatisfied: async (connection) => {
+          const result = await connection.query<{ engine: string | null }>(
+            'SELECT engine AS engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [MYSQL_TABLES.schedules]
+          )
+          return result.rows[0]?.engine?.toLowerCase() === 'innodb'
+        }
+      },
+      ...Object.entries(scheduleIndexes).map(([name, parts], index) => ({
+        sql: ddl[index + 1]!,
+        isSatisfied: async (connection: PoolConnection) =>
+          matchesIndexes(await indexes(connection, MYSQL_TABLES.schedules, [name]), {
+            [name]: parts
+          })
+      }))
+    ]
   return [
     {
       sql: ddl[0]!,
