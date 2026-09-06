@@ -30,6 +30,7 @@ import {
   ScheduleNotFoundError,
   ScheduleStoreFailure
 } from './errors'
+import { makeScheduleOccurrenceId } from './identity'
 import { JobScheduleStore } from './store'
 import type {
   DueSchedulesOptions,
@@ -342,7 +343,7 @@ const normalizeRecord = (value: unknown): ResultType<ScheduleRecord, ScheduleSto
 }
 
 const deterministicJobId = (record: ScheduleRecord, slotMs: number): JobId =>
-  makeJobId(`sched/${encodeURIComponent(record.key)}/${slotMs}`).unwrap()
+  makeJobId(makeScheduleOccurrenceId(record.key, slotMs)).unwrap()
 
 const scheduleResult = (
   status: TickScheduleResult['status'],
