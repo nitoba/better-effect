@@ -4,6 +4,8 @@
 
 ### Added
 
+- Immutable `PreparedEnqueue` producer commands and the optional prepared
+  enqueue capability on the in-memory JobStore.
 - Layer-first `Worker.service(tag).layer(factory)` startup and Runtime-owned
   quiesce/release lifecycle, plus caller-owned `Worker.succeed` test doubles.
 - Retry policies with durable backoff normalization, typed failure handling,

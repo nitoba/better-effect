@@ -55,6 +55,7 @@ import type {
   QueuePauseResult,
   RecoverStalledRequest,
   SettleRequest,
+  TransactionalEnqueue,
   WakeToken
 } from './types'
 
@@ -64,6 +65,8 @@ import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from './store'
 
 import { JobStore } from './store'
 import { JobStoreWakeAbortedError } from './errors'
+import { validatePreparedEnqueue } from '../job/prepared'
+import type { PreparedEnqueue } from '../job/prepared'
 
 /** A deterministic clock accepted by the in-process reference driver. */
 export interface MemoryJobStoreClock {
@@ -496,6 +499,14 @@ class MemoryJobStoreImplementation {
       JobStoreNamespace.EnqueueManyResult,
       JobStoreError
     >
+  }
+
+  enqueuePrepared(request: PreparedEnqueue): Operation<JobStoreNamespace.EnqueueResult> {
+    const checked = validatePreparedEnqueue(request)
+    if (Result.isError(checked)) return fail(checked.error)
+
+    const { protocolVersion: _protocolVersion, ...enqueue } = checked.value
+    return this.enqueue(enqueue)
   }
 
   getJobWithinCritical(
@@ -2102,12 +2113,14 @@ class MemoryJobStoreImplementation {
   }
 }
 
-const makeMemoryJobStore = (options?: MemoryJobStoreOptions): JobStoreNamespace.Contract => {
+const makeMemoryJobStore = (
+  options?: MemoryJobStoreOptions
+): JobStoreNamespace.Contract & TransactionalEnqueue => {
   const implementation = new MemoryJobStoreImplementation(options)
   // SAFETY: MemoryJobStoreImplementation implements every operation in JobStore.Contract; JobStore.of restores the structural Service contract.
   const contract = JobStore.of(implementation as never)
   memoryJobStoreInternals.set(contract as object, implementation)
-  return contract
+  return contract as unknown as JobStoreNamespace.Contract & TransactionalEnqueue
 }
 
 export const getMemoryJobStoreInternals = (
@@ -2121,7 +2134,7 @@ const makeMemoryLayer = <Token extends AnyJobStoreToken>(
   // Layer.make defers construction until each Runtime resolves the provider, so a reused Layer never shares mutable store state.
   Layer.make(
     token,
-    () => makeMemoryJobStore(options) as ServiceContract<InstanceType<Token>>
+    () => makeMemoryJobStore(options) as unknown as ServiceContract<InstanceType<Token>>
   ) as Layer<InstanceType<Token>, never>
 
 const memoryJobStoreApi = {
@@ -2134,7 +2147,7 @@ const memoryJobStoreApi = {
   layerFor<Token extends AnyJobStoreToken>(token: Token, options?: MemoryJobStoreOptions) {
     return makeMemoryLayer(token, options)
   },
-  make(options?: MemoryJobStoreOptions): JobStoreNamespace.Contract {
+  make(options?: MemoryJobStoreOptions): JobStoreNamespace.Contract & TransactionalEnqueue {
     return makeMemoryJobStore(options)
   }
 }

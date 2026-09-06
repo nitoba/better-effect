@@ -19,6 +19,7 @@ import {
   MemoryJobStore,
   UnsupportedJobStoreOperationError,
   makeSerializedJobFailure,
+  validatePreparedEnqueue,
   type JobStoreContract,
   Queue,
   QueueName,
@@ -87,6 +88,72 @@ const makeTestRuntime = async () => {
 }
 
 describe('Job producer and admin programs', () => {
+  test('prepare returns an immutable storage-neutral enqueue without resolving a JobStore', async () => {
+    const clock = new ClockTest(100)
+    const runtime = await Runtime.make(Layer.succeed(Clock, clock))
+
+    try {
+      const result = await runtime.run(() =>
+        Effect.gen(async function* () {
+          const prepared = yield* Send.prepare(
+            { id: 'prepared' },
+            { jobId: 'prepared-job', delayMs: 25, metadata: { source: 'prepare' } }
+          )
+          return Result.ok(prepared)
+        })
+      )
+
+      expect(Result.isOk(result)).toBe(true)
+      if (Result.isError(result)) return
+
+      expect(JSON.parse(JSON.stringify(result.value))).toEqual({
+        protocolVersion: 1,
+        identity: { queue: 'application-tests', name: 'send', version: 1 },
+        id: 'prepared-job',
+        payload: { id: 'prepared' },
+        metadata: { source: 'prepare' },
+        priority: 2,
+        runAt: 125,
+        attemptsMax: 3,
+        now: 100
+      })
+      expect(Object.isFrozen(result.value)).toBe(true)
+      expect(Object.isFrozen(result.value.identity)).toBe(true)
+      expect(Object.isFrozen(result.value.payload)).toBe(true)
+      expect(Object.isFrozen(result.value.metadata)).toBe(true)
+      expect(JSON.parse(JSON.stringify(result.value))).toEqual({
+        protocolVersion: 1,
+        identity: { queue: 'application-tests', name: 'send', version: 1 },
+        id: 'prepared-job',
+        payload: { id: 'prepared' },
+        metadata: { source: 'prepare' },
+        priority: 2,
+        runAt: 125,
+        attemptsMax: 3,
+        now: 100
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('validatePreparedEnqueue rejects a different protocol version', () => {
+    const result = validatePreparedEnqueue({
+      protocolVersion: 2,
+      identity: { queue: 'jobs', name: 'send', version: 1 },
+      payload: { id: 'one' },
+      metadata: {},
+      priority: 0,
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    })
+
+    expect(Result.isError(result)).toBe(true)
+    if (Result.isOk(result)) return
+    expect(result.error.message).toContain('protocol version')
+  })
+
   test('enqueue applies codecs, defaults, callbacks, duplicate semantics, and batches', async () => {
     const { runtime } = await makeTestRuntime()
 

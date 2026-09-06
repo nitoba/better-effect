@@ -32,6 +32,8 @@ import {
   type JobIdentityMismatchError,
   type JobNotFoundError,
   type JobOperation,
+  type PreparedEnqueue,
+  type JobPrepareError,
   type JobPollError,
   type JobPromoteError,
   type JobRecord,
@@ -70,6 +72,7 @@ const Named = Emails.job('named', {
 const options: JobEnqueueOptions = { delayMs: 10 }
 const awaitOptions: JobAwaitOptions = { pollIntervalMs: 10 }
 const enqueue = Send.enqueue({ to: 'a' }, options)
+const prepare = Send.prepare({ to: 'a' })
 const enqueueMany = Send.enqueueMany([{ to: 'a' }])
 const poll = Send.poll('job')
 const attempts = Send.attempts('job')
@@ -153,6 +156,9 @@ expectTypeOf<JobExecutionCancelledError['failure']>().toEqualTypeOf<
 expectTypeOf(enqueue).toEqualTypeOf<
   JobOperation<import('../../src').JobId, ExpectedEnqueueError, typeof JobStore, true>
 >()
+expectTypeOf(prepare).toEqualTypeOf<
+  JobOperation<PreparedEnqueue<'application-types', 'send', 1>, JobPrepareError, never, true>
+>()
 expectTypeOf(enqueueMany).toEqualTypeOf<
   JobOperation<readonly import('../../src').JobId[], ExpectedEnqueueError, typeof JobStore, true>
 >()
@@ -219,6 +225,16 @@ expectTypeOf<EffectRequirements<typeof program>>().toEqualTypeOf<
   JobStore.Instance | InstanceType<typeof Clock>
 >()
 
+const prepareProgram = Effect.gen(async function* () {
+  const prepared = yield* Send.prepare({ to: 'a' })
+  expectTypeOf(prepared).toEqualTypeOf<PreparedEnqueue<'application-types', 'send', 1>>()
+  return Result.ok(prepared)
+})
+expectTypeOf<EffectError<typeof prepareProgram>>().toEqualTypeOf<JobPrepareError>()
+expectTypeOf<EffectRequirements<typeof prepareProgram>>().toEqualTypeOf<
+  InstanceType<typeof Clock>
+>()
+
 const awaitProgram = Effect.gen(async function* () {
   const id = yield* Send.enqueue({ to: 'a' })
   const result = yield* Send.awaitResult(id)
@@ -251,6 +267,7 @@ expectTypeOf<EffectRequirements<typeof namedProgram>>().toEqualTypeOf<
 
 const completeLayer = Layer.merge(MemoryJobStore.layer, ClockLive)
 void Runtime.run(completeLayer, () => program)
+void Runtime.run(ClockLive, () => prepareProgram)
 void Runtime.run(completeLayer, () => awaitProgram)
 void Runtime.run(completeLayer, () => executeProgram)
 const namedLayer = Layer.merge(MemoryJobStore.layerFor(NamedStore), ClockLive)
