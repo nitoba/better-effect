@@ -106,7 +106,29 @@ const expectedCoreRuntimeExports = [
   'validatePersistedBackoff',
   'validatePositiveDuration',
   'validateSerializedJobFailure',
-  'validateTimestamp'
+  'validateTimestamp',
+  'DuplicateScheduleError',
+  'JobScheduleStore',
+  'JobSchedules',
+  'MemoryJobScheduleStore',
+  'ScheduleDefinitionError',
+  'ScheduleNotFoundError',
+  'ScheduleStoreFailure',
+  'encodeScheduleKey',
+  'encodeSchedulePayload',
+  'firstEveryMsOccurrence',
+  'isJobScheduleStoreToken',
+  'isValidTimeZone',
+  'jobScheduleStoreTag',
+  'makeEveryMs',
+  'makeScheduleOccurrenceId',
+  'maxScheduleIdentityLength',
+  'nextCronOccurrence',
+  'nextEveryMsOccurrence',
+  'nextScheduleOccurrence',
+  'normalizeTimeZone',
+  'parseCron',
+  'parseCronExpression'
 ] as const
 
 const allowedExternalImportsByEntrypoint = {

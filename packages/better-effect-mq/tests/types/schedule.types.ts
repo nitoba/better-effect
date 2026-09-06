@@ -1,8 +1,7 @@
 import { expectTypeOf } from 'bun:test'
 
-import { Codec, Queue } from '../../src'
-import { JobSchedules } from '../../src/schedule'
-import type { JobSchedule } from '../../src/schedule'
+import { Codec, JobSchedules, Queue } from '../../src'
+import type { JobSchedule } from '../../src'
 
 const job = Queue.define('billing').job('generate-invoice', {
   version: 3,
