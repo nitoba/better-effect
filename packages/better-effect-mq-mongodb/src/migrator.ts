@@ -134,6 +134,43 @@ const schemas = {
     wakeVersion: { bsonType: ['int', 'long', 'double'], minimum: 0 },
     updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
   }),
+  outbox: validator(
+    [
+      '_id',
+      'namespace',
+      'id',
+      'protocolVersion',
+      'target',
+      'state',
+      'request',
+      'requestDigest',
+      'attemptsMax',
+      'attemptsMade',
+      'runAtMs',
+      'createdAtMs',
+      'updatedAtMs'
+    ],
+    {
+      _id: { bsonType: 'string' },
+      namespace: { bsonType: 'string', minLength: 1 },
+      id: { bsonType: 'string', minLength: 1 },
+      protocolVersion: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      target: { bsonType: 'string', minLength: 1 },
+      state: { enum: ['pending', 'active', 'published', 'failed'] },
+      request: { bsonType: 'object' },
+      requestDigest: { bsonType: 'string', minLength: 1 },
+      attemptsMax: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+      attemptsMade: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      runAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      createdAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      publishedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      leaseOwner: { bsonType: 'string', minLength: 1 },
+      leaseToken: { bsonType: 'string', minLength: 1 },
+      leaseExpiresAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+      failure: { bsonType: 'object' }
+    }
+  ),
   schedules: validator(
     [
       '_id',
@@ -255,6 +292,15 @@ const indexes = (prefix: string) => ({
     },
     { key: { namespace: 1, group: 1, scheduleKey: 1 }, name: 'schedule_group' },
     { key: { namespace: 1, scheduleKey: 1, group: 1 }, name: 'schedule_key' }
+  ],
+  [`${prefix}_outbox`]: [
+    { key: { namespace: 1, id: 1 }, name: 'outbox_identity', unique: true },
+    {
+      key: { namespace: 1, state: 1, runAtMs: 1, createdAtMs: 1, id: 1 },
+      name: 'outbox_claim'
+    },
+    { key: { namespace: 1, state: 1, leaseExpiresAtMs: 1 }, name: 'outbox_lease_sweep' },
+    { key: { namespace: 1, target: 1, state: 1, createdAtMs: -1, id: -1 }, name: 'outbox_target' }
   ]
 })
 
@@ -340,6 +386,7 @@ export const MongoJobStoreMigrator = Object.freeze({
       await ensureCollection(db, names[3]!, undefined)
       await ensureCollection(db, names[4]!, undefined)
       await ensureCollection(db, names[5]!, schemas.schedules)
+      await ensureCollection(db, names[6]!, schemas.outbox)
       const declared = indexes(prefix)
       for (const [name, definition] of Object.entries(declared))
         await db.collection(name).createIndexes(definition)
