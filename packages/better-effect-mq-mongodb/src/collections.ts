@@ -4,7 +4,7 @@
 
 import type { MongoDb } from './config'
 
-export const MONGODB_LAYOUT_VERSION = 2 as const
+export const MONGODB_LAYOUT_VERSION = 3 as const
 export const MONGODB_PROTOCOL_VERSION = 1 as const
 
 export type MongoCollections = ReturnType<typeof mongoCollections>
@@ -16,7 +16,8 @@ export const mongoCollections = (db: MongoDb, prefix: string) =>
     attempts: db.collection(`${prefix}_attempts`),
     queues: db.collection(`${prefix}_queues`),
     counters: db.collection(`${prefix}_counters`),
-    migrations: db.collection(`${prefix}_migrations`)
+    migrations: db.collection(`${prefix}_migrations`),
+    outbox: db.collection(`${prefix}_outbox`)
   })
 
 export const collectionNames = (prefix: string) =>
@@ -26,7 +27,8 @@ export const collectionNames = (prefix: string) =>
     `${prefix}_queues`,
     `${prefix}_counters`,
     `${prefix}_migrations`,
-    `${prefix}_schedules`
+    `${prefix}_schedules`,
+    `${prefix}_outbox`
   ])
 
 export const metadataEntries = (metadata: Readonly<Record<string, string>>) =>
