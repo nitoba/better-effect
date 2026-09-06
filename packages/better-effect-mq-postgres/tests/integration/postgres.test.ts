@@ -5,7 +5,13 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { Layer, Runtime, ServiceRuntime } from 'better-effect'
 import { JobStore, type AnyJobStoreToken, type JobStore as JobStoreType } from 'better-effect-mq'
 import { jobStoreContract, type JobStoreContractSynchronization } from 'better-effect-mq/testing'
-import { PostgresClient, PostgresJobStore, type Pool } from '../../src/index'
+import {
+  makeOutboxRecord,
+  OutboxId,
+  OutboxWorkerId,
+  validatePreparedEnqueue
+} from 'better-effect-mq-outbox'
+import { PostgresClient, PostgresJobStore, PostgresOutbox, type Pool } from '../../src/index'
 
 const connectionString = process.env.POSTGRES_URL
 const schema = `better_effect_mq_contract_${process.pid}`
@@ -126,15 +132,70 @@ describe('PostgreSQL JobStore conformance on PostgreSQL', () => {
     try {
       await configuredPgPool().query(`DROP SCHEMA IF EXISTS "${migrationSchema}" CASCADE`)
       const migrated = await client.migrate()
-      expect(migrated.version).toBe(2)
-      expect(migrated.applied).toEqual([1, 2])
+      expect(migrated.version).toBe(3)
+      expect(migrated.applied).toEqual([1, 2, 3])
       await expect(client.validate()).resolves.toMatchObject({
         schema: migrationSchema,
-        version: 2
+        version: 3
       })
       await expect(client.migrate()).resolves.toMatchObject({ applied: [] })
     } finally {
       await configuredPgPool().query(`DROP SCHEMA IF EXISTS "${migrationSchema}" CASCADE`)
+    }
+  })
+
+  integration('runs the durable outbox append, claim, and settlement paths', async () => {
+    const outboxNamespace = `outbox-${process.pid}`
+    const store = PostgresOutbox.make({
+      pool: configuredPool(),
+      schema,
+      namespace: outboxNamespace,
+      validateSchema: false
+    })
+    const request = validatePreparedEnqueue({
+      protocolVersion: 1,
+      identity: { queue: 'billing', name: 'send', version: 1 },
+      payload: { orderId: 'real-pg' },
+      metadata: {},
+      priority: 0,
+      runAt: 0,
+      attemptsMax: 2,
+      now: 0
+    }).unwrap()
+    const record = makeOutboxRecord({
+      id: OutboxId.make('real-pg-outbox').unwrap(),
+      target: 'orders',
+      request
+    }).unwrap()
+    const transaction = await configuredPgPool().connect()
+    try {
+      await transaction.query('BEGIN')
+      const appended = await store.appendIn(transaction, record)
+      await transaction.query('COMMIT')
+      expect(appended.duplicate).toBe(false)
+      const claimedResult = await store.claim({
+        owner: OutboxWorkerId.make('real-pg-worker').unwrap(),
+        limit: 1,
+        leaseDurationMs: 1_000,
+        nowMs: 0
+      })
+      if (claimedResult.isErr()) throw claimedResult.error
+      const claimed = claimedResult.value[0]
+      if (claimed === undefined) throw new Error('The real PostgreSQL outbox claim was empty')
+      const settled = await store.markPublished({
+        id: claimed.id,
+        leaseToken: claimed.leaseToken,
+        nowMs: 1
+      })
+      if (settled.isErr()) throw settled.error
+      expect(settled.value.status).toBe('applied')
+    } finally {
+      await configuredPgPool().query(
+        `DELETE FROM "${schema}".better_effect_mq_outbox WHERE namespace = $1`,
+        [outboxNamespace]
+      )
+      await store.dispose()
+      transaction.release()
     }
   })
 

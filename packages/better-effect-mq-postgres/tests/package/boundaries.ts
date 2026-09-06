@@ -32,6 +32,9 @@ const peers = manifest.peerDependencies as Record<string, unknown>
 if (peers['better-effect-mq'] === undefined || peers.pg === undefined) {
   throw new Error('Expected MQ and pg peers')
 }
+if (peers['better-effect-mq-outbox'] === undefined) {
+  throw new Error('Expected the outbox peer')
+}
 const peerMeta = manifest.peerDependenciesMeta as Record<string, Record<string, unknown>>
 if (peerMeta.pg?.optional !== true) throw new Error('pg must remain optional')
 
@@ -48,5 +51,9 @@ if (!migration.includes('better_effect_mq_jobs_claim_idx')) {
 const schedulesMigration = await readFile(join(packageRoot, 'migrations/002_schedules.sql'), 'utf8')
 if (!schedulesMigration.includes('better_effect_mq_schedules')) {
   throw new Error('Schedule migration is missing')
+}
+const outboxMigration = await readFile(join(packageRoot, 'migrations/003_outbox.sql'), 'utf8')
+if (!outboxMigration.includes('better_effect_mq_outbox')) {
+  throw new Error('Outbox migration is missing')
 }
 console.log('PostgreSQL package boundaries passed')

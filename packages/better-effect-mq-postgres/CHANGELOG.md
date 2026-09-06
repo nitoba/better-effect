@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add the PostgreSQL v1 `OutboxStore` adapter with transactional `appendIn`,
+  digest-idempotent appends, fenced leases, settlements, recovery, inspection,
+  and default/named Service Layers.
+- Add migration `003_outbox.sql` and schema validation for the durable outbox
+  layout.
+
 ## [0.1.0] - 2026-09-02
 
 Initial release of `better-effect-mq-postgres`.
@@ -13,7 +21,5 @@ Initial release of `better-effect-mq-postgres`.
 
 This release includes the durable `JobStore` operations, claims, settlements,
 heartbeats, and LISTEN/NOTIFY support provided by this adapter.
-
-## Unreleased
 
 Future changes will be recorded here without promising a release date.

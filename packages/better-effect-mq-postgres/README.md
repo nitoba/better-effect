@@ -1,6 +1,6 @@
 # better-effect-mq-postgres
 
-`better-effect-mq-postgres` is the PostgreSQL adapter for [`better-effect-mq`](../better-effect-mq). It provides the durable `JobStore` contract over the migrated relational protocol layout, including transactional enqueue, fenced leases, transitions, inspection queries, and wake/version signalling. It also provides the PostgreSQL `JobScheduleStore` extension, with durable schedule state and atomic schedule ticks.
+`better-effect-mq-postgres` is the PostgreSQL adapter for [`better-effect-mq`](../better-effect-mq). It provides the durable `JobStore` contract over the migrated relational protocol layout, including transactional enqueue, fenced leases, transitions, inspection queries, and wake/version signalling. It also provides the PostgreSQL `JobScheduleStore` extension, with durable schedule state and atomic schedule ticks, plus the v1 `OutboxStore` persistence adapter from [`better-effect-mq-outbox`](../better-effect-mq-outbox).
 
 `pg` is an optional peer. Importing the package, loading migrations, or using a
 caller-owned pool does not load `pg`; `PostgresClient.fromConfig` loads it
@@ -47,6 +47,34 @@ const StoreLive = PostgresJobStore.layerFromConfig({
 })
 ```
 
+The outbox adapter appends a prepared record inside an existing PostgreSQL
+transaction. It does not start, commit, or roll back that transaction, so the
+domain write and outbox insert can commit or roll back together:
+
+```ts
+import { PostgresOutbox } from 'better-effect-mq-postgres'
+
+await transaction.query('BEGIN')
+await transaction.query('INSERT INTO orders ...')
+await PostgresOutbox.appendIn(transaction, record, {
+  namespace: 'billing',
+  schema: 'public'
+})
+await transaction.query('COMMIT')
+```
+
+For post-commit publishing, provide only the outbox token requested by the
+application. The store exposes claim, heartbeat, settlement, release,
+stalled-lease recovery, listing, and count operations:
+
+```ts
+const OutboxLive = PostgresOutbox.layer({ pool, namespace: 'billing' })
+const NamedOutboxLive = PostgresOutbox.layerFor(PostgresOutbox.named('emails'), {
+  pool,
+  namespace: 'billing'
+})
+```
+
 For explicit migration control (the descriptor handshake does not replace
 layout validation):
 
@@ -65,7 +93,9 @@ fixed claim, lease, listing, idempotency, and metadata indexes. Protocol times
 are epoch milliseconds stored in `bigint`; values are always bound parameters
 and schema names are validated before quoting. Migration
 `migrations/002_schedules.sql` adds the schedule table and due/group/key
-indexes without modifying the initial migration.
+indexes without modifying the initial migration. `migrations/003_outbox.sql`
+adds the namespaced outbox table, digest index, claim/lease indexes, and
+published-record index without modifying the JobStore or schedule tables.
 
 ## Upgrade and downgrade policy
 
