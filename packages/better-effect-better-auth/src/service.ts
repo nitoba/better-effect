@@ -58,7 +58,7 @@ export type BetterAuthToken<
 > = ServiceToken<Tag, BetterAuthServiceInstance<Tag, Auth>> &
   BetterAuthTokenMembers<Tag, Auth, Required>
 
-/** Yieldable, constructible Service class returned by `BetterAuth.from` and `BetterAuth.service`. */
+/** Yieldable, constructible Service class returned by `BetterAuth.from`. */
 export type BetterAuthServiceToken<
   Tag extends string,
   Auth extends BetterAuthInstance,
@@ -242,17 +242,10 @@ export function betterAuthMake<
   >
 }
 
-/** Compatibility alias for the original prebuilt-instance helper. */
-export const betterAuthService = betterAuthFrom
-
 /** Better Auth integration namespace. */
 export const BetterAuth = Object.freeze({
   make: betterAuthMake,
-  from: betterAuthFrom,
-  /**
-   * @deprecated Use BetterAuth.make for Layer-first construction or BetterAuth.from for a prebuilt instance.
-   */
-  service: betterAuthFrom
+  from: betterAuthFrom
 })
 
 /** Type-level aliases colocated with the `BetterAuth` factory. */

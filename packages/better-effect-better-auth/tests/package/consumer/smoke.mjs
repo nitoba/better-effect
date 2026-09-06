@@ -7,6 +7,10 @@ import { BetterAuth, BetterAuthApiError, Unauthenticated } from 'better-effect-b
 import { BetterAuthHooks } from 'better-effect-better-auth/hooks'
 import { Result } from 'better-result'
 
+if (Object.hasOwn(BetterAuth, 'service')) {
+  throw new Error('Removed BetterAuth.service API is present in the packed consumer')
+}
+
 const baseURL = 'http://localhost:3000'
 const hookPaths = []
 const AuthHooks = BetterAuthHooks.define('@consumer/HookContext')
@@ -358,7 +362,7 @@ if (
 }
 
 const throwing = makeAuth({ onAPIError: { throw: true } })
-const ThrowingAuth = BetterAuth.service('@consumer/ThrowingAuth', throwing.rawAuth)
+const ThrowingAuth = BetterAuth.from('@consumer/ThrowingAuth', throwing.rawAuth)
 const throwingRuntime = await Runtime.make(ThrowingAuth.layer)
 let throwingResult
 try {

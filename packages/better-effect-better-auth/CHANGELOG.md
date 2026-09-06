@@ -6,13 +6,18 @@
 
 - Added lazy `BetterAuth.make(tag, rawFactory)` with contextual Service
   requirements and concrete Better Auth/plugin type preservation.
-- Added borrowed `BetterAuth.from(tag, rawAuth)` and kept
-  `BetterAuth.service(tag, rawAuth)` as its deprecated compatibility alias.
+- Added borrowed `BetterAuth.from(tag, rawAuth)` for prebuilt,
+  caller-owned instances.
 
 ### Changed
 
 - Changed Better Auth hooks to the Layer-first `BetterAuthHooks.define(tag)`
   API, whose middleware builders are acquired from `BetterAuth.make`.
+
+### Removed
+
+- Removed `BetterAuth.service(tag, rawAuth)`; use `BetterAuth.from(tag, rawAuth)`
+  for a prebuilt, caller-owned instance.
 
 ## [0.1.0] - 2026-08-31
 

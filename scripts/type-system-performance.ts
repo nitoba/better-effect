@@ -1192,7 +1192,7 @@ const betterAuthFixtureSource = (size: number): string => {
   const declarations = names
     .map(
       (name) => `const raw${name} = betterAuth({ plugins: [performancePlugin] })
-const ${name} = BetterAuth.service('@perf/${name}', raw${name})`
+const ${name} = BetterAuth.from('@perf/${name}', raw${name})`
     )
     .join('\n')
   const layers =

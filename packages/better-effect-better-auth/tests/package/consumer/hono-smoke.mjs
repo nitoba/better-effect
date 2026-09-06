@@ -26,7 +26,7 @@ const rawAuth = betterAuth({
   emailAndPassword: { enabled: true },
   secret: 'external-hono-consumer-secret-not-for-production-use'
 })
-const Auth = BetterAuth.service('@hono-consumer/Auth', rawAuth)
+const Auth = BetterAuth.from('@hono-consumer/Auth', rawAuth)
 const execute = (operation) =>
   Result.gen(async function* () {
     return Result.ok(yield* operation)

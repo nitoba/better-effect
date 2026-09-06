@@ -65,7 +65,7 @@ const makeAuth = (behavior: SessionBehavior) => {
     },
     handler: async (_request: Request) => new Response('auth')
   }
-  const Auth = BetterAuth.service('@hono-test/Auth', rawAuth)
+  const Auth = BetterAuth.from('@hono-test/Auth', rawAuth)
 
   return { Auth, calls, rawAuth }
 }
@@ -901,8 +901,8 @@ describe('BetterAuthHono', () => {
   test('keeps separate Auth instances and session tags independent', async () => {
     const first = makeAuth(async (input) => successSession(`first-${input.headers.get('x-id')}`))
     const second = makeAuth(async (input) => successSession(`second-${input.headers.get('x-id')}`))
-    const FirstAuth = BetterAuth.service('@hono-test/FirstAuth', first.rawAuth)
-    const SecondAuth = BetterAuth.service('@hono-test/SecondAuth', second.rawAuth)
+    const FirstAuth = BetterAuth.from('@hono-test/FirstAuth', first.rawAuth)
+    const SecondAuth = BetterAuth.from('@hono-test/SecondAuth', second.rawAuth)
     const FirstSession = BetterAuthHono.session('@hono-test/FirstSession', FirstAuth)
     const SecondSession = BetterAuthHono.session('@hono-test/SecondSession', SecondAuth)
     const app = new Hono()

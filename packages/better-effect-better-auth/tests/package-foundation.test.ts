@@ -11,3 +11,7 @@ test('publishes only the implemented runtime API', () => {
   ])
   expect(Object.keys(honoApi).sort()).toEqual(['BetterAuthHono'])
 })
+
+test('does not publish the removed BetterAuth.service API', () => {
+  expect(Object.keys(publicApi.BetterAuth).sort()).toEqual(['from', 'make'])
+})

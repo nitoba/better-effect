@@ -84,6 +84,11 @@ const rawAuth = betterAuth({
   plugins: [admin({ defaultRole: 'admin' }), releaseGatePlugin()],
   secret: 'external-consumer-secret-not-for-production-use'
 })
+
+// @ts-expect-error BetterAuth.service was removed from the public package API.
+const RemovedAuth = BetterAuth.service('@consumer/RemovedAuth', rawAuth)
+void RemovedAuth
+
 // oxlint-disable-next-line require-yield -- the consumer fixture intentionally has no external requirements.
 export const Auth = BetterAuth.make('@consumer/Auth', async function* () {
   return rawAuth

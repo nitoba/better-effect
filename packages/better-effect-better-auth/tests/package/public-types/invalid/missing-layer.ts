@@ -4,7 +4,7 @@ import { BetterAuth } from 'better-effect-better-auth'
 
 import { authWithPlugins } from '../auth'
 
-const Auth = BetterAuth.service('@invalid/MissingLayer', authWithPlugins)
+const Auth = BetterAuth.from('@invalid/MissingLayer', authWithPlugins)
 const program = Effect.fn(async function* () {
   const auth = yield* Auth
   return Result.ok(auth.raw)

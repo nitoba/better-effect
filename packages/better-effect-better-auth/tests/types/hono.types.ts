@@ -25,7 +25,7 @@ import {
 const rawAuth = betterAuth({
   plugins: [admin()]
 })
-const Auth = BetterAuth.service('@hono/Auth', rawAuth)
+const Auth = BetterAuth.from('@hono/Auth', rawAuth)
 // oxlint-disable-next-line require-yield -- this fixture covers a requirement-free lazy token.
 const LazyAuth = BetterAuth.make('@hono/LazyAuth', async function* () {
   return rawAuth
@@ -133,7 +133,7 @@ const missingSession = HonoEffect.app('@hono/MissingSessionApp', {}, async funct
 void Runtime.make(missingSession.layer)
 
 const otherRawAuth = betterAuth({})
-const OtherAuth = BetterAuth.service('@hono/OtherAuth', otherRawAuth)
+const OtherAuth = BetterAuth.from('@hono/OtherAuth', otherRawAuth)
 const OtherSession = BetterAuthHono.session('@hono/OtherSession', OtherAuth)
 const wrongHono = HonoEffect.app(
   '@hono/WrongAuthApp',

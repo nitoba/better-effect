@@ -151,10 +151,10 @@ class FakeAuth {
   }
 }
 
-describe('BetterAuth.service', () => {
+describe('BetterAuth.from', () => {
   test('returns a yieldable Service token with an immutable Layer and exact raw reference', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/Auth', raw)
+    const Auth = BetterAuth.from('@test/Auth', raw)
     const descriptor = Object.getOwnPropertyDescriptor(Auth, 'layer')
     const runtime = await Runtime.make(Auth.layer)
 
@@ -186,7 +186,7 @@ describe('BetterAuth.service', () => {
 
   test('constructs a complete Service implementation usable through core Layers', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/ConstructedAuth', raw)
+    const Auth = BetterAuth.from('@test/ConstructedAuth', raw)
     const constructed = new Auth()
     const direct = await execute(constructed.api.ping({ value: 'constructed' }))
 
@@ -226,8 +226,8 @@ describe('BetterAuth.service', () => {
   test('keeps multiple Better Auth instances and Proxy caches isolated', async () => {
     const firstRaw = new FakeAuth()
     const secondRaw = new FakeAuth()
-    const FirstAuth = BetterAuth.service('@test/FirstAuth', firstRaw)
-    const SecondAuth = BetterAuth.service('@test/SecondAuth', secondRaw)
+    const FirstAuth = BetterAuth.from('@test/FirstAuth', firstRaw)
+    const SecondAuth = BetterAuth.from('@test/SecondAuth', secondRaw)
     const runtime = await Runtime.make(Layer.merge(FirstAuth.layer, SecondAuth.layer))
 
     const result = await runtime.run(
@@ -252,7 +252,7 @@ describe('BetterAuth.service', () => {
 
   test('supports structural overrides through Auth.of and Layer.succeed', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/OverrideAuth', raw)
+    const Auth = BetterAuth.from('@test/OverrideAuth', raw)
     const liveRuntime = await Runtime.make(Auth.layer)
     const live = await liveRuntime.run(
       Effect.fn(async function* () {
@@ -494,7 +494,7 @@ describe('BetterAuth.make and BetterAuth.from', () => {
 describe('Better Auth session helpers', () => {
   test('forwards Request and Headers sources with exact session query options', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/SessionAuth', raw)
+    const Auth = BetterAuth.from('@test/SessionAuth', raw)
     const runtime = await Runtime.make(Auth.layer)
     const serviceResult = await runtime.run(
       Effect.fn(async function* () {
@@ -544,7 +544,7 @@ describe('Better Auth session helpers', () => {
 
   test('preserves null in get and produces Unauthenticated only from require', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/RequiredSessionAuth', raw)
+    const Auth = BetterAuth.from('@test/RequiredSessionAuth', raw)
     const runtime = await Runtime.make(Auth.layer)
     const serviceResult = await runtime.run(
       Effect.fn(async function* () {
@@ -579,7 +579,7 @@ describe('Better Auth session helpers', () => {
 
   test('does not mask Better Auth API errors or infrastructure defects as unauthenticated', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/SessionFailureAuth', raw)
+    const Auth = BetterAuth.from('@test/SessionFailureAuth', raw)
     const runtime = await Runtime.make(Auth.layer)
     const serviceResult = await runtime.run(
       Effect.fn(async function* () {
@@ -625,7 +625,7 @@ describe('Better Auth session helpers', () => {
 
   test('isolates concurrent session headers', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/ConcurrentSessionAuth', raw)
+    const Auth = BetterAuth.from('@test/ConcurrentSessionAuth', raw)
     const runtime = await Runtime.make(Auth.layer)
     const serviceResult = await runtime.run(
       Effect.fn(async function* () {
@@ -665,7 +665,7 @@ describe('Better Auth session helpers', () => {
 describe('Better Auth Web handler', () => {
   test('returns the exact non-2xx Response without consuming headers or streaming body', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/HandlerAuth', raw)
+    const Auth = BetterAuth.from('@test/HandlerAuth', raw)
     const runtime = await Runtime.make(Auth.layer)
     const serviceResult = await runtime.run(
       Effect.fn(async function* () {
@@ -704,7 +704,7 @@ describe('Better Auth Web handler', () => {
 
   test('normalizes thrown API errors and defects while preserving the original causes', async () => {
     const raw = new FakeAuth()
-    const Auth = BetterAuth.service('@test/HandlerFailureAuth', raw)
+    const Auth = BetterAuth.from('@test/HandlerFailureAuth', raw)
     const runtime = await Runtime.make(Auth.layer)
     const serviceResult = await runtime.run(
       Effect.fn(async function* () {
