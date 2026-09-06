@@ -1,7 +1,7 @@
 // oxlint-disable anti-slop/no-unknown-parameters -- Effect programs intentionally exercise the typed worker boundary.
 
 import { expectTypeOf } from 'bun:test'
-import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { Effect, Service } from 'better-effect'
 import { Result } from 'better-result'
 
 import {
@@ -17,8 +17,6 @@ import {
 class RootService extends Service<RootService>()('WorkerTypesRoot') {
   readonly prefix!: string
 }
-
-class OtherService extends Service<OtherService>()('WorkerTypesOther') {}
 
 const queue = Queue.define('worker-types')
 const payload = Codec.json<{ readonly value: number }>()
@@ -70,41 +68,6 @@ expectTypeOf(firstHandler.handler).toMatchTypeOf<
   }) => Effect.Program<number, { readonly code: string }, RootService | JobContext>
 >()
 
-// SAFETY: This fixture only needs a structurally valid store contract to test Worker type inference.
-const storeLayer = Layer.succeed(JobStore, JobStore.of({} as import('../../src').JobStore.Contract))
-const namedLayer = Layer.succeed(
-  namedStore,
-  // SAFETY: This fixture only needs a structurally valid store contract to test named-store inference.
-  namedStore.of({} as import('../../src').JobStore.Contract)
-)
-const rootLayer = Layer.succeed(RootService, RootService.of({ prefix: 'root' }))
-const completeLayer = Layer.merge(storeLayer, rootLayer)
-const namedCompleteLayer = Layer.merge(namedLayer, rootLayer)
-
-declare const completeRuntime: Runtime.For<typeof completeLayer>
-declare const namedCompleteRuntime: Runtime.For<typeof namedCompleteLayer>
-declare const storeOnlyRuntime: Runtime.For<typeof storeLayer>
-declare const otherRuntime: Runtime<OtherService>
-
-const complete = Worker.startWith(completeRuntime.executor, {
-  handlers: [firstHandler, secondHandler],
-  concurrency: 4
-})
-const namedComplete = Worker.startWith(namedCompleteRuntime.executor, { handlers: [namedHandler] })
-const completeWithExecutor = Worker.startWith(completeRuntime.executor, {
-  handlers: [firstHandler, secondHandler]
-})
-const namedWithExecutor = Worker.startWith(namedCompleteRuntime.executor, {
-  handlers: [namedHandler]
-})
-
-// @ts-expect-error A Worker handler's root Service must be present in the executor.
-void Worker.startWith(storeOnlyRuntime.executor, { handlers: [firstHandler] })
-// @ts-expect-error A Job bound to a named store cannot run on another executor environment.
-void Worker.startWith(completeRuntime.executor, { handlers: [namedHandler] })
-// @ts-expect-error An executor with an unrelated Service does not satisfy the handler.
-void Worker.startWith(otherRuntime.executor, { handlers: [firstHandler] })
-
 const wrongFailure = Worker.handle(firstJob, () =>
   // @ts-expect-error A handler must return the Job's declared failure channel.
   // oxlint-disable-next-line require-yield -- the generator shape is part of the Effect API contract.
@@ -131,12 +94,5 @@ expectTypeOf<WorkerHandle['activeCount']>().toEqualTypeOf<number>()
 
 // @ts-expect-error Handler descriptors are immutable after construction.
 firstHandler.concurrency = 2
-// @ts-expect-error Worker handles expose readonly inspectable values.
-void complete.then((handle) => (handle.id = 'mutable'))
-
-void complete
-void namedComplete
-void completeWithExecutor
-void namedWithExecutor
 void wrongFailure
 void wrongPayload

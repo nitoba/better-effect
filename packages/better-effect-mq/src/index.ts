@@ -204,7 +204,6 @@ export {
 
 export type {
   AnyWorkerHandler,
-  CompleteWorkerOptions,
   JobContextInput,
   WorkerAwaitIdleErrorReason,
   WorkerAwaitIdleOptions,
@@ -215,9 +214,14 @@ export type {
   WorkerHandler,
   WorkerHandlerOptions,
   WorkerHandle,
+  WorkerLayerRequirements,
   WorkerReliabilityOptions,
   WorkerOptions,
   WorkerRandom,
+  WorkerServiceGeneratorFactory,
+  WorkerServiceInstance,
+  WorkerServiceTag,
+  WorkerServiceToken,
   WorkerRequirements,
   WorkerStopOptions
 } from './worker'

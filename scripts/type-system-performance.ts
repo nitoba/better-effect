@@ -1055,10 +1055,13 @@ const AppLive = Layer.merge(
   Layer.succeed(JobStore, JobStore.of(implementation)),
   Layer.succeed(WorkerRoot, WorkerRoot.of({}))
 )
-declare const runtime: Runtime.For<typeof AppLive>
+const AppWorker = Worker.service('BenchmarkWorker')
+const WorkerLive = AppWorker.layer(() => ({ handlers, concurrency: 8 }))
+const ApplicationLive = Layer.complete(Layer.merge(AppLive, WorkerLive))
+declare const runtime: Runtime.For<typeof ApplicationLive>
 void requirements
 void reverseRequirements
-void Worker.startWith(runtime.executor, { handlers, concurrency: 8 })
+void runtime
 `
 }
 

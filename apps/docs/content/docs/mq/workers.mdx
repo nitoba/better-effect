@@ -1,20 +1,24 @@
 ---
 title: Workers
-description: Run real handlers over an existing better-effect Runtime.
+description: Run real handlers with a Layer-owned Worker Service.
 ---
 
 A Worker is a supervisor over an already configured Runtime. It claims jobs,
 provides `JobContext` and `CurrentAbortSignal` to the handler, and settles the
-result through the same JobStore contract used by producers.
+result through the same JobStore contract used by producers. The recommended
+Layer-first API makes the Worker a named Service owned by the Runtime.
 
 ```ts
-import { Effect, Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { JobContext, JobStore, MemoryJobStore, Worker } from 'better-effect-mq'
 import { SendEmail } from './jobs'
 
-const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
+class WorkerConfig extends Service<WorkerConfig>()('WorkerConfig') {
+  readonly concurrency!: number
+}
+
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
     const context = yield* JobContext
@@ -23,28 +27,58 @@ const handler = Worker.handle(SendEmail, (payload) =>
     return Result.ok(`sent:${payload.recipient}`)
   })
 )
+const AppWorker = Worker.service('@app/EmailWorker')
+const AppWorkerLive = AppWorker.layer(async function* () {
+  const config = yield* WorkerConfig
+  return {
+    handlers: [handler] as const,
+    concurrency: config.concurrency
+  }
+})
+const runtime = await Runtime.make(
+  Layer.complete(
+    Layer.merge(
+      MemoryJobStore.layer,
+      ClockLive,
+      Layer.succeed(WorkerConfig, WorkerConfig.of({ concurrency: 8 })),
+      AppWorkerLive
+    )
+  )
+)
 
 try {
-  await using worker = await Worker.startWith(runtime.executor, {
-    handlers: [handler],
-    concurrency: 8
-  })
-  await worker.awaitIdle()
+  await runtime.warmup()
+  const worker = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* AppWorker)
+    })
+  )
+  if (Result.isError(worker)) {
+    throw worker.error
+  }
+  await worker.value.awaitIdle()
 } finally {
-  // The await-using Worker is stopped before this Runtime is disposed.
+  // Runtime disposal quiesces the Worker, drains attempts and releases it.
   await runtime.dispose()
 }
 ```
 
-`Worker.startWith(runtime.executor, options)` is the only Worker start
-boundary. It uses the real Worker supervisor without providing a parallel
-container, scheduler or `Worker.layer`. The handler's `Effect` requirements
-and the Job's store requirement are checked against the executor at startup.
+`Worker.service(tag)` returns a non-constructible, yieldable control token.
+Its factory is lazy and runs once per Layer provider/runtime. Factory Services,
+handler requirements and bound JobStore tokens are retained in the Layer type;
+`JobContext` and `Runtime.Executor` stay internal. The Worker starts only after
+its options and stores have been validated. `AppWorker.succeed(testDouble)` is
+available for caller-owned tests and registers no lifecycle.
+
+`Runtime.warmup()` is an explicit startup barrier. Without warmup, resolving
+`AppWorker` from a program starts the Worker on first use. Runtime shutdown
+quiesces Layer-owned Workers before draining attempts and releases them after
+the drain.
 
 A Worker may have several handlers and named store bindings. Claims are fenced
 by lease token, and handler attempts are bounded by global, queue and handler
-concurrency. Keep the Worker alive while processing and stop it before
-disposing the Runtime that owns its store and other services.
+concurrency. Keep the owning Runtime alive while processing and dispose it
+after the application stops accepting work.
 
 A cooperative `AbortSignal` is available for cancellation and timeout. A
 handler that ignores the signal cannot be forcibly killed by JavaScript.

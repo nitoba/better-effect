@@ -843,7 +843,7 @@ export class WorkerSupervisor<
     )
 
     try {
-      // SAFETY: handler requirements were checked by Worker.startWith before the
+      // SAFETY: handler requirements were checked by the Worker Service layer before the
       // heterogeneous handler tuple was erased inside this supervisor.
       return await (this.executor as AnyExecutor).runWith(JobContext.layer(context), program, {
         signal: attempt.controller.signal,

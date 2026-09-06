@@ -70,9 +70,6 @@ const testEnqueued = testStore.store.enqueue({
 if (testEnqueued.status !== 'ok' || (await testStore.enqueued(workerJob)).length !== 1) {
   throw new Error('the packed TestJobStore did not expose the public store harness')
 }
-const workerRuntime = await Runtime.make(
-  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), ClockLive)
-)
 const now = 1_700_000_000_000
 const jobs = []
 for (let index = 0; index < 8; index += 1) {
@@ -119,12 +116,24 @@ const workerHandler = Worker.handle(workerJob, (input) =>
     return Result.ok(undefined)
   })
 )
-const worker = await Worker.startWith(workerRuntime.executor, {
+const workerService = Worker.service('ExternalWorker')
+const workerLayer = workerService.layer(() => ({
   handlers: [workerHandler],
   concurrency: 2,
   pollIntervalMs: 1
-})
-let stopWasIdempotent = false
+}))
+const workerRuntime = await Runtime.make(
+  Layer.merge(Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), ClockLive), workerLayer)
+)
+const workerResult = await workerRuntime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(yield* workerService)
+  })
+)
+if (!Result.isOk(workerResult)) {
+  throw workerResult.error
+}
+const worker = workerResult.value
 
 try {
   const vectorResult = await workerRuntime.run(() =>
@@ -232,18 +241,10 @@ try {
   }
 } finally {
   releaseGate()
-  const firstStop = worker.stop()
-  const secondStop = worker.stop()
-  stopWasIdempotent = firstStop === secondStop
-  await firstStop
-  await worker[Symbol.asyncDispose]()
   await workerRuntime.dispose()
   await testRuntime.dispose()
 }
 
-if (!stopWasIdempotent) {
-  throw new Error('the packed Worker stop handle was not idempotent')
-}
 if (worker.state !== 'stopped' || worker.activeCount !== 0) {
   throw new Error('the packed Worker did not clean up its handle')
 }

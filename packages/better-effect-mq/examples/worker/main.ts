@@ -6,15 +6,21 @@ import { JobStore, JobContext, MemoryJobStore, Worker } from 'better-effect-mq'
 import { SendEmail } from '../shared/jobs'
 
 const store = MemoryJobStore.make()
-const runtime = await Runtime.make(
-  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), ClockLive)
-)
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
     const context = yield* JobContext
     void context
     return Result.ok(`sent:${payload.recipient}`)
   })
+)
+const AppWorker = Worker.service('@examples/EmailWorker')
+const AppWorkerLive = AppWorker.layer(() => ({
+  handlers: [handler] as const,
+  concurrency: 1,
+  pollIntervalMs: 1
+}))
+const runtime = await Runtime.make(
+  Layer.complete(Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), ClockLive, AppWorkerLive))
 )
 
 try {
@@ -31,16 +37,16 @@ try {
     throw enqueued.error
   }
 
-  const worker = await Worker.startWith(runtime.executor, {
-    handlers: [handler],
-    concurrency: 1,
-    pollIntervalMs: 1
-  })
-  try {
-    await worker.awaitIdle()
-  } finally {
-    await worker.stop()
+  const workerResult = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* AppWorker)
+    })
+  )
+  if (Result.isError(workerResult)) {
+    throw workerResult.error
   }
+
+  await workerResult.value.awaitIdle()
 
   const completed = await store.getJob({ jobId: enqueued.value })
   if (Result.isError(completed) || completed.value?.state !== 'completed') {

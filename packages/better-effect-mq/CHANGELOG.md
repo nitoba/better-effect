@@ -4,6 +4,8 @@
 
 ### Added
 
+- Layer-first `Worker.service(tag).layer(factory)` startup and Runtime-owned
+  quiesce/release lifecycle, plus caller-owned `Worker.succeed` test doubles.
 - Retry policies with durable backoff normalization, typed failure handling,
   cooperative job timeouts, and best-effort failure notifications.
 - Process-local JobEvent observers, logging and metrics adapters, RecordedJobObserver,
