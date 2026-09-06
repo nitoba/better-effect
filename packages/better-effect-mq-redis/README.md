@@ -47,6 +47,12 @@ A namespace can therefore be distributed by using several namespaces, but a sing
 
 The layout includes job hashes, attempt lists, monotonic sequences, identity waiting/delayed indexes, active leases, queue controls, wake versions, counters, idempotency mappings, listing indexes, and a layout marker. The marker records adapter, protocol, layout, index-configuration, and script-set versions. Existing data with no marker or incompatible values fails with `RedisLayoutMismatchError`; the adapter never deletes or rewrites data automatically. Initial marker creation takes a short namespaced Redis lock and rechecks the marker while the lock is held; deployments should use this adapter (or otherwise coordinate writers) during first namespace initialization. Set `validateLayout: false` only when that check is deliberately managed elsewhere. The JobStore descriptor reports protocol v1, layout `1`, and the capability matrix in the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
+## Flow protocol v2 foundation
+
+`RedisFlowStore.make(redis)` implements the core `FlowStoreV2` atomic slice. It uses a separate v2 flow marker and Lua registry, so the protocol-v1 JobStore marker, scripts, and keys remain unchanged. Flow parents are hashes, child specifications and records share a per-flow hash, and byte-ordered child indexes plus pending/cascade sorted sets keep reconciliation work durable. Fan-out, child-result recording, fail-fast cancellation, explicit cancellation, reconciliation, and cascade acknowledgement are each single-slot Lua operations with bounded JSON arguments and idempotent replays.
+
+The flow layout also reserves durable outbox keys and codecs for terminal child reports. Relay delivery, lease ownership, and the JobStore terminal-settlement hook are intentionally not inferred from the v1 API; they require the next core integration wave. Until then, applications should not treat `RedisFlowStore` as a cross-store enqueue or exactly-once relay.
+
 ## Codecs
 
 `encodeJobRecord` and `encodeAttempt` validate before encoding. JSON values are canonical, cycle-free, plain data, and do not execute accessors. `decodeJobRecord` and `decodeAttempt` return `better-result` `Result` values and turn malformed hash fields or JSON into focused `RedisLayoutError` values without including payload or failure contents in default messages.

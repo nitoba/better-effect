@@ -6,9 +6,37 @@
 import { describe, expect, test } from 'bun:test'
 import { Result } from 'better-result'
 
-import { JobId, JobName, QueueName, makeJobRecord, validateAttemptRecord } from 'better-effect-mq'
-import { decodeAttempt, decodeJobRecord, encodeAttempt, encodeJobRecord } from '../src/index'
-import type { AttemptRecord, JobRecord } from 'better-effect-mq'
+import {
+  JobId,
+  JobName,
+  LeaseToken,
+  QueueName,
+  makeFlowChildId,
+  makeJobRecord,
+  makePreparedEnqueue,
+  protocolVersion,
+  validateAttemptRecord
+} from 'better-effect-mq'
+import {
+  decodeAttempt,
+  decodeFlowChildEntry,
+  decodeFlowOutboxEntry,
+  decodeFlowParent,
+  encodeAttempt,
+  encodeFlowChildEntry,
+  encodeFlowOutboxEntry,
+  encodeFlowParent,
+  encodeJobRecord,
+  decodeJobRecord
+} from '../src/index'
+import type {
+  AttemptRecord,
+  FlowChildRecord,
+  FlowChildReport,
+  FlowChildSpec,
+  FlowParentRecord,
+  JobRecord
+} from 'better-effect-mq'
 
 const unwrap = <Value, Failure>(result: Result<Value, Failure>): Value => {
   if (Result.isError(result)) throw result.error
@@ -61,6 +89,72 @@ const attempt = (): AttemptRecord =>
     })
   )
 
+const flowFixtures = () => {
+  const flowId = unwrap(JobId.make('flow-codec'))
+  const childJobId = unwrap(
+    makeFlowChildId({ parentStoreKey: 'parent-store', flowId, childKey: 'child:1' })
+  )
+  const request = unwrap(
+    makePreparedEnqueue({
+      protocolVersion,
+      identity: { queue: 'flow', name: 'child', version: 1 },
+      id: childJobId,
+      payload: { child: true },
+      metadata: {},
+      priority: 0,
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    })
+  )
+  const spec: FlowChildSpec = {
+    childKey: 'child:1',
+    name: 'child',
+    version: 1,
+    storeKey: 'child-store',
+    childJobId,
+    request
+  }
+  const record: FlowChildRecord = {
+    flowId,
+    childKey: 'child:1',
+    name: 'child',
+    version: 1,
+    storeKey: 'child-store',
+    childJobId,
+    status: 'pending',
+    result: undefined,
+    failure: undefined,
+    cascaded: false,
+    pendingSinceMs: 0
+  }
+  const parent: FlowParentRecord = {
+    flowId,
+    flowName: 'codec-flow',
+    parentStoreKey: 'parent-store',
+    depth: 1,
+    state: 'waiting-children',
+    leaseToken: unwrap(LeaseToken.make('lease')),
+    flow: {
+      flowName: 'codec-flow',
+      failFast: true,
+      pending: 1,
+      completed: 0,
+      failed: 0,
+      cancelled: 0
+    },
+    failure: undefined
+  }
+  const report: FlowChildReport = {
+    flowId,
+    childKey: 'child:1',
+    outcome: 'completed',
+    result: { ok: true },
+    failure: undefined
+  }
+  return { flowId, spec, record, parent, report }
+}
+
 describe('Redis codecs', () => {
   test('round-trips complete records and preserves NUL/Unicode JSON', () => {
     const encoded = encodeJobRecord(record())
@@ -86,6 +180,78 @@ describe('Redis codecs', () => {
     expect(Result.isError(decoded)).toBe(false)
     if (Result.isError(decoded)) return
     expect(decoded.value).toEqual(attempt())
+  })
+
+  test('round-trips v2 parent, child row, and terminal outbox report', () => {
+    const fixtures = flowFixtures()
+    const child = encodeFlowChildEntry(fixtures.spec, fixtures.record, 'flow-v2/ref')
+    const decodedChild = decodeFlowChildEntry(child)
+    expect(Result.isError(decodedChild)).toBe(false)
+    if (Result.isError(decodedChild)) return
+    expect(decodedChild.value.record).toEqual(fixtures.record)
+    expect(decodedChild.value.spec).toEqual(fixtures.spec)
+
+    const parent = decodeFlowParent({
+      record: encodeFlowParent(fixtures.parent),
+      fanOutDigest: 'digest'
+    })
+    expect(Result.isError(parent)).toBe(false)
+    if (Result.isError(parent)) return
+    expect(parent.value).toEqual(fixtures.parent)
+
+    const outbox = decodeFlowOutboxEntry(
+      encodeFlowOutboxEntry({
+        id: 'outbox-1',
+        flowName: fixtures.parent.flowName,
+        parentStoreKey: fixtures.parent.parentStoreKey,
+        report: fixtures.report
+      })
+    )
+    expect(Result.isError(outbox)).toBe(false)
+  })
+
+  test('preserves the distinction between an absent result and JSON null', () => {
+    const fixtures = flowFixtures()
+    const completed: FlowChildRecord = {
+      ...fixtures.record,
+      status: 'completed',
+      result: undefined
+    }
+    const absent = decodeFlowChildEntry(
+      encodeFlowChildEntry(fixtures.spec, completed, 'flow-v2/ref')
+    )
+    expect(Result.isError(absent)).toBe(false)
+    if (Result.isError(absent)) return
+    expect(absent.value.record.result).toBeUndefined()
+
+    const jsonNull = decodeFlowChildEntry(
+      encodeFlowChildEntry(fixtures.spec, { ...completed, result: null }, 'flow-v2/ref')
+    )
+    expect(Result.isError(jsonNull)).toBe(false)
+    if (Result.isError(jsonNull)) return
+    expect(jsonNull.value.record.result).toBeNull()
+  })
+
+  test('fails closed for malformed v2 rows', () => {
+    const fixtures = flowFixtures()
+    const child = encodeFlowChildEntry(fixtures.spec, fixtures.record, 'flow-v2/ref')
+    const parsed = JSON.parse(child) as Record<string, unknown>
+    parsed.record = { ...(parsed.record as Record<string, unknown>), status: 'failed' }
+    expect(Result.isError(decodeFlowChildEntry(JSON.stringify(parsed)))).toBe(true)
+    expect(Result.isError(decodeFlowParent({ record: '{}', fanOutDigest: 'digest' }))).toBe(true)
+    expect(
+      Result.isError(
+        decodeFlowOutboxEntry('{"id":"x","flowName":"f","parentStoreKey":"p","report":{}}')
+      )
+    ).toBe(true)
+    expect(() =>
+      encodeFlowOutboxEntry({
+        id: '',
+        flowName: fixtures.parent.flowName,
+        parentStoreKey: fixtures.parent.parentStoreKey,
+        report: fixtures.report
+      })
+    ).toThrow()
   })
 
   test('fails closed for corrupt hashes and keeps sensitive values out of errors', () => {

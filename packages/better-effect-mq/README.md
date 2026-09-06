@@ -28,8 +28,8 @@ These documents define the storage-neutral protocol implemented by the current s
 
 The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
 flow contracts, pure `Flow.define`/`Flow.children` descriptors, and the
-reference `MemoryFlowStore`; durable database adapters, cross-store delivery,
-and Worker supervision remain future integrations.
+reference `MemoryFlowStore`; durable cross-store delivery and Worker
+supervision remain future integrations.
 
 ## Schedule-store conformance
 

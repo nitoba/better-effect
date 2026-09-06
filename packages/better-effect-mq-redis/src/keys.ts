@@ -22,6 +22,10 @@ const safeStates: readonly JobState[] = [
 const rawSegmentPattern = /^[A-Za-z0-9._-]+$/u
 const safeIntegerTextPattern = /^\d{16}$/u
 
+const flowReferencePrefix = 'flow-v2/'
+
+const lengthPrefixed = (value: string): string => `${utf8ByteLength(value)}:${value}`
+
 const invalid = (field: string, message: string): never => {
   throw new RedisLayoutError(message, field, 'INVALID_KEY')
 }
@@ -227,6 +231,32 @@ export const decodeListingMember = (value: string): RedisListingMember => {
   return Object.freeze({ value: legacy.orderingSequence, ...legacy })
 }
 
+/** Encode a flow child key for a lexicographically ordered Redis member. */
+export const encodeFlowChildIndexMember = (value: string): string => {
+  const childKey = validateKeySegment(value, 'childKey')
+  return Buffer.from(childKey, 'utf8').toString('hex')
+}
+
+export const decodeFlowChildIndexMember = (value: string): string => {
+  if (typeof value !== 'string' || value.length === 0 || value.length % 2 !== 0) {
+    return invalid('flow child index member', 'contains an invalid encoding')
+  }
+  if (!/^[0-9a-f]+$/u.test(value))
+    return invalid('flow child index member', 'contains an invalid encoding')
+  const decoded = Buffer.from(value, 'hex').toString('utf8')
+  if (encodeFlowChildIndexMember(decoded) !== value) {
+    return invalid('flow child index member', 'contains an invalid encoding')
+  }
+  return decoded
+}
+
+/** Encode the `(flowId, childKey)` identity used by pending/cascade indexes. */
+export const encodeFlowReference = (flowId: string, childKey: string): string => {
+  const id = validateKeySegment(flowId, 'flowId')
+  const key = validateKeySegment(childKey, 'childKey')
+  return `${flowReferencePrefix}${lengthPrefixed(id)}${lengthPrefixed(key)}`
+}
+
 export interface RedisKeyLayout {
   readonly prefix: string
   readonly namespace: string
@@ -259,6 +289,15 @@ export interface RedisKeyLayout {
   readonly scheduleGroups: string
   readonly scheduleDue: string
   readonly layout: string
+  readonly flowParent: (flowId: string) => string
+  readonly flowChildren: (flowId: string) => string
+  readonly flowChildIndex: (flowId: string) => string
+  readonly flowPending: string
+  readonly flowCascade: string
+  readonly flowOutbox: string
+  readonly flowOutboxSequence: string
+  readonly flowOutboxEntry: (entryId: string) => string
+  readonly flowLayout: string
 }
 
 const stateKey = (state: JobState, field: string): string => {
@@ -319,7 +358,16 @@ export const makeRedisKeyLayout = (prefixValue: string, namespaceValue: string):
       suffix(`schedule-group:${encodeKeySegment(validateKeySegment(group, 'schedule group'))}`),
     scheduleGroups: suffix('schedule-groups'),
     scheduleDue: suffix('schedule-due'),
-    layout: suffix('layout')
+    layout: suffix('layout'),
+    flowParent: (flowId: string) => suffix(`flow-parent:${encodeKeySegment(flowId)}`),
+    flowChildren: (flowId: string) => suffix(`flow-children:${encodeKeySegment(flowId)}`),
+    flowChildIndex: (flowId: string) => suffix(`flow-child-index:${encodeKeySegment(flowId)}`),
+    flowPending: suffix('flow-pending'),
+    flowCascade: suffix('flow-cascade'),
+    flowOutbox: suffix('flow-outbox'),
+    flowOutboxSequence: suffix('seq:flow-outbox'),
+    flowOutboxEntry: (entryId: string) => suffix(`flow-outbox-entry:${encodeKeySegment(entryId)}`),
+    flowLayout: suffix('flow-layout')
   }
   return Object.freeze(layout)
 }

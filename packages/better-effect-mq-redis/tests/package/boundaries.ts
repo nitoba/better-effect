@@ -58,7 +58,12 @@ for (const name of [
   'remove',
   'pause',
   'resume',
-  'tick-schedule'
+  'tick-schedule',
+  'flow-fanout',
+  'flow-record-child-results',
+  'flow-cancel',
+  'flow-reconcile',
+  'flow-mark-cascaded'
 ]) {
   const script = await readFile(join(scriptDirectory, `${name}.lua`), 'utf8')
   if (!script.includes('KEYS') || !script.includes('ARGV')) {

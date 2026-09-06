@@ -27,7 +27,17 @@ export const redisScriptNames = [
   'tick-schedule'
 ] as const
 
-export type RedisScriptName = (typeof redisScriptNames)[number]
+export const redisFlowScriptNames = [
+  'flow-fanout',
+  'flow-record-child-results',
+  'flow-cancel',
+  'flow-reconcile',
+  'flow-mark-cascaded'
+] as const
+
+export type RedisScriptName =
+  | (typeof redisScriptNames)[number]
+  | (typeof redisFlowScriptNames)[number]
 
 export interface RedisScriptDefinition {
   readonly name: RedisScriptName
@@ -68,7 +78,7 @@ const isNoScript = (cause: unknown): boolean => {
   }
 }
 
-const validScriptNames = new Set<string>(redisScriptNames)
+const validScriptNames = new Set<string>([...redisScriptNames, ...redisFlowScriptNames])
 
 const validateStringArray = (
   value: unknown,
@@ -219,6 +229,14 @@ export const loadRedisScriptManifest = async (
 ): Promise<RedisScriptManifest> => {
   const definitions: RedisScriptDefinition[] = []
   for (const name of redisScriptNames) definitions.push(await readDefinition(name, directory))
+  return Object.freeze(definitions)
+}
+
+export const loadRedisFlowScriptManifest = async (
+  directory = new URL('./scripts/', import.meta.url)
+): Promise<RedisScriptManifest> => {
+  const definitions: RedisScriptDefinition[] = []
+  for (const name of redisFlowScriptNames) definitions.push(await readDefinition(name, directory))
   return Object.freeze(definitions)
 }
 

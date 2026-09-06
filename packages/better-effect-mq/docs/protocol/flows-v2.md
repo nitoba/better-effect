@@ -82,5 +82,5 @@ contract accepts either an immediate `better-result` `Result` or a
 `PromiseLike` of one so in-memory and SQL-backed stores can share the same
 protocol without adding a runtime or transaction abstraction.
 
-PostgreSQL, Redis, cross-store enqueue/outbox delivery, result aggregation,
-and Worker supervision are intentionally left to later waves.
+PostgreSQL and Redis adapters provide durable flow storage. Cross-store enqueue,
+outbox delivery, result aggregation, and Worker supervision remain later waves.
