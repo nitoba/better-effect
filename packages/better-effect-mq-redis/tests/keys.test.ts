@@ -7,10 +7,13 @@ import {
   MAX_KEY_SEGMENT_BYTES,
   assertSameRedisHashSlot,
   decodeDelayedMember,
+  decodeFlowChildIndexMember,
   decodeIdentity,
   decodeKeySegment,
   decodeWaitingMember,
   encodeDelayedMember,
+  encodeFlowChildIndexMember,
+  encodeFlowReference,
   encodeIdentity,
   encodeKeySegment,
   encodeWaitingMember,
@@ -50,7 +53,16 @@ describe('Redis key layout', () => {
       layout.scheduleGroup('billing'),
       layout.scheduleGroups,
       layout.scheduleDue,
-      layout.layout
+      layout.layout,
+      layout.flowParent('flow-1'),
+      layout.flowChildren('flow-1'),
+      layout.flowChildIndex('flow-1'),
+      layout.flowPending,
+      layout.flowCascade,
+      layout.flowOutbox,
+      layout.flowOutboxSequence,
+      layout.flowOutboxEntry('entry-1'),
+      layout.flowLayout
     ]
 
     expect(new Set(keys.map(redisHashSlot)).size).toBe(1)
@@ -76,6 +88,15 @@ describe('Redis key layout', () => {
 
     const delayed = encodeDelayedMember(42, 'job:通知')
     expect(decodeDelayedMember(delayed)).toEqual({ orderingSequence: 42, jobId: 'job:通知' })
+
+    const childIndex = encodeFlowChildIndexMember('email:通知')
+    expect(decodeFlowChildIndexMember(childIndex)).toBe('email:通知')
+    expect(encodeFlowReference('flow-1', 'email:通知')).toBe('flow-v2/6:flow-112:email:通知')
+  })
+
+  test('keeps child-index members ordered by UTF-8 bytes', () => {
+    const members = ['a', 'é', '通知'].map(encodeFlowChildIndexMember)
+    expect([...members].sort()).toEqual(members)
   })
 
   test('keeps priority independent from safe-integer member ordering', () => {
@@ -96,6 +117,7 @@ describe('Redis key layout', () => {
     expect(() => decodeWaitingMember(1 as unknown as string)).toThrow(RedisLayoutError)
     expect(() => decodeDelayedMember(1 as unknown as string)).toThrow(RedisLayoutError)
     expect(() => decodeIdentity(1 as unknown as string)).toThrow(RedisLayoutError)
+    expect(() => decodeFlowChildIndexMember('not-hex')).toThrow(RedisLayoutError)
     expect(() => encodeDelayedMember(Number.MAX_SAFE_INTEGER + 1, 'job')).toThrow(RedisLayoutError)
     expect(() => encodeKeySegment('x'.repeat(MAX_KEY_SEGMENT_BYTES + 1))).toThrow(RedisLayoutError)
     expect(() => assertSameRedisHashSlot([])).toThrow(RedisLayoutError)

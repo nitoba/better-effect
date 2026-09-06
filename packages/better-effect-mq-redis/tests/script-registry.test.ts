@@ -7,6 +7,8 @@ import {
   RedisScriptError,
   RedisScriptRegistry,
   assertSameRedisHashSlot,
+  loadRedisFlowScriptManifest,
+  redisFlowScriptNames,
   scriptSetChecksum
 } from '../src/index'
 import type { RedisCommandClient, RedisSubscriberClient } from '../src/index'
@@ -86,6 +88,17 @@ describe('Redis script registry', () => {
     expect(result).toEqual(['ok', registry.getSha('enqueue')])
     expect(client.calls.at(-1)?.[0]).toBe('EVALSHA')
     expect(client.calls.some((call) => call[0] === 'EVAL')).toBe(false)
+  })
+
+  test('loads the v2 flow scripts in a separate manifest', async () => {
+    const client = new FakeRedisClient()
+    const flowManifest = await loadRedisFlowScriptManifest()
+    const registry = await RedisScriptRegistry.load(client, flowManifest)
+
+    expect(flowManifest.map((definition) => definition.name)).toEqual([...redisFlowScriptNames])
+    expect(registry.manifest).toEqual(flowManifest)
+    expect(registry.scriptSetChecksum).toBe(scriptSetChecksum(flowManifest))
+    expect(client.calls).toHaveLength(redisFlowScriptNames.length)
   })
 
   test('routes cluster script commands through their first key', async () => {

@@ -1,4 +1,5 @@
 export { RedisJobStore } from './store'
+export { RedisFlowStore } from './flow-store'
 export { RedisJobScheduleStore } from './schedule-store'
 export {
   RedisClient,
@@ -27,6 +28,16 @@ export type {
 
 export { decodeAttempt, decodeJobRecord, encodeAttempt, encodeJobRecord } from './codec'
 export type { RedisDecodeResult, RedisHashFields } from './codec'
+export {
+  canonicalFlowJson,
+  decodeFlowChildEntry,
+  decodeFlowOutboxEntry,
+  decodeFlowParent,
+  encodeFlowChildEntry,
+  encodeFlowOutboxEntry,
+  encodeFlowParent
+} from './flow-codec'
+export type { RedisFlowChildEntry, RedisFlowDecodeResult } from './flow-codec'
 
 export {
   RedisAdapterError,
@@ -43,22 +54,30 @@ export {
   REDIS_INDEX_CONFIGURATION,
   REDIS_INDEX_CONFIGURATION_CHECKSUM,
   REDIS_LAYOUT_VERSION,
+  REDIS_FLOW_INDEX_CONFIGURATION,
+  REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+  REDIS_FLOW_LAYOUT_VERSION,
+  REDIS_FLOW_PROTOCOL_VERSION,
   REDIS_PROTOCOL_VERSION,
+  ensureRedisFlowLayout,
   ensureRedisLayout,
   MAX_LAYOUT_SCAN_KEYS,
   MAX_LAYOUT_SCAN_PAGES
 } from './layout'
-export type { RedisLayoutMarker } from './layout'
+export type { RedisFlowLayoutMarker, RedisLayoutMarker } from './layout'
 
 export {
   assertSameRedisHashSlot,
   createRedisKeyLayout,
   decodeDelayedMember,
+  decodeFlowChildIndexMember,
   decodeIdentity,
   decodeKeySegment,
   decodeListingMember,
   decodeWaitingMember,
   encodeDelayedMember,
+  encodeFlowChildIndexMember,
+  encodeFlowReference,
   encodeIdentity,
   encodeKeySegment,
   encodeListingMember,
@@ -85,7 +104,9 @@ export type {
 
 export {
   loadRedisScriptManifest,
+  loadRedisFlowScriptManifest,
   RedisScriptRegistry,
+  redisFlowScriptNames,
   redisScriptNames,
   scriptSetChecksum
 } from './script-registry'

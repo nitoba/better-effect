@@ -6,10 +6,14 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   REDIS_INDEX_CONFIGURATION_CHECKSUM,
+  REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+  REDIS_FLOW_LAYOUT_VERSION,
+  REDIS_FLOW_PROTOCOL_VERSION,
   REDIS_LAYOUT_VERSION,
   REDIS_PROTOCOL_VERSION,
   RedisLayoutMismatchError,
   ensureRedisLayout,
+  ensureRedisFlowLayout,
   makeRedisKeyLayout
 } from '../src/index'
 import type { RedisCommandClient, RedisSubscriberClient } from '../src/index'
@@ -17,13 +21,18 @@ import type { RedisCommandClient, RedisSubscriberClient } from '../src/index'
 class LayoutClient implements RedisCommandClient {
   readonly calls: string[][] = []
   marker: Record<string, string> = Object.create(null) as Record<string, string>
+  flowMarker: Record<string, string> = Object.create(null) as Record<string, string>
   keys: string[] = []
   private lock: string | undefined
   private lockKey: string | undefined
 
   async sendCommand(args: readonly string[]): Promise<unknown> {
     this.calls.push([...args])
-    if (args[0] === 'HGETALL') return { ...this.marker }
+    if (args[0] === 'HGETALL') {
+      return args[1]?.endsWith(':flow-layout') === true
+        ? { ...this.flowMarker }
+        : { ...this.marker }
+    }
     if (args[0] === 'SET') {
       this.lockKey = args[1]
       this.lock = args[2]
@@ -51,8 +60,9 @@ class LayoutClient implements RedisCommandClient {
       return 1
     }
     if (args[0] === 'HSET') {
+      const target = args[1]?.endsWith(':flow-layout') === true ? this.flowMarker : this.marker
       for (let index = 2; index < args.length; index += 2) {
-        this.marker[args[index]!] = args[index + 1]!
+        target[args[index]!] = args[index + 1]!
       }
       return this.keys.length
     }
@@ -128,5 +138,50 @@ describe('Redis layout marker', () => {
     const layout = makeRedisKeyLayout('better-effect-mq', 'notifications')
     await expect(ensureRedisLayout(client, layout, 'script-sha', false)).resolves.toBeUndefined()
     expect(client.calls).toHaveLength(0)
+  })
+
+  test('initializes the v2 flow marker alongside an existing v1 namespace', async () => {
+    const client = new LayoutClient()
+    const layout = makeRedisKeyLayout('better-effect-mq', 'notifications')
+    client.keys = [layout.job('existing')]
+
+    const marker = await ensureRedisFlowLayout(client, layout, 'flow-script-sha', true)
+
+    expect(marker).toEqual({
+      adapterVersion: '0.1.0',
+      protocolVersion: REDIS_FLOW_PROTOCOL_VERSION,
+      layoutVersion: REDIS_FLOW_LAYOUT_VERSION,
+      scriptSetChecksum: 'flow-script-sha',
+      indexConfigurationChecksum: REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+      migration: { status: 'not-required', from: undefined, to: 1 }
+    })
+    expect(client.flowMarker.migrationStatus).toBe('not-required')
+  })
+
+  test('rejects an incompatible existing flow marker without touching v1 data', async () => {
+    const client = new LayoutClient()
+    const layout = makeRedisKeyLayout('better-effect-mq', 'notifications')
+    client.marker = {
+      adapterVersion: '0.1.0',
+      protocolVersion: REDIS_PROTOCOL_VERSION,
+      layoutVersion: REDIS_LAYOUT_VERSION,
+      scriptSetChecksum: 'v1-script-sha',
+      indexConfigurationChecksum: REDIS_INDEX_CONFIGURATION_CHECKSUM
+    }
+    client.flowMarker = {
+      adapterVersion: '0.1.0',
+      protocolVersion: REDIS_FLOW_PROTOCOL_VERSION,
+      layoutVersion: REDIS_FLOW_LAYOUT_VERSION,
+      scriptSetChecksum: 'old-flow-script-sha',
+      indexConfigurationChecksum: REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+      migrationStatus: 'not-required',
+      migrationFrom: '',
+      migrationTo: '1'
+    }
+
+    await expect(
+      ensureRedisFlowLayout(client, layout, 'flow-script-sha', true)
+    ).rejects.toBeInstanceOf(RedisLayoutMismatchError)
+    expect(client.marker.scriptSetChecksum).toBe('v1-script-sha')
   })
 })

@@ -7,6 +7,13 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 
+import {
+  flowLayoutVersion,
+  makeFlowMigration,
+  protocolVersionV2,
+  type FlowMigration
+} from 'better-effect-mq'
+
 import { RedisLayoutError, RedisLayoutMismatchError } from './errors'
 import { sendRedisCommand, type RedisCommandClient } from './config'
 import type { RedisKeyLayout } from './keys'
@@ -14,6 +21,8 @@ import type { RedisKeyLayout } from './keys'
 export const REDIS_ADAPTER_VERSION = '0.1.0' as const
 export const REDIS_PROTOCOL_VERSION = '1' as const
 export const REDIS_LAYOUT_VERSION = '1' as const
+export const REDIS_FLOW_PROTOCOL_VERSION = String(protocolVersionV2) as '2'
+export const REDIS_FLOW_LAYOUT_VERSION = String(flowLayoutVersion) as '1'
 export const MAX_LAYOUT_SCAN_PAGES = 10_000 as const
 export const MAX_LAYOUT_SCAN_KEYS = 10_000 as const
 
@@ -56,6 +65,33 @@ export interface RedisLayoutMarker {
   readonly layoutVersion: string
   readonly scriptSetChecksum: string
   readonly indexConfigurationChecksum: string
+}
+
+export const REDIS_FLOW_INDEX_CONFIGURATION = Object.freeze([
+  'flow-layout',
+  'flow-parent',
+  'flow-children',
+  'flow-child-index',
+  'flow-pending',
+  'flow-cascade',
+  'flow-outbox',
+  'flow-outbox-entry',
+  'seq:flow-outbox'
+] as const)
+
+const flowIndexConfigurationChecksum = createHash('sha256')
+  .update(JSON.stringify(REDIS_FLOW_INDEX_CONFIGURATION))
+  .digest('hex')
+
+export const REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM = flowIndexConfigurationChecksum
+
+export interface RedisFlowLayoutMarker {
+  readonly adapterVersion: string
+  readonly protocolVersion: typeof REDIS_FLOW_PROTOCOL_VERSION
+  readonly layoutVersion: typeof REDIS_FLOW_LAYOUT_VERSION
+  readonly scriptSetChecksum: string
+  readonly indexConfigurationChecksum: string
+  readonly migration: FlowMigration
 }
 
 type RedisHash = Record<string, string>
@@ -382,4 +418,196 @@ export const ensureRedisLayout = async (
   const actual = await readMarker(client, layout)
   if (Object.keys(actual).length > 0) return validateExistingMarker(actual, expected)
   return initializeEmptyLayout(client, layout, expected)
+}
+
+const flowMarkerFields = (marker: RedisFlowLayoutMarker): RedisHash =>
+  Object.freeze({
+    adapterVersion: marker.adapterVersion,
+    protocolVersion: marker.protocolVersion,
+    layoutVersion: marker.layoutVersion,
+    scriptSetChecksum: marker.scriptSetChecksum,
+    indexConfigurationChecksum: marker.indexConfigurationChecksum,
+    migrationStatus: marker.migration.status,
+    migrationFrom: marker.migration.from === undefined ? '' : String(marker.migration.from),
+    migrationTo: String(marker.migration.to)
+  }) as RedisHash
+
+const flowExpectedMarker = (scriptSetChecksum: string): RedisFlowLayoutMarker =>
+  Object.freeze({
+    adapterVersion: REDIS_ADAPTER_VERSION,
+    protocolVersion: REDIS_FLOW_PROTOCOL_VERSION,
+    layoutVersion: REDIS_FLOW_LAYOUT_VERSION,
+    scriptSetChecksum,
+    indexConfigurationChecksum: REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+    migration: makeFlowMigration({
+      status: 'not-required',
+      from: undefined,
+      to: flowLayoutVersion
+    })
+  })
+
+const flowMarkerFromHash = (actual: RedisHash): RedisFlowLayoutMarker => {
+  const requiredFields = [
+    'adapterVersion',
+    'protocolVersion',
+    'layoutVersion',
+    'scriptSetChecksum',
+    'indexConfigurationChecksum',
+    'migrationStatus',
+    'migrationFrom',
+    'migrationTo'
+  ] as const
+  const missing = requiredFields.filter((field) => actual[field] === undefined)
+  if (missing.length > 0)
+    throw new RedisLayoutMismatchError(missing.map((field) => `missing ${field}`))
+  const status = actual.migrationStatus
+  if (
+    status !== 'not-required' &&
+    status !== 'required' &&
+    status !== 'in-progress' &&
+    status !== 'complete'
+  ) {
+    throw invalid('flow-layout', 'contains an invalid migration status')
+  }
+  const from =
+    actual.migrationFrom === undefined || actual.migrationFrom === ''
+      ? undefined
+      : actual.migrationFrom
+  const to = actual.migrationTo
+  if (typeof to !== 'string' || to === '')
+    throw invalid('flow-layout', 'contains an invalid migration target')
+  return Object.freeze({
+    adapterVersion: actual.adapterVersion!,
+    protocolVersion: actual.protocolVersion as typeof REDIS_FLOW_PROTOCOL_VERSION,
+    layoutVersion: actual.layoutVersion as typeof REDIS_FLOW_LAYOUT_VERSION,
+    scriptSetChecksum: actual.scriptSetChecksum!,
+    indexConfigurationChecksum: actual.indexConfigurationChecksum!,
+    migration: makeFlowMigration({ status, from, to })
+  })
+}
+
+const flowMarkerProblems = (
+  actual: RedisFlowLayoutMarker,
+  expected: RedisFlowLayoutMarker
+): readonly string[] => {
+  const problems: string[] = []
+  for (const field of [
+    'adapterVersion',
+    'protocolVersion',
+    'layoutVersion',
+    'scriptSetChecksum',
+    'indexConfigurationChecksum'
+  ] as const) {
+    if (actual[field] !== expected[field]) problems.push(`incompatible ${field}`)
+  }
+  for (const field of ['status', 'from', 'to'] as const) {
+    if (actual.migration[field] !== expected.migration[field]) {
+      problems.push(`incompatible migration.${field}`)
+    }
+  }
+  return Object.freeze(problems)
+}
+
+const flowMarkerValidation = (
+  actual: RedisHash,
+  expected: RedisFlowLayoutMarker
+): RedisFlowLayoutMarker => {
+  const marker = flowMarkerFromHash(actual)
+  const expectedFields = Object.keys(flowMarkerFields(expected))
+  const unsupported = Object.keys(actual).filter((field) => !expectedFields.includes(field))
+  const problems = [
+    ...flowMarkerProblems(marker, expected),
+    ...unsupported.map((field) => `unsupported ${field}`)
+  ]
+  if (problems.length > 0) throw new RedisLayoutMismatchError(problems)
+  return expected
+}
+
+const scanFlowNamespace = async (
+  client: RedisCommandClient,
+  layout: RedisKeyLayout
+): Promise<readonly string[]> => {
+  const pattern = `${escapeScanPattern(layout.base)}:*`
+  const discovered: string[] = []
+  let cursor = '0'
+  let pages = 0
+  do {
+    if (pages >= MAX_LAYOUT_SCAN_PAGES)
+      throw invalid('flow-layout', 'flow namespace scan exceeded its page limit')
+    const reply = toScanReply(
+      await sendRedisCommand(
+        client,
+        ['SCAN', cursor, 'MATCH', pattern, 'COUNT', '256'],
+        layout.base
+      )
+    )
+    for (const key of reply.keys) {
+      if (!key.startsWith(`${layout.base}:`)) continue
+      const suffix = key.slice(layout.base.length + 1)
+      if (!suffix.startsWith('flow-') && !suffix.startsWith('seq:flow-')) continue
+      discovered.push(key)
+      if (discovered.length > MAX_LAYOUT_SCAN_KEYS) {
+        throw invalid('flow-layout', 'flow namespace scan exceeded its key limit')
+      }
+    }
+    cursor = reply.cursor
+    pages += 1
+  } while (cursor !== '0')
+  return Object.freeze(discovered)
+}
+
+const initializeEmptyFlowLayout = async (
+  client: RedisCommandClient,
+  layout: RedisKeyLayout,
+  expected: RedisFlowLayoutMarker
+): Promise<RedisFlowLayoutMarker> => {
+  const token = await acquireLayoutLock(client, layout)
+  let result: RedisFlowLayoutMarker | undefined
+  let failure: unknown
+  try {
+    const actual = toHash(
+      await sendRedisCommand(client, ['HGETALL', layout.flowLayout], layout.base)
+    )
+    if (Object.keys(actual).length > 0) {
+      result = flowMarkerValidation(actual, expected)
+    } else {
+      const existingKeys = await scanFlowNamespace(client, layout)
+      if (existingKeys.length > 0) {
+        throw new RedisLayoutMismatchError([
+          'flow layout marker is missing from a non-empty flow namespace'
+        ])
+      }
+      const fields = flowMarkerFields(expected)
+      const command = ['HSET', layout.flowLayout]
+      for (const [key, value] of Object.entries(fields)) command.push(key, value)
+      await sendRedisCommand(client, command, layout.base)
+      result = expected
+    }
+  } catch (cause) {
+    failure = cause
+  }
+  try {
+    await releaseLayoutLock(client, layout, token)
+  } catch (cause) {
+    failure =
+      failure === undefined
+        ? cause
+        : new AggregateError([failure, cause], 'Redis flow layout initialization failed')
+  }
+  if (failure !== undefined) throw failure
+  return result!
+}
+
+/** Validate or initialize the independent protocol-v2 flow layout. */
+export const ensureRedisFlowLayout = async (
+  client: RedisCommandClient,
+  layout: RedisKeyLayout,
+  scriptSetChecksum: string,
+  validateLayout: boolean
+): Promise<RedisFlowLayoutMarker | undefined> => {
+  if (!validateLayout) return undefined
+  const expected = flowExpectedMarker(scriptSetChecksum)
+  const actual = toHash(await sendRedisCommand(client, ['HGETALL', layout.flowLayout], layout.base))
+  if (Object.keys(actual).length > 0) return flowMarkerValidation(actual, expected)
+  return initializeEmptyFlowLayout(client, layout, expected)
 }
