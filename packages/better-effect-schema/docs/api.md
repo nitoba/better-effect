@@ -12,7 +12,7 @@ import {
   SchemaEncodeFailure,
   SchemaConstructionFailure,
   BetterEffectZodError
-} from "better-effect-schema"
+} from 'better-effect-schema'
 ```
 
 `Schema` is the preferred facade. Top-level factory and operation exports are the same function objects. `Z` and `ZodClassError` are deprecated migration aliases.
@@ -30,7 +30,7 @@ Schema.Class<Self>(identifier, annotations?)(definition)
 - a bidirectional `ZodCodec` whose encoded and decoded projections are objects.
 
 ```ts
-class User extends Schema.Class<User>("@app/User")({
+class User extends Schema.Class<User>('@app/User')({
   id: z.uuid(),
   name: z.string()
 }) {}
@@ -205,6 +205,31 @@ Model.is(value)
 
 `Model.is` uses stable logical identity and class kind rather than only constructor reference identity.
 
+## Standard Schema and capabilities
+
+The four `Schema.decode*` operations consume only the Standard Schema V1
+`~standard.validate` protocol. They accept any conforming provider, preserve
+the provider's transformed output, and return `Result` values through
+`SchemaEffect`. The optional `libraryOptions` object is forwarded unchanged.
+
+Advanced operations are provided explicitly by local adapters:
+
+```ts
+const Local = Schema.with({
+  encoding: {
+    encode(schema, value) {
+      return Result.ok(value)
+    }
+  }
+})
+
+Local.encode(schema, value)
+```
+
+`Schema.with` returns a frozen facade. A capability that is absent, incomplete,
+or unsupported is not represented by a placeholder method; available adapter
+callbacks are invoked through the package's no-throw boundary.
+
 ## Type helpers
 
 ```ts
@@ -224,6 +249,10 @@ Equivalent top-level types are exported as `Props`, `Fields`, `Struct`, `Encoded
 SchemaDecodeFailure
 SchemaEncodeFailure
 SchemaConstructionFailure
+SchemaDefinitionFailure
+SchemaExecutionFailure
+SchemaUnsupportedOperation
+SchemaAsyncRequired
 ```
 
 Shared properties:
@@ -233,7 +262,7 @@ readonly _tag: string
 readonly identifier: string
 readonly message: string
 readonly issues: readonly SchemaIssue[]
-readonly cause: z.ZodError // non-enumerable in memory
+readonly cause: unknown // non-enumerable in memory
 ```
 
 `toJSON()` omits `cause`, `stack`, rejected values, and arbitrary validator messages.
