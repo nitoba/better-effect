@@ -25,6 +25,35 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 
 These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
 
+## Schedule-store conformance
+
+Schedule adapters can reuse the runner-agnostic contract from the `testing`
+entrypoint. Factories receive the associated store token and a deterministic
+`ClockTest`; they do not receive a Runtime or a transaction handle:
+
+```ts
+import { ClockTest } from 'better-effect/standard-services'
+import { MemoryJobScheduleStore, MemoryJobStore } from 'better-effect-mq'
+import { jobScheduleStoreContract } from 'better-effect-mq/testing'
+
+const suite = jobScheduleStoreContract({
+  clock: () => new ClockTest(0),
+  makeStore: () => MemoryJobStore.make(),
+  makeScheduleStore: ({ jobStore }) => MemoryJobScheduleStore.make({ jobStore })
+})
+
+for (const scenario of suite) {
+  test(scenario.name, scenario.run)
+}
+```
+
+The v1 suite exercises validation, idempotent cadence updates, CAS and
+deterministic occurrence IDs, response-loss retries, bounded misfire and
+overlap behavior, pause/resume, named-store isolation, group-scoped
+reconciliation with grace, timezone/DST rules, and tick/enqueue/wake
+atomicity. Adapter-specific cases can be added with `extensions`; the
+`suite.report()` snapshot records descriptor and scenario coverage.
+
 The package uses [`better-effect`](https://github.com/nitoba/better-effect)'s
 Service type and [`better-result`](https://github.com/nitoba/better-result)'s
 Result model; it does not depend on the full Effect library.

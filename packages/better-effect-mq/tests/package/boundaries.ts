@@ -580,9 +580,11 @@ const assertTestingEntrypoint = async (path: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
   const actual = Object.keys(module).sort()
   const expected = [
+    'JobScheduleStoreConformanceError',
     'JobStoreConformanceError',
     'RecordedJobObserver',
     'TestJobStore',
+    'jobScheduleStoreContract',
     'jobStoreContract',
     'jobStoreGoldenTrace',
     'runJobStoreGoldenTrace'
