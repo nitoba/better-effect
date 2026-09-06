@@ -1,7 +1,7 @@
 {
   "name": "better-effect-mq-sqlite",
   "version": "0.1.0",
-  "description": "Embedded SQLite JobStore adapter for better-effect-mq.",
+  "description": "Embedded SQLite JobStore and JobScheduleStore adapters for better-effect-mq.",
   "keywords": [
     "better-effect",
     "message-queue",
@@ -41,12 +41,14 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:node": "node --experimental-sqlite tests/node-smoke.mjs",
+    "test:package-boundaries": "bun tests/package/boundaries.ts",
+    "test:package-consumer": "bun tests/package/external-consumer.ts",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint --type-aware .",
     "publint": "publint",
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-mq-sqlite",
-    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run test:node && bun run publint && bun run release:dry && bun run lint"
+    "check": "bun run typecheck && bun test && bun run format:check && bun run build && bun run test:node && bun run test:package-boundaries && bun run test:package-consumer && bun run publint && bun run release:dry && bun run lint"
   },
   "devDependencies": {
     "@types/bun": "1.4.1",

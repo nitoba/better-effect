@@ -3,9 +3,19 @@
 import { createHash } from 'node:crypto'
 import type { SqliteDatabase } from './config'
 import { SqliteMigrationError, SqliteSchemaValidationError } from './errors'
-import { MIGRATION_COMPONENT, SQLITE_TABLES, migrationSql } from './schema'
+import {
+  MIGRATION_COMPONENT,
+  SQLITE_INDEXES,
+  SQLITE_TABLES,
+  migrationSql,
+  scheduleMigrationSql
+} from './schema'
 
-const checksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
+const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
+const scheduleChecksum = createHash('sha256').update(scheduleMigrationSql, 'utf8').digest('hex')
+const checksum = createHash('sha256')
+  .update(`1:${initialChecksum}\n2:${scheduleChecksum}\n`, 'utf8')
+  .digest('hex')
 
 export interface SqliteMigrationOptions {
   readonly database: SqliteDatabase
@@ -14,7 +24,7 @@ export interface SqliteMigrationOptions {
 
 export interface SqliteMigrationResult {
   readonly component: typeof MIGRATION_COMPONENT
-  readonly version: 1
+  readonly version: 2
   readonly applied: readonly number[]
 }
 
@@ -42,18 +52,39 @@ export const SqliteMigrator = {
           `SELECT version, checksum FROM ${SQLITE_TABLES.schemaVersions} WHERE component = ?`
         )
         .get(MIGRATION_COMPONENT)
-      if (existing != null && (existing.version !== 1 || existing.checksum !== checksum)) {
-        throw new SqliteMigrationError('migration checksum mismatch')
-      }
-      if (existing == null) {
+      const applied: number[] = []
+      if (existing != null) {
+        const version = Number(existing.version)
+        if (version === 1) {
+          if (existing.checksum !== initialChecksum) {
+            throw new SqliteMigrationError('migration checksum mismatch')
+          }
+        } else if (version === 2) {
+          if (existing.checksum !== checksum) {
+            throw new SqliteMigrationError('migration checksum mismatch')
+          }
+        } else {
+          throw new SqliteMigrationError('unsupported SQLite migration version')
+        }
+      } else {
         database
           .prepare(
             `INSERT INTO ${SQLITE_TABLES.schemaVersions}(component, version, applied_at_ms, checksum) VALUES(?, ?, ?, ?)`
           )
-          .run(MIGRATION_COMPONENT, 1, appliedAtMs, checksum)
+          .run(MIGRATION_COMPONENT, 1, appliedAtMs, initialChecksum)
+        applied.push(1)
+      }
+      if (existing == null || Number(existing.version) === 1) {
+        database.exec(scheduleMigrationSql)
+        database
+          .prepare(
+            `UPDATE ${SQLITE_TABLES.schemaVersions} SET version = ?, applied_at_ms = ?, checksum = ? WHERE component = ?`
+          )
+          .run(2, appliedAtMs, checksum, MIGRATION_COMPONENT)
+        applied.push(2)
       }
       database.exec('COMMIT')
-      return { component: MIGRATION_COMPONENT, version: 1, applied: existing == null ? [1] : [] }
+      return { component: MIGRATION_COMPONENT, version: 2, applied }
     } catch (cause) {
       rollback(database)
       if (cause instanceof SqliteMigrationError) throw cause
@@ -61,7 +92,7 @@ export const SqliteMigrator = {
     }
   },
 
-  validate(database: SqliteDatabase): { readonly version: 1 } {
+  validate(database: SqliteDatabase): { readonly version: 2 } {
     try {
       const names = new Set(
         database
@@ -72,17 +103,67 @@ export const SqliteMigrator = {
       for (const table of Object.values(SQLITE_TABLES)) {
         if (!names.has(table)) throw new SqliteSchemaValidationError(`missing table ${table}`)
       }
+      const requiredColumns: Readonly<Record<string, readonly string[]>> = {
+        [SQLITE_TABLES.schedules]: [
+          'namespace',
+          'schedule_key',
+          'schedule_group',
+          'job_queue',
+          'job_name',
+          'job_version',
+          'queue',
+          'cron',
+          'every_ms',
+          'time_zone',
+          'payload',
+          'metadata',
+          'priority',
+          'attempts_max',
+          'backoff',
+          'timeout_ms',
+          'misfire',
+          'overlap',
+          'paused',
+          'revision',
+          'next_run_at_ms',
+          'last_scheduled_at_ms',
+          'last_job_id',
+          'created_at_ms',
+          'updated_at_ms'
+        ]
+      }
+      for (const [table, columns] of Object.entries(requiredColumns)) {
+        const actual = new Set(
+          database
+            .prepare(`PRAGMA table_info(${table})`)
+            .all()
+            .flatMap((row) => (typeof row?.name === 'string' ? [row.name] : []))
+        )
+        for (const column of columns) {
+          if (!actual.has(column))
+            throw new SqliteSchemaValidationError(`missing column ${table}.${column}`)
+        }
+      }
+      const indexes = new Set(
+        database
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+          .all()
+          .flatMap((row) => (typeof row?.name === 'string' ? [row.name] : []))
+      )
+      for (const index of SQLITE_INDEXES) {
+        if (!indexes.has(index)) throw new SqliteSchemaValidationError(`missing index ${index}`)
+      }
       const row = database
         .prepare(
           `SELECT version, checksum FROM ${SQLITE_TABLES.schemaVersions} WHERE component = ?`
         )
         .get(MIGRATION_COMPONENT)
-      if (row == null || row.version !== 1 || row.checksum !== checksum) {
+      if (row == null || Number(row.version) !== 2 || row.checksum !== checksum) {
         throw new SqliteSchemaValidationError(
           'schema is not migrated to the supported SQLite layout'
         )
       }
-      return { version: 1 }
+      return { version: 2 }
     } catch (cause) {
       if (cause instanceof SqliteSchemaValidationError) throw cause
       throw new SqliteSchemaValidationError('SQLite schema validation failed')
