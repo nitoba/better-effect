@@ -175,7 +175,7 @@ const makePlainAuth = () =>
 describe('Better Auth v0.1 release gate', () => {
   test('runs real email, session, plugin, transport, handler, and error flows', async () => {
     const { rawAuth, signals } = makeReleaseGateAuth()
-    const Auth = BetterAuth.service('@release-gate/Auth', rawAuth)
+    const Auth = BetterAuth.from('@release-gate/Auth', rawAuth)
     const runtime = await Runtime.make(Auth.layer)
     const signInInput = {
       body: {
@@ -457,9 +457,9 @@ describe('Better Auth v0.1 release gate', () => {
 
   test('keeps plugin surfaces and concurrent requests isolated across Service instances', async () => {
     const first = makeReleaseGateAuth()
-    const firstAuth = BetterAuth.service('@release-gate/FirstAuth', first.rawAuth)
+    const firstAuth = BetterAuth.from('@release-gate/FirstAuth', first.rawAuth)
     const secondRaw = makePlainAuth()
-    const secondAuth = BetterAuth.service('@release-gate/SecondAuth', secondRaw)
+    const secondAuth = BetterAuth.from('@release-gate/SecondAuth', secondRaw)
     const runtime = await Runtime.make(Layer.merge(firstAuth.layer, secondAuth.layer))
 
     try {
@@ -515,7 +515,7 @@ describe('Better Auth v0.1 release gate', () => {
     type DefectAuthInfer = { readonly Session: never }
     // SAFETY: The fake Better Auth instance intentionally supplies only the minimal public inference contract needed by this boundary test.
     const defectInfer = {} as DefectAuthInfer
-    const DefectAuth = BetterAuth.service('@release-gate/DefectAuth', {
+    const DefectAuth = BetterAuth.from('@release-gate/DefectAuth', {
       $ERROR_CODES: {},
       $Infer: defectInfer,
       api: {
@@ -527,7 +527,7 @@ describe('Better Auth v0.1 release gate', () => {
     const { rawAuth: throwingRawAuth } = makeReleaseGateAuth({
       onAPIError: { throw: true }
     })
-    const ThrowingAuth = BetterAuth.service('@release-gate/ThrowingAuth', throwingRawAuth)
+    const ThrowingAuth = BetterAuth.from('@release-gate/ThrowingAuth', throwingRawAuth)
     const runtime = await Runtime.make(Layer.merge(DefectAuth.layer, ThrowingAuth.layer))
 
     try {

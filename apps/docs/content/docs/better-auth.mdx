@@ -86,8 +86,6 @@ provided to one Runtime.
 When the application already owns a configured instance, use
 `BetterAuth.from('@app/Auth', rawAuth)`. It provides the same facade through
 `Layer.succeed` and never closes or reconfigures the borrowed instance.
-`BetterAuth.service(tag, rawAuth)` remains a deprecated compatibility alias for
-`from`.
 
 ## Endpoints and transport modes
 

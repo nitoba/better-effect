@@ -376,6 +376,19 @@ const assertGeneratedPackage = async (): Promise<void> => {
     `Unexpected runtime exports: ${runtimeExports.join(', ')}`
   )
 
+  const betterAuthExports = Object.keys(entrypoint.BetterAuth).sort()
+  assertCondition(
+    JSON.stringify(betterAuthExports) === JSON.stringify(['from', 'make']),
+    `Unexpected BetterAuth exports: ${betterAuthExports.join(', ')}`
+  )
+
+  for (const path of [...sourceFiles, ...generatedModules]) {
+    assertCondition(
+      !(await readFile(path, 'utf8')).includes('BetterAuth.service'),
+      `Removed BetterAuth.service API is still referenced in ${path}`
+    )
+  }
+
   const honoEntrypoint = await import(pathToFileURL(join(distRoot, 'hono.mjs')).href)
   const honoExports = Object.keys(honoEntrypoint).sort()
   assertCondition(

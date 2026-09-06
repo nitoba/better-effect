@@ -120,10 +120,6 @@ const rawAuth = betterAuth({ emailAndPassword: { enabled: true } })
 const Auth = BetterAuth.from('@app/Auth', rawAuth)
 ```
 
-`BetterAuth.service(tag, rawAuth)` remains as a deprecated compatibility alias
-for `BetterAuth.from`. New Layer-first code should use `make`; use `from` when
-the raw instance is intentionally constructed outside the Layer.
-
 The adapter does not create plugin configuration or add framework-specific
 helpers. Keep Better Auth's plugins, database adapter, cookies, and handler in
 the application.

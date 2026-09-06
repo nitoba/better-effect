@@ -21,8 +21,11 @@ const rawAuth = betterAuth({
 })
 
 const otherRawAuth = betterAuth({})
-const Auth = BetterAuth.service('@app/Auth', rawAuth)
-const OtherAuth = BetterAuth.service('@app/OtherAuth', otherRawAuth)
+const Auth = BetterAuth.from('@app/Auth', rawAuth)
+const OtherAuth = BetterAuth.from('@app/OtherAuth', otherRawAuth)
+
+// @ts-expect-error BetterAuth.service was removed from the public API.
+BetterAuth.service('@app/RemovedAuth', rawAuth)
 
 class AppConfig extends Service<AppConfig>()('@app/AppConfig') {
   readonly authUrl = 'https://auth.example.test'
@@ -162,7 +165,7 @@ void testImplementation.session.get(new Headers(), {
 })
 
 // @ts-expect-error empty Service tags are rejected
-BetterAuth.service('', rawAuth)
+BetterAuth.from('', rawAuth)
 
 // @ts-expect-error empty Service tags are rejected for lazy factories too
 // oxlint-disable-next-line require-yield -- this fixture checks tag validation before acquisition.
@@ -172,7 +175,7 @@ BetterAuth.make('', async function* () {
 
 const widenedTag: string = '@app/Widened'
 // @ts-expect-error Service identities must remain literal
-BetterAuth.service(widenedTag, rawAuth)
+BetterAuth.from(widenedTag, rawAuth)
 // @ts-expect-error Service identities must remain literal for lazy factories
 // oxlint-disable-next-line require-yield -- this fixture checks tag validation before acquisition.
 BetterAuth.make(widenedTag, async function* () {
