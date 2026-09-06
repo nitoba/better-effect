@@ -3,6 +3,8 @@
 // oxlint-disable anti-slop/no-unsafe-dictionary-type -- BSON documents are field-based persistence DTOs.
 // oxlint-disable anti-slop/no-chained-type-assertions -- assertions restore validated records at the driver boundary.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts follow explicit document validation.
+// oxlint-disable anti-slop/no-known-value-widening -- BSON documents intentionally combine a fixed envelope with optional fields.
+// oxlint-disable anti-slop/no-conditional-empty-object-spread -- optional BSON fields are omitted rather than persisted as undefined.
 
 import { createHash } from 'node:crypto'
 import { Result } from 'better-result'
@@ -11,7 +13,7 @@ import {
   OutboxDefinitionError,
   OutboxStoreFailure,
   OutboxStore,
-  outboxProtocolVersion,
+  isOutboxStoreToken,
   validateOutboxRecord,
   type AnyOutboxStoreToken,
   type OutboxAppendError,
@@ -53,11 +55,9 @@ const isAppendError = (value: unknown): value is OutboxAppendError =>
   typeof value === 'object' &&
   value !== null &&
   typeof (value as { readonly _tag?: unknown })._tag === 'string' &&
-  [
-    'OutboxDefinitionError',
-    'OutboxConflictError',
-    'OutboxStoreFailure'
-  ].includes((value as { readonly _tag: string })._tag)
+  ['OutboxDefinitionError', 'OutboxConflictError', 'OutboxStoreFailure'].includes(
+    (value as { readonly _tag: string })._tag
+  )
 
 const retryable = (cause: unknown): boolean => {
   if (typeof cause !== 'object' || cause === null) return false
@@ -163,48 +163,30 @@ const initial = (value: OutboxRecord): OutboxRecord => {
   return checked.value
 }
 
-export const namespaceForOutboxToken = (
-  token: AnyOutboxStoreToken,
-  namespace: string
-): string =>
+export const namespaceForOutboxToken = (token: AnyOutboxStoreToken, namespace: string): string =>
   token.serviceTag === OutboxStore.serviceTag
     ? namespace
     : `${namespace}:outbox-${createHash('sha256').update(token.serviceTag).digest('hex').slice(0, 48)}`
 
-const normalize = (options: MongoOutboxAppendOptions): {
-  readonly db: MongoDb
-  readonly namespace: string
-  readonly collectionPrefix: string
-} => {
+const normalize = (options: MongoOutboxAppendOptions): NormalizedAppendOptions => {
   const namespace = validateNamespace(options.namespace ?? DEFAULT_NAMESPACE)
   const collectionPrefix = validateCollectionPrefix(
     options.collectionPrefix ?? DEFAULT_COLLECTION_PREFIX
   )
-  if (options.token !== undefined && !isToken(options.token))
+  if (options.token !== undefined && !isOutboxStoreToken(options.token))
     throw new OutboxDefinitionError({ field: 'token', message: 'must be an OutboxStore token' })
   return {
     db: options.db,
     namespace:
-      options.token === undefined
-        ? namespace
-        : namespaceForOutboxToken(options.token, namespace),
+      options.token === undefined ? namespace : namespaceForOutboxToken(options.token, namespace),
     collectionPrefix
   }
 }
 
-const isToken = (value: unknown): value is AnyOutboxStoreToken => {
-  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return false
-  try {
-    const candidate = value as { readonly serviceTag?: unknown; readonly [Symbol.asyncIterator]?: unknown }
-    return (
-      typeof candidate.serviceTag === 'string' &&
-      typeof candidate[Symbol.asyncIterator] === 'function' &&
-      (candidate.serviceTag === OutboxStore.serviceTag ||
-        candidate.serviceTag.startsWith(`${OutboxStore.serviceTag}/`))
-    )
-  } catch {
-    return false
-  }
+interface NormalizedAppendOptions {
+  readonly db: MongoDb
+  readonly namespace: string
+  readonly collectionPrefix: string
 }
 
 const appendRecord = async (

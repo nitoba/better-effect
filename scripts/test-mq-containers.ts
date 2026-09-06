@@ -22,7 +22,8 @@ const invocation = randomUUID()
 const labels = { [labelName]: invocation }
 const storageIntegrationTests = [
   'packages/better-effect-mq-mysql/tests/integration.mysql.test.ts',
-  'packages/better-effect-mq-mongodb/tests/integration/mongodb.test.ts'
+  'packages/better-effect-mq-mongodb/tests/integration/mongodb.test.ts',
+  'packages/better-effect-mq-mongodb/tests/integration/outbox.test.ts'
 ] as const
 const decoder = new TextDecoder()
 const secrets = new Set<string>()

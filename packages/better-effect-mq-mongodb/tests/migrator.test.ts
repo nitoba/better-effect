@@ -1,3 +1,8 @@
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- this fake stores untyped BSON documents.
+// oxlint-disable anti-slop/no-runtime-typeof -- the fake narrows driver-shaped values.
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts are confined to the fake Mongo boundary.
+// oxlint-disable anti-slop/no-known-value-widening -- test-only BSON documents are intentionally erased.
+
 import { expect, test } from 'bun:test'
 
 import { MongoJobStoreMigrator } from '../src/migrator'
@@ -16,24 +21,24 @@ const makeDatabase = () => {
     const handle: MongoCollection = {
       find: () => ({ toArray: async () => [] }),
       findOne: async (filter) => {
-        const id = filter._id
+        const id = (filter as Document)._id
         return typeof id === 'string' ? (documents.get(`${name}:${id}`) ?? null) : null
       },
       findOneAndUpdate: async (filter, update) => {
-        const id = String(filter._id)
+        const id = String((filter as Document)._id)
         const current = documents.get(`${name}:${id}`) ?? { _id: id }
         const next = {
           ...current,
-          ...(update.$setOnInsert as Document | undefined),
-          ...(update.$set as Document | undefined)
+          ...((update as Document).$setOnInsert as Document | undefined),
+          ...((update as Document).$set as Document | undefined)
         }
         documents.set(`${name}:${id}`, next)
         return { value: next }
       },
       updateOne: async (filter, update) => {
-        const id = String(filter._id)
+        const id = String((filter as Document)._id)
         const current = documents.get(`${name}:${id}`) ?? { _id: id }
-        const next = { ...current, ...(update.$set as Document | undefined) }
+        const next = { ...current, ...((update as Document).$set as Document | undefined) }
         documents.set(`${name}:${id}`, next)
         return { matchedCount: 1 }
       },
