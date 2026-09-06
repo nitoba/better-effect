@@ -59,7 +59,5 @@ export type KyselyServiceToken<Tag extends string, DB> = ServiceToken<
   >
   readonly scoped: KyselyLayerMethod<Tag, DB>
   readonly borrowed: KyselyLayerMethod<Tag, DB>
-  /** @deprecated Use scoped(factory) for Runtime-owned Kysely or borrowed(factory)/succeed(value) for caller-owned resources. */
-  readonly layer: KyselyLayerMethod<Tag, DB>
   readonly succeed: (database: KyselyService<DB>) => Layer<KyselyServiceInstance<Tag, DB>, never>
 }

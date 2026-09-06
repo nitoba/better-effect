@@ -140,20 +140,6 @@ export function service<DB>(): KyselyServiceFactory<DB> {
       return makeBorrowedLayer(factory)
     }
 
-    /**
-     * @deprecated Use scoped(factory) for Runtime-owned Kysely or
-     * borrowed(factory)/succeed(value) for caller-owned resources.
-     */
-    function layer<Yield extends ServiceRequirement<unknown>>(
-      factory: KyselyServiceGenerator<DB, Yield>
-    ): Layer<Instance, KyselyYieldRequirements<Yield>>
-    function layer(factory: KyselyServiceValueFactory<DB>): Layer<Instance, never>
-    function layer(
-      factory: KyselyServiceFactoryInput<DB, ServiceRequirement<unknown>>
-    ): Layer<Instance, Service.Any> {
-      return makeScopedLayer(factory)
-    }
-
     const succeed = (database: KyselyService<DB>): Layer<Instance, never> => {
       const layer = Layer.succeed(layerToken, database)
 
@@ -166,12 +152,6 @@ export function service<DB>(): KyselyServiceFactory<DB> {
         configurable: false,
         enumerable: true,
         value: borrowed,
-        writable: false
-      },
-      layer: {
-        configurable: false,
-        enumerable: true,
-        value: layer,
         writable: false
       },
       scoped: {

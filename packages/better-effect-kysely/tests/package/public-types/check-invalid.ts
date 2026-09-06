@@ -54,6 +54,10 @@ const main = async (): Promise<void> => {
         result.output.includes('Kysely') || result.output.includes('Database'),
         `functional-api did not fail for the invalid public API:\n${result.output}`
       )
+      assertCondition(
+        result.output.includes("Property 'layer' does not exist"),
+        `functional-api did not prove that Database.layer is removed:\n${result.output}`
+      )
     }
   } finally {
     await rm(root, { force: true, recursive: true })

@@ -77,12 +77,9 @@ const syncBorrowed = Database.borrowed(function* () {
 expectTypeOf<Layer.Provided<typeof syncBorrowed>>().toEqualTypeOf<DatabaseInstance>()
 expectTypeOf<Layer.Required<typeof syncBorrowed>>().toEqualTypeOf<ConfigInstance>()
 
-expectTypeOf(Database.layer(() => raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
 expectTypeOf(Database.succeed(raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
 expectTypeOf(Database.scoped(() => raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
 expectTypeOf(Database.borrowed(() => raw)).toMatchTypeOf<Layer<DatabaseInstance, never>>()
-expectTypeOf<Layer.Provided<ReturnType<typeof Database.layer>>>().toEqualTypeOf<DatabaseInstance>()
-expectTypeOf<Layer.Required<ReturnType<typeof Database.layer>>>().toBeNever()
 expectTypeOf<
   Layer.Provided<ReturnType<typeof Database.succeed>>
 >().toEqualTypeOf<DatabaseInstance>()
@@ -162,7 +159,7 @@ declare const completeRuntime: Runtime<DatabaseInstance>
 void completeRuntime.run(program)
 void ServiceRuntime.resolve(Database)
 
-const completeOwned = Layer.complete(Database.layer(() => raw))
+const completeOwned = Layer.complete(Database.scoped(() => raw))
 expectTypeOf<Layer.Provided<typeof completeOwned>>().toEqualTypeOf<DatabaseInstance>()
 expectTypeOf<Layer.Required<typeof completeOwned>>().toBeNever()
 declare const namedRuntime: RuntimeFor<typeof completeOwned>
@@ -175,7 +172,10 @@ new Database()
 Database.succeed(invalidRaw)
 
 // @ts-expect-error acquisition must produce the declared database schema.
-Database.layer(() => invalidRaw)
+Database.scoped(() => invalidRaw)
+
+// @ts-expect-error The legacy layer helper is intentionally not part of the public API.
+Database.layer(() => raw)
 
 // @ts-expect-error the Service iterator must carry the branded instance.
 const wrongRequirement: ServiceRequirement<Kysely<{ other: { id: string } }>> = Database

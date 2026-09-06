@@ -1153,11 +1153,11 @@ const kyselyFixtureSource = (size: number): string => {
   const declarations = serviceNames
     .map((name, index) => {
       const suffix = String(index + 1).padStart(3, '0')
-      return `const ${name} = KyselyEffect.service<Schema${suffix}>()('@perf/${name}')\ndeclare const raw${suffix}: KyselyService<Schema${suffix}>\nconst layer${suffix} = ${name}.layer(() => raw${suffix})\nconst borrowed${suffix} = ${name}.succeed(raw${suffix})\ntype Expected${suffix} = KyselyServiceInstance<'@perf/${name}', Schema${suffix}>\ntype Provided${suffix} = Layer.Provided<typeof layer${suffix}>\ntype BorrowedProvided${suffix} = Layer.Provided<typeof borrowed${suffix}>\ntype Required${suffix} = Layer.Required<typeof layer${suffix}>\ntype Check${suffix} = Assert<Equal<Provided${suffix}, Expected${suffix}>>\ntype BorrowedCheck${suffix} = Assert<Equal<BorrowedProvided${suffix}, Expected${suffix}>>\ntype RequiredCheck${suffix} = Assert<Equal<Required${suffix}, never>>`
+      return `const ${name} = KyselyEffect.service<Schema${suffix}>()('@perf/${name}')\ndeclare const raw${suffix}: KyselyService<Schema${suffix}>\nconst scoped${suffix} = ${name}.scoped(() => raw${suffix})\nconst borrowed${suffix} = ${name}.succeed(raw${suffix})\ntype Expected${suffix} = KyselyServiceInstance<'@perf/${name}', Schema${suffix}>\ntype Provided${suffix} = Layer.Provided<typeof scoped${suffix}>\ntype BorrowedProvided${suffix} = Layer.Provided<typeof borrowed${suffix}>\ntype Required${suffix} = Layer.Required<typeof scoped${suffix}>\ntype Check${suffix} = Assert<Equal<Provided${suffix}, Expected${suffix}>>\ntype BorrowedCheck${suffix} = Assert<Equal<BorrowedProvided${suffix}, Expected${suffix}>>\ntype RequiredCheck${suffix} = Assert<Equal<Required${suffix}, never>>`
     })
     .join('\n\n')
   const layers = serviceNames
-    .map((_, index) => `layer${String(index + 1).padStart(3, '0')}`)
+    .map((_, index) => `scoped${String(index + 1).padStart(3, '0')}`)
     .join(',\n  ')
   const expected = serviceNames
     .map((name, index) => `Expected${String(index + 1).padStart(3, '0')}`)

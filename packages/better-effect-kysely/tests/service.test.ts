@@ -86,11 +86,13 @@ const activate = async (database: ActivatableDatabase): Promise<void> => {
 
 test('rejects construction of the generated token', () => {
   const Database = service<DatabaseSchema>()('@test/NonConstructibleDatabase')
-  const layerDescriptor = Object.getOwnPropertyDescriptor(Database, 'layer')
+  const scopedDescriptor = Object.getOwnPropertyDescriptor(Database, 'scoped')
   const succeedDescriptor = Object.getOwnPropertyDescriptor(Database, 'succeed')
 
   expect(() => Reflect.construct(Database, [])).toThrow('not constructible')
-  expect(layerDescriptor).toMatchObject({ configurable: false, enumerable: true, writable: false })
+  expect(scopedDescriptor).toMatchObject({ configurable: false, enumerable: true, writable: false })
+  expect(Object.getOwnPropertyDescriptor(Database, 'layer')).toBeUndefined()
+  expect('layer' in Database).toBe(false)
   expect(succeedDescriptor).toMatchObject({
     configurable: false,
     enumerable: true,
@@ -198,7 +200,7 @@ test('destroys an owned database after a failed one-shot execution', async () =>
 
   await expect(
     Runtime.run(
-      Database.layer(() => raw),
+      Database.scoped(() => raw),
       async () => {
         const database = await ServiceRuntime.resolve(Database)
         await activate(database)
@@ -216,7 +218,7 @@ test('destroys an owned database after a successful one-shot execution', async (
   const raw = makeDatabase(driver)
 
   const result = await Runtime.run(
-    Database.layer(() => raw),
+    Database.scoped(() => raw),
     async () => {
       const database = await ServiceRuntime.resolve(Database)
       await activate(database)
@@ -238,7 +240,7 @@ test('preserves Result.err outcomes while releasing owned and borrowed databases
   const failure = new Error('result failure')
 
   const ownedResult = await Runtime.run(
-    owned.layer(() => ownedRaw),
+    owned.scoped(() => ownedRaw),
     async () => {
       await activate(await ServiceRuntime.resolve(owned))
       return Result.err(failure)
@@ -260,7 +262,7 @@ test('does not destroy a database when acquisition fails', async () => {
   const driver = new TrackingDriver()
   const acquisitionFailure = new Error('acquisition failed')
   const runtime = await Runtime.make(
-    Database.layer(async () => {
+    Database.scoped(async () => {
       throw acquisitionFailure
     })
   )
@@ -281,7 +283,7 @@ test('releases owned resources after an execution abort', async () => {
   const ready = new Promise<void>((resolve) => {
     signalReady = resolve
   })
-  const runtime = await Runtime.make(Database.layer(() => raw))
+  const runtime = await Runtime.make(Database.scoped(() => raw))
   const execution = runtime.run(
     Effect.fn(async function* () {
       const database = yield* Database
@@ -314,8 +316,8 @@ test('destroys each independent owned database exactly once', async () => {
   const replica = Replica.of(makeDatabase(replicaDriver))
   const runtime = await Runtime.make(
     Layer.merge(
-      Primary.layer(() => primary),
-      Replica.layer(async () => replica)
+      Primary.scoped(() => primary),
+      Replica.scoped(async () => replica)
     )
   )
 
@@ -343,7 +345,7 @@ test('reports owned destroy failures as shutdown cleanup diagnostics', async () 
 
   await expect(
     Runtime.run(
-      Database.layer(() => raw),
+      Database.scoped(() => raw),
       {
         onCleanupFailure: (diagnostic) => {
           diagnostics.push(diagnostic)
@@ -394,7 +396,7 @@ test('supports independent owned and borrowed databases with different tags', as
   )
   const runtime = await Runtime.make(
     Layer.merge(
-      Primary.layer(() => primary),
+      Primary.scoped(() => primary),
       Analytics.borrowed(() => analytics)
     )
   )

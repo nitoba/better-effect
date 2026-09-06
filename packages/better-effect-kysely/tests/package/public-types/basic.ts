@@ -61,8 +61,6 @@ type _NamedToken = Assert<
 >
 type _ServiceContract = Assert<Equal<KyselyEffect.Service<DatabaseSchema>, Kysely<DatabaseSchema>>>
 type _OfInstance = Assert<Equal<ReturnType<typeof Database.of>, Instance>>
-type _LayerProvided = Assert<Equal<Layer.Provided<ReturnType<typeof Database.layer>>, Instance>>
-type _LayerRequired = Assert<Equal<Layer.Required<ReturnType<typeof Database.layer>>, never>>
 type _ScopedProvided = Assert<Equal<Layer.Provided<ReturnType<typeof Database.scoped>>, Instance>>
 type _ScopedRequired = Assert<Equal<Layer.Required<ReturnType<typeof Database.scoped>>, never>>
 type _BorrowedFactoryProvided = Assert<Equal<Layer.Provided<typeof contextualBorrowed>, Instance>>
@@ -189,6 +187,9 @@ type _TransactionErrorJson = Assert<
 
 // @ts-expect-error the generated token has no public constructor
 new Database()
+
+// @ts-expect-error the legacy layer helper is intentionally not public
+Database.layer(() => database)
 
 const SameNamedToken = KyselyEffect.service<DatabaseSchema>()('@consumer/Database')
 type _LiteralTag = Assert<Equal<typeof SameNamedToken.serviceTag, '@consumer/Database'>>

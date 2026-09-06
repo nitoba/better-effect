@@ -279,6 +279,10 @@ const assertPublicDeclaration = async (): Promise<void> => {
   ]
   const exportStatement = declaration.slice(declaration.lastIndexOf('export {'))
   assertCondition(exportStatement.length > 0, 'Declaration has no export statement')
+  assertCondition(
+    !/Database\.layer|readonly layer|function layer/u.test(declaration),
+    'Declaration exposes the removed Database.layer API'
+  )
   for (const name of publicNames) {
     assertCondition(new RegExp(`\\b${name}\\b`).test(exportStatement), `Declaration misses ${name}`)
   }
