@@ -1,4 +1,5 @@
 import type { AnyService, Effect } from 'better-effect'
+import type { UnhandledException } from 'better-result'
 
 import type { JobIdentity } from '../job'
 import type {
@@ -16,6 +17,7 @@ import type {
   ScheduleNotFoundError,
   ScheduleStoreFailure
 } from './errors'
+import type { JobEncodeFailure } from '../codec'
 
 export type ScheduleKey = string
 
@@ -118,6 +120,26 @@ export type ScheduleStoreError =
   | DuplicateScheduleError
   | JobDefinitionError
   | JobStoreError
+
+export type ScheduleReconcileError = ScheduleStoreError | JobEncodeFailure | UnhandledException
+
+export type ScheduleReconcileRemoval = 'warn' | 'group'
+
+export interface ScheduleReconcileOptions {
+  readonly nowMs?: number
+  readonly removal?: ScheduleReconcileRemoval
+  readonly removeAfterMs?: number
+}
+
+export interface ScheduleReconcileReport {
+  readonly group: string
+  readonly created: readonly ScheduleRecord[]
+  readonly updated: readonly ScheduleRecord[]
+  readonly unchanged: readonly ScheduleRecord[]
+  readonly warned: readonly ScheduleAddress[]
+  readonly removed: readonly ScheduleAddress[]
+  readonly deferred: readonly ScheduleAddress[]
+}
 
 export type ScheduleStoreEffect<
   Success,

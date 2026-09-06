@@ -453,6 +453,29 @@ be split across Services.
 Adapters still own persistence and backend-specific behavior; the Worker only
 consumes the public `JobStore.Contract`.
 
+## Schedules and scheduler supervisor
+
+`JobSchedules.define` creates immutable cron/`everyMs` descriptors. Payloads
+are encoded with the Job codec before persistence, unchanged cadence preserves
+the stored next slot, and cadence changes recalculate it. Reconciliation is a
+yieldable operation; it warns by default and can remove only undeclared
+records in the same ownership group:
+
+```ts
+const report =
+  yield *
+  JobSchedules.reconcile(BillingSchedules, {
+    removal: 'group',
+    removeAfterMs: 60_000
+  })
+```
+
+`JobScheduler` is a Layer-first Service. It optionally reconciles during
+activation, sweeps due records in bounded batches, and delegates the
+compare-and-set tick to the associated `JobScheduleStore`. Runtime shutdown
+quiesces new sweeps, drains admitted store calls, and releases only the
+supervisor; JobStore and schedule-store resources remain Runtime-owned.
+
 ## Worker supervisor
 
 `Worker` runs handlers over an already configured `better-effect` Runtime. The

@@ -21,6 +21,7 @@
     "memory-job-store.types.ts",
     "worker.types.ts",
     "worker-layer.types.ts",
+    "scheduler.types.ts",
     "observability.types.ts"
   ]
 }

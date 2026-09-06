@@ -11,7 +11,12 @@ export { firstEveryMsOccurrence, makeEveryMs, nextEveryMsOccurrence } from './ev
 
 export { encodeScheduleKey, makeScheduleOccurrenceId, maxScheduleIdentityLength } from './identity'
 
-export { JobSchedules, encodeSchedulePayload, nextScheduleOccurrence } from './schedules'
+export {
+  JobSchedules,
+  encodeSchedulePayload,
+  nextScheduleOccurrence,
+  reconcileSchedules
+} from './schedules'
 
 export type {
   AnyJobSchedule,
@@ -21,6 +26,9 @@ export type {
   JobScheduleDraft,
   JobScheduleOptions,
   JobSchedulesDefinition,
+  AnyJobSchedulesDefinition,
+  JobSchedulesReconcileGenerator,
+  JobSchedulesStoreTokens,
   MisfirePolicy,
   OverlapPolicy,
   ScheduleDefaultsInput,
@@ -56,6 +64,10 @@ export type {
   ScheduleKey,
   ScheduleOccurrence,
   ScheduleOverlap,
+  ScheduleReconcileError,
+  ScheduleReconcileOptions,
+  ScheduleReconcileReport,
+  ScheduleReconcileRemoval,
   ScheduleRecord,
   ScheduleSelector,
   ScheduleStoreEffect,
@@ -68,3 +80,17 @@ export type {
   TickScheduleResult,
   UpsertScheduleResult
 } from './types'
+
+export type {
+  JobSchedulerError,
+  JobSchedulerErrorHandler,
+  JobSchedulerHandle,
+  JobSchedulerOptions,
+  JobSchedulerRequirements,
+  JobSchedulerServiceInstance,
+  JobSchedulerServiceToken,
+  JobSchedulerStartupReconcile,
+  JobSchedulerState
+} from './scheduler'
+
+export { JobScheduler, isJobSchedulerToken } from './scheduler'

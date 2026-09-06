@@ -15,3 +15,36 @@ nonexistent spring-forward minutes are skipped, while an ambiguous
 fall-back minute fires only at its earlier UTC instant. `everyMs` uses its
 first slot as the grade anchor, so calculating later occurrences does not
 re-anchor a cadence after a redeploy.
+
+Reconcile declarations inside an Effect program. The Job's associated store
+selects the matching `JobScheduleStore`; extra `stores` entries let an empty
+registry still reach a store so the last removed schedule can be detected.
+
+```ts
+const report =
+  yield *
+  JobSchedules.reconcile(BillingSchedules, {
+    removal: 'warn'
+  })
+```
+
+`removal: 'group'` removes only undeclared records in the definition's group.
+Set `removeAfterMs` for a Clock-driven rolling-deploy grace window. The
+operation remains Scope-owned and cancellation leaves the records in place.
+
+Schedulers are Layer-first Services. A scheduler resolves the configured
+schedule stores, optionally reconciles at startup, sweeps due records in
+batches, and delegates compare-and-set ticking to the store:
+
+```ts
+const BillingScheduler = JobScheduler.service('@billing/Scheduler')
+const BillingSchedulerLive = BillingScheduler.layer(() => ({
+  registries: [BillingSchedules],
+  startupReconcile: true,
+  sweepIntervalMs: 1_000,
+  batchSize: 100
+}))
+```
+
+The Layer owns only the scheduler lifecycle. Runtime shutdown quiesces new
+sweeps, drains admitted ticks, and releases the supervisor before its stores.
