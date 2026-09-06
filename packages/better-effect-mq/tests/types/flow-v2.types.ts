@@ -1,5 +1,6 @@
 import { expectTypeOf } from 'bun:test'
 
+import { Codec, Flow, Queue } from '../../src'
 import type {
   FlowChildReport,
   FlowChildSpec,
@@ -11,6 +12,24 @@ import type {
   SettlementOutcome,
   SettlementOutcomeV2
 } from '../../src'
+
+const queue = Queue.define('flow-types')
+const parentJob = queue.job('parent', { version: 1, payload: Codec.json<{ day: string }>() })
+const childJob = queue.job('child', { version: 1, payload: Codec.json<{ userId: string }>() })
+const flow = Flow.define('daily-digest', {
+  parent: parentJob,
+  children: [childJob] as const,
+  onChildFailure: 'continue'
+})
+const children = Flow.children(childJob, [{ key: 'user:1', payload: { userId: '1' } }])
+
+expectTypeOf(flow.parent).toEqualTypeOf<typeof parentJob>()
+expectTypeOf(flow.children).toEqualTypeOf<readonly [typeof childJob]>()
+expectTypeOf(flow.onChildFailure).toEqualTypeOf<'continue'>()
+expectTypeOf(children.job).toEqualTypeOf<typeof childJob>()
+expectTypeOf(children.items[0]!.payload).toEqualTypeOf<{ userId: string }>()
+// @ts-expect-error Flow.children must preserve the Job payload input type.
+Flow.children(childJob, [{ key: 'invalid', payload: { wrong: true } }])
 
 declare const v1: ProtocolVersion
 declare const v2: ProtocolVersionV2

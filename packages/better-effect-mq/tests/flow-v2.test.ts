@@ -2,17 +2,18 @@ import { expect, test } from 'bun:test'
 import { Result, type Result as ResultType } from 'better-result'
 
 import {
+  Codec,
+  Flow,
   JobDefinitionError,
   JobId,
-  JobName,
-  QueueName,
   makeFlowChildId,
   makePreparedEnqueue,
   protocolVersion,
   protocolVersionV2,
   validateFlowChildSpec,
   validateFlowManifest,
-  validateParentEnvelope
+  validateParentEnvelope,
+  Queue
 } from '../src'
 import type { FlowChildSpec, ParentEnvelope } from '../src'
 
@@ -105,14 +106,55 @@ test('flow child specs require the deterministic job ID in their prepared reques
   expect(validateFlowChildSpec(invalid).isErr()).toBe(true)
 })
 
-const parent: ParentEnvelope = {
-  flowName: 'daily-digest',
-  flowId,
-  childKey: 'email:1',
-  parentStoreKey: 'parent-store',
-  depth: 1
-}
+const flowQueue = Queue.define('flow-tests')
+const Parent = flowQueue.job('parent', {
+  version: 1,
+  payload: Codec.json<{ readonly day: string }>()
+})
+const Child = flowQueue.job('child', {
+  version: 1,
+  payload: Codec.json<{ readonly userId: string }>()
+})
 
-void JobName
-void QueueName
-void parent
+test('Flow.define and Flow.children create inert immutable descriptors', () => {
+  const flow = Flow.define('daily-digest', {
+    parent: Parent,
+    children: [Child],
+    onChildFailure: 'continue'
+  })
+  const children = Flow.children(Child, [
+    { key: 'user:1', payload: { userId: '1' }, options: { attempts: 2 } }
+  ])
+
+  expect(Flow.is(flow)).toBe(true)
+  expect(Object.isFrozen(flow)).toBe(true)
+  expect(Object.isFrozen(children)).toBe(true)
+  expect(Object.isFrozen(children.items)).toBe(true)
+  expect(flow.maxChildren).toBe(10_000)
+  expect(flow.maxDepth).toBe(8)
+  expect(children.job).toBe(Child)
+  expect(children.items[0]?.key).toBe('user:1')
+})
+
+test('Flow.define and Flow.children reject invalid identities and child keys', () => {
+  expect(() =>
+    Flow.define('duplicate-flow', {
+      parent: Parent,
+      children: [Child, Child],
+      onChildFailure: 'fail'
+    })
+  ).toThrow(JobDefinitionError)
+
+  expect(() => Flow.children(Child, [{ key: '', payload: { userId: '1' } }])).toThrow(
+    JobDefinitionError
+  )
+  expect(() =>
+    Flow.children(Child, [
+      { key: 'same', payload: { userId: '1' } },
+      { key: 'same', payload: { userId: '2' } }
+    ])
+  ).toThrow(JobDefinitionError)
+})
+
+void Parent
+void Child

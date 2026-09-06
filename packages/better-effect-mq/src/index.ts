@@ -14,6 +14,7 @@ export const WorkerId = WorkerIdFactory
 
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
 export { Retry } from './retry'
+export { Flow } from './flow'
 export { JobMetricNames, JobObserver, makeJobDepthSampler } from './observability'
 export type {
   JobEvent,
@@ -85,6 +86,20 @@ export type {
   RegistryIdentityInput,
   RetryableCallback
 } from './job'
+
+export type {
+  AnyFlowDefinition,
+  FlowChildDefinition,
+  FlowChildGroup,
+  FlowChildInput,
+  FlowChildOptions,
+  FlowChildren,
+  FlowDefinition,
+  FlowDefinitionOptions,
+  FlowFailurePolicy,
+  FlowName,
+  FlowParent
+} from './flow'
 
 export type {
   RetryContext,
