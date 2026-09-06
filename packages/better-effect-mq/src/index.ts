@@ -162,6 +162,8 @@ export {
   makeJobName,
   makeJobRecord,
   makeLeaseToken,
+  makeFlowChildId,
+  makeFlowMigration,
   makePersistedBackoff,
   makePersistedJobFailure,
   makeQueueName,
@@ -170,6 +172,7 @@ export {
   orderJobs,
   promoteJob,
   protocolVersion,
+  protocolVersionV2,
   recoverStalledJob,
   recoverStalledWithPolicy,
   retryJob,
@@ -181,6 +184,13 @@ export {
   transitionJob,
   validateAttemptRecord,
   validateDuration,
+  validateFanOutOutcome,
+  validateFlowChildRecord,
+  validateFlowChildReport,
+  validateFlowChildSpec,
+  validateFlowLimits,
+  validateFlowManifest,
+  validateFlowState,
   validateJobRecord,
   validateOptionalDuration,
   validateOptionalTimestamp,
@@ -188,6 +198,40 @@ export {
   validatePositiveDuration,
   validateSerializedJobFailure,
   validateTimestamp
+} from './protocol'
+
+export {
+  defaultFlowLimits,
+  defaultFlowMaxChildren,
+  defaultFlowMaxDepth,
+  flowLayoutVersion,
+  hardFlowMaxChildren,
+  hardFlowMaxDepth,
+  maxFlowChildIdLength,
+  maxFlowChildKeyLength,
+  maxFlowNameLength,
+  maxFlowStoreKeyLength,
+  validateParentEnvelope
+} from './protocol'
+
+export type {
+  FanOutOutcome,
+  FlowChildRecord,
+  FlowChildReport,
+  FlowChildReportOutcome,
+  FlowChildSpec,
+  FlowChildStatus,
+  FlowLayoutVersion,
+  FlowLimits,
+  FlowMigration,
+  FlowMigrationStatus,
+  FlowOutboxEntry,
+  FlowState,
+  JobRecordV2,
+  JobStateV2,
+  ParentEnvelope,
+  ProtocolVersionV2,
+  SettlementOutcomeV2
 } from './protocol'
 
 export {
