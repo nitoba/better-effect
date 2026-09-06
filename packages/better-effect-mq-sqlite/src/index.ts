@@ -1,7 +1,14 @@
 export { SqliteJobStore } from './SqliteJobStore'
+export { SqliteJobScheduleStore } from './SqliteJobScheduleStore'
 export { SqliteClient } from './client'
 export { SqliteMigrator, migrate } from './migrator'
-export { MIGRATION_COMPONENT, SQLITE_INDEXES, SQLITE_TABLES, migrationSql } from './schema'
+export {
+  MIGRATION_COMPONENT,
+  SQLITE_INDEXES,
+  SQLITE_TABLES,
+  migrationSql,
+  scheduleMigrationSql
+} from './schema'
 export {
   DEFAULT_BUSY_TIMEOUT_MS,
   DEFAULT_NAMESPACE,
