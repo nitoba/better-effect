@@ -12,6 +12,7 @@ export const POSTGRES_TABLES = {
   attempts: 'better_effect_mq_attempts',
   jobs: 'better_effect_mq_jobs',
   queues: 'better_effect_mq_queues',
+  schedules: 'better_effect_mq_schedules',
   schemaVersions: 'better_effect_mq_schema_versions'
 } as const
 
@@ -23,7 +24,10 @@ export const POSTGRES_INDEXES = [
   'better_effect_mq_jobs_run_at_idx',
   'better_effect_mq_jobs_terminal_idx',
   'better_effect_mq_jobs_metadata_idx',
-  'better_effect_mq_jobs_idempotency_idx'
+  'better_effect_mq_jobs_idempotency_idx',
+  'better_effect_mq_schedules_due_idx',
+  'better_effect_mq_schedules_group_idx',
+  'better_effect_mq_schedules_key_idx'
 ] as const
 
 export interface PostgresMigration {

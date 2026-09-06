@@ -1,6 +1,7 @@
 export { PostgresClient } from './client'
 export { PostgresMigrator } from './migrator'
 export { PostgresJobStore } from './layer'
+export { PostgresJobScheduleStore } from './layer'
 export {
   MIGRATION_COMPONENT,
   MIGRATION_SCHEMA_PLACEHOLDER,
@@ -45,3 +46,4 @@ export type {
   PostgresPoolClient,
   PostgresSchemaValidationResult
 } from './migrator'
+export type { PostgresJobScheduleStoreOptions } from './schedule'

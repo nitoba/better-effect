@@ -143,6 +143,33 @@ const requiredColumns = {
     'retry_delay_ms'
   ],
   [POSTGRES_TABLES.queues]: ['namespace', 'queue', 'paused', 'wake_version', 'updated_at_ms'],
+  [POSTGRES_TABLES.schedules]: [
+    'namespace',
+    'schedule_key',
+    'schedule_group',
+    'job_queue',
+    'job_name',
+    'job_version',
+    'queue',
+    'cron',
+    'every_ms',
+    'time_zone',
+    'payload',
+    'metadata',
+    'priority',
+    'attempts_max',
+    'backoff',
+    'timeout_ms',
+    'misfire',
+    'overlap',
+    'paused',
+    'revision',
+    'next_run_at_ms',
+    'last_scheduled_at_ms',
+    'last_job_id',
+    'created_at_ms',
+    'updated_at_ms'
+  ],
   [POSTGRES_TABLES.schemaVersions]: ['component', 'version', 'applied_at_ms', 'checksum']
 } as const satisfies Record<string, readonly string[]>
 
@@ -200,6 +227,31 @@ const expectedColumnTypes = {
   [`${POSTGRES_TABLES.queues}.paused`]: 'boolean',
   [`${POSTGRES_TABLES.queues}.wake_version`]: 'bigint',
   [`${POSTGRES_TABLES.queues}.updated_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.schedule_key`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.schedule_group`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.job_queue`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.job_name`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.job_version`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.queue`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.cron`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.every_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.time_zone`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.payload`]: 'jsonb',
+  [`${POSTGRES_TABLES.schedules}.metadata`]: 'jsonb',
+  [`${POSTGRES_TABLES.schedules}.priority`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.attempts_max`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.backoff`]: 'jsonb',
+  [`${POSTGRES_TABLES.schedules}.timeout_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.misfire`]: 'jsonb',
+  [`${POSTGRES_TABLES.schedules}.overlap`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.paused`]: 'boolean',
+  [`${POSTGRES_TABLES.schedules}.revision`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.next_run_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.last_scheduled_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.last_job_id`]: 'text',
+  [`${POSTGRES_TABLES.schedules}.created_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.schedules}.updated_at_ms`]: 'bigint',
   [`${POSTGRES_TABLES.schemaVersions}.component`]: 'text',
   [`${POSTGRES_TABLES.schemaVersions}.version`]: 'integer',
   [`${POSTGRES_TABLES.schemaVersions}.applied_at_ms`]: 'bigint',
@@ -228,7 +280,14 @@ const nullableColumns = new Set([
   `${POSTGRES_TABLES.attempts}.failure`,
   `${POSTGRES_TABLES.attempts}.worker_id`,
   `${POSTGRES_TABLES.attempts}.retry_at_ms`,
-  `${POSTGRES_TABLES.attempts}.retry_delay_ms`
+  `${POSTGRES_TABLES.attempts}.retry_delay_ms`,
+  `${POSTGRES_TABLES.schedules}.cron`,
+  `${POSTGRES_TABLES.schedules}.every_ms`,
+  `${POSTGRES_TABLES.schedules}.time_zone`,
+  `${POSTGRES_TABLES.schedules}.backoff`,
+  `${POSTGRES_TABLES.schedules}.timeout_ms`,
+  `${POSTGRES_TABLES.schedules}.last_scheduled_at_ms`,
+  `${POSTGRES_TABLES.schedules}.last_job_id`
 ])
 
 type PostgresIndexName = (typeof POSTGRES_INDEXES)[number]
@@ -275,7 +334,16 @@ const expectedIndexFragments = {
     'dedupe_key',
     'WHERE',
     'dedupe_key IS NOT NULL'
-  ]
+  ],
+  [POSTGRES_INDEXES[8]]: [
+    'namespace',
+    'paused',
+    'next_run_at_ms',
+    'schedule_group COLLATE "C"',
+    'schedule_key COLLATE "C"'
+  ],
+  [POSTGRES_INDEXES[9]]: ['namespace', 'schedule_group COLLATE "C"', 'schedule_key COLLATE "C"'],
+  [POSTGRES_INDEXES[10]]: ['namespace', 'schedule_key COLLATE "C"', 'schedule_group COLLATE "C"']
 } as const satisfies Partial<Record<PostgresIndexName, readonly string[]>>
 
 const requiredConstraints = [
@@ -301,28 +369,39 @@ const requiredConstraints = [
   'better_effect_mq_queues_pkey',
   'better_effect_mq_queues_values',
   'better_effect_mq_schema_versions_pkey',
-  'better_effect_mq_schema_versions_values'
+  'better_effect_mq_schema_versions_values',
+  'better_effect_mq_schedules_pkey',
+  'better_effect_mq_schedules_nonempty',
+  'better_effect_mq_schedules_cadence',
+  'better_effect_mq_schedules_values',
+  'better_effect_mq_schedules_epoch_ms',
+  'better_effect_mq_schedules_metadata_values',
+  'better_effect_mq_schedules_overlap',
+  'better_effect_mq_schedules_payload',
+  'better_effect_mq_schedules_misfire'
 ] as const
 
 type PostgresConstraintName = (typeof requiredConstraints)[number]
 
 const expectedConstraintTypes = {
-  [requiredConstraints[0]]: 'p',
-  [requiredConstraints[12]]: 'p',
-  [requiredConstraints[13]]: 'f',
-  [requiredConstraints[19]]: 'p',
-  [requiredConstraints[21]]: 'p'
+  better_effect_mq_jobs_pkey: 'p',
+  better_effect_mq_attempts_pkey: 'p',
+  better_effect_mq_attempts_job_fk: 'f',
+  better_effect_mq_queues_pkey: 'p',
+  better_effect_mq_schema_versions_pkey: 'p',
+  better_effect_mq_schedules_pkey: 'p'
 } satisfies Partial<Record<PostgresConstraintName, 'p' | 'f'>>
 
 const expectedConstraintColumns = {
-  [requiredConstraints[0]]: { local: ['namespace', 'id'] },
-  [requiredConstraints[12]]: { local: ['namespace', 'job_id', 'ledger_sequence'] },
-  [requiredConstraints[13]]: {
+  better_effect_mq_jobs_pkey: { local: ['namespace', 'id'] },
+  better_effect_mq_attempts_pkey: { local: ['namespace', 'job_id', 'ledger_sequence'] },
+  better_effect_mq_attempts_job_fk: {
     local: ['namespace', 'job_id'],
     referenced: ['namespace', 'id']
   },
-  [requiredConstraints[19]]: { local: ['namespace', 'queue'] },
-  [requiredConstraints[21]]: { local: ['component'] }
+  better_effect_mq_queues_pkey: { local: ['namespace', 'queue'] },
+  better_effect_mq_schema_versions_pkey: { local: ['component'] },
+  better_effect_mq_schedules_pkey: { local: ['namespace', 'schedule_group', 'schedule_key'] }
 } satisfies Partial<
   Record<
     PostgresConstraintName,
@@ -348,7 +427,15 @@ const expectedConstraintDefinitions = {
   [requiredConstraints[17]]: `CHECK ((outcome = ANY (ARRAY['completed', 'retried', 'failed', 'cancelled', 'stalled', 'released'])))`,
   [requiredConstraints[18]]: `CHECK ((((started_at_ms IS NULL) OR ((started_at_ms >= 0) AND (started_at_ms <= '9007199254740991'))) AND ((finished_at_ms >= 0) AND (finished_at_ms <= '9007199254740991')) AND ((retry_at_ms IS NULL) OR ((retry_at_ms >= 0) AND (retry_at_ms <= '9007199254740991'))) AND ((retry_delay_ms IS NULL) OR ((retry_delay_ms >= 0) AND (retry_delay_ms <= '9007199254740991'))) AND ((attempt_sequence IS NULL) OR (attempt_sequence = attempt)) AND ((started_at_ms IS NULL) OR (started_at_ms <= finished_at_ms))))`,
   [requiredConstraints[20]]: `CHECK (((namespace <> '') AND (queue <> '') AND ((wake_version >= 0) AND (wake_version <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991'))))`,
-  [requiredConstraints[22]]: `CHECK (((component <> '') AND (version >= 0) AND ((applied_at_ms >= 0) AND (applied_at_ms <= '9007199254740991')) AND (checksum <> '')))`
+  [requiredConstraints[22]]: `CHECK (((component <> '') AND (version >= 0) AND ((applied_at_ms >= 0) AND (applied_at_ms <= '9007199254740991')) AND (checksum <> '')))`,
+  better_effect_mq_schedules_nonempty: `CHECK (((namespace <> '') AND (schedule_key <> '') AND (schedule_group <> '') AND (job_queue <> '') AND (job_name <> '') AND (queue <> '')))`,
+  better_effect_mq_schedules_cadence: `CHECK ((((cron IS NOT NULL) AND (every_ms IS NULL)) OR ((cron IS NULL) AND (every_ms IS NOT NULL))))`,
+  better_effect_mq_schedules_values: `CHECK (((job_version > 0) AND ((every_ms IS NULL) OR (every_ms > 0)) AND ((priority >= '-9007199254740991') AND (priority <= '9007199254740991')) AND (attempts_max >= 1) AND ((revision >= 0) AND (revision <= '9007199254740991'))))`,
+  better_effect_mq_schedules_epoch_ms: `CHECK ((((next_run_at_ms >= 0) AND (next_run_at_ms <= '9007199254740991')) AND ((created_at_ms >= 0) AND (created_at_ms <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991')) AND ((timeout_ms IS NULL) OR ((timeout_ms >= 1) AND (timeout_ms <= '9007199254740991'))) AND ((last_scheduled_at_ms IS NULL) OR ((last_scheduled_at_ms >= 0) AND (last_scheduled_at_ms <= '9007199254740991')))))`,
+  better_effect_mq_schedules_metadata_values: `CHECK (((jsonb_typeof(metadata) = 'object') AND (NOT jsonb_path_exists(metadata, '$.*?(@.type() != "string")'))))`,
+  better_effect_mq_schedules_overlap: `CHECK ((overlap = ANY (ARRAY['allow', 'skip'])))`,
+  better_effect_mq_schedules_payload: `CHECK ((jsonb_typeof(payload) IS NOT NULL))`,
+  better_effect_mq_schedules_misfire: `CHECK ((jsonb_typeof(misfire) = 'object'))`
 } satisfies Partial<Record<PostgresConstraintName, string>>
 
 const expectedConstraintType = (constraint: PostgresConstraintName): 'p' | 'f' | undefined => {
@@ -410,6 +497,7 @@ const rowTableForConstraint = (constraint: string): string => {
   if (constraint.startsWith('better_effect_mq_jobs_')) return POSTGRES_TABLES.jobs
   if (constraint.startsWith('better_effect_mq_attempts_')) return POSTGRES_TABLES.attempts
   if (constraint.startsWith('better_effect_mq_queues_')) return POSTGRES_TABLES.queues
+  if (constraint.startsWith('better_effect_mq_schedules_')) return POSTGRES_TABLES.schedules
   return POSTGRES_TABLES.schemaVersions
 }
 
@@ -810,8 +898,12 @@ const findSchemaProblems = async (
         return true
       })
     const incompatibleDefinition = definition === undefined || !fragmentsInOrder
+    const scheduleIndex =
+      index === POSTGRES_INDEXES[8] ||
+      index === POSTGRES_INDEXES[9] ||
+      index === POSTGRES_INDEXES[10]
     const incompatibleCatalog =
-      entry.table !== POSTGRES_TABLES.jobs ||
+      entry.table !== (scheduleIndex ? POSTGRES_TABLES.schedules : POSTGRES_TABLES.jobs) ||
       entry.valid !== true ||
       entry.ready !== true ||
       entry.accessMethod !== (index === POSTGRES_INDEXES[6] ? 'gin' : 'btree') ||

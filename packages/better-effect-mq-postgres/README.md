@@ -1,6 +1,6 @@
 # better-effect-mq-postgres
 
-`better-effect-mq-postgres` is the PostgreSQL adapter for [`better-effect-mq`](../better-effect-mq). It provides the durable `JobStore` contract over the migrated relational protocol layout, including transactional enqueue, fenced leases, transitions, inspection queries, and wake/version signalling.
+`better-effect-mq-postgres` is the PostgreSQL adapter for [`better-effect-mq`](../better-effect-mq). It provides the durable `JobStore` contract over the migrated relational protocol layout, including transactional enqueue, fenced leases, transitions, inspection queries, and wake/version signalling. It also provides the PostgreSQL `JobScheduleStore` extension, with durable schedule state and atomic schedule ticks.
 
 `pg` is an optional peer. Importing the package, loading migrations, or using a
 caller-owned pool does not load `pg`; `PostgresClient.fromConfig` loads it
@@ -19,6 +19,24 @@ const StoreLive = PostgresJobStore.layer({
   validateSchema: true
 })
 ```
+
+Schedules are associated with a `JobStore` token. Named stores therefore use
+separate PostgreSQL namespaces while preserving the same Layer-first API:
+
+```ts
+import { JobScheduleStore, JobStore } from 'better-effect-mq'
+import { PostgresJobScheduleStore, PostgresJobStore } from 'better-effect-mq-postgres'
+
+const Durable = JobStore.named('durable')
+const DurableSchedules = JobScheduleStore.for(Durable)
+const StoreLive = PostgresJobStore.layerFor(Durable, { pool })
+const ScheduleLive = PostgresJobScheduleStore.layerFor(DurableSchedules, { pool })
+```
+
+`tickSchedule` locks the schedule row, checks its revision and next slot, inserts
+deterministic `sched/<encoded-key>/<slot>` jobs, advances the schedule, and
+updates queue wake state in one PostgreSQL transaction. Replaying a tick is
+therefore duplicate-safe.
 
 Each layer provides only the requested `JobStore` token. It validates the schema during acquisition when `validateSchema` is true, and it never closes a caller-supplied pool. The config-backed form owns and disposes its pool:
 
@@ -45,7 +63,9 @@ a transaction advisory lock. The shipped `migrations/001_initial.sql` creates
 `better_effect_mq_queues`, and `better_effect_mq_schema_versions`, along with
 fixed claim, lease, listing, idempotency, and metadata indexes. Protocol times
 are epoch milliseconds stored in `bigint`; values are always bound parameters
-and schema names are validated before quoting.
+and schema names are validated before quoting. Migration
+`migrations/002_schedules.sql` adds the schedule table and due/group/key
+indexes without modifying the initial migration.
 
 ## Upgrade and downgrade policy
 

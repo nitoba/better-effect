@@ -88,6 +88,33 @@ const validColumnNames = {
     'retry_delay_ms'
   ],
   [POSTGRES_TABLES.queues]: ['namespace', 'queue', 'paused', 'wake_version', 'updated_at_ms'],
+  [POSTGRES_TABLES.schedules]: [
+    'namespace',
+    'schedule_key',
+    'schedule_group',
+    'job_queue',
+    'job_name',
+    'job_version',
+    'queue',
+    'cron',
+    'every_ms',
+    'time_zone',
+    'payload',
+    'metadata',
+    'priority',
+    'attempts_max',
+    'backoff',
+    'timeout_ms',
+    'misfire',
+    'overlap',
+    'paused',
+    'revision',
+    'next_run_at_ms',
+    'last_scheduled_at_ms',
+    'last_job_id',
+    'created_at_ms',
+    'updated_at_ms'
+  ],
   [POSTGRES_TABLES.schemaVersions]: ['component', 'version', 'applied_at_ms', 'checksum']
 } as const
 
@@ -109,7 +136,15 @@ const validConstraintDefinitions = {
   better_effect_mq_attempts_outcome: `CHECK ((outcome = ANY (ARRAY['completed', 'retried', 'failed', 'cancelled', 'stalled', 'released'])))`,
   better_effect_mq_attempts_times: `CHECK ((((started_at_ms IS NULL) OR ((started_at_ms >= 0) AND (started_at_ms <= '9007199254740991'))) AND ((finished_at_ms >= 0) AND (finished_at_ms <= '9007199254740991')) AND ((retry_at_ms IS NULL) OR ((retry_at_ms >= 0) AND (retry_at_ms <= '9007199254740991'))) AND ((retry_delay_ms IS NULL) OR ((retry_delay_ms >= 0) AND (retry_delay_ms <= '9007199254740991'))) AND ((attempt_sequence IS NULL) OR (attempt_sequence = attempt)) AND ((started_at_ms IS NULL) OR (started_at_ms <= finished_at_ms))))`,
   better_effect_mq_queues_values: `CHECK (((namespace <> '') AND (queue <> '') AND ((wake_version >= 0) AND (wake_version <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991'))))`,
-  better_effect_mq_schema_versions_values: `CHECK (((component <> '') AND (version >= 0) AND ((applied_at_ms >= 0) AND (applied_at_ms <= '9007199254740991')) AND (checksum <> '')))`
+  better_effect_mq_schema_versions_values: `CHECK (((component <> '') AND (version >= 0) AND ((applied_at_ms >= 0) AND (applied_at_ms <= '9007199254740991')) AND (checksum <> '')))`,
+  better_effect_mq_schedules_nonempty: `CHECK (((namespace <> '') AND (schedule_key <> '') AND (schedule_group <> '') AND (job_queue <> '') AND (job_name <> '') AND (queue <> '')))`,
+  better_effect_mq_schedules_cadence: `CHECK ((((cron IS NOT NULL) AND (every_ms IS NULL)) OR ((cron IS NULL) AND (every_ms IS NOT NULL))))`,
+  better_effect_mq_schedules_values: `CHECK (((job_version > 0) AND ((every_ms IS NULL) OR (every_ms > 0)) AND ((priority >= '-9007199254740991') AND (priority <= '9007199254740991')) AND (attempts_max >= 1) AND ((revision >= 0) AND (revision <= '9007199254740991'))))`,
+  better_effect_mq_schedules_epoch_ms: `CHECK ((((next_run_at_ms >= 0) AND (next_run_at_ms <= '9007199254740991')) AND ((created_at_ms >= 0) AND (created_at_ms <= '9007199254740991')) AND ((updated_at_ms >= 0) AND (updated_at_ms <= '9007199254740991')) AND ((timeout_ms IS NULL) OR ((timeout_ms >= 1) AND (timeout_ms <= '9007199254740991'))) AND ((last_scheduled_at_ms IS NULL) OR ((last_scheduled_at_ms >= 0) AND (last_scheduled_at_ms <= '9007199254740991')))))`,
+  better_effect_mq_schedules_metadata_values: `CHECK (((jsonb_typeof(metadata) = 'object') AND (NOT jsonb_path_exists(metadata, '$.*?(@.type() != "string")'))))`,
+  better_effect_mq_schedules_overlap: `CHECK ((overlap = ANY (ARRAY['allow', 'skip'])))`,
+  better_effect_mq_schedules_payload: `CHECK ((jsonb_typeof(payload) IS NOT NULL))`,
+  better_effect_mq_schedules_misfire: `CHECK ((jsonb_typeof(misfire) = 'object'))`
 } as const
 
 const validIndexDefinitions = {
@@ -128,7 +163,13 @@ const validIndexDefinitions = {
   [POSTGRES_INDEXES[6]]:
     'CREATE INDEX better_effect_mq_jobs_metadata_idx ON better_effect_mq_jobs USING gin (metadata jsonb_path_ops)',
   [POSTGRES_INDEXES[7]]:
-    'CREATE UNIQUE INDEX better_effect_mq_jobs_idempotency_idx ON better_effect_mq_jobs (namespace, queue, name, version, dedupe_key) WHERE dedupe_key IS NOT NULL'
+    'CREATE UNIQUE INDEX better_effect_mq_jobs_idempotency_idx ON better_effect_mq_jobs (namespace, queue, name, version, dedupe_key) WHERE dedupe_key IS NOT NULL',
+  [POSTGRES_INDEXES[8]]:
+    'CREATE INDEX better_effect_mq_schedules_due_idx ON better_effect_mq_schedules (namespace, paused, next_run_at_ms, schedule_group COLLATE "C", schedule_key COLLATE "C")',
+  [POSTGRES_INDEXES[9]]:
+    'CREATE INDEX better_effect_mq_schedules_group_idx ON better_effect_mq_schedules (namespace, schedule_group COLLATE "C", schedule_key COLLATE "C")',
+  [POSTGRES_INDEXES[10]]:
+    'CREATE INDEX better_effect_mq_schedules_key_idx ON better_effect_mq_schedules (namespace, schedule_key COLLATE "C", schedule_group COLLATE "C")'
 } as const
 
 const validConstraintRows = (schema: string) => [
@@ -149,7 +190,9 @@ const validConstraintRows = (schema: string) => [
         ? POSTGRES_TABLES.attempts
         : conname.startsWith('better_effect_mq_queues_')
           ? POSTGRES_TABLES.queues
-          : POSTGRES_TABLES.schemaVersions,
+          : conname.startsWith('better_effect_mq_schedules_')
+            ? POSTGRES_TABLES.schedules
+            : POSTGRES_TABLES.schemaVersions,
     constraint_type: 'c',
     validated: true,
     definition
@@ -192,6 +235,15 @@ const validConstraintRows = (schema: string) => [
     definition: 'PRIMARY KEY (component)',
     conkey: [1],
     confkey: null
+  },
+  {
+    conname: 'better_effect_mq_schedules_pkey',
+    table_name: POSTGRES_TABLES.schedules,
+    constraint_type: 'p',
+    validated: true,
+    definition: 'PRIMARY KEY (namespace, schedule_group, schedule_key)',
+    conkey: [1, 3, 2],
+    confkey: null
   }
 ]
 
@@ -218,7 +270,12 @@ const fakePool = (options: FakeOptions = {}) => {
         return result(
           POSTGRES_INDEXES.map((indexname) => ({
             indexname,
-            tablename: POSTGRES_TABLES.jobs,
+            tablename:
+              indexname === POSTGRES_INDEXES[8] ||
+              indexname === POSTGRES_INDEXES[9] ||
+              indexname === POSTGRES_INDEXES[10]
+                ? POSTGRES_TABLES.schedules
+                : POSTGRES_TABLES.jobs,
             indexdef: validIndexDefinitions[indexname],
             is_valid: indexname !== options.invalidIndex,
             is_ready: true,
@@ -277,9 +334,11 @@ describe('Postgres foundation', () => {
 
   test('loads the shipped migration with a stable checksum', async () => {
     const migrations = await loadPostgresMigrations()
-    expect(migrations).toHaveLength(1)
+    expect(migrations).toHaveLength(2)
     expect(migrations[0]?.version).toBe(1)
     expect(migrations[0]?.sql).toContain('better_effect_mq_jobs')
+    expect(migrations[1]?.version).toBe(2)
+    expect(migrations[1]?.sql).toContain('better_effect_mq_schedules')
     expect(migrations[0]?.checksum).toMatch(/^[0-9a-f]{64}$/u)
   })
 
@@ -365,7 +424,7 @@ describe('Postgres foundation', () => {
   test('migration is locked, explicit, and idempotency metadata is bound', async () => {
     const { pool, queries } = fakePool({ validSchema: true })
     const first = await PostgresMigrator.run(pool, { appliedAtMs: 1 })
-    expect(first).toMatchObject({ applied: [1], version: 1, schema: 'public' })
+    expect(first).toMatchObject({ applied: [1, 2], version: 2, schema: 'public' })
     expect(queries.some(({ sql }) => sql.includes('pg_advisory_xact_lock'))).toBe(true)
     expect(queries.some(({ sql }) => sql.includes('DROP TABLE'))).toBe(false)
     const lock = queries.find(({ sql }) => sql.includes('pg_advisory_xact_lock'))
