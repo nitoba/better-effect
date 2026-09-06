@@ -328,7 +328,7 @@ describe('Runtime.inspect', () => {
     }
   })
 
-  test('transitions to disposing before waiting and exposes shutdown aborts', async () => {
+  test('transitions to quiescing before waiting and exposes shutdown aborts', async () => {
     let runtime!: Runtime<never>
     let abortedInspection: RuntimeInspection | undefined
     runtime = await Runtime.make(Layer.empty)
@@ -357,10 +357,10 @@ describe('Runtime.inspect', () => {
       abortAfterGracePeriod: true
     })
 
-    expect(runtime.inspect().state).toBe('disposing')
+    expect(runtime.inspect().state).toBe('quiescing')
     await Promise.all([execution, disposal])
     expect(abortedInspection).toMatchObject({
-      state: 'disposing',
+      state: 'aborting',
       activeExecutions: 1,
       shutdownSignalAborted: true
     })

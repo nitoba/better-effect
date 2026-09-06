@@ -1,6 +1,20 @@
 import type { InferYieldRequirements, ServiceRequirement } from '../effect/types'
 import type { ServiceContract, ServiceRequirements, ServiceToken } from '../service'
 import type { MaybePromise } from '../utils/types'
+import type { ScopeOutcome } from '../scope'
+import type { RuntimeShutdownReason } from '../runtime/outcome'
+
+/** Callback that stops a resource from admitting new work. */
+export type LayerQuiesce<Instance = unknown> = (
+  instance: Instance,
+  reason: RuntimeShutdownReason
+) => MaybePromise<void>
+
+/** Lifecycle callbacks for a resource owned by a Runtime root Scope. */
+export type LayerLifecycle<Instance> = {
+  readonly quiesce?: LayerQuiesce<Instance>
+  readonly release: (instance: Instance, outcome: ScopeOutcome) => MaybePromise<void>
+}
 
 /** Runtime-facing provider registration supplied by a Layer backend. */
 export interface LayerRegistration {
@@ -18,6 +32,9 @@ export interface LayerRegistration {
 
   /** Lazily acquire the Service instance; concrete types are erased at this backend boundary. */
   readonly acquire: () => MaybePromise<unknown>
+
+  /** Optional Runtime-root quiesce hook retained by Layer-created registrations. */
+  readonly quiesce?: LayerQuiesce
 }
 
 /** Generator shape used by `Layer.gen` and `Layer.scopedGen`. */

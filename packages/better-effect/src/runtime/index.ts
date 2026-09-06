@@ -26,7 +26,8 @@ export type {
   RuntimeDisposeOptions,
   RuntimeOptions,
   RuntimeRunOptions,
-  RuntimeShutdownDiagnostic
+  RuntimeShutdownDiagnostic,
+  RuntimeShutdownReason
 } from './outcome'
 
 export type {
@@ -38,6 +39,8 @@ export type {
   RuntimeLifecycleEventMetadata,
   RuntimeLifecycleReleaseEvent,
   RuntimeLifecycleStartEvent,
+  RuntimeShutdownEvent,
+  RuntimeShutdownPhase,
   RuntimeResourceReleaseEvent,
   RuntimeServiceAcquireEvent,
   RuntimeServiceResolveEvent,

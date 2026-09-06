@@ -10,6 +10,13 @@ import type { RuntimeContextStorage } from './context'
 
 import type { RuntimeExecutionAttributes, RuntimeObserver } from './observer'
 
+/** Metadata explaining why a Runtime shutdown was requested. */
+export type RuntimeShutdownReason = {
+  readonly kind: 'dispose' | 'signal' | 'external-abort' | 'main-settled'
+  readonly signal?: 'SIGINT' | 'SIGTERM'
+  readonly cause?: unknown
+}
+
 /** Aggregated cleanup information reported during Runtime shutdown. */
 export type RuntimeShutdownDiagnostic = {
   /** Final outcome supplied to the Runtime root Scope. */
@@ -52,6 +59,8 @@ export type RuntimeDisposeOptions = {
   readonly gracePeriod?: number
   /** Abort active execution signals after the grace period expires. */
   readonly abortAfterGracePeriod?: boolean
+  /** Boundary metadata supplied to Layer quiesce callbacks. */
+  readonly reason?: RuntimeShutdownReason
 }
 
 /** Classify only a nominal better-result Err as a failed Runtime outcome. */

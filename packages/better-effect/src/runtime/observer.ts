@@ -3,6 +3,29 @@ import type { Scope } from '../scope'
 import type { ScopeCloseError, ScopeOutcome } from '../scope'
 import type { MaybePromise } from '../utils/types'
 import type { ScopedTaskState } from '../effect/task'
+import type { RuntimeShutdownReason } from './outcome'
+
+/** Observable Runtime shutdown phase. */
+export type RuntimeShutdownPhase =
+  | 'shutdown-requested'
+  | 'quiesce-start'
+  | 'quiesce-end'
+  | 'drain-start'
+  | 'drain-end'
+  | 'abort-active'
+  | 'release-start'
+  | 'release-end'
+  | 'shutdown-complete'
+  | 'shutdown-failure'
+
+/** Detached metadata for one Runtime shutdown phase. */
+export type RuntimeShutdownEvent = {
+  readonly phase: RuntimeShutdownPhase
+  readonly reason: RuntimeShutdownReason
+  readonly activeExecutions?: number
+  readonly durationMs?: number
+  readonly error?: unknown
+}
 
 /** Event emitted after a Service resolution attempt settles. */
 export type RuntimeServiceResolveEvent = {
@@ -117,6 +140,7 @@ export type RuntimeObserver = {
   readonly onLifecycleStart?: (event: RuntimeLifecycleStartEvent) => MaybePromise<void>
   readonly onLifecycleEnd?: (event: RuntimeLifecycleEndEvent) => MaybePromise<void>
   readonly onLifecycleRelease?: (event: RuntimeLifecycleReleaseEvent) => MaybePromise<void>
+  readonly onShutdown?: (event: RuntimeShutdownEvent) => MaybePromise<void>
 }
 
 /** Compose best-effort Runtime observers into one observer. */
@@ -151,6 +175,9 @@ export const RuntimeObserver = {
     },
     onLifecycleRelease: (event) => {
       notifyRuntimeObservers(observers, (observer) => observer.onLifecycleRelease, event)
+    },
+    onShutdown: (event) => {
+      notifyRuntimeObservers(observers, (observer) => observer.onShutdown, event)
     }
   })
 }

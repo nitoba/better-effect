@@ -49,6 +49,10 @@ await NodeRuntime.runMain(
     onDefect: (cause) => {
       console.error(cause)
       return 1
+    },
+    shutdown: {
+      gracePeriod: 10_000,
+      abortAfterGracePeriod: true
     }
   },
   main

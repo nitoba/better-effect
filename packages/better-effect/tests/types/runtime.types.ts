@@ -28,7 +28,7 @@ import {
   type RuntimeTaskInspection
 } from '../../src/runtime'
 import { Scope, type ScopeOutcome } from '../../src/scope'
-import { NodeRuntime, type NodeRuntimeOptions } from '../../src/node'
+import { NodeRuntime, type NodeRuntimeLaunchOptions, type NodeRuntimeOptions } from '../../src/node'
 import { Service, type AnyServiceToken, type ServiceResolver } from '../../src/service'
 import type { MissingDependencies } from '../../src/internal/missing-dependencies'
 import type { CompleteExecution, ExecutionMissing } from '../../src/layer/inference'
@@ -387,6 +387,15 @@ const nodeOptions: NodeRuntimeOptions<string, Error> = {
     return 1
   }
 }
+const launchOptions: NodeRuntimeLaunchOptions = {
+  warmup: true,
+  shutdown: {
+    gracePeriod: 10,
+    abortAfterGracePeriod: true
+  }
+}
+const launchResult = NodeRuntime.launch(Layer.empty, launchOptions)
+expectTypeOf(launchResult).toEqualTypeOf<Promise<void>>()
 // @ts-expect-error NodeRuntime has no separate grace-period cancellation policy.
 const nodeGraceOptions: NodeRuntimeOptions = { gracePeriod: 5_000 }
 
@@ -403,6 +412,7 @@ expectTypeOf<NodeRuntime.Options<string, Error>>().toEqualTypeOf<
 >()
 void nodeOptions
 void nodeGraceOptions
+void launchOptions
 
 // @ts-expect-error Logger is not supplied by this NodeRuntime Layer.
 void NodeRuntime.runMain(DatabaseLive, requiresDatabaseAndLogger)
