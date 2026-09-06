@@ -2,6 +2,9 @@ export { MySqlClient } from './client'
 export { MySqlMigrator } from './migrator'
 export { MySqlJobStore } from './layer'
 export { MySqlJobScheduleStore } from './layer'
+export { MySqlOutboxStore } from './layer'
+export { MySqlOutbox, namespaceForOutboxToken } from './MySqlOutbox'
+export { OutboxStore, isOutboxStoreToken, outboxStoreTag } from './outbox-token'
 export {
   MIGRATION_COMPONENT,
   MYSQL_INDEXES,
@@ -35,6 +38,24 @@ export type {
   MySqlPoolConfig,
   QueryResult
 } from './config'
+export type {
+  MySqlOutboxStoreConfig,
+  MySqlOutboxStoreConnectionConfig,
+  MySqlOutboxStoreContract
+} from './MySqlOutboxStore'
+export type {
+  AnyOutboxStoreToken,
+  DefaultOutboxStoreToken,
+  OutboxStoreInstance,
+  OutboxStoreNameLiteral,
+  OutboxStoreTag,
+  OutboxStoreToken
+} from './outbox-token'
+export type {
+  MySqlOutboxAppendOptions,
+  MySqlOutboxRow,
+  MySqlOutboxTransaction
+} from './MySqlOutbox'
 export type {
   MySqlMigration,
   MySqlMigrationOptions,

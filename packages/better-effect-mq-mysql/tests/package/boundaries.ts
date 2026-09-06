@@ -19,6 +19,7 @@ const peers = manifest.peerDependencies as Record<string, unknown>
 const peerMeta = manifest.peerDependenciesMeta as Record<string, Record<string, unknown>>
 if (
   peers['better-effect-mq'] === undefined ||
+  peers['better-effect-mq-outbox'] === undefined ||
   peers.mysql2 === undefined ||
   peerMeta.mysql2?.optional !== true
 )

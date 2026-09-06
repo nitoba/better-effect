@@ -42,9 +42,16 @@ try {
   await mkdir(archiveRoot, { recursive: true })
 
   const coreArchive = await pack('core', join(repositoryRoot, 'packages/better-effect'))
+  const mqArchive = await pack('mq', join(repositoryRoot, 'packages/better-effect-mq'))
+  const outboxArchive = await pack(
+    'outbox',
+    join(repositoryRoot, 'packages/better-effect-mq-outbox')
+  )
   const mysqlArchive = await pack('mysql', packageRoot)
   await Bun.write(join(nodeModules, '.keep'), '')
   await installArchive(coreArchive, 'better-effect')
+  await installArchive(mqArchive, 'better-effect-mq')
+  await installArchive(outboxArchive, 'better-effect-mq-outbox')
   await installArchive(mysqlArchive, 'better-effect-mq-mysql')
 
   run(

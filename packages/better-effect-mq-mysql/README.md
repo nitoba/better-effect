@@ -1,10 +1,11 @@
 # better-effect-mq-mysql
 
-`better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore` and
-`JobScheduleStore` adapters for [`better-effect-mq`](../better-effect-mq). It
-implements protocol v1 and schedules v1 with short transactions, fenced leases,
-durable attempt records, deterministic occurrence IDs, keyset inspection queries,
-and a per-process wake notifier backed by durable queue wake versions.
+`better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore`,
+`JobScheduleStore`, and durable outbox adapters for [`better-effect-mq`](../better-effect-mq).
+It implements protocol v1, schedules v1, and outbox v1 with short transactions,
+fenced leases, durable attempt records, deterministic occurrence IDs, keyset
+inspection queries, and a per-process wake notifier backed by durable queue wake
+versions.
 
 ```ts
 import { Layer } from 'better-effect'
@@ -49,6 +50,45 @@ await MySqlMigrator.run(pool)
 await MySqlMigrator.validate(pool)
 ```
 
+Migration 4 adds the `better_effect_mq_outbox` table and claim, lease, target,
+and recent-record indexes. The outbox stores an already prepared request and
+delivers it at least once; it does not promise exactly-once execution.
+
+```ts
+import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
+import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { Result } from 'better-result'
+
+const ApplicationOutbox = OutboxStore.named('application')
+const OutboxLive = MySqlOutboxStore.layerFor(ApplicationOutbox, {
+  pool,
+  namespace: 'billing',
+  validateSchema: true
+})
+
+const record = makeOutboxRecord({
+  id: OutboxId.make('invoice-created:123').unwrap(),
+  target: 'jobs-mysql',
+  request: prepared,
+  nowMs: Date.now()
+}).unwrap()
+
+await database.transaction(async (connection) => {
+  await saveInvoice(connection, invoice)
+  const result = await MySqlOutbox.appendIn(connection, record, {
+    namespace: 'billing',
+    token: ApplicationOutbox
+  })
+  if (Result.isError(result)) throw result.error
+})
+```
+
+`MySqlOutbox.appendIn` uses the caller's real `mysql2/promise` connection and
+never begins, commits, rolls back, or releases it. Domain writes and the
+outbox row therefore commit or roll back together. The store layer owns only
+its own short-lived connections; it never holds one while a publisher handler
+runs.
+
 The migrator holds a MySQL `GET_LOCK`, applies idempotent statements in order,
 and records a migration only after all of its DDL succeeds. Since MySQL DDL can
 commit implicitly, an interrupted migration remains detectable and safe to rerun.
@@ -77,6 +117,6 @@ query-plan monitoring. MariaDB is intentionally not advertised as supported.
 
 The repository runs the MySQL conformance suite when `MYSQL_URL` is set to a
 dedicated MySQL 8.0.16+ test database. It covers protocol transitions, queue
-pause/wake behavior, lease fencing, settlement replay, and isolated named
-stores. Without that variable the real-engine suite is skipped; unit, package,
-and tarball checks still run.
+pause/wake behavior, lease fencing, settlement replay, durable outbox append and
+recovery, and isolated named stores. Without that variable the real-engine suite
+is skipped; unit, package, and tarball checks still run.
