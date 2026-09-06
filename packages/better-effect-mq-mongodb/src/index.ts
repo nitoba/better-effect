@@ -1,4 +1,5 @@
 export { MongoJobStore } from './store'
+export { MongoJobScheduleStore } from './schedule'
 export { MongoJobStoreClient } from './client'
 export { MongoJobStoreMigrator } from './migrator'
 export { MongoQueueChangeStream } from './change-stream'
