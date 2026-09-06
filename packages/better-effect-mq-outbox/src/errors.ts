@@ -174,6 +174,35 @@ export class OutboxProtocolMismatchError extends TaggedError('OutboxProtocolMism
   }
 }
 
+export class OutboxRouteMissingError extends TaggedError('OutboxRouteMissingError')<{
+  readonly target: string
+  readonly outboxId?: string
+  readonly message: string
+}> {
+  constructor(args: {
+    readonly target: string
+    readonly outboxId?: string
+    readonly message?: string
+  }) {
+    const message = messageOr(
+      args.message,
+      `No JobStore route is configured for outbox target "${args.target}"`
+    )
+    super(
+      args.outboxId === undefined
+        ? { target: args.target, message }
+        : { target: args.target, outboxId: args.outboxId, message }
+    )
+  }
+
+  static override is<C extends TaggedErrorConstructor>(
+    this: C,
+    value: unknown
+  ): value is InstanceType<C> {
+    return hasTag(value, 'OutboxRouteMissingError')
+  }
+}
+
 export type OutboxStoreError =
   | OutboxDefinitionError
   | OutboxConflictError
