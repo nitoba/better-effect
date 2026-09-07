@@ -106,6 +106,44 @@ const flowWorkerLayer = flowWorker.layer(() => ({
 expectTypeOf<Layer.Required<typeof flowWorkerLayer>>().toEqualTypeOf<
   WorkerLayerConfig | JobStore.Instance | FlowStore.Instance
 >()
+
+const namedParentStore = JobStore.named('typed-flow-parent')
+const namedChildStore = JobStore.named('typed-flow-child')
+const namedParent = queue.job('named-flow-parent', {
+  version: 1,
+  payload: Codec.string,
+  result: Codec.string,
+  store: namedParentStore
+})
+const namedChild = queue.job('named-flow-child', {
+  version: 1,
+  payload: Codec.number,
+  store: namedChildStore
+})
+const namedFlow = Flow.define('typed-named-flow', {
+  parent: namedParent,
+  children: [namedChild] as const,
+  onChildFailure: 'continue'
+})
+const namedFlowWorker = Worker.service('TypedNamedFlowWorker')
+const namedFlowLayer = namedFlowWorker.layer(() => ({
+  handlers: [
+    Worker.handle(namedParent, () =>
+      Effect.fn(async function* () {
+        yield* []
+        return Result.ok('done')
+      })
+    )
+  ] as const,
+  flows: [namedFlow] as const,
+  flowSweepFlowIds: [] as const
+}))
+expectTypeOf<Layer.Required<typeof namedFlowLayer>>().toEqualTypeOf<
+  | JobStore.Instance<'typed-flow-parent'>
+  | JobStore.Instance<'typed-flow-child'>
+  | FlowStore.Instance<typeof namedParentStore>
+  | FlowStore.Instance<typeof namedChildStore>
+>()
 void FlowStore
 
 // @ts-expect-error Worker layers cannot be made into a Runtime before their Services are provided.

@@ -102,9 +102,10 @@ append and exact-payload acknowledgement in Lua scripts; its bounded peek
 reads the ordered outbox without deleting entries. `MemoryFlowStore` is the
 reference implementation used by the shared flow-store conformance suite.
 
-PostgreSQL and Redis adapters provide durable flow storage. Cross-store enqueue,
-outbox delivery, result aggregation, and Worker supervision remain runner-owned
-integration work; this package only defines the storage boundary.
+PostgreSQL and Redis adapters provide durable flow storage. Cross-store enqueue
+and flow phase execution remain outside this Worker integration; the Worker owns
+outbox delivery, result aggregation, and bounded reconciliation using the
+storage boundary.
 
 ## Worker Layer composition
 
@@ -135,8 +136,12 @@ token. Startup resolves and validates all of them before polling. Flow names
 must be unique within one Worker, and a flow parent cannot also be registered
 as a plain Worker handler.
 
-This is a composition and validation slice. The Worker does not yet execute
-fan-out/collect phases or own relay and sweeper loops because the current public
-v1 JobStore contract does not expose the required atomic parent settlement,
-outbox scan/ack, and child terminal-report operations. No cross-store
-transaction is implied: adapters retain ownership of those future operations.
+The Worker starts relay and sweeper supervision from the same Runtime root as
+ordinary job polling. Configure `flowSweepIntervalMs` for the periodic cadence,
+`flowBatchSize` for the per-cycle bound, and `flowSweepFlowIds` to seed Flow
+instances when no outbox entry has yet been observed. The FlowStore v2 contract
+does not enumerate Flow instances, so a seed or a previously observed outbox
+report is required for reconciliation. Relay uses each FlowStore's
+`parentStoreKey` route and leaves unknown entries durable while continuing
+through the bounded page. No cross-store transaction is implied: adapters retain
+ownership of atomic storage operations.

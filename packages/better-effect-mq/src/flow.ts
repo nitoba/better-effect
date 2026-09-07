@@ -123,11 +123,16 @@ export type FlowDefinitionRequirements<Current extends AnyFlowDefinition> =
   | Job.Requirements<FlowChildDefinition<Current>>
 
 export type FlowStoreRequirements<Current extends AnyFlowDefinition> =
-  Current['parent']['store'] extends infer Store
-    ? Store extends import('./store').AnyJobStoreToken
-      ? FlowStoreInstance<Store>
-      : never
-    : never
+  | (Current['parent']['store'] extends infer ParentStore
+      ? ParentStore extends import('./store').AnyJobStoreToken
+        ? FlowStoreInstance<ParentStore>
+        : never
+      : never)
+  | (FlowChildDefinition<Current>['store'] extends infer ChildStore
+      ? ChildStore extends import('./store').AnyJobStoreToken
+        ? FlowStoreInstance<ChildStore>
+        : never
+      : never)
 
 export type FlowHandlerRequirements<
   Current extends AnyFlowDefinition,

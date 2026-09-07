@@ -10,7 +10,7 @@ import type {
   FlowHandlerRequirements
 } from '../flow'
 import type { JobContext } from './context'
-import type { WorkerId, JobRecord, SerializedJobFailure } from '../protocol'
+import type { JobId, WorkerId, JobRecord, SerializedJobFailure } from '../protocol'
 import type { JobObserver } from '../observability'
 
 /** Optional concurrency override for one registered handler. */
@@ -52,6 +52,12 @@ export interface WorkerReliabilityOptions {
   readonly maxStalledCount?: number
   /** Bounded claim/wake polling cadence. Defaults to 100ms. */
   readonly pollIntervalMs?: number
+  /** Periodic Flow relay/sweeper cadence. Defaults to 30 seconds. */
+  readonly flowSweepIntervalMs?: number
+  /** Maximum Flow outbox entries or reconciliation observations per cycle. */
+  readonly flowBatchSize?: number
+  /** Explicit Flow instances to seed for reconciliation. */
+  readonly flowSweepFlowIds?: readonly JobId[]
   readonly shutdown?: {
     readonly gracePeriodMs?: number
     readonly abortAfterGracePeriod?: boolean
