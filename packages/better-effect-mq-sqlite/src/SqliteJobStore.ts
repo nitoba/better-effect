@@ -2,6 +2,8 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts localize completed Result and Service erasure boundaries.
 // oxlint-disable anti-slop/no-runtime-typeof -- persisted SQLite rows and tagged protocol failures are checked at boundaries.
 // oxlint-disable anti-slop/no-unsafe-dictionary-type -- persisted engine snapshots are parsed and validated by the engine boundary.
+// oxlint-disable anti-slop/no-unknown-parameters -- event derivation consumes validated engine results at one persistence boundary.
+// oxlint-disable anti-slop/no-chained-type-assertions -- event records are erased only after the engine Result boundary.
 import { Layer } from 'better-effect'
 import type { ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
@@ -15,6 +17,9 @@ import {
   type ControlledRecoverStalledRequest,
   type ControlledReleaseRequest,
   type ControlledSettleRequest,
+  type DurableJobEventInput,
+  type DurableJobEventType,
+  JobEventStore,
   type QueueControlsRecord,
   validateFlowChildReport,
   validateParentEnvelope,
@@ -22,6 +27,12 @@ import {
   type JobStore as JobStoreNamespace
 } from 'better-effect-mq'
 import type { JobStoreError, JobStoreOperation } from 'better-effect-mq'
+import {
+  appendSqliteJobEvent,
+  normalizeSqliteJobEventStoreOptions,
+  SqliteJobEventStore,
+  type SqliteJobEventStoreOptions
+} from './event-store'
 import { normalizeSqliteJobStoreConfig, type SqliteJobStoreConfig } from './config'
 import { SqliteAdapterError, sqliteError } from './errors'
 import { SqliteMigrator } from './migrator'
@@ -31,6 +42,120 @@ import { withSqliteTransaction } from './internal/transactions'
 
 type Operation<T> = JobStoreOperation<T, JobStoreError>
 type SyncOperation<T> = ResultType<T, JobStoreError>
+type EventOptions = ReturnType<typeof normalizeSqliteJobEventStoreOptions>
+type StateSnapshot = {
+  readonly jobs: readonly [string, Record<string, unknown>][]
+  readonly paused: readonly string[]
+}
+
+const stateSnapshot = (serialized: string): StateSnapshot => {
+  const value = JSON.parse(serialized) as Record<string, unknown>
+  return {
+    jobs: (value.jobs as readonly [string, Record<string, unknown>][]) ?? [],
+    paused: (value.paused as readonly string[]) ?? []
+  }
+}
+
+const attemptEventType = (attempt: Record<string, unknown>): DurableJobEventType => {
+  switch (attempt.outcome) {
+    case 'completed':
+      return 'job-completed'
+    case 'retried':
+      return 'job-retry-scheduled'
+    case 'failed':
+      return 'job-failed'
+    case 'cancelled':
+      return 'job-cancelled'
+    case 'stalled':
+      return 'job-stalled-recovered'
+    case 'released':
+      return 'job-released'
+    default:
+      throw new Error('unsupported attempt outcome')
+  }
+}
+
+const transitionEventType = (
+  operation: string,
+  previous: Record<string, unknown> | undefined,
+  next: Record<string, unknown>
+): DurableJobEventType | undefined => {
+  switch (operation) {
+    case 'cancel':
+    case 'cancelControlled':
+      return previous?.state === 'active'
+        ? previous.cancellationRequestedAt === next.cancellationRequestedAt
+          ? undefined
+          : 'job-cancel-requested'
+        : 'job-cancelled'
+    case 'requestCancellation':
+      return previous?.cancellationRequestedAt === next.cancellationRequestedAt
+        ? undefined
+        : 'job-cancel-requested'
+    case 'promote':
+      return 'job-promoted'
+    case 'retry':
+      return 'job-admin-retried'
+    case 'release':
+    case 'releaseControlled':
+      return 'job-released'
+    case 'recoverStalled':
+    case 'recoverStalledControlled':
+      return 'job-stalled-recovered'
+    default:
+      return undefined
+  }
+}
+
+const eventInput = (
+  type: DurableJobEventType,
+  record: Record<string, unknown> | undefined,
+  recordedAtMs: number,
+  context: {
+    readonly previous?: Record<string, unknown> | undefined
+    readonly attempt?: Record<string, unknown> | undefined
+    readonly duplicate?: boolean | undefined
+    readonly queue?: string | undefined
+  } = {}
+): DurableJobEventInput => ({
+  type,
+  recordedAtMs,
+  jobId: record?.id as never,
+  queue: (record?.queue ?? context.queue) as never,
+  name: record?.name as never,
+  version: record?.version as never,
+  state: record?.state as never,
+  attempt: (context.attempt?.attemptSequence ?? context.attempt?.attempt) as never,
+  delivery: (context.attempt?.delivery ??
+    (typeof record?.deliveryCount === 'number' && record.deliveryCount > 0
+      ? record.deliveryCount
+      : undefined)) as never,
+  workerId: (record?.leaseOwner ?? context.previous?.leaseOwner) as never,
+  outcome: (context.attempt?.outcome ??
+    (type === 'job-released' ? 'released' : undefined)) as never,
+  failureKind: (() => {
+    const failure = record?.failure
+    const previousFailure = context.previous?.failure
+    const currentKind =
+      failure !== null && typeof failure === 'object' && 'kind' in failure
+        ? failure.kind
+        : undefined
+    const previousKind =
+      previousFailure !== null && typeof previousFailure === 'object' && 'kind' in previousFailure
+        ? previousFailure.kind
+        : undefined
+    return (currentKind ?? previousKind) as never
+  })(),
+  duplicate: context.duplicate,
+  attributes: Object.freeze({})
+})
+
+const eventRecordedAt = (record: Record<string, unknown> | undefined, fallback: number): number =>
+  typeof record?.updatedAt === 'number'
+    ? record.updatedAt
+    : typeof record?.createdAt === 'number'
+      ? record.createdAt
+      : fallback
 
 const terminalFlowReport = (
   attempt: import('better-effect-mq').AttemptRecord | undefined,
@@ -108,7 +233,15 @@ class SqliteJobStoreImplementation {
   private flowReportsEnabled: boolean | undefined
   private readonly wakePollers = new Set<ReturnType<typeof setInterval>>()
 
-  constructor(private readonly config: ReturnType<typeof normalizeSqliteJobStoreConfig>) {}
+  private readonly eventOptions: EventOptions | undefined
+
+  constructor(
+    private readonly config: ReturnType<typeof normalizeSqliteJobStoreConfig>,
+    eventOptions?: SqliteJobEventStoreOptions
+  ) {
+    this.eventOptions =
+      eventOptions === undefined ? undefined : normalizeSqliteJobEventStoreOptions(eventOptions)
+  }
 
   private execute<T>(
     operation: string,
@@ -122,7 +255,12 @@ class SqliteJobStoreImplementation {
         this.restore()
         const before = mutable ? this.engine.exportState() : undefined
         const result = callback()
-        if (mutable && Result.isOk(result)) this.persist(before!)
+        if (mutable && Result.isOk(result)) {
+          this.persist(before!)
+          if (this.eventOptions !== undefined) {
+            this.appendEvents(operation, result.value, before!)
+          }
+        }
         if (mutable) this.config.database.exec(Result.isOk(result) ? 'COMMIT' : 'ROLLBACK')
         return result as Operation<T>
       } catch (cause) {
@@ -145,6 +283,114 @@ class SqliteJobStoreImplementation {
       () => undefined
     )
     return result
+  }
+
+  private appendEvents(operation: string, value: unknown, beforeSerialized: string): void {
+    const options = this.eventOptions
+    if (options === undefined) return
+    const before = stateSnapshot(beforeSerialized)
+    const previousJobs = new Map(before.jobs)
+    const recordedAtMs = Date.now()
+    const append = (event: DurableJobEventInput): void =>
+      appendSqliteJobEvent(this.config.database, this.config.namespace, event, options.retention)
+    const result = value as Record<string, unknown>
+    if (operation === 'enqueue' && result.duplicate !== true) {
+      append(
+        eventInput(
+          'job-enqueued',
+          result.job as Record<string, unknown>,
+          eventRecordedAt(result.job as Record<string, unknown>, recordedAtMs),
+          {
+            duplicate: false
+          }
+        )
+      )
+      return
+    }
+    if (operation === 'enqueueMany' && Array.isArray(value)) {
+      for (const item of value) {
+        if (item?.duplicate !== true) {
+          append(
+            eventInput(
+              'job-enqueued',
+              item.job as Record<string, unknown>,
+              eventRecordedAt(item.job as Record<string, unknown>, recordedAtMs),
+              { duplicate: false }
+            )
+          )
+        }
+      }
+      return
+    }
+    if (operation === 'claim' || operation === 'claimControlled') {
+      for (const job of (result.jobs as readonly Record<string, unknown>[]) ?? []) {
+        append(eventInput('job-claimed', job, eventRecordedAt(job, recordedAtMs)))
+      }
+      return
+    }
+    if (operation === 'settle' || operation === 'settleControlled') {
+      if (result.status === 'applied') {
+        const attempt = result.attempt as Record<string, unknown>
+        const record = result.record as Record<string, unknown>
+        append(
+          eventInput(attemptEventType(attempt), record, eventRecordedAt(record, recordedAtMs), {
+            previous: previousJobs.get(String(record.id)),
+            attempt
+          })
+        )
+      }
+      return
+    }
+    if (operation === 'recoverStalled' || operation === 'recoverStalledControlled') {
+      for (const transition of (result.transitions as readonly Record<string, unknown>[]) ?? []) {
+        const record = transition.record as Record<string, unknown>
+        append(
+          eventInput('job-stalled-recovered', record, eventRecordedAt(record, recordedAtMs), {
+            previous: previousJobs.get(String(record.id)),
+            attempt: transition.attempt as Record<string, unknown> | undefined
+          })
+        )
+      }
+      return
+    }
+    if (operation === 'remove') {
+      const job = result.job as Record<string, unknown>
+      append(eventInput('job-removed', job, eventRecordedAt(job, recordedAtMs)))
+      return
+    }
+    if (operation === 'pause' || operation === 'resume') {
+      const queue = typeof result.queue === 'string' ? result.queue : undefined
+      const wasPaused = queue !== undefined && before.paused.includes(queue)
+      const paused = result.paused === true
+      if (queue !== undefined && wasPaused !== paused) {
+        append(
+          eventInput(paused ? 'queue-paused' : 'queue-resumed', undefined, recordedAtMs, { queue })
+        )
+      }
+      return
+    }
+    if (result.record !== undefined) {
+      const record = result.record as Record<string, unknown>
+      const type = transitionEventType(operation, previousJobs.get(String(record.id)), record)
+      if (type !== undefined) {
+        append(
+          eventInput(type, record, eventRecordedAt(record, recordedAtMs), {
+            previous: previousJobs.get(String(record.id))
+          })
+        )
+      }
+      return
+    }
+    if (result.id !== undefined && result.state !== undefined) {
+      const record = result
+      const type = transitionEventType(operation, previousJobs.get(String(record.id)), record)
+      if (type !== undefined)
+        append(
+          eventInput(type, record, eventRecordedAt(record, recordedAtMs), {
+            previous: previousJobs.get(String(record.id))
+          })
+        )
+    }
   }
 
   private restore(): void {
@@ -863,7 +1109,24 @@ const namespaceFor = (token: AnyJobStoreToken, namespace: string): string =>
     ? namespace
     : `${namespace}:${encodeURIComponent(token.serviceTag)}`
 
-const makeLayer = <Token extends AnyJobStoreToken>(token: Token, config: SqliteJobStoreConfig) => {
+const eventLayoutAvailable = (
+  database: ReturnType<typeof normalizeSqliteJobStoreConfig>['database']
+): boolean => {
+  try {
+    const row = database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(SQLITE_TABLES.events)
+    return row !== undefined && row !== null
+  } catch {
+    return false
+  }
+}
+
+const makeLayer = <Token extends AnyJobStoreToken>(
+  token: Token,
+  config: SqliteJobStoreConfig,
+  eventOptions?: SqliteJobEventStoreOptions
+) => {
   const normalized = normalizeSqliteJobStoreConfig(config)
   return Layer.scoped(
     token,
@@ -878,8 +1141,10 @@ const makeLayer = <Token extends AnyJobStoreToken>(token: Token, config: SqliteJ
         )
       }
       if (scoped.validateSchema) SqliteMigrator.validate(scoped.database)
+      const activeEventOptions =
+        eventOptions ?? (eventLayoutAvailable(scoped.database) ? {} : undefined)
       return JobStore.of(
-        new SqliteJobStoreImplementation(scoped) as never
+        new SqliteJobStoreImplementation(scoped, activeEventOptions) as never
       ) as unknown as ServiceContract<InstanceType<Token>>
     },
     async (store) => (store as unknown as SqliteJobStoreImplementation).dispose()
@@ -893,6 +1158,15 @@ export const SqliteJobStore: {
     token: Token,
     config: SqliteJobStoreConfig
   ) => Layer<InstanceType<Token>, never>
+  readonly layerWithEvents: (
+    config: SqliteJobStoreConfig,
+    options?: SqliteJobEventStoreOptions
+  ) => Layer<JobStoreNamespace.Instance | import('better-effect-mq').JobEventStore.Instance, never>
+  readonly layerWithEventsFor: <Token extends AnyJobStoreToken>(
+    token: Token,
+    config: SqliteJobStoreConfig,
+    options?: SqliteJobEventStoreOptions
+  ) => Layer<InstanceType<Token> | import('better-effect-mq').JobEventStore.Instance<Token>, never>
   readonly make: (config: SqliteJobStoreConfig) => JobStoreNamespace.Contract
 } = Object.freeze({
   migrate: (options) => SqliteMigrator.migrate(options),
@@ -902,9 +1176,30 @@ export const SqliteJobStore: {
   layerFor<Token extends AnyJobStoreToken>(token: Token, config: SqliteJobStoreConfig) {
     return makeLayer(token, config)
   },
+  layerWithEvents(config: SqliteJobStoreConfig, options?: SqliteJobEventStoreOptions) {
+    return Layer.merge(
+      makeLayer(JobStore, config, options ?? {}),
+      SqliteJobEventStore.layer({ ...config, ...options })
+    ) as Layer<
+      JobStoreNamespace.Instance | import('better-effect-mq').JobEventStore.Instance,
+      never
+    >
+  },
+  layerWithEventsFor<Token extends AnyJobStoreToken>(
+    token: Token,
+    config: SqliteJobStoreConfig,
+    options?: SqliteJobEventStoreOptions
+  ) {
+    const eventToken = JobEventStore.for(token)
+    return Layer.merge(
+      makeLayer(token, config, options ?? {}) as Layer.Any,
+      SqliteJobEventStore.layerFor(eventToken as never, { ...config, ...options }) as Layer.Any
+    ) as unknown as Layer<InstanceType<Token> | InstanceType<typeof eventToken>, never>
+  },
   make(config: SqliteJobStoreConfig): JobStoreNamespace.Contract {
     const normalized = normalizeSqliteJobStoreConfig(config)
     if (normalized.validateSchema) SqliteMigrator.validate(normalized.database)
-    return JobStore.of(new SqliteJobStoreImplementation(normalized) as never)
+    const eventOptions = eventLayoutAvailable(normalized.database) ? {} : undefined
+    return JobStore.of(new SqliteJobStoreImplementation(normalized, eventOptions) as never)
   }
 })

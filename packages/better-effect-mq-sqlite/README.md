@@ -44,6 +44,11 @@ const FlowLive = SqliteFlowStore.layer({
   namespace: 'desktop-app',
   configurePragmas: true
 })
+
+const EventsLive = SqliteJobStore.layerWithEvents(
+  { database, namespace: 'desktop-app', configurePragmas: true },
+  { retention: { count: 100_000 } }
+)
 ```
 
 `SqliteJobScheduleStore.layer` provides the canonical default `JobScheduleStore` token and shares
@@ -85,7 +90,8 @@ Run migrations deliberately, preferably after a backup for file databases. Migra
 durable schedules table and due/group/key indexes; migration 3 adds the durable outbox table and
 claim, lease, target/state, and recent indexes; migration 4 adds the FlowStore v2 parent columns,
 child manifest table, and durable flow-report outbox; migration 5 adds QueueControls v3 state and
-the persisted dispatch-key column. Startup only validates the schema by default.
+the persisted dispatch-key column; migration 6 adds the durable JobEventStore tables and cursor
+indexes. Startup only validates the schema by default.
 `SqliteFlowStore.make` and its layers require the explicit flow layout marker and fail with
 `SqliteFlowProtocolMismatchError` on a v1-v3 schema; they never upgrade the database implicitly.
 For caller-owned connections, PRAGMAs are changed only with `configurePragmas: true`; enable
@@ -112,6 +118,33 @@ the permit owned by the matching job/lease token, while rate-window capacity is 
 All mutations use the adapter's serialized `BEGIN IMMEDIATE` write path, so the job transition,
 permit, cursor, and rate-window updates commit as one SQLite transaction. The adapter advertises
 `globalConcurrency` and `rateLimiting` after migration 5.
+
+## Durable job events
+
+`SqliteJobStore.layerWithEvents` composes the JobStore and its matching `JobEventStore` token. The
+event layout is installed by migration 6, but ordinary `SqliteJobStore` layers remain unchanged and
+do not add an event Service to the Runtime. Named stores use the matching event token:
+
+```ts
+import { JobEventStore, JobStore } from 'better-effect-mq'
+
+const Durable = JobStore.named('durable')
+const DurableEvents = JobEventStore.for(Durable)
+const Live = SqliteJobStore.layerWithEventsFor(
+  Durable,
+  { database, namespace: 'desktop-app' },
+  { retention: { ageMs: 7 * 24 * 60 * 60 * 1000 } }
+)
+```
+
+Enqueue, claim, settlement, release/recovery, administrative transitions, removal, and queue
+pause/resume append bounded safe fields in the same SQLite transaction as the JobStore mutation.
+Duplicate enqueue and already-applied settlement do not append duplicate events. Cursors are opaque
+and exclusive; filtered pages advance over examined events. Retention uses the configured age/count
+limits, and reads report `JobEventCursorExpiredError` when the requested position was removed.
+`awaitEvents` checks the authoritative table, wakes local waiters after an append, and polls so a
+commit in another process cannot be lost. Payloads, metadata, results, failure bodies, and stacks
+are never copied into the event log.
 
 ## FlowStore v2
 

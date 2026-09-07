@@ -11,7 +11,8 @@ import {
   scheduleMigrationSql,
   outboxMigrationSql,
   flowMigrationSql,
-  controlsMigrationSql
+  controlsMigrationSql,
+  eventsMigrationSql
 } from './schema'
 
 const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
@@ -37,6 +38,13 @@ const versionFiveChecksum = createHash('sha256')
     'utf8'
   )
   .digest('hex')
+const eventsChecksum = createHash('sha256').update(eventsMigrationSql, 'utf8').digest('hex')
+const versionSixChecksum = createHash('sha256')
+  .update(
+    `1:${initialChecksum}\n2:${scheduleChecksum}\n3:${outboxChecksum}\n4:${flowChecksum}\n5:${controlsChecksum}\n6:${eventsChecksum}\n`,
+    'utf8'
+  )
+  .digest('hex')
 
 export interface SqliteMigrationOptions {
   readonly database: SqliteDatabase
@@ -45,7 +53,7 @@ export interface SqliteMigrationOptions {
 
 export interface SqliteMigrationResult {
   readonly component: typeof MIGRATION_COMPONENT
-  readonly version: 5
+  readonly version: 6
   readonly applied: readonly number[]
 }
 
@@ -97,6 +105,9 @@ export const SqliteMigrator = {
         } else if (version === 5) {
           if (existing.checksum !== versionFiveChecksum)
             throw new SqliteMigrationError('migration checksum mismatch')
+        } else if (version === 6) {
+          if (existing.checksum !== versionSixChecksum)
+            throw new SqliteMigrationError('migration checksum mismatch')
         } else {
           throw new SqliteMigrationError('unsupported SQLite migration version')
         }
@@ -147,9 +158,19 @@ export const SqliteMigrator = {
           )
           .run(5, appliedAtMs, versionFiveChecksum, MIGRATION_COMPONENT)
         applied.push(5)
+        currentVersion = 5
+      }
+      if (currentVersion < 6) {
+        database.exec(eventsMigrationSql)
+        database
+          .prepare(
+            `UPDATE ${SQLITE_TABLES.schemaVersions} SET version = ?, applied_at_ms = ?, checksum = ? WHERE component = ?`
+          )
+          .run(6, appliedAtMs, versionSixChecksum, MIGRATION_COMPONENT)
+        applied.push(6)
       }
       database.exec('COMMIT')
-      return { component: MIGRATION_COMPONENT, version: 5, applied }
+      return { component: MIGRATION_COMPONENT, version: 6, applied }
     } catch (cause) {
       rollback(database)
       if (cause instanceof SqliteMigrationError) throw cause
@@ -159,7 +180,7 @@ export const SqliteMigrator = {
     }
   },
 
-  validate(database: SqliteDatabase): { readonly version: 3 | 4 | 5 } {
+  validate(database: SqliteDatabase): { readonly version: 3 | 4 | 5 | 6 } {
     try {
       const names = new Set(
         database
@@ -245,16 +266,26 @@ export const SqliteMigrator = {
         .get(MIGRATION_COMPONENT)
       if (
         row == null ||
-        (Number(row.version) !== 3 && Number(row.version) !== 4 && Number(row.version) !== 5)
+        (Number(row.version) !== 3 &&
+          Number(row.version) !== 4 &&
+          Number(row.version) !== 5 &&
+          Number(row.version) !== 6)
       ) {
         throw new SqliteSchemaValidationError(
           'schema is not migrated to the supported SQLite layout'
         )
       }
       const numericVersion = Number(row.version)
-      const version = numericVersion === 3 ? 3 : numericVersion === 4 ? 4 : 5
+      const version =
+        numericVersion === 3 ? 3 : numericVersion === 4 ? 4 : numericVersion === 5 ? 5 : 6
       const expectedChecksum =
-        version === 3 ? versionThreeChecksum : version === 4 ? checksum : versionFiveChecksum
+        version === 3
+          ? versionThreeChecksum
+          : version === 4
+            ? checksum
+            : version === 5
+              ? versionFiveChecksum
+              : versionSixChecksum
       if (row.checksum !== expectedChecksum) {
         throw new SqliteSchemaValidationError('schema migration checksum mismatch')
       }
@@ -266,16 +297,20 @@ export const SqliteMigrator = {
                 index !== 'better_effect_mq_jobs_waiting_children_idx' &&
                 !index.includes('controlled_permits') &&
                 !index.includes('rate_windows') &&
-                !index.includes('jobs_dispatch')
+                !index.includes('jobs_dispatch') &&
+                !index.includes('job_events')
             )
           : version === 4
             ? SQLITE_INDEXES.filter(
                 (index) =>
                   !index.includes('better_effect_mq_jobs_dispatch') &&
                   !index.includes('controlled_permits') &&
-                  !index.includes('rate_windows')
+                  !index.includes('rate_windows') &&
+                  !index.includes('job_events')
               )
-            : SQLITE_INDEXES
+            : version === 5
+              ? SQLITE_INDEXES.filter((index) => !index.includes('job_events'))
+              : SQLITE_INDEXES
       for (const index of indexesToCheck) {
         if (!indexes.has(index)) throw new SqliteSchemaValidationError(`missing index ${index}`)
       }
@@ -316,6 +351,17 @@ export const SqliteMigrator = {
         ]
         for (const table of requiredControlTables) {
           if (!names.has(table)) throw new SqliteSchemaValidationError(`missing table ${table}`)
+        }
+      }
+      if (version === 6) {
+        for (const table of [SQLITE_TABLES.eventCursors, SQLITE_TABLES.events]) {
+          if (!names.has(table)) throw new SqliteSchemaValidationError(`missing table ${table}`)
+        }
+        for (const index of [
+          'better_effect_mq_job_events_queue_cursor_idx',
+          'better_effect_mq_job_events_type_cursor_idx'
+        ]) {
+          if (!indexes.has(index)) throw new SqliteSchemaValidationError(`missing index ${index}`)
         }
       }
       return { version }

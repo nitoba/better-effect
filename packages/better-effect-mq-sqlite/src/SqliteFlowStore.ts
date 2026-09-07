@@ -1294,7 +1294,8 @@ const open = (
     .prepare(`SELECT version FROM ${SQLITE_TABLES.schemaVersions} WHERE component = ?`)
     .get(MIGRATION_COMPONENT)
   const version = marker === undefined || marker === null ? undefined : Number(marker.version)
-  if (version !== 4 && version !== 5) throw new SqliteFlowProtocolMismatchError(version)
+  if (version !== 4 && version !== 5 && version !== 6)
+    throw new SqliteFlowProtocolMismatchError(version)
   SqliteMigrator.validate(normalized.database)
   const namespace =
     token === undefined ? normalized.namespace : namespaceFor(token.jobStore, normalized.namespace)
