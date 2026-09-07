@@ -135,6 +135,7 @@ const expectedCoreRuntimeExports = [
   'validateFlowOutboxEntry',
   'validateFlowState',
   'validateJobRecord',
+  'validateJobRecordV2',
   'validateOptionalDuration',
   'validateOptionalTimestamp',
   'validatePersistedBackoff',

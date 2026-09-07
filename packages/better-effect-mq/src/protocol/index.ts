@@ -75,6 +75,7 @@ export {
   validateFlowLimits,
   validateFlowMigration,
   validateFlowManifest,
+  validateJobRecordV2,
   validateFlowState,
   validateParentEnvelope
 } from './v2'
@@ -111,6 +112,8 @@ export type {
 } from './types'
 
 export type {
+  AttemptOutcomeV2,
+  AttemptRecordV2,
   FanOutOutcome,
   FlowChildRecord,
   FlowChildReport,

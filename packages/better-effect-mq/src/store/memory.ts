@@ -24,10 +24,14 @@ import {
   makeQueueName,
   makeWorkerId,
   reduceJob,
+  makeFlowMigration,
+  protocolVersionV2,
   validateAttemptRecord,
   validateDuration,
   validateOptionalDuration,
-  validateTimestamp
+  validateTimestamp,
+  validateJobRecordV2,
+  validateParentEnvelope
 } from '../protocol'
 import { recoverStalledWithPolicy } from '../protocol/transitions'
 import type {
@@ -49,7 +53,7 @@ import {
   type QueueControlsRecord
 } from './controlled'
 
-import type { JobId, LeaseToken, QueueName } from '../protocol'
+import type { JobId, JobName, LeaseToken, QueueName } from '../protocol'
 
 import type {
   ActiveJobSnapshot,
@@ -77,7 +81,15 @@ import type {
   WakeToken
 } from './types'
 
-import type { AttemptRecord, JobRecord, JobTransition } from '../protocol'
+import type {
+  AttemptRecord,
+  AttemptRecordV2,
+  JobRecord,
+  JobRecordV2,
+  JobStateV2,
+  JobTransition,
+  ParentEnvelope
+} from '../protocol'
 import type { JobStoreError } from './errors'
 import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from './store'
 import type { DurableJobEventType, JobEventStoreContract, JobEventStoreWriter } from './event-store'
@@ -87,6 +99,30 @@ import type { MemoryJobEventStoreInternals } from './memory-event-store'
 import { JobStore } from './store'
 import { JobStoreWakeAbortedError } from './errors'
 import { JobEventWriterRejectedError } from './event-errors'
+import type {
+  JobCountsV2,
+  JobStoreV2Contract,
+  JobStoreV2Descriptor,
+  JobStoreV2Operation,
+  ListJobsV2Request,
+  ListJobsV2Result
+} from './job-v2'
+import type {
+  CancelFlowRequest,
+  CancelFlowResult,
+  FlowFanOutRequest,
+  FlowFanOutResult,
+  FlowParentRecord,
+  FlowSnapshot,
+  MarkCascadedRequest,
+  PeekOutboxRequest,
+  ReconcileFlowRequest,
+  RecordChildResultsRequest,
+  RecordChildResultsResult,
+  AppendChildReportRequest,
+  AckOutboxRequest
+} from './flow-v2'
+import { MemoryFlowStore } from './memory-flow'
 import { validatePreparedEnqueue } from '../job/prepared'
 import type { PreparedEnqueue } from '../job/prepared'
 
@@ -146,6 +182,7 @@ type NormalizedEnqueue = {
   readonly backoff: JobRecord['backoff']
   readonly timeoutMs: number | undefined
   readonly idempotencyKey: string | undefined
+  readonly parent: ParentEnvelope | undefined
   readonly now: number
 }
 type WakeBaseline = {
@@ -197,7 +234,16 @@ const memoryDescriptor: JobStoreDescriptor = Object.freeze({
   layoutVersion: 1,
   capabilities: memoryCapabilities
 })
+const memoryV2Descriptor: JobStoreV2Descriptor = Object.freeze({
+  protocolVersion: protocolVersionV2,
+  adapter: 'memory',
+  adapterVersion: '0.2.0',
+  layoutVersion: 1,
+  migration: makeFlowMigration({ status: 'not-required', from: undefined, to: 1 }),
+  capabilities: memoryCapabilities
+})
 const listStates = new Set(['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])
+const listStatesV2 = new Set([...listStates, 'waiting-children'])
 const listStateOrder = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const
 
 const ok = <Value>(value: Value): Operation<Value> =>
@@ -205,6 +251,21 @@ const ok = <Value>(value: Value): Operation<Value> =>
 
 const fail = <Value>(cause: JobStoreError): Operation<Value> =>
   Result.err(cause) as unknown as Operation<Value>
+
+const syncV2 = <Value>(operation: JobStoreV2Operation<Value>): ResultType<Value, JobStoreError> =>
+  // SAFETY: MemoryFlowStore is the synchronous reference implementation. Durable adapters may
+  // return a PromiseLike through the same public contract, but this bridge only owns MemoryFlowStore.
+  operation as ResultType<Value, JobStoreError>
+
+const okV2 = <Value>(value: Value): JobStoreV2Operation<Value> =>
+  Result.ok(value) as JobStoreV2Operation<Value>
+
+const failV2 = <Value>(cause: JobStoreError): JobStoreV2Operation<Value> =>
+  Result.err(cause) as JobStoreV2Operation<Value>
+
+const syncJob = <Value>(operation: Operation<Value>): ResultType<Value, JobStoreError> =>
+  // SAFETY: MemoryJobStore completes synchronously; this is used only by its v2 bridge.
+  operation as ResultType<Value, JobStoreError>
 
 const definitionFailure = <Value>(
   field: string,
@@ -472,9 +533,9 @@ const isRequeue = (previous: JobRecord, next: JobRecord): boolean =>
 
 class MemoryJobStoreImplementation {
   readonly descriptor = memoryDescriptor
-
   private readonly jobs = new Map<string, JobRecord>()
   private readonly attempts = new Map<string, AttemptRecord[]>()
+  private readonly v2Attempts = new Map<string, AttemptRecordV2[]>()
   // Terminal records clear active lease fields; retain the fencing token and
   // canonical outcome so a lost settlement response can be safely replayed.
   private readonly settled = new Map<
@@ -508,6 +569,10 @@ class MemoryJobStoreImplementation {
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
   private readonly eventAppender: MemoryJobEventStoreInternals | undefined
   private readonly eventWriter: JobEventStoreWriter | undefined
+  private readonly flowStoreV2 = MemoryFlowStore.make()
+  private readonly flowParentIds = new Set<string>()
+  private readonly flowChildParents = new Map<string, ParentEnvelope>()
+  readonly v2: JobStoreV2Contract = this.makeV2Contract()
   private claimInProgress = false
   private criticalSectionDepth = 0
 
@@ -523,6 +588,348 @@ class MemoryJobStoreImplementation {
       throw new TypeError('MemoryJobStore eventStore must be a MemoryJobEventStore instance')
     }
     this.validateOptions(options)
+  }
+
+  private makeV2Contract(): JobStoreV2Contract {
+    return Object.freeze({
+      descriptor: memoryV2Descriptor,
+      flow: this.flowStoreV2,
+      fanOut: (request: FlowFanOutRequest) => this.fanOutV2(request),
+      recordChildResults: (request: RecordChildResultsRequest) =>
+        this.recordChildResultsV2(request),
+      cancelFlow: (request: CancelFlowRequest) => this.cancelFlowV2(request),
+      reconcile: (request: ReconcileFlowRequest) => this.flowStoreV2.reconcile(request),
+      markCascaded: (request: MarkCascadedRequest) => this.flowStoreV2.markCascaded(request),
+      appendChildReport: (request: AppendChildReportRequest) =>
+        this.flowStoreV2.appendChildReport(request),
+      peekOutbox: (request: PeekOutboxRequest) => this.flowStoreV2.peekOutbox(request),
+      ackOutbox: (request: AckOutboxRequest) => this.flowStoreV2.ackOutbox(request),
+      getFlow: (request: { readonly flowId: JobId }) => this.flowStoreV2.getFlow(request),
+      getJob: (request: { readonly jobId: JobId }) => this.getJobV2(request),
+      getAttempts: (request: { readonly jobId: JobId }) => this.getAttemptsV2(request),
+      list: (request: ListJobsV2Request) => this.listV2(request),
+      counts: (request?: { readonly queue?: QueueName; readonly name?: JobName }) =>
+        this.countsV2(request)
+    })
+  }
+
+  private fanOutV2(request: FlowFanOutRequest): JobStoreV2Operation<FlowFanOutResult> {
+    const fields = readDto(
+      request,
+      [
+        'flowId',
+        'flowName',
+        'parentStoreKey',
+        'depth',
+        'leaseToken',
+        'failFast',
+        'children',
+        'now',
+        'maxChildren'
+      ],
+      'request'
+    )
+    if (Result.isError(fields)) return failV2(fields.error)
+    const currentId = makeJobId(fields.value.flowId)
+    const leaseToken = makeLeaseToken(fields.value.leaseToken)
+    if (Result.isError(currentId)) return failV2(currentId.error)
+    if (Result.isError(leaseToken)) return failV2(leaseToken.error)
+    const current = this.jobs.get(currentId.value)
+    if (current === undefined) return failV2(new JobNotFoundError({ jobId: currentId.value }))
+    if (this.flowParentIds.has(currentId.value) && current.state !== 'active') {
+      // A materialized manifest is the replay identity. The original lease is
+      // intentionally gone, so let the flow store compare the full digest.
+      return syncV2(this.flowStoreV2.fanOut(request))
+    }
+    if (current.state !== 'active' || current.leaseToken !== leaseToken.value) {
+      return failV2(
+        new LeaseLostError({
+          jobId: currentId.value,
+          leaseToken: leaseToken.value,
+          reason: 'mismatched-token'
+        })
+      )
+    }
+    const result = syncV2(this.flowStoreV2.fanOut(request))
+    if (Result.isError(result)) return failV2(result.error)
+    if (result.value.status === 'applied') {
+      const applied = this.applyFlowParent(result.value.parent, request.now, true)
+      if (Result.isError(applied)) return failV2(applied.error)
+      for (const child of request.children) {
+        const parent: ParentEnvelope = Object.freeze({
+          flowName: request.flowName,
+          flowId: request.flowId,
+          childKey: child.childKey,
+          parentStoreKey: request.parentStoreKey,
+          depth: request.depth
+        })
+        this.flowChildParents.set(child.childJobId, parent)
+      }
+    }
+    return result as JobStoreV2Operation<FlowFanOutResult>
+  }
+
+  private recordChildResultsV2(
+    request: RecordChildResultsRequest
+  ): JobStoreV2Operation<RecordChildResultsResult> {
+    const result = syncV2(this.flowStoreV2.recordChildResults(request))
+    if (Result.isError(result)) return failV2(result.error)
+    if (result.value.parentSettled) {
+      const applied = this.applyFlowParent(result.value.parent, request.now)
+      if (Result.isError(applied)) return failV2(applied.error)
+    }
+    return result as JobStoreV2Operation<RecordChildResultsResult>
+  }
+
+  private cancelFlowV2(request: CancelFlowRequest): JobStoreV2Operation<CancelFlowResult> {
+    const result = syncV2(this.flowStoreV2.cancel(request))
+    if (Result.isError(result)) return failV2(result.error)
+    if (result.value.parentSettled) {
+      const applied = this.applyFlowParent(result.value.parent, request.now)
+      if (Result.isError(applied)) return failV2(applied.error)
+    }
+    return result as JobStoreV2Operation<CancelFlowResult>
+  }
+
+  private applyFlowParent(
+    parent: FlowParentRecord,
+    now: number,
+    fanOut = false
+  ): ResultType<void, JobStoreError> {
+    const current = this.jobs.get(parent.flowId)
+    if (current === undefined) return Result.err(new JobNotFoundError({ jobId: parent.flowId }))
+    const state = parent.state === 'waiting-children' ? 'waiting' : parent.state
+    const checked = makeJobRecord({
+      ...current,
+      state,
+      attemptSequence: fanOut
+        ? (current.attemptSequence ?? current.deliveryCount) + 1
+        : current.attemptSequence,
+      updatedAt: now,
+      processedAt:
+        state === 'completed' || state === 'failed' || state === 'cancelled' ? now : undefined,
+      finishedAt:
+        state === 'completed' || state === 'failed' || state === 'cancelled' ? now : undefined,
+      leaseOwner: undefined,
+      leaseToken: undefined,
+      leaseExpiresAt: undefined,
+      cancellationRequestedAt: undefined,
+      result: undefined,
+      failure: parent.failure
+    })
+    if (Result.isError(checked)) return Result.err(checked.error)
+    this.appendTerminalFlowReport(current, checked.value)
+    this.jobs.set(parent.flowId, checked.value)
+    if (fanOut) {
+      const sequence = checked.value.attemptSequence ?? checked.value.deliveryCount
+      const attempt: AttemptRecordV2 = Object.freeze({
+        attempt: checked.value.attemptsMade,
+        attemptSequence: sequence,
+        delivery: checked.value.deliveryCount,
+        startedAt: undefined,
+        finishedAt: now,
+        outcome: 'fanned-out',
+        result: undefined,
+        failure: undefined
+      })
+      this.v2Attempts.set(parent.flowId, [attempt])
+    }
+    this.flowParentIds.add(parent.flowId)
+    this.invalidateListOrder(checked.value.queue)
+    this.notifyQueues([checked.value.queue])
+    return Result.ok()
+  }
+
+  private toV2Record(record: JobRecord): ResultType<JobRecordV2, JobStoreError> {
+    const flow = this.flowParentIds.has(record.id)
+      ? syncV2(this.flowStoreV2.getFlow({ flowId: record.id }))
+      : Result.ok<FlowSnapshot | undefined>(undefined)
+    if (Result.isError(flow)) return Result.err(flow.error)
+    const parent = this.flowChildParents.get(record.id)
+    const parentRecord = flow.value?.parent
+    const state = parentRecord?.state ?? (parent ? record.state : record.state)
+    const candidate = {
+      ...record,
+      state,
+      parent,
+      flow: parentRecord?.flow
+    }
+    const checked = validateJobRecordV2(candidate)
+    if (Result.isError(checked)) return Result.err(checked.error)
+    return checked
+  }
+
+  private getJobV2(request: {
+    readonly jobId: JobId
+  }): JobStoreV2Operation<JobRecordV2 | undefined> {
+    const fields = readDto(request, ['jobId'], 'request')
+    if (Result.isError(fields)) return failV2(fields.error)
+    const jobId = makeJobId(fields.value.jobId)
+    if (Result.isError(jobId)) return failV2(jobId.error)
+    const record = this.jobs.get(jobId.value)
+    if (record === undefined) return okV2(undefined)
+    const v2 = this.toV2Record(record)
+    return Result.isError(v2) ? failV2(v2.error) : okV2(v2.value)
+  }
+
+  private getAttemptsV2(request: {
+    readonly jobId: JobId
+  }): JobStoreV2Operation<readonly AttemptRecordV2[]> {
+    const fields = readDto(request, ['jobId'], 'request')
+    if (Result.isError(fields)) return failV2(fields.error)
+    const jobId = makeJobId(fields.value.jobId)
+    if (Result.isError(jobId)) return failV2(jobId.error)
+    const legacy = this.attempts.get(jobId.value) ?? []
+    const fanOut = this.v2Attempts.get(jobId.value) ?? []
+    return okV2(Object.freeze([...legacy, ...fanOut]))
+  }
+
+  private listV2(request: ListJobsV2Request): JobStoreV2Operation<ListJobsV2Result> {
+    try {
+      const limit = this.positiveInteger(request.limit, 'limit')
+      const queue =
+        request.queue === undefined
+          ? Result.ok<string | undefined>(undefined)
+          : makeQueueName(request.queue)
+      const name =
+        request.name === undefined
+          ? Result.ok<string | undefined>(undefined)
+          : makeJobName(request.name)
+      const version =
+        request.version === undefined
+          ? Result.ok<number | undefined>(undefined)
+          : this.positiveInteger(request.version, 'version')
+      const metadata = this.normalizeMetadataFilter(request.metadata)
+      const orderBy = this.normalizeListOrderBy(request.orderBy)
+      const order = this.normalizeListOrder(request.order)
+      const cursor = this.normalizeCursor(request.cursor)
+      const stateValues =
+        request.state === undefined
+          ? undefined
+          : Array.isArray(request.state)
+            ? request.state
+            : [request.state]
+      const states: ResultType<ReadonlySet<JobStateV2> | undefined, JobStoreError> =
+        stateValues === undefined
+          ? Result.ok<ReadonlySet<JobStateV2> | undefined>(undefined)
+          : (() => {
+              const normalized = new Set<JobStateV2>()
+              for (const state of stateValues) {
+                if (typeof state !== 'string' || !listStatesV2.has(state)) {
+                  return definitionFailure('state', 'unsupported job state')
+                }
+                normalized.add(state as JobStateV2)
+              }
+              return Result.ok<ReadonlySet<JobStateV2>>(normalized)
+            })()
+      if (Result.isError(limit)) return failV2(limit.error)
+      if (Result.isError(queue)) return failV2(queue.error)
+      if (Result.isError(name)) return failV2(name.error)
+      if (Result.isError(version)) return failV2(version.error)
+      if (Result.isError(metadata)) return failV2(metadata.error)
+      if (Result.isError(orderBy)) return failV2(orderBy.error)
+      if (Result.isError(order)) return failV2(order.error)
+      if (Result.isError(cursor)) return failV2(cursor.error)
+      if (Result.isError(states)) return failV2(states.error)
+
+      const stateSignature =
+        states.value === undefined
+          ? '*'
+          : [...states.value].sort((left, right) => compareText(left, right)).join(',')
+      const metadataSignature =
+        metadata.value === undefined
+          ? null
+          : Object.entries(metadata.value)
+              .sort(([left], [right]) => compareText(left, right))
+              .map(([key, value]) => [key, value])
+      const signature = JSON.stringify([
+        queue.value ?? null,
+        name.value ?? null,
+        version.value ?? null,
+        stateSignature,
+        metadataSignature,
+        orderBy.value,
+        order.value
+      ])
+      if (
+        cursor.value !== undefined &&
+        (cursor.value.filterSignature !== signature ||
+          cursor.value.orderBy !== orderBy.value ||
+          cursor.value.order !== order.value)
+      ) {
+        return failV2(new UnsupportedJobStoreOperationError({ operation: 'list.cursor-options' }))
+      }
+
+      const entries: { readonly record: JobRecord; readonly value: JobRecordV2 }[] = []
+      for (const record of this.jobs.values()) {
+        if (queue.value !== undefined && record.queue !== queue.value) continue
+        if (name.value !== undefined && record.name !== name.value) continue
+        if (version.value !== undefined && record.version !== version.value) continue
+        if (metadata.value !== undefined && !this.matchesMetadata(record, metadata.value)) continue
+        const value = this.toV2Record(record)
+        if (Result.isError(value)) return failV2(value.error)
+        if (states.value !== undefined && !states.value.has(value.value.state)) continue
+        entries.push({ record, value: value.value })
+      }
+      entries.sort((left, right) =>
+        compareListRecords(left.record, right.record, orderBy.value, order.value)
+      )
+
+      const start =
+        cursor.value === undefined
+          ? 0
+          : (() => {
+              let low = 0
+              let high = entries.length
+              while (low < high) {
+                const middle = Math.floor((low + high) / 2)
+                const entry = entries[middle]
+                if (entry !== undefined && compareRecordCursor(entry.record, cursor.value) <= 0) {
+                  low = middle + 1
+                } else {
+                  high = middle
+                }
+              }
+              return low
+            })()
+      const selected = entries.slice(start, start + limit.value)
+      const hasMore = start + selected.length < entries.length
+      const last = selected.at(-1)
+      return okV2({
+        jobs: Object.freeze(selected.map((entry) => entry.value)),
+        nextCursor:
+          hasMore && last !== undefined
+            ? this.makeCursor(last.record, signature, orderBy.value, order.value)
+            : undefined
+      })
+    } catch {
+      return failV2(
+        new JobDefinitionError({ field: 'request', message: 'could not read list request' })
+      )
+    }
+  }
+
+  private countsV2(request?: {
+    readonly queue?: QueueName
+    readonly name?: JobName
+  }): JobStoreV2Operation<JobCountsV2> {
+    const base = syncJob(this.counts(request))
+    if (Result.isError(base)) return failV2(base.error)
+    let waitingChildren = 0
+    for (const id of this.flowParentIds) {
+      const parent = syncV2(this.flowStoreV2.getFlow({ flowId: makeJobId(id).unwrap() }))
+      if (Result.isOk(parent) && parent.value?.parent.state === 'waiting-children') {
+        const record = this.jobs.get(id)
+        if (
+          record !== undefined &&
+          (request?.queue === undefined || request.queue === record.queue) &&
+          (request?.name === undefined || request.name === record.name)
+        ) {
+          waitingChildren += 1
+        }
+      }
+    }
+    return okV2({ ...base.value, waiting: base.value.waiting - waitingChildren, waitingChildren })
   }
 
   runCriticalSection<Value>(callback: () => Value): Value {
@@ -1899,6 +2306,7 @@ class MemoryJobStoreImplementation {
         'attemptsMax',
         'backoff',
         'timeoutMs',
+        'parent',
         'now',
         'job',
         'identity'
@@ -1920,6 +2328,11 @@ class MemoryJobStoreImplementation {
     if (timeout.value === 0) {
       return definitionFailure('timeoutMs', 'must be greater than zero')
     }
+    const parent =
+      fields.value.parent === undefined
+        ? Result.ok<ParentEnvelope | undefined>(undefined)
+        : validateParentEnvelope(fields.value.parent)
+    if (Result.isError(parent)) return parent
 
     const candidate = makeJobRecord({
       id: id.value,
@@ -1967,6 +2380,7 @@ class MemoryJobStoreImplementation {
       backoff: candidate.value.backoff,
       timeoutMs: candidate.value.timeoutMs,
       idempotencyKey: candidate.value.idempotencyKey,
+      parent: parent.value,
       now: now.value
     })
   }
@@ -2044,6 +2458,7 @@ class MemoryJobStoreImplementation {
 
     this.sequence += 1
     this.jobs.set(record.value.id, record.value)
+    if (input.parent !== undefined) this.flowChildParents.set(record.value.id, input.parent)
     if (!input.explicitId) this.generatedJobIds.add(record.value.id)
     if (dedupe !== undefined) this.idempotency.set(dedupe, record.value.id)
     this.invalidateListOrder(record.value.queue)
@@ -2177,6 +2592,14 @@ class MemoryJobStoreImplementation {
     return Result.ok(queues)
   }
 
+  private isWaitingChildrenParent(jobId: string): boolean {
+    if (!this.flowParentIds.has(jobId)) return false
+    const flowId = makeJobId(jobId)
+    if (Result.isError(flowId)) return false
+    const snapshot = syncV2(this.flowStoreV2.getFlow({ flowId: flowId.value }))
+    return Result.isOk(snapshot) && snapshot.value?.parent.state === 'waiting-children'
+  }
+
   private claimCandidates(
     queue: string,
     accepted: readonly ClaimIdentity[],
@@ -2185,6 +2608,7 @@ class MemoryJobStoreImplementation {
     const acceptedKeys = new Set(accepted.map((identity) => identityKey(identity)))
     const candidates = [...this.jobs.values()].filter(
       (record) =>
+        !this.isWaitingChildrenParent(record.id) &&
         record.queue === queue &&
         (record.state === 'waiting' || (record.state === 'delayed' && record.runAt <= now)) &&
         acceptedKeys.has(identityKey(record))
@@ -2278,6 +2702,7 @@ class MemoryJobStoreImplementation {
           })
         }
       }
+      this.appendTerminalFlowReport(item.previous, record)
     }
     this.sequence = Math.max(this.sequence, prepared[prepared.length - 1]!.nextSequence)
     if (queues.size > 0) this.notifyQueues(queues)
@@ -2297,6 +2722,38 @@ class MemoryJobStoreImplementation {
         return 'job-stalled-recovered'
       case 'released':
         return 'job-released'
+    }
+  }
+
+  private appendTerminalFlowReport(previous: JobRecord, record: JobRecord): void {
+    if (
+      previous.state === record.state ||
+      (record.state !== 'completed' && record.state !== 'failed' && record.state !== 'cancelled')
+    ) {
+      return
+    }
+    const parent = this.flowChildParents.get(record.id)
+    if (parent === undefined) return
+    const outcome = record.state
+    const sequence = record.attemptSequence ?? record.attemptsMade
+    const entry: AppendChildReportRequest = {
+      id: `flow-v2/report/${record.id}/${sequence}`,
+      flowName: parent.flowName,
+      parentStoreKey: parent.parentStoreKey,
+      report: {
+        flowId: parent.flowId,
+        childKey: parent.childKey,
+        outcome,
+        result: outcome === 'completed' ? record.result : undefined,
+        failure: outcome === 'failed' || outcome === 'cancelled' ? record.failure : undefined
+      }
+    }
+    const appended = syncV2(this.flowStoreV2.appendChildReport(entry))
+    if (Result.isError(appended)) {
+      // The entry was built from a validated parent envelope and JobRecord, so
+      // this can only indicate a broken adapter implementation in this memory
+      // reference. Throwing prevents callers from observing a false ACK.
+      throw appended.error
     }
   }
 
@@ -2678,6 +3135,14 @@ class MemoryJobStoreImplementation {
     )
   }
 
+  private matchesMetadata(record: JobRecord, metadata: Readonly<Record<string, string>>): boolean {
+    const keys = Object.keys(metadata)
+    return (
+      keys.length === Object.keys(record.metadata).length &&
+      keys.every((key) => record.metadata[key] === metadata[key])
+    )
+  }
+
   private getListOrder(orderBy: JobListOrderBy, order: JobListOrder): readonly JobRecord[] {
     const key = `${orderBy}:${order}`
     const cached = this.listOrders.get(key)
@@ -2771,14 +3236,16 @@ class MemoryJobStoreImplementation {
 
 const makeMemoryJobStore = (
   options?: MemoryJobStoreOptions
-): JobStoreNamespace.Contract & TransactionalEnqueue & ControlledJobStoreContract => {
+): JobStoreNamespace.Contract &
+  TransactionalEnqueue &
+  ControlledJobStoreContract & { readonly v2: JobStoreV2Contract } => {
   const implementation = new MemoryJobStoreImplementation(options)
   // SAFETY: MemoryJobStoreImplementation implements every operation in JobStore.Contract; JobStore.of restores the structural Service contract.
   const contract = JobStore.of(implementation as never)
   memoryJobStoreInternals.set(contract as object, implementation)
   return contract as unknown as JobStoreNamespace.Contract &
     TransactionalEnqueue &
-    ControlledJobStoreContract
+    ControlledJobStoreContract & { readonly v2: JobStoreV2Contract }
 }
 
 export const getMemoryJobStoreInternals = (
@@ -2807,7 +3274,9 @@ const memoryJobStoreApi = {
   },
   make(
     options?: MemoryJobStoreOptions
-  ): JobStoreNamespace.Contract & TransactionalEnqueue & ControlledJobStoreContract {
+  ): JobStoreNamespace.Contract &
+    TransactionalEnqueue &
+    ControlledJobStoreContract & { readonly v2: JobStoreV2Contract } {
     return makeMemoryJobStore(options)
   }
 }

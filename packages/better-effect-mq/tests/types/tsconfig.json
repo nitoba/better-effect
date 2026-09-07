@@ -24,6 +24,7 @@
     "worker-layer.types.ts",
     "scheduler.types.ts",
     "observability.types.ts",
-    "flow-v2.types.ts"
+    "flow-v2.types.ts",
+    "job-store-v2.types.ts"
   ]
 }

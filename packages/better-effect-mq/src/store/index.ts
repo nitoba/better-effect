@@ -14,6 +14,18 @@ export {
 } from './event-errors'
 export { JobEvents } from './events'
 export { assertJobStoreProtocolCompatible, isJobStoreDescriptor } from './compatibility'
+export type {
+  GetAttemptsV2Request,
+  GetJobV2Request,
+  JobCountsV2,
+  JobStoreV2,
+  JobStoreV2Contract,
+  JobStoreV2Descriptor,
+  JobStoreV2Error,
+  JobStoreV2Operation,
+  ListJobsV2Request,
+  ListJobsV2Result
+} from './job-v2'
 
 export type {
   AnyJobStoreToken,

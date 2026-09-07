@@ -108,6 +108,8 @@ export interface JobStore extends JobStoreInstance<undefined> {}
 export declare namespace JobStore {
   export type Any = JobStoreInstance<undefined> | JobStoreInstance<string>
   export type Contract = JobStoreContract
+  /** The explicit protocol v2 extension, including flow lifecycle operations. */
+  export type V2 = import('./job-v2').JobStoreV2Contract
   export type Instance<Name extends string | undefined = undefined> = JobStoreInstance<Name>
   export type Token<Name extends string | undefined = undefined> = [Name] extends [undefined]
     ? DefaultJobStoreToken
