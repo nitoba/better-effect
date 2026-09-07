@@ -2,7 +2,7 @@
 
 `better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore`,
 `JobScheduleStore`, and durable outbox adapters for [`better-effect-mq`](../better-effect-mq).
-It implements protocol v1, schedules v1, outbox v1, and Flow protocol v2 with short transactions,
+It implements protocol v1, QueueControls protocol v3, schedules v1, outbox v1, and Flow protocol v2 with short transactions,
 fenced leases, durable attempt records, deterministic occurrence IDs, keyset
 inspection queries, and a per-process wake notifier backed by durable queue wake
 versions.
@@ -129,6 +129,26 @@ connection or transaction is held while a worker handler executes. MySQL has no
 required cross-process push channel here: mutations wake local waiters after
 commit, while other processes discover changes through the worker poll interval.
 Correctness does not depend on that optimization.
+
+## QueueControls protocol v3
+
+Migration 6 adds the durable QueueControls layout: producer-persisted
+`dispatchKey`, revisioned queue controls, bounded rotation cursors, owner-fenced
+permits, and protocol-clock fixed-rate windows. `claimControlled` performs the
+queue pause, global concurrency, per-key concurrency, and rate checks in one
+InnoDB transaction. Controlled settlements, releases, cancellation transitions,
+and stalled recovery remove only the permit matching the job's current
+`leaseToken`; a stale controls revision or legacy claim fails closed.
+
+The adapter uses the deterministic lock order `control → rate window → cursor /
+permits → job`, retries deadlock/lock-timeout failures at the complete
+transaction boundary, and scans a bounded rotating candidate window so one
+blocked dispatch key cannot starve other keys. The fixed rate window starts at
+the first accepted claim; completion and release do not refund its capacity.
+
+The producer persists the validated `dispatchKey` when enqueuing; workers never
+derive it again. Reconcile the registry through the same Worker/Runtime root as
+the JobStore.
 
 Protocol timestamps are caller/Clock supplied epoch milliseconds; this adapter
 does not use `NOW()` or `CURRENT_TIMESTAMP` for protocol decisions. Size the

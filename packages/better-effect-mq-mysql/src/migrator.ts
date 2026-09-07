@@ -365,6 +365,63 @@ const flowJobColumns = [
   'flow_parent_store_key',
   'flow_depth'
 ] as const
+const controlsColumns = [
+  'namespace',
+  'queue',
+  'control_group',
+  'enabled',
+  'revision',
+  'global_concurrency',
+  'per_key_concurrency',
+  'rate_limit_max',
+  'rate_limit_duration_ms',
+  'created_at_ms',
+  'updated_at_ms'
+] as const
+const controlCursorColumns = ['namespace', 'queue', 'cursor_sequence', 'updated_at_ms'] as const
+const permitColumns = [
+  'namespace',
+  'job_id',
+  'queue',
+  'dispatch_key',
+  'lease_token',
+  'acquired_at_ms'
+] as const
+const rateWindowColumns = [
+  'namespace',
+  'queue',
+  'started_at_ms',
+  'claim_count',
+  'updated_at_ms'
+] as const
+const controlsIndexes = Object.freeze({
+  better_effect_mq_jobs_dispatch_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'queue', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'dispatch_key', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'state', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'priority', sub_part: null, collation: 'D' },
+    { non_unique: 1, column_name: 'run_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'sequence', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'id', sub_part: 128, collation: 'A' }
+  ],
+  better_effect_mq_controlled_permits_queue_key_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'queue', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'dispatch_key', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'job_id', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_controlled_permits_job_token_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'job_id', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'lease_token', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_rate_windows_expiry_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'queue', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'started_at_ms', sub_part: null, collation: 'A' }
+  ]
+} satisfies Readonly<Record<string, readonly IndexPart[]>>)
 const flowChildrenColumns = [
   'namespace',
   'flow_id',
@@ -481,6 +538,63 @@ const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
     throw new MySqlMigrationError(
       'MySQL migration 005 reconciliation metadata does not match its DDL'
     )
+  if (migration.version === 6 && ddl.length !== 7)
+    throw new MySqlMigrationError(
+      'MySQL migration 006 reconciliation metadata does not match its DDL'
+    )
+  if (migration.version === 6)
+    return [
+      {
+        sql: ddl[0]!,
+        isSatisfied: async (connection) => {
+          const existing = await column(connection, MYSQL_TABLES.jobs, 'dispatch_key')
+          return (
+            existing?.data_type?.toLowerCase() === 'varchar' &&
+            Number(existing.character_maximum_length) === 512 &&
+            existing.is_nullable === 'YES'
+          )
+        }
+      },
+      {
+        sql: ddl[1]!,
+        isSatisfied: async (connection) =>
+          checkConstraint(
+            connection,
+            MYSQL_TABLES.jobs,
+            'better_effect_mq_jobs_dispatch_key_values'
+          )
+      },
+      {
+        sql: ddl[2]!,
+        isSatisfied: async (connection) =>
+          matchesIndexes(
+            await indexes(connection, MYSQL_TABLES.jobs, ['better_effect_mq_jobs_dispatch_idx']),
+            {
+              better_effect_mq_jobs_dispatch_idx: controlsIndexes.better_effect_mq_jobs_dispatch_idx
+            }
+          )
+      },
+      {
+        sql: ddl[3]!,
+        isSatisfied: async (connection) =>
+          flowTable(connection, MYSQL_TABLES.controls, controlsColumns)
+      },
+      {
+        sql: ddl[4]!,
+        isSatisfied: async (connection) =>
+          flowTable(connection, MYSQL_TABLES.controlCursors, controlCursorColumns)
+      },
+      {
+        sql: ddl[5]!,
+        isSatisfied: async (connection) =>
+          flowTable(connection, MYSQL_TABLES.permits, permitColumns)
+      },
+      {
+        sql: ddl[6]!,
+        isSatisfied: async (connection) =>
+          flowTable(connection, MYSQL_TABLES.rateWindows, rateWindowColumns)
+      }
+    ]
   if (migration.version === 5)
     return [
       ...flowJobColumns.map((name, index) => ({

@@ -12,7 +12,11 @@ export const MYSQL_TABLES = Object.freeze({
   orderingSequences: 'better_effect_mq_ordering_sequences',
   queues: 'better_effect_mq_queues',
   schedules: 'better_effect_mq_schedules',
-  schemaVersions: 'better_effect_mq_schema_versions'
+  schemaVersions: 'better_effect_mq_schema_versions',
+  controls: 'better_effect_mq_queue_controls',
+  controlCursors: 'better_effect_mq_queue_control_cursors',
+  permits: 'better_effect_mq_controlled_permits',
+  rateWindows: 'better_effect_mq_rate_windows'
 })
 /** Flow v2 uses separate tables so v1 layouts are never interpreted as flow layouts. */
 export const MYSQL_FLOW_TABLES = Object.freeze({
@@ -34,6 +38,10 @@ export const MYSQL_INDEXES = Object.freeze([
   'better_effect_mq_schedules_due_idx',
   'better_effect_mq_schedules_group_idx',
   'better_effect_mq_schedules_key_idx',
+  'better_effect_mq_jobs_dispatch_idx',
+  'better_effect_mq_controlled_permits_queue_key_idx',
+  'better_effect_mq_controlled_permits_job_token_idx',
+  'better_effect_mq_rate_windows_expiry_idx',
   'better_effect_mq_jobs_waiting_children_idx',
   'better_effect_mq_flow_children_parent_idx',
   'better_effect_mq_flow_children_job_idx',

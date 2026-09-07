@@ -13,6 +13,18 @@ import type { ServiceContract } from 'better-effect'
 import {
   JobStore,
   JobStoreWakeAbortedError,
+  ControlsRevisionMismatchError,
+  noDispatchKey,
+  type AnyQueueControlsRegistry,
+  type ControlsReconcileOptions,
+  type ControlsReconcileReport,
+  type ControlledClaimRequest,
+  type ControlledClaimResult,
+  type ControlledCancelRequest,
+  type ControlledRecoverStalledRequest,
+  type ControlledReleaseRequest,
+  type ControlledSettleRequest,
+  type QueueControlsRecord,
   type SettlementOutcome,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace,
@@ -75,14 +87,14 @@ const mysqlDescriptor = (queueFilteredNotifications: boolean): JobStoreDescripto
       metadataIndex: 'residual',
       transactionalEnqueue: true,
       durableChangeFeed: false,
-      globalConcurrency: false,
-      rateLimiting: false
+      globalConcurrency: true,
+      rateLimiting: true
     })
   })
 const maxRetries = 3
 
 type Row = Record<string, unknown>
-type StoreResult<T> = ResultType<T, any>
+type StoreResult<T> = ResultType<T, unknown>
 type Tx = PoolConnection
 
 const ok = <T>(value: T): StoreResult<T> => Result.ok(value) as unknown as StoreResult<T>
@@ -102,7 +114,8 @@ const taggedJobErrorTags = new Set([
   'JobNotRetryableError',
   'JobNotCancellableError',
   'JobNotPromotableError',
-  'UnsupportedJobStoreOperationError'
+  'UnsupportedJobStoreOperationError',
+  'ControlsRevisionMismatchError'
 ])
 const isTaggedJobError = (cause: unknown): boolean => {
   try {
@@ -493,6 +506,7 @@ const validateEnqueueRequest = (
   const allowed = [
     'id',
     'idempotencyKey',
+    'dispatchKey',
     'payload',
     'metadata',
     'priority',
@@ -522,6 +536,20 @@ const validateEnqueueRequest = (
     const runAt = safeNumber(input.runAt, `${field}.runAt`)
     const attemptsMax = safeNumber(input.attemptsMax, `${field}.attemptsMax`)
     if (attemptsMax < 1) return definition(`${field}.attemptsMax`, 'must be positive')
+    const dispatchKey = input.dispatchKey
+    if (
+      dispatchKey !== undefined &&
+      (typeof dispatchKey !== 'string' ||
+        dispatchKey.length === 0 ||
+        dispatchKey.length > 512 ||
+        dispatchKey === noDispatchKey ||
+        dispatchKey.includes('\u0000') ||
+        hasUnpairedSurrogate(dispatchKey))
+    )
+      return definition(
+        `${field}.dispatchKey`,
+        'must be a non-empty bounded string without NUL or the reserved __none__ value'
+      )
     const payload = snapshotDataGraph(input.payload, `${field}.payload`, false)
     if (Result.isError(payload)) return payload as StoreResult<Record<string, unknown>>
     let metadata: Readonly<Record<string, string>> = {}
@@ -544,6 +572,7 @@ const validateEnqueueRequest = (
       name: identity.value.name,
       version: identity.value.version,
       queue: identity.value.queue,
+      dispatchKey,
       state: runAt <= now ? 'waiting' : 'delayed',
       payload: payload.value,
       metadata,
@@ -580,6 +609,7 @@ const validateEnqueueRequest = (
       backoff: record.value.backoff,
       timeoutMs: record.value.timeoutMs,
       idempotencyKey: record.value.idempotencyKey,
+      dispatchKey: record.value.dispatchKey,
       now
     }) as Record<string, unknown>
     if (input.id !== undefined) output.id = id.value
@@ -723,11 +753,43 @@ type WakeWaiter = {
 }
 
 const validJobStates = new Set(['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])
+const legacyColumnNames = [
+  'id',
+  'name',
+  'version',
+  'queue',
+  'state',
+  'payload',
+  'metadata',
+  'priority',
+  'run_at_ms',
+  'sequence',
+  'attempts_max',
+  'attempts_made',
+  'attempt_sequence',
+  'delivery_count',
+  'stalled_count',
+  'backoff',
+  'timeout_ms',
+  'idempotency_key',
+  'created_at_ms',
+  'updated_at_ms',
+  'processed_at_ms',
+  'finished_at_ms',
+  'lease_owner',
+  'lease_token',
+  'lease_expires_at_ms',
+  'cancel_requested',
+  'cancellation_requested_at_ms',
+  'result',
+  'failure'
+] as const
 const columnNames = [
   'id',
   'name',
   'version',
   'queue',
+  'dispatch_key',
   'state',
   'payload',
   'metadata',
@@ -761,6 +823,7 @@ const decodeJob = (row: Row): JobRecord => {
     name: row.name,
     version: integer(row.version, 'version'),
     queue: row.queue,
+    dispatchKey: optionalString(row.dispatch_key),
     state: row.state,
     payload: parseJson(row.payload),
     metadata: parseJson(row.metadata),
@@ -823,6 +886,7 @@ const encodeRecord = (r: JobRecord): unknown[] => [
   r.name,
   r.version,
   r.queue,
+  r.dispatchKey ?? null,
   r.state,
   json(r.payload),
   json(r.metadata),
@@ -931,6 +995,10 @@ const settlementOutcomeForAttempt = (
 class MySqlJobStoreImplementation {
   private readonly descriptorValue = mysqlDescriptor(true)
   private closed = false
+  private dispatchKeyAvailable = true
+  private dispatchKeyLayoutChecked = false
+  private controlsAvailable = false
+  private controlsLayoutChecked = false
   private flowReportsEnabled = false
   private readonly waiters = new Set<WakeWaiter>()
   private readonly pendingWakes = new WeakMap<Tx, Set<string>>()
@@ -943,6 +1011,35 @@ class MySqlJobStoreImplementation {
   async start(): Promise<void> {}
   private table(name: string): string {
     return `\`${name}\``
+  }
+  private jobColumns(): readonly string[] {
+    return this.dispatchKeyAvailable ? columnNames : legacyColumnNames
+  }
+  private async ensureDispatchKeyLayout(tx: Tx): Promise<void> {
+    if (this.dispatchKeyLayoutChecked) return
+    this.dispatchKeyLayoutChecked = true
+    try {
+      const result = await tx.query<Row>(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name='dispatch_key'`,
+        [MYSQL_TABLES.jobs]
+      )
+      this.dispatchKeyAvailable = result.rows.length > 0
+    } catch {
+      // Layout detection is a compatibility aid; SQL errors remain authoritative.
+    }
+  }
+  private async ensureControlsLayout(tx: Tx): Promise<void> {
+    if (this.controlsLayoutChecked) return
+    this.controlsLayoutChecked = true
+    try {
+      const result = await tx.query<Row>(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`,
+        [MYSQL_TABLES.controls]
+      )
+      this.controlsAvailable = result.rows.length > 0
+    } catch {
+      // Layout detection is a compatibility aid; SQL errors remain authoritative.
+    }
   }
   private async withTx<T>(
     operation: string,
@@ -960,6 +1057,8 @@ class MySqlJobStoreImplementation {
         tx = await this.client.pool.getConnection()
         await tx.beginTransaction()
         this.pendingWakes.set(tx, new Set())
+        await this.ensureDispatchKeyLayout(tx as Tx)
+        await this.ensureControlsLayout(tx as Tx)
         value = await body(tx as Tx)
         await tx.commit()
         committed = true
@@ -1092,7 +1191,7 @@ class MySqlJobStoreImplementation {
   }
   private async row(tx: Tx, id: string, lock = false): Promise<JobRecord | undefined> {
     const result = await tx.query<Row>(
-      `SELECT ${columnNames.join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? ${lock ? 'FOR UPDATE' : ''}`,
+      `SELECT ${this.jobColumns().join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? ${lock ? 'FOR UPDATE' : ''}`,
       [this.client.namespace, id]
     )
     const found = result.rows[0]
@@ -1130,10 +1229,10 @@ class MySqlJobStoreImplementation {
     return { ...transition, record: record.value }
   }
   private async save(tx: Tx, record: JobRecord, expected?: JobRecord): Promise<boolean> {
-    const writable = columnNames.filter((c) => c !== 'id')
+    const writable = this.jobColumns().filter((c) => c !== 'id')
     const encoded = encodeRecord(record)
     const sets = writable.map((c) => `${c}=?`).join(',')
-    const values = writable.map((c) => encoded[columnNames.indexOf(c)])
+    const values = writable.map((c) => encoded[(columnNames as readonly string[]).indexOf(c)])
     const guards =
       expected === undefined
         ? ''
@@ -1159,7 +1258,7 @@ class MySqlJobStoreImplementation {
   private async transition(
     operation: string,
     request: { jobId: string; now: number },
-    command: (record: JobRecord) => ResultType<JobTransition, any>
+    command: (record: JobRecord) => ResultType<JobTransition, unknown>
   ): Promise<StoreResult<JobTransition>> {
     return this.withTx(operation, async (tx) => {
       const current = await this.row(tx, request.jobId, true)
@@ -1168,6 +1267,12 @@ class MySqlJobStoreImplementation {
       if (Result.isError(next)) throw next.error
       const transition = await this.prepareTransition(tx, current, next.value as JobTransition)
       await this.save(tx, transition.record)
+      if (
+        this.controlsAvailable &&
+        current.state === 'active' &&
+        transition.record.state !== 'active'
+      )
+        await this.clearPermit(tx, current.id, current.leaseToken!)
       if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
       if (transition.attempt !== undefined)
         await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
@@ -1190,6 +1295,194 @@ class MySqlJobStoreImplementation {
       await this.notify(tx, transition.record.queue, request.now)
       return transition
     })
+  }
+  private decodeControls(row: Row): QueueControlsRecord {
+    const rateMax = optionalInteger(row.rate_limit_max, 'rate_limit_max')
+    const rateDuration = optionalInteger(row.rate_limit_duration_ms, 'rate_limit_duration_ms')
+    return Object.freeze({
+      queue: makeQueueName(row.queue).unwrap() as never,
+      group: text(row.control_group, 'control_group'),
+      enabled: row.enabled === true || row.enabled === 1 || row.enabled === '1',
+      revision: integer(row.revision, 'revision'),
+      globalConcurrency: optionalInteger(row.global_concurrency, 'global_concurrency'),
+      perKeyConcurrency: optionalInteger(row.per_key_concurrency, 'per_key_concurrency'),
+      rateLimit:
+        rateMax === undefined || rateDuration === undefined
+          ? undefined
+          : Object.freeze({ max: rateMax, durationMs: rateDuration }),
+      createdAtMs: integer(row.created_at_ms, 'created_at_ms'),
+      updatedAtMs: integer(row.updated_at_ms, 'updated_at_ms')
+    })
+  }
+  private normalizeControls(
+    queue: string,
+    group: string,
+    options: AnyQueueControlsRegistry['controls'][number]['options'],
+    now: number
+  ): StoreResult<QueueControlsRecord> {
+    const positive = (value: unknown, field: string): number => {
+      if (!Number.isSafeInteger(value) || typeof value !== 'number' || value <= 0)
+        throw new JobDefinitionError({ field, message: 'must be a positive safe integer' })
+      return value
+    }
+    const globalConcurrency =
+      options.globalConcurrency === undefined
+        ? undefined
+        : positive(options.globalConcurrency, 'globalConcurrency')
+    const perKeyValue = options.perKeyConcurrency ?? options.concurrencyKey?.max
+    const perKeyConcurrency =
+      perKeyValue === undefined ? undefined : positive(perKeyValue, 'perKeyConcurrency')
+    const rateLimit =
+      options.rateLimit === undefined
+        ? undefined
+        : Object.freeze({
+            max: positive(options.rateLimit.max, 'rateLimit.max'),
+            durationMs: positive(options.rateLimit.durationMs, 'rateLimit.durationMs')
+          })
+    return ok(
+      Object.freeze({
+        queue: queue as never,
+        group,
+        enabled: true,
+        revision: 1,
+        globalConcurrency,
+        perKeyConcurrency,
+        rateLimit,
+        createdAtMs: now,
+        updatedAtMs: now
+      })
+    )
+  }
+  private sameControls(left: QueueControlsRecord, right: QueueControlsRecord): boolean {
+    return (
+      left.globalConcurrency === right.globalConcurrency &&
+      left.perKeyConcurrency === right.perKeyConcurrency &&
+      left.rateLimit?.max === right.rateLimit?.max &&
+      left.rateLimit?.durationMs === right.rateLimit?.durationMs
+    )
+  }
+  private async lockControls(
+    tx: Tx,
+    queue: string,
+    expected: number
+  ): Promise<QueueControlsRecord> {
+    const result = await tx.query<Row>(
+      `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(MYSQL_TABLES.controls)} WHERE namespace=? AND queue=? FOR UPDATE`,
+      [this.client.namespace, queue]
+    )
+    const row = result.rows[0]
+    const actual = row === undefined ? undefined : integer(row.revision, 'revision')
+    if (
+      row === undefined ||
+      !(row.enabled === true || row.enabled === 1 || row.enabled === '1') ||
+      actual !== expected
+    )
+      throw new ControlsRevisionMismatchError({ queue: queue as never, expected, actual })
+    return this.decodeControls(row)
+  }
+  private async lockRateWindow(
+    tx: Tx,
+    control: QueueControlsRecord,
+    now: number
+  ): Promise<
+    | {
+        readonly startedAtMs: number
+        readonly count: number
+        readonly persisted: boolean
+        readonly rollover: boolean
+      }
+    | undefined
+  > {
+    if (control.rateLimit === undefined) return undefined
+    const current = await tx.query<Row>(
+      `SELECT started_at_ms,claim_count FROM ${this.table(MYSQL_TABLES.rateWindows)} WHERE namespace=? AND queue=? FOR UPDATE`,
+      [this.client.namespace, control.queue]
+    )
+    const row = current.rows[0]
+    if (row === undefined) return { startedAtMs: now, count: 0, persisted: false, rollover: true }
+    let startedAtMs = integer(row.started_at_ms, 'started_at_ms')
+    let count = integer(row.claim_count, 'claim_count')
+    if (now >= startedAtMs + control.rateLimit.durationMs) {
+      startedAtMs = now
+      count = 0
+      return { startedAtMs, count, persisted: true, rollover: true }
+    }
+    return { startedAtMs, count, persisted: true, rollover: false }
+  }
+  private async countPermits(tx: Tx, queue: string): Promise<number> {
+    const result = await tx.query<Row>(
+      `SELECT COUNT(*) AS count FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND queue=?`,
+      [this.client.namespace, queue]
+    )
+    return integer(result.rows[0]?.count, 'count')
+  }
+  private async nextControlledRunAt(
+    tx: Tx,
+    queue: string,
+    accepted: readonly {
+      readonly queue: string
+      readonly name: string
+      readonly version: number
+    }[],
+    now: number
+  ): Promise<number | undefined> {
+    const result = await tx.query<Row>(
+      `SELECT MIN(run_at_ms) AS run_at_ms FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND state='delayed' AND run_at_ms > ? AND (queue,name,version) IN (SELECT accepted.queue,accepted.name,accepted.version FROM JSON_TABLE(?, '$[*]' COLUMNS(queue VARCHAR(255) PATH '$.queue', name VARCHAR(255) PATH '$.name', version BIGINT PATH '$.version')) AS accepted)`,
+      [this.client.namespace, queue, now, json(accepted)]
+    )
+    return result.rows[0]?.run_at_ms == null
+      ? undefined
+      : integer(result.rows[0].run_at_ms, 'run_at_ms')
+  }
+  private emptyControlled(
+    wakeToken: import('better-effect-mq').WakeToken,
+    nextRunAtMs: number | undefined,
+    nextEligibleAtMs: number | undefined,
+    reason: import('better-effect-mq').ControlledEmptyClaimReason
+  ): ControlledClaimResult {
+    return { jobs: Object.freeze([]), wakeToken, nextRunAtMs, nextEligibleAtMs, reason }
+  }
+  private async clearPermit(tx: Tx, jobId: string, leaseToken: string): Promise<void> {
+    await tx.query(
+      `DELETE FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND job_id=? AND lease_token=?`,
+      [this.client.namespace, jobId, leaseToken]
+    )
+  }
+  private async applyTransitionInTx(
+    tx: Tx,
+    operation: string,
+    request: { readonly jobId: string; readonly now: number },
+    command: (record: JobRecord) => ResultType<JobTransition, unknown>
+  ): Promise<JobTransition> {
+    const current = await this.row(tx, request.jobId, true)
+    if (current === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    const next = command(current)
+    if (Result.isError(next)) throw next.error
+    const transition = await this.prepareTransition(tx, current, next.value as JobTransition)
+    await this.save(tx, transition.record)
+    if (current.state === 'active' && transition.record.state !== 'active' && current.leaseToken)
+      await this.clearPermit(tx, current.id, current.leaseToken)
+    if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
+    if (transition.attempt !== undefined)
+      await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
+    const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record)
+    if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
+      const parent = await tx.query<Row>(
+        `SELECT parent FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=?`,
+        [this.client.namespace, current.id]
+      )
+      await appendFlowReport(
+        tx,
+        parent.rows[0] ?? {},
+        current.id,
+        transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+        flowOutcome,
+        request.now,
+        this.client.namespace
+      )
+    }
+    await this.notify(tx, transition.record.queue, request.now)
+    return transition
   }
   private async insertAttempt(
     tx: Tx,
@@ -1265,7 +1558,7 @@ class MySqlJobStoreImplementation {
             ? undefined
             : (
                 await tx.query<Row>(
-                  `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+                  `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
                   [this.client.namespace, explicitId.value]
                 )
               ).rows[0]
@@ -1279,7 +1572,7 @@ class MySqlJobStoreImplementation {
             ? undefined
             : (
                 await tx.query<Row>(
-                  `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND name=? AND version=? AND dedupe_key=? FOR UPDATE`,
+                  `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND name=? AND version=? AND dedupe_key=? FOR UPDATE`,
                   [
                     this.client.namespace,
                     normalizedIdentity.value.queue,
@@ -1295,28 +1588,60 @@ class MySqlJobStoreImplementation {
         }
         const id = explicitId?.value ?? (randomUUID() as never)
         const orderingSequence = await this.nextSequence(tx)
+        const insertColumns = this.dispatchKeyAvailable
+          ? 'namespace,id,queue,dispatch_key,name,version,state,payload,metadata,priority,run_at_ms,sequence,attempts_max,attempts_made,delivery_count,stalled_count,created_at_ms,updated_at_ms,backoff,timeout_ms,idempotency_key,dedupe_key'
+          : 'namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,sequence,attempts_max,attempts_made,delivery_count,stalled_count,created_at_ms,updated_at_ms,backoff,timeout_ms,idempotency_key,dedupe_key'
+        const insertValues = this.dispatchKeyAvailable
+          ? [
+              this.client.namespace,
+              id,
+              normalizedIdentity.value.queue,
+              input.dispatchKey ?? null,
+              normalizedIdentity.value.name,
+              normalizedIdentity.value.version,
+              (input.runAt as number) <= (input.now as number) ? 'waiting' : 'delayed',
+              json(input.payload),
+              json(input.metadata === undefined ? {} : input.metadata),
+              input.priority === undefined ? 0 : input.priority,
+              input.runAt,
+              orderingSequence,
+              input.attemptsMax,
+              0,
+              0,
+              0,
+              input.now,
+              input.now,
+              input.backoff === undefined ? null : json(input.backoff),
+              input.timeoutMs ?? null,
+              input.idempotencyKey ?? null,
+              dedupeKey ?? null
+            ]
+          : [
+              this.client.namespace,
+              id,
+              normalizedIdentity.value.queue,
+              normalizedIdentity.value.name,
+              normalizedIdentity.value.version,
+              (input.runAt as number) <= (input.now as number) ? 'waiting' : 'delayed',
+              json(input.payload),
+              json(input.metadata === undefined ? {} : input.metadata),
+              input.priority === undefined ? 0 : input.priority,
+              input.runAt,
+              orderingSequence,
+              input.attemptsMax,
+              0,
+              0,
+              0,
+              input.now,
+              input.now,
+              input.backoff === undefined ? null : json(input.backoff),
+              input.timeoutMs ?? null,
+              input.idempotencyKey ?? null,
+              dedupeKey ?? null
+            ]
         const created = await tx.query<Row>(
-          `INSERT INTO ${this.table(MYSQL_TABLES.jobs)} (namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,sequence,attempts_max,attempts_made,delivery_count,stalled_count,created_at_ms,updated_at_ms,backoff,timeout_ms,idempotency_key,dedupe_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,?,?,?,?,?,?) `,
-          [
-            this.client.namespace,
-            id,
-            normalizedIdentity.value.queue,
-            normalizedIdentity.value.name,
-            normalizedIdentity.value.version,
-            (input.runAt as number) <= (input.now as number) ? 'waiting' : 'delayed',
-            json(input.payload),
-            json(input.metadata === undefined ? {} : input.metadata),
-            input.priority === undefined ? 0 : input.priority,
-            input.runAt,
-            orderingSequence,
-            input.attemptsMax,
-            input.now,
-            input.now,
-            input.backoff === undefined ? null : json(input.backoff),
-            input.timeoutMs ?? null,
-            input.idempotencyKey ?? null,
-            dedupeKey ?? null
-          ]
+          `INSERT INTO ${this.table(MYSQL_TABLES.jobs)} (${insertColumns}) VALUES (${insertValues.map(() => '?').join(',')})`,
+          insertValues
         )
         let createdRow = created.rows[0]
         // mysql2 does not support RETURNING for INSERT. Read the immutable row
@@ -1324,7 +1649,7 @@ class MySqlJobStoreImplementation {
         if (created.rowCount > 0) {
           createdRow = (
             await tx.query<Row>(
-              `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+              `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
               [this.client.namespace, id]
             )
           ).rows[0]
@@ -1340,13 +1665,13 @@ class MySqlJobStoreImplementation {
             explicitId !== undefined
               ? (
                   await tx.query<Row>(
-                    `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+                    `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
                     [this.client.namespace, explicitId.value]
                   )
                 ).rows[0]
               : (
                   await tx.query<Row>(
-                    `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND name=? AND version=? AND dedupe_key=? FOR UPDATE`,
+                    `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND name=? AND version=? AND dedupe_key=? FOR UPDATE`,
                     [
                       this.client.namespace,
                       normalizedIdentity.value.queue,
@@ -1404,6 +1729,18 @@ class MySqlJobStoreImplementation {
         return normalized.value
       })
       return this.withTx('claim', async (tx) => {
+        if (this.controlsAvailable) {
+          const control = await tx.query<Row>(
+            `SELECT revision FROM ${this.table(MYSQL_TABLES.controls)} WHERE namespace=? AND queue=? AND enabled=TRUE FOR UPDATE`,
+            [this.client.namespace, queue.value]
+          )
+          if (control.rows[0] !== undefined)
+            throw new ControlsRevisionMismatchError({
+              queue: queue.value as never,
+              expected: integer(control.rows[0].revision, 'revision'),
+              actual: undefined
+            })
+        }
         // Serialize claim with queue wake mutations so the returned baseline
         // cannot race an enqueue or pause committed between the checks.
         await tx.query(
@@ -1423,7 +1760,7 @@ class MySqlJobStoreImplementation {
           }
         }
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND state IN ('waiting','delayed') AND run_at_ms <= ? AND (queue,name,version) IN (SELECT accepted.queue,accepted.name,accepted.version FROM JSON_TABLE(?, '$[*]' COLUMNS(queue VARCHAR(255) PATH '$.queue', name VARCHAR(255) PATH '$.name', version BIGINT PATH '$.version')) AS accepted) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE utf8mb4_bin LIMIT ? FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND state IN ('waiting','delayed') AND run_at_ms <= ? AND (queue,name,version) IN (SELECT accepted.queue,accepted.name,accepted.version FROM JSON_TABLE(?, '$[*]' COLUMNS(queue VARCHAR(255) PATH '$.queue', name VARCHAR(255) PATH '$.name', version BIGINT PATH '$.version')) AS accepted) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE utf8mb4_bin LIMIT ? FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, queue.value, now, json(accepted), limit]
         )
         const jobs: JobRecord[] = []
@@ -1460,6 +1797,449 @@ class MySqlJobStoreImplementation {
       return fail('claim', cause)
     }
   }
+  async getControls(request: {
+    readonly queue: import('better-effect-mq').QueueName
+  }): Promise<StoreResult<QueueControlsRecord | undefined>> {
+    const queue = makeQueueName(request.queue)
+    if (Result.isError(queue)) return queue as StoreResult<QueueControlsRecord | undefined>
+    return this.withTx('getControls', async (tx) => {
+      const result = await tx.query<Row>(
+        `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(MYSQL_TABLES.controls)} WHERE namespace=? AND queue=?`,
+        [this.client.namespace, queue.value]
+      )
+      return result.rows[0] === undefined ? undefined : this.decodeControls(result.rows[0])
+    }) as Promise<StoreResult<QueueControlsRecord | undefined>>
+  }
+  get(
+    queue: import('better-effect-mq').QueueName
+  ): Promise<StoreResult<QueueControlsRecord | undefined>> {
+    return this.getControls({ queue })
+  }
+  async reconcile(
+    registry: AnyQueueControlsRegistry,
+    options: ControlsReconcileOptions = {}
+  ): Promise<StoreResult<ControlsReconcileReport>> {
+    try {
+      if (typeof registry !== 'object' || registry === null || !Array.isArray(registry.controls))
+        return definition('registry', 'must be a controls registry')
+      const group = text(registry.group, 'registry.group')
+      if (group.length > 128) return definition('registry.group', 'must not exceed 128 characters')
+      const removal = options.removal ?? 'warn'
+      if (!['ignore', 'warn', 'disable'].includes(removal))
+        return definition('removal', 'must be ignore, warn, or disable')
+      const proposed = new Map<string, QueueControlsRecord>()
+      for (const [index, definitionValue] of registry.controls.entries()) {
+        const queue = makeQueueName(definitionValue?.queue)
+        if (Result.isError(queue))
+          return definition(
+            `controls[${index}].queue`,
+            queue.error instanceof Error ? queue.error.message : 'invalid queue'
+          )
+        if (proposed.has(queue.value)) return definition('controls', 'contains a duplicate queue')
+        const normalized = this.normalizeControls(queue.value, group, definitionValue.options, 0)
+        if (Result.isError(normalized)) return normalized
+        proposed.set(queue.value, normalized.value)
+      }
+      return this.withTx('reconcile', async (tx) => {
+        const now = Date.now()
+        const created: QueueControlsRecord[] = []
+        const updated: QueueControlsRecord[] = []
+        const unchanged: QueueControlsRecord[] = []
+        const disabled: QueueControlsRecord[] = []
+        const select = `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(MYSQL_TABLES.controls)}`
+        for (const [queue, candidate] of [...proposed.entries()].sort(([left], [right]) =>
+          left.localeCompare(right)
+        )) {
+          const currentResult = await tx.query<Row>(
+            `${select} WHERE namespace=? AND queue=? FOR UPDATE`,
+            [this.client.namespace, queue]
+          )
+          const current =
+            currentResult.rows[0] === undefined
+              ? undefined
+              : this.decodeControls(currentResult.rows[0])
+          if (current === undefined) {
+            await tx.query(
+              `INSERT INTO ${this.table(MYSQL_TABLES.controls)} (namespace,queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms) VALUES (?,?,?,TRUE,1,?,?,?,?,?,?)`,
+              [
+                this.client.namespace,
+                queue,
+                group,
+                candidate.globalConcurrency ?? null,
+                candidate.perKeyConcurrency ?? null,
+                candidate.rateLimit?.max ?? null,
+                candidate.rateLimit?.durationMs ?? null,
+                now,
+                now
+              ]
+            )
+            const inserted = await tx.query<Row>(`${select} WHERE namespace=? AND queue=?`, [
+              this.client.namespace,
+              queue
+            ])
+            created.push(this.decodeControls(inserted.rows[0]!))
+          } else if (
+            current.enabled &&
+            current.group === group &&
+            this.sameControls(current, candidate)
+          ) {
+            unchanged.push(current)
+          } else {
+            await tx.query(
+              `UPDATE ${this.table(MYSQL_TABLES.controls)} SET control_group=?,enabled=TRUE,revision=revision+1,global_concurrency=?,per_key_concurrency=?,rate_limit_max=?,rate_limit_duration_ms=?,updated_at_ms=? WHERE namespace=? AND queue=?`,
+              [
+                group,
+                candidate.globalConcurrency ?? null,
+                candidate.perKeyConcurrency ?? null,
+                candidate.rateLimit?.max ?? null,
+                candidate.rateLimit?.durationMs ?? null,
+                now,
+                this.client.namespace,
+                queue
+              ]
+            )
+            const changed = await tx.query<Row>(`${select} WHERE namespace=? AND queue=?`, [
+              this.client.namespace,
+              queue
+            ])
+            updated.push(this.decodeControls(changed.rows[0]!))
+          }
+        }
+        const warnings: string[] = []
+        const existing = await tx.query<Row>(
+          `${select} WHERE namespace=? AND control_group=? ORDER BY queue COLLATE utf8mb4_bin FOR UPDATE`,
+          [this.client.namespace, group]
+        )
+        for (const raw of existing.rows) {
+          const current = this.decodeControls(raw)
+          if (proposed.has(current.queue as string)) continue
+          if (removal === 'warn')
+            warnings.push(`controls for queue "${current.queue}" are not present in the registry`)
+          if (removal === 'disable' && current.enabled) {
+            await tx.query(
+              `UPDATE ${this.table(MYSQL_TABLES.controls)} SET enabled=FALSE,revision=revision+1,updated_at_ms=? WHERE namespace=? AND queue=?`,
+              [now, this.client.namespace, current.queue]
+            )
+            const disabledRow = await tx.query<Row>(`${select} WHERE namespace=? AND queue=?`, [
+              this.client.namespace,
+              current.queue
+            ])
+            disabled.push(this.decodeControls(disabledRow.rows[0]!))
+          }
+        }
+        const all = await tx.query<Row>(
+          `${select} WHERE namespace=? ORDER BY queue COLLATE utf8mb4_bin`,
+          [this.client.namespace]
+        )
+        return {
+          created: Object.freeze(created),
+          updated: Object.freeze(updated),
+          unchanged: Object.freeze(unchanged),
+          disabled: Object.freeze(disabled),
+          warnings: Object.freeze(warnings),
+          records: Object.freeze(all.rows.map((row) => this.decodeControls(row)))
+        }
+      }) as Promise<StoreResult<ControlsReconcileReport>>
+    } catch (cause) {
+      return fail('reconcile', cause)
+    }
+  }
+  async claimControlled(
+    request: ControlledClaimRequest
+  ): Promise<StoreResult<ControlledClaimResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['queue', 'accepted', 'limit', 'workerId', 'leaseDurationMs', 'now', 'controlsRevision'],
+      ['queue', 'accepted', 'limit', 'workerId', 'leaseDurationMs', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<ControlledClaimResult>
+    try {
+      const queue = makeQueueName(checked.value.queue)
+      const workerId = makeWorkerId(checked.value.workerId)
+      const limit = safeNumber(checked.value.limit, 'limit')
+      const leaseDuration = safeNumber(checked.value.leaseDurationMs, 'leaseDurationMs')
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(queue)) return queue as StoreResult<ControlledClaimResult>
+      if (Result.isError(workerId)) return workerId as StoreResult<ControlledClaimResult>
+      if (limit < 1) return definition('limit', 'must be positive')
+      if (leaseDuration < 1) return definition('leaseDurationMs', 'must be positive')
+      if (revision < 1) return definition('controlsRevision', 'must be positive')
+      if (now > Number.MAX_SAFE_INTEGER - leaseDuration)
+        return definition('leaseDurationMs', 'lease expiry exceeds safe integer range')
+      if (!Array.isArray(checked.value.accepted)) return definition('accepted', 'must be an array')
+      const accepted = checked.value.accepted.map((identity: unknown) => {
+        const normalized = normalizeIdentity(identity, 'accepted')
+        if (Result.isError(normalized)) throw normalized.error
+        return normalized.value
+      })
+      return this.withTx('claimControlled', async (tx) => {
+        const control = await this.lockControls(tx, queue.value, revision)
+        const rate = await this.lockRateWindow(tx, control, now)
+        await tx.query(
+          `INSERT INTO ${this.table(MYSQL_TABLES.queues)} (namespace,queue,updated_at_ms) VALUES (?,?,?) ON DUPLICATE KEY UPDATE queue=VALUES(queue)`,
+          [this.client.namespace, queue.value, now]
+        )
+        const queueRow = (
+          await tx.query<Row>(
+            `SELECT paused,wake_version FROM ${this.table(MYSQL_TABLES.queues)} WHERE namespace=? AND queue=? FOR UPDATE`,
+            [this.client.namespace, queue.value]
+          )
+        ).rows[0]
+        const wakeToken = makeWakeToken(await this.wakeSnapshot(tx))
+        const nextRunAtMs = await this.nextControlledRunAt(tx, queue.value, accepted, now)
+        if (queueRow?.paused === true || queueRow?.paused === 1 || queueRow?.paused === '1')
+          return this.emptyControlled(wakeToken, nextRunAtMs, undefined, 'paused')
+        const active = await this.countPermits(tx, queue.value)
+        const globalRemaining =
+          control.globalConcurrency === undefined
+            ? Number.MAX_SAFE_INTEGER
+            : control.globalConcurrency - active
+        if (globalRemaining <= 0)
+          return this.emptyControlled(wakeToken, nextRunAtMs, undefined, 'global-concurrency')
+        const rateRemaining =
+          control.rateLimit === undefined
+            ? Number.MAX_SAFE_INTEGER
+            : control.rateLimit.max - (rate?.count ?? 0)
+        if (rateRemaining <= 0)
+          return this.emptyControlled(
+            wakeToken,
+            nextRunAtMs,
+            rate!.startedAtMs + control.rateLimit!.durationMs,
+            'rate-limited'
+          )
+        await tx.query(
+          `INSERT INTO ${this.table(MYSQL_TABLES.controlCursors)} (namespace,queue,cursor_sequence,updated_at_ms) VALUES (?,?,0,?) ON DUPLICATE KEY UPDATE queue=VALUES(queue)`,
+          [this.client.namespace, queue.value, now]
+        )
+        const cursorRow = await tx.query<Row>(
+          `SELECT cursor_sequence FROM ${this.table(MYSQL_TABLES.controlCursors)} WHERE namespace=? AND queue=? FOR UPDATE`,
+          [this.client.namespace, queue.value]
+        )
+        const cursor = integer(cursorRow.rows[0]?.cursor_sequence ?? 0, 'cursor_sequence')
+        const scanBudget = Math.min(Math.max(limit * 4, 32), 256)
+        const permitCounts = await tx.query<Row>(
+          `SELECT dispatch_key,COUNT(*) AS count FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND queue=? GROUP BY dispatch_key`,
+          [this.client.namespace, queue.value]
+        )
+        const candidates = await tx.query<Row>(
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND state IN ('waiting','delayed') AND run_at_ms <= ? AND (queue,name,version) IN (SELECT accepted.queue,accepted.name,accepted.version FROM JSON_TABLE(?, '$[*]' COLUMNS(queue VARCHAR(255) PATH '$.queue', name VARCHAR(255) PATH '$.name', version BIGINT PATH '$.version')) AS accepted) ORDER BY (sequence > ?) DESC,priority DESC,run_at_ms,sequence,id COLLATE utf8mb4_bin LIMIT ? FOR UPDATE SKIP LOCKED`,
+          [this.client.namespace, queue.value, now, json(accepted), cursor, scanBudget]
+        )
+        const counts = new Map<string, number>(
+          permitCounts.rows.map((row) => [
+            text(row.dispatch_key, 'dispatch_key'),
+            integer(row.count, 'count')
+          ])
+        )
+        const capacity = Math.min(limit, globalRemaining, rateRemaining)
+        const planned: Array<{
+          readonly record: JobRecord
+          readonly dispatchKey: string
+          readonly token: string
+        }> = []
+        const plannedCounts = new Map<string, number>()
+        let blocked = false
+        let examinedSequence = cursor
+        for (const raw of candidates.rows) {
+          const current = decodeJob(raw)
+          examinedSequence = current.orderingSequence
+          const dispatchKey = current.dispatchKey ?? noDispatchKey
+          const perKey = (counts.get(dispatchKey) ?? 0) + (plannedCounts.get(dispatchKey) ?? 0)
+          if (control.perKeyConcurrency !== undefined && perKey >= control.perKeyConcurrency) {
+            blocked = true
+            continue
+          }
+          const changed = reduceJob(current, {
+            type: 'claim',
+            jobId: current.id,
+            workerId: workerId.value,
+            leaseToken: randomUUID() as never,
+            leaseExpiresAt: now + leaseDuration,
+            now
+          })
+          if (Result.isError(changed)) throw changed.error
+          const token = changed.value.record.leaseToken!
+          planned.push({ record: changed.value.record, dispatchKey, token })
+          plannedCounts.set(dispatchKey, (plannedCounts.get(dispatchKey) ?? 0) + 1)
+          if (planned.length >= capacity) break
+        }
+        await tx.query(
+          `UPDATE ${this.table(MYSQL_TABLES.controlCursors)} SET cursor_sequence=?,updated_at_ms=? WHERE namespace=? AND queue=?`,
+          [examinedSequence, now, this.client.namespace, queue.value]
+        )
+        for (const item of planned) {
+          if (!(await this.save(tx, item.record)))
+            throw new JobStoreFailure({
+              operation: 'claimControlled',
+              retryable: true,
+              message: 'controlled claim lost its job row'
+            })
+          await this.clearSettlement(tx, item.record.id)
+          await tx.query(
+            `INSERT INTO ${this.table(MYSQL_TABLES.permits)} (namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES (?,?,?,?,?,?)`,
+            [this.client.namespace, item.record.id, queue.value, item.dispatchKey, item.token, now]
+          )
+        }
+        if (planned.length > 0) {
+          if (control.rateLimit !== undefined) {
+            if (rate?.rollover === true)
+              await tx.query(
+                rate.persisted
+                  ? `UPDATE ${this.table(MYSQL_TABLES.rateWindows)} SET started_at_ms=?,claim_count=?,updated_at_ms=? WHERE namespace=? AND queue=?`
+                  : `INSERT INTO ${this.table(MYSQL_TABLES.rateWindows)} (namespace,queue,started_at_ms,claim_count,updated_at_ms) VALUES (?,?,?,?,?)`,
+                rate.persisted
+                  ? [now, planned.length, now, this.client.namespace, queue.value]
+                  : [this.client.namespace, queue.value, now, planned.length, now]
+              )
+            else
+              await tx.query(
+                `UPDATE ${this.table(MYSQL_TABLES.rateWindows)} SET claim_count=claim_count+?,updated_at_ms=? WHERE namespace=? AND queue=?`,
+                [planned.length, now, this.client.namespace, queue.value]
+              )
+          }
+          await this.notify(tx, queue.value, now)
+        }
+        return planned.length === 0
+          ? this.emptyControlled(
+              wakeToken,
+              nextRunAtMs,
+              undefined,
+              blocked ? 'per-key-concurrency' : 'empty'
+            )
+          : {
+              jobs: Object.freeze(planned.map((item) => item.record as never)),
+              wakeToken,
+              nextRunAtMs,
+              nextEligibleAtMs: undefined,
+              reason: undefined
+            }
+      }) as Promise<StoreResult<ControlledClaimResult>>
+    } catch (cause) {
+      return fail('claimControlled', cause)
+    }
+  }
+  private async settleInTx(
+    tx: Tx,
+    request: {
+      readonly jobId: string
+      readonly leaseToken: string
+      readonly outcome: SettlementOutcome
+      readonly now: number
+      readonly startedAt?: number
+    }
+  ): Promise<JobStoreNamespace.SettlementResult> {
+    const raw = await tx.query<Row>(
+      `SELECT ${this.jobColumns().join(',')},parent,last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+      [this.client.namespace, request.jobId]
+    )
+    const source = raw.rows[0]
+    if (source === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    const current = decodeJob(source)
+    const previousToken = optionalString(source.last_settlement_token)
+    const previousOutcome = optionalString(source.last_settlement_outcome)
+    const previousAttemptSequence = optionalInteger(
+      source.last_settlement_attempt_sequence,
+      'last_settlement_attempt_sequence'
+    )
+    const canonicalOutcome = canonicalJson(request.outcome)
+    if (
+      previousToken === request.leaseToken &&
+      previousOutcome !== undefined &&
+      canonicalJson(parseJson(previousOutcome)) !== canonicalOutcome
+    )
+      throw new SettlementConflictError({
+        jobId: request.jobId as never,
+        leaseToken: request.leaseToken as never
+      })
+    const alreadyApplied = async (): Promise<
+      | {
+          readonly record: JobRecord
+          readonly attempt: AttemptRecord
+          readonly status: 'already-applied'
+        }
+      | undefined
+    > => {
+      if (
+        previousToken !== request.leaseToken ||
+        previousOutcome === undefined ||
+        previousAttemptSequence === undefined ||
+        canonicalJson(parseJson(previousOutcome)) !== canonicalOutcome
+      )
+        return undefined
+      const attemptRow = await tx.query<Row>(
+        `SELECT attempt,attempt_sequence,delivery,started_at_ms,finished_at_ms,outcome,result,failure,retry_at_ms,retry_delay_ms FROM ${this.table(MYSQL_TABLES.attempts)} WHERE namespace=? AND job_id=? AND attempt_sequence=? LIMIT 1`,
+        [this.client.namespace, current.id, previousAttemptSequence]
+      )
+      const attempt = decodeAttempt(attemptRow.rows[0])
+      return attempt === undefined
+        ? undefined
+        : { record: current, attempt, status: 'already-applied' }
+    }
+    if (current.state !== 'active') {
+      const result = await alreadyApplied()
+      if (result !== undefined) return result
+      throw new LeaseLostError({
+        jobId: current.id,
+        reason: 'missing-lease',
+        leaseToken: request.leaseToken as never
+      })
+    }
+    if (previousToken !== undefined) {
+      const result = await alreadyApplied()
+      if (result !== undefined) return result
+      throw new SettlementConflictError({
+        jobId: current.id,
+        leaseToken: request.leaseToken as never
+      })
+    }
+    const next = reduceJob(current, {
+      type: 'settle',
+      jobId: current.id,
+      leaseToken: request.leaseToken as never,
+      outcome: request.outcome,
+      now: request.now,
+      ...(request.startedAt === undefined ? {} : { startedAt: request.startedAt })
+    })
+    if (Result.isError(next)) throw next.error
+    if (next.value.attempt === undefined)
+      throw new JobDefinitionError({
+        field: 'attempt',
+        message: 'settlement did not record an attempt'
+      })
+    const transition = await this.prepareTransition(tx, current, next.value)
+    const attempt = transition.attempt
+    if (attempt === undefined)
+      throw new JobDefinitionError({
+        field: 'attempt',
+        message: 'settlement did not record an attempt'
+      })
+    await this.save(tx, transition.record)
+    await this.insertAttempt(tx, attempt, current.id, current.leaseOwner)
+    await tx.query(
+      `UPDATE ${this.table(MYSQL_TABLES.jobs)} SET last_settlement_token=?,last_settlement_outcome=?,last_settlement_attempt_sequence=? WHERE namespace=? AND id=?`,
+      [
+        request.leaseToken,
+        canonicalOutcome,
+        attempt.attemptSequence ?? attempt.attempt,
+        this.client.namespace,
+        current.id
+      ]
+    )
+    if (await this.flowReportsAvailable(tx))
+      await appendFlowReport(
+        tx,
+        source,
+        current.id,
+        attempt.attemptSequence ?? attempt.attempt,
+        request.outcome,
+        request.now,
+        this.client.namespace
+      )
+    await this.notify(tx, current.queue, request.now)
+    return { record: transition.record, attempt, status: 'applied' }
+  }
   async settle(
     request: JobStoreNamespace.SettleRequest
   ): Promise<StoreResult<JobStoreNamespace.SettlementResult>> {
@@ -1486,7 +2266,7 @@ class MySqlJobStoreImplementation {
       const settlementOutcome = outcome.value as typeof request.outcome
       return this.withTx('settle', async (tx) => {
         const raw = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')},parent,last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+          `SELECT ${this.jobColumns().join(',')},parent,last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
           [this.client.namespace, jobId.value]
         )
         const source = raw.rows[0]
@@ -1571,6 +2351,7 @@ class MySqlJobStoreImplementation {
           })
         const transition = await this.prepareTransition(tx, current, next.value)
         await this.save(tx, transition.record)
+        if (this.controlsAvailable) await this.clearPermit(tx, current.id, leaseToken.value)
         await this.insertAttempt(tx, transition.attempt!, current.id, current.leaseOwner)
         await tx.query(
           `UPDATE ${this.table(MYSQL_TABLES.jobs)} SET last_settlement_token=?,last_settlement_outcome=?,last_settlement_attempt_sequence=? WHERE namespace=? AND id=?`,
@@ -1599,6 +2380,243 @@ class MySqlJobStoreImplementation {
       return fail('settle', cause)
     }
   }
+  async settleControlled(
+    request: ControlledSettleRequest
+  ): Promise<StoreResult<JobStoreNamespace.SettlementResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['jobId', 'leaseToken', 'outcome', 'now', 'controlsRevision'],
+      ['jobId', 'leaseToken', 'outcome', 'now', 'startedAt', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<JobStoreNamespace.SettlementResult>
+    try {
+      const jobId = makeJobId(checked.value.jobId)
+      const leaseToken = makeLeaseToken(checked.value.leaseToken)
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      const outcome = validateSettlementOutcome(checked.value.outcome)
+      if (Result.isError(jobId)) return jobId as StoreResult<JobStoreNamespace.SettlementResult>
+      if (Result.isError(leaseToken))
+        return leaseToken as StoreResult<JobStoreNamespace.SettlementResult>
+      if (Result.isError(outcome)) return outcome as StoreResult<JobStoreNamespace.SettlementResult>
+      return this.withTx('settleControlled', async (tx) => {
+        const identity = await tx.query<Row>(
+          `SELECT queue FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=?`,
+          [this.client.namespace, jobId.value]
+        )
+        const queue = identity.rows[0]?.queue
+        if (queue === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(tx, text(queue, 'queue'), revision)
+        await this.lockRateWindow(tx, control, now)
+        const permit = await tx.query<Row>(
+          `SELECT lease_token FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND job_id=? FOR UPDATE`,
+          [this.client.namespace, jobId.value]
+        )
+        const result = await this.settleInTx(tx, {
+          jobId: jobId.value,
+          leaseToken: leaseToken.value,
+          outcome: outcome.value as unknown as SettlementOutcome,
+          now,
+          ...(checked.value.startedAt === undefined
+            ? {}
+            : { startedAt: safeNumber(checked.value.startedAt, 'startedAt') })
+        })
+        if (
+          result.status === 'applied' &&
+          permit.rows[0] !== undefined &&
+          optionalString(permit.rows[0].lease_token) === leaseToken.value
+        )
+          await this.clearPermit(tx, jobId.value, leaseToken.value)
+        return result
+      }) as Promise<StoreResult<JobStoreNamespace.SettlementResult>>
+    } catch (cause) {
+      return fail('settleControlled', cause)
+    }
+  }
+  async releaseControlled(
+    request: ControlledReleaseRequest
+  ): Promise<StoreResult<JobStoreNamespace.ReleaseResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['jobId', 'leaseToken', 'now', 'controlsRevision'],
+      ['jobId', 'leaseToken', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<JobStoreNamespace.ReleaseResult>
+    try {
+      const jobId = makeJobId(checked.value.jobId)
+      const leaseToken = makeLeaseToken(checked.value.leaseToken)
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(jobId)) return jobId as StoreResult<JobStoreNamespace.ReleaseResult>
+      if (Result.isError(leaseToken))
+        return leaseToken as StoreResult<JobStoreNamespace.ReleaseResult>
+      return this.withTx('releaseControlled', async (tx) => {
+        const identity = await tx.query<Row>(
+          `SELECT queue FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=?`,
+          [this.client.namespace, jobId.value]
+        )
+        const queue = identity.rows[0]?.queue
+        if (queue === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(tx, text(queue, 'queue'), revision)
+        await this.lockRateWindow(tx, control, now)
+        const permit = await tx.query<Row>(
+          `SELECT lease_token FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND job_id=? FOR UPDATE`,
+          [this.client.namespace, jobId.value]
+        )
+        if (
+          permit.rows[0] === undefined ||
+          optionalString(permit.rows[0].lease_token) !== leaseToken.value
+        )
+          throw new LeaseLostError({
+            jobId: jobId.value,
+            reason: 'mismatched-token',
+            leaseToken: leaseToken.value
+          })
+        const transition = await this.applyTransitionInTx(
+          tx,
+          'release',
+          { jobId: jobId.value, now },
+          (record) => {
+            if (record.state !== 'active')
+              return Result.err(
+                new LeaseLostError({
+                  jobId: record.id,
+                  reason: 'missing-lease',
+                  leaseToken: leaseToken.value
+                })
+              ) as ResultType<JobTransition, unknown>
+            return reduceJob(record, {
+              type: 'release',
+              jobId: record.id,
+              leaseToken: leaseToken.value,
+              now
+            })
+          }
+        )
+        await this.clearPermit(tx, jobId.value, leaseToken.value)
+        return transition
+      }) as Promise<StoreResult<JobStoreNamespace.ReleaseResult>>
+    } catch (cause) {
+      return fail('releaseControlled', cause)
+    }
+  }
+  async cancelControlled(
+    request: ControlledCancelRequest
+  ): Promise<StoreResult<JobStoreNamespace.CancelResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['jobId', 'now', 'controlsRevision'],
+      ['jobId', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<JobStoreNamespace.CancelResult>
+    try {
+      const jobId = makeJobId(checked.value.jobId)
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(jobId)) return jobId as StoreResult<JobStoreNamespace.CancelResult>
+      return this.withTx('cancelControlled', async (tx) => {
+        const identity = await tx.query<Row>(
+          `SELECT queue,state FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=?`,
+          [this.client.namespace, jobId.value]
+        )
+        const queue = identity.rows[0]?.queue
+        if (queue === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(tx, text(queue, 'queue'), revision)
+        await this.lockRateWindow(tx, control, now)
+        const permit = await tx.query<Row>(
+          `SELECT job_id FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND job_id=? FOR UPDATE`,
+          [this.client.namespace, jobId.value]
+        )
+        const transition = await this.applyTransitionInTx(
+          tx,
+          identity.rows[0]?.state === 'active' ? 'requestCancellation' : 'cancel',
+          { jobId: jobId.value, now },
+          (record) =>
+            record.state === 'active'
+              ? reduceJob(record, { type: 'request-cancellation', jobId: record.id, now })
+              : reduceJob(record, { type: 'cancel', jobId: record.id, now })
+        )
+        if (identity.rows[0]?.state !== 'active' && permit.rows[0] !== undefined)
+          await tx.query(
+            `DELETE FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND job_id=?`,
+            [this.client.namespace, jobId.value]
+          )
+        return transition
+      }) as Promise<StoreResult<JobStoreNamespace.CancelResult>>
+    } catch (cause) {
+      return fail('cancelControlled', cause)
+    }
+  }
+  async recoverStalledControlled(
+    request: ControlledRecoverStalledRequest
+  ): Promise<StoreResult<JobStoreNamespace.RecoverStalledResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['queue', 'maxStalledCount', 'now', 'controlsRevision'],
+      ['queue', 'maxStalledCount', 'limit', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked))
+      return checked as StoreResult<JobStoreNamespace.RecoverStalledResult>
+    try {
+      const queue = makeQueueName(checked.value.queue)
+      const maximum = safeNumber(checked.value.maxStalledCount, 'maxStalledCount')
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      const limit =
+        checked.value.limit === undefined
+          ? Number.MAX_SAFE_INTEGER - 1
+          : safeNumber(checked.value.limit, 'limit')
+      if (Result.isError(queue)) return queue as StoreResult<JobStoreNamespace.RecoverStalledResult>
+      if (limit < 1) return definition('limit', 'must be positive')
+      return this.withTx('recoverStalledControlled', async (tx) => {
+        const control = await this.lockControls(tx, queue.value, revision)
+        await this.lockRateWindow(tx, control, now)
+        const candidates = await tx.query<Row>(
+          `SELECT id,lease_token FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND queue=? AND state='active' AND lease_expires_at_ms <= ? ORDER BY lease_expires_at_ms,sequence,id COLLATE utf8mb4_bin LIMIT ?`,
+          [this.client.namespace, queue.value, now, limit]
+        )
+        const transitions: JobTransition[] = []
+        for (const candidate of candidates.rows) {
+          const jobId = text(candidate.id, 'job_id')
+          const token = optionalString(candidate.lease_token)
+          const permit = await tx.query<Row>(
+            `SELECT lease_token FROM ${this.table(MYSQL_TABLES.permits)} WHERE namespace=? AND job_id=? FOR UPDATE`,
+            [this.client.namespace, jobId]
+          )
+          if (permit.rows[0] !== undefined && optionalString(permit.rows[0].lease_token) !== token)
+            continue
+          const current = await this.row(tx, jobId, true)
+          if (
+            current === undefined ||
+            current.state !== 'active' ||
+            current.leaseExpiresAt === undefined ||
+            current.leaseExpiresAt > now
+          )
+            continue
+          const next = recoverStalledWithPolicy(
+            current,
+            { type: 'recover-stalled', jobId: current.id, now } as never,
+            current.stalledCount >= maximum
+          ) as unknown as ResultType<JobTransition, unknown>
+          if (Result.isError(next)) throw next.error
+          const transition = await this.applyTransitionInTx(
+            tx,
+            'recoverStalled',
+            { jobId, now },
+            () => next
+          )
+          transitions.push(transition)
+        }
+        return { transitions: Object.freeze(transitions), recovered: transitions.length }
+      }) as Promise<StoreResult<JobStoreNamespace.RecoverStalledResult>>
+    } catch (cause) {
+      return fail('recoverStalledControlled', cause)
+    }
+  }
   async release(request: JobStoreNamespace.ReleaseRequest): Promise<StoreResult<JobTransition>> {
     const checked = validateDto(
       request,
@@ -1625,7 +2643,7 @@ class MySqlJobStoreImplementation {
               reason: 'missing-lease',
               leaseToken: leaseToken.value
             })
-          ) as ResultType<JobTransition, any>
+          ) as ResultType<JobTransition, unknown>
         return reduceJob(r, {
           type: 'release',
           jobId: r.id,
@@ -1783,7 +2801,7 @@ class MySqlJobStoreImplementation {
       if (limit < 1) return definition('limit', 'must be positive')
       return this.withTx('recoverStalled', async (tx) => {
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')},parent FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND state='active' AND lease_expires_at_ms <= ? ORDER BY lease_expires_at_ms LIMIT ? FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')},parent FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND state='active' AND lease_expires_at_ms <= ? ORDER BY lease_expires_at_ms LIMIT ? FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, now, limit]
         )
         const transitions = [] as JobTransition[]
@@ -1793,10 +2811,12 @@ class MySqlJobStoreImplementation {
             r as never,
             { type: 'recover-stalled', jobId: r.id, now } as never,
             r.stalledCount >= maximum
-          ) as unknown as ResultType<JobTransition, any>
+          ) as unknown as ResultType<JobTransition, unknown>
           if (Result.isError(n)) throw n.error
           const transition = await this.prepareTransition(tx, r, n.value)
           await this.save(tx, transition.record)
+          if (this.controlsAvailable && r.leaseToken !== undefined)
+            await this.clearPermit(tx, r.id, r.leaseToken)
           if (transition.attempt)
             await this.insertAttempt(tx, transition.attempt, r.id, r.leaseOwner)
           const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record)
@@ -2110,7 +3130,7 @@ class MySqlJobStoreImplementation {
         const limitParameter = parameter(limit + 1)
         const direction = order === 'asc' ? 'ASC' : 'DESC'
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE ${where.join(' AND ')} ORDER BY ${column} ${direction},sequence ${order},id COLLATE utf8mb4_bin ${order} LIMIT ${limitParameter}`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE ${where.join(' AND ')} ORDER BY ${column} ${direction},sequence ${order},id COLLATE utf8mb4_bin ${order} LIMIT ${limitParameter}`,
           values
         )
         const page = rows.rows.slice(0, limit)
