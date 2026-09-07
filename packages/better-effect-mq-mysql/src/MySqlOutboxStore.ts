@@ -297,7 +297,7 @@ class MySqlOutboxStoreImplementation implements OutboxStoreContract {
         `UPDATE ${outboxTable} SET state=?,run_at_ms=?,updated_at_ms=?,lease_owner=NULL,lease_token=NULL,lease_expires_at_ms=NULL,failure=? WHERE namespace=? AND id=? AND state='active' AND lease_token=?`,
         [
           terminal ? 'failed' : 'pending',
-          terminal ? current.runAtMs : Math.max(current.runAtMs, nowMs),
+          current.runAtMs,
           nowMs,
           failure === undefined
             ? current.failure === undefined

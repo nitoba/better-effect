@@ -14,6 +14,11 @@ export const MYSQL_TABLES = Object.freeze({
   schedules: 'better_effect_mq_schedules',
   schemaVersions: 'better_effect_mq_schema_versions'
 })
+/** Flow v2 uses separate tables so v1 layouts are never interpreted as flow layouts. */
+export const MYSQL_FLOW_TABLES = Object.freeze({
+  children: 'better_effect_mq_flow_children',
+  outbox: 'better_effect_mq_flow_outbox'
+})
 export const MYSQL_INDEXES = Object.freeze([
   'better_effect_mq_jobs_claim_idx',
   'better_effect_mq_jobs_active_lease_idx',
@@ -28,7 +33,17 @@ export const MYSQL_INDEXES = Object.freeze([
   'better_effect_mq_outbox_recent_idx',
   'better_effect_mq_schedules_due_idx',
   'better_effect_mq_schedules_group_idx',
-  'better_effect_mq_schedules_key_idx'
+  'better_effect_mq_schedules_key_idx',
+  'better_effect_mq_jobs_waiting_children_idx',
+  'better_effect_mq_flow_children_parent_idx',
+  'better_effect_mq_flow_children_job_idx',
+  'better_effect_mq_flow_children_pending_idx',
+  'better_effect_mq_flow_children_cascade_idx',
+  'better_effect_mq_flow_children_job_unique',
+  'better_effect_mq_flow_outbox_id_unique',
+  'better_effect_mq_flow_outbox_sequence_unique',
+  'better_effect_mq_flow_outbox_claim_idx',
+  'better_effect_mq_flow_outbox_route_idx'
 ])
 export interface MySqlMigration {
   readonly version: number

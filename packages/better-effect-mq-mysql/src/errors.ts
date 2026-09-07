@@ -43,6 +43,26 @@ export class MySqlSchemaValidationError extends MySqlAdapterError {
   }
 }
 
+export class MySqlFlowProtocolMismatchError extends MySqlAdapterError {
+  readonly expectedProtocolVersion: number
+  readonly actualProtocolVersion: number | undefined
+  readonly actualLayoutVersion: number | undefined
+
+  constructor(args: {
+    readonly expectedProtocolVersion: number
+    readonly actualProtocolVersion?: number | undefined
+    readonly actualLayoutVersion?: number | undefined
+  }) {
+    super(
+      `MySQL flow protocol mismatch: expected v${args.expectedProtocolVersion} with layout v1, found protocol v${args.actualProtocolVersion ?? 'unknown'} and migration layout ${args.actualLayoutVersion ?? 'unknown'}`
+    )
+    this.name = 'MySqlFlowProtocolMismatchError'
+    this.expectedProtocolVersion = args.expectedProtocolVersion
+    this.actualProtocolVersion = args.actualProtocolVersion
+    this.actualLayoutVersion = args.actualLayoutVersion
+  }
+}
+
 /** Deliberately excludes driver SQL, parameters, and connection strings from the public message. */
 export const redactedMySqlError = (operation: string, cause: unknown): MySqlAdapterError =>
   cause instanceof MySqlAdapterError

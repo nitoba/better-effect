@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add the MySQL Flow protocol v2 adapter, additive migration, deterministic
+  child/dependency persistence, cross-store report outbox, reconciliation, and
+  terminal child report integration with the JobStore.
 - Add the MySQL durable outbox v1 table, typed transactional append, Layer-first
   default/named outbox stores, fenced leases, recovery, settlement, and admin
   inspection operations.

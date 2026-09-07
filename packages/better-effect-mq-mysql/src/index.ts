@@ -4,9 +4,11 @@ export { MySqlJobStore } from './layer'
 export { MySqlJobScheduleStore } from './layer'
 export { MySqlOutboxStore } from './layer'
 export { MySqlOutbox, namespaceForOutboxToken } from './MySqlOutbox'
+export { MySqlFlowStore } from './flow'
 export { OutboxStore, isOutboxStoreToken, outboxStoreTag } from './outbox-token'
 export {
   MIGRATION_COMPONENT,
+  MYSQL_FLOW_TABLES,
   MYSQL_INDEXES,
   MYSQL_TABLES,
   loadMySqlMigrations,
@@ -26,6 +28,7 @@ export {
   MySqlConfigurationError,
   MySqlMigrationError,
   MySqlSchemaValidationError,
+  MySqlFlowProtocolMismatchError,
   redactedMySqlError
 } from './errors'
 export type {
@@ -64,3 +67,4 @@ export type {
   MySqlSchemaValidationResult
 } from './migrator'
 export type { MySqlJobScheduleStoreOptions } from './schedule'
+export type { MySqlFlowStoreInstance } from './flow'

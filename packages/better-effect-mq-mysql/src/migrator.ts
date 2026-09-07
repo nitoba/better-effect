@@ -13,6 +13,7 @@ import {
 } from './errors'
 import {
   MIGRATION_COMPONENT,
+  MYSQL_FLOW_TABLES,
   MYSQL_TABLES,
   loadMySqlMigrations,
   migrationManifestChecksum,
@@ -355,6 +356,112 @@ const outboxColumns = [
   'failure',
   'ordering_sequence'
 ] as const
+const flowJobColumns = [
+  'parent',
+  'flow',
+  'flow_manifest_digest',
+  'flow_lease_token',
+  'flow_name',
+  'flow_parent_store_key',
+  'flow_depth'
+] as const
+const flowChildrenColumns = [
+  'namespace',
+  'flow_id',
+  'child_key',
+  'name',
+  'version',
+  'store_key',
+  'child_job_id',
+  'request',
+  'status',
+  'result',
+  'failure',
+  'cascaded',
+  'pending_since_ms',
+  'flow_child_identity',
+  'child_job_identity'
+] as const
+const flowOutboxColumns = [
+  'namespace',
+  'id',
+  'id_identity',
+  'flow_name',
+  'parent_store_key',
+  'report',
+  'sequence',
+  'created_at_ms'
+] as const
+const flowIndexes = Object.freeze({
+  better_effect_mq_jobs_waiting_children_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'state', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'updated_at_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'sequence', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_flow_children_job_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'child_job_identity', sub_part: null, collation: 'A' }
+  ],
+  better_effect_mq_flow_children_pending_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'flow_id', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'status', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'pending_since_ms', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'child_key', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_flow_children_cascade_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'flow_id', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'status', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'cascaded', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'child_key', sub_part: 191, collation: 'A' }
+  ],
+  better_effect_mq_flow_outbox_claim_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'sequence', sub_part: null, collation: 'A' }
+  ],
+  better_effect_mq_flow_outbox_route_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'parent_store_key', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'sequence', sub_part: null, collation: 'A' }
+  ]
+} satisfies Readonly<Record<string, readonly IndexPart[]>>)
+const flowTable = async (
+  connection: PoolConnection,
+  table: string,
+  columns: readonly string[]
+): Promise<boolean> => {
+  const engine = await connection.query<{ engine: string | null }>(
+    'SELECT engine AS engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+    [table]
+  )
+  if (engine.rows[0] === undefined) return false
+  if (engine.rows[0].engine?.toLowerCase() !== 'innodb')
+    throw new MySqlMigrationError(`existing table ${table} is not InnoDB`)
+  const found = await connection.query<{ column_name: string }>(
+    'SELECT column_name AS column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?',
+    [table]
+  )
+  const missing = columns.filter((name) => !found.rows.some((row) => row.column_name === name))
+  if (missing.length > 0)
+    throw new MySqlMigrationError(
+      `existing table ${table} is missing columns: ${missing.join(', ')}`
+    )
+  return true
+}
+const checkConstraint = async (
+  connection: PoolConnection,
+  table: string,
+  name: string
+): Promise<boolean> => {
+  const result = await connection.query<{ constraint_name: string }>(
+    "SELECT constraint_name AS constraint_name FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = ? AND constraint_name = ? AND constraint_type = 'CHECK'",
+    [table, name]
+  )
+  return result.rows.length > 0
+}
 const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
   const ddl = statements(migration.sql)
   if (migration.version === 1) return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
@@ -370,6 +477,54 @@ const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
     throw new MySqlMigrationError(
       'MySQL migration 004 reconciliation metadata does not match its DDL'
     )
+  if (migration.version === 5 && ddl.length !== 17)
+    throw new MySqlMigrationError(
+      'MySQL migration 005 reconciliation metadata does not match its DDL'
+    )
+  if (migration.version === 5)
+    return [
+      ...flowJobColumns.map((name, index) => ({
+        sql: ddl[index]!,
+        isSatisfied: async (connection: PoolConnection) =>
+          (await column(connection, MYSQL_TABLES.jobs, name)) !== undefined
+      })),
+      {
+        sql: ddl[7]!,
+        isSatisfied: async (connection) =>
+          !(await checkConstraint(connection, MYSQL_TABLES.jobs, 'better_effect_mq_jobs_state'))
+      },
+      {
+        sql: ddl[8]!,
+        isSatisfied: async (connection) =>
+          checkConstraint(connection, MYSQL_TABLES.jobs, 'better_effect_mq_jobs_state')
+      },
+      {
+        sql: ddl[9]!,
+        isSatisfied: async (connection) =>
+          flowTable(connection, MYSQL_FLOW_TABLES.children, flowChildrenColumns)
+      },
+      {
+        sql: ddl[10]!,
+        isSatisfied: async (connection) =>
+          flowTable(connection, MYSQL_FLOW_TABLES.outbox, flowOutboxColumns)
+      },
+      ...Object.entries(flowIndexes).map(([name, parts], index) => ({
+        sql: ddl[index + 11]!,
+        isSatisfied: async (connection: PoolConnection) =>
+          matchesIndexes(
+            await indexes(
+              connection,
+              index === 0
+                ? MYSQL_TABLES.jobs
+                : index <= 3
+                  ? MYSQL_FLOW_TABLES.children
+                  : MYSQL_FLOW_TABLES.outbox,
+              [name]
+            ),
+            { [name]: parts }
+          )
+      }))
+    ]
   if (migration.version !== 2 && migration.version !== 3 && migration.version !== 4)
     return ddl.map((sql) => ({ sql, isSatisfied: async () => false }))
   if (migration.version === 4)

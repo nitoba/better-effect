@@ -2,7 +2,7 @@
 
 `better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore`,
 `JobScheduleStore`, and durable outbox adapters for [`better-effect-mq`](../better-effect-mq).
-It implements protocol v1, schedules v1, and outbox v1 with short transactions,
+It implements protocol v1, schedules v1, outbox v1, and Flow protocol v2 with short transactions,
 fenced leases, durable attempt records, deterministic occurrence IDs, keyset
 inspection queries, and a per-process wake notifier backed by durable queue wake
 versions.
@@ -17,6 +17,27 @@ const StoreLive = Layer.merge(
   MySqlJobScheduleStore.layer({ pool, namespace: 'billing', validateSchema: true })
 )
 ```
+
+Flow v2 is exposed as a separate, container-neutral `FlowStoreV2` adapter. It
+persists the parent manifest and dependency rows in MySQL, and uses a durable
+flow outbox for cross-store child reports:
+
+```ts
+import { MySqlFlowStore } from 'better-effect-mq-mysql'
+
+const flows = await MySqlFlowStore.make({
+  pool,
+  namespace: 'billing',
+  validateSchema: true
+})
+```
+
+`fanOut` is idempotent for an identical manifest and rejects conflicting replay.
+Child terminal transitions (`complete`, `fail`, `cancel`, and exhausted stalled
+recovery) append a report in the same MySQL transaction as the job attempt.
+`peekOutbox` and `ackOutbox` provide at-least-once delivery for relays; they do
+not promise exactly-once execution across stores. Flow v2 does not use a
+cross-store transaction.
 
 Named stores retain their association explicitly:
 
@@ -53,6 +74,11 @@ await MySqlMigrator.validate(pool)
 Migration 4 adds the `better_effect_mq_outbox` table and claim, lease, target,
 and recent-record indexes. The outbox stores an already prepared request and
 delivers it at least once; it does not promise exactly-once execution.
+
+Migration 5 adds the flow v2 columns, `better_effect_mq_flow_children`, and
+`better_effect_mq_flow_outbox`. It is additive and leaves migrations 1–4
+unchanged. Opening `MySqlFlowStore` against a v1-only or incomplete flow layout
+fails with `MySqlFlowProtocolMismatchError`; run the migrator before opening it.
 
 ```ts
 import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
@@ -115,8 +141,9 @@ query-plan monitoring. MariaDB is intentionally not advertised as supported.
 
 ## Integration verification
 
-The repository runs the MySQL conformance suite when `MYSQL_URL` is set to a
-dedicated MySQL 8.0.16+ test database. It covers protocol transitions, queue
+The repository runs the MySQL conformance suites when `MYSQL_URL` is set to a
+dedicated MySQL 8.0.16+ test database. They cover protocol transitions, queue
 pause/wake behavior, lease fencing, settlement replay, durable outbox append and
-recovery, and isolated named stores. Without that variable the real-engine suite
-is skipped; unit, package, and tarball checks still run.
+recovery, Flow v2 manifest/report/cascade behavior, and isolated named stores.
+Without that variable the real-engine suites are skipped; unit, package, and
+tarball checks still run.

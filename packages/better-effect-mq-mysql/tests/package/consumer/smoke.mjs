@@ -10,11 +10,12 @@ import {
 
 const migrations = await loadMySqlMigrations()
 if (
-  migrations.length !== 4 ||
+  migrations.length !== 5 ||
   !migrations[0].sql.includes('ENGINE=InnoDB') ||
   !migrations[1].sql.includes('dedupe_hash') ||
   !migrations[2].sql.includes('better_effect_mq_schedules') ||
-  !migrations[3].sql.includes('better_effect_mq_outbox')
+  !migrations[3].sql.includes('better_effect_mq_outbox') ||
+  !migrations[4].sql.includes('better_effect_mq_flow_children')
 ) {
   throw new Error('Expected the initial InnoDB migration and forward-only upgrades')
 }
