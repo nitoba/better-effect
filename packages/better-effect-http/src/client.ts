@@ -5,9 +5,11 @@ import type { Layer as LayerType, ServiceIdentity, ServiceToken } from 'better-e
 import { operation } from './operation'
 import type { HttpOperation } from './operation'
 import type { TransportOptions, TransportRequestOptions } from './internal/ofetch-transport'
+import type { HttpDecodeOptions, HttpSchema, HttpResponseSchemas } from './schema'
 
 export type HttpClientOptions = TransportOptions
-export type HttpRequestOptions = TransportRequestOptions
+export type HttpRequestOptions = TransportRequestOptions &
+  ({ readonly schema?: never; readonly responses?: never } | HttpDecodeOptions)
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
   readonly get: (path: string, options?: HttpRequestOptions) => HttpOperation
   readonly post: (path: string, options?: HttpRequestOptions) => HttpOperation
