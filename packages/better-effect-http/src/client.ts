@@ -20,6 +20,8 @@ import type { HttpRetryPolicy } from './retry'
 import { makeHttpLimiter } from './limits'
 import { stream as makeStream } from './stream/description'
 import type { HttpStream } from './stream/description'
+import { ndjson as makeNdjson } from './codecs/ndjson/description'
+import type { HttpNdjsonRequestOptions, HttpNdjsonStream } from './codecs/ndjson/description'
 
 export type HttpClientOptions = TransportOptions & {
   readonly limits?: import('./limits').HttpLimits
@@ -60,8 +62,17 @@ export type HttpRequestFunction = {
   (method: string, path: string, options?: TransportRequestOptions): HttpOperation
 }
 
+export type HttpNdjsonMethod = {
+  <S extends HttpSchema>(
+    path: string,
+    options: HttpNdjsonRequestOptions<S> & { readonly schema: S }
+  ): HttpNdjsonStream<S>
+  (path: string, options?: HttpNdjsonRequestOptions<undefined>): HttpNdjsonStream<undefined>
+}
+
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
   readonly stream: (path: string, options?: TransportRequestOptions) => HttpStream
+  readonly ndjson: HttpNdjsonMethod
   readonly endpoints: <E extends Record<string, HttpEndpoint>>(
     endpoints: E
   ) => { [K in keyof E]: (args: HttpEndpointArgs<E[K]['definition']>) => HttpOperation }
@@ -110,6 +121,7 @@ const makeClient = <Tag extends string>(
     request(name, path, options)
   const client = {
     stream: (path: string, options?: TransportRequestOptions) => makeStream(config, path, options),
+    ndjson: (path: string, options?: HttpNdjsonRequestOptions) => makeNdjson(config, path, options),
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
     use: (...added: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[]) =>
       makeClient(config, [...hooks, ...added], limiter),

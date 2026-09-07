@@ -42,6 +42,32 @@ const result = await Runtime.run(HttpClient.layer({ baseURL: 'https://api.exampl
 the final status, preserving the status/data correlation in TypeScript. A
 status that is not declared in `responses` is returned as `HttpStatusError`.
 
+NDJSON responses are decoded incrementally, one UTF-8 JSON record at a time. A
+schema is optional; when present its transformed output is delivered to the
+consumer exactly once per record:
+
+```ts
+const users = http.ndjson('/users/export', {
+  schema: UserSchema,
+  limits: { maxRecordBytes: 1_048_576 }
+})
+
+yield *
+  users.forEach((user) =>
+    Effect.fn(async function* () {
+      const repository = yield* UserRepository
+      yield* Result.await(repository.upsert(user))
+      return Result.ok(undefined)
+    })
+  )
+```
+
+Records are separated by LF or CRLF. Empty lines are ignored, while whitespace
+lines and malformed JSON terminate the stream. A final record must end in a
+newline unless `allowFinalRecordWithoutDelimiter: true` is set. The record
+limit is measured in UTF-8 bytes (independent of transport chunking), and an
+ordinary JSON array is delivered as one record rather than expanded.
+
 Authentication recovery is opt-in. Keep the session key opaque and derive the
 current credential for each physical send; refresh state is shared only while
 the same key is in flight:

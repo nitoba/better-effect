@@ -16,3 +16,10 @@ export * from './retry'
 export * from './auth'
 export * from './limits'
 export * from './stream'
+export {
+  HttpNdjsonLimitError,
+  HttpNdjsonParseError,
+  HttpNdjsonUtf8Error
+} from './codecs/ndjson/errors'
+export type { HttpNdjsonBoundaryError, HttpNdjsonErrorKind } from './codecs/ndjson/errors'
+export type { NdjsonError, NdjsonLimits, NdjsonOptions, NdjsonOutput } from './codecs/ndjson/parser'

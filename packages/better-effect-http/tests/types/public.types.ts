@@ -1,10 +1,15 @@
 import * as Http from '../../src'
+import { expectTypeOf } from 'bun:test'
 import type {
   HttpClientInstance,
   HttpOperation,
   HttpResponseOperation,
+  HttpStream,
+  NdjsonError,
   ResponseData
 } from '../../src'
+import { Effect, Service } from 'better-effect'
+import { Result } from 'better-result'
 import type { StandardSchemaV1 } from 'better-effect-schema'
 
 const request = Http.HttpRequest.make('https://example.test')
@@ -52,3 +57,26 @@ void expectedUser
 void expectedResponses
 void typedRecovery
 void configured
+
+declare const userRecordSchema: StandardSchemaV1<unknown, { readonly id: number }>
+const typedNdjson = client.ndjson('/users', {
+  schema: userRecordSchema,
+  limits: { maxRecordBytes: 1024 }
+})
+const unknownNdjson = client.ndjson('/users')
+
+expectTypeOf<typeof typedNdjson>().toEqualTypeOf<HttpStream<{ readonly id: number }, NdjsonError>>()
+expectTypeOf<typeof unknownNdjson>().toEqualTypeOf<HttpStream<unknown, NdjsonError>>()
+
+class UserRepository extends Service<UserRepository>()('UserRepository') {}
+const consuming = Effect.fn(async function* () {
+  yield* typedNdjson.forEach(() =>
+    Effect.fn(async function* () {
+      const repository = yield* UserRepository
+      void repository
+      return Result.ok(undefined)
+    })
+  )
+  return Result.ok(undefined)
+})
+expectTypeOf<Effect.Requirements<typeof consuming>>().toEqualTypeOf<UserRepository>()
