@@ -38,6 +38,53 @@ the Memory JobStore's committed transitions in its synchronous critical
 sections. Durable events intentionally omit payloads, results, complete failure
 data, and arbitrary metadata; see the [v1 event contract](./docs/protocol/durable-events-v1.md).
 
+The public reader keeps cursor ownership with the caller. `JobEvents.page` is
+one finite, lazy/yieldable read; `JobEvents.forEach` is a continuous,
+sequential consumer that uses `awaitEvents` as a wake hint and bounded polling
+as its fallback:
+
+```ts
+import { Effect, Result } from 'better-effect'
+import { JobEventStore, JobEvents } from 'better-effect-mq'
+
+const page = Effect.gen(async function* () {
+  return Result.ok(
+    yield* JobEvents.page(JobEventStore, {
+      after: cursor,
+      limit: 100,
+      types: ['job-completed']
+    })
+  )
+})
+
+const consume = Effect.gen(async function* () {
+  return Result.ok(
+    yield* JobEvents.forEach(
+      {
+        store: JobEventStore,
+        after: cursor,
+        filters: { types: ['job-completed'] },
+        pageSize: 100,
+        pollIntervalMs: 5_000,
+        signal
+      },
+      (event) =>
+        Effect.fn(async function* () {
+          yield* handleEvent(event)
+          return Result.ok(undefined)
+        })
+    )
+  )
+})
+```
+
+The handler must finish before the caller persists `event.cursor`. A handler
+failure leaves the caller's cursor untouched, so restarting from the last
+persisted cursor provides at-least-once delivery. The consumer does not create
+a subscriber or a Runtime; it uses the active Runtime and Scope, and stops its
+wait when the caller's `AbortSignal` or Scope closes. Aborts are reported as
+`JobEventConsumerAbortedError`.
+
 ## Controlled claims
 
 `QueueControls` is the Layer-first, yieldable controls extension. It keeps
