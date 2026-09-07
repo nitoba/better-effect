@@ -1,12 +1,16 @@
 import { TaggedError } from 'better-result'
 
-import {
-  sanitizeSchemaIdentifier,
-  sanitizeSchemaIssues,
-  type SchemaIssue
-} from './internal/issues.js'
+import { sanitizeSchemaIdentifier, sanitizeSchemaIssues } from './internal/issues.js'
 
-export type { SchemaIssue, SchemaIssuePath, SchemaIssuePathSegment } from './internal/issues.js'
+export type SchemaIssuePathSegment = string | number | symbol
+export type SchemaIssuePath = readonly SchemaIssuePathSegment[]
+
+/** A bounded, serialization-safe validation issue. */
+export interface SchemaIssue {
+  readonly message: 'Validation failed'
+  readonly code?: string
+  readonly path?: SchemaIssuePath
+}
 
 export interface SchemaFailureOptions {
   readonly identifier?: unknown

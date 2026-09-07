@@ -88,6 +88,7 @@
     "check": "bun run typecheck && bun run test && bun run examples:build && bun run examples:run && bun run check:source && bun run check:package && bun run test:package && bun run publint && bun run release:dry && npm pack --dry-run --ignore-scripts",
     "prepack": "bun run clean && bun run build",
     "test:package": "bun ./scripts/test-package.mjs",
+    "test:package-consumer": "bun ./scripts/test-package.mjs",
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-schema"
   },
   "dependencies": {
