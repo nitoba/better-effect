@@ -6,7 +6,9 @@ import type {
   HttpResponseOperation,
   HttpStream,
   NdjsonError,
-  ResponseData
+  ResponseData,
+  SseEventMessage,
+  SseMessage
 } from '../../src'
 import { Effect, Service } from 'better-effect'
 import { Result } from 'better-result'
@@ -41,6 +43,47 @@ const expectedUser: HttpOperation<{ readonly id: number }> = user
 const expectedResponses: HttpResponseOperation<
   ResponseData<{ 200: typeof userSchema; 404: typeof notFoundSchema }>
 > = responses
+
+const rawEvents = client.sse('/events')
+const typedEvents = client.sse('/events', { schema: userSchema })
+const namedEvents = client.sse('/events', {
+  events: { progress: userSchema, failed: notFoundSchema },
+  reconnect: false,
+  timeout: { headersMs: 10_000, readIdleMs: 45_000, totalMs: false }
+})
+type ExpectedNamedEvents = SseEventMessage<{
+  readonly progress: typeof userSchema
+  readonly failed: typeof notFoundSchema
+}>
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? true
+    : false
+type Assert<Condition extends true> = Condition
+type _RawEventsExact = Assert<
+  Equal<NonNullable<(typeof rawEvents)['_A']>, SseMessage<string, string>>
+>
+type _TypedEventsExact = Assert<
+  Equal<NonNullable<(typeof typedEvents)['_A']>, SseMessage<string, { readonly id: number }>>
+>
+type _NamedEventsExact = Assert<Equal<NonNullable<(typeof namedEvents)['_A']>, ExpectedNamedEvents>>
+const handleNamed = (message: ExpectedNamedEvents): void => {
+  if (message.event === 'progress') {
+    const id: number = message.data.id
+    void id
+  } else {
+    const reason: string = message.data.reason
+    void reason
+  }
+}
+
+// @ts-expect-error schema and events are mutually exclusive.
+client.sse('/events', { schema: userSchema, events: { progress: userSchema } })
+
+void rawEvents
+void typedEvents
+void namedEvents
+void handleNamed
 
 const recovery = Http.HttpAuth.refresh({
   maxReplays: 1,
