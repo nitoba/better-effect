@@ -12,11 +12,13 @@ const coreSourceRoot = join(repositoryRoot, 'packages/better-effect/src')
 
 const expectedExports = {
   '.': './dist/index.mjs',
+  './opentelemetry': './dist/opentelemetry.mjs',
   './testing': './dist/testing.mjs',
   './package.json': './package.json'
 } as const
 
 const expectedPeers = {
+  '@opentelemetry/api': '>=1.9.0 <1.10.0',
   'better-effect': '>=0.13.0 <0.14.0',
   'better-effect-schema': '>=0.1.0 <0.2.0',
   'better-result': '^3.0.0',
@@ -24,6 +26,7 @@ const expectedPeers = {
 } as const
 
 const allowedExternalImports = new Set([
+  '@opentelemetry/api',
   'ofetch',
   'better-effect',
   'better-effect-schema',
@@ -190,7 +193,14 @@ const assertCoreIsolation = async (): Promise<void> => {
 }
 
 const assertGeneratedPackage = async (): Promise<void> => {
-  for (const name of ['index.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts']) {
+  for (const name of [
+    'index.mjs',
+    'index.d.mts',
+    'opentelemetry.mjs',
+    'opentelemetry.d.mts',
+    'testing.mjs',
+    'testing.d.mts'
+  ]) {
     assertCondition(
       (await collectFiles(distRoot)).includes(join(distRoot, name)),
       `Missing generated ${name}`
@@ -208,6 +218,11 @@ const assertGeneratedPackage = async (): Promise<void> => {
   }
 
   const entrypoint = await import(pathToFileURL(join(distRoot, 'index.mjs')).href)
+  const mainSource = await readFile(join(distRoot, 'index.mjs'), 'utf8')
+  assertCondition(
+    !mainSource.includes('@opentelemetry/api'),
+    'Main entrypoint must not load OpenTelemetry'
+  )
   for (const exportName of ['HttpRequest', 'HttpRequestError', 'validateHttpOptions']) {
     assertCondition(
       exportName in entrypoint,
@@ -216,6 +231,11 @@ const assertGeneratedPackage = async (): Promise<void> => {
   }
   const testingEntrypoint = await import(pathToFileURL(join(distRoot, 'testing.mjs')).href)
   assertCondition('HttpTest' in testingEntrypoint, 'Missing public HTTP testing export: HttpTest')
+  const telemetryEntrypoint = await import(pathToFileURL(join(distRoot, 'opentelemetry.mjs')).href)
+  assertCondition(
+    'HttpTelemetry' in telemetryEntrypoint,
+    'Missing public HTTP OpenTelemetry export: HttpTelemetry'
+  )
 }
 
 const assertPackedArtifact = async (): Promise<void> => {
@@ -251,6 +271,8 @@ const assertPackedArtifact = async (): Promise<void> => {
       'package/CHANGELOG.md',
       'package/dist/index.mjs',
       'package/dist/index.d.mts',
+      'package/dist/opentelemetry.mjs',
+      'package/dist/opentelemetry.d.mts',
       'package/dist/testing.mjs',
       'package/dist/testing.d.mts'
     ]) {
