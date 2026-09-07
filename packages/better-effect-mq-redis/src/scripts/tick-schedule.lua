@@ -85,7 +85,7 @@ local function validJob(item)
   if record.id ~= item.id or (record.state ~= "waiting" and record.state ~= "delayed") then return false end
   for key in pairs(record) do
     local known = {
-      id=true, name=true, version=true, queue=true, state=true, payload=true, metadata=true,
+    id=true, name=true, version=true, queue=true, dispatchKey=true, state=true, payload=true, metadata=true,
       priority=true, runAt=true, orderingSequence=true, attemptsMax=true, attemptsMade=true,
       attemptSequence=true, deliveryCount=true, stalledCount=true, backoff=true, timeoutMs=true,
       idempotencyKey=true, createdAt=true, updatedAt=true, processedAt=true, finishedAt=true,

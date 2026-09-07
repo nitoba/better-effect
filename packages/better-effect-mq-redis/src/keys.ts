@@ -275,6 +275,13 @@ export interface RedisKeyLayout {
   readonly wake: string
   readonly layoutLock: string
   readonly counts: string
+  readonly controlsIndex: string
+  readonly controls: (queue: string) => string
+  readonly controlsActive: (queue: string) => string
+  readonly controlsKeyCounts: (queue: string) => string
+  readonly controlsPermits: (queue: string) => string
+  readonly controlsRate: (queue: string) => string
+  readonly controlsRotation: (queue: string) => string
   readonly idempotency: (scopeHash?: string) => string
   readonly all: string
   readonly byQueue: (queue: string) => string
@@ -337,6 +344,13 @@ export const makeRedisKeyLayout = (prefixValue: string, namespaceValue: string):
     wake: suffix('wake'),
     layoutLock: suffix('layout-lock'),
     counts: suffix('counts'),
+    controlsIndex: suffix('controls'),
+    controls: (queue: string) => suffix(`controls:${queueSegment(queue)}`),
+    controlsActive: (queue: string) => suffix(`controls-active:${queueSegment(queue)}`),
+    controlsKeyCounts: (queue: string) => suffix(`controls-key-counts:${queueSegment(queue)}`),
+    controlsPermits: (queue: string) => suffix(`controls-permits:${queueSegment(queue)}`),
+    controlsRate: (queue: string) => suffix(`controls-rate:${queueSegment(queue)}`),
+    controlsRotation: (queue: string) => suffix(`controls-rotation:${queueSegment(queue)}`),
     idempotency: (scopeHash?: string) =>
       scopeHash === undefined
         ? suffix('idempotency')

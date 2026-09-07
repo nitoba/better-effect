@@ -47,6 +47,12 @@ A namespace can therefore be distributed by using several namespaces, but a sing
 
 The layout includes job hashes, attempt lists, monotonic sequences, identity waiting/delayed indexes, active leases, queue controls, wake versions, counters, idempotency mappings, listing indexes, and a layout marker. The marker records adapter, protocol, layout, index-configuration, and script-set versions. Existing data with no marker or incompatible values fails with `RedisLayoutMismatchError`; the adapter never deletes or rewrites data automatically. Initial marker creation takes a short namespaced Redis lock and rechecks the marker while the lock is held; deployments should use this adapter (or otherwise coordinate writers) during first namespace initialization. Set `validateLayout: false` only when that check is deliberately managed elsewhere. The JobStore descriptor reports protocol v1, layout `1`, and the capability matrix in the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
+## Queue controls protocol v3
+
+The Redis JobStore implements the `better-effect-mq` QueueControls protocol v3. Reconciliation persists one revisioned control record per queue. Controlled claims enforce global concurrency, producer-persisted `dispatchKey` concurrency, and a fixed-window rate limit atomically with the lease transition. Permits, per-key counts, the protocol-clock rate window, and fair rotation state share the namespace hash slot with the job indexes.
+
+Controlled settlement, release, cancellation, retry, and stalled-lease recovery fence on the same revision and release only the matching lease permit. Legacy claims fail closed while controls are enabled. Control changes wake workers through the existing persisted wake-version channel; `nextEligibleAtMs` is returned for rate-limited polling.
+
 ## Flow protocol v2 foundation
 
 `RedisFlowStore.make(redis)` implements the core `FlowStoreV2` atomic slice. It uses a separate v2 flow marker and Lua registry, so the protocol-v1 JobStore marker, scripts, and keys remain unchanged. Flow parents are hashes, child specifications and records share a per-flow hash, and byte-ordered child indexes plus pending/cascade sorted sets keep reconciliation work durable. Fan-out, child-result recording, fail-fast cancellation, explicit cancellation, reconciliation, and cascade acknowledgement are each single-slot Lua operations with bounded JSON arguments and idempotent replays.

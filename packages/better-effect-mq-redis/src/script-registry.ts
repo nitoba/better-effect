@@ -14,6 +14,8 @@ export const redisScriptNames = [
   'enqueue',
   'enqueue-many',
   'claim',
+  'controlled-claim',
+  'controls-reconcile',
   'settle',
   'release',
   'heartbeat',

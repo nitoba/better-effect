@@ -62,7 +62,14 @@ describe('Redis key layout', () => {
       layout.flowOutbox,
       layout.flowOutboxSequence,
       layout.flowOutboxEntry('entry-1'),
-      layout.flowLayout
+      layout.flowLayout,
+      layout.controlsIndex,
+      layout.controls('mail'),
+      layout.controlsActive('mail'),
+      layout.controlsKeyCounts('mail'),
+      layout.controlsPermits('mail'),
+      layout.controlsRate('mail'),
+      layout.controlsRotation('mail')
     ]
 
     expect(new Set(keys.map(redisHashSlot)).size).toBe(1)

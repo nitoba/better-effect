@@ -11,6 +11,7 @@ import { Layer, type ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 import {
   JobStore,
+  ControlsRevisionMismatchError,
   JobStoreWakeAbortedError,
   JobStoreFailure,
   JobNotFoundError,
@@ -35,6 +36,18 @@ import {
   type LostLease,
   type JobStore as J,
   type JobStoreDescriptor
+} from 'better-effect-mq'
+import type {
+  AnyQueueControlsRegistry,
+  ControlsReconcileOptions,
+  ControlsReconcileReport,
+  QueueControlsRecord,
+  ControlledClaimRequest,
+  ControlledClaimResult,
+  ControlledSettleRequest,
+  ControlledReleaseRequest,
+  ControlledRecoverStalledRequest,
+  ControlledCancelRequest
 } from 'better-effect-mq'
 import { RedisClient } from './client'
 import { RedisConnectionError, RedisLayoutError } from './errors'
@@ -73,7 +86,8 @@ const tagged = new Set([
   'UnsupportedJobStoreOperationError',
   'JobNotRetryableError',
   'JobNotCancellableError',
-  'JobNotPromotableError'
+  'JobNotPromotableError',
+  'ControlsRevisionMismatchError'
 ])
 const retryableRedisFailure = (cause: unknown): boolean => {
   if (cause instanceof RedisConnectionError) return true
@@ -244,7 +258,8 @@ const enqueueFields = [
   'timeoutMs',
   'now',
   'job',
-  'identity'
+  'identity',
+  'dispatchKey'
 ] as const
 const claimFields = ['queue', 'accepted', 'limit', 'workerId', 'leaseDurationMs', 'now'] as const
 const settleFields = ['jobId', 'leaseToken', 'outcome', 'now', 'startedAt'] as const
@@ -400,6 +415,12 @@ type MutationKeys = {
   readonly wake: string
   readonly wakeChannel: string
   readonly queueControls: string
+  readonly control: string
+  readonly controlPermits: string
+  readonly controlKeyCounts: string
+  readonly controlRate: string
+  readonly controlRotation: string
+  readonly controlActive: string
   readonly active: string
   readonly sequenceJobs: string
   readonly revision: string
@@ -489,7 +510,7 @@ const canonicalJson = (value: unknown): string => {
 
 const jobStates = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const
 
-/** The v1 descriptor is declarative; wake notifications remain an optimization. */
+/** The core descriptor remains v1; controls are advertised as the v3 extension. */
 const redisDescriptor: JobStoreDescriptor = Object.freeze({
   protocolVersion: 1,
   adapter: 'redis',
@@ -636,6 +657,12 @@ class RedisJobStoreImplementation {
       wake: this.layout.wake,
       wakeChannel: this.layout.wakeChannel,
       queueControls: this.layout.queues,
+      control: this.layout.controls(record.queue),
+      controlPermits: this.layout.controlsPermits(record.queue),
+      controlKeyCounts: this.layout.controlsKeyCounts(record.queue),
+      controlRate: this.layout.controlsRate(record.queue),
+      controlRotation: this.layout.controlsRotation(record.queue),
+      controlActive: this.layout.controlsActive(record.queue),
       active: this.layout.active,
       sequenceJobs: this.layout.sequenceJobs,
       revision: `${this.layout.job(record.id)}:revision`,
@@ -693,10 +720,16 @@ class RedisJobStoreImplementation {
       readonly settlementToken?: string
       readonly settlementDigest?: string
       readonly expectedRevision?: number
+      readonly controlled?: {
+        readonly revision: number
+      }
       readonly scriptName?: Parameters<typeof runScript>[1]
     } = {}
   ): Promise<MutationResult> {
-    const scriptName = mutation.scriptName ?? (previous === undefined ? 'enqueue' : 'claim')
+    const scriptName =
+      mutation.controlled === undefined
+        ? (mutation.scriptName ?? (previous === undefined ? 'enqueue' : 'claim'))
+        : 'settle'
     const fields = encodeJobRecord(record)
     const prior = previous === undefined ? {} : encodeJobRecord(previous)
     const keys = this.mutationKeys(record, previous)
@@ -740,7 +773,13 @@ class RedisJobStoreImplementation {
           }),
       ...(mutation.expectedRevision === undefined
         ? {}
-        : { expectedRevision: String(mutation.expectedRevision) })
+        : { expectedRevision: String(mutation.expectedRevision) }),
+      ...(mutation.controlled === undefined
+        ? {}
+        : {
+            controlled: true,
+            controlledRevision: String(mutation.controlled.revision)
+          })
     }
     const keyList = uniqueKeys(
       Object.entries(keys)
@@ -749,6 +788,13 @@ class RedisJobStoreImplementation {
     )
     const reply = await this.script(scriptName, keyList, [JSON.stringify(item)], true)
     if (reply.status === 'error') {
+      if (reply.operation === 'MQ_CONTROLS_REVISION')
+        throw new ControlsRevisionMismatchError({
+          queue: record.queue as never,
+          expected: mutation.controlled?.revision ?? 0,
+          actual:
+            reply.values[0] === undefined ? undefined : redisNumber(reply.values[0], 'revision')
+        })
       if (reply.operation === 'MQ_SETTLEMENT_CONFLICT' && mutation.settlementToken !== undefined)
         throw new SettlementConflictError({
           jobId: record.id as never,
@@ -864,18 +910,248 @@ class RedisJobStoreImplementation {
     }
     return out
   }
+  private decodeControls(fields: Record<string, string>): QueueControlsRecord {
+    const queue = makeQueueName(fields.queue)
+    if (Result.isError(queue)) throw queue.error
+    if (fields.enabled !== '0' && fields.enabled !== '1')
+      throw new JobStoreFailure({
+        operation: 'controls',
+        retryable: false,
+        message: 'Redis controls enabled flag is invalid'
+      })
+    const group = text(fields.group, 'group')
+    const revision = redisNumber(fields.revision ?? '', 'controls.revision')
+    const createdAtMs = redisNumber(fields.createdAtMs ?? '', 'controls.createdAtMs')
+    const updatedAtMs = redisNumber(fields.updatedAtMs ?? '', 'controls.updatedAtMs')
+    const positiveOptional = (field: string): number | undefined => {
+      if (fields[field] === undefined) return undefined
+      const value = redisNumber(fields[field]!, `controls.${field}`)
+      if (value === 0)
+        throw new JobStoreFailure({
+          operation: 'controls',
+          retryable: false,
+          message: `Redis controls ${field} must be positive`
+        })
+      return value
+    }
+    const rateMax = positiveOptional('rateMax')
+    const rateDurationMs = positiveOptional('rateDurationMs')
+    if ((rateMax === undefined) !== (rateDurationMs === undefined))
+      throw new JobStoreFailure({
+        operation: 'controls',
+        retryable: false,
+        message: 'Redis controls rate window is incomplete'
+      })
+    return Object.freeze({
+      queue: queue.value,
+      group,
+      enabled: fields.enabled === '1',
+      revision,
+      globalConcurrency: positiveOptional('globalConcurrency'),
+      perKeyConcurrency: positiveOptional('perKeyConcurrency'),
+      rateLimit:
+        rateMax === undefined || rateDurationMs === undefined
+          ? undefined
+          : Object.freeze({ max: rateMax, durationMs: rateDurationMs }),
+      createdAtMs,
+      updatedAtMs
+    })
+  }
+  private async readControls(queue: string): Promise<QueueControlsRecord | undefined> {
+    const fields = hashReply(await this.command(['HGETALL', this.layout.controls(queue)]))
+    return Object.keys(fields).length === 0 ? undefined : this.decodeControls(fields)
+  }
+  private async assertControlRevision(
+    queue: string,
+    expected: number
+  ): Promise<QueueControlsRecord> {
+    const record = await this.readControls(queue)
+    if (record === undefined || !record.enabled || record.revision !== expected)
+      throw new ControlsRevisionMismatchError({
+        queue: queue as never,
+        expected,
+        actual: record?.revision
+      })
+    return record
+  }
+  private controlMutationKeys(queue: string) {
+    return {
+      control: this.layout.controls(queue),
+      controlsIndex: this.layout.controlsIndex,
+      wake: this.layout.wake,
+      queueControls: this.layout.queues,
+      wakeChannel: this.layout.wakeChannel
+    }
+  }
+  private controlKeys(queue: string) {
+    return {
+      control: this.layout.controls(queue),
+      permits: this.layout.controlsPermits(queue),
+      keyCounts: this.layout.controlsKeyCounts(queue),
+      rate: this.layout.controlsRate(queue),
+      rotation: this.layout.controlsRotation(queue),
+      controlActive: this.layout.controlsActive(queue)
+    }
+  }
+  async getControls(request: {
+    readonly queue: import('better-effect-mq').QueueName
+  }): Promise<Op<QueueControlsRecord | undefined>> {
+    try {
+      const queue = makeQueueName(request.queue)
+      if (Result.isError(queue)) throw queue.error
+      return ok(await this.readControls(queue.value))
+    } catch (cause) {
+      return fail('getControls', cause)
+    }
+  }
+  async get(
+    queue: import('better-effect-mq').QueueName
+  ): Promise<Op<QueueControlsRecord | undefined>> {
+    return this.getControls({ queue })
+  }
+  async reconcile(
+    registry: AnyQueueControlsRegistry,
+    options: ControlsReconcileOptions = {}
+  ): Promise<Op<ControlsReconcileReport>> {
+    try {
+      if (registry === null || typeof registry !== 'object' || !Array.isArray(registry.controls))
+        throw new JobDefinitionError({ field: 'registry', message: 'must be a controls registry' })
+      const group = text(registry.group, 'registry.group')
+      const removal = options.removal ?? 'warn'
+      if (removal !== 'ignore' && removal !== 'warn' && removal !== 'disable')
+        throw new JobDefinitionError({
+          field: 'removal',
+          message: 'must be ignore, warn, or disable'
+        })
+      const requested = new Set<string>()
+      const created: QueueControlsRecord[] = []
+      const updated: QueueControlsRecord[] = []
+      const unchanged: QueueControlsRecord[] = []
+      const disabled: QueueControlsRecord[] = []
+      const warnings: string[] = []
+      const now = Date.now()
+      for (const [index, definition] of registry.controls.entries()) {
+        const queue = makeQueueName(definition?.queue)
+        if (Result.isError(queue))
+          throw new JobDefinitionError({
+            field: `controls[${index}].queue`,
+            message: queue.error.message
+          })
+        if (requested.has(queue.value))
+          throw new JobDefinitionError({ field: 'controls', message: 'contains a duplicate queue' })
+        requested.add(queue.value)
+        const optionsValue = definition.options
+        const positiveOptional = (value: unknown, field: string): number | undefined =>
+          value === undefined ? undefined : number(value, field, true)
+        const rateMax = optionsValue.rateLimit?.max
+        const rateDurationMs = optionsValue.rateLimit?.durationMs
+        if ((rateMax === undefined) !== (rateDurationMs === undefined))
+          throw new JobDefinitionError({
+            field: 'rateLimit',
+            message: 'must contain max and durationMs'
+          })
+        const body = {
+          mode: 'upsert',
+          queue: queue.value,
+          group,
+          enabled: true,
+          now,
+          globalConcurrency: positiveOptional(optionsValue.globalConcurrency, 'globalConcurrency'),
+          perKeyConcurrency: positiveOptional(optionsValue.perKeyConcurrency, 'perKeyConcurrency'),
+          rateMax: positiveOptional(rateMax, 'rateLimit.max'),
+          rateDurationMs: positiveOptional(rateDurationMs, 'rateLimit.durationMs'),
+          keys: this.controlMutationKeys(queue.value)
+        }
+        const reply = await this.script(
+          'controls-reconcile',
+          Object.values(body.keys),
+          [JSON.stringify(body)],
+          true
+        )
+        if (reply.status === 'error')
+          throw new JobStoreFailure({
+            operation: 'reconcile',
+            retryable: false,
+            message: `Redis controls reconcile rejected the request: ${reply.operation}`
+          })
+        if (reply.values.length !== 2 || typeof reply.values[1] !== 'string')
+          throw new JobStoreFailure({
+            operation: 'reconcile',
+            retryable: false,
+            message: 'Redis controls reconcile returned an invalid record'
+          })
+        const record = this.decodeControls(JSON.parse(reply.values[1]) as Record<string, string>)
+        if (reply.values[0] === 'created') created.push(record)
+        else if (reply.values[0] === 'updated') updated.push(record)
+        else unchanged.push(record)
+      }
+      const indexed = stringsReply(await this.command(['SMEMBERS', this.layout.controlsIndex]))
+      for (const queue of indexed) {
+        if (requested.has(queue)) continue
+        if (removal === 'warn')
+          warnings.push(`controls for queue "${queue}" are not present in the registry`)
+        if (removal !== 'disable') continue
+        const current = await this.readControls(queue)
+        if (current === undefined || !current.enabled) continue
+        const body = { mode: 'disable', queue, now, keys: this.controlMutationKeys(queue) }
+        const reply = await this.script(
+          'controls-reconcile',
+          Object.values(body.keys),
+          [JSON.stringify(body)],
+          true
+        )
+        if (reply.status === 'error')
+          throw new JobStoreFailure({
+            operation: 'reconcile',
+            retryable: false,
+            message: `Redis controls disable rejected the request: ${reply.operation}`
+          })
+        if (reply.values.length !== 2 || typeof reply.values[1] !== 'string')
+          throw new JobStoreFailure({
+            operation: 'reconcile',
+            retryable: false,
+            message: 'Redis controls disable returned an invalid record'
+          })
+        disabled.push(this.decodeControls(JSON.parse(reply.values[1]) as Record<string, string>))
+      }
+      const records: QueueControlsRecord[] = []
+      for (const queue of stringsReply(
+        await this.command(['SMEMBERS', this.layout.controlsIndex])
+      )) {
+        const record = await this.readControls(queue)
+        if (record !== undefined) records.push(record)
+      }
+      return ok({
+        created: Object.freeze(created),
+        updated: Object.freeze(updated),
+        unchanged: Object.freeze(unchanged),
+        disabled: Object.freeze(disabled),
+        warnings: Object.freeze(warnings),
+        records: Object.freeze(records)
+      })
+    } catch (cause) {
+      return fail('reconcile', cause)
+    }
+  }
   private async transition(
     operation: string,
     request: unknown,
     allowed: readonly string[],
-    command: (r: JobRecord) => ResultType<JobTransition, any>
+    command: (r: JobRecord) => ResultType<JobTransition, any>,
+    controlledRevision?: number
   ): Promise<Op<JobTransition>> {
     try {
-      const x = requireObject(request, 'request', allowed)
+      const x = requireObject(
+        request,
+        'request',
+        controlledRevision === undefined ? allowed : [...allowed, 'controlsRevision']
+      )
       const id = makeJobId(x.jobId)
       if (Result.isError(id)) return Result.err(id.error) as Op<JobTransition>
       const current = await this.read(id.value)
       if (current === undefined) throw new JobNotFoundError({ jobId: id.value })
+      if (controlledRevision !== undefined)
+        await this.assertControlRevision(current.queue, controlledRevision)
       const currentRevision = await this.revision(id.value)
       const next = command(current)
       if (Result.isError(next)) throw next.error
@@ -885,7 +1161,10 @@ class RedisJobStoreImplementation {
         scriptName:
           operation === 'requestCancellation'
             ? 'cancel'
-            : (operation as Parameters<typeof runScript>[1])
+            : (operation as Parameters<typeof runScript>[1]),
+        ...(controlledRevision === undefined
+          ? {}
+          : { controlled: { revision: controlledRevision } })
       })
       if (isAlreadyAppliedMutation(mutation))
         throw new JobStoreFailure({
@@ -1095,6 +1374,9 @@ class RedisJobStoreImplementation {
         const record = makeJobRecord({
           id,
           ...i,
+          ...(x.dispatchKey === undefined
+            ? {}
+            : { dispatchKey: text(x.dispatchKey, 'dispatchKey') }),
           state: runAt <= now ? 'waiting' : 'delayed',
           payload: x.payload as never,
           metadata: (x.metadata === undefined ? {} : x.metadata) as never,
@@ -1273,6 +1555,7 @@ class RedisJobStoreImplementation {
         wake: this.layout.wake,
         wakeChannel: this.layout.wakeChannel,
         queueControls: this.layout.queues,
+        control: this.layout.controls(q.value),
         byQueue: this.layout.byQueue(q.value),
         byStateWaiting: this.layout.byState('waiting'),
         byStateDelayed: this.layout.byState('delayed'),
@@ -1367,9 +1650,178 @@ class RedisJobStoreImplementation {
       return fail('claim', cause)
     }
   }
-  async settle(request: J.SettleRequest): Promise<Op<J.SettlementResult>> {
+  async claimControlled(request: ControlledClaimRequest): Promise<Op<ControlledClaimResult>> {
     try {
-      const x = requireObject(request, 'request', settleFields)
+      const x = requireObject(request, 'request', [...claimFields, 'controlsRevision'])
+      const q = makeQueueName(x.queue)
+      const w = makeWorkerId(x.workerId)
+      if (Result.isError(q)) throw q.error
+      if (Result.isError(w)) throw w.error
+      const now = number(x.now, 'now')
+      const limit = number(x.limit, 'limit', true)
+      const duration = number(x.leaseDurationMs, 'leaseDurationMs', true)
+      const controlsRevision = number(x.controlsRevision, 'controlsRevision', true)
+      if (limit > MAX_CLAIM_LIMIT)
+        throw new JobDefinitionError({ field: 'limit', message: 'must be at most 1024' })
+      const rawAccepted = requireArray(x.accepted, 'accepted')
+      if (rawAccepted.length > MAX_ACCEPTED_IDENTITIES)
+        throw new JobDefinitionError({
+          field: 'accepted',
+          message: 'must contain at most 2048 identities'
+        })
+      const accepted = [] as ReturnType<typeof identity>[]
+      const acceptedKeys = new Set<string>()
+      for (const value of rawAccepted) {
+        const checked = identity(value, 'accepted')
+        const key = `${checked.name}\u0000${checked.version}`
+        if (!acceptedKeys.has(key)) {
+          acceptedKeys.add(key)
+          accepted.push(checked)
+        }
+      }
+      if (accepted.length * (limit + 256) > MAX_CLAIM_WORK)
+        throw new JobDefinitionError({
+          field: 'accepted',
+          message: 'claim workload exceeds the bounded limit'
+        })
+      if (now > Number.MAX_SAFE_INTEGER - duration)
+        throw new JobDefinitionError({
+          field: 'leaseDurationMs',
+          message: 'lease expiry exceeds safe integer range'
+        })
+      await this.assertControlRevision(q.value, controlsRevision)
+      const baseline = await this.baseline()
+      const tokens = Array.from({ length: limit }, () => randomUUID())
+      const identities = accepted.map((item) => ({
+        name: item.name,
+        version: item.version,
+        waiting: this.layout.waiting(q.value, item.name, item.version),
+        delayed: this.layout.delayed(q.value, item.name, item.version)
+      }))
+      const control = this.controlKeys(q.value)
+      const keys = {
+        active: this.layout.active,
+        counts: this.layout.counts,
+        wake: this.layout.wake,
+        wakeChannel: this.layout.wakeChannel,
+        queueControls: this.layout.queues,
+        byStateWaiting: this.layout.byState('waiting'),
+        byStateDelayed: this.layout.byState('delayed'),
+        byStateActive: this.layout.byState('active'),
+        ...control
+      }
+      const discoveryLimit = Math.min(MAX_CLAIM_DISCOVERY_SCAN, Math.max(128, limit))
+      const discovered = await this.discoverClaimKeys(
+        identities,
+        discoveryLimit,
+        Math.max(128, Math.min(10_000, limit * 4))
+      )
+      const keyList = uniqueKeys([
+        ...Object.values(keys),
+        ...identities.flatMap((item) => [item.waiting, item.delayed]),
+        ...Object.values(discovered.jobs),
+        ...Object.values(discovered.revisions),
+        ...Object.values(discovered.settlements)
+      ])
+      const body = {
+        mode: 'controlled-claim',
+        keys,
+        identities,
+        queue: q.value,
+        workerId: w.value,
+        tokens,
+        controlsRevision,
+        jobPrefix: `${this.layout.base}:job:`,
+        jobKeys: discovered.jobs,
+        revisionKeys: discovered.revisions,
+        settlementKeys: discovered.settlements,
+        waitingScanLimit: discoveryLimit,
+        promotionBudget: Math.max(128, Math.min(10_000, limit * 4)),
+        now,
+        limit,
+        leaseDuration: duration
+      }
+      if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_CLAIM_BODY_BYTES)
+        throw new JobDefinitionError({
+          field: 'accepted',
+          message: 'claim request exceeds its bounded size'
+        })
+      const reply = await this.script('controlled-claim', keyList, [JSON.stringify(body)], true)
+      if (reply.status === 'error') {
+        if (reply.operation === 'MQ_CONTROLS_REVISION')
+          throw new ControlsRevisionMismatchError({
+            queue: q.value,
+            expected: controlsRevision,
+            actual:
+              reply.values[0] === undefined
+                ? undefined
+                : redisNumber(reply.values[0], 'controlsRevision')
+          })
+        throw new JobStoreFailure({
+          operation: 'claimControlled',
+          retryable: reply.operation === 'MQ_CLAIM_RETRY',
+          message: `Redis controlled claim rejected the request: ${reply.operation}`
+        })
+      }
+      if (reply.values.length !== 6 || reply.values[0] !== 'applied')
+        throw new JobStoreFailure({
+          operation: 'claimControlled',
+          retryable: false,
+          message: 'Redis controlled claim returned an invalid reply'
+        })
+      const jobs = decodeActiveJobReplies(reply.values[1], 'claimControlled.jobs')
+      const nextRunAtMs =
+        reply.values[2] === null || reply.values[2] === undefined
+          ? undefined
+          : redisNumber(reply.values[2], 'nextRunAtMs')
+      const nextEligibleAtMs =
+        reply.values[3] === null || reply.values[3] === undefined
+          ? undefined
+          : redisNumber(reply.values[3], 'nextEligibleAtMs')
+      const wakeVersion = redisNumber(reply.values[4], 'wakeVersion')
+      const reason =
+        reply.values[5] === null || reply.values[5] === undefined ? undefined : reply.values[5]
+      if (
+        reason !== undefined &&
+        (typeof reason !== 'string' ||
+          ![
+            'empty',
+            'paused',
+            'global-concurrency',
+            'rate-limited',
+            'per-key-concurrency'
+          ].includes(reason))
+      )
+        throw new JobStoreFailure({
+          operation: 'claimControlled',
+          retryable: false,
+          message: 'Redis controlled claim returned an invalid reason'
+        })
+      const tokenBaseline = {
+        ...baseline,
+        [q.value]: Math.max(baseline[q.value] ?? 0, wakeVersion)
+      }
+      return ok({
+        jobs,
+        wakeToken: this.token(tokenBaseline),
+        nextRunAtMs,
+        nextEligibleAtMs,
+        reason: reason as ControlledClaimResult['reason']
+      })
+    } catch (cause) {
+      return fail('claimControlled', cause)
+    }
+  }
+  async settle(
+    request: J.SettleRequest,
+    controlledRevision?: number
+  ): Promise<Op<J.SettlementResult>> {
+    try {
+      const x = requireObject(
+        request,
+        'request',
+        controlledRevision === undefined ? settleFields : [...settleFields, 'controlsRevision']
+      )
       const token = makeLeaseToken(x.leaseToken)
       if (Result.isError(token)) throw token.error
       const id = makeJobId(x.jobId)
@@ -1377,6 +1829,8 @@ class RedisJobStoreImplementation {
       const digest = canonicalJson(x.outcome)
       const current = await this.read(id.value)
       if (!current) throw new JobNotFoundError({ jobId: id.value })
+      if (controlledRevision !== undefined)
+        await this.assertControlRevision(current.queue, controlledRevision)
       const currentRevision = await this.revision(id.value)
       const settled = hashReply(
         await this.command(['HGETALL', `${this.layout.job(id.value)}:settlement`])
@@ -1430,7 +1884,10 @@ class RedisJobStoreImplementation {
         scriptName: 'settle',
         attempt: next.value.attempt,
         settlementToken: token.value,
-        settlementDigest: canonicalJson(x.outcome)
+        settlementDigest: canonicalJson(x.outcome),
+        ...(controlledRevision === undefined
+          ? {}
+          : { controlled: { revision: controlledRevision } })
       })
       if (isAlreadyAppliedMutation(mutation))
         return ok({
@@ -1449,6 +1906,9 @@ class RedisJobStoreImplementation {
       return fail('settle', cause)
     }
   }
+  async settleControlled(request: ControlledSettleRequest): Promise<Op<J.SettlementResult>> {
+    return this.settle(request, number(request.controlsRevision, 'controlsRevision', true))
+  }
   async release(request: J.ReleaseRequest): Promise<Op<JobTransition>> {
     return this.transition('release', request, leaseFields, (r) => {
       const x = requireObject(request, 'request', leaseFields)
@@ -1461,6 +1921,24 @@ class RedisJobStoreImplementation {
         now: number(x.now, 'now')
       })
     })
+  }
+  async releaseControlled(request: ControlledReleaseRequest): Promise<Op<JobTransition>> {
+    return this.transition(
+      'release',
+      request,
+      leaseFields,
+      (record) => {
+        const token = makeLeaseToken(request.leaseToken)
+        if (Result.isError(token)) return Result.err(token.error) as ResultType<JobTransition, any>
+        return reduceJob(record, {
+          type: 'release',
+          jobId: record.id,
+          leaseToken: token.value,
+          now: number(request.now, 'now')
+        })
+      },
+      number(request.controlsRevision, 'controlsRevision', true)
+    )
   }
   async heartbeat(request: J.HeartbeatRequest): Promise<Op<J.HeartbeatResult>> {
     try {
@@ -1555,7 +2033,10 @@ class RedisJobStoreImplementation {
       return fail('heartbeat', cause)
     }
   }
-  async recoverStalled(request: J.RecoverStalledRequest): Promise<Op<J.RecoverStalledResult>> {
+  async recoverStalled(
+    request: J.RecoverStalledRequest,
+    controlledRevision?: number
+  ): Promise<Op<J.RecoverStalledResult>> {
     try {
       const x = requireObject(request, 'request', recoverFields),
         now = number(x.now, 'now'),
@@ -1564,6 +2045,11 @@ class RedisJobStoreImplementation {
       if (limit > MAX_RECOVER_LIMIT)
         throw new JobDefinitionError({ field: 'limit', message: 'must be at most 10000' })
       const transitions: JobTransition[] = []
+      if (controlledRevision !== undefined && x.queue !== undefined) {
+        const queue = makeQueueName(x.queue)
+        if (Result.isError(queue)) throw queue.error
+        await this.assertControlRevision(queue.value, controlledRevision)
+      }
       let scanned = 0
       while (transitions.length < limit && scanned < MAX_RECOVER_SCAN) {
         const batchSize = Math.min(128, MAX_RECOVER_SCAN - scanned)
@@ -1707,11 +2193,20 @@ class RedisJobStoreImplementation {
               t.value.record,
               record,
               t.value.attempt === undefined
-                ? { scriptName: 'recover-stalled', expectedRevision: revision }
+                ? {
+                    scriptName: 'recover-stalled',
+                    expectedRevision: revision,
+                    ...(controlledRevision === undefined
+                      ? {}
+                      : { controlled: { revision: controlledRevision } })
+                  }
                 : {
                     scriptName: 'recover-stalled',
                     attempt: t.value.attempt,
-                    expectedRevision: revision
+                    expectedRevision: revision,
+                    ...(controlledRevision === undefined
+                      ? {}
+                      : { controlled: { revision: controlledRevision } })
                   }
             )
             if (isAlreadyAppliedMutation(mutation))
@@ -1735,6 +2230,12 @@ class RedisJobStoreImplementation {
     } catch (cause) {
       return fail('recoverStalled', cause)
     }
+  }
+  async recoverStalledControlled(
+    request: ControlledRecoverStalledRequest
+  ): Promise<Op<J.RecoverStalledResult>> {
+    const { controlsRevision: _controlsRevision, ...recovery } = request
+    return this.recoverStalled(recovery, number(request.controlsRevision, 'controlsRevision', true))
   }
   private token(baseline: Record<string, number>): J.WakeToken {
     return `redis-wake-v1-${Buffer.from(JSON.stringify(baseline)).toString('base64url')}` as J.WakeToken
@@ -2238,6 +2739,21 @@ class RedisJobStoreImplementation {
       const x = requireObject(request, 'request', idFields)
       return reduceJob(r, { type: 'cancel', jobId: r.id, now: number(x.now, 'now') })
     })
+  }
+  async cancelControlled(request: ControlledCancelRequest): Promise<Op<JobTransition>> {
+    const revision = number(request.controlsRevision, 'controlsRevision', true)
+    return this.transition(
+      'cancel',
+      request,
+      idFields,
+      (record) =>
+        reduceJob(record, {
+          type: record.state === 'active' ? 'request-cancellation' : 'cancel',
+          jobId: record.id,
+          now: number(request.now, 'now')
+        }),
+      revision
+    )
   }
   async requestCancellation(request: J.RequestCancellationRequest): Promise<Op<JobTransition>> {
     return this.transition('requestCancellation', request, idFields, (r) => {

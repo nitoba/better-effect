@@ -9,8 +9,10 @@ local ok, value = pcall(cjson.decode, raw or "")
 if ok and type(value) == "table" then decoded = value end
 local p = decoded
 local replyName = p and p.reply or "redis"
-local function errorReply(code)
-  return {"error", tostring(code)}
+local function errorReply(code, ...)
+  local result = {"error", tostring(code)}
+  for _, value in ipairs({...}) do result[#result + 1] = tostring(value) end
+  return result
 end
 local function okReply(status, ...)
   local result = {"ok", replyName, status}
@@ -54,7 +56,7 @@ end
 local function validRecord(record)
   if type(record) ~= "table" then return false end
   local knownFields = {
-    id=true, name=true, version=true, queue=true, state=true, payload=true, metadata=true,
+    id=true, name=true, version=true, queue=true, dispatchKey=true, state=true, payload=true, metadata=true,
     priority=true, runAt=true, orderingSequence=true, attemptsMax=true, attemptsMade=true,
     attemptSequence=true, deliveryCount=true, stalledCount=true, backoff=true, timeoutMs=true,
     idempotencyKey=true, createdAt=true, updatedAt=true, processedAt=true, finishedAt=true,
@@ -74,6 +76,7 @@ local function validRecord(record)
   for _, name in ipairs({"id", "name", "queue", "payload", "metadata"}) do
     if type(record[name]) ~= "string" then return false end
   end
+  if record.dispatchKey ~= nil and type(record.dispatchKey) ~= "string" then return false end
   if not validJson(record.payload) or not validJson(record.metadata) then return false end
   for _, name in ipairs({"attemptSequence", "timeoutMs", "processedAt", "finishedAt", "leaseExpiresAt", "cancellationRequestedAt"}) do
     if record[name] ~= nil and safeNumber(record[name]) == nil then return false end
@@ -221,6 +224,24 @@ local function addSchedule(item, record)
     redis.call("ZADD", keys.active, safeNumber(record.leaseExpiresAt), record.id)
   end
 end
+local function releaseControlledPermit(item)
+  if not item.controlled or item.previousState ~= "active" or item.record.state == "active" then return nil end
+  local keys = item.keys
+  local encodedId = string.match(keys.job, "job:(.+)$")
+  local permit = encodedId and redis.call("HGET", keys.controlPermits, encodedId)
+  if not permit then return nil end
+  local separator = string.find(permit, "\000", 1, true)
+  if not separator then return "control-corrupt" end
+  local token = string.sub(permit, 1, separator - 1)
+  if token ~= tostring(item.expected.leaseToken or "") then return "conflict" end
+  local dispatchKey = string.sub(permit, separator + 1)
+  local count = safeNumber(redis.call("HGET", keys.controlKeyCounts, dispatchKey) or "0")
+  if not count or count == 0 then return "control-corrupt" end
+  redis.call("HDEL", keys.controlPermits, encodedId)
+  redis.call("SREM", keys.controlActive, encodedId)
+  if count == 1 then redis.call("HDEL", keys.controlKeyCounts, dispatchKey) else redis.call("HINCRBY", keys.controlKeyCounts, dispatchKey, -1) end
+  return nil
+end
 local function setRecord(item, mode)
   local keys, record = item.keys, item.record
   if type(keys) ~= "table" or type(item.queue) ~= "string" or item.queue == "" or
@@ -229,6 +250,12 @@ local function setRecord(item, mode)
   end
   local job = keys.job
   if not validRecord(record) or not keyTypesValid(item) then return "invalid" end
+  if item.controlled then
+    local expected = safeNumber(item.controlledRevision, true)
+    local actual = safeNumber(redis.call("HGET", keys.control or "", "revision") or "0")
+    if not expected or not actual or redis.call("HGET", keys.control or "", "enabled") ~= "1" or actual ~= expected then return "controls-revision:" .. tostring(actual or 0) end
+    if not keyTypeIs(keys.control, "hash") or not keyTypeIs(keys.controlPermits, "hash") or not keyTypeIs(keys.controlKeyCounts, "hash") or not keyTypeIs(keys.controlActive, "set") then return "corrupt" end
+  end
   if mode ~= "enqueue" and item.settlementToken and keys.settlement then
     local existingToken = redis.call("HGET", keys.settlement, "token")
     if existingToken == item.settlementToken then
@@ -247,6 +274,8 @@ local function setRecord(item, mode)
   end
   if not wakeAvailable(item) or not revisionAvailable(item) then return "unsafe" end
   if not countersAvailable(item, mode) then return "corrupt" end
+  local permitResult = releaseControlledPermit(item)
+  if permitResult ~= nil then return permitResult end
   local previousState = item.previousState
   local allocatedSequence = nil
   if mode ~= "enqueue" and previousState ~= record.state and (record.state == "waiting" or record.state == "delayed") then
@@ -384,6 +413,7 @@ end
 if p.mode == "write" then
   local result = setRecord(p, "write")
   if result == "settlement-conflict" then return errorReply("MQ_SETTLEMENT_CONFLICT") end
+  if result:sub(1, 18) == "controls-revision:" then return errorReply("MQ_CONTROLS_REVISION", result:sub(19)) end
   if result == "already" then
     local latest = redis.call("LRANGE", p.keys.attempts, "-1", "-1")
     return okReply("already", redis.call("HGETALL", p.keys.job), latest[1] or "", redis.call("HGET", p.keys.settlement, "attempt") or "")
@@ -392,6 +422,7 @@ if p.mode == "write" then
   if result == "corrupt" then return errorReply("MQ_CORRUPT_COUNTER") end
   if result == "invalid" then return errorReply("MQ_INVALID_ARGUMENT") end
   if result == "conflict" then return errorReply("MQ_CONFLICT") end
+  if result == "control-corrupt" then return errorReply("MQ_CORRUPT_CONTROLS") end
   local id, version, sequence = result:match("^applied:(.*):(%d+):(%d+)$")
   if id then return okReply("applied", id, version, sequence) end
   id, version = result:match("^applied:(.*):(%d+)$")

@@ -119,7 +119,7 @@ end
 local function validJob(job)
   if not keyTypeIs(job, "hash") or redis.call("EXISTS", job) == 0 then return false end
   local knownFields = {
-    id=true, name=true, version=true, queue=true, state=true, payload=true, metadata=true,
+    id=true, name=true, version=true, queue=true, dispatchKey=true, state=true, payload=true, metadata=true,
     priority=true, runAt=true, orderingSequence=true, attemptsMax=true, attemptsMade=true,
     attemptSequence=true, deliveryCount=true, stalledCount=true, backoff=true, timeoutMs=true,
     idempotencyKey=true, createdAt=true, updatedAt=true, processedAt=true, finishedAt=true,
@@ -413,7 +413,7 @@ if #p.identities > MAX_IDENTITIES or #p.identities * (p.limit + p.promotionBudge
   return errorReply("MQ_BATCH_LIMIT")
 end
 if p.now > MAX - p.leaseDuration or #p.tokens < p.limit then return errorReply("MQ_INVALID_ARGUMENT") end
-if not p.jobPrefix or not p.keys.all or not p.keys.active or not p.keys.counts or not p.keys.wake or not p.keys.wakeChannel or not p.keys.queueControls or not p.keys.byStateWaiting or not p.keys.byStateDelayed or not p.keys.byStateActive then
+if not p.jobPrefix or not p.keys.all or not p.keys.active or not p.keys.counts or not p.keys.wake or not p.keys.wakeChannel or not p.keys.queueControls or not p.keys.control or not p.keys.byStateWaiting or not p.keys.byStateDelayed or not p.keys.byStateActive then
   return errorReply("MQ_INVALID_ARGUMENT")
 end
 for index, identity in ipairs(p.identities) do
@@ -427,6 +427,10 @@ for index = 1, p.limit do
 end
 local wakeVersion = integer(redis.call("HGET", p.keys.wake, p.queue) or "0")
 if not wakeVersion or wakeVersion >= MAX then return errorReply("MQ_UNSAFE_INTEGER") end
+local controlledRevision = integer(redis.call("HGET", p.keys.control, "revision") or "0")
+if redis.call("HGET", p.keys.control, "enabled") == "1" then
+  return errorReply("MQ_CONTROLS_REVISION", controlledRevision or 0)
+end
 if redis.call("HGET", p.keys.queueControls, p.queue) == "1" then
   return okReply("applied", {}, cjson.null, wakeVersion)
 end

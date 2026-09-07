@@ -72,7 +72,8 @@ const record = (payload: JobRecord['payload'] = { z: 1, a: ['通知', '\u0000'] 
       leaseExpiresAt: undefined,
       cancellationRequestedAt: undefined,
       result: undefined,
-      failure: undefined
+      failure: undefined,
+      dispatchKey: 'tenant-a'
     })
   )
 
