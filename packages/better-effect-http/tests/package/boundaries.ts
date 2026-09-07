@@ -13,6 +13,7 @@ const coreSourceRoot = join(repositoryRoot, 'packages/better-effect/src')
 const expectedExports = {
   '.': './dist/index.mjs',
   './opentelemetry': './dist/opentelemetry.mjs',
+  './endpoints': './dist/endpoints.mjs',
   './testing': './dist/testing.mjs',
   './package.json': './package.json'
 } as const

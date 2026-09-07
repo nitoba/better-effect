@@ -29,6 +29,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./dist/index.mjs",
+    "./endpoints": "./dist/endpoints.mjs",
     "./opentelemetry": "./dist/opentelemetry.mjs",
     "./testing": "./dist/testing.mjs",
     "./package.json": "./package.json"
