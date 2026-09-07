@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 
-import type { CLASS_TYPE_ID } from '../internal/symbols.js'
+import type { CLASS_TYPE_ID } from './metadata.js'
 
 export type GenericClassAnnotations = Readonly<Record<string, unknown>>
 

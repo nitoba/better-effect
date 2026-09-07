@@ -1,12 +1,4 @@
-export type SchemaIssuePathSegment = string | number | symbol
-export type SchemaIssuePath = readonly SchemaIssuePathSegment[]
-
-/** A bounded, serialization-safe validation issue. */
-export interface SchemaIssue {
-  readonly message: 'Validation failed'
-  readonly code?: string
-  readonly path?: SchemaIssuePath
-}
+import type { SchemaIssue, SchemaIssuePath, SchemaIssuePathSegment } from '../failure.js'
 
 interface DataProperty {
   readonly present: boolean
