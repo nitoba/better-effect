@@ -66,9 +66,10 @@ export interface ValibotAsyncConfiguredAdapter extends SchemaAdapter {
 }
 
 type ValibotConfigure = {
-  (
-    options: { readonly encode: ValibotEncoder; readonly encodeAsync: ValibotAsyncEncoder }
-  ): ValibotAsyncConfiguredAdapter
+  (options: {
+    readonly encode: ValibotEncoder
+    readonly encodeAsync: ValibotAsyncEncoder
+  }): ValibotAsyncConfiguredAdapter
   (options: { readonly encode: ValibotEncoder }): ValibotConfiguredAdapter
   (options: { readonly encodeAsync: ValibotAsyncEncoder }): ValibotAsyncConfiguredAdapter
   (options: ValibotAdapterOptions): SchemaAdapter
@@ -961,11 +962,14 @@ const configured = (options: ValibotAdapterOptions): SchemaAdapter => {
   })
 }
 
-function configure(
-  options: { readonly encode: ValibotEncoder; readonly encodeAsync: ValibotAsyncEncoder }
-): ValibotAsyncConfiguredAdapter
+function configure(options: {
+  readonly encode: ValibotEncoder
+  readonly encodeAsync: ValibotAsyncEncoder
+}): ValibotAsyncConfiguredAdapter
 function configure(options: { readonly encode: ValibotEncoder }): ValibotConfiguredAdapter
-function configure(options: { readonly encodeAsync: ValibotAsyncEncoder }): ValibotAsyncConfiguredAdapter
+function configure(options: {
+  readonly encodeAsync: ValibotAsyncEncoder
+}): ValibotAsyncConfiguredAdapter
 function configure(options: ValibotAdapterOptions): SchemaAdapter
 function configure(options: ValibotAdapterOptions): SchemaAdapter {
   return configured(options)
