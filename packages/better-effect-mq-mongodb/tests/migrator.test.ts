@@ -5,7 +5,7 @@
 
 import { expect, test } from 'bun:test'
 
-import { MongoJobStoreMigrator } from '../src/migrator'
+import { MongoJobEventStoreMigrator, MongoJobStoreMigrator } from '../src/migrator'
 import type { MongoCollection, MongoDb } from '../src/config'
 
 type Document = Record<string, unknown>
@@ -80,5 +80,22 @@ test('MongoDB migration creates the durable controls and outbox layout at versio
   expect(fake.documents.get('better_effect_mq_migrations:layout')).toMatchObject({
     protocolVersion: 1,
     layoutVersion: 4
+  })
+})
+
+test('MongoDB event migration is explicit and records its independent layout marker', async () => {
+  const fake = makeDatabase()
+  await MongoJobStoreMigrator.migrate({ db: fake.db })
+
+  const result = await MongoJobEventStoreMigrator.migrate({ db: fake.db })
+
+  expect(result).toEqual({ version: 1, applied: true })
+  expect(fake.created).toContain('better_effect_mq_job_events')
+  expect(fake.indexed.some((value) => value.startsWith('better_effect_mq_job_events:'))).toBe(true)
+  expect(fake.documents.get('better_effect_mq_migrations:events-layout')).toMatchObject({
+    extension: 'better-effect-mq/events',
+    extensionVersion: 1,
+    protocolVersion: 1,
+    layoutVersion: 1
   })
 })

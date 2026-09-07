@@ -10,7 +10,23 @@ import {
   type MongoJobStoreConfig,
   type MongoJobStoreConnectionConfig
 } from './config'
-import { MongoJobStoreConfigurationError, redactedMongoError } from './errors'
+import {
+  MongoJobStoreConfigurationError,
+  MongoJobStoreTopologyError,
+  redactedMongoError
+} from './errors'
+
+export const assertMongoTransactionTopology = async (db: MongoDb): Promise<void> => {
+  const hello = await db.admin().command({ hello: 1 })
+  if (
+    typeof hello.logicalSessionTimeoutMinutes !== 'number' ||
+    (typeof hello.setName !== 'string' && hello.msg !== 'isdbgrid')
+  )
+    throw new MongoJobStoreTopologyError(
+      'standalone',
+      'MongoDB JobStore requires a replica set (a single-node replica set is sufficient for development) or a transaction-capable mongos deployment'
+    )
+}
 
 export class MongoJobStoreClient extends Service<MongoJobStoreClient>()('MongoJobStoreClient') {
   readonly db: MongoDb

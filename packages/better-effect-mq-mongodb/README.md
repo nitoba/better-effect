@@ -9,6 +9,44 @@ a single-node replica set for local development) or a transaction-capable mongos
 deployment. Sharded deployments are not claimed as officially supported until
 they have dedicated integration coverage.
 
+## Durable job events
+
+The events extension is an explicit migration and Layer, so existing JobStore
+deployments remain compatible until it is enabled:
+
+```ts
+import { Layer } from 'better-effect'
+import { JobEventStore, JobStore } from 'better-effect-mq'
+import { MongoJobEventStore, MongoJobStore } from 'better-effect-mq-mongodb'
+
+await MongoJobStore.migrate({ db })
+await MongoJobEventStore.migrate({ db })
+
+const Live = Layer.merge(
+  MongoJobStore.layer({ db, namespace: 'billing' }),
+  MongoJobEventStore.layer({ db, namespace: 'billing', retention: { count: 100_000 } })
+)
+```
+
+Enqueue, claim, settlement, release, stalled recovery, administrative
+transitions, removal, and queue pause/resume append one safe event in the same
+MongoDB transaction as the JobStore mutation. The cursor counter is scoped to
+the namespace. `read()` is exclusive and cursor-ordered; retention is enforced
+by explicit age/count sweeps, and expired cursors are reported explicitly.
+Change streams only wake `awaitEvents()` waiters; polling remains authoritative
+when notifications are unavailable or a notification is lost.
+
+Named stores use the corresponding event token:
+
+```ts
+const Durable = JobStore.named('durable')
+const DurableEvents = JobEventStore.for(Durable)
+const Live = Layer.merge(
+  MongoJobStore.layerFor(Durable, { db }),
+  MongoJobEventStore.layerFor(DurableEvents, { db })
+)
+```
+
 ## QueueControls protocol v3
 
 The adapter implements durable, revisioned queue controls over separate

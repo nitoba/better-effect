@@ -42,7 +42,9 @@ import {
   type JobStoreDescriptor,
   type QueueName,
   type SettlementOutcome,
-  type FlowChildReport
+  type FlowChildReport,
+  type DurableJobEventInput,
+  type DurableJobEventType
 } from 'better-effect-mq'
 import type {
   AnyQueueControlsRegistry,
@@ -58,16 +60,19 @@ import type {
 } from 'better-effect-mq'
 import { MongoQueueChangeStream } from './change-stream'
 import {
+  MONGODB_EVENTS_LAYOUT_VERSION,
+  MONGODB_EVENTS_PROTOCOL_VERSION,
   metadataEntries,
   metadataFromEntries,
   mongoCollections,
   namespaceId,
   type MongoCollections
 } from './collections'
-import { MongoJobStoreClient } from './client'
+import { assertMongoTransactionTopology, MongoJobStoreClient } from './client'
 import type { MongoJobStoreConfig, MongoJobStoreConnectionConfig, MongoSession } from './config'
-import { MongoJobStoreLayoutError, MongoJobStoreTopologyError } from './errors'
+import { MongoJobStoreLayoutError } from './errors'
 import { MongoJobStoreMigrator } from './migrator'
+import { appendMongoJobEvent } from './event-store'
 
 type Doc = Record<string, unknown>
 type Op<T> = ResultType<T, any>
@@ -605,6 +610,7 @@ class MongoJobStoreImplementation {
   private readonly collections: MongoCollections
   private readonly waiters = new Set<(cause?: unknown) => void>()
   private stream: MongoQueueChangeStream | undefined
+  private eventsAvailable = false
   private disposed = false
   private disposal: Promise<void> | undefined
   constructor(private readonly client: MongoJobStoreClient) {
@@ -617,6 +623,15 @@ class MongoJobStoreImplementation {
     await this.verifyTopology()
     if (this.client.validateLayout)
       await MongoJobStoreMigrator.validate(this.client.db, this.client.collectionPrefix)
+    const eventLayout = await this.collections.migrations.findOne({ _id: 'events-layout' })
+    if (eventLayout !== null) {
+      if (
+        eventLayout.protocolVersion !== MONGODB_EVENTS_PROTOCOL_VERSION ||
+        eventLayout.layoutVersion !== MONGODB_EVENTS_LAYOUT_VERSION
+      )
+        throw new MongoJobStoreLayoutError('MongoDB event layout is incompatible')
+      this.eventsAvailable = eventLayout.extension === 'better-effect-mq/events'
+    }
     if (this.client.notifications === 'auto') {
       this.stream = new MongoQueueChangeStream(this.client.db, this.client.namespace, () =>
         this.wake()
@@ -625,15 +640,7 @@ class MongoJobStoreImplementation {
     }
   }
   private async verifyTopology(): Promise<void> {
-    const hello = await this.client.db.admin().command({ hello: 1 })
-    if (
-      typeof hello.logicalSessionTimeoutMinutes !== 'number' ||
-      (typeof hello.setName !== 'string' && hello.msg !== 'isdbgrid')
-    )
-      throw new MongoJobStoreTopologyError(
-        'standalone',
-        'MongoDB JobStore requires a replica set (a single-node replica set is sufficient for development) or a transaction-capable mongos deployment'
-      )
+    await assertMongoTransactionTopology(this.client.db)
   }
   private async transaction<T>(operation: string, body: TxBody<T>): Promise<Op<T>> {
     if (this.disposed) return fail(operation, new Error('store is disposed'))
@@ -908,6 +915,90 @@ class MongoJobStoreImplementation {
     )
     return result.matchedCount === 1
   }
+  private settlementEventType(attempt: AttemptRecord): DurableJobEventType {
+    switch (attempt.outcome) {
+      case 'completed':
+        return 'job-completed'
+      case 'retried':
+        return 'job-retry-scheduled'
+      case 'failed':
+        return 'job-failed'
+      case 'cancelled':
+        return 'job-cancelled'
+      case 'stalled':
+        return 'job-stalled-recovered'
+      case 'released':
+        return 'job-released'
+    }
+  }
+  private transitionEventType(
+    operation: string,
+    previous: JobRecord,
+    next: JobRecord,
+    attempt: AttemptRecord | undefined
+  ): DurableJobEventType | undefined {
+    if (attempt !== undefined) {
+      if (operation === 'recoverStalled' || operation === 'recoverStalledControlled')
+        return 'job-stalled-recovered'
+      return this.settlementEventType(attempt)
+    }
+    switch (operation) {
+      case 'cancel':
+      case 'cancelControlled':
+        return 'job-cancelled'
+      case 'requestCancellation':
+        return previous.cancellationRequestedAt === next.cancellationRequestedAt
+          ? undefined
+          : 'job-cancel-requested'
+      case 'promote':
+        return 'job-promoted'
+      case 'retry':
+        return 'job-admin-retried'
+      case 'release':
+      case 'releaseControlled':
+        return 'job-released'
+      case 'recoverStalled':
+      case 'recoverStalledControlled':
+        return 'job-stalled-recovered'
+      default:
+        return undefined
+    }
+  }
+  private async appendEvent(
+    session: MongoSession,
+    type: DurableJobEventType,
+    record: JobRecord | undefined,
+    recordedAtMs: number,
+    context: {
+      readonly previous?: JobRecord
+      readonly attempt?: AttemptRecord
+      readonly duplicate?: boolean
+      readonly queue?: string
+    } = {}
+  ): Promise<void> {
+    if (!this.eventsAvailable) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record?.id,
+      queue: (record?.queue ?? context.queue) as never,
+      name: record?.name,
+      version: record?.version,
+      state: record?.state,
+      attempt: context.attempt?.attemptSequence ?? context.attempt?.attempt,
+      delivery:
+        context.attempt?.delivery ??
+        (record?.deliveryCount !== undefined && record.deliveryCount > 0
+          ? record.deliveryCount
+          : undefined),
+      workerId: (record?.leaseOwner ?? context.previous?.leaseOwner) as never,
+      outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
+      failureKind: (record?.failure?.kind ?? context.previous?.failure?.kind) as never,
+      duplicate: context.duplicate,
+      attributes: Object.freeze({})
+    }
+    await appendMongoJobEvent(session, this.client, input)
+  }
   private async transitionInTransaction(
     operation: string,
     session: MongoSession,
@@ -962,6 +1053,17 @@ class MongoJobStoreImplementation {
         request.now,
         session
       )
+    const eventType = this.transitionEventType(
+      operation,
+      found.record,
+      transition.record,
+      transition.attempt
+    )
+    if (eventType !== undefined)
+      await this.appendEvent(session, eventType, transition.record, request.now, {
+        previous: found.record,
+        ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+      })
     await this.notify(transition.record.queue, request.now, session)
     return transition
   }
@@ -1019,6 +1121,12 @@ class MongoJobStoreImplementation {
                 {
                   session
                 }
+              )
+              await this.appendEvent(
+                session,
+                'job-enqueued',
+                changed.value,
+                changed.value.createdAt
               )
               await this.notify(changed.value.queue, changed.value.updatedAt, session)
               output.push({ job: changed.value, duplicate: false })
@@ -1226,7 +1334,9 @@ class MongoJobStoreImplementation {
           )
           const document = this.findOneResult(value)
           if (document === undefined) break
-          jobs.push(decodeJob(document))
+          const job = decodeJob(document)
+          await this.appendEvent(session, 'job-claimed', job, now)
+          jobs.push(job)
         }
         const earliest = await this.collections.jobs.findOne(
           {
@@ -1625,6 +1735,9 @@ class MongoJobStoreImplementation {
             },
             { session }
           )
+          await this.appendEvent(session, 'job-claimed', item.record, now, {
+            previous: item.previous
+          })
         }
         if (planned.length > 0 && rate !== undefined) {
           const updated = await this.collections.rateWindows.updateOne(
@@ -1764,6 +1877,16 @@ class MongoJobStoreImplementation {
         request.now,
         session
       )
+    await this.appendEvent(
+      session,
+      this.settlementEventType(reduced.value.attempt),
+      next,
+      request.now,
+      {
+        previous: found.record,
+        attempt: reduced.value.attempt
+      }
+    )
     await this.notify(next.queue, request.now, session)
     return { record: next, attempt: reduced.value.attempt, status: 'applied' }
   }
@@ -2089,6 +2212,11 @@ class MongoJobStoreImplementation {
               now,
               session
             )
+          if (reduced.value.attempt !== undefined)
+            await this.appendEvent(session, 'job-stalled-recovered', next, now, {
+              previous: found.record,
+              attempt: reduced.value.attempt
+            })
           await this.notify(next.queue, now, session)
           return { ...reduced.value, record: next }
         })
@@ -2163,6 +2291,7 @@ class MongoJobStoreImplementation {
           { namespace: this.client.namespace, jobId: job.value },
           { session }
         )
+        await this.appendEvent(session, 'job-removed', found.record, request.now)
         return { job: found.record, removed: true }
       })
     } catch (cause) {
@@ -2183,6 +2312,11 @@ class MongoJobStoreImplementation {
       const queue = makeQueueName(request.queue)
       if (Result.isError(queue)) throw queue.error
       return this.transaction(paused ? 'pause' : 'resume', async (session) => {
+        const current = await this.collections.queues.findOne(
+          { _id: namespaceId(this.client.namespace, queue.value) },
+          { session }
+        )
+        const changed = current === null || current.paused !== paused
         await this.collections.queues.findOneAndUpdate(
           { _id: namespaceId(this.client.namespace, queue.value) },
           {
@@ -2192,6 +2326,16 @@ class MongoJobStoreImplementation {
           },
           { upsert: true, session }
         )
+        if (changed)
+          await this.appendEvent(
+            session,
+            paused ? 'queue-paused' : 'queue-resumed',
+            undefined,
+            request.now,
+            {
+              queue: queue.value
+            }
+          )
         return { queue: queue.value, paused }
       })
     } catch (cause) {

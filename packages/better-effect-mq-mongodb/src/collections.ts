@@ -8,6 +8,8 @@ export const MONGODB_LAYOUT_VERSION = 4 as const
 export const MONGODB_PROTOCOL_VERSION = 1 as const
 export const MONGODB_FLOW_LAYOUT_VERSION = 1 as const
 export const MONGODB_FLOW_PROTOCOL_VERSION = 2 as const
+export const MONGODB_EVENTS_LAYOUT_VERSION = 1 as const
+export const MONGODB_EVENTS_PROTOCOL_VERSION = 1 as const
 
 export type MongoCollections = ReturnType<typeof mongoCollections>
 
@@ -22,6 +24,7 @@ export const mongoCollections = (db: MongoDb, prefix: string) =>
     permits: db.collection(`${prefix}_controlled_permits`),
     rateWindows: db.collection(`${prefix}_controlled_rate_windows`),
     controlCursors: db.collection(`${prefix}_controlled_cursors`),
+    events: db.collection(`${prefix}_job_events`),
     migrations: db.collection(`${prefix}_migrations`),
     outbox: db.collection(`${prefix}_outbox`),
     flowChildren: db.collection(`${prefix}_flow_children`),
@@ -45,6 +48,8 @@ export const collectionNames = (prefix: string) =>
 
 export const flowCollectionNames = (prefix: string) =>
   Object.freeze([`${prefix}_flow_children`, `${prefix}_flow_outbox`])
+
+export const eventCollectionNames = (prefix: string) => Object.freeze([`${prefix}_job_events`])
 
 export const metadataEntries = (metadata: Readonly<Record<string, string>>) =>
   Object.freeze(

@@ -10,6 +10,8 @@ import {
   flowCollectionNames,
   MONGODB_FLOW_LAYOUT_VERSION,
   MONGODB_FLOW_PROTOCOL_VERSION,
+  MONGODB_EVENTS_LAYOUT_VERSION,
+  MONGODB_EVENTS_PROTOCOL_VERSION,
   MONGODB_LAYOUT_VERSION,
   MONGODB_PROTOCOL_VERSION,
   mongoCollections
@@ -408,6 +410,46 @@ const controlCursorsSchema = validator(
   }
 )
 
+const jobEventsSchema = validator(
+  ['_id', 'namespace', 'cursor', 'recordedAtMs', 'type', 'attributes'],
+  {
+    _id: { bsonType: 'string', minLength: 1 },
+    namespace: { bsonType: 'string', minLength: 1 },
+    cursor: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    recordedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+    type: {
+      enum: [
+        'job-enqueued',
+        'job-claimed',
+        'job-completed',
+        'job-retry-scheduled',
+        'job-failed',
+        'job-cancelled',
+        'job-cancel-requested',
+        'job-released',
+        'job-stalled-recovered',
+        'job-promoted',
+        'job-admin-retried',
+        'job-removed',
+        'queue-paused',
+        'queue-resumed'
+      ]
+    },
+    jobId: { bsonType: 'string', minLength: 1 },
+    queue: { bsonType: 'string', minLength: 1 },
+    name: { bsonType: 'string', minLength: 1 },
+    version: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    state: { enum: ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] },
+    attempt: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    delivery: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    workerId: { bsonType: 'string', minLength: 1 },
+    outcome: { bsonType: 'string', minLength: 1 },
+    failureKind: { bsonType: 'string', minLength: 1 },
+    duplicate: { bsonType: 'bool' },
+    attributes: { bsonType: 'object' }
+  }
+)
+
 const indexes = (prefix: string) => ({
   [`${prefix}_jobs`]: [
     { key: { namespace: 1, id: 1 }, name: 'job_identity', unique: true },
@@ -496,6 +538,16 @@ const indexes = (prefix: string) => ({
   ],
   [`${prefix}_controlled_cursors`]: [
     { key: { namespace: 1, queue: 1 }, name: 'controlled_cursor', unique: true }
+  ]
+})
+
+const eventIndexes = (prefix: string) => ({
+  [`${prefix}_job_events`]: [
+    { key: { namespace: 1, cursor: 1 }, name: 'event_cursor', unique: true },
+    { key: { namespace: 1, recordedAtMs: 1, cursor: 1 }, name: 'event_age' },
+    { key: { namespace: 1, queue: 1, cursor: 1 }, name: 'event_queue' },
+    { key: { namespace: 1, jobId: 1, cursor: 1 }, name: 'event_job' },
+    { key: { namespace: 1, type: 1, cursor: 1 }, name: 'event_type' }
   ]
 })
 
@@ -674,6 +726,65 @@ export const MongoJobStoreMigrator = Object.freeze({
       throw new MongoJobStoreLayoutError(
         'MongoDB namespace layout is incompatible; run MongoJobStore.migrate() explicitly',
         problems
+      )
+  }
+})
+
+export const MongoJobEventStoreMigrator = Object.freeze({
+  async migrate(options: MongoMigrationOptions): Promise<{
+    readonly version: typeof MONGODB_EVENTS_LAYOUT_VERSION
+    readonly applied: boolean
+  }> {
+    const prefix = validateCollectionPrefix(options.collectionPrefix ?? 'better_effect_mq')
+    const db = normalizeMongoJobStoreConfig({ db: options.db, collectionPrefix: prefix }).db
+    const collections = mongoCollections(db, prefix)
+    const base = await collections.migrations.findOne({ _id: 'layout' })
+    if (
+      base?.protocolVersion !== MONGODB_PROTOCOL_VERSION ||
+      base.layoutVersion !== MONGODB_LAYOUT_VERSION
+    )
+      throw new MongoJobStoreLayoutError(
+        'MongoDB JobEventStore requires the current JobStore layout; run MongoJobStore.migrate() first'
+      )
+    const existing = await collections.migrations.findOne({ _id: 'events-layout' })
+    if (existing !== null) {
+      if (
+        existing.protocolVersion !== MONGODB_EVENTS_PROTOCOL_VERSION ||
+        existing.layoutVersion !== MONGODB_EVENTS_LAYOUT_VERSION
+      )
+        throw new MongoJobStoreLayoutError('MongoDB event layout is incompatible', [
+          'incompatible event protocol or layout version'
+        ])
+      return Object.freeze({ version: MONGODB_EVENTS_LAYOUT_VERSION, applied: false })
+    }
+    await ensureCollection(db, `${prefix}_job_events`, jobEventsSchema)
+    for (const [name, definition] of Object.entries(eventIndexes(prefix)))
+      await db.collection(name).createIndexes(definition)
+    await collections.migrations.updateOne(
+      { _id: 'events-layout' },
+      {
+        $set: {
+          extension: 'better-effect-mq/events',
+          extensionVersion: 1,
+          protocolVersion: MONGODB_EVENTS_PROTOCOL_VERSION,
+          layoutVersion: MONGODB_EVENTS_LAYOUT_VERSION,
+          updatedAtMs: Date.now()
+        }
+      },
+      { upsert: true }
+    )
+    return Object.freeze({ version: MONGODB_EVENTS_LAYOUT_VERSION, applied: true })
+  },
+  async validate(db: MongoDb, collectionPrefix = 'better_effect_mq'): Promise<void> {
+    const prefix = validateCollectionPrefix(collectionPrefix)
+    const marker = await mongoCollections(db, prefix).migrations.findOne({ _id: 'events-layout' })
+    if (
+      marker?.protocolVersion !== MONGODB_EVENTS_PROTOCOL_VERSION ||
+      marker.layoutVersion !== MONGODB_EVENTS_LAYOUT_VERSION
+    )
+      throw new MongoJobStoreLayoutError(
+        'MongoDB event layout is incompatible; run MongoJobEventStoreMigrator.migrate() explicitly',
+        ['incompatible event protocol or layout version']
       )
   }
 })

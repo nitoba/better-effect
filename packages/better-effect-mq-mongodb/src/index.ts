@@ -1,8 +1,9 @@
 export { MongoJobStore } from './store'
+export { MongoJobEventStore } from './event-store'
 export { MongoFlowStore } from './flow'
 export { MongoJobScheduleStore } from './schedule'
 export { MongoJobStoreClient } from './client'
-export { MongoJobStoreMigrator } from './migrator'
+export { MongoJobStoreMigrator, MongoJobEventStoreMigrator } from './migrator'
 export { MongoFlowMigrator } from './migrator'
 export { MongoQueueChangeStream } from './change-stream'
 export { MongoOutbox } from './MongoOutbox'
@@ -13,7 +14,10 @@ export {
   MONGODB_PROTOCOL_VERSION,
   MONGODB_FLOW_LAYOUT_VERSION,
   MONGODB_FLOW_PROTOCOL_VERSION,
+  MONGODB_EVENTS_LAYOUT_VERSION,
+  MONGODB_EVENTS_PROTOCOL_VERSION,
   collectionNames,
+  eventCollectionNames,
   flowCollectionNames,
   metadataEntries,
   metadataFromEntries,
@@ -38,6 +42,11 @@ export type {
   MongoSession
 } from './config'
 export type { MongoMigrationOptions } from './migrator'
+export type {
+  MongoJobEventStoreConfig,
+  MongoJobEventStoreConnectionConfig,
+  MongoJobEventStoreInstance
+} from './event-store'
 export type { MongoFlowStoreInstance } from './flow'
 export type {
   MongoOutboxAppendOptions,
