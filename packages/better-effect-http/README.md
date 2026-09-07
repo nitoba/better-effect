@@ -41,3 +41,26 @@ const result = await Runtime.run(HttpClient.layer({ baseURL: 'https://api.exampl
 `http.response(path, { responses })` selects and validates the schema matching
 the final status, preserving the status/data correlation in TypeScript. A
 status that is not declared in `responses` is returned as `HttpStatusError`.
+
+Authentication recovery is opt-in. Keep the session key opaque and derive the
+current credential for each physical send; refresh state is shared only while
+the same key is in flight:
+
+```ts
+import { HttpAuth } from 'better-effect-http'
+
+const authentication = HttpAuth.authentication({
+  credential: currentAccessToken
+})
+const recovery = HttpAuth.refresh({
+  maxReplays: 1,
+  key: currentSessionKey,
+  refresh: refreshSessionToken
+})
+```
+
+Only replayable, bodyless `GET`, `HEAD`, and `OPTIONS` requests are retried by
+the default 401 policy. Unsafe or one-shot requests return a typed
+`HttpAuthRefreshError`; refresh failures are never converted into network
+errors. Configure the refresh endpoint with a client or route that does not
+install this middleware to avoid recursion.
