@@ -369,6 +369,156 @@ const scenarios = (
     }
   },
   {
+    id: 'empty-fanout',
+    name: 'settles an empty fan-out without entering waiting-children',
+    category: 'settlement',
+    body: async (store, scenario) => {
+      const flowId = await startFlow(options, store, scenario, prefix, 'empty', false, [])
+      const snapshot = await unwrap(store.getFlow({ flowId }), scenario, 'empty-fanout')
+      assert(snapshot !== undefined, scenario, 'empty-fanout', 'flow snapshot is required')
+      assert(
+        snapshot.parent.state === 'waiting',
+        scenario,
+        'empty-fanout',
+        'parent must be runnable'
+      )
+      assert(snapshot.parent.flow.pending === 0, scenario, 'empty-fanout', 'pending must be zero')
+      assert(snapshot.children.length === 0, scenario, 'empty-fanout', 'children must be empty')
+    }
+  },
+  {
+    id: 'failfast-settlement',
+    name: 'keeps the first fail-fast failure and cancels the remainder',
+    category: 'settlement',
+    body: async (store, scenario) => {
+      const flowId = await startFlow(options, store, scenario, prefix, 'failfast', true, [
+        'first',
+        'completed',
+        'pending'
+      ])
+      const firstFailure = makeSerializedJobFailure({
+        kind: 'typed',
+        message: 'first failure',
+        retryable: false,
+        recordedAt: 1
+      }).unwrap()
+      const settled = await unwrap(
+        store.recordChildResults({
+          flowId,
+          now: 2,
+          reports: [
+            report(flowId, 'first', 'failed', firstFailure),
+            report(flowId, 'completed', 'completed')
+          ]
+        }),
+        scenario,
+        'failfast-settlement'
+      )
+      assert(settled.parent.state === 'failed', scenario, 'failfast-settlement', 'parent must fail')
+      assert(settled.parentSettled, scenario, 'failfast-settlement', 'parent must settle')
+      assert(
+        settled.parent.flow.pending === 0,
+        scenario,
+        'failfast-settlement',
+        'pending must be zero'
+      )
+      assert(
+        settled.parent.flow.failed === 1,
+        scenario,
+        'failfast-settlement',
+        'one failure is counted'
+      )
+      assert(
+        settled.parent.flow.completed === 1,
+        scenario,
+        'failfast-settlement',
+        'completed report is counted'
+      )
+      assert(
+        settled.parent.flow.cancelled === 1,
+        scenario,
+        'failfast-settlement',
+        'remaining child is cancelled'
+      )
+      assert(
+        settled.parent.failure?.message === 'first failure',
+        scenario,
+        'failfast-settlement',
+        'first failure must be preserved'
+      )
+    }
+  },
+  {
+    id: 'reconcile-observations',
+    name: 'reconciles missing and terminal child observations',
+    category: 'reconciliation',
+    body: async (store, scenario) => {
+      const flowId = await startFlow(options, store, scenario, prefix, 'observations', false, [
+        'missing',
+        'completed',
+        'waiting'
+      ])
+      const reconciled = await unwrap(
+        store.reconcile({
+          flowId,
+          now: 2,
+          observations: [
+            { childKey: 'missing', state: 'missing' },
+            { childKey: 'completed', state: 'completed', result: { ok: true } },
+            { childKey: 'waiting', state: 'waiting' }
+          ]
+        }),
+        scenario,
+        'reconcile-observations'
+      )
+      assert(
+        reconciled.enqueue.map((child) => child.childKey).join('|') === 'missing',
+        scenario,
+        'reconcile-enqueue',
+        'missing child must be re-enqueued'
+      )
+      assert(
+        reconciled.reports.length === 1 && reconciled.reports[0]?.childKey === 'completed',
+        scenario,
+        'reconcile-reports',
+        'terminal observation must become a report'
+      )
+    }
+  },
+  {
+    id: 'cancel-cascade',
+    name: 'cancels pending children and exposes bounded cascade work',
+    category: 'cancellation',
+    body: async (store, scenario) => {
+      const flowId = await startFlow(options, store, scenario, prefix, 'cancel', false, [
+        'one',
+        'two',
+        'three'
+      ])
+      const cancelled = await unwrap(store.cancel({ flowId, now: 2 }), scenario, 'cancel')
+      assert(cancelled.cancelled === 3, scenario, 'cancel', 'all pending children must cancel')
+      assert(cancelled.parentSettled, scenario, 'cancel', 'parent must settle')
+      assert(cancelled.parent.state === 'cancelled', scenario, 'cancel', 'parent must be cancelled')
+      const first = await unwrap(
+        store.reconcile({ flowId, observations: [], now: 3, limit: 2 }),
+        scenario,
+        'cancel-cascade'
+      )
+      assert(first.cascade.length === 2, scenario, 'cascade-bound', 'cascade obeys its limit')
+      await unwrap(
+        store.markCascaded({ flowId, childKeys: first.cascade.map((child) => child.childKey) }),
+        scenario,
+        'cascade-ack'
+      )
+      const remaining = await unwrap(
+        store.reconcile({ flowId, observations: [], now: 4, limit: 2 }),
+        scenario,
+        'cascade-retry'
+      )
+      assert(remaining.cascade.length === 1, scenario, 'cascade-retry', 'one child remains')
+    }
+  },
+  {
     id: 'bounded-cascade',
     name: 'bounds reconciliation and makes cascade work retryable',
     category: 'reconciliation',

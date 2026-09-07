@@ -967,7 +967,8 @@ const appendFlowReport = async (
 }
 
 const settlementOutcomeForAttempt = (
-  attempt: AttemptRecord | undefined
+  attempt: AttemptRecord | undefined,
+  terminalState?: JobRecord['state']
 ): SettlementOutcome | undefined => {
   if (attempt?.outcome === 'completed')
     return attempt.result === undefined
@@ -979,6 +980,8 @@ const settlementOutcomeForAttempt = (
     return attempt.failure === undefined
       ? { type: 'cancelled' }
       : { type: 'cancelled', failure: attempt.failure }
+  if (attempt?.outcome === 'stalled' && terminalState === 'failed' && attempt.failure !== undefined)
+    return { type: 'fail', failure: attempt.failure }
   return undefined
 }
 
@@ -1693,7 +1696,7 @@ class PostgresJobStoreImplementation {
     if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
     if (transition.attempt !== undefined)
       await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
-    const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
+    const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record.state)
     if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
       const parent = await tx.query<Row>(
         `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
@@ -3054,7 +3057,10 @@ class PostgresJobStoreImplementation {
           }
           if (transition.attempt)
             await this.insertAttempt(tx, transition.attempt, r.id, r.leaseOwner)
-          const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
+          const flowOutcome = settlementOutcomeForAttempt(
+            transition.attempt,
+            transition.record.state
+          )
           if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
             const parent = await tx.query<Row>(
               `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,

@@ -314,4 +314,105 @@ describe('SQLite QueueControls protocol v3', () => {
     expect(changed.updated[0]?.revision).toBe(2)
     expect(Result.isError(staleClaim)).toBe(true)
   })
+
+  test('appends terminal child reports for controlled settlements atomically', async () => {
+    const config = makeStore()
+    const store = SqliteJobStore.make(config)
+    const controlled = store as unknown as ControlledJobStoreContract
+    const queue = Queue.define('controlled-flow')
+    const controls = await resolve(
+      controlled.reconcile(
+        QueueControls.registry({
+          group: 'controlled-flow-tests',
+          controls: [QueueControls.define(queue, { globalConcurrency: 1 })]
+        })
+      )
+    )
+    const revision = controls.records[0]!.revision
+    const parent = (flowId: string, childKey: string): string =>
+      JSON.stringify({
+        flowName: 'controlled-flow',
+        flowId,
+        childKey,
+        parentStoreKey: 'controlled-parent',
+        depth: 1
+      })
+    const attachParent = (id: string, flowId: string, childKey: string): void => {
+      config.database
+        .prepare('UPDATE better_effect_mq_jobs SET parent = ? WHERE namespace = ? AND id = ?')
+        .run(parent(flowId, childKey), 'controlled', id)
+    }
+
+    await resolve(enqueue(store, 'controlled-settle', 'controlled-flow'))
+    attachParent('controlled-settle', 'flow-settle', 'settle')
+    const claimed = await resolve(
+      controlled.claimControlled({
+        queue: makeQueueName('controlled-flow').unwrap(),
+        accepted: [identity('controlled-flow')],
+        limit: 1,
+        workerId: makeWorkerId('controlled-worker').unwrap(),
+        leaseDurationMs: 100,
+        now: 1,
+        controlsRevision: revision
+      })
+    )
+    await resolve(
+      controlled.settleControlled({
+        jobId: claimed.jobs[0]!.id,
+        leaseToken: claimed.jobs[0]!.leaseToken,
+        outcome: { type: 'complete', result: { ok: true } },
+        now: 2,
+        controlsRevision: revision
+      })
+    )
+
+    await resolve(enqueue(store, 'controlled-cancel', 'controlled-flow'))
+    attachParent('controlled-cancel', 'flow-cancel', 'cancel')
+    await resolve(
+      controlled.cancelControlled({
+        jobId: makeJobId('controlled-cancel').unwrap(),
+        now: 3,
+        controlsRevision: revision
+      })
+    )
+
+    await resolve(enqueue(store, 'controlled-stalled', 'controlled-flow'))
+    attachParent('controlled-stalled', 'flow-stalled', 'stalled')
+    const stalledClaim = await resolve(
+      controlled.claimControlled({
+        queue: makeQueueName('controlled-flow').unwrap(),
+        accepted: [identity('controlled-flow')],
+        limit: 1,
+        workerId: makeWorkerId('controlled-stalled-worker').unwrap(),
+        leaseDurationMs: 1,
+        now: 4,
+        controlsRevision: revision
+      })
+    )
+    await resolve(
+      controlled.recoverStalledControlled({
+        queue: makeQueueName('controlled-flow').unwrap(),
+        maxStalledCount: 0,
+        limit: 1,
+        now: 5,
+        controlsRevision: revision
+      })
+    )
+
+    const reports = config.database
+      .prepare('SELECT report_json FROM better_effect_mq_flow_outbox ORDER BY row_sequence')
+      .all() as readonly { readonly report_json: string }[]
+    expect(reports.map((row) => JSON.parse(row.report_json).outcome)).toEqual([
+      'completed',
+      'cancelled',
+      'failed'
+    ])
+    expect(JSON.parse(reports[0]!.report_json)).toMatchObject({
+      flowId: 'flow-settle',
+      childKey: 'settle',
+      result: { ok: true }
+    })
+    expect(JSON.parse(reports[2]!.report_json).failure.kind).toBe('stalled')
+    expect(stalledClaim.jobs).toHaveLength(1)
+  })
 })

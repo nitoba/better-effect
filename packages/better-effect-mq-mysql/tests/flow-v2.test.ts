@@ -65,7 +65,8 @@ const childSpec = (flowId: string, childKey: string, storeKey = 'parent-store'):
 
 const createParent = async (
   flowNamespace: string,
-  failFast: boolean
+  failFast: boolean,
+  suffix = 'default'
 ): Promise<{ readonly flowId: string; readonly leaseToken: string }> => {
   const runtime = await Runtime.make(
     MySqlJobStore.layer({ pool: configuredPool(), namespace: flowNamespace, validateSchema: false })
@@ -74,7 +75,7 @@ const createParent = async (
     return await runtime.run(async () => {
       const store = await ServiceRuntime.resolve(JobStore)
       const queue = makeQueueName('flow').unwrap()
-      const name = failFast ? 'flow-fail-fast' : 'flow-continue'
+      const name = `${failFast ? 'flow-fail-fast' : 'flow-continue'}-${suffix}`
       const enqueued = await store.enqueue({
         job: { queue, name, version: 1 },
         payload: { flow: true },
@@ -136,7 +137,8 @@ describe('MySQL flow protocol v2', () => {
     const suite = flowStoreContract({
       makeStore: () =>
         MySqlFlowStore.make({ pool: configuredPool(), namespace, validateSchema: false }),
-      createFlow: (_store, _scenario, input) => createParent(namespace, input.failFast),
+      createFlow: (_store, scenario, input) =>
+        createParent(namespace, input.failFast, `contract-${scenario.id}`),
       prefix: `mysql-${process.pid}`
     })
     for (const scenario of suite) await scenario.run()

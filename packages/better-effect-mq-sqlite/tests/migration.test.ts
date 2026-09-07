@@ -129,4 +129,12 @@ describe('migration 3 layout validation', () => {
 
     expect(() => SqliteMigrator.validate(database)).toThrow(SqliteSchemaValidationError)
   })
+
+  test('rejects a v2 flow layout with a missing flow table', () => {
+    const database = open()
+    SqliteMigrator.migrate({ database })
+    database.exec(`DROP TABLE ${SQLITE_TABLES.flowOutbox}`)
+
+    expect(() => SqliteMigrator.validate(database)).toThrow(SqliteSchemaValidationError)
+  })
 })
