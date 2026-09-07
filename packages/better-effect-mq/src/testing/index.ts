@@ -55,10 +55,18 @@ export type {
 
 export { JobEventStoreConformanceError, jobEventStoreContract } from './job-event-store-contract'
 export type {
+  JobEventStoreContractCapabilities,
   JobEventStoreContractClock,
+  JobEventStoreContractExtension,
+  JobEventStoreContractFactoryOptions,
+  JobEventStoreContractHooks,
+  JobEventStoreContractMaybePromise,
   JobEventStoreContractOptions,
   JobEventStoreContractReport,
   JobEventStoreContractScenario,
+  JobEventStoreContractScenarioContext,
+  JobEventStoreContractScenarioInfo,
+  JobEventStoreContractSkippedScenario,
   JobEventStoreContractSuite
 } from './job-event-store-contract'
 
