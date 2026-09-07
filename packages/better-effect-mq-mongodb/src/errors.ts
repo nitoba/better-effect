@@ -45,6 +45,26 @@ export class MongoJobStoreMigrationError extends MongoJobStoreError {
   }
 }
 
+export class MongoFlowProtocolMismatchError extends MongoJobStoreError {
+  readonly expectedProtocolVersion: number
+  readonly actualProtocolVersion: number | undefined
+  readonly actualLayoutVersion: number | undefined
+
+  constructor(args: {
+    readonly expectedProtocolVersion: number
+    readonly actualProtocolVersion?: number | undefined
+    readonly actualLayoutVersion?: number | undefined
+  }) {
+    super(
+      `MongoDB flow protocol mismatch: expected v${args.expectedProtocolVersion} with layout v1, found protocol v${args.actualProtocolVersion ?? 'unknown'} and flow layout ${args.actualLayoutVersion ?? 'unknown'}`
+    )
+    this.name = 'MongoFlowProtocolMismatchError'
+    this.expectedProtocolVersion = args.expectedProtocolVersion
+    this.actualProtocolVersion = args.actualProtocolVersion
+    this.actualLayoutVersion = args.actualLayoutVersion
+  }
+}
+
 /** Never copy a command, URI, payload, or driver message into public diagnostics. */
 export const redactedMongoError = (operation: string, cause: unknown): MongoJobStoreError =>
   cause instanceof MongoJobStoreError

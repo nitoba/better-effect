@@ -1,7 +1,9 @@
 export { MongoJobStore } from './store'
+export { MongoFlowStore } from './flow'
 export { MongoJobScheduleStore } from './schedule'
 export { MongoJobStoreClient } from './client'
 export { MongoJobStoreMigrator } from './migrator'
+export { MongoFlowMigrator } from './migrator'
 export { MongoQueueChangeStream } from './change-stream'
 export { MongoOutbox } from './MongoOutbox'
 export { MongoOutboxStore } from './MongoOutboxStore'
@@ -9,7 +11,10 @@ export { OutboxStore, isOutboxStoreToken, outboxStoreTag } from 'better-effect-m
 export {
   MONGODB_LAYOUT_VERSION,
   MONGODB_PROTOCOL_VERSION,
+  MONGODB_FLOW_LAYOUT_VERSION,
+  MONGODB_FLOW_PROTOCOL_VERSION,
   collectionNames,
+  flowCollectionNames,
   metadataEntries,
   metadataFromEntries,
   mongoCollections
@@ -33,6 +38,7 @@ export type {
   MongoSession
 } from './config'
 export type { MongoMigrationOptions } from './migrator'
+export type { MongoFlowStoreInstance } from './flow'
 export type {
   MongoOutboxAppendOptions,
   MongoOutboxRow,
@@ -48,6 +54,7 @@ export {
   MongoJobStoreError,
   MongoJobStoreLayoutError,
   MongoJobStoreMigrationError,
+  MongoFlowProtocolMismatchError,
   MongoJobStoreTopologyError,
   redactedMongoError
 } from './errors'

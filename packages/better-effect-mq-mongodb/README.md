@@ -37,6 +37,47 @@ rejected during Layer acquisition. MongoDB's transaction retry policy is
 bounded, and an unknown commit result is safe to replay because the schedule
 revision and occurrence ID are both deterministic.
 
+## FlowStore v2
+
+MongoDB also provides the protocol-v2 `FlowStore` adapter. Flow persistence is
+enabled by a separate, explicit migration so an existing JobStore v1 layout is
+never silently rewritten:
+
+```ts
+import { MongoJobStore } from 'better-effect-mq-mongodb'
+import { MongoFlowStore } from 'better-effect-mq-mongodb'
+
+await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
+await MongoFlowStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
+
+const FlowLive = MongoFlowStore.layer({
+  db,
+  namespace: 'notifications',
+  collectionPrefix: 'better_effect_mq'
+})
+```
+
+The flow migration records protocol v2/layout 1 independently, extends the
+jobs validator with flow fields, and creates dedicated flow-child and
+flow-report outbox collections. `fanOut`, child result recording, cancellation,
+reconciliation, and cascade acknowledgement run in MongoDB transactions. A
+terminal child settlement appends its report in the same transaction when the
+persisted child carries a valid parent envelope; reports remain durable until
+the parent store confirms the exact payload through `ackOutbox`.
+
+Named JobStores use the matching FlowStore token and namespace:
+
+```ts
+import { JobStore } from 'better-effect-mq'
+
+const Durable = JobStore.named('durable')
+const FlowLive = MongoFlowStore.layerFor(Durable, { db, namespace: 'application' })
+```
+
+Flow layers validate both layout markers during acquisition and never migrate
+automatically. MongoDB transactions provide the atomicity boundary; cross-store
+parent/child transactions are intentionally not claimed.
+
 ## Durable outbox
 
 The package also provides the durable protocol-v1 `OutboxStore` adapter. It

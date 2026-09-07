@@ -47,6 +47,13 @@ if (/transaction\??:\s*unknown|handle:\s*unknown/u.test(source))
   throw new Error('Legacy unknown transaction API leaked into adapter')
 if (!source.includes('findOneAndUpdate') || !source.includes('leaseToken'))
   throw new Error('Durable outbox claim and fencing implementation is missing')
+if (
+  !source.includes('MongoFlowStore') ||
+  !source.includes('MONGODB_FLOW_PROTOCOL_VERSION') ||
+  !source.includes('flowChildren') ||
+  !source.includes('flowOutbox')
+)
+  throw new Error('MongoDB FlowStore v2 surface is missing')
 
 const collections = await readFile(join(packageRoot, 'src/collections.ts'), 'utf8')
 if (!collections.includes('MONGODB_LAYOUT_VERSION = 3') || !collections.includes('outbox:'))
