@@ -57,10 +57,13 @@ if (
 
 const collections = await readFile(join(packageRoot, 'src/collections.ts'), 'utf8')
 if (
-  !collections.includes('MONGODB_LAYOUT_VERSION = 4') ||
+  !collections.includes('MONGODB_LAYOUT_VERSION = 5') ||
   !collections.includes('outbox:') ||
+  !collections.includes('events:') ||
   !collections.includes('controls:') ||
   !collections.includes('controlled_permits')
 )
   throw new Error('MongoDB outbox layout is missing')
+if (!source.includes('MongoJobEventStore') || !source.includes('appendMongoJobEvent'))
+  throw new Error('MongoDB JobEventStore surface is missing')
 console.log('MongoDB package boundaries passed')

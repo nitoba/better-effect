@@ -151,7 +151,7 @@ describe('MongoDB JobStore protocol v1 conformance on a replica set', () => {
       { upsert: true }
     )
     await expect(MongoJobStore.migrate({ db: configuredDatabase() })).resolves.toEqual({
-      version: 4,
+      version: 5,
       applied: true
     })
     await expect(collections.jobs.findOne({ _id: sentinelId })).resolves.toMatchObject({

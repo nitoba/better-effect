@@ -13,6 +13,7 @@ import {
   JobDefinitionError,
   JobNotFoundError,
   JobStore,
+  JobEventStore,
   JobStoreFailure,
   JobStoreWakeAbortedError,
   LeaseLostError,
@@ -42,7 +43,9 @@ import {
   type JobStoreDescriptor,
   type QueueName,
   type SettlementOutcome,
-  type FlowChildReport
+  type FlowChildReport,
+  type DurableJobEventInput,
+  type DurableJobEventType
 } from 'better-effect-mq'
 import type {
   AnyQueueControlsRegistry,
@@ -68,6 +71,11 @@ import { MongoJobStoreClient } from './client'
 import type { MongoJobStoreConfig, MongoJobStoreConnectionConfig, MongoSession } from './config'
 import { MongoJobStoreLayoutError, MongoJobStoreTopologyError } from './errors'
 import { MongoJobStoreMigrator } from './migrator'
+import {
+  appendMongoJobEvent,
+  MongoJobEventStore,
+  type MongoJobEventStoreOptions
+} from './event-store'
 
 type Doc = Record<string, unknown>
 type Op<T> = ResultType<T, any>
@@ -607,7 +615,10 @@ class MongoJobStoreImplementation {
   private stream: MongoQueueChangeStream | undefined
   private disposed = false
   private disposal: Promise<void> | undefined
-  constructor(private readonly client: MongoJobStoreClient) {
+  constructor(
+    private readonly client: MongoJobStoreClient,
+    private readonly eventOptions?: MongoJobEventStoreOptions
+  ) {
     this.collections = mongoCollections(client.db, client.collectionPrefix)
   }
   get descriptor(): JobStoreDescriptor {
@@ -962,8 +973,101 @@ class MongoJobStoreImplementation {
         request.now,
         session
       )
+    const eventType = this.transitionEventType(
+      operation,
+      found.record,
+      transition.record,
+      transition.attempt
+    )
+    if (eventType !== undefined)
+      await this.appendEvent(
+        session,
+        eventType,
+        transition.record,
+        request.now,
+        found.record,
+        transition.attempt
+      )
     await this.notify(transition.record.queue, request.now, session)
     return transition
+  }
+  private transitionEventType(
+    operation: string,
+    previous: JobRecord,
+    next: JobRecord,
+    attempt: AttemptRecord | undefined
+  ): DurableJobEventType | undefined {
+    if (this.eventOptions === undefined) return undefined
+    if (attempt !== undefined) {
+      switch (attempt.outcome) {
+        case 'completed':
+          return 'job-completed'
+        case 'retried':
+          return 'job-retry-scheduled'
+        case 'failed':
+          return 'job-failed'
+        case 'cancelled':
+          return 'job-cancelled'
+        case 'stalled':
+          return 'job-stalled-recovered'
+        case 'released':
+          return 'job-released'
+      }
+    }
+    switch (operation) {
+      case 'cancel':
+      case 'cancelControlled':
+        return previous.state === 'active'
+          ? previous.cancellationRequestedAt === next.cancellationRequestedAt
+            ? undefined
+            : 'job-cancel-requested'
+          : 'job-cancelled'
+      case 'requestCancellation':
+        return previous.cancellationRequestedAt === next.cancellationRequestedAt
+          ? undefined
+          : 'job-cancel-requested'
+      case 'promote':
+        return 'job-promoted'
+      case 'retry':
+        return 'job-admin-retried'
+      case 'release':
+      case 'releaseControlled':
+        return 'job-released'
+      case 'recoverStalled':
+      case 'recoverStalledControlled':
+        return 'job-stalled-recovered'
+      default:
+        return undefined
+    }
+  }
+  private async appendEvent(
+    session: MongoSession,
+    type: DurableJobEventType,
+    record: JobRecord | undefined,
+    recordedAtMs: number,
+    previous?: JobRecord,
+    attempt?: AttemptRecord,
+    extra: { readonly queue?: string; readonly duplicate?: boolean } = {}
+  ): Promise<void> {
+    if (this.eventOptions === undefined) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record?.id,
+      queue: (record?.queue ?? extra.queue) as DurableJobEventInput['queue'],
+      name: record?.name,
+      version: record?.version,
+      state: record?.state,
+      attempt: attempt?.attemptSequence ?? attempt?.attempt,
+      delivery:
+        attempt?.delivery ?? (record?.deliveryCount === 0 ? undefined : record?.deliveryCount),
+      workerId: (record?.leaseOwner ?? previous?.leaseOwner) as never,
+      outcome: attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
+      failureKind: (record?.failure?.kind ?? previous?.failure?.kind) as never,
+      duplicate: extra.duplicate,
+      attributes: Object.freeze({})
+    }
+    await appendMongoJobEvent(session, this.collections, this.client.namespace, input)
   }
   private async transition(
     operation: string,
@@ -1018,6 +1122,17 @@ class MongoJobStoreImplementation {
                 encodeJob(this.client.namespace, changed.value),
                 {
                   session
+                }
+              )
+              await this.appendEvent(
+                session,
+                'job-enqueued',
+                changed.value,
+                changed.value.updatedAt,
+                undefined,
+                undefined,
+                {
+                  duplicate: false
                 }
               )
               await this.notify(changed.value.queue, changed.value.updatedAt, session)
@@ -1226,7 +1341,9 @@ class MongoJobStoreImplementation {
           )
           const document = this.findOneResult(value)
           if (document === undefined) break
-          jobs.push(decodeJob(document))
+          const claimed = decodeJob(document)
+          jobs.push(claimed)
+          await this.appendEvent(session, 'job-claimed', claimed, now, undefined, undefined)
         }
         const earliest = await this.collections.jobs.findOne(
           {
@@ -1625,6 +1742,7 @@ class MongoJobStoreImplementation {
             },
             { session }
           )
+          await this.appendEvent(session, 'job-claimed', item.record, now, item.previous)
         }
         if (planned.length > 0 && rate !== undefined) {
           const updated = await this.collections.rateWindows.updateOne(
@@ -1764,6 +1882,24 @@ class MongoJobStoreImplementation {
         request.now,
         session
       )
+    await this.appendEvent(
+      session,
+      reduced.value.attempt.outcome === 'completed'
+        ? 'job-completed'
+        : reduced.value.attempt.outcome === 'retried'
+          ? 'job-retry-scheduled'
+          : reduced.value.attempt.outcome === 'failed'
+            ? 'job-failed'
+            : reduced.value.attempt.outcome === 'cancelled'
+              ? 'job-cancelled'
+              : reduced.value.attempt.outcome === 'stalled'
+                ? 'job-stalled-recovered'
+                : 'job-released',
+      next,
+      request.now,
+      found.record,
+      reduced.value.attempt
+    )
     await this.notify(next.queue, request.now, session)
     return { record: next, attempt: reduced.value.attempt, status: 'applied' }
   }
@@ -2089,6 +2225,14 @@ class MongoJobStoreImplementation {
               now,
               session
             )
+          await this.appendEvent(
+            session,
+            'job-stalled-recovered',
+            next,
+            now,
+            found.record,
+            reduced.value.attempt
+          )
           await this.notify(next.queue, now, session)
           return { ...reduced.value, record: next }
         })
@@ -2163,6 +2307,7 @@ class MongoJobStoreImplementation {
           { namespace: this.client.namespace, jobId: job.value },
           { session }
         )
+        await this.appendEvent(session, 'job-removed', found.record, request.now)
         return { job: found.record, removed: true }
       })
     } catch (cause) {
@@ -2191,6 +2336,17 @@ class MongoJobStoreImplementation {
             $inc: { wakeVersion: 1 }
           },
           { upsert: true, session }
+        )
+        await this.appendEvent(
+          session,
+          paused ? 'queue-paused' : 'queue-resumed',
+          undefined,
+          request.now,
+          undefined,
+          undefined,
+          {
+            queue: queue.value
+          }
         )
         return { queue: queue.value, paused }
       })
@@ -2483,14 +2639,15 @@ const namespaceFor = (token: AnyJobStoreToken, namespace: string): string =>
   token.serviceTag === JobStore.serviceTag ? namespace : `${namespace}:store-${token.serviceTag}`
 const layer = <T extends AnyJobStoreToken>(
   token: T,
-  acquire: () => Promise<MongoJobStoreClient>
+  acquire: () => Promise<MongoJobStoreClient>,
+  eventOptions?: MongoJobEventStoreOptions
 ): Layer<InstanceType<T>, never> =>
   Layer.scoped(
     token,
     async () => {
       const client = await acquire()
       try {
-        const store = new MongoJobStoreImplementation(client)
+        const store = new MongoJobStoreImplementation(client, eventOptions)
         await store.start()
         return JobStore.of(store as never) as unknown as ServiceContract<InstanceType<T>>
       } catch (cause) {
@@ -2527,5 +2684,61 @@ export const MongoJobStore = Object.freeze({
         namespace: namespaceFor(token, config.namespace ?? 'default')
       })
     )
+  },
+  layerWithEvents(config: MongoJobStoreConfig, options: MongoJobEventStoreOptions = {}) {
+    return Layer.merge(
+      layer(JobStore, async () => MongoJobStoreClient.fromDb(config), options),
+      MongoJobEventStore.layer({ ...config, ...options })
+    ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
+  },
+  layerWithEventsFor<T extends AnyJobStoreToken>(
+    token: T,
+    config: MongoJobStoreConfig,
+    options: MongoJobEventStoreOptions = {}
+  ) {
+    const eventToken = JobEventStore.for(token)
+    return Layer.merge(
+      layer(
+        token,
+        async () =>
+          MongoJobStoreClient.fromDb({
+            ...config,
+            namespace: namespaceFor(token, config.namespace ?? 'default')
+          }),
+        options
+      ) as Layer.Any,
+      MongoJobEventStore.layerFor(eventToken as never, { ...config, ...options }) as Layer.Any
+    ) as unknown as Layer<InstanceType<T> | InstanceType<typeof eventToken>, never>
+  },
+  layerWithEventsFromConfig(
+    config: MongoJobStoreConnectionConfig,
+    options: MongoJobEventStoreOptions = {}
+  ) {
+    return Layer.merge(
+      layer(JobStore, () => MongoJobStoreClient.fromConfig(config), options),
+      MongoJobEventStore.layerFromConfig({ ...config, ...options })
+    ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
+  },
+  layerWithEventsFromConfigFor<T extends AnyJobStoreToken>(
+    token: T,
+    config: MongoJobStoreConnectionConfig,
+    options: MongoJobEventStoreOptions = {}
+  ) {
+    const eventToken = JobEventStore.for(token)
+    return Layer.merge(
+      layer(
+        token,
+        () =>
+          MongoJobStoreClient.fromConfig({
+            ...config,
+            namespace: namespaceFor(token, config.namespace ?? 'default')
+          }),
+        options
+      ) as Layer.Any,
+      MongoJobEventStore.layerFromConfigFor(eventToken as never, {
+        ...config,
+        ...options
+      }) as Layer.Any
+    ) as unknown as Layer<InstanceType<T> | InstanceType<typeof eventToken>, never>
   }
 })

@@ -1,7 +1,7 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- the smoke test only checks the optional exported factory.
 
 import { Layer } from 'better-effect'
-import { MongoOutboxStore, OutboxStore } from 'better-effect-mq-mongodb'
+import { MongoJobEventStore, MongoOutboxStore, OutboxStore } from 'better-effect-mq-mongodb'
 
 const db = {
   collection() {
@@ -18,3 +18,5 @@ const layer = MongoOutboxStore.layerFor(OutboxStore.named('external'), {
 if (!(layer instanceof Layer)) throw new Error('Expected a MongoDB outbox Layer')
 if (MongoOutboxStore.layerFromConfig === undefined)
   throw new Error('Missing connection Layer factory')
+if (!(MongoJobEventStore.layer({ db, validateLayout: false }) instanceof Layer))
+  throw new Error('Expected a MongoDB event Layer')
