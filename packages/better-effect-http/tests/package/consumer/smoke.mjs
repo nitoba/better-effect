@@ -1,8 +1,10 @@
 import * as Http from 'better-effect-http'
 import packageJson from 'better-effect-http/package.json' with { type: 'json' }
 
-if (Object.keys(Http).length !== 0) {
-  throw new Error('The initial HTTP package must not expose a placeholder API')
+for (const exportName of ['HttpRequest', 'HttpRequestError', 'validateHttpOptions']) {
+  if (!(exportName in Http)) {
+    throw new Error(`Missing public HTTP foundation export: ${exportName}`)
+  }
 }
 
 if (packageJson.name !== 'better-effect-http' || packageJson.version !== '0.1.0') {
