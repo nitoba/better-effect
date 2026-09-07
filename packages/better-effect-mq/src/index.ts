@@ -236,6 +236,7 @@ export {
   validateFlowLimits,
   validateFlowMigration,
   validateFlowManifest,
+  validateJobRecordV2,
   validateFlowState,
   validateJobRecord,
   validateOptionalDuration,
@@ -261,6 +262,8 @@ export {
 } from './protocol'
 
 export type {
+  AttemptOutcomeV2,
+  AttemptRecordV2,
   FanOutOutcome,
   FlowChildRecord,
   FlowChildReport,
@@ -531,6 +534,16 @@ export type {
   JobStoreInstance,
   JobStoreNameLiteral,
   JobStoreOperation,
+  JobStoreV2,
+  JobStoreV2Contract,
+  JobStoreV2Descriptor,
+  JobStoreV2Error,
+  JobStoreV2Operation,
+  GetAttemptsV2Request,
+  GetJobV2Request,
+  JobCountsV2,
+  ListJobsV2Request,
+  ListJobsV2Result,
   JobStorePauseError,
   JobStorePausedQueuesError,
   JobStorePromoteError,

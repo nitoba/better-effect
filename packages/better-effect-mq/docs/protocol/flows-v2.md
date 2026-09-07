@@ -1,7 +1,8 @@
 # Flow protocol v2
 
 This document describes the first v2 flow slice. It is explicit and additive:
-the existing `JobStore` and protocol v1 state machine remain unchanged.
+the existing v1 `JobStore` methods and state machine remain unchanged, while a
+v2-capable JobStore advertises an explicit `store.v2` contract.
 
 ## Version, layout, and migration
 
@@ -59,16 +60,22 @@ within a group and options contain only the storage-neutral enqueue settings.
 
 ## Memory reference store
 
-`MemoryFlowStore` implements the flow-only `FlowStoreV2` contract. It is kept
-separate from the v1 `MemoryJobStore` so existing v1 behavior and exports do
-not gain implicit flow semantics.
+`MemoryFlowStore` implements the flow-only `FlowStoreV2` contract used by the
+Worker relay and sweeper. `MemoryJobStore.make()` also exposes a v2 JobStore
+bridge at `store.v2`; its v1 methods still return v1 snapshots, while v2
+inspection methods materialize `JobRecordV2` values with flow fields. This
+keeps existing v1 behavior and exports stable while making the protocol
+revision and migration boundary explicit.
 
 `fanOut` validates the complete manifest before mutating state and atomically
-creates the parent flow counters plus all pending child rows. Repeating the
+creates the parent flow counters plus all pending child rows. The JobStore v2
+bridge first validates the parent lease, then materializes the parent's phase
+marker and delegates manifest persistence to this flow store. Repeating the
 same manifest returns `already-applied`; a conflicting manifest returns a
 settlement conflict. Child jobs are not inserted into another job store by
 this operation: `reconcile` returns deterministic `FlowChildSpec` values for a
-driver to enqueue and later acknowledge.
+driver to enqueue and later acknowledge. The v2 bridge also records a
+`fanned-out` v2 ledger entry without consuming the handler attempt budget.
 
 `recordChildResults` is pending-only and idempotent. In continue mode the parent
 returns to `waiting` only after `pending` reaches zero. In fail-fast mode the

@@ -94,14 +94,22 @@ there is no auxiliary Runtime or legacy claim bypass. The Memory adapter is the
 reference atomic implementation. See the [v3 controls contract](./docs/protocol/controls-v3.md)
 for the revision, `dispatchKey`, no-key bucket, permit, and fairness rules.
 
-The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
-flow contracts, pure `Flow.define`/`Flow.children`/`Flow.handle` descriptors,
-the reference `MemoryFlowStore`, and Layer-first Worker route validation.
-`FlowStoreV2` also defines durable terminal-report outbox append, bounded peek,
-parent confirmation, and exact-payload acknowledgement. A Layer-owned Worker
-supervises bounded relay and reconciliation cycles from the same Runtime root;
-flow phase execution and fan-out remain application-owned until the atomic v2
-parent-settlement contract is available.
+The flow v2 slice is additive to the v1 JobStore and is exposed explicitly by a
+v2-capable store through `store.v2` (or the `JobStore.V2` type). It provides
+JSON-neutral flow contracts, pure `Flow.define`/`Flow.children`/`Flow.handle`
+descriptors, the reference `MemoryFlowStore`, and Layer-first Worker route
+validation. `store.v2` materializes `waiting-children` parent snapshots,
+exposes v2 list/counts inspection, applies idempotent fan-out and parent
+settlement, and appends terminal child reports to the child-store outbox. The
+fan-out phase is represented by a v2-only `fanned-out` attempt ledger entry
+without consuming the handler's attempt budget. The
+existing v1 methods and descriptor remain unchanged, so adapters can migrate
+explicitly by advertising the v2 descriptor and its migration metadata.
+`FlowStoreV2` continues to define durable terminal-report outbox append,
+bounded peek, parent confirmation, and exact-payload acknowledgement. A
+Layer-owned Worker supervises bounded relay and reconciliation cycles from the
+same Runtime root; cross-store enqueue remains at-least-once and converges via
+the durable manifest and deterministic child IDs.
 
 ## Schedule-store conformance
 
