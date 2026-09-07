@@ -14,9 +14,10 @@ import type {
 } from './schema'
 import type { HttpInterceptor, HttpObserver } from './interceptors'
 import type { HttpMiddleware } from './middleware'
+import type { HttpRetryPolicy } from './retry'
 
 export type HttpClientOptions = TransportOptions
-export type HttpRequestOptions = TransportRequestOptions &
+export type HttpRequestOptions = TransportRequestOptions & { readonly retry?: HttpRetryPolicy | false } &
   ({ readonly schema?: never; readonly responses?: never } | HttpDecodeOptions)
 
 export type HttpRequestMethod = {
