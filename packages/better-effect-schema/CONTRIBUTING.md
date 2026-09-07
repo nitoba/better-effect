@@ -2,46 +2,39 @@
 
 ## Requirements
 
-- Node.js 20 or newer
-- Bun
-- Zod 4.5.4 or newer within Zod 4
-- better-result 3.x
-- better-effect 0.13.x
-- TypeScript 6.0 or newer
-
-## Setup
-
-```bash
-bun install --frozen-lockfile
-bun run check --filter=better-effect-schema
-```
+- Bun and the current TypeScript compiler
+- `better-result` 3.x
+- `better-effect` 0.13.x
+- optional provider peers only when an adapter is being changed
 
 ## Development rules
 
-- Add a failing runtime or type test before changing behavior.
-- Keep Zod, better-result, and better-effect as peers; do not add Effect TS or `@effect/*`.
-- Use only the public root entrypoints of better-effect and better-result.
-- Keep schema operations requirement-free: schemas must not acquire Services.
-- Keep expected validation failures in the typed Result channel and package-contract misuse as `BetterEffectZodError` defects.
-- Do not override `_parse`, `_parseSync`, or `_parseAsync`.
-- Do not instantiate Zod wrapper classes directly.
+- Add a `bun:test` runtime test or a `tests/types` contract before changing
+  behavior.
+- Keep the root package provider-neutral and use adapter subpaths for native
+  provider code.
+- Keep expected validation failures in typed Result channels.
+- Keep schema operations requirement-free and delegate Result semantics to
+  `better-result`.
+- Do not add parser shims, throwing convenience APIs, or provider imports to
+  core modules.
 - Do not add TypeScript suppression directives to `src`.
-- Keep encoded input, decoded constructor props, and class instance output distinct.
-- Give new public APIs documentation plus positive and negative type tests.
-- Validate packed artifacts outside the workspace before release.
+- Update examples and documentation for every public API change.
 
 ## Commands
 
 ```bash
 bun run typecheck
-bun run test
+bun run test:runtime
+bun run test:types
 bun run examples
 bun run check:source
 bun run check:package
 bun run test:package
-npm pack --dry-run --ignore-scripts
+bun run publint
+bun run check
 ```
 
-## Pull requests
-
-Describe the behavioral contract, the red/green evidence, compatibility implications, and every public type change. Keep unrelated refactors out of feature changes.
+Pull requests should describe the behavioral contract, runtime/type evidence,
+adapter implications, and public type changes. Keep unrelated package or
+worktree changes out of the branch.

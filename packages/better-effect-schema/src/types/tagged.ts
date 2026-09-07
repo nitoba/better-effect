@@ -60,13 +60,17 @@ type TaggedResult<Value> = SchemaEffect<Value, TaggedConstructionFailure>
 
 export type TaggedClassType<Self, Tag extends string, Fields extends TaggedFieldMap> = Omit<
   GenericSchemaClass<Self, TaggedDefinition<Tag, Fields>>,
-  'kind' | 'fields' | 'encodedSchema' | 'make' | 'makeAsync' | 'unsafeMake' | 'is'
+  'kind' | 'fields' | 'encodedSchema' | '~standard' | 'make' | 'makeAsync' | 'unsafeMake' | 'is'
 > & {
   new (props?: TaggedProps<Fields>): Readonly<TaggedProps<Fields>> & { readonly _tag: Tag }
   readonly identifier: Tag
   readonly kind: 'tagged-class'
   readonly fields: TaggedShape<Tag, Fields>
   readonly encodedSchema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedEncoded<Tag, Fields>>
+  readonly '~standard': StandardSchemaV1<
+    TaggedEncoded<Tag, Fields>,
+    TaggedInstance<Self, Tag, Fields>
+  >['~standard']
   make(props?: TaggedProps<Fields>): TaggedResult<TaggedInstance<Self, Tag, Fields>>
   makeAsync(props?: TaggedProps<Fields>): Promise<TaggedResult<TaggedInstance<Self, Tag, Fields>>>
   unsafeMake(props?: TaggedProps<Fields>): TaggedResult<TaggedInstance<Self, Tag, Fields>>
@@ -84,13 +88,17 @@ export type TaggedErrorType<Self, Tag extends string, Fields extends TaggedField
     Self & TaggedErrorValue<Tag, Fields>,
     TaggedDefinition<Tag, Fields>
   >,
-  'kind' | 'fields' | 'encodedSchema' | 'make' | 'makeAsync' | 'unsafeMake' | 'is'
+  'kind' | 'fields' | 'encodedSchema' | '~standard' | 'make' | 'makeAsync' | 'unsafeMake' | 'is'
 > & {
   new (props?: TaggedProps<Fields>): TaggedErrorValue<Tag, Fields> & Readonly<TaggedProps<Fields>>
   readonly identifier: Tag
   readonly kind: 'tagged-error'
   readonly fields: TaggedShape<Tag, Fields>
   readonly encodedSchema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedEncoded<Tag, Fields>>
+  readonly '~standard': StandardSchemaV1<
+    TaggedEncoded<Tag, Fields>,
+    TaggedErrorValue<Tag, Fields>
+  >['~standard']
   make(props?: TaggedProps<Fields>): TaggedResult<Self & TaggedErrorValue<Tag, Fields>>
   makeAsync(
     props?: TaggedProps<Fields>

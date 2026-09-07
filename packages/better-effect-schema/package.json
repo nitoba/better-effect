@@ -29,6 +29,8 @@
     "dist",
     "docs/api.md",
     "docs/valibot.md",
+    "docs/arktype.md",
+    "docs/zod.md",
     "docs/architecture.md",
     "README.md",
     "VERIFICATION.md",
@@ -114,6 +116,9 @@
       "optional": true
     },
     "valibot": {
+      "optional": true
+    },
+    "zod": {
       "optional": true
     }
   },
