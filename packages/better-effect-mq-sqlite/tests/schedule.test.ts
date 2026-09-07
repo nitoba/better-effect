@@ -15,7 +15,7 @@ afterEach(() => {
 test('SQLite schedules migrate and atomically enqueue deterministic occurrences', async () => {
   const database = new Database(':memory:')
   databases.push(database)
-  expect(SqliteJobStore.migrate({ database }).version).toBe(4)
+  expect(SqliteJobStore.migrate({ database }).version).toBe(5)
 
   const runtime = await Runtime.make(
     Layer.merge(

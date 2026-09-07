@@ -84,8 +84,9 @@ The caller owns a supplied database and must close it. `:memory:` databases are 
 Run migrations deliberately, preferably after a backup for file databases. Migration 2 adds the
 durable schedules table and due/group/key indexes; migration 3 adds the durable outbox table and
 claim, lease, target/state, and recent indexes; migration 4 adds the FlowStore v2 parent columns,
-child manifest table, and durable flow-report outbox. Startup only validates the schema by default.
-`SqliteFlowStore.make` and its layers require the explicit migration-4 marker and fail with
+child manifest table, and durable flow-report outbox; migration 5 adds QueueControls v3 state and
+the persisted dispatch-key column. Startup only validates the schema by default.
+`SqliteFlowStore.make` and its layers require the explicit flow layout marker and fail with
 `SqliteFlowProtocolMismatchError` on a v1-v3 schema; they never upgrade the database implicitly.
 For caller-owned connections, PRAGMAs are changed only with `configurePragmas: true`; enable
 `foreign_keys`, use a finite `busyTimeoutMs`, and use WAL for file databases where appropriate:
@@ -95,6 +96,22 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA synchronous = NORMAL;
 ```
+
+## QueueControls protocol v3
+
+`SqliteJobStore` implements the durable `QueueControls` extension. Migration 5 adds the persisted
+`dispatch_key` column plus queue controls, rotation cursors, controlled permits, and fixed-window
+rate-limit tables. `QueueControls.reconcile` is idempotent and revisioned; changing a record
+increments its revision, and controlled claims fail closed when the caller presents a stale
+revision. Legacy `claim` calls are rejected while controls are enabled.
+
+Controlled claims acquire global and per-key permits, skip candidates whose dispatch key is full,
+and use a bounded rotating scan so one blocked key does not hold the queue head. Rate limits use
+fixed windows anchored at the first accepted claim; settlement, release, and recovery release only
+the permit owned by the matching job/lease token, while rate-window capacity is never refunded.
+All mutations use the adapter's serialized `BEGIN IMMEDIATE` write path, so the job transition,
+permit, cursor, and rate-window updates commit as one SQLite transaction. The adapter advertises
+`globalConcurrency` and `rateLimiting` after migration 5.
 
 ## FlowStore v2
 

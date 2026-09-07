@@ -9,6 +9,7 @@ export {
   SQLITE_INDEXES,
   SQLITE_TABLES,
   flowMigrationSql,
+  controlsMigrationSql,
   migrationSql,
   scheduleMigrationSql,
   outboxMigrationSql
