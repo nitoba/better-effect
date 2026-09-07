@@ -1,6 +1,7 @@
 import { Layer } from 'better-effect'
 import {
   MySqlOutboxStore,
+  MySqlJobEventStore,
   MySqlJobScheduleStore,
   MySqlJobStore,
   loadMySqlMigrations,
@@ -10,12 +11,13 @@ import {
 
 const migrations = await loadMySqlMigrations()
 if (
-  migrations.length !== 6 ||
+  migrations.length !== 7 ||
   !migrations[0]!.sql.includes('ENGINE=InnoDB') ||
   !migrations[1]!.sql.includes('dedupe_hash') ||
   !migrations[2]!.sql.includes('better_effect_mq_schedules') ||
   !migrations[3]!.sql.includes('better_effect_mq_outbox') ||
-  !migrations[4]!.sql.includes('better_effect_mq_flow_children')
+  !migrations[4]!.sql.includes('better_effect_mq_flow_children') ||
+  !migrations[6]!.sql.includes('better_effect_mq_job_events')
 ) {
   throw new Error('Expected the initial InnoDB migration and forward-only upgrades')
 }
@@ -40,3 +42,5 @@ const outboxLayer = MySqlOutboxStore.layerFor(OutboxStore.named('billing'), {
   validateSchema: false
 })
 if (!(outboxLayer instanceof Layer)) throw new Error('Expected an outbox Layer')
+const eventLayer = MySqlJobEventStore.layer({ pool, validateSchema: false })
+if (!(eventLayer instanceof Layer)) throw new Error('Expected an event Layer')

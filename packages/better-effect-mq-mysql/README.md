@@ -1,7 +1,7 @@
 # better-effect-mq-mysql
 
 `better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore`,
-`JobScheduleStore`, and durable outbox adapters for [`better-effect-mq`](../better-effect-mq).
+`JobScheduleStore`, durable `JobEventStore`, and durable outbox adapters for [`better-effect-mq`](../better-effect-mq).
 It implements protocol v1, QueueControls protocol v3, schedules v1, outbox v1, and Flow protocol v2 with short transactions,
 fenced leases, durable attempt records, deterministic occurrence IDs, keyset
 inspection queries, and a per-process wake notifier backed by durable queue wake
@@ -79,6 +79,30 @@ Migration 5 adds the flow v2 columns, `better_effect_mq_flow_children`, and
 `better_effect_mq_flow_outbox`. It is additive and leaves migrations 1–4
 unchanged. Opening `MySqlFlowStore` against a v1-only or incomplete flow layout
 fails with `MySqlFlowProtocolMismatchError`; run the migrator before opening it.
+
+Migration 7 adds the append-only `better_effect_mq_job_events` feed and its
+per-namespace cursor allocator. When those tables are present, `MySqlJobStore`
+appends each durable transition in the same InnoDB transaction; without the
+event extension, existing JobStore operations remain available. Read events
+through an explicit layer:
+
+```ts
+import { Layer } from 'better-effect'
+import { JobEventStore, JobStore } from 'better-effect-mq'
+import { MySqlJobEventStore, MySqlJobStore } from 'better-effect-mq-mysql'
+
+const EventsLive = Layer.merge(
+  MySqlJobStore.layer({ pool, namespace: 'billing' }),
+  MySqlJobEventStore.layer({ pool, namespace: 'billing' })
+)
+```
+
+`JobEventCursor` values are opaque to callers. Reads use exclusive keyset
+pagination and advance over filtered events; count/age retention is applied by
+the adapter and old cursors return `JobEventCursorExpiredError`. `awaitEvents`
+uses a process-local wake after commit with polling as the authoritative
+fallback. Event records contain only bounded operational fields and safe
+attributes, never payloads, results, full failures, or arbitrary metadata.
 
 ```ts
 import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'

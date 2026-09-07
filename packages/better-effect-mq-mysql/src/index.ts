@@ -2,6 +2,7 @@ export { MySqlClient } from './client'
 export { MySqlMigrator } from './migrator'
 export { MySqlJobStore } from './layer'
 export { MySqlJobScheduleStore } from './layer'
+export { MySqlJobEventStore } from './event-store'
 export { MySqlOutboxStore } from './layer'
 export { MySqlOutbox, namespaceForOutboxToken } from './MySqlOutbox'
 export { MySqlFlowStore } from './flow'
@@ -67,4 +68,9 @@ export type {
   MySqlSchemaValidationResult
 } from './migrator'
 export type { MySqlJobScheduleStoreOptions } from './schedule'
+export type {
+  MySqlJobEventStoreConfig,
+  MySqlJobEventStoreConnectionConfig,
+  MySqlJobEventStoreInstance
+} from './event-store'
 export type { MySqlFlowStoreInstance } from './flow'
