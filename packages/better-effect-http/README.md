@@ -94,9 +94,10 @@ install this middleware to avoid recursion.
 SSE streams are consumed incrementally through `http.sse`. Raw streams expose
 string data; `schema` parses each event's data as JSON and validates it once,
 while `events` selects a schema by event name and returns a discriminated
-`SseMessage` union. Reconnection is intentionally disabled in this release;
-`id` is the identifier declared on the event and `lastEventId` is the effective
-protocol cursor, not a business acknowledgement:
+`SseMessage` union. Reconnection is disabled by default and can be enabled with
+a finite opening budget. Only bodyless safe methods can be replayed
+automatically. `lastEventId` is the identifier declared on the event and the
+effective protocol cursor, not a business acknowledgement:
 
 ```ts
 const events = http.sse('/jobs/42/events', {
@@ -104,7 +105,14 @@ const events = http.sse('/jobs/42/events', {
     progress: ProgressSchema,
     completed: CompletedSchema
   },
-  reconnect: false,
+  lastEventId: persistedCheckpoint,
+  reconnect: {
+    times: 5,
+    delay: HttpRetry.exponential({ initialMs: 500, factor: 2, maxMs: 15_000, jitter: 'full' }),
+    resume: 'last-event-id',
+    respectServerRetry: true,
+    onEnd: 'reconnect'
+  },
   timeout: { headersMs: 10_000, readIdleMs: 45_000, totalMs: false }
 })
 
@@ -112,6 +120,11 @@ yield * events.forEach((message) => handleEvent(message))
 ```
 
 The parser accepts UTF-8 chunks, LF/CRLF/CR line endings, comments, multiline
-data, and protocol `retry` controls without opening a second connection.
+data, and protocol `retry` controls. `times` counts every new physical opening,
+including failed openings; a response's headers or heartbeats do not reset the
+budget. `Last-Event-ID` is sent only to the configured SSE origin, and an empty
+cursor removes the header. A server cannot supply history that it does not
+retain, and the client does not deduplicate events or promise exactly-once
+delivery; applications own checkpoint persistence and effect idempotency.
 Unknown event names fail by default when `events` is supplied; raw mode does
 not parse JSON or interpret provider-specific markers.

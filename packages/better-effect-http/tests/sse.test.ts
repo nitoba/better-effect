@@ -2,10 +2,13 @@
 import { Result } from 'better-result'
 import { Scope } from 'better-effect'
 import { expect, test } from 'bun:test'
-import { HttpDecodeError, HttpHookError, HttpTimeoutError } from '../src/errors'
+import { HttpDecodeError, HttpHookError, HttpRequestError, HttpTimeoutError } from '../src/errors'
 import { SseUnexpectedEventError } from '../src/codecs/sse'
 import { sse } from '../src/codecs/sse/description'
 import { HttpStreamUnexpectedEndError } from '../src/stream'
+import { HttpRetry } from '../src/retry'
+import { HttpInterceptor, HttpRequest } from '../src'
+import { makeHttpLimiter } from '../src/limits'
 import type { StandardSchemaV1 } from 'better-effect-schema'
 
 const schema = <Output>(
@@ -333,6 +336,13 @@ test('reconnect true is rejected before opening the one-shot body', () => {
   expect(() =>
     sse({ fetch: fetchStream('data: ok\n\n') }, '/events', { reconnect: true } as never)
   ).toThrow()
+  expect(() =>
+    sse({ fetch: fetchStream('data: ok\n\n') }, '/events', {
+      method: 'POST',
+      body: { command: 'run' },
+      reconnect: { times: 1, onEnd: 'reconnect' }
+    })
+  ).toThrow(HttpRequestError)
 })
 
 test('schema and event-map modes are mutually exclusive at runtime', () => {
@@ -343,4 +353,218 @@ test('schema and event-map modes are mutually exclusive at runtime', () => {
       events: { message: value }
     } as never)
   ).toThrow()
+})
+
+test('reconnects transient openings and resumes with the delivered cursor', async () => {
+  const requests: Array<{ readonly lastEventId: string | null }> = []
+  let calls = 0
+  const fetch = Object.assign(
+    async (
+      _input: Parameters<typeof globalThis.fetch>[0],
+      init?: Parameters<typeof globalThis.fetch>[1]
+    ) => {
+      requests.push({ lastEventId: new Headers(init?.headers).get('last-event-id') })
+      calls++
+      if (calls === 1) return new Response(null, { status: 503 })
+      if (calls === 2)
+        return new Response('id: delivered\ndata: value\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' }
+        })
+      return new Response(null, { status: 204 })
+    },
+    { preconnect: () => {} }
+  ) as typeof globalThis.fetch
+
+  const values = await collect(
+    sse({ fetch }, '/events', {
+      lastEventId: 'persisted',
+      reconnect: {
+        times: 2,
+        delay: HttpRetry.fixed(0),
+        resume: 'last-event-id',
+        onEnd: 'reconnect'
+      }
+    }).results()
+  )
+
+  expect(values).toEqual([
+    Result.ok({ event: 'message', data: 'value', id: 'delivered', lastEventId: 'delivered' })
+  ])
+  expect(calls).toBe(3)
+  expect(requests.map((request) => request.lastEventId)).toEqual([
+    'persisted',
+    'persisted',
+    'delivered'
+  ])
+})
+
+test('reconnect times count failed openings and are not reset after headers', async () => {
+  let calls = 0
+  const fetch = Object.assign(
+    async () => {
+      calls++
+      if (calls === 1) return new Response(null, { status: 503 })
+      if (calls === 2)
+        return new Response('id: one\ndata: value\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' }
+        })
+      return new Response(null, { status: 503 })
+    },
+    { preconnect: () => {} }
+  ) as typeof globalThis.fetch
+
+  const values = await collect(
+    sse({ fetch }, '/events', {
+      reconnect: { times: 2, delay: () => 0, onEnd: 'reconnect' }
+    }).results()
+  )
+
+  expect(values).toHaveLength(2)
+  expect(values[0]).toEqual(
+    Result.ok({ event: 'message', data: 'value', id: 'one', lastEventId: 'one' })
+  )
+  expect(values[1] && Result.isError(values[1])).toBe(true)
+  expect(calls).toBe(3)
+})
+
+test('204 ends an SSE session without consuming reconnect budget', async () => {
+  let calls = 0
+  const fetch = Object.assign(
+    async () => {
+      calls++
+      return new Response(null, { status: 204 })
+    },
+    { preconnect: () => {} }
+  ) as typeof globalThis.fetch
+
+  const values = await collect(
+    sse({ fetch }, '/events', {
+      reconnect: { times: 5, delay: () => 0, onEnd: 'reconnect' }
+    }).results()
+  )
+  expect(values).toEqual([])
+  expect(calls).toBe(1)
+})
+
+test('id-only frames update the resumed cursor only after a complete frame', async () => {
+  const headers: Array<string | null> = []
+  let calls = 0
+  const fetch = Object.assign(
+    async (
+      _input: Parameters<typeof globalThis.fetch>[0],
+      init?: Parameters<typeof globalThis.fetch>[1]
+    ) => {
+      headers.push(new Headers(init?.headers).get('last-event-id'))
+      calls++
+      if (calls === 1)
+        return new Response('id: first\n\nid:\n\nid: incomplete\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' }
+        })
+      return new Response(null, { status: 204 })
+    },
+    { preconnect: () => {} }
+  ) as typeof globalThis.fetch
+
+  const values = await collect(
+    sse({ fetch }, '/events', {
+      reconnect: { times: 1, delay: () => 0, resume: 'last-event-id', onEnd: 'reconnect' }
+    }).results()
+  )
+  expect(values).toEqual([])
+  expect(calls).toBe(2)
+  expect(headers).toEqual([null, null])
+})
+
+test('rejects illegal initial and replay cursors as request errors', () => {
+  expect(() => sse({ fetch: fetchStream('') }, '/events', { lastEventId: 'bad\nvalue' })).toThrow(
+    HttpRequestError
+  )
+  expect(() =>
+    sse({ fetch: fetchStream('') }, '/events', {
+      lastEventId: 'ok',
+      reconnect: { times: 1, resume: 'last-event-id', onEnd: 'reconnect' },
+      headers: { 'last-event-id': 'bad\u0000value' }
+    })
+  ).toThrow(HttpRequestError)
+})
+
+test('runs request interceptors for every physical opening and observes reconnect metadata', async () => {
+  const authorization: string[] = []
+  const reconnects: unknown[] = []
+  let calls = 0
+  const fetch = Object.assign(
+    async (
+      _input: Parameters<typeof globalThis.fetch>[0],
+      init?: Parameters<typeof globalThis.fetch>[1]
+    ) => {
+      authorization.push(new Headers(init?.headers).get('authorization') ?? '')
+      calls++
+      if (calls === 1) return new Response(null, { status: 503 })
+      return new Response(null, { status: 204 })
+    },
+    { preconnect: () => {} }
+  ) as typeof globalThis.fetch
+  const token = HttpInterceptor.make({
+    name: 'fresh-token',
+    onRequest: ({ request }) =>
+      HttpRequest.setHeader(request, 'authorization', `token-${calls + 1}`)
+  })
+  const observer = HttpInterceptor.observe({
+    name: 'reconnect-observer',
+    onStreamReconnect: (context) => {
+      reconnects.push(context)
+    }
+  })
+
+  const values = await collect(
+    sse({ fetch }, '/events', { reconnect: { times: 1, delay: () => 0 } }, undefined, [
+      token,
+      observer
+    ]).results()
+  )
+
+  expect(values).toEqual([])
+  expect(authorization).toEqual(['token-1', 'token-2'])
+  expect(reconnects).toEqual([
+    {
+      connection: 2,
+      attempt: 1,
+      delayMs: 0,
+      reason: 'status',
+      lastEventId: ''
+    }
+  ])
+})
+
+test('releases the stream admission before waiting for a reconnect', async () => {
+  const limiter = makeHttpLimiter({ concurrency: 1 })!
+  let calls = 0
+  const fetch = Object.assign(
+    async () => {
+      calls++
+      if (calls === 1)
+        return new Response('data: value\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' }
+        })
+      return new Response(null, { status: 204 })
+    },
+    { preconnect: () => {} }
+  ) as typeof globalThis.fetch
+
+  const values = await collect(
+    sse(
+      { fetch },
+      '/events',
+      { reconnect: { times: 1, delay: () => 0, onEnd: 'reconnect' } },
+      limiter
+    ).results()
+  )
+  expect(values).toEqual([
+    Result.ok({ event: 'message', data: 'value', id: undefined, lastEventId: '' })
+  ])
+  expect(calls).toBe(2)
 })

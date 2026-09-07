@@ -51,6 +51,16 @@ const namedEvents = client.sse('/events', {
   reconnect: false,
   timeout: { headersMs: 10_000, readIdleMs: 45_000, totalMs: false }
 })
+const resumableEvents = client.sse('/events', {
+  lastEventId: 'persisted',
+  reconnect: {
+    times: 5,
+    delay: Http.HttpRetry.exponential({ initialMs: 500, factor: 2, maxMs: 15_000, jitter: 'full' }),
+    resume: 'last-event-id',
+    respectServerRetry: true,
+    onEnd: 'reconnect'
+  }
+})
 type ExpectedNamedEvents = SseEventMessage<{
   readonly progress: typeof userSchema
   readonly failed: typeof notFoundSchema
@@ -80,9 +90,13 @@ const handleNamed = (message: ExpectedNamedEvents): void => {
 // @ts-expect-error schema and events are mutually exclusive.
 client.sse('/events', { schema: userSchema, events: { progress: userSchema } })
 
+// @ts-expect-error reconnect requires a policy object or false.
+client.sse('/events', { reconnect: true })
+
 void rawEvents
 void typedEvents
 void namedEvents
+void resumableEvents
 void handleNamed
 
 const recovery = Http.HttpAuth.refresh({

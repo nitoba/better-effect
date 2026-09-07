@@ -5,6 +5,8 @@ export type {
   SseLimits,
   SseMessage,
   SseOptions,
+  SseReconnectOptions,
+  SseReconnectReason,
   SseRawOptions,
   SseRequestOptions,
   SseSchemaOptions,

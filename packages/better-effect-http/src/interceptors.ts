@@ -17,6 +17,18 @@ export type HttpResponseHookContext<A = unknown> = Readonly<{
   readonly operationId?: string
 }>
 
+export type HttpStreamReconnectContext = Readonly<{
+  /** Stable identity of the logical HTTP call, when the pipeline provides it. */
+  readonly operationId?: string
+  /** One-based physical connection number that will be opened next. */
+  readonly connection: number
+  /** One-based reconnection number, excluding the initial opening. */
+  readonly attempt: number
+  readonly delayMs: number
+  readonly reason: 'eof' | 'status' | 'transport' | 'read' | 'timeout'
+  readonly lastEventId: string
+}>
+
 export type HttpInterceptor<R extends AnyService = never, E = HttpError> = Readonly<{
   readonly name: string
   readonly onRequest?: (context: HttpRequestHookContext) => HookValue<HttpRequest, E, R>
@@ -42,6 +54,7 @@ export type HttpObserver<R extends AnyService = never> = Readonly<{
   readonly onError?: (
     context: Readonly<{ error: HttpError; operationId?: string }>
   ) => HookValue<void, never, R>
+  readonly onStreamReconnect?: (context: HttpStreamReconnectContext) => HookValue<void, never, R>
   readonly requirements?: EffectRequirements<R>
   readonly _kind: 'observe'
 }>

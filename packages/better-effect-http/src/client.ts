@@ -20,6 +20,7 @@ import type { HttpRetryPolicy } from './retry'
 import { makeHttpLimiter } from './limits'
 import { stream as makeStream } from './stream/description'
 import type { HttpStream } from './stream/description'
+import type { HttpHook } from './internal/hooks'
 import { ndjson as makeNdjson } from './codecs/ndjson/description'
 import type { HttpNdjsonRequestOptions, HttpNdjsonStream } from './codecs/ndjson/description'
 import { sse as makeSse } from './codecs/sse/description'
@@ -145,7 +146,9 @@ const makeClient = <Tag extends string>(
   const client = {
     stream: (path: string, options?: TransportRequestOptions) => makeStream(config, path, options),
     ndjson: (path: string, options?: HttpNdjsonRequestOptions) => makeNdjson(config, path, options),
-    sse: (path: string, options?: SseRawOptions) => makeSse(config, path, options),
+    sse: (path: string, options?: SseRawOptions) =>
+      // SAFETY: configured hook values are narrowed by the runtime hook guards before invocation.
+      makeSse(config, path, options, limiter, hooks as unknown as readonly HttpHook[]),
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
     use: (...added: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[]) =>
       makeClient(config, [...hooks, ...added], limiter),
@@ -180,7 +183,7 @@ const attach = <Tag extends string>(
     ...(hooks.interceptors ?? []),
     ...(hooks.observers ?? []),
     ...(hooks.middleware ?? [])
-  ]
+  ] as readonly HttpHook[]
   Object.defineProperty(service, 'layer', {
     value: (options: HttpClientOptions) =>
       Layer.make(service, () => makeClient<Tag>(options, configured))
