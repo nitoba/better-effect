@@ -1,4 +1,12 @@
 export { JobStore, isJobStoreToken, jobStoreTag } from './store'
+export {
+  JobEventStore,
+  isJobEventStoreToken,
+  jobEventExtension,
+  jobEventExtensionVersion,
+  jobEventStoreTag
+} from './event-store'
+export { JobEventCursorExpiredError, JobEventStoreFailure } from './event-errors'
 export { assertJobStoreProtocolCompatible, isJobStoreDescriptor } from './compatibility'
 
 export type {
@@ -10,8 +18,30 @@ export type {
   JobStoreToken
 } from './store'
 
+export type {
+  AnyJobEventStoreToken,
+  AwaitEventsOptions,
+  DefaultJobEventStoreToken,
+  DurableJobEvent,
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventCursor,
+  JobEventPage,
+  JobEventReadOptions,
+  JobEventRetention,
+  JobEventStoreContract,
+  JobEventStoreDescriptor,
+  JobEventStoreEffect,
+  JobEventStoreInstance,
+  JobEventStoreOperation,
+  JobEventStoreTag,
+  JobEventStoreToken
+} from './event-store'
+export type { JobEventStoreError } from './event-errors'
+
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'
+export { MemoryJobEventStore } from './memory-event-store'
 export {
   controlledProtocolVersion,
   protocolVersionV3,
@@ -76,6 +106,7 @@ export type {
   MemoryJobStoreIdGenerator,
   MemoryJobStoreOptions
 } from './memory'
+export type { MemoryJobEventStoreClock, MemoryJobEventStoreOptions } from './memory-event-store'
 export type {
   JobStoreCancelError,
   JobStoreClaimError,

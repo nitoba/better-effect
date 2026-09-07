@@ -80,6 +80,9 @@ import type {
 import type { AttemptRecord, JobRecord, JobTransition } from '../protocol'
 import type { JobStoreError } from './errors'
 import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from './store'
+import type { DurableJobEventType, JobEventStoreContract } from './event-store'
+import { getMemoryJobEventStoreInternals } from './memory-event-store'
+import type { MemoryJobEventStoreInternals } from './memory-event-store'
 
 import { JobStore } from './store'
 import { JobStoreWakeAbortedError } from './errors'
@@ -104,6 +107,8 @@ export interface MemoryJobStoreOptions {
   readonly clock?: MemoryJobStoreClock | (() => number | Date)
   /** Optional deterministic source for generated job IDs and lease tokens. */
   readonly idGenerator?: MemoryJobStoreIdGenerator
+  /** Optional reference EventStore to receive atomic transition appends. */
+  readonly eventStore?: JobEventStoreContract
 }
 
 type Operation<Value> = JobStoreOperation<Value, JobStoreError>
@@ -498,12 +503,20 @@ class MemoryJobStoreImplementation {
   private readonly rotations = new Map<string, number>()
   private readonly clock: MemoryJobStoreOptions['clock']
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
+  private readonly eventAppender: MemoryJobEventStoreInternals | undefined
   private claimInProgress = false
   private criticalSectionDepth = 0
 
   constructor(options: MemoryJobStoreOptions = {}) {
     this.clock = options.clock
     this.idGenerator = options.idGenerator
+    this.eventAppender =
+      options.eventStore === undefined
+        ? undefined
+        : getMemoryJobEventStoreInternals(options.eventStore)
+    if (options.eventStore !== undefined && this.eventAppender === undefined) {
+      throw new TypeError('MemoryJobStore eventStore must be a MemoryJobEventStore instance')
+    }
     this.validateOptions(options)
   }
 
@@ -678,6 +691,9 @@ class MemoryJobStoreImplementation {
       for (const item of planned) {
         this.jobs.set(item.transition.record.id, item.transition.record)
         this.issuedLeaseTokens.add(item.transition.record.leaseToken!)
+        this.appendEvent('job-claimed', item.transition.record, item.transition.record.updatedAt, {
+          previous: item.previous
+        })
       }
       if (planned.length > 0) this.invalidateListOrder(queue.value)
 
@@ -1109,7 +1125,7 @@ class MemoryJobStoreImplementation {
       }
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
-      this.commitPrepared([prepared.value], true)
+      this.commitPrepared([prepared.value], true, this.settlementEventType(attempt))
       this.releaseControlledPermit(jobId.value, leaseToken.value)
       this.settled.set(jobId.value, { leaseToken: leaseToken.value, outcomeDigest })
       return ok({
@@ -1156,7 +1172,7 @@ class MemoryJobStoreImplementation {
       if (Result.isError(transition)) return fail(transition.error)
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
-      this.commitPrepared([prepared.value], true)
+      this.commitPrepared([prepared.value], true, 'job-released')
       this.releaseControlledPermit(jobId.value, leaseToken.value)
       return ok(snapshotTransition(prepared.value.transition))
     } catch {
@@ -1326,7 +1342,7 @@ class MemoryJobStoreImplementation {
         planned.push(prepared.value)
       }
 
-      this.commitPrepared(planned, true)
+      this.commitPrepared(planned, true, 'job-stalled-recovered')
       for (const item of planned) {
         if (item.transition.record.state !== 'active') {
           const permit = this.controlledPermits.get(item.transition.record.id)
@@ -1658,6 +1674,7 @@ class MemoryJobStoreImplementation {
         )
       }
 
+      this.appendEvent('job-removed', current, now.value)
       this.jobs.delete(current.id)
       this.attempts.delete(current.id)
       this.removeIdempotency(current)
@@ -2005,6 +2022,9 @@ class MemoryJobStoreImplementation {
     if (!input.explicitId) this.generatedJobIds.add(record.value.id)
     if (dedupe !== undefined) this.idempotency.set(dedupe, record.value.id)
     this.invalidateListOrder(record.value.queue)
+    this.appendEvent('job-enqueued', record.value, record.value.createdAt, {
+      duplicate: false
+    })
     this.notifyQueues([record.value.queue])
     return Result.ok({ job: cloneRecord(record.value), duplicate: false })
   }
@@ -2199,7 +2219,11 @@ class MemoryJobStoreImplementation {
     })
   }
 
-  private commitPrepared(prepared: readonly PreparedTransition[], notify: boolean): void {
+  private commitPrepared(
+    prepared: readonly PreparedTransition[],
+    notify: boolean,
+    eventType?: DurableJobEventType
+  ): void {
     if (prepared.length === 0) return
     const queues = new Set<string>()
     for (const item of prepared) {
@@ -2219,9 +2243,91 @@ class MemoryJobStoreImplementation {
         history.push(attempt)
         this.attempts.set(record.id, history)
       }
+      if (eventType !== undefined) {
+        if (attempt === undefined) {
+          this.appendEvent(eventType, record, record.updatedAt, { previous: item.previous })
+        } else {
+          this.appendEvent(eventType, record, record.updatedAt, {
+            previous: item.previous,
+            attempt
+          })
+        }
+      }
     }
     this.sequence = Math.max(this.sequence, prepared[prepared.length - 1]!.nextSequence)
     if (queues.size > 0) this.notifyQueues(queues)
+  }
+
+  private settlementEventType(attempt: AttemptRecord): DurableJobEventType {
+    switch (attempt.outcome) {
+      case 'completed':
+        return 'job-completed'
+      case 'retried':
+        return 'job-retry-scheduled'
+      case 'failed':
+        return 'job-failed'
+      case 'cancelled':
+        return 'job-cancelled'
+      case 'stalled':
+        return 'job-stalled-recovered'
+      case 'released':
+        return 'job-released'
+    }
+  }
+
+  private transitionEventType(
+    command: Exclude<Parameters<typeof reduceJob>[1], { type: 'claim' }>,
+    previous: JobRecord,
+    next: JobRecord
+  ): DurableJobEventType | undefined {
+    switch (command.type) {
+      case 'cancel':
+        return 'job-cancelled'
+      case 'request-cancellation':
+        return previous.cancellationRequestedAt === next.cancellationRequestedAt
+          ? undefined
+          : 'job-cancel-requested'
+      case 'promote':
+        return 'job-promoted'
+      case 'retry':
+        return 'job-admin-retried'
+      case 'recover-stalled':
+        return 'job-stalled-recovered'
+      case 'settle':
+      case 'release':
+        return undefined
+    }
+  }
+
+  private appendEvent(
+    type: DurableJobEventType,
+    record: JobRecord | undefined,
+    recordedAtMs: number,
+    context: {
+      readonly previous?: JobRecord
+      readonly attempt?: AttemptRecord
+      readonly duplicate?: boolean
+      readonly queue?: QueueName
+    } = {}
+  ): void {
+    if (this.eventAppender === undefined) return
+    const workerId = record?.leaseOwner ?? context.previous?.leaseOwner
+    this.eventAppender.append({
+      type,
+      recordedAtMs,
+      jobId: record?.id,
+      queue: record?.queue ?? context.queue,
+      name: record?.name,
+      version: record?.version,
+      state: record?.state,
+      attempt: context.attempt?.attemptSequence ?? context.attempt?.attempt,
+      delivery: context.attempt?.delivery ?? record?.deliveryCount,
+      workerId,
+      outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
+      failureKind: record?.failure?.kind ?? context.previous?.failure?.kind,
+      duplicate: context.duplicate,
+      attributes: Object.freeze({})
+    })
   }
 
   private transitionById(
@@ -2233,7 +2339,11 @@ class MemoryJobStoreImplementation {
     const prepared = this.prepareTransition(transition.value, current)
     if (Result.isError(prepared)) return fail(prepared.error)
     const notify = command.type === 'promote' || command.type === 'retry'
-    this.commitPrepared([prepared.value], notify)
+    this.commitPrepared(
+      [prepared.value],
+      notify,
+      this.transitionEventType(command, current, prepared.value.transition.record)
+    )
     if (command.type === 'retry') this.settled.delete(current.id)
     return ok(snapshotTransition(prepared.value.transition))
   }
@@ -2277,9 +2387,11 @@ class MemoryJobStoreImplementation {
       const present = this.paused.has(queue.value)
       if (shouldPause && !present) {
         this.paused.add(queue.value)
+        this.appendEvent('queue-paused', undefined, now.value, { queue: queue.value })
         this.notifyQueues([queue.value])
       } else if (!shouldPause && present) {
         this.paused.delete(queue.value)
+        this.appendEvent('queue-resumed', undefined, now.value, { queue: queue.value })
         this.notifyQueues([queue.value])
       }
       return ok(Object.freeze({ queue: queue.value, paused: shouldPause }))
