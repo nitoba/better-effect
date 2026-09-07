@@ -46,7 +46,13 @@ export type HttpRequestFunction = {
 }
 
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
-  readonly use: (...hooks: readonly (HttpInterceptor<any, any> | HttpObserver<any> | HttpMiddleware<any, any, any>)[]) => HttpClientInstance<Tag>
+  readonly use: (
+    ...hooks: readonly (
+      | HttpInterceptor<any, any>
+      | HttpObserver<any>
+      | HttpMiddleware<any, any, any>
+    )[]
+  ) => HttpClientInstance<Tag>
   readonly get: HttpRequestMethod
   readonly post: HttpRequestMethod
   readonly put: HttpRequestMethod
@@ -74,7 +80,10 @@ type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
   readonly layer: (options: HttpClientOptions) => HttpClientLayer<Tag>
 }
 
-const makeClient = <Tag extends string>(config: HttpClientOptions, hooks: readonly unknown[] = []): HttpClientInstance<Tag> => {
+const makeClient = <Tag extends string>(
+  config: HttpClientOptions,
+  hooks: readonly unknown[] = []
+): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>
     operation(config, { method, path, options })
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
@@ -88,7 +97,13 @@ const makeClient = <Tag extends string>(config: HttpClientOptions, hooks: readon
     patch: method('PATCH'),
     delete: method('DELETE'),
     head: method('HEAD'),
-    response: (path: string, options: TransportRequestOptions & { readonly responses: HttpResponseSchemas; readonly schema?: never }) => request('GET', path, options)
+    response: (
+      path: string,
+      options: TransportRequestOptions & {
+        readonly responses: HttpResponseSchemas
+        readonly schema?: never
+      }
+    ) => request('GET', path, options)
   } as HttpClientInstance<Tag>
 }
 
