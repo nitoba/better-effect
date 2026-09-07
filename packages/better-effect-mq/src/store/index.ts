@@ -6,7 +6,12 @@ export {
   jobEventExtensionVersion,
   jobEventStoreTag
 } from './event-store'
-export { JobEventCursorExpiredError, JobEventStoreFailure } from './event-errors'
+export {
+  JobEventConsumerAbortedError,
+  JobEventCursorExpiredError,
+  JobEventStoreFailure
+} from './event-errors'
+export { JobEvents } from './events'
 export { assertJobStoreProtocolCompatible, isJobStoreDescriptor } from './compatibility'
 
 export type {
@@ -38,6 +43,15 @@ export type {
   JobEventStoreToken
 } from './event-store'
 export type { JobEventStoreError } from './event-errors'
+export type {
+  JobEventFilters,
+  JobEventOperation,
+  JobEventsApi,
+  JobEventsForEachOperation,
+  JobEventsForEachOptions,
+  JobEventsHandler,
+  JobEventsPageOperation
+} from './events'
 
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'

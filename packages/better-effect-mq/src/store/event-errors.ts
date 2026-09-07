@@ -48,4 +48,20 @@ export class JobEventCursorExpiredError extends TaggedError('JobEventCursorExpir
   }
 }
 
+/** A long-lived event consumer stopped because its caller or Runtime aborted it. */
+export class JobEventConsumerAbortedError extends TaggedError('JobEventConsumerAbortedError')<{
+  readonly message: string
+}> {
+  constructor() {
+    super({ message: 'Job event consumer was aborted' })
+  }
+
+  static override is<C extends TaggedErrorConstructor>(
+    this: C,
+    value: unknown
+  ): value is InstanceType<C> {
+    return hasTaggedError(value, 'JobEventConsumerAbortedError')
+  }
+}
+
 export type JobEventStoreError = JobEventStoreFailure | JobEventCursorExpiredError
