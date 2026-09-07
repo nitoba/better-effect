@@ -146,6 +146,16 @@ const parseJson = (value: unknown, field: string): unknown => {
   }
 }
 
+const parseJsonArray = (value: unknown, field: string): readonly unknown[] => {
+  const parsed = parseJson(value, field)
+  if (Array.isArray(parsed)) return parsed
+  // Redis Lua cjson encodes an empty table as `{}`, even when the table is
+  // used as an array. The flow scripts only use that representation for an
+  // empty response array.
+  if (isPlainObject(parsed) && Object.keys(parsed).length === 0) return []
+  throw invalid(field, 'must be an array')
+}
+
 const normalizedRecord = (value: unknown): FlowChildRecord => {
   if (!isPlainObject(value)) throw invalid('child', 'must be a plain object')
   const checked = validateChildRecord({
@@ -162,8 +172,7 @@ const validateChildRecord = (value: unknown) => {
 }
 
 const parseChildRecords = (value: unknown): readonly FlowChildRecord[] => {
-  const parsed = parseJson(value, 'children')
-  if (!Array.isArray(parsed)) throw invalid('children', 'must be an array')
+  const parsed = parseJsonArray(value, 'children')
   return Object.freeze(
     parsed.map(normalizedRecord).sort((left, right) => sortBytes(left.childKey, right.childKey))
   )
@@ -229,8 +238,7 @@ const decodeReport = (value: unknown): FlowChildReport => {
 }
 
 const decodeSpecs = (value: unknown): readonly FlowChildSpec[] => {
-  const parsed = parseJson(value, 'specs')
-  if (!Array.isArray(parsed)) throw invalid('specs', 'must be an array')
+  const parsed = parseJsonArray(value, 'specs')
   return Object.freeze(
     parsed.map((item) => {
       const checked = validateFlowChildSpec(item)
@@ -241,8 +249,7 @@ const decodeSpecs = (value: unknown): readonly FlowChildSpec[] => {
 }
 
 const decodeReports = (value: unknown): readonly FlowChildReport[] => {
-  const parsed = parseJson(value, 'reports')
-  if (!Array.isArray(parsed)) throw invalid('reports', 'must be an array')
+  const parsed = parseJsonArray(value, 'reports')
   return Object.freeze(parsed.map(decodeReport))
 }
 
@@ -593,13 +600,11 @@ const normalizeAck = (request: AckOutboxRequest) => {
 }
 
 class RedisFlowStoreImplementation implements FlowStoreV2 {
-  private readonly ready: Promise<void>
+  private ready: Promise<void> | undefined
   private closed = false
   private registry: RedisScriptRegistry | undefined
 
-  constructor(private readonly redis: RedisClient) {
-    this.ready = this.initialize()
-  }
+  constructor(private readonly redis: RedisClient) {}
 
   get descriptor() {
     return Object.freeze({
@@ -613,7 +618,13 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     })
   }
 
-  private async initialize(): Promise<void> {
+  private initialize(): Promise<void> {
+    if (this.ready !== undefined) return this.ready
+    this.ready = this.initializeOnce()
+    return this.ready
+  }
+
+  private async initializeOnce(): Promise<void> {
     await this.redis.initialize()
     const registry = await RedisScriptRegistry.load(
       this.redis.client,
@@ -635,14 +646,14 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     payload: Record<string, unknown>
   ): Promise<readonly unknown[]> {
     if (this.closed) throw new RedisConnectionError(operation)
-    await this.ready
+    await this.initialize()
     if (this.registry === undefined) throw new RedisConnectionError('flow script initialization')
     return decodeScript(this.registry, operation, keys, [canonicalFlowJson(payload)])
   }
 
   private async command(args: readonly string[]): Promise<unknown> {
     if (this.closed) throw new RedisConnectionError('flow command')
-    await this.ready
+    await this.initialize()
     return sendRedisCommand(this.redis.client, args, this.redis.layout.base)
   }
 
