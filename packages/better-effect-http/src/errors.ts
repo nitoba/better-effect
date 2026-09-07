@@ -19,6 +19,7 @@ export type HttpErrorPhase =
   | 'abort'
   | 'decode'
   | 'hook'
+  | 'auth'
 
 export class HttpRequestError extends TaggedError('HttpRequestError')<{
   readonly phase: 'request'
@@ -63,6 +64,11 @@ export class HttpLimitError extends TaggedError('HttpLimitError')<{
   readonly phase: 'admission'
   readonly reason: 'queue-full'
 }> {}
+export class HttpAuthRefreshError extends TaggedError('HttpAuthRefreshError')<{
+  readonly phase: 'auth'
+  readonly reason: 'not-replayable' | 'refresh-failed'
+  readonly cause?: unknown
+}> {}
 
 export type HttpError =
   | HttpRequestError
@@ -73,6 +79,7 @@ export type HttpError =
   | HttpDecodeError
   | HttpHookError
   | HttpLimitError
+  | HttpAuthRefreshError
 
 export const safeErrorJSON = (error: unknown): SafeErrorJSON => {
   if (error instanceof HttpStatusError) return error.toJSON()

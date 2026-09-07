@@ -37,5 +37,13 @@ const expectedResponses: HttpResponseOperation<
   ResponseData<{ 200: typeof userSchema; 404: typeof notFoundSchema }>
 > = responses
 
+const recovery = Http.HttpAuth.refresh({
+  maxReplays: 1,
+  key: 'session',
+  refresh: 'token'
+})
+const typedRecovery: Http.HttpAuthMiddleware<never, never> = recovery
+
 void expectedUser
 void expectedResponses
+void typedRecovery

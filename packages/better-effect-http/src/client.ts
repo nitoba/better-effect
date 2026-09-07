@@ -2,8 +2,8 @@
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- token assertions are justified by the structural contract below. */
 import { Layer, Service } from 'better-effect'
 import type { Layer as LayerType, ServiceIdentity, ServiceToken } from 'better-effect'
-import { operation } from './operation'
 import type { HttpOperation, HttpResponseOperation } from './operation'
+import { operationWithHooks } from './internal/hooks'
 import type { TransportOptions, TransportRequestOptions } from './internal/ofetch-transport'
 import type {
   HttpDecodeOptions,
@@ -22,6 +22,12 @@ import { makeHttpLimiter } from './limits'
 export type HttpClientOptions = TransportOptions & {
   readonly limits?: import('./limits').HttpLimits
 }
+export type HttpClientHooks = Readonly<{
+  readonly interceptors?: readonly HttpInterceptor[]
+  readonly observers?: readonly HttpObserver[]
+  readonly middleware?: readonly HttpMiddleware[]
+}>
+export type HttpClientServiceOptions = HttpClientHooks
 export type HttpRequestOptions = TransportRequestOptions & {
   readonly retry?: HttpRetryPolicy | false
 } & ({ readonly schema?: never; readonly responses?: never } | HttpDecodeOptions)
@@ -92,16 +98,17 @@ type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
 
 const makeClient = <Tag extends string>(
   config: HttpClientOptions,
-  hooks: readonly unknown[] = [],
+  hooks: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[] = [],
   limiter = makeHttpLimiter(config.limits)
 ): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>
-    operation(config, { method, path, options }, limiter)
+    operationWithHooks(config, { method, path, options }, limiter, hooks)
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
     request(name, path, options)
   const client = {
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
-    use: (...added: readonly unknown[]) => makeClient(config, [...hooks, ...added], limiter),
+    use: (...added: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[]) =>
+      makeClient(config, [...hooks, ...added], limiter),
     request,
     get: method('GET'),
     post: method('POST'),
@@ -126,21 +133,28 @@ const token = Service<HttpClientInstance<'HttpClient'>>()(
 ) as unknown as HttpClientToken<'HttpClient'>
 
 const attach = <Tag extends string>(
-  service: HttpClientToken<Tag>
+  service: HttpClientToken<Tag>,
+  hooks: HttpClientHooks = {}
 ): HttpClientTokenWithLayer<Tag> => {
+  const configured = [
+    ...(hooks.interceptors ?? []),
+    ...(hooks.observers ?? []),
+    ...(hooks.middleware ?? [])
+  ]
   Object.defineProperty(service, 'layer', {
-    value: (options: HttpClientOptions) => Layer.make(service, () => makeClient<Tag>(options))
+    value: (options: HttpClientOptions) =>
+      Layer.make(service, () => makeClient<Tag>(options, configured))
   })
   // SAFETY: `layer` was defined as a non-enumerable own property immediately above.
   return service as HttpClientTokenWithLayer<Tag>
 }
 
 export const HttpClient = Object.assign(attach(token), {
-  service<const Tag extends string>(tag: Tag): HttpClientTokenWithLayer<Tag> {
+  service<const Tag extends string>(tag: Tag, hooks: HttpClientServiceOptions = {}) {
     // SAFETY: Service validates the non-empty literal tag at runtime; the cast restores the erased instance contract.
     const service = Service<HttpClientInstance<Tag>>()(
       tag as never
     ) as unknown as HttpClientToken<Tag>
-    return attach(service)
+    return attach(service, hooks)
   }
 })
