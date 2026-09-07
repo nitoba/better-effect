@@ -113,19 +113,42 @@ export function operation(config: TransportOptions, request: AnyOperationRequest
       let response: Response
       while (true) {
         response = await executeRequest(config, request)
+        if (policy === undefined) break
         try {
-          const responseType = 'options' in request ? request.options.responseType : request.responseType
+          const responseType =
+            'options' in request ? request.options.responseType : request.responseType
           if (!response.ok) await classifyResponse(response, responseType, request.method)
           break
         } catch (error) {
+          // SAFETY: classifyResponse and executeRequest only reach this branch with a typed HTTP failure.
           const httpError = error as import('./errors').HttpError
-          const eligible = policy !== undefined && (methods === undefined || methods.includes(request.method.toUpperCase())) && (httpError._tag === 'HttpStatusError' ? retryableStatus(httpError.status) : httpError._tag === 'HttpTransportError' || httpError._tag === 'HttpTimeoutError') && (policy.when === undefined || policy.when({ error: httpError, attempt: attempt + 1 }))
+          const eligible =
+            policy !== undefined &&
+            (methods === undefined || methods.includes(request.method.toUpperCase())) &&
+            (httpError._tag === 'HttpStatusError'
+              ? retryableStatus(httpError.status)
+              : httpError._tag === 'HttpTransportError' || httpError._tag === 'HttpTimeoutError') &&
+            (policy.when === undefined || policy.when({ error: httpError, attempt: attempt + 1 }))
           if (!eligible || attempt >= policy.times) throw error
           const local = policy.delay?.(attempt + 1) ?? 0
-          const server = policy.respectRetryAfter && httpError._tag === 'HttpStatusError' ? retryAfterMs(httpError.headers.get('retry-after')) ?? 0 : 0
+          const server =
+            policy.respectRetryAfter && httpError._tag === 'HttpStatusError'
+              ? (retryAfterMs(httpError.headers.get('retry-after')) ?? 0)
+              : 0
           const wait = Math.max(local, server)
-          if (policy.totalMs !== undefined && Date.now() - started + wait > policy.totalMs) throw error
-          await new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, wait); requestOptions.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(requestOptions.signal?.reason) }, { once: true }) })
+          if (policy.totalMs !== undefined && Date.now() - started + wait > policy.totalMs)
+            throw error
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, wait)
+            requestOptions.signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer)
+                reject(requestOptions.signal?.reason)
+              },
+              { once: true }
+            )
+          })
           attempt++
         }
       }
