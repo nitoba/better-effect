@@ -1,6 +1,6 @@
 # better-effect-mq-mongodb
 
-MongoDB adapter for the protocol-v1 [`better-effect-mq`](../better-effect-mq) `JobStore` and its schedules extension.
+MongoDB adapter for the protocol-v1 [`better-effect-mq`](../better-effect-mq) `JobStore`, durable `JobEventStore`, and its schedules extension.
 
 `mongodb` is an optional peer: importing this package and using a caller-owned
 `Db` does not load the driver. The adapter requires MongoDB transactions, so a
@@ -38,6 +38,35 @@ const StoreLive = MongoJobStore.layer({
   collectionPrefix: 'better_effect_mq'
 })
 ```
+
+## Durable JobEventStore
+
+The event extension is explicit and Layer-first. It stores safe, cursor-ordered
+transition records in `${collectionPrefix}_events` and allocates a monotonic
+cursor from the namespace counter. It never records payloads, results, failure
+data, or arbitrary metadata. Run the normal migration first; event-enabled
+layers validate the layout and do not migrate automatically:
+
+```ts
+import { JobEventStore, JobStore } from 'better-effect-mq'
+import { MongoJobEventStore, MongoJobStore } from 'better-effect-mq-mongodb'
+
+await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
+const EventsLive = MongoJobEventStore.layer({ db, namespace: 'notifications' })
+const StoreAndEventsLive = MongoJobStore.layerWithEvents(
+  { db, namespace: 'notifications' },
+  { retention: { ageMs: 7 * 24 * 60 * 60 * 1000, count: 100_000 } }
+)
+const Durable = JobStore.named('durable')
+const Events = JobEventStore.for(Durable)
+```
+
+`read({ after })` is exclusive and advances in cursor order even when filters
+skip events. Retention is enforced by bounded sweeps for both age and count;
+expired cursors return `JobEventCursorExpiredError`. `awaitEvents` uses a
+MongoDB change stream only as a best-effort wake hint and always retains a
+polling fallback. With `layerWithEvents`, a transition and its event append
+commit or rollback together.
 
 Schedules use the associated `JobStore` token and are provided as a separate
 Layer. Named stores therefore remain isolated in MongoDB namespaces:
@@ -157,10 +186,10 @@ await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
 ```
 
 Migration creates validated `jobs`, `attempts`, `queues`, `counters`,
-`migrations`, `schedules`, `outbox`, and the four QueueControls collections,
+`migrations`, `schedules`, `outbox`, `events`, and the four QueueControls collections,
 plus claim, idempotency, lease, list, ledger, metadata, controlled-claim,
 permit, rate-window, due-schedule, and outbox fencing indexes. The schedules,
-outbox, and controls extensions advance the MongoDB layout marker to 4 without
+outbox, controls, and event extensions advance the MongoDB layout marker to 5 without
 deleting or rewriting existing protocol-v1 data. Validation uses `moderate`/`error` to support
 expand/migrate/contract rollouts; it is additional protection, not a
 replacement for document decoding at the adapter boundary.

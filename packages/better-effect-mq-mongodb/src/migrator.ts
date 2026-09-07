@@ -192,6 +192,42 @@ const schemas = {
       failure: { bsonType: 'object' }
     }
   ),
+  events: validator(['_id', 'namespace', 'cursor', 'recordedAtMs', 'eventType', 'attributes'], {
+    _id: { bsonType: 'string', minLength: 1 },
+    namespace: { bsonType: 'string', minLength: 1 },
+    cursor: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    recordedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+    eventType: {
+      enum: [
+        'job-enqueued',
+        'job-claimed',
+        'job-completed',
+        'job-retry-scheduled',
+        'job-failed',
+        'job-cancelled',
+        'job-cancel-requested',
+        'job-released',
+        'job-stalled-recovered',
+        'job-promoted',
+        'job-admin-retried',
+        'job-removed',
+        'queue-paused',
+        'queue-resumed'
+      ]
+    },
+    jobId: { bsonType: 'string', minLength: 1 },
+    queue: { bsonType: 'string', minLength: 1 },
+    name: { bsonType: 'string', minLength: 1 },
+    version: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    state: { bsonType: 'string', minLength: 1 },
+    attempt: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    delivery: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    workerId: { bsonType: 'string', minLength: 1 },
+    outcome: { bsonType: 'string', minLength: 1 },
+    failureKind: { bsonType: 'string', minLength: 1 },
+    duplicate: { bsonType: 'bool' },
+    attributes: { bsonType: 'object' }
+  }),
   schedules: validator(
     [
       '_id',
@@ -482,6 +518,12 @@ const indexes = (prefix: string) => ({
     { key: { namespace: 1, state: 1, leaseExpiresAtMs: 1 }, name: 'outbox_lease_sweep' },
     { key: { namespace: 1, target: 1, state: 1, createdAtMs: -1, id: -1 }, name: 'outbox_target' }
   ],
+  [`${prefix}_events`]: [
+    { key: { namespace: 1, cursor: 1 }, name: 'event_cursor', unique: true },
+    { key: { namespace: 1, queue: 1, cursor: 1 }, name: 'event_queue_cursor' },
+    { key: { namespace: 1, eventType: 1, cursor: 1 }, name: 'event_type_cursor' },
+    { key: { namespace: 1, recordedAtMs: 1, cursor: 1 }, name: 'event_retention' }
+  ],
   [`${prefix}_controls`]: [
     { key: { namespace: 1, queue: 1 }, name: 'controls_identity', unique: true },
     { key: { namespace: 1, controlGroup: 1, queue: 1 }, name: 'controls_group' }
@@ -636,10 +678,11 @@ export const MongoJobStoreMigrator = Object.freeze({
       await ensureCollection(db, names[4]!, undefined)
       await ensureCollection(db, names[5]!, schemas.schedules)
       await ensureCollection(db, names[6]!, schemas.outbox)
-      await ensureCollection(db, names[7]!, controlsSchema)
-      await ensureCollection(db, names[8]!, permitsSchema)
-      await ensureCollection(db, names[9]!, rateWindowsSchema)
-      await ensureCollection(db, names[10]!, controlCursorsSchema)
+      await ensureCollection(db, names[7]!, schemas.events)
+      await ensureCollection(db, names[8]!, controlsSchema)
+      await ensureCollection(db, names[9]!, permitsSchema)
+      await ensureCollection(db, names[10]!, rateWindowsSchema)
+      await ensureCollection(db, names[11]!, controlCursorsSchema)
       const declared = indexes(prefix)
       for (const [name, definition] of Object.entries(declared))
         await db.collection(name).createIndexes(definition)

@@ -4,7 +4,7 @@
 
 import type { MongoDb } from './config'
 
-export const MONGODB_LAYOUT_VERSION = 4 as const
+export const MONGODB_LAYOUT_VERSION = 5 as const
 export const MONGODB_PROTOCOL_VERSION = 1 as const
 export const MONGODB_FLOW_LAYOUT_VERSION = 1 as const
 export const MONGODB_FLOW_PROTOCOL_VERSION = 2 as const
@@ -24,6 +24,7 @@ export const mongoCollections = (db: MongoDb, prefix: string) =>
     controlCursors: db.collection(`${prefix}_controlled_cursors`),
     migrations: db.collection(`${prefix}_migrations`),
     outbox: db.collection(`${prefix}_outbox`),
+    events: db.collection(`${prefix}_events`),
     flowChildren: db.collection(`${prefix}_flow_children`),
     flowOutbox: db.collection(`${prefix}_flow_outbox`)
   })
@@ -37,6 +38,7 @@ export const collectionNames = (prefix: string) =>
     `${prefix}_migrations`,
     `${prefix}_schedules`,
     `${prefix}_outbox`,
+    `${prefix}_events`,
     `${prefix}_controls`,
     `${prefix}_controlled_permits`,
     `${prefix}_controlled_rate_windows`,

@@ -5,7 +5,7 @@ import { MONGODB_LAYOUT_VERSION, collectionNames, MongoJobScheduleStore } from '
 
 describe('MongoDB schedule layout', () => {
   test('declares the schedule collection without changing protocol v1', () => {
-    expect(MONGODB_LAYOUT_VERSION).toBe(4)
+    expect(MONGODB_LAYOUT_VERSION).toBe(5)
     expect(collectionNames('better_effect_mq')).toContain('better_effect_mq_schedules')
   })
 

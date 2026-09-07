@@ -5,6 +5,7 @@ export { MongoJobStoreClient } from './client'
 export { MongoJobStoreMigrator } from './migrator'
 export { MongoFlowMigrator } from './migrator'
 export { MongoQueueChangeStream } from './change-stream'
+export { MongoJobEventStore } from './event-store'
 export { MongoOutbox } from './MongoOutbox'
 export { MongoOutboxStore } from './MongoOutboxStore'
 export { OutboxStore, isOutboxStoreToken, outboxStoreTag } from 'better-effect-mq-outbox'
@@ -49,6 +50,12 @@ export type {
   MongoOutboxStoreConnectionConfig,
   MongoOutboxStoreContract
 } from './MongoOutboxStore'
+export type {
+  MongoJobEventStoreConfig,
+  MongoJobEventStoreConnectionConfig,
+  MongoJobEventStoreInstance,
+  MongoJobEventStoreOptions
+} from './event-store'
 export {
   MongoJobStoreConfigurationError,
   MongoJobStoreError,

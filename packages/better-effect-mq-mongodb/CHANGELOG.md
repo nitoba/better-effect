@@ -10,6 +10,12 @@
   rate-window, and fairness-cursor collections and indexes.
 - Add the protocol-v2 `MongoFlowStore` with explicit flow migration, atomic
   child settlement reports, durable flow outbox delivery, and named layers.
+- Add the durable `MongoJobEventStore` with namespace-scoped monotonic cursors,
+  filtered pagination, explicit age/count retention, polling fallback, and
+  change-stream wake hints.
+- Advance the MongoDB layout to version 5 with validated events and cursor
+  collections. Event-enabled JobStore layers append transition events in the
+  same MongoDB transaction as the state change.
 
 ## [0.1.0] - 2026-09-04
 
