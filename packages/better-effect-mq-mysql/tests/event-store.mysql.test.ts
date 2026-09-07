@@ -11,7 +11,15 @@ import {
   QueueName,
   WorkerId
 } from 'better-effect-mq'
-import { MYSQL_TABLES, MySqlClient, MySqlJobEventStore, MySqlJobStore } from '../src/index'
+import {
+  MYSQL_TABLES,
+  MySqlClient,
+  MySqlJobEventStore,
+  MySqlJobStore,
+  type PoolConnection,
+  type QueryResult
+} from '../src/index'
+import { appendMySqlJobEvent } from '../src/event-store'
 
 const uri = process.env.MYSQL_URL
 const integration = uri === undefined ? test.skip : test
@@ -48,6 +56,50 @@ const makeRuntime = async (retention?: { readonly count?: number; readonly ageMs
       : MySqlJobEventStore.layer({ ...config, retention })
   return Runtime.make(Layer.merge(MySqlJobStore.layer(config), events))
 }
+
+test('quotes the reserved event cursor column when appending an event', async () => {
+  const queries: string[] = []
+  const connection: PoolConnection = {
+    query: async <Row = unknown>(sql: string): Promise<QueryResult<Row>> => {
+      queries.push(sql)
+      if (sql.includes('SELECT next_cursor')) {
+        // SAFETY: the fake models the exact row shape returned by this fixed SELECT.
+        return { rows: [{ next_cursor: 1 }] as Row[], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    },
+    execute: async <Row = unknown>(): Promise<QueryResult<Row>> => ({ rows: [], rowCount: 0 }),
+    beginTransaction: async () => undefined,
+    commit: async () => undefined,
+    rollback: async () => undefined,
+    release: () => undefined
+  }
+
+  await appendMySqlJobEvent(
+    connection,
+    { namespace: 'events-test' },
+    {
+      type: 'job-enqueued',
+      recordedAtMs: 1,
+      jobId: undefined,
+      queue: undefined,
+      name: undefined,
+      version: undefined,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes: Object.freeze({})
+    }
+  )
+
+  const insert = queries.find((sql) => sql.startsWith('INSERT INTO `better_effect_mq_job_events`'))
+  expect(insert).toContain('`cursor`')
+  expect(insert).not.toContain('namespace,cursor')
+})
 
 describe('MySQL durable JobEventStore', () => {
   beforeAll(async () => {

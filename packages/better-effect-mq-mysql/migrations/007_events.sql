@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS better_effect_mq_job_event_cursors (
 
 CREATE TABLE IF NOT EXISTS better_effect_mq_job_events (
   namespace VARCHAR(255) NOT NULL,
-  cursor BIGINT UNSIGNED NOT NULL,
+  `cursor` BIGINT UNSIGNED NOT NULL,
   recorded_at_ms BIGINT UNSIGNED NOT NULL,
   event_type VARCHAR(64) NOT NULL,
   job_id VARCHAR(255) NULL,
@@ -27,9 +27,9 @@ CREATE TABLE IF NOT EXISTS better_effect_mq_job_events (
   failure_kind VARCHAR(64) NULL,
   duplicate BOOLEAN NULL,
   attributes JSON NOT NULL,
-  PRIMARY KEY (namespace, cursor),
+  PRIMARY KEY (namespace, `cursor`),
   CONSTRAINT better_effect_mq_job_events_values CHECK (
-    namespace <> '' AND cursor > 0
+    namespace <> '' AND `cursor` > 0
     AND recorded_at_ms <= 9007199254740991
     AND (job_id IS NULL OR job_id <> '')
     AND (queue IS NULL OR queue <> '')
@@ -48,6 +48,6 @@ CREATE TABLE IF NOT EXISTS better_effect_mq_job_events (
       'job-removed', 'queue-paused', 'queue-resumed'
     )
   ),
-  KEY better_effect_mq_job_events_queue_cursor_idx (namespace(191), queue(191), cursor),
-  KEY better_effect_mq_job_events_type_cursor_idx (namespace(191), event_type, cursor)
+  KEY better_effect_mq_job_events_queue_cursor_idx (namespace(191), queue(191), `cursor`),
+  KEY better_effect_mq_job_events_type_cursor_idx (namespace(191), event_type, `cursor`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

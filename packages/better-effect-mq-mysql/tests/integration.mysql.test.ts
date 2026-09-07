@@ -217,7 +217,7 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
 
   integration('migrates fresh layouts and upgrades an existing v1 MySQL layout', async () => {
     const client = MySqlClient.fromPool({ pool: configuredPool(), namespace })
-    expect(upgradeApplied).toEqual([2, 3, 4, 5, 6])
+    expect(upgradeApplied).toEqual([2, 3, 4, 5, 6, 7])
     expect(upgradedColumns).toEqual(
       new Map([
         ['dedupe_hash', 'binary'],

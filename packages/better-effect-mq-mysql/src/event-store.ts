@@ -86,6 +86,7 @@ const descriptor: JobEventStoreDescriptor = Object.freeze({
 
 const eventTable = (): string => quoteIdentifier(MYSQL_TABLES.events)
 const cursorTable = (): string => quoteIdentifier(MYSQL_TABLES.eventCursors)
+const eventCursorColumn = quoteIdentifier('cursor')
 
 const hash = (value: string): string =>
   createHash('sha256').update(value).digest('hex').slice(0, 48)
@@ -350,7 +351,7 @@ export const appendMySqlJobEvent = async (
   const nextCursor = cursor.rows[0]?.next_cursor
   if (nextCursor === undefined) throw new Error('event cursor exhausted')
   await tx.query(
-    `INSERT INTO ${events} (namespace,cursor,recorded_at_ms,event_type,job_id,queue,name,version,state,attempt,delivery,worker_id,outcome,failure_kind,duplicate,attributes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO ${events} (namespace,${eventCursorColumn},recorded_at_ms,event_type,job_id,queue,name,version,state,attempt,delivery,worker_id,outcome,failure_kind,duplicate,attributes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [client.namespace, nextCursor, ...eventInputValues(input)]
   )
   markMySqlJobEventWake(tx, client.namespace)
@@ -470,7 +471,7 @@ class MySqlJobEventStoreImplementation {
     }
     if (this.retention.count !== undefined) {
       await tx.query(
-        `DELETE FROM ${this.table()} WHERE namespace=? AND cursor NOT IN (SELECT cursor FROM (SELECT cursor FROM ${this.table()} WHERE namespace=? ORDER BY cursor DESC LIMIT ?) AS retained)`,
+        `DELETE FROM ${this.table()} WHERE namespace=? AND ${eventCursorColumn} NOT IN (SELECT ${eventCursorColumn} FROM (SELECT ${eventCursorColumn} FROM ${this.table()} WHERE namespace=? ORDER BY ${eventCursorColumn} DESC LIMIT ?) AS retained)`,
         [this.client.namespace, this.client.namespace, this.retention.count]
       )
     }
@@ -493,7 +494,7 @@ class MySqlJobEventStoreImplementation {
       })
     }
     const first = await tx.query<Row>(
-      `SELECT MIN(cursor) AS cursor FROM ${this.table()} WHERE namespace=?`,
+      `SELECT MIN(${eventCursorColumn}) AS ${eventCursorColumn} FROM ${this.table()} WHERE namespace=?`,
       [this.client.namespace]
     )
     const firstCursor = first.rows[0]?.cursor
@@ -532,7 +533,7 @@ class MySqlJobEventStoreImplementation {
           await this.prune(tx, Date.now())
           await this.assertReadable(tx, normalized.after)
           const rows = await tx.query<Row>(
-            `SELECT cursor,recorded_at_ms,event_type,job_id,queue,name,version,state,attempt,delivery,worker_id,outcome,failure_kind,duplicate,attributes FROM ${this.table()} WHERE namespace=? AND cursor>? ORDER BY cursor ASC LIMIT ?`,
+            `SELECT ${eventCursorColumn},recorded_at_ms,event_type,job_id,queue,name,version,state,attempt,delivery,worker_id,outcome,failure_kind,duplicate,attributes FROM ${this.table()} WHERE namespace=? AND ${eventCursorColumn}>? ORDER BY ${eventCursorColumn} ASC LIMIT ?`,
             [
               this.client.namespace,
               normalized.after,
@@ -579,7 +580,7 @@ class MySqlJobEventStoreImplementation {
         values.push(...queues)
       }
       const rows = await tx.query<Row>(
-        `SELECT 1 FROM ${this.table()} WHERE namespace=? AND cursor>?${queueClause} LIMIT 1`,
+        `SELECT 1 FROM ${this.table()} WHERE namespace=? AND ${eventCursorColumn}>?${queueClause} LIMIT 1`,
         values
       )
       return rows.rows.length > 0

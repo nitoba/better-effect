@@ -394,6 +394,25 @@ const rateWindowColumns = [
   'claim_count',
   'updated_at_ms'
 ] as const
+const eventCursorColumns = ['namespace', 'next_cursor'] as const
+const eventColumns = [
+  'namespace',
+  'cursor',
+  'recorded_at_ms',
+  'event_type',
+  'job_id',
+  'queue',
+  'name',
+  'version',
+  'state',
+  'attempt',
+  'delivery',
+  'worker_id',
+  'outcome',
+  'failure_kind',
+  'duplicate',
+  'attributes'
+] as const
 const controlsIndexes = Object.freeze({
   better_effect_mq_jobs_dispatch_idx: [
     { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
@@ -420,6 +439,25 @@ const controlsIndexes = Object.freeze({
     { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
     { non_unique: 1, column_name: 'queue', sub_part: 191, collation: 'A' },
     { non_unique: 1, column_name: 'started_at_ms', sub_part: null, collation: 'A' }
+  ]
+} satisfies Readonly<Record<string, readonly IndexPart[]>>)
+const eventCursorIndexes = Object.freeze({
+  PRIMARY: [{ non_unique: 0, column_name: 'namespace', sub_part: null, collation: 'A' }]
+} satisfies Readonly<Record<string, readonly IndexPart[]>>)
+const eventIndexes = Object.freeze({
+  PRIMARY: [
+    { non_unique: 0, column_name: 'namespace', sub_part: null, collation: 'A' },
+    { non_unique: 0, column_name: 'cursor', sub_part: null, collation: 'A' }
+  ],
+  better_effect_mq_job_events_queue_cursor_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'queue', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'cursor', sub_part: null, collation: 'A' }
+  ],
+  better_effect_mq_job_events_type_cursor_idx: [
+    { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
+    { non_unique: 1, column_name: 'event_type', sub_part: null, collation: 'A' },
+    { non_unique: 1, column_name: 'cursor', sub_part: null, collation: 'A' }
   ]
 } satisfies Readonly<Record<string, readonly IndexPart[]>>)
 const flowChildrenColumns = [
@@ -542,6 +580,10 @@ const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
     throw new MySqlMigrationError(
       'MySQL migration 006 reconciliation metadata does not match its DDL'
     )
+  if (migration.version === 7 && ddl.length !== 2)
+    throw new MySqlMigrationError(
+      'MySQL migration 007 reconciliation metadata does not match its DDL'
+    )
   if (migration.version === 6)
     return [
       {
@@ -593,6 +635,30 @@ const migrationDdls = (migration: MySqlMigration): readonly MigrationDdl[] => {
         sql: ddl[6]!,
         isSatisfied: async (connection) =>
           flowTable(connection, MYSQL_TABLES.rateWindows, rateWindowColumns)
+      }
+    ]
+  if (migration.version === 7)
+    return [
+      {
+        sql: ddl[0]!,
+        isSatisfied: async (connection) => {
+          if (!(await flowTable(connection, MYSQL_TABLES.eventCursors, eventCursorColumns)))
+            return false
+          return matchesIndexes(
+            await indexes(connection, MYSQL_TABLES.eventCursors, ['PRIMARY']),
+            eventCursorIndexes
+          )
+        }
+      },
+      {
+        sql: ddl[1]!,
+        isSatisfied: async (connection) => {
+          if (!(await flowTable(connection, MYSQL_TABLES.events, eventColumns))) return false
+          return matchesIndexes(
+            await indexes(connection, MYSQL_TABLES.events, Object.keys(eventIndexes)),
+            eventIndexes
+          )
+        }
       }
     ]
   if (migration.version === 5)
