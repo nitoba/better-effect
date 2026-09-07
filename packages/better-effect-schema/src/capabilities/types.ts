@@ -1,7 +1,6 @@
 import type { Result } from 'better-result'
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec'
 
-import type { SchemaEffect } from '../schema-effect.js'
 import type {
   SchemaDefinitionFailure,
   SchemaExecutionFailure,
@@ -15,8 +14,8 @@ export type StandardSchema = StandardSchemaV1
 export type SchemaInput<Schema extends StandardSchemaV1> = StandardSchemaV1.InferInput<Schema>
 export type SchemaOutput<Schema extends StandardSchemaV1> = StandardSchemaV1.InferOutput<Schema>
 
-/** Result accepted from an adapter capability. `SchemaEffect` remains valid for core adapters. */
-export type CapabilityResult<Value, Failure> = Result<Value, Failure> | SchemaEffect<Value, Failure>
+/** Result returned by an adapter capability. Async variants are explicit per capability. */
+export type CapabilityResult<Value, Failure> = Result<Value, Failure>
 export type AsyncCapabilityResult<Value, Failure> =
   | CapabilityResult<Value, Failure>
   | PromiseLike<CapabilityResult<Value, Failure>>
@@ -27,10 +26,13 @@ export type SchemaCapabilityFailure =
   | SchemaUnsupportedOperation
   | SchemaAsyncRequired
 
-/** The portable relationship between wire input, decoded output, props, and a class instance. */
-export interface SchemaDescriptor<Input, Output, Props, Self> {
+/**
+ * The portable relationship between wire input, decoded output, construction input,
+ * normalized props, and a class instance.
+ */
+export interface SchemaDescriptor<Input, Output, Props, Self, ConstructionInput = Props> {
   readonly schema: StandardSchemaV1<Input, Output>
-  readonly props: StandardSchemaV1<Props, Props>
+  readonly propsSchema: StandardSchemaV1<ConstructionInput, Props>
   readonly construct: (props: Props) => Self
 }
 
@@ -53,12 +55,12 @@ export interface SchemaReadCapability {
 }
 
 export interface SchemaPropsCapability {
-  readonly props: <Input, Output, Props, Self>(
-    descriptor: SchemaDescriptor<Input, Output, Props, Self>
-  ) => CapabilityResult<StandardSchemaV1<Props, Props>, SchemaCapabilityFailure>
-  readonly make: <Input, Output, Props, Self>(
-    descriptor: SchemaDescriptor<Input, Output, Props, Self>,
-    props: Props
+  readonly props: <Input, Output, Props, Self, ConstructionInput = Props>(
+    descriptor: SchemaDescriptor<Input, Output, Props, Self, ConstructionInput>
+  ) => CapabilityResult<StandardSchemaV1<ConstructionInput, Props>, SchemaCapabilityFailure>
+  readonly make: <Input, Output, Props, Self, ConstructionInput = Props>(
+    descriptor: SchemaDescriptor<Input, Output, Props, Self, ConstructionInput>,
+    props: ConstructionInput
   ) => CapabilityResult<Self, SchemaCapabilityFailure>
 }
 
@@ -80,6 +82,13 @@ export interface SchemaEncodingCapability {
 }
 
 export type SchemaFieldMap = Readonly<Record<string, StandardSchemaV1>>
+
+export type SchemaJSONSchemaSide = 'input' | 'output'
+
+export interface SchemaJSONSchemaOptions extends StandardJSONSchemaV1.Options {
+  /** Select the representation described by the generated document. */
+  readonly side?: SchemaJSONSchemaSide
+}
 
 export interface SchemaStructureCapability {
   readonly fields: <Input, Output>(
@@ -106,7 +115,7 @@ export interface SchemaDerivationCapability {
 export interface SchemaJSONSchemaCapability {
   readonly toJSONSchema: <Input, Output>(
     schema: StandardSchemaV1<Input, Output>,
-    options: StandardJSONSchemaV1.Options
+    options: SchemaJSONSchemaOptions
   ) => CapabilityResult<Record<string, unknown>, SchemaCapabilityFailure>
 }
 

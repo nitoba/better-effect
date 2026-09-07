@@ -32,6 +32,8 @@ export type {
   SchemaFieldMap,
   SchemaInput,
   SchemaJSONSchemaCapability,
+  SchemaJSONSchemaOptions,
+  SchemaJSONSchemaSide,
   SchemaNativeBridgeCapability,
   SchemaObjectPolicy,
   SchemaOutput,

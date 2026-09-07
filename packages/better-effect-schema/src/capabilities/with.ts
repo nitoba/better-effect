@@ -18,6 +18,21 @@ type PublicCapabilityFailure = SchemaCapabilityFailure | SchemaAsyncRequired
 
 type CapabilityKey = keyof SchemaCapabilities
 
+const capabilityMethods = new Set([
+  'read',
+  'props',
+  'make',
+  'encoded',
+  'encode',
+  'encodeAsync',
+  'fields',
+  'struct',
+  'policy',
+  'derive',
+  'toJSONSchema',
+  'bridge'
+])
+
 type SelectedCapability<Adapter extends SchemaAdapter, Key extends CapabilityKey> =
   | (Key extends keyof Adapter ? NonNullable<Adapter[Key]> : never)
   | (Adapter['capabilities'] extends SchemaCapabilities
@@ -49,6 +64,25 @@ const selectedCapability = (
 const unsupported = (operation: string): ResultType<never, SchemaUnsupportedOperation> =>
   Result.err(new SchemaUnsupportedOperation({ operation }))
 
+const isResult = (value: unknown): boolean => {
+  if (!isObjectLike(value)) return false
+
+  try {
+    const result = value as ResultType<unknown, unknown>
+    return Result.isOk(result) || Result.isError(result)
+  } catch {
+    return false
+  }
+}
+
+const normalizeResult = (
+  operation: string,
+  value: unknown
+): CapabilityResult<unknown, PublicCapabilityFailure> =>
+  isResult(value)
+    ? (value as CapabilityResult<unknown, PublicCapabilityFailure>)
+    : Result.err(new SchemaExecutionFailure({ operation, cause: 'invalid-result' }))
+
 const syncCapability = (
   operation: string,
   capability: unknown,
@@ -68,7 +102,7 @@ const syncCapability = (
   const result = invokeSync<CapabilityResult<unknown, SchemaCapabilityFailure>>(operation, () =>
     Reflect.apply(method, owner, args)
   )
-  return Result.isError(result) ? result : result.value
+  return Result.isError(result) ? result : normalizeResult(operation, result.value)
 }
 
 const asyncCapability = async (
@@ -91,7 +125,7 @@ const asyncCapability = async (
     operation,
     () => Reflect.apply(method, owner, args)
   )
-  return Result.isError(result) ? result : result.value
+  return Result.isError(result) ? result : normalizeResult(operation, result.value)
 }
 
 type Method<Capability, Key extends PropertyKey> = Capability extends unknown
@@ -197,5 +231,16 @@ export const withAdapter = <Adapter extends SchemaAdapter>(
   installSync(facade, adapter, 'jsonSchema', 'toJSONSchema')
   installSync(facade, adapter, 'bridge', 'bridge')
 
-  return Object.freeze(facade) as unknown as SchemaFacade<Adapter>
+  const frozenFacade = Object.freeze(facade)
+  return new Proxy(frozenFacade, {
+    get(target, property, receiver) {
+      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver)
+
+      if (typeof property === 'string' && capabilityMethods.has(property)) {
+        return () => unsupported(property)
+      }
+
+      return undefined
+    }
+  }) as unknown as SchemaFacade<Adapter>
 }

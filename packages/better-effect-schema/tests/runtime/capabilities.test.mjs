@@ -54,3 +54,27 @@ test('Schema.with normalizes throwing capability callbacks', () => {
   assert.equal(Result.isError(result), true)
   if (Result.isError(result)) assert.ok(result.error instanceof SchemaExecutionFailure)
 })
+
+test('Schema.with turns malformed capability returns into Result failures', () => {
+  const local = Schema.with({
+    encoding: {
+      encode() {
+        return { value: 'not-a-result' }
+      }
+    }
+  })
+
+  const result = local.encode({}, 'value')
+
+  assert.equal(Result.isError(result), true)
+  if (Result.isError(result)) assert.ok(result.error instanceof SchemaExecutionFailure)
+})
+
+test('Schema.with reports missing capabilities through the runtime boundary', () => {
+  const local = Schema.with({})
+  const castFacade = local
+  const result = castFacade.derive()
+
+  assert.equal(Result.isError(result), true)
+  if (Result.isError(result)) assert.equal(result.error._tag, 'SchemaUnsupportedOperation')
+})
