@@ -106,6 +106,8 @@ test('captures async codec completion, sync async requirements, and rejection', 
   assert.equal(Result.isError(syncResult), true)
   if (Result.isError(syncResult))
     assert.equal(syncResult.error instanceof SchemaAsyncRequired, true)
+  if (Result.isError(syncResult))
+    assert.equal(syncResult.error.cause?.constructor?.name, '$ZodAsyncError')
 
   const asyncResult = await Local.encodeAsync(asyncCodec, new Date('2026-09-06T00:00:00.000Z'))
   assert.equal(unwrap(asyncResult), '2026-09-06T00:00:00.000Z')

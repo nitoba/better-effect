@@ -6,7 +6,19 @@ export type SyncExecution<A> = SchemaEffect<A, SchemaExecutionFailure | SchemaAs
 
 export type AsyncExecution<A> = SchemaEffect<A, SchemaExecutionFailure>
 
-const asyncSignal = (_cause: unknown): boolean => false
+export interface SyncExecutionOptions {
+  readonly isAsyncError?: (cause: unknown) => boolean
+}
+
+const isAsyncError = (options: SyncExecutionOptions, cause: unknown): boolean => {
+  if (options.isAsyncError === undefined) return false
+
+  try {
+    return options.isAsyncError(cause)
+  } catch {
+    return false
+  }
+}
 
 const inspectThenable = (
   value: unknown
@@ -23,13 +35,17 @@ const inspectThenable = (
 }
 
 /** Invoke one synchronous provider and turn every unexpected throw into a Result failure. */
-export const invokeSync = <A>(operation: string, thunk: () => A): SyncExecution<A> => {
+export const invokeSync = <A>(
+  operation: string,
+  thunk: () => A,
+  options: SyncExecutionOptions = {}
+): SyncExecution<A> => {
   let value: A
 
   try {
     value = thunk()
   } catch (cause) {
-    if (asyncSignal(cause)) {
+    if (isAsyncError(options, cause)) {
       return schemaFailure<A, SchemaExecutionFailure | SchemaAsyncRequired>(
         new SchemaAsyncRequired({ operation, cause })
       )

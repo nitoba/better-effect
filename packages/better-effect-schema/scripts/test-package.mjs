@@ -75,7 +75,13 @@ try {
   run('tar', ['-xzf', archive, '-C', extracted], root)
   await rename(join(extracted, 'package'), join(consumerModules, 'better-effect-schema'))
 
-  for (const dependency of ['@standard-schema/spec', 'better-effect', 'better-result', 'zod']) {
+  for (const dependency of [
+    '@standard-schema/spec',
+    'better-effect',
+    'better-result',
+    'valibot',
+    'zod'
+  ]) {
     await linkDependency(dependency, consumerModules)
   }
 
@@ -116,9 +122,11 @@ try {
 
   await writeFile(
     join(consumer, 'smoke.ts'),
-    `import * as z from "zod"
+    `import * as v from "valibot"
+import * as z from "zod"
 import { Effect } from "better-effect"
 import { Result, TaggedError } from "better-result"
+import { ValibotAdapter } from "better-effect-schema/valibot"
 import {
   Schema,
   SchemaAsyncRequired,
@@ -176,6 +184,13 @@ const failure = new UserNotFound({
   id: "550e8400-e29b-41d4-a716-446655440000"
 })
 if (!TaggedError.is(failure)) throw new Error("TaggedError protocol was lost")
+
+const valibotUser = v.object({ id: v.string() })
+const valibotFields = Schema.with(ValibotAdapter).fields(valibotUser)
+if (valibotFields.status === "error") throw valibotFields.error
+if (valibotFields.value.id !== valibotUser.entries.id) {
+  throw new Error("Valibot subpath capability was not preserved")
+}
 
 console.log("external-consumer: ok")
 `

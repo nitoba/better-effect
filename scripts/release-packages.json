@@ -49,7 +49,8 @@
         "MONOREPO_INTEGRATION.md",
         "VERIFICATION.md",
         "docs/api.md",
-        "docs/architecture.md"
+        "docs/architecture.md",
+        "docs/valibot.md"
       ]
     },
     {

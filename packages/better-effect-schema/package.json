@@ -5,14 +5,14 @@
   "keywords": [
     "better-effect",
     "better-result",
-    "schema",
-    "standard-schema",
-    "zod",
     "class",
     "codec",
     "effect",
+    "schema",
+    "standard-schema",
     "typescript",
-    "validation"
+    "validation",
+    "zod"
   ],
   "homepage": "https://github.com/nitoba/better-effect#readme",
   "bugs": {
@@ -25,15 +25,20 @@
     "url": "git+https://github.com/nitoba/better-effect.git",
     "directory": "packages/better-effect-schema"
   },
+  "files": [
+    "dist",
+    "docs/api.md",
+    "docs/valibot.md",
+    "docs/architecture.md",
+    "README.md",
+    "VERIFICATION.md",
+    "MIGRATION.md",
+    "MONOREPO_INTEGRATION.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "type": "module",
   "sideEffects": false,
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "engines": {
-    "node": ">=20"
-  },
   "main": "./dist/esm/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
@@ -48,19 +53,17 @@
       "import": "./dist/esm/zod.js",
       "default": "./dist/esm/zod.js"
     },
+    "./valibot": {
+      "types": "./dist/esm/valibot.d.ts",
+      "import": "./dist/esm/valibot.js",
+      "default": "./dist/esm/valibot.js"
+    },
     "./package.json": "./package.json"
   },
-  "files": [
-    "dist",
-    "docs/api.md",
-    "docs/architecture.md",
-    "README.md",
-    "VERIFICATION.md",
-    "MIGRATION.md",
-    "MONOREPO_INTEGRATION.md",
-    "CHANGELOG.md",
-    "LICENSE"
-  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -82,17 +85,27 @@
   "dependencies": {
     "@standard-schema/spec": "^1.1.0"
   },
-  "peerDependencies": {
-    "better-effect": ">=0.13.0 <0.14.0",
-    "better-result": "^3.0.0",
-    "typescript": ">=6.0.0",
-    "zod": ">=4.5.4 <5"
-  },
   "devDependencies": {
     "better-effect": "0.13.0",
     "better-result": "3.0.1",
     "publint": "^0.3.23",
     "typescript": "^7.0.2",
+    "valibot": "1.4.2",
     "zod": "4.5.4"
+  },
+  "peerDependencies": {
+    "better-effect": ">=0.13.0 <0.14.0",
+    "better-result": "^3.0.0",
+    "typescript": ">=6.0.0",
+    "valibot": ">=1.4.2 <2",
+    "zod": ">=4.5.4 <5"
+  },
+  "peerDependenciesMeta": {
+    "valibot": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
