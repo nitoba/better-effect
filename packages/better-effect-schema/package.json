@@ -43,6 +43,11 @@
       "import": "./dist/esm/index.js",
       "default": "./dist/esm/index.js"
     },
+    "./zod": {
+      "types": "./dist/esm/zod.d.ts",
+      "import": "./dist/esm/zod.js",
+      "default": "./dist/esm/zod.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

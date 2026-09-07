@@ -8,8 +8,8 @@ import {
   SchemaAsyncRequired,
   SchemaExecutionFailure,
   SchemaUnsupportedOperation
-} from '../../dist/esm/index.js'
-import { ZodAdapter } from '../../dist/esm/adapters/zod/index.js'
+} from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 
 const Local = Schema.with(ZodAdapter)
 
