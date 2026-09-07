@@ -52,6 +52,7 @@ const validColumnNames = {
     'delivery_count',
     'stalled_count',
     'attempt_sequence',
+    'dispatch_key',
     'backoff',
     'timeout_ms',
     'idempotency_key',
@@ -88,6 +89,35 @@ const validColumnNames = {
     'retry_delay_ms'
   ],
   [POSTGRES_TABLES.queues]: ['namespace', 'queue', 'paused', 'wake_version', 'updated_at_ms'],
+  [POSTGRES_TABLES.controls]: [
+    'namespace',
+    'queue',
+    'control_group',
+    'enabled',
+    'revision',
+    'global_concurrency',
+    'per_key_concurrency',
+    'rate_limit_max',
+    'rate_limit_duration_ms',
+    'created_at_ms',
+    'updated_at_ms'
+  ],
+  [POSTGRES_TABLES.controlCursors]: ['namespace', 'queue', 'cursor_sequence', 'updated_at_ms'],
+  [POSTGRES_TABLES.permits]: [
+    'namespace',
+    'job_id',
+    'queue',
+    'dispatch_key',
+    'lease_token',
+    'acquired_at_ms'
+  ],
+  [POSTGRES_TABLES.rateWindows]: [
+    'namespace',
+    'queue',
+    'started_at_ms',
+    'claim_count',
+    'updated_at_ms'
+  ],
   [POSTGRES_TABLES.schedules]: [
     'namespace',
     'schedule_key',
@@ -210,7 +240,15 @@ const validIndexDefinitions = {
   [POSTGRES_INDEXES[15]]:
     'CREATE INDEX better_effect_mq_outbox_digest_idx ON better_effect_mq_outbox (namespace, request_digest COLLATE "C" ASC)',
   [POSTGRES_INDEXES[16]]:
-    'CREATE INDEX better_effect_mq_outbox_published_idx ON better_effect_mq_outbox (namespace, published_at_ms DESC, sequence DESC, id COLLATE "C" DESC) WHERE state = \'published\''
+    'CREATE INDEX better_effect_mq_outbox_published_idx ON better_effect_mq_outbox (namespace, published_at_ms DESC, sequence DESC, id COLLATE "C" DESC) WHERE state = \'published\'',
+  [POSTGRES_INDEXES[17]]:
+    'CREATE INDEX better_effect_mq_jobs_dispatch_idx ON better_effect_mq_jobs (namespace, queue, dispatch_key, state, priority DESC, run_at_ms, sequence, id COLLATE "C")',
+  [POSTGRES_INDEXES[18]]:
+    'CREATE INDEX better_effect_mq_controlled_permits_queue_key_idx ON better_effect_mq_controlled_permits (namespace, queue, dispatch_key, job_id COLLATE "C")',
+  [POSTGRES_INDEXES[19]]:
+    'CREATE INDEX better_effect_mq_controlled_permits_job_token_idx ON better_effect_mq_controlled_permits (namespace, job_id, lease_token)',
+  [POSTGRES_INDEXES[20]]:
+    'CREATE INDEX better_effect_mq_rate_windows_expiry_idx ON better_effect_mq_rate_windows (namespace, queue, started_at_ms)'
 } as const
 
 const validConstraintRows = (schema: string) => [
@@ -235,7 +273,15 @@ const validConstraintRows = (schema: string) => [
             ? POSTGRES_TABLES.schedules
             : conname.startsWith('better_effect_mq_outbox_')
               ? POSTGRES_TABLES.outbox
-              : POSTGRES_TABLES.schemaVersions,
+              : conname.startsWith('better_effect_mq_queue_controls_')
+                ? POSTGRES_TABLES.controls
+                : conname.startsWith('better_effect_mq_queue_control_cursors_')
+                  ? POSTGRES_TABLES.controlCursors
+                  : conname.startsWith('better_effect_mq_controlled_permits_')
+                    ? POSTGRES_TABLES.permits
+                    : conname.startsWith('better_effect_mq_rate_windows_')
+                      ? POSTGRES_TABLES.rateWindows
+                      : POSTGRES_TABLES.schemaVersions,
     constraint_type: 'c',
     validated: true,
     definition
@@ -324,9 +370,13 @@ const fakePool = (options: FakeOptions = {}) => {
             indexname,
             tablename: indexname.startsWith('better_effect_mq_schedules_')
               ? POSTGRES_TABLES.schedules
-              : indexname.startsWith('better_effect_mq_outbox_')
-                ? POSTGRES_TABLES.outbox
-                : POSTGRES_TABLES.jobs,
+              : indexname.startsWith('better_effect_mq_controlled_permits_')
+                ? POSTGRES_TABLES.permits
+                : indexname.startsWith('better_effect_mq_rate_windows_')
+                  ? POSTGRES_TABLES.rateWindows
+                  : indexname.startsWith('better_effect_mq_outbox_')
+                    ? POSTGRES_TABLES.outbox
+                    : POSTGRES_TABLES.jobs,
             indexdef: validIndexDefinitions[indexname],
             is_valid: indexname !== options.invalidIndex,
             is_ready: true,
@@ -385,7 +435,7 @@ describe('Postgres foundation', () => {
 
   test('loads the shipped migration with a stable checksum', async () => {
     const migrations = await loadPostgresMigrations()
-    expect(migrations).toHaveLength(4)
+    expect(migrations).toHaveLength(5)
     expect(migrations[0]?.version).toBe(1)
     expect(migrations[0]?.sql).toContain('better_effect_mq_jobs')
     expect(migrations[1]?.version).toBe(2)
@@ -394,6 +444,8 @@ describe('Postgres foundation', () => {
     expect(migrations[2]?.sql).toContain('better_effect_mq_outbox')
     expect(migrations[3]?.version).toBe(4)
     expect(migrations[3]?.sql).toContain('better_effect_mq_flow_children')
+    expect(migrations[4]?.version).toBe(5)
+    expect(migrations[4]?.sql).toContain('better_effect_mq_queue_controls')
     expect(migrations[0]?.checksum).toMatch(/^[0-9a-f]{64}$/u)
   })
 
@@ -479,7 +531,7 @@ describe('Postgres foundation', () => {
   test('migration is locked, explicit, and idempotency metadata is bound', async () => {
     const { pool, queries } = fakePool({ validSchema: true })
     const first = await PostgresMigrator.run(pool, { appliedAtMs: 1 })
-    expect(first).toMatchObject({ applied: [1, 2, 3, 4], version: 4, schema: 'public' })
+    expect(first).toMatchObject({ applied: [1, 2, 3, 4, 5], version: 5, schema: 'public' })
     expect(queries.some(({ sql }) => sql.includes('pg_advisory_xact_lock'))).toBe(true)
     expect(queries.some(({ sql }) => sql.includes('DROP TABLE'))).toBe(false)
     const lock = queries.find(({ sql }) => sql.includes('pg_advisory_xact_lock'))

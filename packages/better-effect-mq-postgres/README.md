@@ -6,8 +6,11 @@
 caller-owned pool does not load `pg`; `PostgresClient.fromConfig` loads it
 lazily when it creates an owned pool. The shipped migration requires PostgreSQL
 12 or newer because it uses `jsonb_path_exists` for metadata constraints. The
-JobStore preserves protocol v1; its descriptor reports layout `1`,
-`metadataIndex: 'indexed'`, transactional enqueue, and native batch claim/enqueue.
+JobStore preserves protocol v1 for the base contract and adds controlled claim
+protocol v3 in migration `005_controls_v3.sql`. Controlled queues persist the
+producer's `dispatchKey`, revisioned limits, fixed windows, fairness cursors,
+and fenced permits. Claims lock controls, rate windows, permits, and jobs in
+that order and fail closed when a legacy claim or stale revision is presented.
 See the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
 ## Flow protocol v2
@@ -123,6 +126,9 @@ and schema names are validated before quoting. Migration
 indexes without modifying the initial migration. `migrations/003_outbox.sql`
 adds the namespaced outbox table, digest index, claim/lease indexes, and
 published-record index without modifying the JobStore or schedule tables.
+Migration `migrations/005_controls_v3.sql` adds the controlled-claim layout;
+its fixed-window rate limiter is anchored at the first accepted claim and does
+not refund capacity on settlement, release, cancellation, or recovery.
 
 ## Upgrade and downgrade policy
 

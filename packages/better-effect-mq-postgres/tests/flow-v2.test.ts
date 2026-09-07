@@ -124,7 +124,7 @@ const createParent = async (
 describe('PostgreSQL flow protocol v2', () => {
   test('ships an additive flow migration and leaves historical migrations unchanged', async () => {
     const migrations = await loadPostgresMigrations()
-    expect(migrations).toHaveLength(4)
+    expect(migrations).toHaveLength(5)
     expect(migrations.slice(0, 3).map(({ checksum }) => checksum)).toEqual([
       '318f515315265f43f75703530465b7700572c3191867fe43b95a37ca6afca8a7',
       '98812cdcab7c4b87525f64a941936a37d08334bb337f287fcd82fa7a2fe9610d',
@@ -133,6 +133,7 @@ describe('PostgreSQL flow protocol v2', () => {
     expect(migrations[3]?.sql).toContain('better_effect_mq_flow_children')
     expect(migrations[3]?.sql).toContain('better_effect_mq_flow_outbox')
     expect(migrationSql(migrations[3]!, 'flow_test')).toContain('"flow_test"')
+    expect(migrations[4]?.sql).toContain('better_effect_mq_queue_controls')
   })
 
   test('rejects a v1-only schema during the v2 handshake', async () => {

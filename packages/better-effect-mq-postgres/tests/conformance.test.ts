@@ -76,8 +76,8 @@ const suite = jobStoreContract({
     metadataIndex: 'indexed',
     transactionalEnqueue: true,
     durableChangeFeed: false,
-    globalConcurrency: false,
-    rateLimiting: false
+    globalConcurrency: true,
+    rateLimiting: true
   },
   makeRuntime: async () =>
     Runtime.make(PostgresJobStore.layer({ pool, schema, namespace, validateSchema: false })),
@@ -117,10 +117,10 @@ describe('PostgreSQL JobStore conformance via PGlite', () => {
       metadataIndex: 'indexed',
       transactionalEnqueue: true,
       durableChangeFeed: false,
-      globalConcurrency: false,
-      rateLimiting: false
+      globalConcurrency: true,
+      rateLimiting: true
     })
     expect(report.descriptor?.capabilities).toEqual(report.capabilities)
-    expect(report.capabilitiesNotTested).toEqual([])
+    expect(report.capabilitiesNotTested).toEqual(['globalConcurrency', 'rateLimiting'])
   })
 })

@@ -107,6 +107,7 @@ const requiredColumns = {
     'delivery_count',
     'stalled_count',
     'attempt_sequence',
+    'dispatch_key',
     'backoff',
     'timeout_ms',
     'idempotency_key',
@@ -143,6 +144,35 @@ const requiredColumns = {
     'retry_delay_ms'
   ],
   [POSTGRES_TABLES.queues]: ['namespace', 'queue', 'paused', 'wake_version', 'updated_at_ms'],
+  [POSTGRES_TABLES.controls]: [
+    'namespace',
+    'queue',
+    'control_group',
+    'enabled',
+    'revision',
+    'global_concurrency',
+    'per_key_concurrency',
+    'rate_limit_max',
+    'rate_limit_duration_ms',
+    'created_at_ms',
+    'updated_at_ms'
+  ],
+  [POSTGRES_TABLES.controlCursors]: ['namespace', 'queue', 'cursor_sequence', 'updated_at_ms'],
+  [POSTGRES_TABLES.permits]: [
+    'namespace',
+    'job_id',
+    'queue',
+    'dispatch_key',
+    'lease_token',
+    'acquired_at_ms'
+  ],
+  [POSTGRES_TABLES.rateWindows]: [
+    'namespace',
+    'queue',
+    'started_at_ms',
+    'claim_count',
+    'updated_at_ms'
+  ],
   [POSTGRES_TABLES.schedules]: [
     'namespace',
     'schedule_key',
@@ -210,6 +240,7 @@ const expectedColumnTypes = {
   [`${POSTGRES_TABLES.jobs}.delivery_count`]: 'bigint',
   [`${POSTGRES_TABLES.jobs}.stalled_count`]: 'bigint',
   [`${POSTGRES_TABLES.jobs}.attempt_sequence`]: 'bigint',
+  [`${POSTGRES_TABLES.jobs}.dispatch_key`]: 'text',
   [`${POSTGRES_TABLES.jobs}.backoff`]: 'jsonb',
   [`${POSTGRES_TABLES.jobs}.timeout_ms`]: 'bigint',
   [`${POSTGRES_TABLES.jobs}.idempotency_key`]: 'text',
@@ -247,6 +278,32 @@ const expectedColumnTypes = {
   [`${POSTGRES_TABLES.queues}.paused`]: 'boolean',
   [`${POSTGRES_TABLES.queues}.wake_version`]: 'bigint',
   [`${POSTGRES_TABLES.queues}.updated_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.controls}.queue`]: 'text',
+  [`${POSTGRES_TABLES.controls}.control_group`]: 'text',
+  [`${POSTGRES_TABLES.controls}.enabled`]: 'boolean',
+  [`${POSTGRES_TABLES.controls}.revision`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.global_concurrency`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.per_key_concurrency`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.rate_limit_max`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.rate_limit_duration_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.created_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.controls}.updated_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.controlCursors}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.controlCursors}.queue`]: 'text',
+  [`${POSTGRES_TABLES.controlCursors}.cursor_sequence`]: 'bigint',
+  [`${POSTGRES_TABLES.controlCursors}.updated_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.permits}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.permits}.job_id`]: 'text',
+  [`${POSTGRES_TABLES.permits}.queue`]: 'text',
+  [`${POSTGRES_TABLES.permits}.dispatch_key`]: 'text',
+  [`${POSTGRES_TABLES.permits}.lease_token`]: 'text',
+  [`${POSTGRES_TABLES.permits}.acquired_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.rateWindows}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.rateWindows}.queue`]: 'text',
+  [`${POSTGRES_TABLES.rateWindows}.started_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.rateWindows}.claim_count`]: 'bigint',
+  [`${POSTGRES_TABLES.rateWindows}.updated_at_ms`]: 'bigint',
   [`${POSTGRES_TABLES.schedules}.namespace`]: 'text',
   [`${POSTGRES_TABLES.schedules}.schedule_key`]: 'text',
   [`${POSTGRES_TABLES.schedules}.schedule_group`]: 'text',
@@ -298,6 +355,7 @@ const expectedColumnTypes = {
 
 const nullableColumns = new Set([
   `${POSTGRES_TABLES.jobs}.backoff`,
+  `${POSTGRES_TABLES.jobs}.dispatch_key`,
   `${POSTGRES_TABLES.jobs}.timeout_ms`,
   `${POSTGRES_TABLES.jobs}.idempotency_key`,
   `${POSTGRES_TABLES.jobs}.dedupe_key`,
@@ -330,7 +388,11 @@ const nullableColumns = new Set([
   `${POSTGRES_TABLES.outbox}.lease_owner`,
   `${POSTGRES_TABLES.outbox}.lease_token`,
   `${POSTGRES_TABLES.outbox}.lease_expires_at_ms`,
-  `${POSTGRES_TABLES.outbox}.failure`
+  `${POSTGRES_TABLES.outbox}.failure`,
+  `${POSTGRES_TABLES.controls}.global_concurrency`,
+  `${POSTGRES_TABLES.controls}.per_key_concurrency`,
+  `${POSTGRES_TABLES.controls}.rate_limit_max`,
+  `${POSTGRES_TABLES.controls}.rate_limit_duration_ms`
 ])
 
 type PostgresIndexName = (typeof POSTGRES_INDEXES)[number]
@@ -417,7 +479,11 @@ const expectedIndexFragments = {
     'WHERE',
     'state =',
     'published'
-  ]
+  ],
+  [POSTGRES_INDEXES[17]]: ['namespace', 'queue', 'dispatch_key', 'state', 'priority DESC'],
+  [POSTGRES_INDEXES[18]]: ['namespace', 'queue', 'dispatch_key', 'job_id'],
+  [POSTGRES_INDEXES[19]]: ['namespace', 'job_id', 'lease_token'],
+  [POSTGRES_INDEXES[20]]: ['namespace', 'queue', 'started_at_ms']
 } as const satisfies Partial<Record<PostgresIndexName, readonly string[]>>
 
 const requiredConstraints = [
@@ -996,13 +1062,19 @@ const findSchemaProblems = async (
       })
     const incompatibleDefinition = definition === undefined || !fragmentsInOrder
     const scheduleIndex = index.startsWith('better_effect_mq_schedules_')
-    const incompatibleCatalog =
-      entry.table !==
-        (scheduleIndex
-          ? POSTGRES_TABLES.schedules
+    const controlledPermitIndex = index.startsWith('better_effect_mq_controlled_permits_')
+    const rateWindowIndex = index.startsWith('better_effect_mq_rate_windows_')
+    const expectedTable = scheduleIndex
+      ? POSTGRES_TABLES.schedules
+      : controlledPermitIndex
+        ? POSTGRES_TABLES.permits
+        : rateWindowIndex
+          ? POSTGRES_TABLES.rateWindows
           : index.startsWith('better_effect_mq_outbox_')
             ? POSTGRES_TABLES.outbox
-            : POSTGRES_TABLES.jobs) ||
+            : POSTGRES_TABLES.jobs
+    const incompatibleCatalog =
+      entry.table !== expectedTable ||
       entry.valid !== true ||
       entry.ready !== true ||
       entry.accessMethod !== (index === POSTGRES_INDEXES[6] ? 'gin' : 'btree') ||

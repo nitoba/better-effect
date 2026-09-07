@@ -13,6 +13,18 @@ import type { ServiceContract } from 'better-effect'
 import {
   JobStore,
   JobStoreWakeAbortedError,
+  ControlsRevisionMismatchError,
+  noDispatchKey,
+  type AnyQueueControlsRegistry,
+  type ControlsReconcileOptions,
+  type ControlsReconcileReport,
+  type ControlledClaimRequest,
+  type ControlledClaimResult,
+  type ControlledCancelRequest,
+  type ControlledRecoverStalledRequest,
+  type ControlledReleaseRequest,
+  type ControlledSettleRequest,
+  type QueueControlsRecord,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace,
   type JobStoreDescriptor,
@@ -76,8 +88,8 @@ const postgresDescriptor = (queueFilteredNotifications: boolean): JobStoreDescri
       metadataIndex: 'indexed',
       transactionalEnqueue: true,
       durableChangeFeed: false,
-      globalConcurrency: false,
-      rateLimiting: false
+      globalConcurrency: true,
+      rateLimiting: true
     })
   })
 const maxRetries = 3
@@ -108,7 +120,8 @@ const taggedJobErrorTags = new Set([
   'JobNotRetryableError',
   'JobNotCancellableError',
   'JobNotPromotableError',
-  'UnsupportedJobStoreOperationError'
+  'UnsupportedJobStoreOperationError',
+  'ControlsRevisionMismatchError'
 ])
 const isTaggedJobError = (cause: unknown): boolean => {
   try {
@@ -481,6 +494,7 @@ const validateEnqueueRequest = (
   const allowed = [
     'id',
     'idempotencyKey',
+    'dispatchKey',
     'payload',
     'metadata',
     'priority',
@@ -510,6 +524,20 @@ const validateEnqueueRequest = (
     const runAt = safeNumber(input.runAt, `${field}.runAt`)
     const attemptsMax = safeNumber(input.attemptsMax, `${field}.attemptsMax`)
     if (attemptsMax < 1) return definition(`${field}.attemptsMax`, 'must be positive')
+    if (input.dispatchKey !== undefined) {
+      if (
+        typeof input.dispatchKey !== 'string' ||
+        input.dispatchKey.length === 0 ||
+        input.dispatchKey.length > 512 ||
+        input.dispatchKey === noDispatchKey ||
+        input.dispatchKey.includes('\u0000') ||
+        hasUnpairedSurrogate(input.dispatchKey)
+      )
+        return definition(
+          `${field}.dispatchKey`,
+          'must be a bounded non-empty well-formed string without NUL'
+        )
+    }
     const payload = snapshotDataGraph(input.payload, `${field}.payload`, false)
     if (Result.isError(payload)) return payload as StoreResult<Record<string, unknown>>
     let metadata: Readonly<Record<string, string>> = {}
@@ -532,6 +560,7 @@ const validateEnqueueRequest = (
       name: identity.value.name,
       version: identity.value.version,
       queue: identity.value.queue,
+      dispatchKey: input.dispatchKey as string | undefined,
       state: runAt <= now ? 'waiting' : 'delayed',
       payload: payload.value,
       metadata,
@@ -739,6 +768,7 @@ const columnNames = [
   'name',
   'version',
   'queue',
+  'dispatch_key',
   'state',
   'payload',
   'metadata',
@@ -766,12 +796,18 @@ const columnNames = [
   'failure'
 ] as const
 
+type JobColumn = (typeof columnNames)[number]
+const legacyColumnNames = columnNames.filter(
+  (column): column is Exclude<JobColumn, 'dispatch_key'> => column !== 'dispatch_key'
+)
+
 const decodeJob = (row: Row): JobRecord => {
   const record = makeJobRecord({
     id: row.id,
     name: row.name,
     version: integer(row.version, 'version'),
     queue: row.queue,
+    dispatchKey: optionalString(row.dispatch_key),
     state: row.state,
     payload: parseJson(row.payload),
     metadata: parseJson(row.metadata),
@@ -834,6 +870,7 @@ const encodeRecord = (r: JobRecord): unknown[] => [
   r.name,
   r.version,
   r.queue,
+  r.dispatchKey ?? null,
   r.state,
   json(r.payload),
   json(r.metadata),
@@ -947,6 +984,10 @@ class PostgresJobStoreImplementation {
   private descriptorValue = postgresDescriptor(false)
   private readonly channel: string
   private closed = false
+  private dispatchKeyAvailable = true
+  private dispatchKeyLayoutChecked = false
+  private controlsAvailable = false
+  private controlsLayoutChecked = false
   private flowReportsEnabled = false
   private listener:
     | {
@@ -1055,6 +1096,43 @@ class PostgresJobStoreImplementation {
   private table(name: string): string {
     return `${quoteIdentifier(this.client.schema)}.${quoteIdentifier(name)}`
   }
+  private jobColumns(): readonly JobColumn[] {
+    return this.dispatchKeyAvailable ? columnNames : legacyColumnNames
+  }
+  private async ensureDispatchKeyLayout(tx: Tx): Promise<void> {
+    if (this.dispatchKeyLayoutChecked) return
+    this.dispatchKeyLayoutChecked = true
+    try {
+      const result = await tx.query<Row>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema=$1 AND table_name=$2 AND column_name='dispatch_key'
+         ) AS available`,
+        [this.client.schema, POSTGRES_TABLES.jobs]
+      )
+      const available = result.rows[0]?.available
+      if (typeof available === 'boolean') this.dispatchKeyAvailable = available
+    } catch {
+      // Layout detection is only a compatibility aid; normal SQL remains authoritative.
+    }
+  }
+  private async ensureControlsLayout(tx: Tx): Promise<void> {
+    if (this.controlsLayoutChecked) return
+    this.controlsLayoutChecked = true
+    try {
+      const result = await tx.query<Row>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables
+            WHERE table_schema=$1 AND table_name=$2
+         ) AS available`,
+        [this.client.schema, POSTGRES_TABLES.controls]
+      )
+      const available = result.rows[0]?.available
+      if (typeof available === 'boolean') this.controlsAvailable = available
+    } catch {
+      // Layout detection is only a compatibility aid; normal SQL remains authoritative.
+    }
+  }
   private async withTx<T>(
     operation: string,
     body: (tx: Tx) => Promise<T>
@@ -1070,6 +1148,8 @@ class PostgresJobStoreImplementation {
       try {
         tx = await this.client.pool.connect()
         await tx.query('BEGIN')
+        await this.ensureDispatchKeyLayout(tx as Tx)
+        await this.ensureControlsLayout(tx as Tx)
         value = await body(tx as Tx)
         await tx.query('COMMIT')
         committed = true
@@ -1219,7 +1299,7 @@ class PostgresJobStoreImplementation {
   }
   private async row(tx: Tx, id: string, lock = false): Promise<JobRecord | undefined> {
     const result = await tx.query<Row>(
-      `SELECT ${columnNames.join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 ${lock ? 'FOR UPDATE' : ''}`,
+      `SELECT ${this.jobColumns().join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 ${lock ? 'FOR UPDATE' : ''}`,
       [this.client.namespace, id]
     )
     const found = result.rows[0]
@@ -1256,7 +1336,8 @@ class PostgresJobStoreImplementation {
     return { ...transition, record: record.value }
   }
   private async save(tx: Tx, record: JobRecord, expected?: JobRecord): Promise<boolean> {
-    const writable = columnNames.filter((c) => c !== 'id')
+    const columns = this.jobColumns()
+    const writable = columns.filter((c) => c !== 'id')
     const encoded = encodeRecord(record)
     const sets = writable.map((c, i) => `${c}=$${i + 2}`).join(',')
     const values = writable.map((c) => encoded[columnNames.indexOf(c)])
@@ -1288,36 +1369,7 @@ class PostgresJobStoreImplementation {
     request: { jobId: string; now: number },
     command: (record: JobRecord) => ResultType<JobTransition, unknown>
   ): Promise<StoreResult<JobTransition>> {
-    return this.withTx(operation, async (tx) => {
-      const current = await this.row(tx, request.jobId, true)
-      if (current === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
-      const next = command(current)
-      if (Result.isError(next)) throw next.error
-      const transition = await this.prepareTransition(tx, current, next.value as JobTransition)
-      await this.save(tx, transition.record)
-      if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
-      if (transition.attempt !== undefined)
-        await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
-      const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
-      if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
-        const parent = await tx.query<Row>(
-          `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
-          [this.client.namespace, current.id]
-        )
-        await appendFlowReport(
-          tx,
-          parent.rows[0] ?? {},
-          current.id,
-          transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
-          flowOutcome,
-          request.now,
-          this.client.schema,
-          this.client.namespace
-        )
-      }
-      await this.notify(tx, transition.record.queue, request.now)
-      return transition
-    })
+    return this.withTx(operation, (tx) => this.applyTransitionInTx(tx, operation, request, command))
   }
   private async insertAttempt(
     tx: Tx,
@@ -1343,6 +1395,332 @@ class PostgresJobStoreImplementation {
         a.retryDelayMs ?? null
       ]
     )
+  }
+
+  private decodeControls(row: Row): QueueControlsRecord {
+    const rateMax = optionalInteger(row.rate_limit_max, 'rate_limit_max')
+    const rateDuration = optionalInteger(row.rate_limit_duration_ms, 'rate_limit_duration_ms')
+    return Object.freeze({
+      queue: makeQueueName(row.queue).unwrap() as never,
+      group: text(row.control_group, 'control_group'),
+      enabled: row.enabled === true,
+      revision: integer(row.revision, 'revision'),
+      globalConcurrency: optionalInteger(row.global_concurrency, 'global_concurrency'),
+      perKeyConcurrency: optionalInteger(row.per_key_concurrency, 'per_key_concurrency'),
+      rateLimit:
+        rateMax === undefined || rateDuration === undefined
+          ? undefined
+          : Object.freeze({ max: rateMax, durationMs: rateDuration }),
+      createdAtMs: integer(row.created_at_ms, 'created_at_ms'),
+      updatedAtMs: integer(row.updated_at_ms, 'updated_at_ms')
+    })
+  }
+
+  private normalizeControls(
+    queue: string,
+    group: string,
+    options: AnyQueueControlsRegistry['controls'][number]['options'],
+    now: number
+  ): StoreResult<QueueControlsRecord> {
+    const positive = (value: unknown, field: string): number => {
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+        throw new JobDefinitionError({ field, message: 'must be a positive safe integer' })
+      return value
+    }
+    const globalConcurrency =
+      options.globalConcurrency === undefined
+        ? undefined
+        : positive(options.globalConcurrency, 'globalConcurrency')
+    const perKeyConcurrency =
+      (options.perKeyConcurrency ?? options.concurrencyKey?.max) === undefined
+        ? undefined
+        : positive(options.perKeyConcurrency ?? options.concurrencyKey?.max, 'perKeyConcurrency')
+    const rateLimit =
+      options.rateLimit === undefined
+        ? undefined
+        : Object.freeze({
+            max: positive(options.rateLimit.max, 'rateLimit.max'),
+            durationMs: positive(options.rateLimit.durationMs, 'rateLimit.durationMs')
+          })
+    return ok(
+      Object.freeze({
+        queue: queue as never,
+        group,
+        enabled: true,
+        revision: 1,
+        globalConcurrency,
+        perKeyConcurrency,
+        rateLimit,
+        createdAtMs: now,
+        updatedAtMs: now
+      })
+    )
+  }
+
+  private sameControls(left: QueueControlsRecord, right: QueueControlsRecord): boolean {
+    return (
+      left.globalConcurrency === right.globalConcurrency &&
+      left.perKeyConcurrency === right.perKeyConcurrency &&
+      left.rateLimit?.max === right.rateLimit?.max &&
+      left.rateLimit?.durationMs === right.rateLimit?.durationMs
+    )
+  }
+
+  private async lockControls(
+    tx: Tx,
+    queue: string,
+    expected: number
+  ): Promise<QueueControlsRecord> {
+    const result = await tx.query<Row>(
+      `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 AND queue=$2 FOR UPDATE`,
+      [this.client.namespace, queue]
+    )
+    const row = result.rows[0]
+    const actual = row === undefined ? undefined : integer(row.revision, 'revision')
+    if (row === undefined || row.enabled !== true || actual !== expected)
+      throw new ControlsRevisionMismatchError({ queue: queue as never, expected, actual })
+    return this.decodeControls(row)
+  }
+
+  private async lockRateWindow(
+    tx: Tx,
+    control: QueueControlsRecord,
+    now: number
+  ): Promise<{ readonly startedAtMs: number; readonly count: number } | undefined> {
+    if (control.rateLimit === undefined) return undefined
+    await tx.query(
+      `INSERT INTO ${this.table(POSTGRES_TABLES.rateWindows)} (namespace,queue,started_at_ms,claim_count,updated_at_ms) VALUES ($1,$2,$3,0,$3) ON CONFLICT(namespace,queue) DO NOTHING`,
+      [this.client.namespace, control.queue, now]
+    )
+    const current = await tx.query<Row>(
+      `SELECT started_at_ms,claim_count FROM ${this.table(POSTGRES_TABLES.rateWindows)} WHERE namespace=$1 AND queue=$2 FOR UPDATE`,
+      [this.client.namespace, control.queue]
+    )
+    const row = current.rows[0]
+    if (row === undefined)
+      throw new JobStoreFailure({
+        operation: 'rateWindow',
+        retryable: true,
+        message: 'rate window row is missing'
+      })
+    let startedAtMs = integer(row.started_at_ms, 'started_at_ms')
+    let count = integer(row.claim_count, 'claim_count')
+    if (now >= startedAtMs + control.rateLimit.durationMs) {
+      startedAtMs = now
+      count = 0
+      await tx.query(
+        `UPDATE ${this.table(POSTGRES_TABLES.rateWindows)} SET started_at_ms=$3,claim_count=0,updated_at_ms=$3 WHERE namespace=$1 AND queue=$2`,
+        [this.client.namespace, control.queue, now]
+      )
+    }
+    return { startedAtMs, count }
+  }
+
+  private async countPermits(tx: Tx, queue: string): Promise<number> {
+    const result = await tx.query<Row>(
+      `SELECT count(*)::bigint AS count FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state='active'`,
+      [this.client.namespace, queue]
+    )
+    return integer(result.rows[0]?.count, 'count')
+  }
+
+  private async nextControlledRunAt(
+    tx: Tx,
+    queue: string,
+    accepted: readonly {
+      readonly queue: string
+      readonly name: string
+      readonly version: number
+    }[],
+    now: number
+  ): Promise<number | undefined> {
+    const result = await tx.query<Row>(
+      `SELECT MIN(run_at_ms) AS run_at_ms FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state='delayed' AND run_at_ms > $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint))`,
+      [this.client.namespace, queue, now, json(accepted)]
+    )
+    return result.rows[0]?.run_at_ms == null
+      ? undefined
+      : integer(result.rows[0].run_at_ms, 'run_at_ms')
+  }
+
+  private emptyControlled(
+    wakeToken: import('better-effect-mq').WakeToken,
+    nextRunAtMs: number | undefined,
+    nextEligibleAtMs: number | undefined,
+    reason: import('better-effect-mq').ControlledEmptyClaimReason
+  ): ControlledClaimResult {
+    return { jobs: Object.freeze([]), wakeToken, nextRunAtMs, nextEligibleAtMs, reason }
+  }
+
+  private async applyTransitionInTx(
+    tx: Tx,
+    operation: string,
+    request: { readonly jobId: string; readonly now: number },
+    command: (record: JobRecord) => ResultType<JobTransition, unknown>
+  ): Promise<JobTransition> {
+    const current = await this.row(tx, request.jobId, true)
+    if (current === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    const next = command(current)
+    if (Result.isError(next)) throw next.error
+    const transition = await this.prepareTransition(tx, current, next.value as JobTransition)
+    await this.save(tx, transition.record)
+    if (
+      this.controlsAvailable &&
+      current.state === 'active' &&
+      transition.record.state !== 'active'
+    ) {
+      await tx.query(
+        `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+        [this.client.namespace, current.id, current.leaseToken]
+      )
+    }
+    if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
+    if (transition.attempt !== undefined)
+      await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
+    const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
+    if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
+      const parent = await tx.query<Row>(
+        `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+        [this.client.namespace, current.id]
+      )
+      await appendFlowReport(
+        tx,
+        parent.rows[0] ?? {},
+        current.id,
+        transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+        flowOutcome,
+        request.now,
+        this.client.schema,
+        this.client.namespace
+      )
+    }
+    await this.notify(tx, transition.record.queue, request.now)
+    return transition
+  }
+
+  private async settleInTx(
+    tx: Tx,
+    request: {
+      readonly jobId: string
+      readonly leaseToken: string
+      readonly outcome: SettlementOutcome
+      readonly now: number
+      readonly startedAt?: number
+    }
+  ): Promise<JobStoreNamespace.SettlementResult> {
+    const raw = await tx.query<Row>(
+      `SELECT ${this.jobColumns().join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
+      [this.client.namespace, request.jobId]
+    )
+    const source = raw.rows[0]
+    if (source === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    const current = decodeJob(source)
+    const previousToken = optionalString(source.last_settlement_token)
+    const previousOutcome = optionalString(source.last_settlement_outcome)
+    const previousAttemptSequence = optionalInteger(
+      source.last_settlement_attempt_sequence,
+      'last_settlement_attempt_sequence'
+    )
+    const canonicalOutcome = canonicalJson(request.outcome)
+    if (
+      previousToken === request.leaseToken &&
+      previousOutcome !== undefined &&
+      canonicalJson(parseJson(previousOutcome)) !== canonicalOutcome
+    )
+      throw new SettlementConflictError({
+        jobId: request.jobId as never,
+        leaseToken: request.leaseToken as never
+      })
+    if (current.state !== 'active') {
+      if (
+        previousToken === request.leaseToken &&
+        previousOutcome !== undefined &&
+        previousAttemptSequence !== undefined &&
+        canonicalJson(parseJson(previousOutcome)) === canonicalOutcome
+      ) {
+        const attemptRow = await tx.query<Row>(
+          `SELECT attempt,attempt_sequence,delivery,started_at_ms,finished_at_ms,outcome,result,failure,retry_at_ms,retry_delay_ms FROM ${this.table(POSTGRES_TABLES.attempts)} WHERE namespace=$1 AND job_id=$2 AND attempt_sequence=$3 LIMIT 1`,
+          [this.client.namespace, current.id, previousAttemptSequence]
+        )
+        const attempt = decodeAttempt(attemptRow.rows[0])
+        if (attempt !== undefined) return { record: current, attempt, status: 'already-applied' }
+      }
+      throw new LeaseLostError({
+        jobId: current.id,
+        reason: 'missing-lease',
+        leaseToken: request.leaseToken as never
+      })
+    }
+    if (current.leaseToken !== request.leaseToken)
+      throw new LeaseLostError({
+        jobId: current.id,
+        reason: 'mismatched-token',
+        leaseToken: request.leaseToken as never
+      })
+    if (previousToken !== undefined) {
+      if (
+        previousToken !== request.leaseToken ||
+        previousOutcome === undefined ||
+        previousAttemptSequence === undefined ||
+        canonicalJson(parseJson(previousOutcome)) !== canonicalOutcome
+      )
+        throw new SettlementConflictError({
+          jobId: request.jobId as never,
+          leaseToken: request.leaseToken as never
+        })
+    }
+    const next = reduceJob(current, {
+      type: 'settle',
+      jobId: current.id,
+      leaseToken: request.leaseToken as never,
+      outcome: request.outcome,
+      now: request.now,
+      ...(request.startedAt === undefined ? {} : { startedAt: request.startedAt })
+    })
+    if (Result.isError(next)) throw next.error
+    if (next.value.attempt === undefined)
+      throw new JobDefinitionError({
+        field: 'attempt',
+        message: 'settlement did not record an attempt'
+      })
+    const attempt = next.value.attempt
+    const transition = await this.prepareTransition(tx, current, next.value)
+    await this.save(tx, transition.record)
+    if (this.controlsAvailable) {
+      await tx.query(
+        `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+        [this.client.namespace, current.id, request.leaseToken]
+      )
+    }
+    await this.insertAttempt(tx, attempt, current.id, current.leaseOwner)
+    await tx.query(
+      `UPDATE ${this.table(POSTGRES_TABLES.jobs)} SET last_settlement_token=$3,last_settlement_outcome=$4,last_settlement_attempt_sequence=$5 WHERE namespace=$1 AND id=$2`,
+      [
+        this.client.namespace,
+        current.id,
+        request.leaseToken,
+        canonicalOutcome,
+        attempt.attemptSequence ?? attempt.attempt
+      ]
+    )
+    if (await this.flowReportsAvailable(tx)) {
+      const parent = await tx.query<Row>(
+        `SELECT parent FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+        [this.client.namespace, current.id]
+      )
+      await appendFlowReport(
+        tx,
+        parent.rows[0] ?? {},
+        current.id,
+        attempt.attemptSequence ?? attempt.attempt,
+        request.outcome,
+        request.now,
+        this.client.schema,
+        this.client.namespace
+      )
+    }
+    await this.notify(tx, current.queue, request.now)
+    return { record: transition.record, attempt, status: 'applied' }
   }
   async enqueue(
     request: JobStoreNamespace.EnqueueRequest
@@ -1393,7 +1771,7 @@ class PostgresJobStoreImplementation {
             ? undefined
             : (
                 await tx.query<Row>(
-                  `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
+                  `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
                   [this.client.namespace, explicitId.value]
                 )
               ).rows[0]
@@ -1407,7 +1785,7 @@ class PostgresJobStoreImplementation {
             ? undefined
             : (
                 await tx.query<Row>(
-                  `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND name=$3 AND version=$4 AND dedupe_key=$5 FOR UPDATE`,
+                  `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND name=$3 AND version=$4 AND dedupe_key=$5 FOR UPDATE`,
                   [
                     this.client.namespace,
                     normalizedIdentity.value.queue,
@@ -1422,26 +1800,53 @@ class PostgresJobStoreImplementation {
           continue
         }
         const id = explicitId?.value ?? (randomUUID() as never)
+        const insertColumns = this.dispatchKeyAvailable
+          ? 'namespace,id,queue,dispatch_key,name,version,state,payload,metadata,priority,run_at_ms,attempts_max,attempts_made,delivery_count,stalled_count,created_at_ms,updated_at_ms,backoff,timeout_ms,idempotency_key,dedupe_key'
+          : 'namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,attempts_max,attempts_made,delivery_count,stalled_count,created_at_ms,updated_at_ms,backoff,timeout_ms,idempotency_key,dedupe_key'
+        const insertPlaceholders = this.dispatchKeyAvailable
+          ? '$1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,0,0,0,$13,$13,$14::jsonb,$15,$16,$17'
+          : '$1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,0,0,0,$12,$12,$13::jsonb,$14,$15,$16'
+        const insertValues = this.dispatchKeyAvailable
+          ? [
+              this.client.namespace,
+              id,
+              normalizedIdentity.value.queue,
+              input.dispatchKey ?? null,
+              normalizedIdentity.value.name,
+              normalizedIdentity.value.version,
+              (input.runAt as number) <= (input.now as number) ? 'waiting' : 'delayed',
+              json(input.payload),
+              json(input.metadata === undefined ? {} : input.metadata),
+              input.priority === undefined ? 0 : input.priority,
+              input.runAt,
+              input.attemptsMax,
+              input.now,
+              input.backoff === undefined ? null : json(input.backoff),
+              input.timeoutMs ?? null,
+              input.idempotencyKey ?? null,
+              dedupeKey ?? null
+            ]
+          : [
+              this.client.namespace,
+              id,
+              normalizedIdentity.value.queue,
+              normalizedIdentity.value.name,
+              normalizedIdentity.value.version,
+              (input.runAt as number) <= (input.now as number) ? 'waiting' : 'delayed',
+              json(input.payload),
+              json(input.metadata === undefined ? {} : input.metadata),
+              input.priority === undefined ? 0 : input.priority,
+              input.runAt,
+              input.attemptsMax,
+              input.now,
+              input.backoff === undefined ? null : json(input.backoff),
+              input.timeoutMs ?? null,
+              input.idempotencyKey ?? null,
+              dedupeKey ?? null
+            ]
         const created = await tx.query<Row>(
-          `INSERT INTO ${this.table(POSTGRES_TABLES.jobs)} (namespace,id,queue,name,version,state,payload,metadata,priority,run_at_ms,attempts_max,attempts_made,delivery_count,stalled_count,created_at_ms,updated_at_ms,backoff,timeout_ms,idempotency_key,dedupe_key) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,0,0,0,$12,$12,$13::jsonb,$14,$15,$16) ON CONFLICT DO NOTHING RETURNING ${columnNames.join(',')}`,
-          [
-            this.client.namespace,
-            id,
-            normalizedIdentity.value.queue,
-            normalizedIdentity.value.name,
-            normalizedIdentity.value.version,
-            (input.runAt as number) <= (input.now as number) ? 'waiting' : 'delayed',
-            json(input.payload),
-            json(input.metadata === undefined ? {} : input.metadata),
-            input.priority === undefined ? 0 : input.priority,
-            input.runAt,
-            input.attemptsMax,
-            input.now,
-            input.backoff === undefined ? null : json(input.backoff),
-            input.timeoutMs ?? null,
-            input.idempotencyKey ?? null,
-            dedupeKey ?? null
-          ]
+          `INSERT INTO ${this.table(POSTGRES_TABLES.jobs)} (${insertColumns}) VALUES (${insertPlaceholders}) ON CONFLICT DO NOTHING RETURNING ${this.jobColumns().join(',')}`,
+          insertValues
         )
         let createdRow = created.rows[0]
         if (createdRow === undefined) {
@@ -1455,13 +1860,13 @@ class PostgresJobStoreImplementation {
             explicitId !== undefined
               ? (
                   await tx.query<Row>(
-                    `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
+                    `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
                     [this.client.namespace, explicitId.value]
                   )
                 ).rows[0]
               : (
                   await tx.query<Row>(
-                    `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND name=$3 AND version=$4 AND dedupe_key=$5 FOR UPDATE`,
+                    `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND name=$3 AND version=$4 AND dedupe_key=$5 FOR UPDATE`,
                     [
                       this.client.namespace,
                       normalizedIdentity.value.queue,
@@ -1519,6 +1924,19 @@ class PostgresJobStoreImplementation {
         return normalized.value
       })
       return this.withTx('claim', async (tx) => {
+        if (this.controlsAvailable) {
+          const control = await tx.query<Row>(
+            `SELECT revision FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 AND queue=$2 AND enabled=true FOR UPDATE`,
+            [this.client.namespace, queue.value]
+          )
+          if (control.rows[0] !== undefined) {
+            throw new ControlsRevisionMismatchError({
+              queue: queue.value as never,
+              expected: integer(control.rows[0].revision, 'revision'),
+              actual: undefined
+            })
+          }
+        }
         // Serialize claim with queue wake mutations so the returned baseline
         // cannot race an enqueue or pause committed between the checks.
         await tx.query(
@@ -1538,7 +1956,7 @@ class PostgresJobStoreImplementation {
           }
         }
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $5 FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $5 FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, queue.value, now, json(accepted), limit]
         )
         const jobs: JobRecord[] = []
@@ -1575,6 +1993,559 @@ class PostgresJobStoreImplementation {
       return fail('claim', cause)
     }
   }
+
+  async getControls(request: {
+    readonly queue: import('better-effect-mq').QueueName
+  }): Promise<StoreResult<QueueControlsRecord | undefined>> {
+    const queue = makeQueueName(request.queue)
+    if (Result.isError(queue)) return queue as StoreResult<QueueControlsRecord | undefined>
+    return this.withTx('getControls', async (tx) => {
+      const result = await tx.query<Row>(
+        `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 AND queue=$2`,
+        [this.client.namespace, queue.value]
+      )
+      return result.rows[0] === undefined ? undefined : this.decodeControls(result.rows[0])
+    }) as Promise<StoreResult<QueueControlsRecord | undefined>>
+  }
+
+  get(
+    queue: import('better-effect-mq').QueueName
+  ): Promise<StoreResult<QueueControlsRecord | undefined>> {
+    return this.getControls({ queue })
+  }
+
+  async reconcile(
+    registry: AnyQueueControlsRegistry,
+    options: ControlsReconcileOptions = {}
+  ): Promise<StoreResult<ControlsReconcileReport>> {
+    try {
+      if (typeof registry !== 'object' || registry === null || !Array.isArray(registry.controls))
+        return definition('registry', 'must be a controls registry')
+      const group = text(registry.group, 'registry.group')
+      if (group.length > 128) return definition('registry.group', 'must not exceed 128 characters')
+      const removal = options.removal ?? 'warn'
+      if (!['ignore', 'warn', 'disable'].includes(removal))
+        return definition('removal', 'must be ignore, warn, or disable')
+      const proposed = new Map<string, QueueControlsRecord>()
+      for (const [index, definitionValue] of registry.controls.entries()) {
+        const queue = makeQueueName(definitionValue?.queue)
+        if (Result.isError(queue))
+          return definition(
+            `controls[${index}].queue`,
+            queue.error instanceof Error ? queue.error.message : 'invalid queue'
+          )
+        if (proposed.has(queue.value)) return definition('controls', 'contains a duplicate queue')
+        const normalized = this.normalizeControls(queue.value, group, definitionValue.options, 0)
+        if (Result.isError(normalized)) return normalized
+        proposed.set(queue.value, normalized.value)
+      }
+      return this.withTx('reconcile', async (tx) => {
+        const now = Date.now()
+        const created: QueueControlsRecord[] = []
+        const updated: QueueControlsRecord[] = []
+        const unchanged: QueueControlsRecord[] = []
+        const disabled: QueueControlsRecord[] = []
+        for (const [queue, candidate] of proposed) {
+          const currentResult = await tx.query<Row>(
+            `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 AND queue=$2 FOR UPDATE`,
+            [this.client.namespace, queue]
+          )
+          const current =
+            currentResult.rows[0] === undefined
+              ? undefined
+              : this.decodeControls(currentResult.rows[0])
+          if (current === undefined) {
+            const inserted = await tx.query<Row>(
+              `INSERT INTO ${this.table(POSTGRES_TABLES.controls)} (namespace,queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms) VALUES ($1,$2,$3,true,1,$4,$5,$6,$7,$8,$8) RETURNING queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms`,
+              [
+                this.client.namespace,
+                queue,
+                group,
+                candidate.globalConcurrency ?? null,
+                candidate.perKeyConcurrency ?? null,
+                candidate.rateLimit?.max ?? null,
+                candidate.rateLimit?.durationMs ?? null,
+                now
+              ]
+            )
+            created.push(this.decodeControls(inserted.rows[0]!))
+          } else if (
+            current.enabled &&
+            current.group === group &&
+            this.sameControls(current, candidate)
+          ) {
+            unchanged.push(current)
+          } else {
+            const updatedResult = await tx.query<Row>(
+              `UPDATE ${this.table(POSTGRES_TABLES.controls)} SET control_group=$3,enabled=true,revision=revision+1,global_concurrency=$4,per_key_concurrency=$5,rate_limit_max=$6,rate_limit_duration_ms=$7,updated_at_ms=$8 WHERE namespace=$1 AND queue=$2 RETURNING queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms`,
+              [
+                this.client.namespace,
+                queue,
+                group,
+                candidate.globalConcurrency ?? null,
+                candidate.perKeyConcurrency ?? null,
+                candidate.rateLimit?.max ?? null,
+                candidate.rateLimit?.durationMs ?? null,
+                now
+              ]
+            )
+            updated.push(this.decodeControls(updatedResult.rows[0]!))
+          }
+        }
+        const warnings: string[] = []
+        const existing = await tx.query<Row>(
+          `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 AND control_group=$2 FOR UPDATE`,
+          [this.client.namespace, group]
+        )
+        for (const raw of existing.rows) {
+          const current = this.decodeControls(raw)
+          if (proposed.has(current.queue as string)) continue
+          if (removal === 'warn')
+            warnings.push(`controls for queue "${current.queue}" are not present in the registry`)
+          if (removal === 'disable' && current.enabled) {
+            const disabledResult = await tx.query<Row>(
+              `UPDATE ${this.table(POSTGRES_TABLES.controls)} SET enabled=false,revision=revision+1,updated_at_ms=$3 WHERE namespace=$1 AND queue=$2 RETURNING queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms`,
+              [this.client.namespace, current.queue, now]
+            )
+            disabled.push(this.decodeControls(disabledResult.rows[0]!))
+          }
+        }
+        const all = await tx.query<Row>(
+          `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 ORDER BY queue COLLATE "C"`,
+          [this.client.namespace]
+        )
+        return {
+          created: Object.freeze(created),
+          updated: Object.freeze(updated),
+          unchanged: Object.freeze(unchanged),
+          disabled: Object.freeze(disabled),
+          warnings: Object.freeze(warnings),
+          records: Object.freeze(all.rows.map((row) => this.decodeControls(row)))
+        }
+      }) as Promise<StoreResult<ControlsReconcileReport>>
+    } catch (cause) {
+      return fail('reconcile', cause)
+    }
+  }
+
+  async claimControlled(
+    request: ControlledClaimRequest
+  ): Promise<StoreResult<ControlledClaimResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['queue', 'accepted', 'limit', 'workerId', 'leaseDurationMs', 'now', 'controlsRevision'],
+      ['queue', 'accepted', 'limit', 'workerId', 'leaseDurationMs', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<ControlledClaimResult>
+    try {
+      const queue = makeQueueName(checked.value.queue)
+      const workerId = makeWorkerId(checked.value.workerId)
+      const limit = safeNumber(checked.value.limit, 'limit')
+      const leaseDuration = safeNumber(checked.value.leaseDurationMs, 'leaseDurationMs')
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(queue)) return queue as StoreResult<ControlledClaimResult>
+      if (Result.isError(workerId)) return workerId as StoreResult<ControlledClaimResult>
+      if (limit < 1) return definition('limit', 'must be positive')
+      if (leaseDuration < 1) return definition('leaseDurationMs', 'must be positive')
+      if (revision < 1) return definition('controlsRevision', 'must be positive')
+      if (now > Number.MAX_SAFE_INTEGER - leaseDuration)
+        return definition('leaseDurationMs', 'lease expiry exceeds safe integer range')
+      if (!Array.isArray(checked.value.accepted)) return definition('accepted', 'must be an array')
+      const accepted = checked.value.accepted.map((identity: unknown) => {
+        const normalized = normalizeIdentity(identity, 'accepted')
+        if (Result.isError(normalized)) throw normalized.error
+        return normalized.value
+      })
+      return this.withTx('claimControlled', async (tx) => {
+        const control = await this.lockControls(tx, queue.value, revision)
+        const rate = await this.lockRateWindow(tx, control, now)
+        await tx.query(
+          `INSERT INTO ${this.table(POSTGRES_TABLES.queues)} (namespace,queue,updated_at_ms) VALUES ($1,$2,$3) ON CONFLICT(namespace,queue) DO NOTHING`,
+          [this.client.namespace, queue.value, now]
+        )
+        const queueRow = (
+          await tx.query<Row>(
+            `SELECT paused,wake_version FROM ${this.table(POSTGRES_TABLES.queues)} WHERE namespace=$1 AND queue=$2 FOR UPDATE`,
+            [this.client.namespace, queue.value]
+          )
+        ).rows[0]
+        const wakeToken = makeWakeToken(await this.wakeSnapshot(tx))
+        const nextRunAtMs = await this.nextControlledRunAt(tx, queue.value, accepted, now)
+        if (queueRow?.paused === true)
+          return this.emptyControlled(wakeToken, nextRunAtMs, undefined, 'paused')
+        const active = await this.countPermits(tx, queue.value)
+        const globalRemaining =
+          control.globalConcurrency === undefined
+            ? Number.MAX_SAFE_INTEGER
+            : control.globalConcurrency - active
+        if (globalRemaining <= 0)
+          return this.emptyControlled(wakeToken, nextRunAtMs, undefined, 'global-concurrency')
+        const rateRemaining =
+          control.rateLimit === undefined
+            ? Number.MAX_SAFE_INTEGER
+            : control.rateLimit.max - (rate?.count ?? 0)
+        if (rateRemaining <= 0)
+          return this.emptyControlled(
+            wakeToken,
+            nextRunAtMs,
+            rate!.startedAtMs + control.rateLimit!.durationMs,
+            'rate-limited'
+          )
+        const cursorResult = await tx.query<Row>(
+          `SELECT cursor_sequence FROM ${this.table(POSTGRES_TABLES.controlCursors)} WHERE namespace=$1 AND queue=$2 FOR UPDATE`,
+          [this.client.namespace, queue.value]
+        )
+        const cursor =
+          cursorResult.rows[0] === undefined
+            ? 0
+            : integer(cursorResult.rows[0].cursor_sequence, 'cursor_sequence')
+        const scanBudget = Math.min(Math.max(limit * 4, 32), 256)
+        const candidates = await tx.query<Row>(
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY (sequence > $5) DESC,priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $6 FOR UPDATE SKIP LOCKED`,
+          [this.client.namespace, queue.value, now, json(accepted), cursor, scanBudget]
+        )
+        const permitCounts = await tx.query<Row>(
+          `SELECT COALESCE(dispatch_key,$3) AS dispatch_key,count(*)::bigint AS count FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state='active' GROUP BY COALESCE(dispatch_key,$3)`,
+          [this.client.namespace, queue.value, noDispatchKey]
+        )
+        const counts = new Map<string, number>(
+          permitCounts.rows.map((row) => [
+            text(row.dispatch_key, 'dispatch_key'),
+            integer(row.count, 'count')
+          ])
+        )
+        const capacity = Math.min(limit, globalRemaining, rateRemaining)
+        const planned: Array<{
+          readonly record: JobRecord
+          readonly dispatchKey: string
+          readonly token: string
+        }> = []
+        let blocked = false
+        let examinedSequence = cursor
+        for (const raw of candidates.rows) {
+          const current = decodeJob(raw)
+          examinedSequence = current.orderingSequence
+          const dispatchKey = current.dispatchKey ?? noDispatchKey
+          const perKey = counts.get(dispatchKey) ?? 0
+          const plannedForKey = planned.filter((item) => item.dispatchKey === dispatchKey).length
+          if (
+            control.perKeyConcurrency !== undefined &&
+            perKey + plannedForKey >= control.perKeyConcurrency
+          ) {
+            blocked = true
+            continue
+          }
+          const changed = reduceJob(current, {
+            type: 'claim',
+            jobId: current.id,
+            workerId: workerId.value,
+            leaseToken: randomUUID() as never,
+            leaseExpiresAt: now + leaseDuration,
+            now
+          })
+          if (Result.isError(changed)) throw changed.error
+          planned.push({
+            record: changed.value.record,
+            dispatchKey,
+            token: changed.value.record.leaseToken!
+          })
+          if (planned.length >= capacity) break
+        }
+        await tx.query(
+          `INSERT INTO ${this.table(POSTGRES_TABLES.controlCursors)} (namespace,queue,cursor_sequence,updated_at_ms) VALUES ($1,$2,$3,$4) ON CONFLICT(namespace,queue) DO UPDATE SET cursor_sequence=EXCLUDED.cursor_sequence,updated_at_ms=EXCLUDED.updated_at_ms`,
+          [this.client.namespace, queue.value, examinedSequence, now]
+        )
+        for (const item of planned) {
+          if (!(await this.save(tx, item.record)))
+            throw new JobStoreFailure({
+              operation: 'claimControlled',
+              retryable: true,
+              message: 'controlled claim lost its job row'
+            })
+          await this.clearSettlement(tx, item.record.id)
+          await tx.query(
+            `INSERT INTO ${this.table(POSTGRES_TABLES.permits)} (namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [this.client.namespace, item.record.id, queue.value, item.dispatchKey, item.token, now]
+          )
+        }
+        if (planned.length > 0) {
+          if (control.rateLimit !== undefined)
+            await tx.query(
+              `UPDATE ${this.table(POSTGRES_TABLES.rateWindows)} SET claim_count=claim_count+$3,updated_at_ms=$4 WHERE namespace=$1 AND queue=$2`,
+              [this.client.namespace, queue.value, planned.length, now]
+            )
+          await this.notify(tx, queue.value, now)
+        }
+        return planned.length === 0
+          ? this.emptyControlled(
+              wakeToken,
+              nextRunAtMs,
+              undefined,
+              blocked ? 'per-key-concurrency' : 'empty'
+            )
+          : {
+              jobs: Object.freeze(planned.map((item) => item.record as never)),
+              wakeToken,
+              nextRunAtMs,
+              nextEligibleAtMs: undefined,
+              reason: undefined
+            }
+      }) as Promise<StoreResult<ControlledClaimResult>>
+    } catch (cause) {
+      return fail('claimControlled', cause)
+    }
+  }
+
+  async settleControlled(
+    request: ControlledSettleRequest
+  ): Promise<StoreResult<JobStoreNamespace.SettlementResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['jobId', 'leaseToken', 'outcome', 'now', 'controlsRevision'],
+      ['jobId', 'leaseToken', 'outcome', 'now', 'startedAt', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<JobStoreNamespace.SettlementResult>
+    try {
+      const jobId = makeJobId(checked.value.jobId)
+      const leaseToken = makeLeaseToken(checked.value.leaseToken)
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      const outcome = validateSettlementOutcome(checked.value.outcome)
+      if (Result.isError(jobId)) return jobId as StoreResult<JobStoreNamespace.SettlementResult>
+      if (Result.isError(leaseToken))
+        return leaseToken as StoreResult<JobStoreNamespace.SettlementResult>
+      if (Result.isError(outcome)) return outcome as StoreResult<JobStoreNamespace.SettlementResult>
+      return this.withTx('settleControlled', async (tx) => {
+        const identity = await tx.query<Row>(
+          `SELECT queue,state FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+          [this.client.namespace, jobId.value]
+        )
+        const queue = identity.rows[0]?.queue
+        if (queue === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(tx, text(queue, 'queue'), revision)
+        await this.lockRateWindow(tx, control, now)
+        const permit = await tx.query<Row>(
+          `SELECT lease_token FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 FOR UPDATE`,
+          [this.client.namespace, jobId.value]
+        )
+        const result = await this.settleInTx(tx, {
+          jobId: jobId.value,
+          leaseToken: leaseToken.value,
+          outcome: outcome.value as unknown as SettlementOutcome,
+          now,
+          ...(checked.value.startedAt === undefined
+            ? {}
+            : { startedAt: safeNumber(checked.value.startedAt, 'startedAt') })
+        })
+        if (result.status === 'applied' && permit.rows[0] !== undefined) {
+          await tx.query(
+            `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+            [this.client.namespace, jobId.value, leaseToken.value]
+          )
+        }
+        return result
+      }) as Promise<StoreResult<JobStoreNamespace.SettlementResult>>
+    } catch (cause) {
+      return fail('settleControlled', cause)
+    }
+  }
+
+  async releaseControlled(
+    request: ControlledReleaseRequest
+  ): Promise<StoreResult<JobStoreNamespace.ReleaseResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['jobId', 'leaseToken', 'now', 'controlsRevision'],
+      ['jobId', 'leaseToken', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<JobStoreNamespace.ReleaseResult>
+    try {
+      const jobId = makeJobId(checked.value.jobId)
+      const leaseToken = makeLeaseToken(checked.value.leaseToken)
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(jobId)) return jobId as StoreResult<JobStoreNamespace.ReleaseResult>
+      if (Result.isError(leaseToken))
+        return leaseToken as StoreResult<JobStoreNamespace.ReleaseResult>
+      return this.withTx('releaseControlled', async (tx) => {
+        const identity = await tx.query<Row>(
+          `SELECT queue FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+          [this.client.namespace, jobId.value]
+        )
+        const queue = identity.rows[0]?.queue
+        if (queue === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(tx, text(queue, 'queue'), revision)
+        await this.lockRateWindow(tx, control, now)
+        const permit = await tx.query<Row>(
+          `SELECT lease_token FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 FOR UPDATE`,
+          [this.client.namespace, jobId.value]
+        )
+        if (
+          permit.rows[0] === undefined ||
+          optionalString(permit.rows[0].lease_token) !== leaseToken.value
+        )
+          throw new LeaseLostError({
+            jobId: jobId.value,
+            reason: 'mismatched-token',
+            leaseToken: leaseToken.value
+          })
+        const transition = await this.applyTransitionInTx(
+          tx,
+          'release',
+          { jobId: jobId.value, now },
+          (record) => {
+            if (record.state !== 'active')
+              return Result.err(
+                new LeaseLostError({
+                  jobId: record.id,
+                  reason: 'missing-lease',
+                  leaseToken: leaseToken.value
+                })
+              ) as ResultType<JobTransition, unknown>
+            return reduceJob(record, {
+              type: 'release',
+              jobId: record.id,
+              leaseToken: leaseToken.value,
+              now
+            })
+          }
+        )
+        await tx.query(
+          `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+          [this.client.namespace, jobId.value, leaseToken.value]
+        )
+        return transition
+      }) as Promise<StoreResult<JobStoreNamespace.ReleaseResult>>
+    } catch (cause) {
+      return fail('releaseControlled', cause)
+    }
+  }
+
+  async cancelControlled(
+    request: ControlledCancelRequest
+  ): Promise<StoreResult<JobStoreNamespace.CancelResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['jobId', 'now', 'controlsRevision'],
+      ['jobId', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked)) return checked as StoreResult<JobStoreNamespace.CancelResult>
+    try {
+      const jobId = makeJobId(checked.value.jobId)
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(jobId)) return jobId as StoreResult<JobStoreNamespace.CancelResult>
+      return this.withTx('cancelControlled', async (tx) => {
+        const identity = await tx.query<Row>(
+          `SELECT queue,state FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
+          [this.client.namespace, jobId.value]
+        )
+        const queue = identity.rows[0]?.queue
+        if (queue === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(tx, text(queue, 'queue'), revision)
+        await this.lockRateWindow(tx, control, now)
+        const permit = await tx.query<Row>(
+          `SELECT job_id FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 FOR UPDATE`,
+          [this.client.namespace, jobId.value]
+        )
+        const transition = await this.applyTransitionInTx(
+          tx,
+          identity.rows[0]?.state === 'active' ? 'requestCancellation' : 'cancel',
+          { jobId: jobId.value, now },
+          (record) =>
+            record.state === 'active'
+              ? reduceJob(record, { type: 'request-cancellation', jobId: record.id, now })
+              : reduceJob(record, { type: 'cancel', jobId: record.id, now })
+        )
+        if (identity.rows[0]?.state !== 'active' && permit.rows[0] !== undefined)
+          await tx.query(
+            `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2`,
+            [this.client.namespace, jobId.value]
+          )
+        return transition
+      }) as Promise<StoreResult<JobStoreNamespace.CancelResult>>
+    } catch (cause) {
+      return fail('cancelControlled', cause)
+    }
+  }
+
+  async recoverStalledControlled(
+    request: ControlledRecoverStalledRequest
+  ): Promise<StoreResult<JobStoreNamespace.RecoverStalledResult>> {
+    const checked = validateDto(
+      request,
+      'request',
+      ['queue', 'maxStalledCount', 'now', 'controlsRevision'],
+      ['queue', 'maxStalledCount', 'limit', 'now', 'controlsRevision']
+    )
+    if (Result.isError(checked))
+      return checked as StoreResult<JobStoreNamespace.RecoverStalledResult>
+    try {
+      const queue = makeQueueName(checked.value.queue)
+      const maximum = safeNumber(checked.value.maxStalledCount, 'maxStalledCount')
+      const now = safeNumber(checked.value.now, 'now')
+      const revision = safeNumber(checked.value.controlsRevision, 'controlsRevision')
+      const limit =
+        checked.value.limit === undefined
+          ? Number.MAX_SAFE_INTEGER - 1
+          : safeNumber(checked.value.limit, 'limit')
+      if (Result.isError(queue)) return queue as StoreResult<JobStoreNamespace.RecoverStalledResult>
+      if (limit < 1) return definition('limit', 'must be positive')
+      return this.withTx('recoverStalledControlled', async (tx) => {
+        const control = await this.lockControls(tx, queue.value, revision)
+        await this.lockRateWindow(tx, control, now)
+        const candidates = await tx.query<Row>(
+          `SELECT id,lease_token FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state='active' AND lease_expires_at_ms <= $3 ORDER BY lease_expires_at_ms,sequence,id COLLATE "C" LIMIT $4`,
+          [this.client.namespace, queue.value, now, limit]
+        )
+        const transitions: JobTransition[] = []
+        for (const candidate of candidates.rows) {
+          const jobId = text(candidate.id, 'job_id')
+          const token = optionalString(candidate.lease_token)
+          const permit = await tx.query<Row>(
+            `SELECT lease_token FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 FOR UPDATE`,
+            [this.client.namespace, jobId]
+          )
+          if (permit.rows[0] !== undefined && optionalString(permit.rows[0].lease_token) !== token)
+            continue
+          const current = await this.row(tx, jobId, true)
+          if (
+            current === undefined ||
+            current.state !== 'active' ||
+            current.leaseExpiresAt === undefined ||
+            current.leaseExpiresAt > now
+          )
+            continue
+          const next = recoverStalledWithPolicy(
+            current,
+            { type: 'recover-stalled', jobId: current.id, now } as never,
+            current.stalledCount >= maximum
+          ) as unknown as ResultType<JobTransition, unknown>
+          if (Result.isError(next)) throw next.error
+          const transition = await this.applyTransitionInTx(
+            tx,
+            'recoverStalled',
+            { jobId, now },
+            () => next
+          )
+          if (transition.attempt !== undefined && transition.attempt.outcome === 'stalled')
+            await tx.query(
+              `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+              [this.client.namespace, jobId, token]
+            )
+          transitions.push(transition)
+        }
+        return { transitions: Object.freeze(transitions), recovered: transitions.length }
+      }) as Promise<StoreResult<JobStoreNamespace.RecoverStalledResult>>
+    } catch (cause) {
+      return fail('recoverStalledControlled', cause)
+    }
+  }
   async settle(
     request: JobStoreNamespace.SettleRequest
   ): Promise<StoreResult<JobStoreNamespace.SettlementResult>> {
@@ -1601,7 +2572,7 @@ class PostgresJobStoreImplementation {
       const settlementOutcome = outcome.value as typeof request.outcome
       return this.withTx('settle', async (tx) => {
         const raw = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
+          `SELECT ${this.jobColumns().join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
           [this.client.namespace, jobId.value]
         )
         const source = raw.rows[0]
@@ -1686,6 +2657,12 @@ class PostgresJobStoreImplementation {
           })
         const transition = await this.prepareTransition(tx, current, next.value)
         await this.save(tx, transition.record)
+        if (this.controlsAvailable) {
+          await tx.query(
+            `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+            [this.client.namespace, current.id, leaseToken.value]
+          )
+        }
         await this.insertAttempt(tx, transition.attempt!, current.id, current.leaseOwner)
         await tx.query(
           `UPDATE ${this.table(POSTGRES_TABLES.jobs)} SET last_settlement_token=$3,last_settlement_outcome=$4,last_settlement_attempt_sequence=$5 WHERE namespace=$1 AND id=$2`,
@@ -1904,7 +2881,7 @@ class PostgresJobStoreImplementation {
       if (limit < 1) return definition('limit', 'must be positive')
       return this.withTx('recoverStalled', async (tx) => {
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND state='active' AND lease_expires_at_ms <= $2 ORDER BY lease_expires_at_ms LIMIT $3 FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND state='active' AND lease_expires_at_ms <= $2 ORDER BY lease_expires_at_ms LIMIT $3 FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, now, limit]
         )
         const transitions = [] as JobTransition[]
@@ -1918,6 +2895,12 @@ class PostgresJobStoreImplementation {
           if (Result.isError(n)) throw n.error
           const transition = await this.prepareTransition(tx, r, n.value)
           await this.save(tx, transition.record)
+          if (this.controlsAvailable) {
+            await tx.query(
+              `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
+              [this.client.namespace, r.id, r.leaseToken]
+            )
+          }
           if (transition.attempt)
             await this.insertAttempt(tx, transition.attempt, r.id, r.leaseOwner)
           const flowOutcome = settlementOutcomeForAttempt(transition.attempt)
@@ -2235,7 +3218,7 @@ class PostgresJobStoreImplementation {
         const limitParameter = parameter(limit + 1)
         const direction = order === 'asc' ? 'ASC NULLS LAST' : 'DESC NULLS FIRST'
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE ${where.join(' AND ')} ORDER BY ${column} ${direction},sequence ${order},id COLLATE "C" ${order} LIMIT ${limitParameter}`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE ${where.join(' AND ')} ORDER BY ${column} ${direction},sequence ${order},id COLLATE "C" ${order} LIMIT ${limitParameter}`,
           values
         )
         const page = rows.rows.slice(0, limit)
