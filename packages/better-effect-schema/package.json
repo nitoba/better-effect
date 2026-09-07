@@ -58,6 +58,11 @@
       "import": "./dist/esm/valibot.js",
       "default": "./dist/esm/valibot.js"
     },
+    "./arktype": {
+      "types": "./dist/esm/arktype.d.ts",
+      "import": "./dist/esm/arktype.js",
+      "default": "./dist/esm/arktype.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -86,6 +91,8 @@
     "@standard-schema/spec": "^1.1.0"
   },
   "devDependencies": {
+    "@types/node": "^26.1.2",
+    "arktype": "2.2.3",
     "better-effect": "0.13.0",
     "better-result": "3.0.1",
     "publint": "^0.3.23",
@@ -94,6 +101,7 @@
     "zod": "4.5.4"
   },
   "peerDependencies": {
+    "arktype": ">=2.2.3 <3.0.0",
     "better-effect": ">=0.13.0 <0.14.0",
     "better-result": "^3.0.0",
     "typescript": ">=6.0.0",
@@ -101,6 +109,9 @@
     "zod": ">=4.5.4 <5"
   },
   "peerDependenciesMeta": {
+    "arktype": {
+      "optional": true
+    },
     "valibot": {
       "optional": true
     }
