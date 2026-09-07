@@ -8,7 +8,9 @@ import {
   Codec,
   Job,
   JobAdmin,
+  JobEventStore,
   JobStore,
+  MemoryJobEventStore,
   MemoryJobStore,
   Queue,
   type JobAdminCountError,
@@ -63,6 +65,7 @@ const Send = Emails.job('send', {
   store: JobStore
 })
 const NamedStore = JobStore.named('application-named')
+const NamedEvents = JobEventStore.for(NamedStore)
 const Named = Emails.job('named', {
   version: 1,
   payload: Codec.string,
@@ -71,12 +74,23 @@ const Named = Emails.job('named', {
 
 const options: JobEnqueueOptions = { delayMs: 10 }
 const awaitOptions: JobAwaitOptions = { pollIntervalMs: 10 }
+const eventAwaitOptions = {
+  strategy: 'events' as const,
+  eventStore: JobEventStore,
+  pollFallbackMs: 5_000
+}
 const enqueue = Send.enqueue({ to: 'a' }, options)
 const prepare = Send.prepare({ to: 'a' })
 const enqueueMany = Send.enqueueMany([{ to: 'a' }])
 const poll = Send.poll('job')
 const attempts = Send.attempts('job')
 const awaitResult = Send.awaitResult('job', awaitOptions)
+const eventAwaitResult = Send.awaitResult('job', eventAwaitOptions)
+const eventExecute = Send.execute({ to: 'a' }, eventAwaitOptions)
+const namedEventAwaitResult = Named.awaitResult('job', {
+  strategy: 'events',
+  eventStore: NamedEvents
+})
 const execute = Send.execute({ to: 'a' })
 const admin = JobAdmin.for(JobStore)
 const adminList = admin.list({
@@ -179,6 +193,33 @@ expectTypeOf(attempts).toEqualTypeOf<
 expectTypeOf(awaitResult).toEqualTypeOf<
   JobOperation<string, ExpectedAwaitError, typeof JobStore, true>
 >()
+expectTypeOf(eventAwaitResult).toEqualTypeOf<
+  JobOperation<
+    string,
+    ExpectedAwaitError,
+    typeof JobStore,
+    true,
+    import('../../src').JobEventStore.Instance
+  >
+>()
+expectTypeOf(eventExecute).toEqualTypeOf<
+  JobOperation<
+    string,
+    ExpectedEnqueueError | ExpectedAwaitError,
+    typeof JobStore,
+    true,
+    import('../../src').JobEventStore.Instance
+  >
+>()
+expectTypeOf(namedEventAwaitResult).toEqualTypeOf<
+  JobOperation<
+    undefined,
+    JobAwaitResultError<never>,
+    typeof NamedStore,
+    true,
+    import('../../src').JobEventStore.Instance<typeof NamedStore>
+  >
+>()
 expectTypeOf(execute).toEqualTypeOf<
   JobOperation<string, ExpectedEnqueueError | ExpectedAwaitError, typeof JobStore, true>
 >()
@@ -243,6 +284,21 @@ const awaitProgram = Effect.gen(async function* () {
 expectTypeOf<EffectError<typeof awaitProgram>>().toEqualTypeOf<
   ExpectedEnqueueError | ExpectedAwaitError
 >()
+
+const eventAwaitProgram = Effect.gen(async function* () {
+  const id = yield* Send.enqueue({ to: 'a' })
+  const result = yield* Send.awaitResult(id, eventAwaitOptions)
+  return Result.ok(result)
+})
+expectTypeOf<EffectError<typeof eventAwaitProgram>>().toEqualTypeOf<
+  ExpectedEnqueueError | ExpectedAwaitError
+>()
+expectTypeOf<EffectRequirements<typeof eventAwaitProgram>>().toEqualTypeOf<
+  JobStore.Instance | InstanceType<typeof Clock> | import('../../src').JobEventStore.Instance
+>()
+
+// @ts-expect-error event waiting must use the EventStore associated with the JobStore.
+Named.awaitResult('job', { strategy: 'events', eventStore: JobEventStore })
 expectTypeOf<EffectRequirements<typeof awaitProgram>>().toEqualTypeOf<
   JobStore.Instance | InstanceType<typeof Clock>
 >()
@@ -269,6 +325,7 @@ const completeLayer = Layer.merge(MemoryJobStore.layer, ClockLive)
 void Runtime.run(completeLayer, () => program)
 void Runtime.run(ClockLive, () => prepareProgram)
 void Runtime.run(completeLayer, () => awaitProgram)
+void Runtime.run(Layer.merge(completeLayer, MemoryJobEventStore.layer), () => eventAwaitProgram)
 void Runtime.run(completeLayer, () => executeProgram)
 const namedLayer = Layer.merge(MemoryJobStore.layerFor(NamedStore), ClockLive)
 void Runtime.run(namedLayer, () => namedProgram)

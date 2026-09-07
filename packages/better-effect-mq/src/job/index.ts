@@ -50,6 +50,8 @@ export type {
   JobAttemptsError,
   JobAttemptView,
   JobAwaitOptions,
+  JobAwaitEventsOptions,
+  JobAwaitPollingOptions,
   JobAwaitResultError,
   JobBoundOperations,
   JobEffect,
