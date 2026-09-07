@@ -19,22 +19,30 @@ export interface GenericClassDefinition<
   readonly fields?: GenericSchemaFieldMap
   readonly struct?: unknown
   readonly codec?: unknown
-  readonly encode?: (value: Props) => Encoded | PromiseLike<Encoded>
+  encode?(value: Props): Encoded | PromiseLike<Encoded>
 }
 
 export type GenericClassInput<Definition extends GenericClassDefinition> =
-  Definition extends GenericClassDefinition<infer Input, unknown, unknown, unknown> ? Input : never
+  Definition extends { readonly schema: infer Schema extends StandardSchemaV1 }
+    ? StandardSchemaV1.InferInput<Schema>
+    : never
 
 export type GenericClassConstructorInput<Definition extends GenericClassDefinition> =
-  Definition extends GenericClassDefinition<unknown, infer Input, unknown, unknown> ? Input : never
+  Definition extends { readonly propsSchema: infer Schema extends StandardSchemaV1 }
+    ? StandardSchemaV1.InferInput<Schema>
+    : never
 
 export type GenericClassProps<Definition extends GenericClassDefinition> =
-  Definition extends GenericClassDefinition<unknown, unknown, infer Props, unknown> ? Props : never
+  Definition extends { readonly propsSchema: infer Schema extends StandardSchemaV1 }
+    ? StandardSchemaV1.InferOutput<Schema>
+    : never
 
 export type GenericClassEncoded<Definition extends GenericClassDefinition> =
-  Definition extends GenericClassDefinition<unknown, unknown, unknown, infer Encoded>
-    ? Encoded
-    : never
+  Definition extends { readonly encodedSchema?: infer Schema }
+    ? NonNullable<Schema> extends StandardSchemaV1
+      ? StandardSchemaV1.InferInput<NonNullable<Schema>>
+      : GenericClassInput<Definition>
+    : GenericClassInput<Definition>
 
 export type GenericClassFields<Definition extends GenericClassDefinition> = Definition extends {
   readonly fields: infer Fields
@@ -69,29 +77,30 @@ export type GenericConstructorArgs<Input> = keyof Input extends never
     ? readonly [input?: Input]
     : readonly [input: Input]
 
-interface GenericClassFluent<Self, Definition extends GenericClassDefinition> {
-  meta(): GenericClassAnnotations | undefined
-  meta(metadata: GenericClassAnnotations): this
-  describe(description: string): this
-  register<Metadata>(
-    registry: { add(value: object, metadata?: Metadata): unknown },
-    metadata?: Metadata
-  ): this
-}
-
-export type GenericSchemaClass<Self, Definition extends GenericClassDefinition> = {
-  new (...args: GenericConstructorArgs<GenericClassProps<Definition>>): Self
+export interface GenericSchemaClass<
+  Self,
+  Definition extends GenericClassDefinition,
+  Inherited = object
+> {
+  /**
+   * The constructor deliberately describes decoded properties instead of Self.
+   * This keeps the F-bounded `class Self extends Schema.Class<Self>(...)`
+   * declaration finite while the metadata and Result APIs retain Self exactly.
+   */
+  new (...args: GenericConstructorArgs<GenericClassProps<Definition>>): Readonly<
+    GenericClassProps<Definition>
+  > & Inherited
 
   readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<Self, Definition>
   readonly identifier: string
   readonly kind: 'class'
-  readonly '~standard': StandardSchemaV1<GenericClassInput<Definition>, Self>['~standard']
   readonly schema: Definition['schema']
   readonly propsSchema: Definition['propsSchema']
   readonly encodedSchema: Definition['encodedSchema'] | undefined
   readonly fields: Definition['fields'] | undefined
   readonly struct: Definition['struct'] | undefined
   readonly codec: Definition['codec'] | undefined
+  readonly '~standard': StandardSchemaV1<GenericClassInput<Definition>, Self>['~standard']
 
   make(
     input: GenericClassConstructorInput<Definition>
@@ -109,7 +118,14 @@ export type GenericSchemaClass<Self, Definition extends GenericClassDefinition> 
   >
 
   is(value: unknown): value is Self
-} & GenericClassFluent<Self, Definition>
+  meta(): GenericClassAnnotations | undefined
+  meta(metadata: GenericClassAnnotations): this
+  describe(description: string): this
+  register<Metadata>(
+    registry: { add(value: object, metadata?: Metadata): unknown },
+    metadata?: Metadata
+  ): this
+}
 
 type GenericSchemaClassDeclaration<Self, Definition extends GenericClassDefinition> = Omit<
   GenericSchemaClass<Self, Definition>,

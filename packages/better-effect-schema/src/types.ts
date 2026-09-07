@@ -17,7 +17,6 @@ export type {
   Simplify,
   ToJSONSchemaParams
 } from './types/common.js'
-export type { ClassTypeMetadata } from './types/class-metadata.js'
 export type {
   GenericClassAnnotations,
   GenericClassBuilder,
@@ -35,39 +34,19 @@ export type {
   GenericSchemaClass,
   GenericSchemaFieldMap
 } from './types/generic-class.js'
-export type {
-  CatchallBuilder,
-  ExtendBuilder,
-  OmitBuilder,
-  PickBuilder
-} from './types/derivation-builders.js'
-export type { Encoded, Fields, Input, Output, Instance, Props, Struct } from './types/extractors.js'
-export type { ClassBuilder, ClassFactory, MissingClassSelfGeneric } from './types/factories.js'
-export type { SchemaClass } from './types/schema-class.js'
-export type {
-  CatchallObject,
-  ClassDeepPartialObject,
-  ClassDeepPartialShape,
-  DeepPartialObject,
-  ExactPartialShape,
-  LooseObject,
-  MergeShapes,
-  OmitShape,
-  PartialShape,
-  PickShape,
-  RebuildObject,
-  RequiredShape,
-  SchemaShape,
-  StrictObject,
-  StripObject
-} from './types/shapes.js'
+export type { Encoded, Fields, Input, Instance, Output, Props, Struct } from './types/extractors.js'
 export type {
   ErrorTaglessFields,
+  TaggedAnnotations,
   TaggedClassBuilder,
   TaggedClassFactory,
+  TaggedEncoded,
   TaggedErrorBuilder,
   TaggedErrorFactory,
   TaggedErrorReservedField,
+  TaggedInstance,
+  TaggedInput,
+  TaggedProps,
   TaggedShape,
   TaglessFields
 } from './types/tagged.js'

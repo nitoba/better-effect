@@ -1,6 +1,4 @@
 export { Class } from './class.js'
-export { BetterEffectZodError, ZodClassError } from './errors.js'
-export type { BetterEffectZodErrorCode, ZodClassErrorCode } from './errors.js'
 export {
   SchemaAsyncRequired,
   SchemaConstructionFailure,
@@ -89,23 +87,37 @@ export { Schema } from './schema.js'
 export { TaggedClass } from './tagged-class.js'
 export { TaggedError } from './tagged-error.js'
 export type {
+  ErrorTaglessFields,
+  TaggedAnnotations,
+  TaggedClassBuilder,
+  TaggedClassFactory,
+  TaggedEncoded,
+  TaggedErrorBuilder,
+  TaggedErrorFactory,
+  TaggedErrorReservedField,
+  TaggedInstance,
+  TaggedInput,
+  TaggedProps,
+  TaggedShape,
+  TaglessFields
+} from './types.js'
+export type { Encoded, Fields, Input, Output, Instance, Props, Struct } from './types/extractors.js'
+export type {
   AnyObjectCodec,
   AnyObjectSchema,
   ClassAnnotations,
-  ClassBuilder,
+  ClassAugmentation,
   ClassDefinition,
-  ClassFactory,
   ClassKind,
+  ConfigOf,
+  ConstructionProps,
   ConstructorArgs,
-  Encoded,
-  Fields,
-  Input,
-  Output,
-  Instance,
+  DefinitionFields,
+  FieldMask,
+  InheritedClassMembers,
   MakeOptions,
-  Props,
-  SchemaClass,
-  Struct,
+  RawShape,
+  ShapeOf,
+  Simplify,
   ToJSONSchemaParams
-} from './types.js'
-export { Z } from './z.js'
+} from './types/common.js'

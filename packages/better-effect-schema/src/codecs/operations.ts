@@ -8,7 +8,6 @@ import {
   SchemaExecutionFailure,
   SchemaUnsupportedOperation
 } from '../failure.js'
-import { isSchemaClass } from '../is-schema-class.js'
 import type { SchemaEffect } from '../schema-effect.js'
 import { invokeAsync, invokeSync } from '../internal/execution.js'
 import {
@@ -48,7 +47,6 @@ interface RuntimeCodec {
   readonly encodedSchema: StandardSchemaV1
   readonly encode: Function
   readonly encodeAsync: Function | undefined
-  readonly legacyClass: boolean
 }
 
 type NormalizedEncoderResult =
@@ -102,18 +100,10 @@ const readCodec = (
       return unsupported(operation)
     }
 
-    let legacyClass = false
-    try {
-      legacyClass = isSchemaClass(codec)
-    } catch {
-      // A diagnostic check must not turn a valid callback into an exception.
-    }
-
     return schemaSuccess<RuntimeCodec, SchemaUnsupportedOperation | SchemaExecutionFailure>({
       encodedSchema: encodedSchema as StandardSchemaV1,
       encode,
-      encodeAsync: typeof encodeAsync === 'function' ? encodeAsync : undefined,
-      legacyClass
+      encodeAsync: typeof encodeAsync === 'function' ? encodeAsync : undefined
     })
   } catch (cause) {
     return schemaFailure(
@@ -124,19 +114,13 @@ const readCodec = (
 
 const normalizeEncoderResult = (
   value: unknown,
-  allowLegacyRawValue: boolean,
   identifier: string,
   operation: string
 ): Normalization => {
   if (!isObjectLike(value)) {
-    return allowLegacyRawValue
-      ? schemaSuccess<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>({
-          _tag: 'value',
-          value
-        })
-      : schemaFailure<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>(
-          new SchemaDefinitionFailure({ identifier, operation, cause: 'invalid-result' })
-        )
+    return schemaFailure<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>(
+      new SchemaDefinitionFailure({ identifier, operation, cause: 'invalid-result' })
+    )
   }
 
   try {
@@ -161,27 +145,15 @@ const normalizeEncoderResult = (
       })
     }
 
-    return allowLegacyRawValue
-      ? schemaSuccess<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>({
-          _tag: 'value',
-          value
-        })
-      : schemaFailure<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>(
-          new SchemaDefinitionFailure({ identifier, operation, cause: 'invalid-result' })
-        )
+    return schemaFailure<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>(
+      new SchemaDefinitionFailure({ identifier, operation, cause: 'invalid-result' })
+    )
   } catch (cause) {
     return schemaFailure<NormalizedEncoderResult, SchemaDefinitionFailure | SchemaExecutionFailure>(
       new SchemaExecutionFailure({ identifier, operation, cause })
     )
   }
 }
-
-const legacyEncodeFailure = (
-  failure: SchemaExecutionFailure,
-  identifier: string,
-  operation: string
-): SchemaEffect<never, SchemaEncodeFailure> =>
-  schemaFailure(new SchemaEncodeFailure({ identifier, operation, cause: failure.cause }))
 
 const encodeValidationSync = <Codec extends AnySchemaCodec>(
   codec: Codec,
@@ -256,19 +228,11 @@ export const encodeCodec = <Codec extends AnySchemaCodec>(
 
   const invoked = invokeSync('encode', () => Reflect.apply(descriptor.value.encode, codec, [value]))
   if (Result.isError(invoked)) {
-    if (descriptor.value.legacyClass && invoked.error instanceof SchemaExecutionFailure) {
-      return legacyEncodeFailure(
-        invoked.error,
-        identifierOf(codec),
-        'encode'
-      ) as CodecEncodeOperation<Codec>
-    }
     return invoked as CodecEncodeOperation<Codec>
   }
 
   const normalized = normalizeEncoderResult(
     invoked.value,
-    descriptor.value.legacyClass,
     identifierOf(codec),
     'encode'
   )
@@ -293,19 +257,11 @@ export const encodeCodecAsync = async <Codec extends AnySchemaCodec>(
   const encoder = descriptor.value.encodeAsync ?? descriptor.value.encode
   const invoked = await invokeAsync('encodeAsync', () => Reflect.apply(encoder, codec, [value]))
   if (Result.isError(invoked)) {
-    if (descriptor.value.legacyClass && invoked.error instanceof SchemaExecutionFailure) {
-      return legacyEncodeFailure(
-        invoked.error,
-        identifierOf(codec),
-        'encodeAsync'
-      ) as unknown as Awaited<CodecEncodeAsyncOperation<Codec>>
-    }
     return invoked as unknown as Awaited<CodecEncodeAsyncOperation<Codec>>
   }
 
   const normalized = normalizeEncoderResult(
     invoked.value,
-    descriptor.value.legacyClass,
     identifierOf(codec),
     'encodeAsync'
   )

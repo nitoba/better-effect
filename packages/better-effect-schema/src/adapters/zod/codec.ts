@@ -129,14 +129,14 @@ export const ZodCodecCapabilities = Object.freeze({
   read: readCapability
 })
 
-export function bridgeZodSchema<Native extends z.ZodType>(
+export const bridgeZodSchema = <Native>(
   native: Native
-): ZodCapabilityResult<StandardSchemaV1<z.input<Native>, z.output<Native>>>
-export function bridgeZodSchema<Native, Input, Output>(
-  native: Native
-): ZodCapabilityResult<StandardSchemaV1<Input, Output>>
-export function bridgeZodSchema(native: unknown): ZodCapabilityResult<StandardSchemaV1> {
+): ZodCapabilityResult<
+  Native extends z.ZodType ? StandardSchemaV1<z.input<Native>, z.output<Native>> : StandardSchemaV1
+> => {
   const schema = toZodSchema(native)
   if (schema === undefined) return unsupported('bridge', 'not-a-zod-schema-or-raw-shape')
-  return Result.ok(asStandardSchema(schema))
+  return Result.ok(asStandardSchema(schema)) as ZodCapabilityResult<
+    Native extends z.ZodType ? StandardSchemaV1<z.input<Native>, z.output<Native>> : StandardSchemaV1
+  >
 }

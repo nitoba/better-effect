@@ -1,20 +1,8 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { AnyTaggedError, TaggedErrorInstance } from 'better-result'
+import type { TaggedErrorInstance } from 'better-result'
 
-import type { CLASS_TYPE_ID } from '../internal/symbols.js'
 import type { SchemaEffect } from '../schema-effect.js'
-import type {
-  SchemaAsyncRequired,
-  SchemaConstructionFailure,
-  SchemaDefinitionFailure,
-  SchemaExecutionFailure
-} from '../failure.js'
-import type { ClassDefinition } from './common.js'
-import type { ClassTypeMetadata } from './class-metadata.js'
-import type { MissingClassSelfGeneric } from './factories.js'
-
-/** Type-only carrier used by the generic `Encoded` extractor. */
-export declare const TAGGED_ENCODED: unique symbol
+import type { GenericClassDefinition, GenericSchemaClass } from './generic-class.js'
 
 export type TaggedField = StandardSchemaV1
 export type TaggedFieldMap = Readonly<Record<string, TaggedField>>
@@ -52,120 +40,63 @@ export type TaggedEncoded<Tag extends string, Fields extends TaggedFieldMap> = {
 } & Readonly<TaggedInput<Fields>>
 
 export type TaggedConstructionFailure =
-  | SchemaAsyncRequired
-  | SchemaConstructionFailure
-  | SchemaDefinitionFailure
-  | SchemaExecutionFailure
-
-type TaggedResult<Self, Tag extends string, Fields extends TaggedFieldMap> = SchemaEffect<
-  TaggedInstance<Self, Tag, Fields>,
-  TaggedConstructionFailure
->
+  | import('../failure.js').SchemaAsyncRequired
+  | import('../failure.js').SchemaConstructionFailure
+  | import('../failure.js').SchemaDefinitionFailure
+  | import('../failure.js').SchemaExecutionFailure
 
 export type TaggedAnnotations = Readonly<Record<string, unknown>>
 
-type FieldMask<Fields extends TaggedFieldMap> = {
-  readonly [Key in Exclude<keyof Fields, '_tag'>]?: true
+type TaggedDefinition<Tag extends string, Fields extends TaggedFieldMap> = GenericClassDefinition<
+  TaggedEncoded<Tag, Fields>,
+  TaggedProps<Fields>,
+  TaggedProps<Fields>,
+  TaggedEncoded<Tag, Fields>
+> & {
+  readonly fields: TaggedShape<Tag, Fields>
 }
 
-type PickFields<Fields extends TaggedFieldMap, Mask extends FieldMask<Fields>> = Pick<
-  Fields,
-  Extract<keyof Mask, keyof Fields>
->
+type TaggedResult<Value> = SchemaEffect<Value, TaggedConstructionFailure>
 
-type TaggedClassType<Self, Tag extends string, Fields extends TaggedFieldMap> = {
-  new (props?: TaggedProps<Fields>): TaggedProps<Fields> & { readonly _tag: Tag }
-  readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-    Self,
-    ClassDefinition,
-    TaggedProps<Fields>,
-    TaggedProps<Fields> & { readonly _tag: Tag },
-    object,
-    '_tag',
-    never
-  >
-  readonly [TAGGED_ENCODED]: TaggedEncoded<Tag, Fields>
+export type TaggedClassType<Self, Tag extends string, Fields extends TaggedFieldMap> = Omit<
+  GenericSchemaClass<Self, TaggedDefinition<Tag, Fields>>,
+  'kind' | 'fields' | 'encodedSchema' | 'make' | 'makeAsync' | 'unsafeMake' | 'is'
+> & {
+  new (props?: TaggedProps<Fields>): Readonly<TaggedProps<Fields>> & { readonly _tag: Tag }
   readonly identifier: Tag
   readonly kind: 'tagged-class'
   readonly fields: TaggedShape<Tag, Fields>
-  readonly struct: StandardSchemaV1
-  readonly schema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedInstance<Self, Tag, Fields>>
-  readonly codec: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedInstance<Self, Tag, Fields>>
   readonly encodedSchema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedEncoded<Tag, Fields>>
-  readonly propsSchema: StandardSchemaV1<TaggedProps<Fields>, TaggedProps<Fields>>
-  readonly '~standard': StandardSchemaV1<
-    TaggedEncoded<Tag, Fields>,
-    TaggedInstance<Self, Tag, Fields>
-  >['~standard']
-
-  make(props?: TaggedProps<Fields>): TaggedResult<Self, Tag, Fields>
-  makeAsync(props?: TaggedProps<Fields>): Promise<TaggedResult<Self, Tag, Fields>>
-  unsafeMake(props?: TaggedProps<Fields>): TaggedResult<Self, Tag, Fields>
-  decode(input: TaggedEncoded<Tag, Fields>): TaggedResult<Self, Tag, Fields>
-  decodeAsync(input: TaggedEncoded<Tag, Fields>): Promise<TaggedResult<Self, Tag, Fields>>
-  parse(input: TaggedEncoded<Tag, Fields>): TaggedInstance<Self, Tag, Fields>
-  encode(input: TaggedInstance<Self, Tag, Fields>): TaggedEncoded<Tag, Fields>
-  is(input: unknown): input is TaggedInstance<Self, Tag, Fields>
-
-  pick<DerivedSelf>(
-    identifier: string,
-    annotations?: TaggedAnnotations
-  ): <const Mask extends FieldMask<Fields>>(
-    mask: Mask
-  ) => TaggedClassType<DerivedSelf, Tag, PickFields<Fields, Mask>>
-
-  extend<DerivedSelf, const Added extends TaglessFields<Fields>>(
-    identifier: string,
-    annotations?: TaggedAnnotations
-  ): (fields: Added) => TaggedClassType<DerivedSelf, Tag, Fields & Added>
+  make(props?: TaggedProps<Fields>): TaggedResult<TaggedInstance<Self, Tag, Fields>>
+  makeAsync(props?: TaggedProps<Fields>): Promise<TaggedResult<TaggedInstance<Self, Tag, Fields>>>
+  unsafeMake(props?: TaggedProps<Fields>): TaggedResult<TaggedInstance<Self, Tag, Fields>>
+  is(value: unknown): value is TaggedInstance<Self, Tag, Fields>
 }
 
-type TaggedErrorProps<Tag extends string, Fields extends TaggedFieldMap> = TaggedErrorInstance<
+type TaggedErrorValue<Tag extends string, Fields extends TaggedFieldMap> = TaggedErrorInstance<
   Tag,
   TaggedProps<Fields>
 > &
   Readonly<TaggedProps<Fields>>
 
-type TaggedErrorType<Self, Tag extends string, Fields extends TaggedFieldMap> = {
-  new (props?: TaggedProps<Fields>): TaggedErrorProps<Tag, Fields>
-  readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-    Self,
-    ClassDefinition,
-    TaggedProps<Fields>,
-    TaggedProps<Fields> & { readonly _tag: Tag },
-    AnyTaggedError,
-    TaggedErrorReservedField,
-    never
-  >
-  readonly [TAGGED_ENCODED]: TaggedEncoded<Tag, Fields>
+export type TaggedErrorType<Self, Tag extends string, Fields extends TaggedFieldMap> = Omit<
+  GenericSchemaClass<
+    Self & TaggedErrorValue<Tag, Fields>,
+    TaggedDefinition<Tag, Fields>
+  >,
+  'kind' | 'fields' | 'encodedSchema' | 'make' | 'makeAsync' | 'unsafeMake' | 'is'
+> & {
+  new (props?: TaggedProps<Fields>): TaggedErrorValue<Tag, Fields> & Readonly<TaggedProps<Fields>>
   readonly identifier: Tag
   readonly kind: 'tagged-error'
   readonly fields: TaggedShape<Tag, Fields>
-  readonly struct: StandardSchemaV1
-  readonly schema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedErrorProps<Tag, Fields>>
-  readonly codec: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedErrorProps<Tag, Fields>>
   readonly encodedSchema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedEncoded<Tag, Fields>>
-  readonly propsSchema: StandardSchemaV1<TaggedProps<Fields>, TaggedProps<Fields>>
-  readonly '~standard': StandardSchemaV1<
-    TaggedEncoded<Tag, Fields>,
-    TaggedErrorProps<Tag, Fields>
-  >['~standard']
-
-  make(props?: TaggedProps<Fields>): TaggedResult<Self, Tag, Fields>
-  makeAsync(props?: TaggedProps<Fields>): Promise<TaggedResult<Self, Tag, Fields>>
-  unsafeMake(props?: TaggedProps<Fields>): TaggedResult<Self, Tag, Fields>
-  decode(input: TaggedEncoded<Tag, Fields>): TaggedResult<Self, Tag, Fields>
-  decodeAsync(input: TaggedEncoded<Tag, Fields>): Promise<TaggedResult<Self, Tag, Fields>>
-  parse(input: TaggedEncoded<Tag, Fields>): Self & TaggedErrorProps<Tag, Fields>
-  encode(input: Self & TaggedErrorProps<Tag, Fields>): TaggedEncoded<Tag, Fields>
-  is(input: unknown): input is Self & TaggedErrorProps<Tag, Fields>
-
-  pick<DerivedSelf>(
-    identifier: string,
-    annotations?: TaggedAnnotations
-  ): <const Mask extends FieldMask<Fields>>(
-    mask: Mask
-  ) => TaggedErrorType<DerivedSelf, Tag, PickFields<Fields, Mask>>
+  make(props?: TaggedProps<Fields>): TaggedResult<Self & TaggedErrorValue<Tag, Fields>>
+  makeAsync(
+    props?: TaggedProps<Fields>
+  ): Promise<TaggedResult<Self & TaggedErrorValue<Tag, Fields>>>
+  unsafeMake(props?: TaggedProps<Fields>): TaggedResult<Self & TaggedErrorValue<Tag, Fields>>
+  is(value: unknown): value is Self & TaggedErrorValue<Tag, Fields>
 }
 
 export type TaggedClassBuilder<Self> = {
@@ -184,14 +115,17 @@ export type TaggedErrorBuilder<Self> = {
   ): TaggedErrorType<Self, Tag, Fields>
 }
 
+type MissingSelfGeneric<Factory extends string> =
+  `Missing \`Self\` generic - use \`class Self extends Schema.${Factory}<Self>()(...)\``
+
 export interface TaggedClassFactory {
   <Self = never>(): [Self] extends [never]
-    ? MissingClassSelfGeneric<'TaggedClass', '()'>
+    ? MissingSelfGeneric<'TaggedClass'>
     : TaggedClassBuilder<Self>
 }
 
 export interface TaggedErrorFactory {
   <Self = never>(): [Self] extends [never]
-    ? MissingClassSelfGeneric<'TaggedError', '()'>
+    ? MissingSelfGeneric<'TaggedError'>
     : TaggedErrorBuilder<Self>
 }

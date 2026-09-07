@@ -138,7 +138,9 @@ export interface SchemaCapabilities {
 }
 
 /** Public adapter contract; capabilities can be direct or grouped under `capabilities`. */
-export interface SchemaAdapter extends SchemaCapabilities {
+export interface SchemaAdapter<Classes = object> extends SchemaCapabilities {
   readonly name?: string
   readonly capabilities?: SchemaCapabilities
+  /** Optional provider-owned class factories exposed by a local facade. */
+  readonly classes?: Classes
 }

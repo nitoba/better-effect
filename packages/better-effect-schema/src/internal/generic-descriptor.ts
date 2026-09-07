@@ -19,10 +19,14 @@ export interface GenericClassDescriptor {
   readonly struct: unknown
   readonly codec: unknown
   readonly annotations: GenericClassAnnotations | undefined
-  readonly kind: 'class'
+  readonly kind: GenericClassKind
+  readonly baseClass: Function | undefined
+  readonly prepareConstruction: ((value: unknown) => unknown) | undefined
   readonly preparationFailure: SchemaDefinitionFailure | SchemaExecutionFailure | undefined
   readonly instances: WeakSet<object>
 }
+
+export type GenericClassKind = 'class' | 'tagged-class' | 'tagged-error'
 
 const descriptors = new WeakMap<Function, GenericClassDescriptor>()
 const allInstances = new WeakSet<object>()
@@ -62,7 +66,13 @@ const validFields = (value: unknown): value is Readonly<Record<string, StandardS
 export const prepareGenericDescriptor = (
   identifier: unknown,
   definition: unknown,
-  annotations?: GenericClassAnnotations
+  annotations?: GenericClassAnnotations,
+  options: {
+    readonly kind?: GenericClassKind
+    readonly baseClass?: Function
+    readonly prepareConstruction?: (value: unknown) => unknown
+    readonly definitionFailure?: SchemaDefinitionFailure | SchemaExecutionFailure
+  } = {}
 ): GenericClassDescriptor => {
   const safeIdentifier = typeof identifier === 'string' ? identifier : ''
   const base: {
@@ -75,7 +85,10 @@ export const prepareGenericDescriptor = (
     struct: unknown
     codec: unknown
     annotations: GenericClassAnnotations | undefined
-    kind: 'class'
+    kind: GenericClassKind
+    baseClass: Function | undefined
+    prepareConstruction: ((value: unknown) => unknown) | undefined
+    definitionFailure: SchemaDefinitionFailure | SchemaExecutionFailure | undefined
     preparationFailure: SchemaDefinitionFailure | SchemaExecutionFailure | undefined
     instances: WeakSet<object>
   } = {
@@ -88,13 +101,18 @@ export const prepareGenericDescriptor = (
     struct: undefined,
     codec: undefined,
     annotations,
-    kind: 'class' as const,
+    kind: options.kind ?? 'class',
+    baseClass: options.baseClass,
+    prepareConstruction: options.prepareConstruction,
+    definitionFailure: options.definitionFailure,
     preparationFailure: undefined,
     instances: new WeakSet<object>()
   }
 
   try {
-    if (safeIdentifier.trim().length === 0) {
+    if (base.definitionFailure !== undefined) {
+      base.preparationFailure = base.definitionFailure
+    } else if (safeIdentifier.trim().length === 0) {
       base.preparationFailure = failure(identifier, 'definition', 'invalid-identifier')
     } else if (!objectLike(definition) || Array.isArray(definition)) {
       base.preparationFailure = failure(safeIdentifier, 'definition', 'invalid-definition')
