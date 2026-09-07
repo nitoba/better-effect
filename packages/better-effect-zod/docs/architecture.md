@@ -1,5 +1,10 @@
 # Architecture
 
+> This document describes the audited predecessor layout for roadmap #209. The
+> directory moves to `packages/better-effect-schema` in #211; the Zod-specific
+> implementation then moves behind `src/adapters/zod/` in #220. It is retained
+> here in #210 so the structural move has a file-by-file reference.
+
 ## Position in the ecosystem
 
 `better-effect-zod` is an optional modeling and validation package:
@@ -237,3 +242,25 @@ Standard Schema describes validation/decode, not automatic persistence of arbitr
 - private better-effect or better-result subpath imports.
 
 Package checks also reject stale package identities, private export paths, CommonJS entrypoints, missing peers, and generated source artifacts.
+
+## Migration ownership map
+
+The current files map to the new package boundaries as follows:
+
+| Current path | Responsibility today | Planned destination | Owner |
+| --- | --- | --- | --- |
+| `src/index.ts`, `src/schema.ts`, `src/types.ts` | public barrels and type facade | `src/index.ts`, `src/schema.ts`, `src/types/` | integration/types |
+| `src/operations.ts`, `src/schema-effect.ts` | Zod operations and Effect alias | `src/operations/`, `src/schema-effect.ts` | operations |
+| `src/failure.ts`, `src/errors.ts` | Zod-shaped failure and definition errors | `src/failure.ts`, `src/internal/diagnostics.ts` | failures |
+| `src/class.ts`, `src/tagged-class.ts`, `src/tagged-error.ts` | class family factories | `src/classes/` | classes |
+| `src/internal/descriptor.ts`, `class-types.ts`, `factory.ts`, `runtime-class.ts` | class descriptors and construction | `src/classes/` + private internals | classes |
+| `src/internal/instance.ts`, `construction-context.ts`, `symbols.ts`, `tag.ts` | identity/prevalidated construction/tag protection | `src/classes/identity.ts` and class internals | classes |
+| `src/internal/object-schema.ts`, `projections.ts`, `codec.ts`, `codec-cache.ts` | Zod object/input/output codec machinery | generic capability consumers; Zod pieces under `src/adapters/zod/` | codecs/adapters |
+| `src/internal/derivation.ts`, `class-derivation-api.ts` | structural object derivation | `src/derivation/` | derivations |
+| `src/internal/metadata.ts` | Zod registry metadata | `src/json-schema/metadata.ts` | JSON Schema |
+| `src/internal/issues.ts`, `result.ts` | issue sanitization and Result helpers | `src/internal/diagnostics.ts`, `src/schema-effect.ts` | failures |
+| `src/z.ts` | deprecated provider facade alias | removed after documented cutover | integration |
+| `scripts/*.mjs` | build, source/package checks, external consumer | package scripts with new name/subpaths | integration/release |
+
+No file should be copied into both the generic core and an adapter. During #211
+the source may still import Zod, but that state is temporary and release-blocked.
