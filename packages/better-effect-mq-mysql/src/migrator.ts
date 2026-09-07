@@ -403,7 +403,7 @@ const controlsIndexes = Object.freeze({
     { non_unique: 1, column_name: 'priority', sub_part: null, collation: 'D' },
     { non_unique: 1, column_name: 'run_at_ms', sub_part: null, collation: 'A' },
     { non_unique: 1, column_name: 'sequence', sub_part: null, collation: 'A' },
-    { non_unique: 1, column_name: 'id', sub_part: 191, collation: 'A' }
+    { non_unique: 1, column_name: 'id', sub_part: 128, collation: 'A' }
   ],
   better_effect_mq_controlled_permits_queue_key_idx: [
     { non_unique: 1, column_name: 'namespace', sub_part: 191, collation: 'A' },
