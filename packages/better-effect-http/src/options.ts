@@ -1,11 +1,25 @@
+// oxlint-disable anti-slop/no-runtime-typeof -- timeout accepts a documented numeric-or-record union at the public boundary.
 export type HttpOptions = Readonly<{
   readonly baseURL?: string
-  readonly timeout?: number
+  readonly timeout?:
+    | number
+    | Readonly<{ readonly attemptMs?: number; readonly totalMs?: number | false }>
   readonly expectedStatuses?: readonly number[]
 }>
 
 export const validateHttpOptions = (options: HttpOptions): string | undefined => {
-  if (options.timeout !== undefined && (!Number.isFinite(options.timeout) || options.timeout < 0))
+  const timeouts =
+    typeof options.timeout === 'number'
+      ? [options.timeout]
+      : options.timeout
+        ? [
+            options.timeout.attemptMs,
+            options.timeout.totalMs === false ? undefined : options.timeout.totalMs
+          ]
+        : []
+  if (
+    timeouts.some((timeout) => timeout !== undefined && (!Number.isFinite(timeout) || timeout < 0))
+  )
     return 'timeout must be a finite non-negative number'
   if (
     options.expectedStatuses?.some(

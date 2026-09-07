@@ -5,8 +5,11 @@
 // oxlint-disable anti-slop/no-unsafe-dictionary-type -- the transport option object is checked by ofetch's named contract.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions restore the platform BodyInit contract after narrowing.
 import { createFetch, ofetch } from 'ofetch'
+import { CurrentAbortSignal } from 'better-effect'
 import type { FetchOptions } from 'ofetch'
 import { HttpDecodeError, HttpStatusError, HttpTransportError } from '../errors'
+import { linkSignals } from './signals'
+import { deadline } from './deadlines'
 
 export type TransportOptions = Readonly<{
   readonly baseURL?: string
@@ -21,6 +24,9 @@ export type TransportRequest = Readonly<{
   readonly headers?: RequestInit['headers']
   readonly body?: unknown
   readonly signal?: AbortSignal
+  readonly timeout?:
+    | number
+    | Readonly<{ readonly attemptMs?: number; readonly totalMs?: number | false }>
   readonly responseType?: 'json' | 'text' | 'blob' | 'arrayBuffer'
 }>
 
@@ -63,6 +69,10 @@ export const executeRequest = async (
     if (!headers.has('content-type')) headers.set('content-type', 'application/json')
   }
   try {
+    const timeout =
+      typeof request.timeout === 'number' ? request.timeout : request.timeout?.attemptMs
+    const timed = deadline(timeout)
+    const linked = linkSignals(request.signal, yieldCurrentSignal(), timed?.signal)
     const requester = config.fetch ? createFetch({ fetch: config.fetch }) : ofetch
     const options: FetchOptions<'stream'> = {
       method: request.method,
@@ -73,10 +83,23 @@ export const executeRequest = async (
       responseType: 'stream'
     }
     if (request.query !== undefined) options.query = request.query
-    if (request.signal !== undefined) options.signal = request.signal
-    return await requester.raw(urlFor(config.baseURL, request.path), options)
+    options.signal = linked.signal
+    try {
+      return await requester.raw(urlFor(config.baseURL, request.path), options)
+    } finally {
+      linked.dispose()
+      timed?.dispose()
+    }
   } catch (cause) {
     throw new HttpTransportError({ phase: 'transport', cause })
+  }
+}
+
+const yieldCurrentSignal = (): AbortSignal | undefined => {
+  try {
+    return CurrentAbortSignal[Symbol.iterator]().next().value as AbortSignal
+  } catch {
+    return undefined
   }
 }
 
