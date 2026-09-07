@@ -6,6 +6,8 @@ import type { MongoDb } from './config'
 
 export const MONGODB_LAYOUT_VERSION = 3 as const
 export const MONGODB_PROTOCOL_VERSION = 1 as const
+export const MONGODB_FLOW_LAYOUT_VERSION = 1 as const
+export const MONGODB_FLOW_PROTOCOL_VERSION = 2 as const
 
 export type MongoCollections = ReturnType<typeof mongoCollections>
 
@@ -17,7 +19,9 @@ export const mongoCollections = (db: MongoDb, prefix: string) =>
     queues: db.collection(`${prefix}_queues`),
     counters: db.collection(`${prefix}_counters`),
     migrations: db.collection(`${prefix}_migrations`),
-    outbox: db.collection(`${prefix}_outbox`)
+    outbox: db.collection(`${prefix}_outbox`),
+    flowChildren: db.collection(`${prefix}_flow_children`),
+    flowOutbox: db.collection(`${prefix}_flow_outbox`)
   })
 
 export const collectionNames = (prefix: string) =>
@@ -30,6 +34,9 @@ export const collectionNames = (prefix: string) =>
     `${prefix}_schedules`,
     `${prefix}_outbox`
   ])
+
+export const flowCollectionNames = (prefix: string) =>
+  Object.freeze([`${prefix}_flow_children`, `${prefix}_flow_outbox`])
 
 export const metadataEntries = (metadata: Readonly<Record<string, string>>) =>
   Object.freeze(

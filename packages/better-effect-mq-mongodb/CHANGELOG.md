@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add the protocol-v2 `MongoFlowStore` with explicit flow migration, atomic
+  child settlement reports, durable flow outbox delivery, and named layers.
+
 ## [0.1.0] - 2026-09-04
 
 Initial MongoDB JobStore adapter for protocol v1.

@@ -26,6 +26,8 @@ import {
   makeWorkerId,
   recoverStalledWithPolicy,
   reduceJob,
+  validateFlowChildReport,
+  validateParentEnvelope,
   validateAttemptRecord,
   type AnyJobStoreToken,
   type AttemptRecord,
@@ -35,7 +37,9 @@ import {
   type JobIdRequest,
   type LostLease,
   type JobStore as J,
-  type JobStoreDescriptor
+  type JobStoreDescriptor,
+  type SettlementOutcome,
+  type FlowChildReport
 } from 'better-effect-mq'
 import { MongoQueueChangeStream } from './change-stream'
 import {
@@ -55,7 +59,15 @@ type Op<T> = ResultType<T, any>
 type TxBody<T> = (session: MongoSession) => Promise<T>
 class MongoDuplicateConflict extends Error {}
 const MAX = Number.MAX_SAFE_INTEGER
-const states = new Set(['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'])
+const states = new Set([
+  'waiting',
+  'delayed',
+  'active',
+  'waiting-children',
+  'completed',
+  'failed',
+  'cancelled'
+])
 const tagged = new Set([
   'JobStoreFailure',
   'JobDefinitionError',
@@ -169,6 +181,139 @@ const canonical = (value: unknown): string => {
     }
   }
   return visit(value)
+}
+
+const settlementOutcomeForAttempt = (
+  attempt: AttemptRecord | undefined,
+  terminalState: JobRecord['state']
+): SettlementOutcome | undefined => {
+  if (attempt?.outcome === 'completed')
+    return attempt.result === undefined
+      ? { type: 'complete' }
+      : { type: 'complete', result: attempt.result }
+  if (attempt?.outcome === 'failed' && attempt.failure !== undefined)
+    return { type: 'fail', failure: attempt.failure }
+  if (attempt?.outcome === 'cancelled')
+    return attempt.failure === undefined
+      ? { type: 'cancelled' }
+      : { type: 'cancelled', failure: attempt.failure }
+  if (attempt?.outcome === 'stalled' && terminalState === 'failed' && attempt.failure !== undefined)
+    return { type: 'fail', failure: attempt.failure }
+  return undefined
+}
+
+const appendFlowReport = async (
+  collections: MongoCollections,
+  namespace: string,
+  source: Doc,
+  jobId: string,
+  attemptSequence: number,
+  outcome: SettlementOutcome,
+  now: number,
+  session: MongoSession
+): Promise<void> => {
+  if (source.parent === undefined || source.parent === null) return
+  const parent = validateParentEnvelope(source.parent)
+  if (Result.isError(parent)) throw parent.error
+  const marker = await collections.migrations.findOne({ _id: 'flow-layout' }, { session })
+  if (marker?.protocolVersion !== 2 || marker.layoutVersion !== 1)
+    throw new JobStoreFailure({
+      operation: 'settle',
+      retryable: false,
+      message: 'MongoDB flow protocol v2 migration is required for a parent child job'
+    })
+  let report: FlowChildReport | undefined
+  switch (outcome.type) {
+    case 'complete':
+      report = {
+        flowId: parent.value.flowId,
+        childKey: parent.value.childKey,
+        outcome: 'completed',
+        result: outcome.result,
+        failure: undefined
+      }
+      break
+    case 'fail':
+      report = {
+        flowId: parent.value.flowId,
+        childKey: parent.value.childKey,
+        outcome: 'failed',
+        result: undefined,
+        failure: outcome.failure
+      }
+      break
+    case 'cancelled':
+      report = {
+        flowId: parent.value.flowId,
+        childKey: parent.value.childKey,
+        outcome: 'cancelled',
+        result: undefined,
+        failure: outcome.failure
+      }
+      break
+    case 'retry':
+      return
+  }
+  const checked = validateFlowChildReport(report)
+  if (Result.isError(checked)) throw checked.error
+  const id = `flow-report/${jobId}/${attemptSequence}`
+  const existing = await collections.flowOutbox.findOne(
+    { _id: namespaceId(namespace, id) },
+    { session }
+  )
+  if (existing !== null) {
+    if (
+      existing.flowName !== parent.value.flowName ||
+      existing.parentStoreKey !== parent.value.parentStoreKey ||
+      canonical(existing.report) !== canonical(checked.value)
+    )
+      throw new SettlementConflictError({
+        jobId: parent.value.flowId,
+        leaseToken: makeLeaseToken('flow-report-conflict').unwrap()
+      })
+    return
+  }
+  const sequenceValue = await collections.counters.findOneAndUpdate(
+    {
+      _id: namespaceId(namespace, 'flow-outbox-sequence'),
+      $or: [{ value: { $lt: MAX } }, { value: { $exists: false } }]
+    },
+    {
+      $setOnInsert: { namespace, name: 'flow-outbox-sequence' },
+      $inc: { value: 1 }
+    },
+    { upsert: true, returnDocument: 'after', session }
+  )
+  const sequenceDocument =
+    sequenceValue !== null &&
+    typeof sequenceValue === 'object' &&
+    'lastErrorObject' in sequenceValue &&
+    'value' in sequenceValue
+      ? (sequenceValue as { readonly value?: unknown }).value
+      : sequenceValue
+  const sequence = integer(
+    sequenceDocument !== null && typeof sequenceDocument === 'object'
+      ? (sequenceDocument as Doc).value
+      : undefined,
+    'flow outbox sequence',
+    1
+  )
+  await collections.flowOutbox.findOneAndUpdate(
+    { _id: namespaceId(namespace, id) },
+    {
+      $setOnInsert: {
+        _id: namespaceId(namespace, id),
+        namespace,
+        id,
+        flowName: parent.value.flowName,
+        parentStoreKey: parent.value.parentStoreKey,
+        report: checked.value,
+        sequence,
+        createdAtMs: now
+      }
+    },
+    { upsert: true, returnDocument: 'after', session }
+  )
 }
 const encodeJob = (
   namespace: string,
@@ -481,6 +626,18 @@ class MongoJobStoreImplementation {
             found.record.leaseOwner
           ),
           { session }
+        )
+      const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record.state)
+      if (flowOutcome !== undefined)
+        await appendFlowReport(
+          this.collections,
+          this.client.namespace,
+          found.doc,
+          transition.record.id,
+          transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+          flowOutcome,
+          request.now,
+          session
         )
       await this.notify(transition.record.queue, request.now, session)
       return transition
@@ -838,6 +995,18 @@ class MongoJobStoreImplementation {
             leaseToken: token.value,
             reason: 'mismatched-token'
           })
+        const flowOutcome = settlementOutcomeForAttempt(reduced.value.attempt, next.state)
+        if (flowOutcome !== undefined)
+          await appendFlowReport(
+            this.collections,
+            this.client.namespace,
+            found.doc,
+            next.id,
+            reduced.value.attempt.attemptSequence ?? reduced.value.attempt.attempt,
+            flowOutcome,
+            request.now,
+            session
+          )
         await this.notify(next.queue, request.now, session)
         return { record: next, attempt: reduced.value.attempt, status: 'applied' }
       })
@@ -964,6 +1133,18 @@ class MongoJobStoreImplementation {
                 found.record.leaseOwner
               ),
               { session }
+            )
+          const flowOutcome = settlementOutcomeForAttempt(reduced.value.attempt, next.state)
+          if (flowOutcome !== undefined)
+            await appendFlowReport(
+              this.collections,
+              this.client.namespace,
+              found.doc,
+              next.id,
+              reduced.value.attempt!.attemptSequence ?? reduced.value.attempt!.attempt,
+              flowOutcome,
+              now,
+              session
             )
           await this.notify(next.queue, now, session)
           return { ...reduced.value, record: next }
@@ -1121,6 +1302,7 @@ class MongoJobStoreImplementation {
         waiting: 0,
         delayed: 0,
         active: 0,
+        'waiting-children': 0,
         completed: 0,
         failed: 0,
         cancelled: 0
