@@ -63,8 +63,8 @@ describe('PostgreSQL LISTEN fallback', () => {
           metadataIndex: 'indexed',
           transactionalEnqueue: true,
           durableChangeFeed: false,
-          globalConcurrency: false,
-          rateLimiting: false
+          globalConcurrency: true,
+          rateLimiting: true
         }
       })
       expect(Object.isFrozen(descriptor)).toBe(true)

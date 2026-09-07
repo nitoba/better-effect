@@ -61,8 +61,8 @@ const suite = jobStoreContract({
     metadataIndex: 'indexed',
     transactionalEnqueue: true,
     durableChangeFeed: false,
-    globalConcurrency: false,
-    rateLimiting: false
+    globalConcurrency: true,
+    rateLimiting: true
   },
   makeRuntime: async (context) => {
     const runtime = await Runtime.make(
@@ -132,11 +132,11 @@ describe('PostgreSQL JobStore conformance on PostgreSQL', () => {
     try {
       await configuredPgPool().query(`DROP SCHEMA IF EXISTS "${migrationSchema}" CASCADE`)
       const migrated = await client.migrate()
-      expect(migrated.version).toBe(4)
-      expect(migrated.applied).toEqual([1, 2, 3, 4])
+      expect(migrated.version).toBe(5)
+      expect(migrated.applied).toEqual([1, 2, 3, 4, 5])
       await expect(client.validate()).resolves.toMatchObject({
         schema: migrationSchema,
-        version: 4
+        version: 5
       })
       await expect(client.migrate()).resolves.toMatchObject({ applied: [] })
     } finally {
@@ -217,10 +217,10 @@ describe('PostgreSQL JobStore conformance on PostgreSQL', () => {
       metadataIndex: 'indexed',
       transactionalEnqueue: true,
       durableChangeFeed: false,
-      globalConcurrency: false,
-      rateLimiting: false
+      globalConcurrency: true,
+      rateLimiting: true
     })
     expect(report.descriptor?.capabilities).toEqual(report.capabilities)
-    expect(report.capabilitiesNotTested).toEqual([])
+    expect(report.capabilitiesNotTested).toEqual(['globalConcurrency', 'rateLimiting'])
   })
 })

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add PostgreSQL controlled claim protocol v3 support with durable queue
+  controls, dispatch keys, fixed-window rate limits, global/per-key permits,
+  bounded fairness scanning, revision fencing, and atomic settlement/recovery.
+- Add migration `005_controls_v3.sql` and schema validation for the controls
+  tables and indexes.
 - Add the PostgreSQL v1 `OutboxStore` adapter with transactional `appendIn`,
   digest-idempotent appends, fenced leases, settlements, recovery, inspection,
   and default/named Service Layers.
