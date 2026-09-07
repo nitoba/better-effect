@@ -3,22 +3,60 @@
 import { Layer, Service } from 'better-effect'
 import type { Layer as LayerType, ServiceIdentity, ServiceToken } from 'better-effect'
 import { operation } from './operation'
-import type { HttpOperation } from './operation'
+import type { HttpOperation, HttpResponseOperation } from './operation'
 import type { TransportOptions, TransportRequestOptions } from './internal/ofetch-transport'
-import type { HttpDecodeOptions, HttpSchema, HttpResponseSchemas } from './schema'
+import type {
+  HttpDecodeOptions,
+  HttpSchema,
+  HttpResponseSchemas,
+  ResponseData,
+  SchemaOutput
+} from './schema'
 
 export type HttpClientOptions = TransportOptions
 export type HttpRequestOptions = TransportRequestOptions &
   ({ readonly schema?: never; readonly responses?: never } | HttpDecodeOptions)
-export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
-  readonly get: (path: string, options?: HttpRequestOptions) => HttpOperation
-  readonly post: (path: string, options?: HttpRequestOptions) => HttpOperation
-  readonly put: (path: string, options?: HttpRequestOptions) => HttpOperation
-  readonly patch: (path: string, options?: HttpRequestOptions) => HttpOperation
-  readonly delete: (path: string, options?: HttpRequestOptions) => HttpOperation
-  readonly head: (path: string, options?: HttpRequestOptions) => HttpOperation
-  readonly request: (method: string, path: string, options?: HttpRequestOptions) => HttpOperation
+
+export type HttpRequestMethod = {
+  <S extends HttpSchema>(
+    path: string,
+    options: TransportRequestOptions & { readonly schema: S; readonly responses?: never }
+  ): HttpOperation<SchemaOutput<S>>
+  <R extends HttpResponseSchemas>(
+    path: string,
+    options: TransportRequestOptions & { readonly responses: R; readonly schema?: never }
+  ): HttpResponseOperation<ResponseData<R>>
+  (path: string, options?: TransportRequestOptions): HttpOperation
 }
+
+export type HttpRequestFunction = {
+  <S extends HttpSchema>(
+    method: string,
+    path: string,
+    options: TransportRequestOptions & { readonly schema: S; readonly responses?: never }
+  ): HttpOperation<SchemaOutput<S>>
+  <R extends HttpResponseSchemas>(
+    method: string,
+    path: string,
+    options: TransportRequestOptions & { readonly responses: R; readonly schema?: never }
+  ): HttpResponseOperation<ResponseData<R>>
+  (method: string, path: string, options?: TransportRequestOptions): HttpOperation
+}
+
+export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
+  readonly get: HttpRequestMethod
+  readonly post: HttpRequestMethod
+  readonly put: HttpRequestMethod
+  readonly patch: HttpRequestMethod
+  readonly delete: HttpRequestMethod
+  readonly head: HttpRequestMethod
+  readonly request: HttpRequestFunction
+  readonly response: <R extends HttpResponseSchemas>(
+    path: string,
+    options: TransportRequestOptions & { readonly responses: R; readonly schema?: never }
+  ) => HttpResponseOperation<ResponseData<R>>
+}
+
 export type HttpClientToken<Tag extends string = 'HttpClient'> = ServiceToken<
   Tag,
   HttpClientInstance<Tag>
@@ -36,14 +74,17 @@ type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
 const makeClient = <Tag extends string>(config: HttpClientOptions): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>
     operation(config, { method, path, options })
+  const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
+    request(name, path, options)
   return {
     request,
-    get: (p, o) => request('GET', p, o),
-    post: (p, o) => request('POST', p, o),
-    put: (p, o) => request('PUT', p, o),
-    patch: (p, o) => request('PATCH', p, o),
-    delete: (p, o) => request('DELETE', p, o),
-    head: (p, o) => request('HEAD', p, o)
+    get: method('GET'),
+    post: method('POST'),
+    put: method('PUT'),
+    patch: method('PATCH'),
+    delete: method('DELETE'),
+    head: method('HEAD'),
+    response: (path, options) => request('GET', path, options)
   } as HttpClientInstance<Tag>
 }
 

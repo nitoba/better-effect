@@ -11,8 +11,20 @@ import {
 } from './errors'
 import type { HttpError } from './errors'
 import { classifyResponse, executeRequest } from './internal/ofetch-transport'
-import type { TransportOptions, TransportRequestInput } from './internal/ofetch-transport'
-import type { HttpDecodeOptions, HttpSchema, HttpResponseSchemas } from './schema'
+import type {
+  DeferredTransportRequest,
+  TransportOptions,
+  TransportRequest,
+  TransportRequestInput,
+  TransportRequestOptions
+} from './internal/ofetch-transport'
+import type {
+  HttpDecodeOptions,
+  HttpSchema,
+  HttpResponseSchemas,
+  ResponseData,
+  SchemaOutput
+} from './schema'
 import { responseWithSchema } from './response-status'
 
 export type HttpResponse<A = unknown, Status extends number = number> = Readonly<{
@@ -22,27 +34,80 @@ export type HttpResponse<A = unknown, Status extends number = number> = Readonly
   url: string
   data: A
 }>
-export type HttpOperation<A = unknown> = AsyncGenerator<Err<never, HttpError>, HttpResponse<A>, unknown>
 
-export const operation = <S extends HttpSchema = never, R extends HttpResponseSchemas = never>(
+export type HttpOperation<A = unknown, Status extends number = number> = AsyncGenerator<
+  Err<never, HttpError>,
+  HttpResponse<A, Status>,
+  unknown
+>
+
+export type HttpResponseOperation<Response extends HttpResponse = HttpResponse> = AsyncGenerator<
+  Err<never, HttpError>,
+  Response,
+  unknown
+>
+
+type RequestOptions<S extends HttpSchema, R extends HttpResponseSchemas> = TransportRequestOptions &
+  HttpDecodeOptions<S, R>
+
+export type HttpOperationRequest<
+  S extends HttpSchema = never,
+  R extends HttpResponseSchemas = never
+> =
+  | (TransportRequest & HttpDecodeOptions<S, R>)
+  | (DeferredTransportRequest & {
+      readonly options: RequestOptions<S, R> | TransportRequestOptions
+    })
+
+type AnyOperationRequest =
+  | TransportRequestInput
+  | (TransportRequest & HttpDecodeOptions<HttpSchema, HttpResponseSchemas>)
+  | (DeferredTransportRequest & {
+      readonly options: TransportRequestOptions & HttpDecodeOptions<HttpSchema, HttpResponseSchemas>
+    })
+
+export function operation<S extends HttpSchema>(
   config: TransportOptions,
-  request: TransportRequestInput & (HttpDecodeOptions<S, R> | { readonly schema?: never; readonly responses?: never })
-): HttpOperation<unknown> => {
+  request: HttpOperationRequest<S, never>
+): HttpOperation<SchemaOutput<S>>
+export function operation<R extends HttpResponseSchemas>(
+  config: TransportOptions,
+  request: HttpOperationRequest<never, R>
+): HttpResponseOperation<ResponseData<R>>
+export function operation(config: TransportOptions, request: AnyOperationRequest): HttpOperation
+export function operation(config: TransportOptions, request: AnyOperationRequest): HttpOperation {
+  const requestOptions = 'options' in request ? request.options : request
+  const hasSchema = 'schema' in requestOptions
+  const hasResponses = 'responses' in requestOptions
+  const hasDecodeOptions = hasSchema || hasResponses
+
+  if (hasSchema && hasResponses) {
+    return (async function* () {
+      return yield* Result.err(
+        new HttpRequestError({
+          phase: 'request',
+          details: 'schema and responses are mutually exclusive'
+        })
+      )
+    })()
+  }
+
   let consumed = false
   return (async function* () {
     if (consumed)
       return yield* Result.err(
-        new HttpRequestError({ phase: 'request', details: 'HTTP operation was already consumed' })
+        new HttpRequestError({
+          phase: 'request',
+          details: 'HTTP operation was already consumed'
+        })
       )
     consumed = true
     try {
       const response = await executeRequest(config, request)
-      const decodeOptions = 'options' in request && ('schema' in request.options || 'responses' in request.options)
-        ? request.options as HttpDecodeOptions<S, R>
-        : !('options' in request) && ('schema' in request || 'responses' in request)
-          ? request as HttpDecodeOptions<S, R>
-          : undefined
-      if (decodeOptions !== undefined) return await responseWithSchema(response, request, decodeOptions)
+      if (hasDecodeOptions) {
+        // SAFETY: `hasDecodeOptions` was derived from this exact request before execution.
+        return await responseWithSchema(response, request, requestOptions as HttpDecodeOptions)
+      }
       const responseType =
         'options' in request ? request.options.responseType : request.responseType
       const data = await classifyResponse(response, responseType, request.method)

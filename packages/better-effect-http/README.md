@@ -2,24 +2,42 @@
 
 Layer-first HTTP client foundations for `better-effect`.
 
-This package is the distribution boundary for the HTTP roadmap and currently
-contains no public HTTP API. Transport, operations, typed errors, validation,
-streaming, endpoints, and integrations are delivered by the downstream issues
-tracked in [#229](https://github.com/nitoba/better-effect/issues/229).
+This package is the distribution boundary for the HTTP roadmap. It provides a
+lazy, `yield*`-compatible client built on the platform Fetch API and `ofetch`,
+including response validation through the provider-neutral Standard Schema API
+from `better-effect-schema`.
 
 The package is intentionally separate from `better-effect`. It uses `ofetch`
 as its planned internal transport and does not make any network request, read
 environment variables, create a Runtime, or register listeners during import.
 
-## Development status
-
-The package structure, build, package exports, and external-consumer checks are
-in place for the initial development release. Do not depend on an HTTP client
-export until a later roadmap issue adds and documents one.
-
 ```bash
 bun add better-effect-http
 ```
 
-The command above installs the package boundary only at this stage; no HTTP
-client functions are exported yet.
+Define a client as a `better-effect` Service and provide it with a Layer:
+
+```ts
+import { Effect, Runtime } from 'better-effect'
+import { HttpClient } from 'better-effect-http'
+import { Result } from 'better-result'
+
+const App = Effect.fn(async function* () {
+  const http = yield* HttpClient
+  const response = yield* http.response('/users/42', {
+    responses: {
+      200: UserSchema,
+      404: UserNotFoundSchema
+    }
+  })
+
+  return Result.ok(response.status === 404 ? null : response.data)
+})
+
+const result = await Runtime.run(HttpClient.layer({ baseURL: 'https://api.example.com' }), App)
+```
+
+`http.get(path, { schema })` validates successful responses with one schema.
+`http.response(path, { responses })` selects and validates the schema matching
+the final status, preserving the status/data correlation in TypeScript. A
+status that is not declared in `responses` is returned as `HttpStatusError`.

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+const schemaPackageRoot = resolve(packageRoot, '../better-effect-schema')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const decoder = new TextDecoder()
 
@@ -40,22 +41,46 @@ const main = async (): Promise<void> => {
     const archiveDirectory = join(root, 'archives')
     await mkdir(archiveDirectory)
     assertSuccess(
+      run(['bun', 'run', 'build'], schemaPackageRoot),
+      'Building better-effect-schema for the external consumer'
+    )
+    assertSuccess(
+      run(
+        ['bun', 'pm', 'pack', '--destination', archiveDirectory, '--ignore-scripts'],
+        schemaPackageRoot
+      ),
+      'Packing better-effect-schema'
+    )
+    assertSuccess(
       run(
         ['bun', 'pm', 'pack', '--destination', archiveDirectory, '--ignore-scripts'],
         packageRoot
       ),
       'Packing better-effect-http'
     )
-    const archiveName = (await readdir(archiveDirectory)).find((entry) => entry.endsWith('.tgz'))
+    const archiveName = (await readdir(archiveDirectory)).find(
+      (entry) => entry.startsWith('better-effect-http-') && entry.endsWith('.tgz')
+    )
     assertCondition(archiveName !== undefined, 'Package packing did not create an archive')
+    const schemaArchiveName = (await readdir(archiveDirectory)).find(
+      (entry) => entry.startsWith('better-effect-schema-') && entry.endsWith('.tgz')
+    )
+    assertCondition(
+      schemaArchiveName !== undefined,
+      'Schema package packing did not create an archive'
+    )
 
     const fixture = join(root, 'fixture')
     await cp(fixtureSource, fixture, { recursive: true })
     await mkdir(join(fixture, 'artifacts'))
     await cp(join(archiveDirectory, archiveName), join(fixture, 'artifacts/better-effect-http.tgz'))
+    await cp(
+      join(archiveDirectory, schemaArchiveName),
+      join(fixture, 'artifacts', schemaArchiveName)
+    )
 
     assertSuccess(
-      run(['bun', 'install', '--ignore-scripts'], fixture),
+      run(['bun', 'install', '--ignore-scripts', '--omit=peer'], fixture),
       'Installing external consumer'
     )
     assertSuccess(

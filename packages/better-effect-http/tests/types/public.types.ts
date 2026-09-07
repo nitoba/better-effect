@@ -1,4 +1,11 @@
 import * as Http from '../../src'
+import type {
+  HttpClientInstance,
+  HttpOperation,
+  HttpResponseOperation,
+  ResponseData
+} from '../../src'
+import type { StandardSchemaV1 } from 'better-effect-schema'
 
 const request = Http.HttpRequest.make('https://example.test')
 const authenticated = Http.HttpRequest.bearerToken(request, 'secret')
@@ -15,3 +22,20 @@ const immutable: typeof request extends Readonly<{ url: string }> ? true : never
 void authenticated
 void exactTag
 void immutable
+
+declare const userSchema: StandardSchemaV1<unknown, { readonly id: number }>
+declare const notFoundSchema: StandardSchemaV1<unknown, { readonly reason: string }>
+declare const client: HttpClientInstance<'Api'>
+
+const user = client.get('/users/42', { schema: userSchema })
+const responses = client.response('/users/42', {
+  responses: { 200: userSchema, 404: notFoundSchema }
+})
+
+const expectedUser: HttpOperation<{ readonly id: number }> = user
+const expectedResponses: HttpResponseOperation<
+  ResponseData<{ 200: typeof userSchema; 404: typeof notFoundSchema }>
+> = responses
+
+void expectedUser
+void expectedResponses

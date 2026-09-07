@@ -5,9 +5,13 @@
   "dependencies": {
     "better-effect": "0.13.0",
     "better-effect-http": "file:./artifacts/better-effect-http.tgz",
+    "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz",
     "better-result": "3.0.1"
   },
   "devDependencies": {
     "typescript": "7.0.2"
+  },
+  "overrides": {
+    "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz"
   }
 }
