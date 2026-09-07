@@ -1,10 +1,9 @@
 # Architecture
 
 > This document describes the audited predecessor layout for roadmap #209. The
-> directory moved to `packages/better-effect-schema` in #211; the Zod-specific
+> directory moves to `packages/better-effect-schema` in #211; the Zod-specific
 > implementation then moves behind `src/adapters/zod/` in #220. It is retained
-> as a file-by-file reference. The package release remains blocked until that
-> adapter extraction is complete.
+> here in #210 so the structural move has a file-by-file reference.
 
 ## Position in the ecosystem
 

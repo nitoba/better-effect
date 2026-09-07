@@ -5,6 +5,7 @@ import {
   Schema,
   SchemaConstructionFailure,
   SchemaDecodeFailure,
+  SchemaDefinitionFailure,
   SchemaEncodeFailure,
   SchemaAsyncRequired,
   SchemaExecutionFailure,
@@ -18,12 +19,12 @@ class User extends Schema.Class<User>('@type/User')({
 
 Schema.decodeUnknown(User)({}) satisfies Effect<
   User,
-  SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
   never
 >
 Schema.decode(User)({ id: 'id', name: 'Ada' }) satisfies Effect<
   User,
-  SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
   never
 >
 Schema.encode(User)(new User({ id: 'id', name: 'Ada' })) satisfies Effect<

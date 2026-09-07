@@ -19,6 +19,33 @@ export type {
 export { isClassInstance } from './is-class-instance.js'
 export { isSchemaClass } from './is-schema-class.js'
 export type { AnySchemaClass } from './is-schema-class.js'
+export { withAdapter } from './capabilities/with.js'
+export type {
+  AsyncCapabilityResult,
+  CapabilityResult,
+  SchemaAdapter,
+  SchemaCapabilities,
+  SchemaCapabilityFailure,
+  SchemaDescriptor,
+  SchemaEncodedCapability,
+  SchemaEncodingCapability,
+  SchemaFieldMap,
+  SchemaInput,
+  SchemaJSONSchemaCapability,
+  SchemaJSONSchemaOptions,
+  SchemaJSONSchemaSide,
+  SchemaNativeBridgeCapability,
+  SchemaObjectPolicy,
+  SchemaOutput,
+  SchemaPropsCapability,
+  SchemaReadCapability,
+  SchemaStructureCapability,
+  SchemaDerivationOperation,
+  SchemaDerivationCapability,
+  StandardSchema
+} from './capabilities/types.js'
+export type { SchemaFacade } from './capabilities/with.js'
+export type { StandardSchemaV1, StandardJSONSchemaV1 } from '@standard-schema/spec'
 export {
   decode,
   decodeAsync,

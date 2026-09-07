@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import * as z from 'zod'
 import { Result } from 'better-result'
 
 import {
@@ -33,12 +32,11 @@ test('failure taxonomy preserves causes without serializing them', () => {
 })
 
 test('unexpected synchronous provider errors become SchemaExecutionFailure', () => {
-  const Broken = new Proxy(z.string(), {
-    get(target, property, receiver) {
-      if (property === '_zod') throw new Error('provider exploded')
-      return Reflect.get(target, property, receiver)
+  const Broken = {
+    get '~standard'() {
+      throw new Error('provider exploded')
     }
-  })
+  }
 
   const result = Schema.decodeUnknown(Broken)('value')
 
@@ -51,9 +49,17 @@ test('unexpected synchronous provider errors become SchemaExecutionFailure', () 
 
 test('the synchronous API reports an async schema without retrying it', () => {
   let checks = 0
-  const AsyncSchema = z.string().superRefine(async () => {
-    checks += 1
-  })
+  const AsyncSchema = {
+    identifier: 'AsyncSchema',
+    '~standard': {
+      version: 1,
+      vendor: 'fixture',
+      validate: async () => {
+        checks += 1
+        return { value: 'value', issues: undefined }
+      }
+    }
+  }
 
   const result = Schema.decodeUnknown(AsyncSchema)('value')
 
@@ -63,12 +69,11 @@ test('the synchronous API reports an async schema without retrying it', () => {
 })
 
 test('unexpected asynchronous provider errors become SchemaExecutionFailure', async () => {
-  const Broken = new Proxy(z.string(), {
-    get(target, property, receiver) {
-      if (property === '_zod') throw new Error('async provider exploded')
-      return Reflect.get(target, property, receiver)
+  const Broken = {
+    get '~standard'() {
+      throw new Error('async provider exploded')
     }
-  })
+  }
 
   const result = await Schema.decodeUnknownAsync(Broken)('value')
 

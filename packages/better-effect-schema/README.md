@@ -11,12 +11,17 @@
 It also adds requirement-free operations that return `better-result` values typed as `better-effect` Effects:
 
 ```text
-unknown / encoded value
+          unknown / encoded value
           │
           ▼
 Schema.decodeUnknown(...)
           │
-          ├── Effect<Domain, SchemaDecodeFailure, never>
+          ├── Effect<
+          │     Domain,
+          │     SchemaDecodeFailure | SchemaDefinitionFailure |
+          │       SchemaExecutionFailure | SchemaAsyncRequired,
+          │     never
+          │   >
           ▼
 real domain class instance
 ```
@@ -46,19 +51,15 @@ The package is ESM-only.
 ## Quick start
 
 ```ts
-import * as z from "zod"
-import { Schema } from "better-effect-schema"
+import * as z from 'zod'
+import { Schema } from 'better-effect-schema'
 
-const DateFromISOString = z.codec(
-  z.iso.datetime(),
-  z.date(),
-  {
-    decode: (value) => new Date(value),
-    encode: (value) => value.toISOString()
-  }
-)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
 
-class Person extends Schema.Class<Person>("@app/domain/Person")({
+class Person extends Schema.Class<Person>('@app/domain/Person')({
   id: z.int().positive(),
   name: z.string().min(1),
   bornAt: DateFromISOString
@@ -70,8 +71,8 @@ class Person extends Schema.Class<Person>("@app/domain/Person")({
 
 const person = Person.parse({
   id: 1,
-  name: "Ada",
-  bornAt: "1990-12-10T00:00:00.000Z"
+  name: 'Ada',
+  bornAt: '1990-12-10T00:00:00.000Z'
 })
 
 person instanceof Person // true
@@ -88,11 +89,11 @@ Person.encode(person)
 
 A schema class represents three related types:
 
-| Type | Meaning | `Person` example |
-| --- | --- | --- |
-| `z.input<typeof Person>` | Encoded boundary input | `bornAt: string` |
-| `Schema.Props<typeof Person>` | Decoded constructor properties | `bornAt: Date` |
-| `z.output<typeof Person>` | Concrete class instance | `Person` |
+| Type                          | Meaning                        | `Person` example |
+| ----------------------------- | ------------------------------ | ---------------- |
+| `z.input<typeof Person>`      | Encoded boundary input         | `bornAt: string` |
+| `Schema.Props<typeof Person>` | Decoded constructor properties | `bornAt: Date`   |
+| `z.output<typeof Person>`     | Concrete class instance        | `Person`         |
 
 ```ts
 type PersonEncoded = z.input<typeof Person>
@@ -107,10 +108,10 @@ The distinction is important whenever a field or whole object uses `z.codec()`. 
 Schema classes retain the standard Zod surface:
 
 ```ts
-Person.parse(input)             // throws ZodError
-Person.safeParse(input)         // Zod safe result
-Person.decode(encoded)          // throws ZodError
-Person.encode(person)           // throws ZodError
+Person.parse(input) // throws ZodError
+Person.safeParse(input) // Zod safe result
+Person.decode(encoded) // throws ZodError
+Person.encode(person) // throws ZodError
 await Person.decodeAsync(input)
 await Person.encodeAsync(person)
 ```
@@ -120,18 +121,30 @@ Use these operations when native Zod behavior is the desired boundary.
 For application workflows, the `Schema` facade exposes expected failures as `better-result` values:
 
 ```ts
-import type { Effect } from "better-effect"
+import type { Effect } from 'better-effect'
 import {
   Schema,
+  SchemaAsyncRequired,
   SchemaDecodeFailure,
-  SchemaEncodeFailure
-} from "better-effect-schema"
+  SchemaDefinitionFailure,
+  SchemaEncodeFailure,
+  SchemaExecutionFailure
+} from 'better-effect-schema'
 
 const decoded = Schema.decodeUnknown(Person)(input)
-// Effect<Person, SchemaDecodeFailure, never>
+// Effect<
+//   Person,
+//   SchemaDecodeFailure | SchemaDefinitionFailure |
+//     SchemaExecutionFailure | SchemaAsyncRequired,
+//   never
+// >
 
 const encoded = Schema.encode(Person)(person)
-// Effect<PersonEncoded, SchemaEncodeFailure, never>
+// Effect<
+//   PersonEncoded,
+//   SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+//   never
+// >
 ```
 
 These operations are requirement-free. Their runtime representation is a `better-result` `Result`; `Effect<_, _, never>` records that no Service is acquired.
@@ -162,9 +175,9 @@ Schema.make(Person, props)
 ### Composition with Result.gen and Effect.fn
 
 ```ts
-import { Effect } from "better-effect"
-import { Result } from "better-result"
-import { Schema } from "better-effect-schema"
+import { Effect } from 'better-effect'
+import { Result } from 'better-result'
+import { Schema } from 'better-effect-schema'
 
 const normalizePerson = (input: unknown) =>
   Effect.fn(function* () {
@@ -221,12 +234,13 @@ Handle failures with the ordinary better-result matching tools:
 ```ts
 const response = result.match({
   ok: (person) => ({ status: 200, person }),
-  err: (failure) => failure.match({
-    SchemaDecodeFailure: (error) => ({
-      status: 400,
-      issues: error.issues
+  err: (failure) =>
+    failure.match({
+      SchemaDecodeFailure: (error) => ({
+        status: 400,
+        issues: error.issues
+      })
     })
-  })
 })
 ```
 
@@ -239,8 +253,8 @@ Constructors and `make` accept decoded properties:
 ```ts
 const props: Schema.Props<typeof Person> = {
   id: 1,
-  name: "Ada",
-  bornAt: new Date("1990-12-10T00:00:00.000Z")
+  name: 'Ada',
+  bornAt: new Date('1990-12-10T00:00:00.000Z')
 }
 
 const first = new Person(props)
@@ -270,7 +284,7 @@ const trusted = Person.unsafeMake(props)
 A custom constructor should forward the same properties object to `super`:
 
 ```ts
-class Account extends Schema.Class<Account>("@app/Account")({
+class Account extends Schema.Class<Account>('@app/Account')({
   id: z.string()
 }) {
   constructor(props: Schema.Props<typeof Account>) {
@@ -302,12 +316,14 @@ Nested parsing still creates concrete instances:
 
 ```ts
 const team = Team.parse({
-  name: "Research",
-  members: [{
-    id: 1,
-    name: "Ada",
-    bornAt: "1990-12-10T00:00:00.000Z"
-  }]
+  name: 'Research',
+  members: [
+    {
+      id: 1,
+      name: 'Ada',
+      bornAt: '1990-12-10T00:00:00.000Z'
+    }
+  ]
 })
 
 team.members[0] instanceof Person // true
@@ -353,7 +369,7 @@ const UserWireCodec = z.codec(
   }
 )
 
-class User extends Schema.Class<User>("@app/domain/User")(UserWireCodec) {
+class User extends Schema.Class<User>('@app/domain/User')(UserWireCodec) {
   get label(): string {
     return this.displayName
   }
@@ -369,14 +385,11 @@ Arbitrary whole-object codecs cannot use structural class derivations. A codec m
 `Schema.TaggedClass` injects and protects a literal `_tag`:
 
 ```ts
-class UserCreated extends Schema.TaggedClass<UserCreated>()(
-  "UserCreated",
-  { userId: z.uuid() }
-) {}
+class UserCreated extends Schema.TaggedClass<UserCreated>()('UserCreated', { userId: z.uuid() }) {}
 
 const event = UserCreated.parse({
-  _tag: "UserCreated",
-  userId: "550e8400-e29b-41d4-a716-446655440000"
+  _tag: 'UserCreated',
+  userId: '550e8400-e29b-41d4-a716-446655440000'
 })
 ```
 
@@ -384,7 +397,7 @@ Constructors do not require the tag:
 
 ```ts
 new UserCreated({
-  userId: "550e8400-e29b-41d4-a716-446655440000"
+  userId: '550e8400-e29b-41d4-a716-446655440000'
 })
 ```
 
@@ -401,17 +414,16 @@ The encoded form always contains `_tag`. Derivations cannot replace, remove, or 
 - exhaustively matchable through `.match(...)`.
 
 ```ts
-class UserNotFound extends Schema.TaggedError<UserNotFound>()(
-  "UserNotFound",
-  { userId: z.uuid() }
-) {
+class UserNotFound extends Schema.TaggedError<UserNotFound>()('UserNotFound', {
+  userId: z.uuid()
+}) {
   override get message(): string {
     return `User ${this.userId} was not found`
   }
 }
 
 const failure = new UserNotFound({
-  userId: "550e8400-e29b-41d4-a716-446655440000"
+  userId: '550e8400-e29b-41d4-a716-446655440000'
 })
 
 failure instanceof Error // true
@@ -426,7 +438,7 @@ Direct short-circuiting uses the same object identity:
 ```ts
 const program = Result.gen(function* () {
   yield* failure
-  return Result.ok("unreachable")
+  return Result.ok('unreachable')
 })
 ```
 
@@ -439,16 +451,16 @@ For transport or persistence, prefer `Schema.encode(ErrorClass)(error)`. The inh
 Object-backed classes support structural derivation while retaining class behavior:
 
 ```ts
-class Employee extends Person.extend<Employee>("@app/Employee")({
-  role: z.enum(["admin", "member"])
+class Employee extends Person.extend<Employee>('@app/Employee')({
+  role: z.enum(['admin', 'member'])
 }) {}
 
-class PersonSummary extends Person.pick<PersonSummary>("@app/PersonSummary")({
+class PersonSummary extends Person.pick<PersonSummary>('@app/PersonSummary')({
   id: true,
   name: true
 }) {}
 
-class PersonPatch extends Person.partial<PersonPatch>("@app/PersonPatch") {}
+class PersonPatch extends Person.partial<PersonPatch>('@app/PersonPatch') {}
 ```
 
 Available derivations:
@@ -522,14 +534,10 @@ const findUser = (id: string) =>
     const db = yield* Database
 
     const row = yield* db
-      .selectFrom("users")
+      .selectFrom('users')
       .selectAll()
-      .where("id", "=", id)
-      .$call(
-        KyselyEffect.executeTakeFirstOrFail(
-          () => new UserNotFound({ userId: id })
-        )
-      )
+      .where('id', '=', id)
+      .$call(KyselyEffect.executeTakeFirstOrFail(() => new UserNotFound({ userId: id })))
 
     const user = yield* Schema.decodeUnknown(User)(row)
     return Result.ok(user)
@@ -547,9 +555,7 @@ Class instances are not assumed to be JSON-safe. Supply an explicit encoder that
 ```ts
 const UserPayload = Codec.standardSchema({
   schema: User,
-  encode: (user) => mapUserEncodingForJob(
-    Schema.encode(User)(user)
-  )
+  encode: (user) => mapUserEncodingForJob(Schema.encode(User)(user))
 })
 ```
 
@@ -606,7 +612,7 @@ Identifiers are therefore runtime type identities within a class kind. Use stabl
 Metadata is synchronized between the class facade and its backing codec:
 
 ```ts
-const DescribedUser = User.describe("Application user")
+const DescribedUser = User.describe('Application user')
 const metadata = DescribedUser.meta()
 ```
 
@@ -617,7 +623,7 @@ const metadata = DescribedUser.meta()
 The following source-compatible aliases are retained for migration:
 
 ```ts
-import { Z, ZodClassError } from "better-effect-schema"
+import { Z, ZodClassError } from 'better-effect-schema'
 ```
 
 They are deprecated:

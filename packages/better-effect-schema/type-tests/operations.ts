@@ -7,6 +7,7 @@ import {
   type Encoded,
   type Props,
   SchemaDecodeFailure,
+  SchemaDefinitionFailure,
   SchemaEncodeFailure,
   SchemaAsyncRequired,
   SchemaExecutionFailure
@@ -29,7 +30,7 @@ const decoded = Schema.decodeUnknown(User)({
 })
 decoded satisfies Effect<
   User,
-  SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
   never
 >
 
