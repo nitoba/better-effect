@@ -8,6 +8,7 @@ import { Effect, Layer, Runtime, Service } from '../src'
 import { HonoEffect, HonoEffectBoundaryMissingError } from '../src/hono'
 import { CurrentAbortSignal, CurrentRequest } from '../src/standard-services'
 import type { AnyServiceToken, ScopeOutcome } from '../src'
+import type { WebEffectStream } from '../src/web'
 
 class RequestId extends Service<RequestId>()('HonoRequestId') {
   constructor(readonly value: string) {
@@ -472,6 +473,164 @@ test('HonoEffect defaults redact typed failures and pass through Response failur
     expect(await errorResponse.json()).toEqual({ error: 'Internal Server Error' })
     expect(response).toBe(responseFailure)
     expect(await response.text()).toBe('not found')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect.stream retains one request execution until the downstream body reaches EOF', async () => {
+  class StreamService extends Service<StreamService>()('@tests/HonoStreamService') {
+    constructor(readonly value: string) {
+      super()
+    }
+  }
+
+  let releaseCount = 0
+  let allowTail!: () => void
+  const tailAllowed = new Promise<void>((resolve) => {
+    allowTail = resolve
+  })
+  const events: string[] = []
+  const streamProgram = Effect.fn(async function* () {
+    const service = yield* StreamService
+    return Result.ok<WebEffectStream>({
+      status: 206,
+      headers: {
+        'content-type': 'text/plain',
+        'x-stream-value': service.value
+      },
+      producer: async function* ({ signal }) {
+        yield new TextEncoder().encode('head')
+        await tailAllowed
+        if (signal.aborted) return
+        yield new TextEncoder().encode('-tail')
+      }
+    })
+  })
+  const App = HonoEffect.app(
+    '@tests/HonoManagedStream',
+    {
+      requestLayer: () =>
+        Layer.scoped(
+          StreamService,
+          () => new StreamService('request'),
+          () => {
+            releaseCount += 1
+          }
+        )
+    },
+    async function* (http) {
+      const app = new Hono()
+      app.use('*', yield* http.middleware())
+      app.get('/stream', yield* http.stream(streamProgram))
+      return app
+    }
+  )
+  const runtime = await Runtime.make(App.layer, {
+    observers: [
+      {
+        onExecutionStart: () => {
+          events.push('start')
+        },
+        onExecutionEnd: () => {
+          events.push('end')
+        }
+      }
+    ]
+  })
+
+  try {
+    const app = await resolveApp(runtime, App)
+    events.length = 0
+    const response = await app.request('/stream')
+
+    expect(response.status).toBe(206)
+    expect(response.headers.get('x-stream-value')).toBe('request')
+    expect(events).toEqual(['start'])
+    expect(releaseCount).toBe(0)
+
+    const reader = response.body!.getReader()
+    const head = await reader.read()
+    expect(new TextDecoder().decode(head.value)).toBe('head')
+    expect(releaseCount).toBe(0)
+
+    allowTail()
+    const tail = await reader.read()
+    expect(new TextDecoder().decode(tail.value)).toBe('-tail')
+    expect(await reader.read()).toEqual({ done: true, value: undefined })
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(releaseCount).toBe(1)
+    expect(events).toEqual(['start', 'end'])
+  } finally {
+    allowTail()
+    await runtime.dispose()
+  }
+})
+
+test('HonoEffect.stream keeps pre-commit failures typed and post-commit failures in the body', async () => {
+  class StreamFailureService extends Service<StreamFailureService>()('@tests/HonoStreamFailure') {}
+
+  const beforeFailure = new HttpFailure('before headers')
+  const afterFailure = new Error('after headers')
+  const outcomes: ScopeOutcome[] = []
+  let failurePolicyCalls = 0
+  const beforeProgram = Effect.fn(async function* () {
+    yield* StreamFailureService
+    return Result.err(beforeFailure)
+  })
+  const afterProgram = Effect.fn(async function* () {
+    yield* StreamFailureService
+    return Result.ok<WebEffectStream>({
+      producer: async function* () {
+        yield new TextEncoder().encode('head')
+        throw afterFailure
+      }
+    })
+  })
+  const App = HonoEffect.app(
+    '@tests/HonoStreamFailures',
+    {
+      requestLayer: () =>
+        Layer.scoped(
+          StreamFailureService,
+          () => new StreamFailureService(),
+          (_service, outcome) => {
+            outcomes.push(outcome)
+          }
+        ),
+      onFailure: (error: HttpFailure, context) => {
+        failurePolicyCalls += 1
+        return context.text(error.message, 422)
+      }
+    },
+    async function* (http) {
+      const app = new Hono()
+      app.use('*', yield* http.middleware())
+      app.get('/before', yield* http.stream(beforeProgram))
+      app.get('/after', yield* http.stream(afterProgram))
+      return app
+    }
+  )
+  const runtime = await Runtime.make(App.layer)
+
+  try {
+    const app = await resolveApp(runtime, App)
+    const before = await app.request('/before')
+    expect(before.status).toBe(422)
+    expect(await before.text()).toBe('before headers')
+    expect(failurePolicyCalls).toBe(1)
+
+    const after = await app.request('/after')
+    const reader = after.body!.getReader()
+    expect(await reader.read()).toMatchObject({ done: false })
+    const lateFailure = await reader.read().catch((cause) => cause)
+    expect(lateFailure).toBe(afterFailure)
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(outcomes).toEqual([
+      { status: 'failure', cause: beforeFailure },
+      { status: 'failure', cause: afterFailure }
+    ])
   } finally {
     await runtime.dispose()
   }

@@ -87,6 +87,12 @@ type ManagedBody = {
   readonly start: () => void
 }
 
+/** @internal A managed Web response plan used by framework adapters. */
+export type ManagedWebResponse = RuntimeManagedPlan<Response> & {
+  /** @internal Keep the request execution alive after readiness is returned. */
+  readonly retainCompletion?: boolean
+}
+
 const makeManagedBody = (
   descriptor: WebEffectStream,
   managedPromise: Promise<RuntimeManagedExecution<unknown>>,
@@ -241,6 +247,30 @@ const makeManagedBody = (
   }
 }
 
+/** @internal Build a response plan without admitting a second Runtime execution. */
+export const makeManagedResponse = (
+  descriptor: WebEffectStream,
+  managedPromise: Promise<RuntimeManagedExecution<unknown>>,
+  timeoutMs = DEFAULT_UNCONSUMED_TIMEOUT_MS
+): ManagedWebResponse => {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new RangeError(
+      'WebEffect stream unconsumedTimeoutMs must be a finite non-negative number'
+    )
+  }
+
+  const body = makeManagedBody(descriptor, managedPromise, timeoutMs)
+  const response = new Response(body.body, streamResponseInit(descriptor))
+  body.start()
+
+  return {
+    readiness: response,
+    completion: body.completion,
+    cancel: body.cancel,
+    retainCompletion: true
+  }
+}
+
 const combineRequestLayer = <RequestLayer extends LayerInput>(
   request: Request,
   customLayer: RequestLayer | undefined
@@ -253,6 +283,67 @@ const combineRequestLayer = <RequestLayer extends LayerInput>(
 
   // SAFETY: WebEffect.handleWith validates the custom Layer's shape and override contract at its public boundary.
   return Layer.override(currentRequestLayer, customLayer as never)
+}
+
+/** @internal Run a framework boundary with a readiness/completion split. */
+export type ManagedWebBoundaryOptions = {
+  readonly requestLayer?: (request: Request) => LayerInput
+  readonly onSuccess: (
+    result: { readonly value: unknown },
+    managed: Promise<RuntimeManagedExecution<unknown>>
+  ) => ManagedWebResponse | PromiseLike<ManagedWebResponse>
+  readonly onFailure?: (error: unknown) => Response | PromiseLike<Response>
+}
+
+/** @internal Adapt a managed Runtime execution for framework-owned boundaries. */
+export const runManagedWith = async (
+  executor: RuntimeExecutor<AnyService>,
+  request: Request,
+  program: AnyProgram,
+  options: ManagedWebBoundaryOptions
+): Promise<Response> => {
+  const managedDeferred = deferred<RuntimeManagedExecution<unknown>>()
+  let retainCompletion = false
+  const managedProgram = async (): Promise<ManagedWebResponse> => {
+    const result = await program()
+
+    if (Result.isError(result)) {
+      const response = assertResponse(await (options.onFailure ?? defaultFailure)(result.error))
+      return {
+        readiness: response,
+        completion: Promise.reject(result.error),
+        cancel: async () => {}
+      }
+    }
+
+    const plan = await options.onSuccess({ value: result.value }, managedDeferred.promise)
+    retainCompletion = plan.retainCompletion === true
+    return plan
+  }
+
+  const requestLayer = combineRequestLayer(request, options.requestLayer?.(request))
+  let managed: RuntimeManagedExecution<unknown> | undefined
+
+  try {
+    managed = executor.runWithManaged(requestLayer as Layer.Any, managedProgram as never, {
+      signal: request.signal
+    })
+    managedDeferred.resolve(managed)
+    const response = assertResponse(await managed.readiness)
+    if (retainCompletion) {
+      void managed.completion.catch(() => undefined)
+    } else {
+      await managed.completion.catch(() => undefined)
+    }
+    return response
+  } catch (cause) {
+    managedDeferred.reject(cause)
+    if (managed !== undefined) {
+      void managed.completion.catch(() => undefined)
+      await managed.cancel(cause).catch(() => undefined)
+    }
+    throw cause
+  }
 }
 
 /** Execute one Result-valued Program inside a framework-neutral Web request boundary. */

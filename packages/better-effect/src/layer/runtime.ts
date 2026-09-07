@@ -899,9 +899,7 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     const signalListener = (): void => {
       void cancel(prepared.signalLink.signal.reason)
     }
-    if (prepared.signalLink.signal.aborted) {
-      signalListener()
-    } else {
+    if (!prepared.signalLink.signal.aborted) {
       prepared.signalLink.signal.addEventListener('abort', signalListener, { once: true })
     }
 

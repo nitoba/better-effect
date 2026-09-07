@@ -4,10 +4,18 @@ import type { Env, MiddlewareHandler } from 'hono'
 
 import { Effect } from '../effect'
 import type { LayerInput } from '../layer/inference'
-import type { RuntimeExecutor } from '../runtime'
+import type { RuntimeExecutor, RuntimeManagedExecution, RuntimeManagedPlan } from '../runtime'
 import type { AnyService } from '../service'
-import { WebEffect } from '../web'
-import type { AnyRouteOptions, HonoContext, HonoEffectSuccess, ResponseLike } from './types'
+import { makeManagedResponse, runManagedWith } from '../web/web-effect'
+import { assertResponse } from '../web/responses'
+import type {
+  AnyRouteOptions,
+  HonoContext,
+  HonoEffectStreamOptions,
+  HonoEffectSuccess,
+  ResponseLike
+} from './types'
+import type { WebEffectStream } from '../web/types'
 
 /* oxlint-disable anti-slop/no-unknown-parameters -- Hono handlers carry opaque Result values until the typed adapter callbacks consume them. */
 
@@ -24,6 +32,11 @@ type RequestOutcome =
   | {
       readonly kind: 'defect'
       readonly cause: unknown
+    }
+  | {
+      readonly kind: 'stream'
+      readonly descriptor: WebEffectStream
+      readonly options: HonoEffectStreamOptions
     }
 
 export type RequestState = {
@@ -44,6 +57,14 @@ export const recordRequestSuccess = (
   state.outcome ??= { kind: 'success', value, options }
 }
 
+export const recordRequestStream = (
+  state: RequestState,
+  descriptor: WebEffectStream,
+  options: HonoEffectStreamOptions
+): void => {
+  state.outcome ??= { kind: 'stream', descriptor, options }
+}
+
 export type RequestBoundaryOptions<RequestLayer extends LayerInput, Failure> = {
   readonly executor: RuntimeExecutor<AnyService>
   readonly states: WeakMap<object, RequestState>
@@ -54,8 +75,21 @@ export type RequestBoundaryOptions<RequestLayer extends LayerInput, Failure> = {
 
 type BoundaryOptions<RequestLayer extends LayerInput> = {
   readonly requestLayer?: (request: Request) => RequestLayer
-  readonly onSuccess: (result: { readonly value: unknown }) => ResponseLike
+  readonly onSuccess: (
+    result: { readonly value: unknown },
+    managed: Promise<RuntimeManagedExecution<unknown>>
+  ) => RuntimeManagedPlan<Response> | PromiseLike<RuntimeManagedPlan<Response>>
   readonly onFailure: (error: unknown) => ResponseLike
+}
+
+const responsePlan = (response: ResponseLike): RuntimeManagedPlan<Response> => {
+  const readiness = Promise.resolve(response).then((value) => assertResponse(value))
+
+  return {
+    readiness,
+    completion: readiness.then(() => undefined),
+    cancel: async () => {}
+  }
 }
 
 const makeBoundaryOptions = <RequestLayer extends LayerInput, Failure>(
@@ -64,20 +98,24 @@ const makeBoundaryOptions = <RequestLayer extends LayerInput, Failure>(
   context: HonoContext
 ): BoundaryOptions<RequestLayer> => {
   const boundaryOptions: BoundaryOptions<RequestLayer> = {
-    onSuccess: ({ value }) => {
+    onSuccess: ({ value }, managed) => {
       if (context.finalized) {
-        return context.res
+        return responsePlan(context.res)
       }
 
       const outcome = state.outcome
 
+      if (outcome?.kind === 'stream') {
+        return makeManagedResponse(outcome.descriptor, managed, outcome.options.unconsumedTimeoutMs)
+      }
+
       if (outcome?.kind !== 'success') {
         // SAFETY: Values without a Hono route outcome are existing Web Responses; WebEffect validates them.
-        return value as Response
+        return responsePlan(value as Response)
       }
 
       if (outcome.options.respond !== undefined) {
-        return outcome.options.respond(value, context)
+        return responsePlan(outcome.options.respond(value, context))
       }
 
       const success: HonoEffectSuccess = { value }
@@ -90,7 +128,7 @@ const makeBoundaryOptions = <RequestLayer extends LayerInput, Failure>(
         Object.assign(success, { serialize: outcome.options.serialize })
       }
 
-      return options.onSuccess(success, context)
+      return responsePlan(options.onSuccess(success, context))
     },
     onFailure: (error) => {
       if (context.error !== undefined || context.finalized) {
@@ -166,7 +204,7 @@ export const makeRequestBoundary = <
       let response: Response
 
       // SAFETY: HonoEffect's public Layer boundary validates the request Layer before this erased WebEffect dispatch.
-      response = await WebEffect.handleWith(
+      response = await runManagedWith(
         options.executor,
         context.req.raw,
         program,
