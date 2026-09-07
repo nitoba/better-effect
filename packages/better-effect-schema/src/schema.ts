@@ -14,6 +14,7 @@ import {
 import { TaggedClass } from './tagged-class.js'
 import { TaggedError } from './tagged-error.js'
 import { withAdapter } from './capabilities/with.js'
+import { toJSONSchema } from './json-schema/consumer.js'
 import type { SchemaEffect as SchemaEffectType } from './schema-effect.js'
 import type { SchemaCodec as SchemaCodecType } from './codecs/index.js'
 import type {
@@ -32,6 +33,7 @@ export const Schema = Object.freeze({
   TaggedClass,
   TaggedError,
   with: withAdapter,
+  toJSONSchema,
   isClassInstance,
   isSchemaClass,
   decodeUnknown,
