@@ -10,6 +10,7 @@ import { Program, ServiceRuntime } from 'better-effect'
 import type { RuntimeExecutor } from 'better-effect'
 import { Panic, Result, UnhandledException, type Result as ResultType } from 'better-result'
 
+import { Flow } from '../flow'
 import {
   isUnrecoverableFailure,
   runRetryable,
@@ -21,21 +22,36 @@ import { Retry } from '../retry'
 import { parseJsonValue } from '../internal/json'
 import {
   JobDefinitionError,
+  JobNotCancellableError,
+  JobNotFoundError,
   JobStoreFailure,
   LeaseLostError,
+  hardFlowMaxChildren,
+  makeJobId,
   makeSerializedJobFailure,
   makeWorkerId,
   makeQueueName
 } from '../protocol'
-import type { JobRecord, JsonValue, SerializedJobFailure, SettlementOutcome } from '../protocol'
+import type {
+  FlowChildSpec,
+  FlowOutboxEntry,
+  JobId,
+  JobRecord,
+  JsonValue,
+  SerializedJobFailure,
+  SettlementOutcome
+} from '../protocol'
 import { freezeJobEvent } from '../observability/events'
 import type { JobEvent } from '../observability/events'
 import { notifyJobObserver } from '../observability/observer'
-import { JobStore, JobStoreWakeAbortedError } from '../store'
+import { FlowStore, JobStore, JobStoreWakeAbortedError } from '../store'
 import type {
   ActiveJobSnapshot,
   AnyJobStoreToken,
+  AnyFlowStoreToken,
   ClaimResult,
+  FlowChildObservation,
+  FlowStoreV2,
   HeartbeatResult,
   RecoverStalledResult,
   JobStoreContract,
@@ -63,6 +79,21 @@ import type { JobObserver } from '../observability'
 type AnyExecutor = RuntimeExecutor<any>
 type UnknownResult = ResultType<unknown, unknown>
 type StoreOperation<Value> = JobStoreOperation<Value, JobStore.Error>
+
+type FlowOperation<Value> = import('../store').FlowStoreV2Operation<Value>
+
+type FlowRoute = {
+  readonly key: string
+  readonly flowName: string
+  readonly parentStoreKey: string
+  readonly parentFlowStore: AnyFlowStoreToken
+  readonly sourceFlowStores: readonly AnyFlowStoreToken[]
+  readonly childStores: ReadonlyMap<string, AnyJobStoreToken>
+}
+
+type FlowSource = {
+  readonly token: AnyFlowStoreToken
+}
 
 type HandlerEntry = {
   readonly handler: AnyWorkerHandler
@@ -191,6 +222,17 @@ export class WorkerSupervisor<
   private readonly workerOptions: NormalizedWorkerOptions
   private readonly supervisionTasks = new Set<Promise<void>>()
   private readonly supervisionController = new AbortController()
+  private readonly flowRoutes: readonly FlowRoute[]
+  private readonly flowRoutesByKey = new Map<string, FlowRoute>()
+  private readonly flowSources = new Map<string, FlowSource>()
+  private readonly flowIdsByRoute = new Map<string, Set<JobId>>()
+  private readonly relayCursors = new Map<string, string | undefined>()
+  private readonly relayRetries = new Map<string, FlowOutboxEntry[]>()
+  private readonly flowCycleTasks = new Set<Promise<void>>()
+  private relayCycle: Promise<void> | undefined
+  private sweepCycle: Promise<void> | undefined
+  private relayPulsePending = false
+  private sweepPulsePending = false
   private readonly claimLeases = new Set<ClaimLease>()
   private readonly claimCleanupTasks = new Set<Promise<void>>()
   private nextClaimGeneration = 0
@@ -198,12 +240,22 @@ export class WorkerSupervisor<
   constructor(
     executor: RuntimeExecutor<Environment>,
     handlers: readonly AnyWorkerHandler[],
-    options: NormalizedWorkerOptions
+    options: NormalizedWorkerOptions,
+    flows: readonly WorkerFlowRegistration[] = []
   ) {
     this.executor = executor
     this.workerOptions = options
     this.workerId = options.id
     this.groups = makeGroups(handlers, options)
+    this.flowRoutes = makeFlowRoutes(flows)
+    for (const route of this.flowRoutes) {
+      this.flowRoutesByKey.set(route.key, route)
+      const ids = new Set<JobId>(options.flowSweepFlowIds)
+      this.flowIdsByRoute.set(route.key, ids)
+      for (const source of route.sourceFlowStores) {
+        this.flowSources.set(source.serviceTag, { token: source })
+      }
+    }
   }
 
   start(): void {
@@ -224,6 +276,10 @@ export class WorkerSupervisor<
     for (const store of stores.values()) {
       this.startSupervisionLoop(store, 'heartbeat')
       this.startSupervisionLoop(store, 'stalled')
+    }
+    if (this.flowRoutes.length > 0) {
+      this.startFlowSupervisionLoop('relay')
+      this.startFlowSupervisionLoop('sweep')
     }
     this.emit({ type: 'worker-started', recordedAt: this.readNow(), workerId: this.id })
   }
@@ -325,6 +381,7 @@ export class WorkerSupervisor<
     await attempts
     this.supervisionController.abort()
     await Promise.allSettled(this.supervisionTasks)
+    await Promise.allSettled(this.flowCycleTasks)
     await Promise.allSettled(this.claimCleanupTasks)
     this.currentState = 'stopped'
     this.emit({ type: 'worker-stopped', recordedAt: this.readNow(), workerId: this.id })
@@ -942,6 +999,13 @@ export class WorkerSupervisor<
 
     if (result.value.status !== 'applied' && result.value.status !== 'already-applied') return
     const persisted = result.value.attempt
+    if (
+      persisted.outcome === 'completed' ||
+      persisted.outcome === 'failed' ||
+      persisted.outcome === 'cancelled'
+    ) {
+      this.requestFlowRelay()
+    }
     if (attempt?.terminalNotified === true) return
     if (attempt !== undefined) attempt.terminalNotified = true
     this.emitSettled(job, persisted, attempt?.durationMs)
@@ -1143,6 +1207,365 @@ export class WorkerSupervisor<
         this.report(cause)
       }
     )
+  }
+
+  private startFlowSupervisionLoop(kind: 'relay' | 'sweep'): void {
+    const task = this.superviseFlow(kind)
+    this.supervisionTasks.add(task)
+    void task.then(
+      () => this.supervisionTasks.delete(task),
+      (cause) => {
+        this.supervisionTasks.delete(task)
+        this.report(cause)
+      }
+    )
+    if (kind === 'relay') this.requestFlowRelay()
+    else this.requestFlowSweep()
+  }
+
+  private async superviseFlow(kind: 'relay' | 'sweep'): Promise<void> {
+    while (!this.supervisionController.signal.aborted) {
+      await this.sleep(this.workerOptions.flowSweepIntervalMs, this.supervisionController.signal)
+      if (this.supervisionController.signal.aborted || !this.canAcceptWork()) return
+      if (kind === 'relay') this.requestFlowRelay()
+      else this.requestFlowSweep()
+    }
+  }
+
+  private requestFlowRelay(): void {
+    if (!this.canAcceptWork() || this.flowSources.size === 0) return
+    if (this.relayCycle !== undefined) {
+      this.relayPulsePending = true
+      return
+    }
+
+    const task = this.relayOutbox()
+    this.relayCycle = task
+    this.flowCycleTasks.add(task)
+    void task.then(
+      () => this.finishFlowCycle('relay', task),
+      (cause) => {
+        this.report(cause)
+        this.finishFlowCycle('relay', task)
+      }
+    )
+  }
+
+  private requestFlowSweep(): void {
+    if (!this.canAcceptWork() || this.flowRoutes.length === 0) return
+    if (this.sweepCycle !== undefined) {
+      this.sweepPulsePending = true
+      return
+    }
+
+    const task = this.sweepFlows()
+    this.sweepCycle = task
+    this.flowCycleTasks.add(task)
+    void task.then(
+      () => this.finishFlowCycle('sweep', task),
+      (cause) => {
+        this.report(cause)
+        this.finishFlowCycle('sweep', task)
+      }
+    )
+  }
+
+  private finishFlowCycle(kind: 'relay' | 'sweep', task: Promise<void>): void {
+    this.flowCycleTasks.delete(task)
+    if (kind === 'relay') {
+      if (this.relayCycle !== task) return
+      this.relayCycle = undefined
+      if (this.relayPulsePending) {
+        this.relayPulsePending = false
+        this.requestFlowRelay()
+      }
+      return
+    }
+
+    if (this.sweepCycle !== task) return
+    this.sweepCycle = undefined
+    if (this.sweepPulsePending) {
+      this.sweepPulsePending = false
+      this.requestFlowSweep()
+    }
+  }
+
+  private async relayOutbox(): Promise<void> {
+    for (const source of this.flowSources.values()) {
+      const sourceKey = source.token.serviceTag
+      const pending = this.relayRetries.get(sourceKey)
+      let entries: readonly FlowOutboxEntry[]
+      if (pending !== undefined && pending.length > 0) {
+        entries = pending.slice(0, this.workerOptions.flowBatchSize)
+        this.relayRetries.set(sourceKey, pending.slice(entries.length))
+      } else {
+        const pageResult = await this.runFlowOperation(source.token, (store) =>
+          store.peekOutbox({
+            cursor: this.relayCursors.get(sourceKey),
+            limit: this.workerOptions.flowBatchSize
+          })
+        )
+        if (Result.isError(pageResult)) {
+          this.report(pageResult.error)
+          continue
+        }
+
+        const page = pageResult.value
+        this.relayCursors.set(sourceKey, page.hasMore ? page.cursor : undefined)
+        entries = page.entries
+      }
+      if (entries.length === 0) continue
+
+      const groups = new Map<
+        string,
+        { readonly route: FlowRoute; readonly entries: FlowOutboxEntry[] }
+      >()
+      for (const entry of entries) {
+        const route = this.flowRoutesByKey.get(flowRouteKey(entry.flowName, entry.parentStoreKey))
+        if (route === undefined) continue
+        this.rememberFlowId(route, entry.report.flowId)
+        const key = `${route.key}\u0000${entry.report.flowId}`
+        const group = groups.get(key)
+        if (group === undefined) {
+          groups.set(key, { route, entries: [entry] })
+        } else {
+          group.entries.push(entry)
+        }
+      }
+
+      const confirmed: FlowOutboxEntry[] = []
+      const failed: FlowOutboxEntry[] = []
+      for (const group of groups.values()) {
+        const first = group.entries[0]
+        if (first === undefined) continue
+        const result = await this.runFlowOperation(group.route.parentFlowStore, (store) =>
+          store.recordChildResults({
+            flowId: first.report.flowId,
+            reports: group.entries.map((entry) => entry.report),
+            now: this.readNow()
+          })
+        )
+        if (Result.isError(result)) {
+          this.report(result.error)
+          failed.push(...group.entries)
+          continue
+        }
+        confirmed.push(...group.entries)
+      }
+
+      if (confirmed.length > 0) {
+        const acknowledged = await this.runFlowOperation(source.token, (store) =>
+          store.ackOutbox({ entries: confirmed })
+        )
+        if (Result.isError(acknowledged)) {
+          this.report(acknowledged.error)
+          failed.push(...confirmed)
+        }
+      }
+      if (failed.length > 0) {
+        const retries = this.relayRetries.get(sourceKey) ?? []
+        this.relayRetries.set(sourceKey, [...failed, ...retries])
+      }
+    }
+  }
+
+  private async sweepFlows(): Promise<void> {
+    let remaining = this.workerOptions.flowBatchSize
+    for (const route of this.flowRoutes) {
+      if (remaining <= 0) return
+      const ids = this.flowIdsByRoute.get(route.key)
+      if (ids === undefined) continue
+      for (const flowId of Array.from(ids)) {
+        if (remaining <= 0) return
+        const inspected = await this.sweepFlow(route, flowId, remaining)
+        remaining -= inspected
+      }
+    }
+  }
+
+  private async sweepFlow(route: FlowRoute, flowId: JobId, limit: number): Promise<number> {
+    const snapshot = await this.runFlowOperation(route.parentFlowStore, (store) =>
+      store.getFlow({ flowId })
+    )
+    if (Result.isError(snapshot)) {
+      if (JobNotFoundError.is(snapshot.error)) this.forgetFlowId(route, flowId)
+      else this.report(snapshot.error)
+      return 1
+    }
+    if (snapshot.value === undefined) {
+      this.forgetFlowId(route, flowId)
+      return 1
+    }
+
+    const observations: FlowChildObservation[] = []
+    let inspected = 0
+    for (const child of snapshot.value.children) {
+      if (child.status !== 'pending' || inspected >= limit) continue
+      inspected += 1
+      const childStore = route.childStores.get(child.storeKey)
+      if (childStore === undefined) continue
+      const job = await this.runJobOperation<JobRecord | undefined>(childStore, (store) =>
+        store.getJob({ jobId: child.childJobId })
+      )
+      if (Result.isError(job)) {
+        this.report(job.error)
+        continue
+      }
+      observations.push(observationForChild(child.childKey, job.value))
+    }
+
+    const reconciliation = await this.runFlowOperation(route.parentFlowStore, (store) =>
+      store.reconcile({ flowId, observations, now: this.readNow(), limit })
+    )
+    if (Result.isError(reconciliation)) {
+      this.report(reconciliation.error)
+      return Math.max(1, inspected)
+    }
+
+    await this.enqueueReconciliation(route, reconciliation.value.enqueue)
+    if (reconciliation.value.reports.length > 0) {
+      const reportResult = await this.runFlowOperation(route.parentFlowStore, (store) =>
+        store.recordChildResults({
+          flowId,
+          reports: reconciliation.value.reports,
+          now: this.readNow()
+        })
+      )
+      if (Result.isError(reportResult)) this.report(reportResult.error)
+    }
+    await this.cascadeReconciliation(route, flowId, reconciliation.value.cascade)
+    return Math.max(1, inspected)
+  }
+
+  private async enqueueReconciliation(
+    route: FlowRoute,
+    specs: readonly FlowChildSpec[]
+  ): Promise<void> {
+    const byStore = new Map<
+      string,
+      { readonly store: AnyJobStoreToken; requests: import('../store').EnqueueRequest[] }
+    >()
+    for (const spec of specs) {
+      const store = route.childStores.get(spec.storeKey)
+      if (store === undefined) continue
+      const group = byStore.get(spec.storeKey)
+      if (group === undefined) {
+        byStore.set(spec.storeKey, {
+          store,
+          requests: [enqueueRequestFromPrepared(spec.request)]
+        })
+      } else {
+        group.requests.push(enqueueRequestFromPrepared(spec.request))
+      }
+    }
+    for (const group of byStore.values()) {
+      const result = await this.runJobOperation(group.store, (store) =>
+        store.enqueueMany(group.requests)
+      )
+      if (Result.isError(result)) this.report(result.error)
+    }
+  }
+
+  private async cascadeReconciliation(
+    route: FlowRoute,
+    flowId: JobId,
+    specs: readonly FlowChildSpec[]
+  ): Promise<void> {
+    const marked: string[] = []
+    for (const spec of specs) {
+      const store = route.childStores.get(spec.storeKey)
+      if (store === undefined) continue
+      const job = await this.runJobOperation<JobRecord | undefined>(store, (client) =>
+        client.getJob({ jobId: spec.childJobId })
+      )
+      if (Result.isError(job)) {
+        this.report(job.error)
+        continue
+      }
+      if (job.value === undefined || isTerminalJobState(job.value.state)) {
+        marked.push(spec.childKey)
+        continue
+      }
+      const currentJob = job.value
+
+      const result = await this.runJobOperation(store, (client) =>
+        currentJob.state === 'active'
+          ? client.requestCancellation({ jobId: spec.childJobId, now: this.readNow() })
+          : client.cancel({ jobId: spec.childJobId, now: this.readNow() })
+      )
+      if (Result.isError(result)) {
+        if (JobNotFoundError.is(result.error)) {
+          marked.push(spec.childKey)
+        } else if (JobNotCancellableError.is(result.error)) {
+          const latest = await this.runJobOperation<JobRecord | undefined>(store, (client) =>
+            client.getJob({ jobId: spec.childJobId })
+          )
+          if (
+            Result.isOk(latest) &&
+            (latest.value === undefined || isTerminalJobState(latest.value.state))
+          ) {
+            marked.push(spec.childKey)
+          } else {
+            this.report(result.error)
+          }
+        } else {
+          this.report(result.error)
+        }
+      } else if (currentJob.state !== 'active') {
+        marked.push(spec.childKey)
+      }
+    }
+    if (marked.length === 0) return
+    const result = await this.runFlowOperation(route.parentFlowStore, (store) =>
+      store.markCascaded({ flowId, childKeys: marked })
+    )
+    if (Result.isError(result)) this.report(result.error)
+  }
+
+  private rememberFlowId(route: FlowRoute, flowId: JobId): void {
+    this.flowIdsByRoute.get(route.key)?.add(flowId)
+  }
+
+  private forgetFlowId(route: FlowRoute, flowId: JobId): void {
+    this.flowIdsByRoute.get(route.key)?.delete(flowId)
+  }
+
+  private async runFlowOperation<Value>(
+    token: AnyFlowStoreToken,
+    operation: (store: FlowStoreV2) => FlowOperation<Value>
+  ): Promise<ResultType<Value, unknown>> {
+    try {
+      const store = (await this.executor.run(() => ServiceRuntime.resolve(token))) as FlowStoreV2
+      const result = await Promise.resolve(operation(store))
+      if (!isResultLike(result)) {
+        return Result.err(new Error('FlowStore operation did not return a Result')) as ResultType<
+          Value,
+          unknown
+        >
+      }
+      return result as ResultType<Value, unknown>
+    } catch (cause) {
+      return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<Value, unknown>
+    }
+  }
+
+  private async runJobOperation<Value>(
+    token: AnyJobStoreToken,
+    operation: (store: JobStoreContract) => StoreOperation<Value>
+  ): Promise<ResultType<Value, unknown>> {
+    try {
+      const store = await this.executor.run(() => ServiceRuntime.resolve(token))
+      const result = await Promise.resolve(operation(store))
+      if (!isResultLike(result)) {
+        return Result.err(new Error('JobStore operation did not return a Result')) as ResultType<
+          Value,
+          unknown
+        >
+      }
+      return result as ResultType<Value, unknown>
+    } catch (cause) {
+      return Result.err(new WorkerRuntimeOwnershipError(cause)) as ResultType<Value, unknown>
+    }
   }
 
   private async superviseStore(
@@ -1515,6 +1938,9 @@ export type NormalizedWorkerOptions = {
   readonly stalledIntervalMs: number
   readonly maxStalledCount: number
   readonly pollIntervalMs: number
+  readonly flowSweepIntervalMs: number
+  readonly flowBatchSize: number
+  readonly flowSweepFlowIds: readonly JobId[]
   readonly storeOperationTimeoutMs: number
   readonly now: () => number
   readonly random: WorkerRandom
@@ -1608,6 +2034,21 @@ export const normalizeWorkerOptions = (
     readOption(options, 'pollIntervalMs') ?? defaultPollIntervalMs,
     'pollIntervalMs'
   )
+  const flowSweepIntervalMs = positiveDuration(
+    readOption(options, 'flowSweepIntervalMs') ?? 30_000,
+    'flowSweepIntervalMs'
+  )
+  const flowBatchSize = positiveInteger(
+    readOption(options, 'flowBatchSize') ?? 100,
+    'flowBatchSize'
+  )
+  if (flowBatchSize > hardFlowMaxChildren) {
+    throw new JobDefinitionError({
+      field: 'flowBatchSize',
+      message: `must not exceed the Flow hard limit of ${hardFlowMaxChildren}`
+    })
+  }
+  const flowSweepFlowIds = normalizeFlowSweepIds(readOption(options, 'flowSweepFlowIds'))
   const shutdownValue = readOption(options, 'shutdown')
   const shutdown = normalizeShutdown(shutdownValue)
   const id = normalizeWorkerId(readOption(options, 'id'), readOption(options, 'workerId'))
@@ -1643,6 +2084,9 @@ export const normalizeWorkerOptions = (
     stalledIntervalMs,
     maxStalledCount,
     pollIntervalMs,
+    flowSweepIntervalMs,
+    flowBatchSize,
+    flowSweepFlowIds,
     storeOperationTimeoutMs: Math.max(
       pollIntervalMs,
       Math.min(leaseDurationMs, heartbeatIntervalMs * 2)
@@ -2192,6 +2636,96 @@ const normalizeWorkerId = (
 type QueueLimits = {
   readonly defaultLimit: number
   readonly named: ReadonlyMap<string, number>
+}
+
+const flowRouteKey = (flowName: string, parentStoreKey: string): string =>
+  `${flowName}\u0000${parentStoreKey}`
+
+const enqueueRequestFromPrepared = (
+  request: import('../job/prepared').PreparedEnqueue
+): import('../store').EnqueueRequest => {
+  const { protocolVersion: _protocolVersion, ...enqueue } = request
+  return enqueue
+}
+
+const makeFlowRoutes = (registrations: readonly WorkerFlowRegistration[]): readonly FlowRoute[] => {
+  const routes: FlowRoute[] = []
+
+  for (const registration of registrations) {
+    const flow = Flow.is(registration) ? registration : registration.flow
+    const parentStore = flow.parent.store
+    const stores = new Map<string, AnyJobStoreToken>()
+    stores.set(parentStore.serviceTag, parentStore)
+    for (const child of flow.children) stores.set(child.store.serviceTag, child.store)
+
+    const sourceFlowStores = [...stores.values()].map(
+      (store) => FlowStore.for(store) as AnyFlowStoreToken
+    )
+    routes.push({
+      key: flowRouteKey(flow.name, parentStore.serviceTag),
+      flowName: flow.name,
+      parentStoreKey: parentStore.serviceTag,
+      parentFlowStore: sourceFlowStores[0]!,
+      sourceFlowStores: Object.freeze(sourceFlowStores),
+      childStores: stores
+    })
+  }
+
+  return Object.freeze(routes)
+}
+
+const observationForChild = (
+  childKey: string,
+  job: JobRecord | undefined
+): FlowChildObservation => {
+  if (job === undefined) return { childKey, state: 'missing' }
+
+  switch (job.state) {
+    case 'waiting':
+    case 'delayed':
+    case 'active':
+      return { childKey, state: job.state }
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return {
+        childKey,
+        state: job.state,
+        ...(job.result === undefined ? {} : { result: job.result }),
+        ...(job.failure === undefined ? {} : { failure: job.failure })
+      }
+  }
+}
+
+const isTerminalJobState = (state: JobRecord['state']): boolean =>
+  state === 'completed' || state === 'failed' || state === 'cancelled'
+
+const normalizeFlowSweepIds = (value: unknown): readonly JobId[] => {
+  if (value === undefined) return Object.freeze([])
+  if (!Array.isArray(value)) {
+    throw new JobDefinitionError({ field: 'flowSweepFlowIds', message: 'must be an array' })
+  }
+
+  const seen = new Set<JobId>()
+  const ids: JobId[] = []
+  for (const [index, candidate] of value.entries()) {
+    const id = makeJobId(candidate)
+    if (Result.isError(id)) {
+      throw new JobDefinitionError({
+        field: `flowSweepFlowIds[${index}]`,
+        message: id.error.message
+      })
+    }
+    if (seen.has(id.value)) {
+      throw new JobDefinitionError({
+        field: `flowSweepFlowIds[${index}]`,
+        message: `duplicate flow id ${id.value}`
+      })
+    }
+    seen.add(id.value)
+    ids.push(id.value)
+  }
+  return Object.freeze(ids)
 }
 
 const normalizeQueueLimits = (value: unknown, fallback: number): QueueLimits => {

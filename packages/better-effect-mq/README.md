@@ -30,8 +30,10 @@ The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
 flow contracts, pure `Flow.define`/`Flow.children`/`Flow.handle` descriptors,
 the reference `MemoryFlowStore`, and Layer-first Worker route validation.
 `FlowStoreV2` also defines durable terminal-report outbox append, bounded peek,
-parent confirmation, and exact-payload acknowledgement. Cross-store relay and
-flow execution supervision remain runner-owned integrations.
+parent confirmation, and exact-payload acknowledgement. A Layer-owned Worker
+supervises bounded relay and reconciliation cycles from the same Runtime root;
+flow phase execution and fan-out remain application-owned until the atomic v2
+parent-settlement contract is available.
 
 ## Schedule-store conformance
 
@@ -609,10 +611,11 @@ associated `FlowStore` requirement to the Layer contract. Provide the v2 store
 explicitly, for example with `Layer.succeed(FlowStore,
 FlowStore.of(MemoryFlowStore.make()))`. Worker startup validates the associated
 store's v2 descriptor in the same Runtime root and rejects duplicate flow names
-or a flow parent also registered as a plain Worker handler. This slice does not
-claim children or run relay/sweeper loops; those operations remain runner-owned
-and require the corresponding atomic v2 JobStore settlement and outbox
-scan/ack contracts.
+or a flow parent also registered as a plain Worker handler. After startup, the
+Worker runs bounded relay and reconciliation/sweeper cycles for the registered
+routes. Relay is at-least-once: it records reports in the parent before
+acknowledging the source outbox, and unknown routes do not block later entries.
+The Worker does not claim children or execute fan-out/collect phase callbacks.
 
 Each claimed Job runs through `executor.runWith(JobContext.layer(context), ...)`
 with a fresh child Scope and attempt-local `AbortSignal`. Root Services remain

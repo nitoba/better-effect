@@ -14,6 +14,8 @@
   Runtime attempt metadata, and opt-in queue-depth sampling.
 - Flow v2 phase handlers and associated `FlowStore` requirements for Layer-first
   Worker route validation, including duplicate-route checks.
+- Layer-owned Flow v2 relay and bounded reconciliation/sweeper supervision,
+  including at-least-once outbox delivery and graceful Runtime shutdown.
 - The deterministic TestJobStore harness, end-to-end examples, MQ documentation,
   and package/type-system release gates.
 

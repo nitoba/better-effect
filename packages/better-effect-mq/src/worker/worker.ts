@@ -230,7 +230,12 @@ const startWorkerWithExecutor = async (
   const normalizedOptions = normalizeWorkerOptions(options)
   await assertStoresAvailable(executor, normalizedHandlers, normalizedFlows)
 
-  const supervisor = new WorkerSupervisor(executor, normalizedHandlers, normalizedOptions)
+  const supervisor = new WorkerSupervisor(
+    executor,
+    normalizedHandlers,
+    normalizedOptions,
+    normalizedFlows
+  )
   supervisor.start()
   return supervisor
 }
@@ -515,6 +520,7 @@ const assertStoresAvailable = async (
     )
     for (const child of flow.children) {
       stores.set(child.store.serviceTag, child.store)
+      flowStores.set(child.store.serviceTag, FlowStore.for(child.store) as AnyFlowStoreToken)
     }
   }
 
