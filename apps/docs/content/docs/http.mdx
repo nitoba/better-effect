@@ -1,0 +1,360 @@
+---
+title: HTTP client
+description: Lazy, typed HTTP, NDJSON, SSE and managed Hono streaming with better-effect.
+icon: Globe
+---
+
+`better-effect-http` is a small, server-side HTTP client built on the Fetch API
+and `ofetch`. It describes requests as lazy, single-use Programs consumed with
+`yield*`, while `better-result` remains the source of truth for success and
+failure. The package is separate from `better-effect`; importing it does not do
+I/O, read environment variables, create a Runtime, or register listeners.
+
+## Install and package boundaries
+
+```bash
+bun add better-effect-http better-effect better-result better-effect-schema
+# Only the managed Hono recipe also needs:
+bun add hono
+```
+
+The local workspace uses Bun 1.4.2 and TypeScript 7.0.2; release gates also run
+the current Node.js LTS interoperability smoke tests. The public TypeScript
+peer range starts at 6.0. The package peers on
+`better-effect >=0.13.0 <0.14.0`, `better-result ^3.0.0`, and
+`better-effect-schema >=0.1.0 <0.2.0`. The optional
+`@opentelemetry/api >=1.9.0 <1.10.0` peer is used only by the telemetry
+subpath.
+
+`ofetch` and `eventsource-parser` are runtime dependencies. `ofetch` retry is
+disabled; the HTTP policy is the only retry controller. Zod, Valibot, and
+ArkType are not HTTP dependencies. Their Standard Schema values work directly,
+and `better-effect-schema/{zod,valibot,arktype}` adapters are explicit choices
+for capabilities beyond the protocol.
+
+Use these implemented entry points:
+
+| Import                             | Purpose                                           |
+| ---------------------------------- | ------------------------------------------------- |
+| `better-effect-http`               | client, requests, responses, policies and streams |
+| `better-effect-http/endpoints`     | declarative endpoint namespace                    |
+| `better-effect-http/opentelemetry` | optional tracer observer                          |
+| `better-effect-http/testing`       | deterministic `HttpTest` fixtures                 |
+
+There is no active HTTP import from `better-effect`, and new examples use
+`better-effect-schema`, never the historical `better-effect-zod` package.
+
+## One Runtime, lazy operations, and Services
+
+`HttpClient` is a Service token plus a Layer factory. Constructing
+`http.get(...)`, `http.sse(...)`, or `http.stream(...)` performs no request.
+The active Runtime supplies the resolver, request signal, Scope, and hook
+requirements when the operation is consumed.
+
+```ts
+const App = Effect.fn(async function* () {
+  const http = yield* HttpClient
+  const response = yield* http.get('/users/42', { schema: UserSchema })
+  return Result.ok(response.data)
+})
+
+const runtime = await Runtime.make(HttpClient.layer({ baseURL: 'https://api.example.test' }))
+try {
+  const result = await runtime.run(App)
+  if (Result.isError(result)) console.error(result.error)
+} finally {
+  await runtime.dispose()
+}
+```
+
+Use one application Runtime. Do not create a `NodeRuntime` with `Layer.empty`
+and then another Runtime for the HTTP Layer. A named client has the same
+contract and an independent Service tag:
+
+```ts
+const PartnerHttp = HttpClient.service('@app/PartnerHttp', {
+  interceptors: [authentication],
+  observers: [observer],
+  middleware: [recovery]
+})
+const PartnerLive = PartnerHttp.layer({ baseURL: 'https://partner.example' })
+```
+
+`.use(...)` is immutable and returns a new client. Requests, headers, query
+values, policies, and body configuration are derived values. Every operation
+is single-use. A stream terminal opens a one-shot reader/session; once that
+session is consumed or closed it cannot be read again. Create another explicit
+stream description when the application needs another request. Effectful hooks
+preserve their E/R requirements and Runtime checks them at the execution
+boundary.
+
+## Methods, body/query, formats, and statuses
+
+The client has `get`, `post`, `put`, `patch`, `delete`, `head`, and dynamic
+`request(method, path, options)`. Options include `query`, `body`, `headers`,
+`signal`, `timeout`, `responseType`, `schema`, `responses`, and `retry`.
+
+Query values are strings, numbers, booleans, nullish values, or arrays of those
+values. Plain object bodies are JSON encoded once at the physical send. String,
+`ArrayBuffer`, `Blob`, `FormData`, `URLSearchParams`, and
+`ReadableStream<Uint8Array>` bodies stay explicit. `responseType` can be
+`json`, `text`, `blob`, or `arrayBuffer`. `HEAD`, 204, 205, 304, and empty
+bodies expose `data: undefined`; the client does not invent an object.
+
+Without a schema, a successful JSON value is `unknown`. A TypeScript generic is
+not runtime validation. Pass a Standard Schema value for decoding, or use
+`responses` for a status-discriminated union:
+
+```ts
+const response =
+  yield *
+  http.post('/users', {
+    body: requestBody,
+    responses: {
+      201: UserSchema,
+      404: UserNotFoundSchema,
+      422: ValidationErrorSchema
+    }
+  })
+
+if (response.status === 422) console.log(response.data.field)
+else if (response.status === 404) console.log(response.data.reason)
+else console.log(response.data.id)
+```
+
+An undeclared failure status is `HttpStatusError`. Transport, timeout, abort,
+status, decode, schema/provider execution, hook, auth, and admission errors
+have distinct typed tags. Safe JSON diagnostics do not serialize bodies,
+tokens, cookies, causes, arbitrary messages, or stacks.
+
+## Interceptors, observers, and middleware
+
+These are intentionally different layers:
+
+| Layer                     | Job                                     | Frequency and guarantees                               |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------ |
+| `HttpInterceptor.make`    | transform request/response              | request transformation runs before every physical send |
+| `HttpInterceptor.observe` | observe success/error and SSE reconnect | best effort; callback failure is secondary             |
+| `HttpMiddleware.make`     | wrap a logical operation                | controls whether and how `next` is invoked             |
+
+They run in configured order. A hook can return a value, Result, Promise, or
+effectful Program. Interceptor request callbacks receive immutable
+`HttpRequest`; derive a new value with `HttpRequest.setHeader` or
+`HttpRequest.setQuery`. Resolve credentials and request context per invocation,
+not from mutable global state. Observers are diagnostic side effects; middleware
+is the natural boundary for auth recovery and similar logical policies.
+
+## Retry, idempotency, and timeouts
+
+`HttpRetry.make` is opt-in. `HttpRetry.transient` defaults to safe
+`GET`/`HEAD`/`OPTIONS`, but safety does not prove a body is replayable. `times`
+counts additional physical attempts. `totalMs` includes backoff and is the
+logical-call budget; `timeout` can separately bound each attempt and the total.
+The built-in retryable statuses are 408, 429, 500, 502, 503, and 504.
+
+```ts
+const response =
+  yield *
+  http.get('/health', {
+    retry: HttpRetry.transient({
+      times: 2,
+      delay: HttpRetry.exponential({ initialMs: 100, factor: 2, maxMs: 1_000, jitter: 'full' }),
+      respectRetryAfter: true,
+      totalMs: 2_500
+    }),
+    timeout: { attemptMs: 700, totalMs: 3_000 }
+  })
+```
+
+`Retry-After` accepts delta seconds and future HTTP dates; the effective delay
+is the greater of local backoff and the server value. A retry makes a new
+physical request, not a second execution of the business Program or schema
+transform. There is no implicit ofetch retry, and auth recovery/SSE reconnect
+do not create a multiplicative retry loop.
+
+## Limits, queueing, and telemetry
+
+`HttpClient.layer({ limits })` supports shared local `concurrency`, `rate`
+(`requests` per `perMs`), and bounded `queue.maxSize`. Admission is per
+physical send, including retries, and is released on success, failure, abort,
+or stream cancellation. It is not a remote quota or a broker. Concurrent
+clients and sessions remain isolated unless the application deliberately shares
+a configured Layer. Use `Program.forEach` for independent work and let pull
+based stream consumption provide backpressure; do not prefetch without a
+bounded policy.
+
+`better-effect-http/opentelemetry` adapts a caller-supplied tracer without an
+SDK, exporter, global provider, or process hook:
+
+```ts
+const telemetry = HttpTelemetry.observe({
+  tracer,
+  propagation: { allowedOrigins: ['https://partner.example'] },
+  recordEvents: true
+})
+const instrumented = base.use(telemetry)
+```
+
+One logical call has one identity; physical attempts and SSE openings are
+children/events. Phases distinguish admission, preparation, send, headers,
+read, validation, retry wait, completion, error, and cancel. Streaming spans
+end at EOF/terminal/error/cancel, not at response headers. URL path and
+low-cardinality route metadata are safe; bodies, query strings, userinfo,
+tokens, cookies, cursor values, causes, and provider messages are redacted.
+Propagation is restricted to allowed origins. Throwing instrumentation cannot
+change the HTTP result.
+
+## Schemas, classes, and codecs
+
+HTTP uses `better-effect-schema`'s provider-neutral
+`Schema.decodeUnknownAsync` (or the corresponding sync decode capability when a
+synchronous boundary is intentional). Decoded output is real output: classes
+preserve `instanceof`, methods, getters, private state, defaults, and
+transforms. `Schema.Class`, `TaggedClass`, and `TaggedError` cross the same
+Standard Schema boundary. Invalid values and schema/provider execution
+failures remain distinct.
+
+Standard Schema is a validation/decode protocol, not a universal encoder or
+reflector. It does not reverse transforms, and HTTP does not use identity as an
+encoding fallback. For a domain representation that differs from the wire,
+define an explicit `bodyCodec`; `body` and `bodyCodec` are mutually exclusive.
+Encoding happens once when the endpoint operation is consumed.
+
+## Streaming and NDJSON
+
+`http.stream` is an unstarted, pull-based `HttpStream<Uint8Array>`. Its
+`results`, `forEach`, `use`, `takeUntil`, and `pipeTo` terminals own a reader
+and child Scope. `pipeTo` writes directly to a `WritableStream`, so a download
+does not materialize its entire body:
+
+```ts
+yield * http.stream('/exports/archive.zip').pipeTo(fileWritableStream)
+```
+
+`http.ndjson` decodes one UTF-8 JSON record at a time. LF/CRLF delimit records;
+empty lines are ignored, whitespace-only lines and malformed JSON fail. A
+final record needs a delimiter unless `allowFinalRecordWithoutDelimiter` is
+explicit. `maxRecordBytes` is counted in UTF-8 bytes, independent of transport
+chunks. A JSON array is one record, not an implicit expansion. Consumers should
+process records sequentially and must not retry after partial persistence
+without an application idempotency key.
+
+## SSE sessions and reconnect
+
+`http.sse` is opt-in and incremental. Raw mode returns string data; `schema`
+decodes JSON data with one schema; `events` maps names to schemas and returns a
+discriminated `SseMessage` union. Event/control framing includes `event`,
+`id`, multiline data, comments, UTF-8, heartbeat bytes, and protocol retry
+controls. Use
+`results`, `forEach`, `use`, or `takeUntil`; `requireMatch: true` makes a
+business terminal mandatory.
+
+```ts
+const events = http.sse('/jobs/42/events', {
+  events: { progress: ProgressSchema, completed: CompletedSchema },
+  reconnect: {
+    times: 3,
+    delay: HttpRetry.exponential({ initialMs: 250, factor: 2, maxMs: 5_000 }),
+    resume: 'last-event-id',
+    onEnd: 'reconnect'
+  },
+  timeout: { headersMs: 10_000, readIdleMs: 45_000, totalMs: false }
+})
+yield * events.takeUntil((message) => message.event === 'completed', { requireMatch: true })
+```
+
+Reconnect is disabled by default. `times` counts each physical opening,
+including failed openings; headers and heartbeats do not reset it. Only
+bodyless safe methods are replayable. The application's initial
+`lastEventId` and business checkpoint are separate: `Last-Event-ID` does not
+promise server history, deduplication, acknowledgement, or exactly-once
+delivery. POST generation should set `reconnect: false` and require an
+explicit `completed` event to avoid repeating work.
+
+## Authentication recovery
+
+`HttpAuth.authentication` reads the current credential for each physical send.
+`HttpAuth.refresh` treats only eligible 401 responses as expiry, coalesces
+refreshes by an opaque session key, and permits a bounded replay:
+
+```ts
+const authentication = HttpAuth.authentication({ credential: currentAccessToken })
+const recovery = HttpAuth.refresh({
+  maxReplays: 1,
+  key: currentSessionKey,
+  refresh: refreshSessionToken
+})
+```
+
+Only bodyless `GET`, `HEAD`, and `OPTIONS` are replayable by default. Unsafe or
+one-shot bodies return `HttpAuthRefreshError`; a fresh token is not proof of
+write idempotency. Use a client/route without recovery for the refresh call to
+avoid recursion. The rejected response and admission permit are released
+before refresh. Single-flight state is client-Layer-owned and must not promote
+request-local Services beyond their lifetime.
+
+## Hono managed streaming
+
+The Hono bridge is provided by `better-effect/hono`. `HonoEffect.app` builds an
+application Layer, and `routes.stream` is the explicit opt-in managed streaming
+boundary. Compose that Layer with the HTTP client Layer once. The request
+boundary runs once for the whole Hono chain; normal JSON routes retain their
+existing behavior.
+
+```ts
+const App = HonoEffect.app('@app/Api', {}, async function* (routes) {
+  const app = new Hono()
+  app.use('*', yield* routes.middleware())
+  app.get('/download', yield* routes.stream(streamProgram))
+  return app
+})
+
+const runtime = await Runtime.make(Layer.merge(HttpClient.layer({ baseURL }), App.layer))
+```
+
+For a proxy, validate upstream status and choose safe headers before commit;
+never forward hop-by-hop headers, invalidated `Content-Length`, or credentials.
+The first downstream chunk can be ready before upstream completion. The request
+Scope remains open until EOF, error, or cancellation; downstream cancellation
+closes the upstream reader, pending retry/reconnect waits, and permits. After
+headers commit, an error can close/error the body or emit an explicit domain
+event, but cannot replace the HTTP status. `onError` cannot change committed
+headers, and an unconsumed body is closed by the managed idle policy.
+
+## Recipes and executable verification
+
+The package contains nine local-only examples with identified demo data:
+
+1. `typed-client.ts`: typed class/schema GET and POST with 404/422 results.
+2. `auth-retry.ts`: effectful auth, bounded retry, observer, `ClockTest`, and
+   same-session refresh single-flight.
+3. `endpoints-sdk.ts`: safe path/query encoding and explicit domain codec.
+4. `download.ts`: bytes to `WritableStream` without full materialization.
+5. `ndjson.ts`: sequential persistence, typed error, and no post-delivery
+   retry.
+6. `sse-progress.ts`: events map and `takeUntil` with `requireMatch`.
+7. `sse-resumable.ts`: application cursor, reconnect budget, and separate
+   business idempotency.
+8. `generation.ts`: POST SSE, `reconnect: false`, and explicit completion.
+9. `hono-streaming.ts`: managed proxy, readiness, Scope lifetime, and cancel.
+
+Run them from `packages/better-effect-http`:
+
+```bash
+bun run typecheck:examples
+bun run examples:run
+bun run test:docs
+```
+
+`test:docs` checks this page, the package README, navigation links, canonical
+schema imports, and all nine example files. The package check builds and
+validates declarations and the packed consumer too.
+
+## Deliberate limits
+
+Cache, circuit breaker, OpenAPI generation, server HttpApi, WebSockets, global
+cookie jar, unrestricted authenticated redirects, Range download resume, SSE
+ACK/checkpoint persistence, remote history, exactly-once delivery, and
+browser/edge certification are not delivered capabilities. Callbacks that
+never settle cannot be force-cancelled. Origins, redirect policy, credentials,
+and business idempotency remain application decisions.

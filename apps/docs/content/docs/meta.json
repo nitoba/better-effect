@@ -11,6 +11,7 @@
     "web",
     "next",
     "hono",
+    "http",
     "better-auth",
     "kysely",
     "scope",

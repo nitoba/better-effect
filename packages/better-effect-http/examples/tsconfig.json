@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "ESNext.Disposable"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "types": ["bun"],
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true
+  },
+  "files": [
+    "support.ts",
+    "typed-client.ts",
+    "auth-retry.ts",
+    "endpoints-sdk.ts",
+    "download.ts",
+    "ndjson.ts",
+    "sse-progress.ts",
+    "sse-resumable.ts",
+    "generation.ts",
+    "hono-streaming.ts"
+  ]
+}
