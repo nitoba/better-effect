@@ -17,8 +17,11 @@ import type { HttpEndpoint, HttpEndpointArgs } from './endpoints'
 import type { HttpInterceptor, HttpObserver } from './interceptors'
 import type { HttpMiddleware } from './middleware'
 import type { HttpRetryPolicy } from './retry'
+import { makeHttpLimiter } from './limits'
 
-export type HttpClientOptions = TransportOptions
+export type HttpClientOptions = TransportOptions & {
+  readonly limits?: import('./limits').HttpLimits
+}
 export type HttpRequestOptions = TransportRequestOptions & {
   readonly retry?: HttpRetryPolicy | false
 } & ({ readonly schema?: never; readonly responses?: never } | HttpDecodeOptions)
@@ -89,15 +92,16 @@ type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
 
 const makeClient = <Tag extends string>(
   config: HttpClientOptions,
-  hooks: readonly unknown[] = []
+  hooks: readonly unknown[] = [],
+  limiter = makeHttpLimiter(config.limits)
 ): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>
-    operation(config, { method, path, options })
+    operation(config, { method, path, options }, limiter)
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
     request(name, path, options)
   const client = {
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
-    use: (...added: readonly unknown[]) => makeClient(config, [...hooks, ...added]),
+    use: (...added: readonly unknown[]) => makeClient(config, [...hooks, ...added], limiter),
     request,
     get: method('GET'),
     post: method('POST'),

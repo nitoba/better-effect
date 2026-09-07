@@ -59,6 +59,10 @@ export class HttpHookError extends TaggedError('HttpHookError')<{
   readonly phase: 'hook'
   readonly cause: unknown
 }> {}
+export class HttpLimitError extends TaggedError('HttpLimitError')<{
+  readonly phase: 'admission'
+  readonly reason: 'queue-full'
+}> {}
 
 export type HttpError =
   | HttpRequestError
@@ -68,6 +72,7 @@ export type HttpError =
   | HttpAbortError
   | HttpDecodeError
   | HttpHookError
+  | HttpLimitError
 
 export const safeErrorJSON = (error: unknown): SafeErrorJSON => {
   if (error instanceof HttpStatusError) return error.toJSON()
