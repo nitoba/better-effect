@@ -253,7 +253,11 @@ describe('classes and Standard Schema bridge', () => {
 
 describe('TaggedClass and TaggedError conformance', () => {
   test('injects protected tags, preserves methods, and validates through the bridge', async () => {
-    const parsed = noThrowSync(() => UserCreated.parse({ _tag: 'UserCreated', id: 1, name: 'Ada' }))
+    const parsed = unwrapOk(
+      noThrowSync(() =>
+        Schema.decodeUnknown(UserCreated, { _tag: 'UserCreated', id: 1, name: 'Ada' })
+      )
+    )
     expect(parsed).toBeInstanceOf(UserCreated)
     expect(parsed._tag).toBe('UserCreated')
     expect(parsed.greet()).toBe('Ada#1')
@@ -275,7 +279,11 @@ describe('TaggedClass and TaggedError conformance', () => {
   })
 
   test('is a better-result TaggedError while Standard Schema sees a value', async () => {
-    const error = noThrowSync(() => UserNotFound.parse({ _tag: 'UserNotFound', resource: 'user' }))
+    const error = unwrapOk(
+      noThrowSync(() =>
+        Schema.decodeUnknown(UserNotFound, { _tag: 'UserNotFound', resource: 'user' })
+      )
+    )
     expect(error).toBeInstanceOf(UserNotFound)
     expect(ResultTaggedError.is(error)).toBe(true)
     expect(isTaggedError(error)).toBe(true)

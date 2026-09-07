@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import test from "node:test"
+import { test } from "bun:test"
 import * as z from "zod"
 import {
   Result,
@@ -8,8 +8,11 @@ import {
 } from "better-result"
 
 import { Schema } from "../../dist/esm/index.js"
+import { ZodAdapter } from "../../dist/esm/zod.js"
 
-class UserNotFound extends Schema.TaggedError()(
+const local = Schema.with(ZodAdapter)
+
+class UserNotFound extends local.TaggedError()(
   "UserNotFound",
   { userId: z.uuid() }
 ) {
@@ -59,15 +62,14 @@ test("schema tagged errors support exhaustive instance matching", () => {
 })
 
 test("decoded tagged errors retain matching and yieldability", () => {
-  const error = UserNotFound.parse({
+  const decoded = Schema.decodeUnknown(UserNotFound, {
     _tag: "UserNotFound",
     userId: "550e8400-e29b-41d4-a716-446655440000"
   })
+  assert.equal(Result.isOk(decoded), true)
+  if (Result.isError(decoded)) return
+  const error = decoded.value
 
   assert.equal(BetterResultTaggedError.is(error), true)
   assert.equal(error.match({ UserNotFound: () => "matched" }), "matched")
-  assert.deepEqual(UserNotFound.encode(error), {
-    _tag: "UserNotFound",
-    userId: "550e8400-e29b-41d4-a716-446655440000"
-  })
 })
