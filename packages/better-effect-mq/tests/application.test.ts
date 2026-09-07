@@ -15,11 +15,16 @@ import {
   JobIdentityMismatchError,
   JobNotFoundError,
   JobNotRetryableError,
+  JobEventStore,
+  JobEventStoreFailure,
   JobStore,
+  MemoryJobEventStore,
   MemoryJobStore,
   UnsupportedJobStoreOperationError,
   makeSerializedJobFailure,
   validatePreparedEnqueue,
+  type JobEventStoreContract,
+  type JobEventStoreOperation,
   type JobStoreContract,
   Queue,
   QueueName,
@@ -495,6 +500,152 @@ describe('Job producer and admin programs', () => {
       expect(Result.isError(missing)).toBe(true)
       if (Result.isOk(missing)) return
       expect(JobNotFoundError.is(missing.error)).toBe(true)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('awaitResult events waits on the durable feed and rereads the Job record', async () => {
+    const clock = new ClockTest(0)
+    const events = MemoryJobEventStore.make({ clock: () => clock.now() })
+    const store = MemoryJobStore.make({
+      clock,
+      eventStore: events,
+      idGenerator: { next: () => 'event-await-job' }
+    })
+    const runtime = await Runtime.make(
+      Layer.merge(
+        Layer.succeed(JobStore, JobStore.of(store)),
+        Layer.succeed(JobEventStore, JobEventStore.of(events)),
+        Layer.succeed(Clock, clock)
+      )
+    )
+
+    try {
+      const enqueued = await runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(yield* Send.enqueue({ id: 'event-await' }))
+        })
+      )
+      if (Result.isError(enqueued)) throw enqueued.error
+
+      const pending = runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(
+            yield* Send.awaitResult(enqueued.value, {
+              strategy: 'events',
+              eventStore: JobEventStore,
+              pollFallbackMs: 5_000
+            })
+          )
+        })
+      )
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+      const claimed = await store.claim({
+        queue: QueueName.make(queue.queue).unwrap(),
+        accepted: [Send.identity],
+        limit: 1,
+        workerId: makeWorkerId('event-await-worker').unwrap(),
+        leaseDurationMs: 100,
+        now: 0
+      })
+      if (Result.isError(claimed)) throw claimed.error
+      const active = claimed.value.jobs[0]
+      if (active === undefined) throw new Error('event await Job was not claimed')
+      const settled = await store.settle({
+        jobId: enqueued.value,
+        leaseToken: active.leaseToken,
+        outcome: { type: 'complete', result: 'event-done' },
+        now: 0
+      })
+      if (Result.isError(settled)) throw settled.error
+
+      const result = await pending
+      expect(Result.isOk(result)).toBe(true)
+      if (Result.isError(result)) return
+      expect(result.value).toBe('event-done')
+      expect(clock.pendingSleeps).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  test('awaitResult events falls back to polling when notification fails', async () => {
+    const clock = new ClockTest(0)
+    const events = MemoryJobEventStore.make({ clock: () => clock.now() })
+    const store = MemoryJobStore.make({
+      clock,
+      eventStore: events,
+      idGenerator: { next: () => 'event-fallback-job' }
+    })
+    const brokenNotifications: JobEventStoreContract = {
+      descriptor: events.descriptor,
+      tailCursor: () => events.tailCursor(),
+      read: (options) => events.read(options),
+      awaitEvents: () => {
+        const notificationFailure: unknown = Result.err(
+          new JobEventStoreFailure({
+            operation: 'awaitEvents',
+            message: 'notification unavailable'
+          })
+        )
+        // SAFETY: this fixture deliberately erases a typed Result into the Effect facade expected by the public contract.
+        return notificationFailure as JobEventStoreOperation<void, JobEventStoreFailure>
+      }
+    }
+    const runtime = await Runtime.make(
+      Layer.merge(
+        Layer.succeed(JobStore, JobStore.of(store)),
+        Layer.succeed(JobEventStore, JobEventStore.of(brokenNotifications)),
+        Layer.succeed(Clock, clock)
+      )
+    )
+
+    try {
+      const enqueued = await runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(yield* Send.enqueue({ id: 'event-fallback' }))
+        })
+      )
+      if (Result.isError(enqueued)) throw enqueued.error
+      const pending = runtime.run(() =>
+        Effect.gen(async function* () {
+          return Result.ok(
+            yield* Send.awaitResult(enqueued.value, {
+              strategy: 'events',
+              eventStore: JobEventStore,
+              pollFallbackMs: 10
+            })
+          )
+        })
+      )
+
+      while (clock.pendingSleeps === 0) await Promise.resolve()
+      const claimed = await store.claim({
+        queue: QueueName.make(queue.queue).unwrap(),
+        accepted: [Send.identity],
+        limit: 1,
+        workerId: makeWorkerId('event-fallback-worker').unwrap(),
+        leaseDurationMs: 100,
+        now: 0
+      })
+      if (Result.isError(claimed)) throw claimed.error
+      const active = claimed.value.jobs[0]
+      if (active === undefined) throw new Error('event fallback Job was not claimed')
+      const settled = await store.settle({
+        jobId: enqueued.value,
+        leaseToken: active.leaseToken,
+        outcome: { type: 'complete', result: 'polled-done' },
+        now: 0
+      })
+      if (Result.isError(settled)) throw settled.error
+      clock.advance(10)
+
+      const result = await pending
+      expect(Result.isOk(result)).toBe(true)
+      if (Result.isError(result)) return
+      expect(result.value).toBe('polled-done')
     } finally {
       await runtime.dispose()
     }

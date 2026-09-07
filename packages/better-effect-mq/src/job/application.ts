@@ -10,7 +10,7 @@
 // oxlint-disable typescript/no-redundant-type-constituents -- erased internal operations intentionally carry unknown failures.
 
 import { CurrentAbortSignal } from 'better-effect'
-import type { ServiceRequirement } from 'better-effect'
+import type { AnyService, ServiceRequirement } from 'better-effect'
 import { Clock } from 'better-effect/standard-services'
 import { Result, UnhandledException } from 'better-result'
 import type { Err, Result as ResultType } from 'better-result'
@@ -44,9 +44,21 @@ import type {
   PersistedBackoff,
   SerializedJobFailure
 } from '../protocol'
-import { isJobStoreToken } from '../store'
+import {
+  isJobEventStoreToken,
+  isJobStoreToken,
+  JobEventStore,
+  JobEventCursorExpiredError,
+  JobEventStoreFailure
+} from '../store'
 import type {
   AnyJobStoreToken,
+  AnyJobEventStoreToken,
+  JobEventCursor,
+  JobEventStoreContract,
+  JobEventStoreError,
+  JobEventStoreToken,
+  JobEventPage,
   JobStoreOperation,
   JobStoreError,
   JobStoreCancelError,
@@ -81,11 +93,14 @@ export type JobOperation<
   Success,
   Failure,
   Store extends AnyJobStoreToken,
-  NeedsClock extends boolean = false
+  NeedsClock extends boolean = false,
+  AdditionalRequirements extends AnyService = never
 > = AsyncGenerator<
   | Err<never, Failure>
   | ServiceRequirement<
-      InstanceType<Store> | (NeedsClock extends true ? InstanceType<typeof Clock> : never)
+      | InstanceType<Store>
+      | (NeedsClock extends true ? InstanceType<typeof Clock> : never)
+      | AdditionalRequirements
     >,
   Success,
   unknown
@@ -96,8 +111,9 @@ export type JobEffect<
   Success,
   Failure,
   Store extends AnyJobStoreToken,
-  NeedsClock extends boolean = false
-> = JobOperation<Success, Failure, Store, NeedsClock>
+  NeedsClock extends boolean = false,
+  AdditionalRequirements extends AnyService = never
+> = JobOperation<Success, Failure, Store, NeedsClock, AdditionalRequirements>
 
 type JobScheduleFields =
   | {
@@ -155,13 +171,30 @@ export type JobEnqueueManyOptions =
     })
 
 /** Polling controls used by `awaitResult`; aborting never cancels a persisted Job. */
-export type JobAwaitOptions = {
+export type JobAwaitPollingOptions = {
+  readonly strategy?: 'polling'
   readonly pollIntervalMs?: number
   readonly signal?: AbortSignal
 }
 
+/** Event-driven waiting is opt-in and requires the EventStore for the JobStore. */
+export type JobAwaitEventsOptions<Store extends AnyJobStoreToken> = {
+  readonly strategy: 'events'
+  readonly eventStore: JobEventStoreToken<Store>
+  readonly pollFallbackMs?: number
+  readonly signal?: AbortSignal
+}
+
+export type JobAwaitOptions<Store extends AnyJobStoreToken = AnyJobStoreToken> =
+  | JobAwaitPollingOptions
+  | JobAwaitEventsOptions<Store>
+
 /** Enqueue options plus caller-owned waiting controls for `execute`. */
-export type JobExecuteOptions = JobEnqueueOptions & JobAwaitOptions
+export type JobExecuteOptions<Store extends AnyJobStoreToken = AnyJobStoreToken> =
+  EnqueueOptionsWithWait<Store>
+
+type EnqueueOptionsWithWait<Store extends AnyJobStoreToken> = JobEnqueueOptions &
+  JobAwaitOptions<Store>
 
 /** Explicit retry schedule controls. */
 export type JobRetryOptions = JobScheduleFields
@@ -366,19 +399,43 @@ export interface JobBoundOperations<
   readonly attempts: (
     jobId: string
   ) => JobOperation<readonly JobAttemptView<Success, Failure>[], JobAttemptsError, Store>
-  readonly awaitResult: (
-    jobId: string,
-    options?: JobAwaitOptions
-  ) => JobOperation<JobAwaitResultSuccess<Success>, JobAwaitResultError<Failure>, Store, true>
-  readonly execute: (
-    payload: PayloadInput,
-    options?: JobExecuteOptions
-  ) => JobOperation<
-    JobAwaitResultSuccess<Success>,
-    JobEnqueueError | JobAwaitResultError<Failure>,
-    Store,
-    true
-  >
+  readonly awaitResult: {
+    (
+      jobId: string,
+      options: JobAwaitEventsOptions<Store>
+    ): JobOperation<
+      JobAwaitResultSuccess<Success>,
+      JobAwaitResultError<Failure>,
+      Store,
+      true,
+      InstanceType<JobEventStoreToken<Store>>
+    >
+    (
+      jobId: string,
+      options?: JobAwaitPollingOptions
+    ): JobOperation<JobAwaitResultSuccess<Success>, JobAwaitResultError<Failure>, Store, true>
+  }
+  readonly execute: {
+    (
+      payload: PayloadInput,
+      options: JobEnqueueOptions & JobAwaitEventsOptions<Store>
+    ): JobOperation<
+      JobAwaitResultSuccess<Success>,
+      JobEnqueueError | JobAwaitResultError<Failure>,
+      Store,
+      true,
+      InstanceType<JobEventStoreToken<Store>>
+    >
+    (
+      payload: PayloadInput,
+      options?: JobEnqueueOptions & JobAwaitPollingOptions
+    ): JobOperation<
+      JobAwaitResultSuccess<Success>,
+      JobEnqueueError | JobAwaitResultError<Failure>,
+      Store,
+      true
+    >
+  }
   readonly cancel: (jobId: string) => JobOperation<JobRecord, JobCancelError, Store, true>
   readonly promote: (jobId: string) => JobOperation<JobRecord, JobPromoteError, Store, true>
   readonly retry: (
@@ -403,8 +460,9 @@ type ErasedAwaitError = JobAwaitResultError<unknown>
 type ErasedOperation<
   Success = unknown,
   Failure = unknown,
-  NeedsClock extends boolean = false
-> = JobOperation<Success, Failure, AnyJobStoreToken, NeedsClock>
+  NeedsClock extends boolean = false,
+  AdditionalRequirements extends AnyService = never
+> = JobOperation<Success, Failure, AnyJobStoreToken, NeedsClock, AdditionalRequirements>
 
 type MutableRecord = Record<string, unknown>
 
@@ -425,7 +483,13 @@ const batchFields = [
   ...enqueueFields.filter((field) => field !== 'jobId' && field !== 'idempotencyKey'),
   'chunkSize'
 ] as const
-const awaitFields = ['pollIntervalMs', 'signal'] as const
+const awaitFields = [
+  'strategy',
+  'eventStore',
+  'pollIntervalMs',
+  'pollFallbackMs',
+  'signal'
+] as const
 const executeFields = [...enqueueFields, ...awaitFields] as const
 const listFields = [
   'queue',
@@ -456,6 +520,7 @@ const cursorFields = [
 
 const defaultBatchChunkSize = 32
 const defaultPollIntervalMs = 100
+const defaultPollFallbackMs = 5_000
 const cursorVersion = 1 as const
 const defaultListOrderBy: JobListOrderBy = 'enqueuedAt'
 const defaultListOrder: JobListOrder = 'asc'
@@ -1394,28 +1459,73 @@ const isAbortSignal = (value: unknown): value is AbortSignal => {
   }
 }
 
+type NormalizedAwaitOptions =
+  | {
+      readonly strategy: 'polling'
+      readonly pollIntervalMs: number
+      readonly signal: AbortSignal | undefined
+    }
+  | {
+      readonly strategy: 'events'
+      readonly eventStore: AnyJobEventStoreToken
+      readonly pollFallbackMs: number
+      readonly signal: AbortSignal | undefined
+    }
+
 const normalizeAwaitOptions = (
   value: unknown
-): ResultType<
-  { readonly pollIntervalMs: number; readonly signal: AbortSignal | undefined },
-  JobDefinitionError
-> => {
+): ResultType<NormalizedAwaitOptions, JobDefinitionError> => {
   const fields = readFields(value, awaitFields, 'options')
   if (Result.isError(fields)) return fields
+
+  if (fields.value.signal !== undefined && !isAbortSignal(fields.value.signal)) {
+    return invalid('signal', 'must be an AbortSignal')
+  }
+
+  const signal = fields.value.signal as AbortSignal | undefined
+  const strategy = fields.value.strategy
+  if (strategy !== undefined && strategy !== 'polling' && strategy !== 'events') {
+    return invalid('strategy', 'must be polling or events')
+  }
+
+  if (strategy === 'events') {
+    if (fields.value.pollIntervalMs !== undefined) {
+      return invalid('pollIntervalMs', 'is not supported with the events strategy')
+    }
+    if (!isJobEventStoreToken(fields.value.eventStore)) {
+      return invalid('eventStore', 'must be a JobEventStore token')
+    }
+    const fallback =
+      fields.value.pollFallbackMs === undefined
+        ? Result.ok(defaultPollFallbackMs)
+        : validateDuration(fields.value.pollFallbackMs, 'pollFallbackMs')
+    if (Result.isError(fallback)) return fallback
+    return Result.ok({
+      strategy,
+      eventStore: fields.value.eventStore,
+      pollFallbackMs: fallback.value,
+      signal
+    })
+  }
+
+  if (fields.value.eventStore !== undefined || fields.value.pollFallbackMs !== undefined) {
+    return invalid('strategy', 'must be events when event waiting options are provided')
+  }
   const interval =
     fields.value.pollIntervalMs === undefined
       ? Result.ok(defaultPollIntervalMs)
       : validateDuration(fields.value.pollIntervalMs, 'pollIntervalMs')
   if (Result.isError(interval)) return interval
 
-  if (fields.value.signal !== undefined && !isAbortSignal(fields.value.signal)) {
-    return invalid('signal', 'must be an AbortSignal')
-  }
+  return Result.ok({ strategy: 'polling', pollIntervalMs: interval.value, signal })
+}
 
-  return Result.ok({
-    pollIntervalMs: interval.value,
-    signal: fields.value.signal as AbortSignal | undefined
-  })
+const isEventStoreFor = (eventStore: AnyJobEventStoreToken, store: AnyJobStoreToken): boolean => {
+  try {
+    return eventStore.serviceTag === JobEventStore.for(store).serviceTag
+  } catch {
+    return false
+  }
 }
 
 const linkSignals = (
@@ -1465,11 +1575,248 @@ const sleepForPoll = (
       signal.aborted ? new JobAwaitAbortedError() : new UnhandledException({ cause })
   })
 
+const runEventStoreOperation = async <Value>(
+  operation: unknown
+): Promise<ResultType<Value, JobEventStoreError>> => {
+  try {
+    const resolved = await operation
+    if (!isResultValue(resolved)) {
+      return Result.err(
+        new JobEventStoreFailure({
+          operation: 'operation',
+          message: 'event store operation did not return a Result'
+        })
+      )
+    }
+
+    // SAFETY: event-store operations are Result values after the runtime guard above.
+    return resolved as ResultType<Value, JobEventStoreError>
+  } catch {
+    return Result.err(
+      new JobEventStoreFailure({
+        operation: 'operation',
+        message: 'event store operation failed'
+      })
+    )
+  }
+}
+
+const awaitEventStoreOperation = async <Value>(
+  operation: unknown
+): Promise<ResultType<ResultType<Value, JobEventStoreError>, never>> =>
+  Result.ok(await runEventStoreOperation<Value>(operation))
+
+type EventWaitResult = {
+  readonly kind: 'event' | 'poll'
+  readonly rebase: boolean
+}
+
+const waitForEventOrPoll = async (
+  eventStore: JobEventStoreContract,
+  cursor: JobEventCursor,
+  clock: InstanceType<typeof Clock>,
+  pollFallbackMs: number,
+  signal: AbortSignal
+): Promise<ResultType<EventWaitResult, JobAwaitAbortedError | UnhandledException>> => {
+  const waitController = new AbortController()
+  const linked = linkSignals(signal, waitController.signal)
+  const event = Promise.resolve(
+    runEventStoreOperation(eventStore.awaitEvents({ after: cursor, signal: linked.signal }))
+  ).then((result) => ({ kind: 'event' as const, result }))
+  const poll = Promise.resolve(sleepForPoll(clock, pollFallbackMs, linked.signal)).then(
+    (result) => ({
+      kind: 'poll' as const,
+      result
+    })
+  )
+
+  try {
+    const first = await Promise.race([event, poll])
+    if (first.kind === 'poll') {
+      if (Result.isError(first.result)) return first.result
+      return Result.ok({ kind: 'poll', rebase: false })
+    }
+
+    if (Result.isOk(first.result)) return Result.ok({ kind: 'event', rebase: false })
+    if (signal.aborted) return Result.err(new JobAwaitAbortedError())
+
+    // Notification errors, including an expired await cursor, are hints only.
+    // Let the polling timer win before rebasing from a fresh tail cursor.
+    const fallback = await poll
+    if (Result.isError(fallback.result)) return fallback.result
+    return Result.ok({ kind: 'poll', rebase: true })
+  } catch (cause) {
+    return Result.err(
+      signal.aborted ? new JobAwaitAbortedError() : new UnhandledException({ cause })
+    )
+  } finally {
+    waitController.abort()
+    linked.dispose()
+  }
+}
+
+const isTerminalState = (state: JobState): boolean =>
+  state === 'completed' || state === 'failed' || state === 'cancelled'
+
+const isTerminalEvent = (type: string): boolean =>
+  type === 'job-completed' ||
+  type === 'job-failed' ||
+  type === 'job-cancelled' ||
+  type === 'job-removed'
+
+const runPollingAwaitResult = async function* (
+  definition: JobOperationDescriptor,
+  checkedId: JobId,
+  store: import('../store').JobStoreContract,
+  clock: InstanceType<typeof Clock>,
+  signal: AbortSignal,
+  pollIntervalMs: number
+): ErasedOperation<unknown, ErasedAwaitError, true> {
+  for (;;) {
+    const record = yield* Result.await(
+      Promise.resolve(
+        observedStoreOperation(store.getJob({ jobId: checkedId }), definition.observer, 'getJob')
+      )
+    )
+    if (record === undefined) {
+      return yield* failOperation<unknown, JobNotFoundError>(
+        new JobNotFoundError({ jobId: checkedId })
+      )
+    }
+    if (!matchesIdentity(definition, record)) {
+      yield* failOperation<unknown, JobIdentityMismatchError>(
+        identityMismatch(checkedId, definition, record)
+      )
+    }
+    if (isTerminalState(record.state)) {
+      return yield* Result.await(Promise.resolve(awaitTerminal(definition, record)))
+    }
+
+    yield* Result.await(Promise.resolve(sleepForPoll(clock, pollIntervalMs, signal)))
+  }
+}
+
+const runEventsAwaitResult = async function* (
+  definition: JobOperationDescriptor,
+  checkedId: JobId,
+  store: import('../store').JobStoreContract,
+  eventStore: JobEventStoreContract,
+  clock: InstanceType<typeof Clock>,
+  signal: AbortSignal,
+  pollFallbackMs: number
+): ErasedOperation<unknown, ErasedAwaitError, true> {
+  let cursor: JobEventCursor | undefined
+  let rebase = true
+
+  for (;;) {
+    if (rebase) {
+      const tail = yield* Result.await(
+        Promise.resolve(awaitEventStoreOperation<JobEventCursor>(eventStore.tailCursor()))
+      )
+      if (Result.isError(tail)) {
+        return yield* runPollingAwaitResult(
+          definition,
+          checkedId,
+          store,
+          clock,
+          signal,
+          pollFallbackMs
+        )
+      }
+      cursor = tail.value
+      rebase = false
+    }
+
+    const record = yield* Result.await(
+      Promise.resolve(
+        observedStoreOperation(store.getJob({ jobId: checkedId }), definition.observer, 'getJob')
+      )
+    )
+    if (record === undefined) {
+      return yield* failOperation<unknown, JobNotFoundError>(
+        new JobNotFoundError({ jobId: checkedId })
+      )
+    }
+    if (!matchesIdentity(definition, record)) {
+      yield* failOperation<unknown, JobIdentityMismatchError>(
+        identityMismatch(checkedId, definition, record)
+      )
+    }
+    if (isTerminalState(record.state)) {
+      return yield* Result.await(Promise.resolve(awaitTerminal(definition, record)))
+    }
+
+    const currentCursor = cursor
+    if (currentCursor === undefined) {
+      rebase = true
+      continue
+    }
+    const page = yield* Result.await(
+      Promise.resolve(
+        awaitEventStoreOperation<JobEventPage>(
+          eventStore.read({ after: currentCursor, jobId: checkedId })
+        )
+      )
+    )
+    if (Result.isError(page)) {
+      if (JobEventCursorExpiredError.is(page.error)) {
+        // Retention only invalidates the hint cursor. Rebase before the next
+        // Job read so the race-safe tail-before-record ordering is preserved.
+        rebase = true
+        continue
+      }
+
+      // A permanently unavailable reader cannot make the Job result
+      // incorrect; the requested event strategy degrades to polling.
+      return yield* runPollingAwaitResult(
+        definition,
+        checkedId,
+        store,
+        clock,
+        signal,
+        pollFallbackMs
+      )
+    }
+
+    if (page.value.nextCursor !== undefined) cursor = page.value.nextCursor
+    if (page.value.events.some((event) => isTerminalEvent(event.type))) {
+      const latest = yield* Result.await(
+        Promise.resolve(
+          observedStoreOperation(store.getJob({ jobId: checkedId }), definition.observer, 'getJob')
+        )
+      )
+      if (latest === undefined) {
+        return yield* failOperation<unknown, JobNotFoundError>(
+          new JobNotFoundError({ jobId: checkedId })
+        )
+      }
+      if (!matchesIdentity(definition, latest)) {
+        yield* failOperation<unknown, JobIdentityMismatchError>(
+          identityMismatch(checkedId, definition, latest)
+        )
+      }
+      if (isTerminalState(latest.state)) {
+        return yield* Result.await(Promise.resolve(awaitTerminal(definition, latest)))
+      }
+    }
+
+    const waitCursor = cursor
+    if (waitCursor === undefined) {
+      rebase = true
+      continue
+    }
+    const waited = yield* Result.await(
+      Promise.resolve(waitForEventOrPoll(eventStore, waitCursor, clock, pollFallbackMs, signal))
+    )
+    rebase = waited.rebase
+  }
+}
+
 const runAwaitResult = async function* (
   definition: JobOperationDescriptor,
   jobId: unknown,
   options: unknown
-): ErasedOperation<unknown, ErasedAwaitError, true> {
+): ErasedOperation<unknown, ErasedAwaitError, true, AnyService> {
   const normalized = yield* Result.await(Promise.resolve(normalizeAwaitOptions(options)))
   const checkedId = yield* Result.await(Promise.resolve(normalizeJobId(jobId)))
   const store = yield* definition.store
@@ -1478,34 +1825,36 @@ const runAwaitResult = async function* (
   const signals = linkSignals(runtimeSignal, normalized.signal)
 
   try {
-    for (;;) {
-      const record = yield* Result.await(
-        Promise.resolve(
-          observedStoreOperation(store.getJob({ jobId: checkedId }), definition.observer, 'getJob')
-        )
-      )
-      if (record === undefined) {
-        return yield* failOperation<unknown, JobNotFoundError>(
-          new JobNotFoundError({ jobId: checkedId })
-        )
-      }
-      if (!matchesIdentity(definition, record)) {
-        yield* failOperation<unknown, JobIdentityMismatchError>(
-          identityMismatch(checkedId, definition, record)
-        )
-      }
-      if (
-        record.state === 'completed' ||
-        record.state === 'failed' ||
-        record.state === 'cancelled'
-      ) {
-        return yield* Result.await(Promise.resolve(awaitTerminal(definition, record)))
-      }
-
-      yield* Result.await(
-        Promise.resolve(sleepForPoll(clock, normalized.pollIntervalMs, signals.signal))
+    if (normalized.strategy === 'polling') {
+      return yield* runPollingAwaitResult(
+        definition,
+        checkedId,
+        store,
+        clock,
+        signals.signal,
+        normalized.pollIntervalMs
       )
     }
+
+    if (!isEventStoreFor(normalized.eventStore, definition.store)) {
+      return yield* failOperation<unknown, JobDefinitionError>(
+        new JobDefinitionError({
+          field: 'eventStore',
+          message: 'must be associated with the Job definition store'
+        })
+      )
+    }
+
+    const eventStore = yield* normalized.eventStore
+    return yield* runEventsAwaitResult(
+      definition,
+      checkedId,
+      store,
+      eventStore,
+      clock,
+      signals.signal,
+      normalized.pollFallbackMs
+    )
   } finally {
     signals.dispose()
   }
@@ -1643,7 +1992,7 @@ const runExecute = async function* (
   definition: JobOperationDescriptor,
   payload: unknown,
   options: unknown
-): ErasedOperation<unknown, JobEnqueueError | ErasedAwaitError, true> {
+): ErasedOperation<unknown, JobEnqueueError | ErasedAwaitError, true, AnyService> {
   const normalized = yield* Result.await(Promise.resolve(normalizeExecuteOptions(options)))
   const id = yield* runEnqueue(definition, payload, normalized.enqueue)
   return yield* runAwaitResult(definition, id, normalized.await)
@@ -2052,8 +2401,10 @@ const makeOperations = (definition: JobOperationDescriptor): ErasedOperations =>
     enqueueMany: (values, options) => runEnqueueMany(definition, values, options),
     poll: (jobId) => runPoll(definition, jobId),
     attempts: (jobId) => runAttempts(definition, jobId),
-    awaitResult: (jobId, options) => runAwaitResult(definition, jobId, options),
-    execute: (payload, options) => runExecute(definition, payload, options),
+    awaitResult: ((jobId: string, options: unknown) =>
+      runAwaitResult(definition, jobId, options)) as unknown as ErasedOperations['awaitResult'],
+    execute: ((payload: unknown, options: unknown) =>
+      runExecute(definition, payload, options)) as unknown as ErasedOperations['execute'],
     cancel: (jobId) =>
       makeTransition(definition, jobId, 'cancel', undefined) as unknown as JobOperation<
         JobRecord,

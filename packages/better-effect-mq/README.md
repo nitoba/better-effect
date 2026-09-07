@@ -393,12 +393,28 @@ await runtime.run(() => program)
 ```
 
 The producer surface includes `enqueue`, `enqueueMany`, `poll`, `attempts`,
-`awaitResult`, and `execute`. `delayMs` and `at` are mutually exclusive;
-`execute` is only enqueue followed by polling and is not exactly-once RPC. A
-caller aborting `awaitResult` stops waiting but does not cancel an already
-persisted Job. `awaitResult` uses `Clock.sleep` and `CurrentAbortSignal`, and
-returns typed handler failures separately from persisted defect, timeout,
-decode, cancellation, not-found, identity-mismatch, and store errors.
+`awaitResult`, and `execute`. Polling is the default and remains available
+explicitly with `strategy: 'polling'`. When the optional event extension is
+provided, callers may opt into event-driven waiting by passing the associated
+`JobEventStore` token:
+
+```ts
+yield *
+  SendEmail.awaitResult(id, {
+    strategy: 'events',
+    eventStore: JobEventStore,
+    pollFallbackMs: 5_000
+  })
+```
+
+The durable event is only a wake hint: `awaitResult` rereads the Job record
+before decoding its result or failure. Cursor, read, and notification problems
+fall back to polling. `delayMs` and `at` are mutually exclusive; `execute`
+accepts the same waiting strategies and is not exactly-once RPC. A caller
+aborting `awaitResult` stops waiting but does not cancel an already persisted
+Job. The polling path uses `Clock.sleep` and `CurrentAbortSignal`, and returns
+typed handler failures separately from persisted defect, timeout, decode,
+cancellation, not-found, identity-mismatch, and store errors.
 
 Generic inspection and queue mutations require explicit routing:
 `JobAdmin.for(store).list`, `.counts`, `.pause`, `.resume`, `.pausedQueues`, and
