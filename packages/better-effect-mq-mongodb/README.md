@@ -9,6 +9,25 @@ a single-node replica set for local development) or a transaction-capable mongos
 deployment. Sharded deployments are not claimed as officially supported until
 they have dedicated integration coverage.
 
+## QueueControls protocol v3
+
+The adapter implements durable, revisioned queue controls over separate
+`${collectionPrefix}_controls`, `${collectionPrefix}_controlled_permits`,
+`${collectionPrefix}_controlled_rate_windows`, and
+`${collectionPrefix}_controlled_cursors` collections. Enqueue persists the
+producer's `dispatchKey`; workers never derive it again. Controlled claims are
+atomic MongoDB transactions that lock the control revision, fixed rate window,
+bounded fairness cursor, candidate jobs, and owner-fenced permits. A legacy
+`claim` is rejected while a queue has enabled controls, and a stale
+`controlsRevision` fails closed.
+
+Global concurrency, per-key concurrency, and fixed-window rate limits are
+enforced together. The window is anchored at its first accepted claim and does
+not refund capacity on settlement, release, cancellation, or recovery. Permits
+are removed only for the matching `jobId` and `leaseToken`; stale settlement,
+release, and recovery requests cannot release a newer owner. Reconciliation is
+idempotent and monotonic, and `removal: 'disable'` is explicit.
+
 ```ts
 import { JobScheduleStore, JobStore } from 'better-effect-mq'
 import { MongoJobScheduleStore, MongoJobStore } from 'better-effect-mq-mongodb'
@@ -138,9 +157,10 @@ await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
 ```
 
 Migration creates validated `jobs`, `attempts`, `queues`, `counters`,
-`migrations`, `schedules`, and `outbox` collections plus claim, idempotency,
-lease, list, ledger, metadata, due-schedule, and outbox fencing indexes. The
-schedules and outbox extensions advance the MongoDB layout marker to 3 without
+`migrations`, `schedules`, `outbox`, and the four QueueControls collections,
+plus claim, idempotency, lease, list, ledger, metadata, controlled-claim,
+permit, rate-window, due-schedule, and outbox fencing indexes. The schedules,
+outbox, and controls extensions advance the MongoDB layout marker to 4 without
 deleting or rewriting existing protocol-v1 data. Validation uses `moderate`/`error` to support
 expand/migrate/contract rollouts; it is additional protection, not a
 replacement for document decoding at the adapter boundary.

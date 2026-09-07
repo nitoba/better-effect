@@ -4,7 +4,7 @@
 
 import type { MongoDb } from './config'
 
-export const MONGODB_LAYOUT_VERSION = 3 as const
+export const MONGODB_LAYOUT_VERSION = 4 as const
 export const MONGODB_PROTOCOL_VERSION = 1 as const
 export const MONGODB_FLOW_LAYOUT_VERSION = 1 as const
 export const MONGODB_FLOW_PROTOCOL_VERSION = 2 as const
@@ -18,6 +18,10 @@ export const mongoCollections = (db: MongoDb, prefix: string) =>
     attempts: db.collection(`${prefix}_attempts`),
     queues: db.collection(`${prefix}_queues`),
     counters: db.collection(`${prefix}_counters`),
+    controls: db.collection(`${prefix}_controls`),
+    permits: db.collection(`${prefix}_controlled_permits`),
+    rateWindows: db.collection(`${prefix}_controlled_rate_windows`),
+    controlCursors: db.collection(`${prefix}_controlled_cursors`),
     migrations: db.collection(`${prefix}_migrations`),
     outbox: db.collection(`${prefix}_outbox`),
     flowChildren: db.collection(`${prefix}_flow_children`),
@@ -32,7 +36,11 @@ export const collectionNames = (prefix: string) =>
     `${prefix}_counters`,
     `${prefix}_migrations`,
     `${prefix}_schedules`,
-    `${prefix}_outbox`
+    `${prefix}_outbox`,
+    `${prefix}_controls`,
+    `${prefix}_controlled_permits`,
+    `${prefix}_controlled_rate_windows`,
+    `${prefix}_controlled_cursors`
   ])
 
 export const flowCollectionNames = (prefix: string) =>

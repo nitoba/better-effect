@@ -64,16 +64,21 @@ const makeDatabase = () => {
   return { db, created, indexed, documents }
 }
 
-test('MongoDB migration creates the durable outbox layout at version 3', async () => {
+test('MongoDB migration creates the durable controls and outbox layout at version 4', async () => {
   const fake = makeDatabase()
 
   const result = await MongoJobStoreMigrator.migrate({ db: fake.db })
 
-  expect(result).toEqual({ version: 3, applied: true })
+  expect(result).toEqual({ version: 4, applied: true })
   expect(fake.created).toContain('better_effect_mq_outbox')
+  expect(fake.created).toContain('better_effect_mq_controls')
+  expect(fake.created).toContain('better_effect_mq_controlled_permits')
+  expect(fake.created).toContain('better_effect_mq_controlled_rate_windows')
+  expect(fake.created).toContain('better_effect_mq_controlled_cursors')
   expect(fake.indexed.some((value) => value.startsWith('better_effect_mq_outbox:'))).toBe(true)
+  expect(fake.indexed.some((value) => value.startsWith('better_effect_mq_controls:'))).toBe(true)
   expect(fake.documents.get('better_effect_mq_migrations:layout')).toMatchObject({
     protocolVersion: 1,
-    layoutVersion: 3
+    layoutVersion: 4
   })
 })

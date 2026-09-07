@@ -111,6 +111,7 @@ const schemas = {
       backoff: {},
       timeoutMs: { bsonType: ['int', 'long', 'double'], minimum: 1 },
       idempotencyKey: { bsonType: 'string', minLength: 1 },
+      dispatchKey: { bsonType: 'string', minLength: 1, maxLength: 512 },
       ledgerCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
       lastSettlementToken: { bsonType: 'string', minLength: 1 },
       lastSettlementDigest: { bsonType: 'string', minLength: 1 },
@@ -344,6 +345,69 @@ const flowOutboxSchema = validator(
   }
 )
 
+const controlsSchema = validator(
+  [
+    '_id',
+    'namespace',
+    'queue',
+    'controlGroup',
+    'enabled',
+    'revision',
+    'createdAtMs',
+    'updatedAtMs'
+  ],
+  {
+    _id: { bsonType: 'string', minLength: 1 },
+    namespace: { bsonType: 'string', minLength: 1 },
+    queue: { bsonType: 'string', minLength: 1 },
+    controlGroup: { bsonType: 'string', minLength: 1 },
+    enabled: { bsonType: 'bool' },
+    revision: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    globalConcurrency: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    perKeyConcurrency: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    rateLimitMax: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    rateLimitDurationMs: { bsonType: ['int', 'long', 'double'], minimum: 1 },
+    createdAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+    updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+  }
+)
+
+const permitsSchema = validator(
+  ['_id', 'namespace', 'jobId', 'queue', 'dispatchKey', 'leaseToken', 'acquiredAtMs'],
+  {
+    _id: { bsonType: 'string', minLength: 1 },
+    namespace: { bsonType: 'string', minLength: 1 },
+    jobId: { bsonType: 'string', minLength: 1 },
+    queue: { bsonType: 'string', minLength: 1 },
+    dispatchKey: { bsonType: 'string', minLength: 1, maxLength: 512 },
+    leaseToken: { bsonType: 'string', minLength: 1 },
+    acquiredAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+  }
+)
+
+const rateWindowsSchema = validator(
+  ['_id', 'namespace', 'queue', 'startedAtMs', 'claimCount', 'updatedAtMs'],
+  {
+    _id: { bsonType: 'string', minLength: 1 },
+    namespace: { bsonType: 'string', minLength: 1 },
+    queue: { bsonType: 'string', minLength: 1 },
+    startedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+    claimCount: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+    updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+  }
+)
+
+const controlCursorsSchema = validator(
+  ['_id', 'namespace', 'queue', 'cursorSequence', 'updatedAtMs'],
+  {
+    _id: { bsonType: 'string', minLength: 1 },
+    namespace: { bsonType: 'string', minLength: 1 },
+    queue: { bsonType: 'string', minLength: 1 },
+    cursorSequence: { bsonType: ['int', 'long', 'double'], minimum: 0 },
+    updatedAtMs: { bsonType: ['int', 'long', 'double'], minimum: 0 }
+  }
+)
+
 const indexes = (prefix: string) => ({
   [`${prefix}_jobs`]: [
     { key: { namespace: 1, id: 1 }, name: 'job_identity', unique: true },
@@ -379,6 +443,18 @@ const indexes = (prefix: string) => ({
     {
       key: { namespace: 1, 'metadataEntries.key': 1, 'metadataEntries.value': 1 },
       name: 'metadata'
+    },
+    {
+      key: {
+        namespace: 1,
+        queue: 1,
+        state: 1,
+        runAtMs: 1,
+        priority: -1,
+        orderSequence: 1,
+        id: 1
+      },
+      name: 'controlled_claim'
     }
   ],
   [`${prefix}_attempts`]: [
@@ -405,6 +481,21 @@ const indexes = (prefix: string) => ({
     },
     { key: { namespace: 1, state: 1, leaseExpiresAtMs: 1 }, name: 'outbox_lease_sweep' },
     { key: { namespace: 1, target: 1, state: 1, createdAtMs: -1, id: -1 }, name: 'outbox_target' }
+  ],
+  [`${prefix}_controls`]: [
+    { key: { namespace: 1, queue: 1 }, name: 'controls_identity', unique: true },
+    { key: { namespace: 1, controlGroup: 1, queue: 1 }, name: 'controls_group' }
+  ],
+  [`${prefix}_controlled_permits`]: [
+    { key: { namespace: 1, jobId: 1 }, name: 'controlled_permit_job', unique: true },
+    { key: { namespace: 1, queue: 1, dispatchKey: 1 }, name: 'controlled_permit_key' },
+    { key: { namespace: 1, jobId: 1, leaseToken: 1 }, name: 'controlled_permit_owner' }
+  ],
+  [`${prefix}_controlled_rate_windows`]: [
+    { key: { namespace: 1, queue: 1 }, name: 'controlled_rate_window', unique: true }
+  ],
+  [`${prefix}_controlled_cursors`]: [
+    { key: { namespace: 1, queue: 1 }, name: 'controlled_cursor', unique: true }
   ]
 })
 
@@ -545,6 +636,10 @@ export const MongoJobStoreMigrator = Object.freeze({
       await ensureCollection(db, names[4]!, undefined)
       await ensureCollection(db, names[5]!, schemas.schedules)
       await ensureCollection(db, names[6]!, schemas.outbox)
+      await ensureCollection(db, names[7]!, controlsSchema)
+      await ensureCollection(db, names[8]!, permitsSchema)
+      await ensureCollection(db, names[9]!, rateWindowsSchema)
+      await ensureCollection(db, names[10]!, controlCursorsSchema)
       const declared = indexes(prefix)
       for (const [name, definition] of Object.entries(declared))
         await db.collection(name).createIndexes(definition)

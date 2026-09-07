@@ -29,6 +29,9 @@ export interface MongoCollection {
 
 export interface MongoSession {
   withTransaction<T>(callback: () => Promise<T>, options?: object): Promise<T>
+  startTransaction?(options?: object): void | Promise<void>
+  commitTransaction?(): Promise<void>
+  abortTransaction?(): Promise<void>
   endSession(): Promise<void> | void
 }
 
