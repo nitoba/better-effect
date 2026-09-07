@@ -1,6 +1,5 @@
 import { Scope } from 'better-effect'
 import { HttpStreamBodyError, HttpStreamConsumedError, HttpStreamReadError } from './errors'
-import type { HttpStreamError } from './errors'
 
 export type StreamMetadata = Readonly<{
   readonly status: number
@@ -65,6 +64,7 @@ export class StreamSession {
     this.reading = true
     try {
       if (!this.reader) {
+        // SAFETY: a stream body exposes the standard Uint8Array reader contract.
         this.reader = this.body?.getReader() as ReadableStreamDefaultReader<Uint8Array> | undefined
       }
       if (!this.reader) return await this.finish()

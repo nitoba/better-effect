@@ -23,7 +23,11 @@ test('reads chunks on demand and releases the body at EOF', async () => {
     expect(await session.read()).toEqual({ done: false, value: new Uint8Array([1, 2]) })
     expect(await session.read()).toEqual({ done: true })
     expect(cancelled).toBe(0)
-    await expect(session.read()).rejects.toBeInstanceOf(HttpStreamConsumedError)
+    const consumed = await session.read().then(
+      () => undefined,
+      (error) => error
+    )
+    expect(consumed).toBeInstanceOf(HttpStreamConsumedError)
   })
 })
 
@@ -36,11 +40,19 @@ test('turns a late reader failure into a typed stream error', async () => {
   })
   await Scope.run(async () => {
     const session = await StreamSession.make(new Response(body, { status: 200 }))
-    await expect(session.read()).rejects.toMatchObject({
+    const readFailure = await session.read().then(
+      () => undefined,
+      (error) => error
+    )
+    expect(readFailure).toMatchObject({
       _tag: 'HttpStreamReadError',
       bytesRead: 0
     })
-    await expect(session.read()).rejects.toBeInstanceOf(HttpStreamConsumedError)
+    const consumed = await session.read().then(
+      () => undefined,
+      (error) => error
+    )
+    expect(consumed).toBeInstanceOf(HttpStreamConsumedError)
   })
   expect(new HttpStreamReadError({ phase: 'read', cause, bytesRead: 0 })).toBeInstanceOf(Error)
 })
