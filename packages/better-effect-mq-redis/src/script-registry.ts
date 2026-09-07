@@ -32,7 +32,9 @@ export const redisFlowScriptNames = [
   'flow-record-child-results',
   'flow-cancel',
   'flow-reconcile',
-  'flow-mark-cascaded'
+  'flow-mark-cascaded',
+  'flow-outbox-append',
+  'flow-outbox-ack'
 ] as const
 
 export type RedisScriptName =

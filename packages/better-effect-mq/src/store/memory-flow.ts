@@ -23,6 +23,7 @@ import {
   validateFanOutOutcome,
   validateFlowChildRecord,
   validateFlowChildReport,
+  validateFlowOutboxEntry,
   validateFlowLimits,
   validateParentEnvelope,
   validateSerializedJobFailure
@@ -47,11 +48,16 @@ import type { JobId } from '../protocol'
 import type {
   CancelFlowRequest,
   CancelFlowResult,
+  AckOutboxRequest,
+  AckOutboxResult,
+  AppendChildReportRequest,
+  AppendChildReportResult,
   FlowChildObservation,
   FlowChildObservationState,
   FlowFanOutRequest,
   FlowFanOutResult,
   FlowParentRecord,
+  FlowOutboxPage,
   FlowSnapshot,
   FlowStoreV2,
   FlowStoreV2Descriptor,
@@ -60,6 +66,7 @@ import type {
   GetFlowRequest,
   MarkCascadedRequest,
   MarkCascadedResult,
+  PeekOutboxRequest,
   ReconcileFlowRequest,
   ReconcileFlowResult,
   RecordChildResultsRequest,
@@ -70,7 +77,6 @@ type StoredFlow = {
   readonly parent: FlowParentRecord
   readonly specs: Map<string, FlowChildSpec>
   readonly children: Map<string, FlowChildRecord>
-  readonly outbox: FlowOutboxEntry[]
   readonly fanOutDigest: string
 }
 
@@ -108,6 +114,8 @@ const reconcileFields = ['flowId', 'observations', 'now', 'limit'] as const
 const observationFields = ['childKey', 'state', 'result', 'failure'] as const
 const cascadeFields = ['flowId', 'childKeys'] as const
 const getFlowFields = ['flowId'] as const
+const outboxPeekFields = ['cursor', 'limit', 'parentStoreKey'] as const
+const outboxAckFields = ['entries'] as const
 
 const ok = <Value>(value: Value): FlowStoreV2Operation<Value> =>
   Result.ok(value) as FlowStoreV2Operation<Value>
@@ -189,14 +197,19 @@ const cloneReport = (report: FlowChildReport): FlowChildReport => {
   return checked.isOk() ? checked.value : report
 }
 
+const cloneOutboxEntry = (entry: FlowOutboxEntry): FlowOutboxEntry => {
+  const checked = validateFlowOutboxEntry(entry)
+  return checked.isOk() ? checked.value : entry
+}
+
 const childSnapshots = (flow: StoredFlow): readonly FlowChildRecord[] =>
   Object.freeze([...flow.children.values()].map(cloneChild))
 
-const snapshot = (flow: StoredFlow): FlowSnapshot =>
+const snapshot = (flow: StoredFlow, outbox: readonly FlowOutboxEntry[]): FlowSnapshot =>
   Object.freeze({
     parent: cloneParent(flow.parent),
     children: childSnapshots(flow),
-    outbox: Object.freeze(flow.outbox.map((entry) => Object.freeze({ ...entry })))
+    outbox: Object.freeze(outbox.map(cloneOutboxEntry))
   })
 
 const parentEnvelopeForRequest = (
@@ -393,6 +406,7 @@ const flowStoreDescriptor: FlowStoreV2Descriptor = Object.freeze({
 class MemoryFlowStoreImplementation implements FlowStoreV2 {
   readonly descriptor = flowStoreDescriptor
   private readonly flows = new Map<string, StoredFlow>()
+  private readonly outbox = new Map<string, FlowOutboxEntry>()
 
   fanOut(request: FlowFanOutRequest): FlowStoreV2Operation<FlowFanOutResult> {
     const normalized = normalizeFanOutRequest(request)
@@ -459,7 +473,6 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
       parent,
       specs,
       children,
-      outbox: [],
       fanOutDigest: digest
     }
     this.flows.set(normalized.value.flowId, stored)
@@ -646,6 +659,7 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
     const enqueue: FlowChildSpec[] = []
     const reports: FlowChildReport[] = []
     const cascade: FlowChildSpec[] = []
+    const cascadeLimit = limit.value ?? hardFlowMaxChildren
     const children = new Map(stored.children)
     for (const observation of observations) {
       const child = children.get(observation.childKey)
@@ -671,13 +685,18 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
           reports.push(report.value)
         }
       }
-      if (child.status === 'cancelled' && !child.cascaded) {
+      if (child.status === 'cancelled' && !child.cascaded && cascade.length < cascadeLimit) {
         cascade.push(stored.specs.get(child.childKey)!)
       }
     }
     const seenCascade = new Set(cascade.map((spec) => spec.childKey))
     for (const child of children.values()) {
-      if (child.status === 'cancelled' && !child.cascaded && !seenCascade.has(child.childKey)) {
+      if (
+        child.status === 'cancelled' &&
+        !child.cascaded &&
+        !seenCascade.has(child.childKey) &&
+        cascade.length < cascadeLimit
+      ) {
         cascade.push(stored.specs.get(child.childKey)!)
       }
     }
@@ -728,11 +747,135 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
     return ok({ marked, children: childSnapshots(updated) })
   }
 
+  appendChildReport(
+    request: AppendChildReportRequest
+  ): FlowStoreV2Operation<AppendChildReportResult> {
+    const fields = readObjectFields(
+      request,
+      ['id', 'flowName', 'parentStoreKey', 'report'],
+      'request'
+    )
+    if (Result.isError(fields)) return fail(fields.error)
+    for (const field of ['id', 'flowName', 'parentStoreKey', 'report'] as const) {
+      const present = fieldRequired(fields.value, field)
+      if (Result.isError(present)) return fail(present.error)
+    }
+    const entry = validateFlowOutboxEntry(fields.value)
+    if (Result.isError(entry)) return fail(entry.error)
+    const digest = canonicalJson(entry.value)
+    const existing = this.outbox.get(entry.value.id)
+    if (existing !== undefined) {
+      if (canonicalJson(existing) !== digest) {
+        return fail(
+          new SettlementConflictError({
+            jobId: entry.value.report.flowId,
+            leaseToken: makeLeaseToken('outbox-conflict').unwrap()
+          })
+        )
+      }
+      return ok({ status: 'already-applied', entry: cloneOutboxEntry(existing) })
+    }
+    this.outbox.set(entry.value.id, entry.value)
+    return ok({ status: 'applied', entry: cloneOutboxEntry(entry.value) })
+  }
+
+  peekOutbox(request: PeekOutboxRequest): FlowStoreV2Operation<FlowOutboxPage> {
+    const fields = readObjectFields(request, outboxPeekFields, 'request')
+    if (Result.isError(fields)) return fail(fields.error)
+    const limit =
+      fields.value.limit === undefined
+        ? Result.ok(100)
+        : validatePositiveIntegerValue(fields.value.limit, 'limit')
+    if (Result.isError(limit)) return fail(limit.error)
+    if (limit.value > hardFlowMaxChildren)
+      return fail(new JobDefinitionError({ field: 'limit', message: 'must not exceed hard limit' }))
+    const cursor =
+      fields.value.cursor === undefined
+        ? Result.ok<string | undefined>(undefined)
+        : validateChildKey(fields.value.cursor, 'cursor')
+    const parentStoreKey =
+      fields.value.parentStoreKey === undefined
+        ? Result.ok<string | undefined>(undefined)
+        : validateChildKey(fields.value.parentStoreKey, 'parentStoreKey')
+    if (Result.isError(cursor)) return fail(cursor.error)
+    if (Result.isError(parentStoreKey)) return fail(parentStoreKey.error)
+
+    const entries = [...this.outbox.values()].filter(
+      (entry) => parentStoreKey.value === undefined || entry.parentStoreKey === parentStoreKey.value
+    )
+    const cursorIndex =
+      cursor.value === undefined ? -1 : entries.findIndex((entry) => entry.id === cursor.value)
+    const start = cursorIndex < 0 ? 0 : cursorIndex + 1
+    const page = entries.slice(start, start + limit.value).map(cloneOutboxEntry)
+    const hasMore = start + page.length < entries.length
+    return ok({
+      entries: Object.freeze(page),
+      cursor: hasMore && page.length > 0 ? page.at(-1)!.id : undefined,
+      hasMore
+    })
+  }
+
+  ackOutbox(request: AckOutboxRequest): FlowStoreV2Operation<AckOutboxResult> {
+    const fields = readObjectFields(request, outboxAckFields, 'request')
+    if (Result.isError(fields)) return fail(fields.error)
+    const entries = fields.value.entries
+    if (!Array.isArray(entries) || entries.length > hardFlowMaxChildren) {
+      return fail(
+        new JobDefinitionError({
+          field: 'entries',
+          message: 'must be an array within the hard limit'
+        })
+      )
+    }
+    const seen = new Map<string, string>()
+    const checkedEntries: FlowOutboxEntry[] = []
+    for (const [index, value] of entries.entries()) {
+      const checked = validateFlowOutboxEntry(value)
+      if (Result.isError(checked))
+        return fail(
+          new JobDefinitionError({ field: `entries[${index}]`, message: checked.error.message })
+        )
+      const digest = canonicalJson(checked.value)
+      const previous = seen.get(checked.value.id)
+      if (previous !== undefined && previous !== digest) {
+        return fail(
+          new JobDefinitionError({
+            field: 'entries',
+            message: 'conflicting duplicate outbox entry'
+          })
+        )
+      }
+      if (previous === undefined) {
+        seen.set(checked.value.id, digest)
+        checkedEntries.push(checked.value)
+      }
+    }
+    let acknowledged = 0
+    let skipped = 0
+    for (const entry of checkedEntries) {
+      const existing = this.outbox.get(entry.id)
+      if (existing === undefined || canonicalJson(existing) !== canonicalJson(entry)) {
+        skipped += 1
+        continue
+      }
+      this.outbox.delete(entry.id)
+      acknowledged += 1
+    }
+    return ok({ acknowledged, skipped })
+  }
+
   getFlow(request: GetFlowRequest): FlowStoreV2Operation<FlowSnapshot | undefined> {
     const flowId = normalizeFlowIdRequest(request, getFlowFields, 'request')
     if (Result.isError(flowId)) return fail(flowId.error)
     const flow = this.flows.get(flowId.value)
-    return ok(flow === undefined ? undefined : snapshot(flow))
+    return ok(
+      flow === undefined
+        ? undefined
+        : snapshot(
+            flow,
+            [...this.outbox.values()].filter((entry) => entry.report.flowId === flowId.value)
+          )
+    )
   }
 }
 

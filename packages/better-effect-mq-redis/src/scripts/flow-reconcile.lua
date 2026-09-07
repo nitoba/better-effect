@@ -15,7 +15,8 @@ if #KEYS < 3 or type(ARGV[1]) ~= "string" or #ARGV[1] > MAX_BODY then
 end
 local decodedOk, p = pcall(cjson.decode, ARGV[1])
 if not decodedOk or type(p) ~= "table" or p.mode ~= "flow-reconcile" or
-   type(p.observations) ~= "table" or type(p.now) ~= "number" then
+   type(p.observations) ~= "table" or type(p.now) ~= "number" or
+   type(p.cascadeLimit) ~= "number" then
   return errorReply("MQ_INVALID_ARGUMENT")
 end
 if not keyTypeIs(KEYS[1], "hash") or not keyTypeIs(KEYS[2], "hash") or not keyTypeIs(KEYS[3], "zset") then
@@ -85,7 +86,7 @@ for _, observation in ipairs(p.observations) do
       }
     end
   end
-  if child.status == "cancelled" and child.cascaded ~= true then
+  if child.status == "cancelled" and child.cascaded ~= true and #cascade < p.cascadeLimit then
     cascade[#cascade + 1] = entry.spec
   end
 end
@@ -96,7 +97,8 @@ for index = 1, #all, 2 do
   if not ok or type(entry) ~= "table" or type(entry.spec) ~= "table" or type(entry.record) ~= "table" then
     return errorReply("MQ_CORRUPT_COUNTER")
   end
-  if entry.record.status == "cancelled" and entry.record.cascaded ~= true and not seen[entry.record.childKey] then
+  if entry.record.status == "cancelled" and entry.record.cascaded ~= true and
+     not seen[entry.record.childKey] and #cascade < p.cascadeLimit then
     cascade[#cascade + 1] = entry.spec
   end
 end

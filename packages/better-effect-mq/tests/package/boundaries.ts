@@ -117,6 +117,7 @@ const expectedCoreRuntimeExports = [
   'validateFlowLimits',
   'validateFlowManifest',
   'validateFlowMigration',
+  'validateFlowOutboxEntry',
   'validateFlowState',
   'validateJobRecord',
   'validateOptionalDuration',
@@ -607,10 +608,12 @@ const assertTestingEntrypoint = async (path: string): Promise<void> => {
   const module = await import(pathToFileURL(path).href)
   const actual = Object.keys(module).sort()
   const expected = [
+    'FlowStoreConformanceError',
     'JobScheduleStoreConformanceError',
     'JobStoreConformanceError',
     'RecordedJobObserver',
     'TestJobStore',
+    'flowStoreContract',
     'jobScheduleStoreContract',
     'jobStoreContract',
     'jobStoreGoldenTrace',

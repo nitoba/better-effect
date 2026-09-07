@@ -149,6 +149,34 @@ export interface FlowSnapshot {
   readonly outbox: readonly FlowOutboxEntry[]
 }
 
+export interface AppendChildReportRequest extends FlowOutboxEntry {}
+
+export interface AppendChildReportResult {
+  readonly status: 'applied' | 'already-applied'
+  readonly entry: FlowOutboxEntry
+}
+
+export interface PeekOutboxRequest {
+  readonly cursor?: string | undefined
+  readonly limit?: number
+  readonly parentStoreKey?: string
+}
+
+export interface FlowOutboxPage {
+  readonly entries: readonly FlowOutboxEntry[]
+  readonly cursor: string | undefined
+  readonly hasMore: boolean
+}
+
+export interface AckOutboxRequest {
+  readonly entries: readonly FlowOutboxEntry[]
+}
+
+export interface AckOutboxResult {
+  readonly acknowledged: number
+  readonly skipped: number
+}
+
 export interface FlowStoreV2 {
   readonly descriptor: FlowStoreV2Descriptor
 
@@ -159,5 +187,13 @@ export interface FlowStoreV2 {
   cancel(request: CancelFlowRequest): FlowStoreV2Operation<CancelFlowResult>
   reconcile(request: ReconcileFlowRequest): FlowStoreV2Operation<ReconcileFlowResult>
   markCascaded(request: MarkCascadedRequest): FlowStoreV2Operation<MarkCascadedResult>
+  /** Append a terminal child report in the same atomic unit as child settlement. */
+  appendChildReport(
+    request: AppendChildReportRequest
+  ): FlowStoreV2Operation<AppendChildReportResult>
+  /** Peek without removal; repeated pages are safe to redeliver. */
+  peekOutbox(request: PeekOutboxRequest): FlowStoreV2Operation<FlowOutboxPage>
+  /** Remove only entries whose full payload was confirmed by the parent store. */
+  ackOutbox(request: AckOutboxRequest): FlowStoreV2Operation<AckOutboxResult>
   getFlow(request: GetFlowRequest): FlowStoreV2Operation<FlowSnapshot | undefined>
 }

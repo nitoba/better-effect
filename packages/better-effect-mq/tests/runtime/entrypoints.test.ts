@@ -100,6 +100,7 @@ const expectedCoreRuntimeExports = [
   'validateFlowLimits',
   'validateFlowManifest',
   'validateFlowMigration',
+  'validateFlowOutboxEntry',
   'validateFlowState',
   'validateJobRecord',
   'validateOptionalDuration',
@@ -152,10 +153,12 @@ test('the core entrypoint exposes only the durable protocol surface', () => {
 
 test('the testing entrypoint exposes only runner-agnostic testing utilities', () => {
   expect(Object.keys(testing).sort()).toEqual([
+    'FlowStoreConformanceError',
     'JobScheduleStoreConformanceError',
     'JobStoreConformanceError',
     'RecordedJobObserver',
     'TestJobStore',
+    'flowStoreContract',
     'jobScheduleStoreContract',
     'jobStoreContract',
     'jobStoreGoldenTrace',

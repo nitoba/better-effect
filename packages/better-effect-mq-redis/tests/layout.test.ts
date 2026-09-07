@@ -158,6 +158,25 @@ describe('Redis layout marker', () => {
     expect(client.flowMarker.migrationStatus).toBe('not-required')
   })
 
+  test('accepts the persisted string form of the flow migration target', async () => {
+    const client = new LayoutClient()
+    const layout = makeRedisKeyLayout('better-effect-mq', 'notifications')
+    client.flowMarker = {
+      adapterVersion: '0.1.0',
+      protocolVersion: REDIS_FLOW_PROTOCOL_VERSION,
+      layoutVersion: REDIS_FLOW_LAYOUT_VERSION,
+      scriptSetChecksum: 'flow-script-sha',
+      indexConfigurationChecksum: REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+      migrationStatus: 'not-required',
+      migrationFrom: '',
+      migrationTo: '1'
+    }
+
+    await expect(
+      ensureRedisFlowLayout(client, layout, 'flow-script-sha', true)
+    ).resolves.toMatchObject({ migration: { status: 'not-required', to: 1 } })
+  })
+
   test('rejects an incompatible existing flow marker without touching v1 data', async () => {
     const client = new LayoutClient()
     const layout = makeRedisKeyLayout('better-effect-mq', 'notifications')

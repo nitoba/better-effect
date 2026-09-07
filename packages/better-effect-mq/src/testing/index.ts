@@ -1,6 +1,16 @@
 export { TestJobStore } from './test-job-store'
 export type { TestJobStoreOptions } from './test-job-store'
 
+export { FlowStoreConformanceError, flowStoreContract } from './flow-store-contract'
+export type {
+  FlowStoreContractMaybePromise,
+  FlowStoreContractOptions,
+  FlowStoreContractReport,
+  FlowStoreContractScenario,
+  FlowStoreContractScenarioInfo,
+  FlowStoreContractSuite
+} from './flow-store-contract'
+
 export { RecordedJobObserver } from './recorded-job-observer'
 export type { RecordedJobObserverSnapshot } from './recorded-job-observer'
 

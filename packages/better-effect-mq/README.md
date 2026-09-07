@@ -29,8 +29,9 @@ These documents define the storage-neutral protocol implemented by the current s
 The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
 flow contracts, pure `Flow.define`/`Flow.children`/`Flow.handle` descriptors,
 the reference `MemoryFlowStore`, and Layer-first Worker route validation.
-Durable cross-store delivery and flow execution supervision remain future
-integrations.
+`FlowStoreV2` also defines durable terminal-report outbox append, bounded peek,
+parent confirmation, and exact-payload acknowledgement. Cross-store relay and
+flow execution supervision remain runner-owned integrations.
 
 ## Schedule-store conformance
 
@@ -60,6 +61,12 @@ overlap behavior, pause/resume, named-store isolation, group-scoped
 reconciliation with grace, timezone/DST rules, and tick/enqueue/wake
 atomicity. Adapter-specific cases can be added with `extensions`; the
 `suite.report()` snapshot records descriptor and scenario coverage.
+
+Flow adapters can use the runner-neutral `flowStoreContract` from the same
+testing entrypoint. It covers descriptor compatibility, terminal-report
+outbox durability, bounded pages, exact-payload acknowledgement, child-report
+idempotency, and retryable cascade work. SQL-backed adapters may provide a
+`createFlow` hook to seed the parent row before the common settlement cases.
 
 The package uses [`better-effect`](https://github.com/nitoba/better-effect)'s
 Service type and [`better-result`](https://github.com/nitoba/better-result)'s
@@ -603,8 +610,8 @@ explicitly, for example with `Layer.succeed(FlowStore,
 FlowStore.of(MemoryFlowStore.make()))`. Worker startup validates the associated
 store's v2 descriptor in the same Runtime root and rejects duplicate flow names
 or a flow parent also registered as a plain Worker handler. This slice does not
-claim children, deliver a durable outbox, or run relay/sweeper loops yet; those
-operations require the corresponding atomic v2 JobStore settlement and outbox
+claim children or run relay/sweeper loops; those operations remain runner-owned
+and require the corresponding atomic v2 JobStore settlement and outbox
 scan/ack contracts.
 
 Each claimed Job runs through `executor.runWith(JobContext.layer(context), ...)`

@@ -446,6 +446,12 @@ const flowExpectedMarker = (scriptSetChecksum: string): RedisFlowLayoutMarker =>
     })
   })
 
+const migrationValue = (value: string): number | string => {
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) return value
+  const numeric = Number(value)
+  return Number.isSafeInteger(numeric) ? numeric : value
+}
+
 const flowMarkerFromHash = (actual: RedisHash): RedisFlowLayoutMarker => {
   const requiredFields = [
     'adapterVersion',
@@ -472,10 +478,11 @@ const flowMarkerFromHash = (actual: RedisHash): RedisFlowLayoutMarker => {
   const from =
     actual.migrationFrom === undefined || actual.migrationFrom === ''
       ? undefined
-      : actual.migrationFrom
-  const to = actual.migrationTo
-  if (typeof to !== 'string' || to === '')
+      : migrationValue(actual.migrationFrom)
+  const rawTo = actual.migrationTo
+  if (rawTo === undefined || rawTo === '')
     throw invalid('flow-layout', 'contains an invalid migration target')
+  const to = migrationValue(rawTo)
   return Object.freeze({
     adapterVersion: actual.adapterVersion!,
     protocolVersion: actual.protocolVersion as typeof REDIS_FLOW_PROTOCOL_VERSION,
