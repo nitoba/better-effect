@@ -45,6 +45,20 @@ const Dummy = queue.job('dummy', {
   result: Codec.string,
   store: ParentStore
 })
+const FailParent = queue.job('fail-parent', {
+  version: 1,
+  payload: Codec.json<{ readonly value: string }>(),
+  result: Codec.json<{ readonly done: boolean }>(),
+  failure: Codec.json<{ readonly code: string }>(),
+  store: ParentStore
+})
+const FailChild = queue.job('fail-child', {
+  version: 1,
+  payload: Codec.json<{ readonly value: string }>(),
+  result: Codec.json<{ readonly done: boolean }>(),
+  failure: Codec.json<{ readonly code: string }>(),
+  store: ChildStore
+})
 const FlowDefinition = Flow.define('flow-worker-lifecycle', {
   parent: Parent,
   children: [Child] as const,
@@ -58,6 +72,12 @@ const unwrap = async <Value, Failure>(
   if (Result.isError(result)) throw result.error
   return result.value
 }
+
+const pureProgram = <Value>(value: Value) =>
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok(value)
+  })
 
 const waitFor = async (
   check: () => boolean | Promise<boolean>,
@@ -432,5 +452,250 @@ test('Worker shutdown waits for an admitted Flow relay I/O operation', async () 
   } finally {
     releasePeek?.()
     if (runtime.inspect().state !== 'disposed') await runtime.dispose()
+  }
+})
+
+test('Worker executes Flow.handle fanOut, child jobs, relay, and typed collect end to end', async () => {
+  const parentJobStore = MemoryJobStore.make()
+  const childJobStore = MemoryJobStore.make()
+  const parentFlowStore = MemoryFlowStore.make()
+  const childFlowStore = MemoryFlowStore.make()
+  const flowId = JobId.make('flow-execution').unwrap()
+  const parentPrepared = makePreparedEnqueue({
+    protocolVersion,
+    identity: Parent.identity,
+    id: flowId,
+    payload: { value: 'root' },
+    metadata: {},
+    priority: 0,
+    runAt: 0,
+    attemptsMax: 1,
+    now: 0
+  }).unwrap()
+  const { protocolVersion: _protocolVersion, ...parentRequest } = parentPrepared
+  await unwrap(parentJobStore.enqueue(parentRequest))
+
+  const collected: string[] = []
+  const route = Flow.handle(FlowDefinition, {
+    fanOut: (payload) =>
+      pureProgram([
+        Flow.children(Child, [{ key: `child:${payload.value}`, payload: { value: payload.value } }])
+      ] as const),
+    collect: (_payload, results) =>
+      Effect.fn(async function* () {
+        const page = yield* Result.await(
+          // SAFETY: FlowResults.page is invoked in the Runtime that provides its FlowStore.
+          Promise.resolve(results.page({ limit: 1 })()) as Promise<
+            Result<import('../src').FlowChildPage<typeof FlowDefinition>, never>
+          >
+        )
+        const all = yield* Result.await(
+          // SAFETY: FlowResults.all is invoked in the Runtime that provides its FlowStore.
+          Promise.resolve(results.all()()) as Promise<
+            Result<readonly import('../src').FlowSettledChild<typeof FlowDefinition>[], never>
+          >
+        )
+        yield* Result.await(
+          // SAFETY: FlowResults.forEach is invoked in the Runtime that provides its FlowStore.
+          Promise.resolve(
+            results.forEach((child) => {
+              collected.push(child.childKey)
+              return pureProgram(undefined)
+            })()
+          ) as Promise<Result<void, never>>
+        )
+        return Result.ok({ done: page.items.length === 1 && all.length === 1 } as const)
+      })
+  })
+  const childHandler = Worker.handle(Child, () => pureProgram({ done: true }))
+  const workerService = Worker.service('FlowExecutionWorker')
+  const workerLayer = workerService.layer(() => ({
+    handlers: [childHandler] as const,
+    flows: [route] as const,
+    concurrency: 1,
+    pollIntervalMs: 1,
+    flowSweepIntervalMs: 2,
+    flowBatchSize: 4
+  }))
+  const parentFlowToken = FlowStore.for(ParentStore)
+  const childFlowToken = FlowStore.for(ChildStore)
+  const application = Layer.complete(
+    Layer.merge(
+      Layer.merge(
+        Layer.merge(
+          Layer.succeed(ParentStore, ParentStore.of(parentJobStore)),
+          Layer.succeed(ChildStore, ChildStore.of(childJobStore))
+        ),
+        Layer.merge(
+          Layer.succeed(parentFlowToken, parentFlowToken.of(parentFlowStore)),
+          Layer.succeed(childFlowToken, childFlowToken.of(childFlowStore))
+        )
+      ),
+      workerLayer
+    )
+  )
+  const runtime = await Runtime.make(application)
+  await runtime.warmup()
+
+  try {
+    await waitFor(
+      async () => (await unwrap(parentJobStore.getJob({ jobId: flowId })))?.state === 'completed'
+    )
+    expect(collected).toEqual(['child:root'])
+    const childId = makeFlowChildId({
+      parentStoreKey: ParentStore.serviceTag,
+      flowId,
+      childKey: 'child:root'
+    }).unwrap()
+    expect((await unwrap(childJobStore.getJob({ jobId: childId })))?.state).toBe('completed')
+    expect((await unwrap(parentFlowStore.getFlow({ flowId })))?.children[0]?.status).toBe(
+      'completed'
+    )
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('Worker fail-fast Flow settles the parent from the first failed child', async () => {
+  const parentJobStore = MemoryJobStore.make()
+  const childJobStore = MemoryJobStore.make()
+  const parentFlowStore = MemoryFlowStore.make()
+  const childFlowStore = MemoryFlowStore.make()
+  const flow = Flow.define('flow-worker-fail-fast', {
+    parent: FailParent,
+    children: [FailChild] as const,
+    onChildFailure: 'fail'
+  })
+  let collected = false
+  const route = Flow.handle(flow, {
+    fanOut: () =>
+      pureProgram([Flow.children(FailChild, [{ key: 'failed-child', payload: { value: 'x' } }])]),
+    collect: () => {
+      collected = true
+      return pureProgram({ done: true })
+    }
+  })
+  const flowId = JobId.make('flow-fail-fast').unwrap()
+  const prepared = makePreparedEnqueue({
+    protocolVersion,
+    identity: FailParent.identity,
+    id: flowId,
+    payload: { value: 'root' },
+    metadata: {},
+    priority: 0,
+    runAt: 0,
+    attemptsMax: 1,
+    now: 0
+  }).unwrap()
+  const { protocolVersion: _protocolVersion, ...request } = prepared
+  await unwrap(parentJobStore.enqueue(request))
+
+  const childHandler = Worker.handle(FailChild, () =>
+    Effect.fn(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.err({ code: 'child-failed' })
+    })
+  )
+  const workerService = Worker.service('FlowFailFastWorker')
+  const parentFlowToken = FlowStore.for(ParentStore)
+  const childFlowToken = FlowStore.for(ChildStore)
+  const workerLayer = workerService.layer(() => ({
+    handlers: [childHandler] as const,
+    flows: [route] as const,
+    concurrency: 1,
+    pollIntervalMs: 1,
+    flowSweepIntervalMs: 2,
+    flowBatchSize: 4
+  }))
+  const application = Layer.complete(
+    Layer.merge(
+      Layer.merge(
+        Layer.merge(
+          Layer.succeed(ParentStore, ParentStore.of(parentJobStore)),
+          Layer.succeed(ChildStore, ChildStore.of(childJobStore))
+        ),
+        Layer.merge(
+          Layer.succeed(parentFlowToken, parentFlowToken.of(parentFlowStore)),
+          Layer.succeed(childFlowToken, childFlowToken.of(childFlowStore))
+        )
+      ),
+      workerLayer
+    )
+  )
+  const runtime = await Runtime.make(application)
+  await runtime.warmup()
+
+  try {
+    await waitFor(
+      async () => (await unwrap(parentJobStore.getJob({ jobId: flowId })))?.state === 'failed'
+    )
+    expect(collected).toBe(false)
+    expect((await unwrap(parentFlowStore.getFlow({ flowId })))?.parent.state).toBe('failed')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('Worker rejects nested Flow cycles before creating another generation of children', async () => {
+  const jobStore = MemoryJobStore.make()
+  const flowStore = MemoryFlowStore.make()
+  const cycle = Flow.define('flow-worker-cycle', {
+    parent: Dummy,
+    children: [Dummy] as const,
+    onChildFailure: 'fail'
+  })
+  const flowId = JobId.make('flow-cycle-root').unwrap()
+  const prepared = makePreparedEnqueue({
+    protocolVersion,
+    identity: Dummy.identity,
+    id: flowId,
+    payload: 'root',
+    metadata: {},
+    priority: 0,
+    runAt: 0,
+    attemptsMax: 1,
+    now: 0
+  }).unwrap()
+  const { protocolVersion: _protocolVersion, ...request } = prepared
+  await unwrap(jobStore.enqueue(request))
+
+  const route = Flow.handle(cycle, {
+    fanOut: () => pureProgram([Flow.children(Dummy, [{ key: 'cycle-child', payload: 'nested' }])]),
+    collect: () => pureProgram('unreachable')
+  })
+  const ordinaryHandler = Worker.handle(Child, () => pureProgram({ done: true }))
+  const workerService = Worker.service('FlowCycleWorker')
+  const workerLayer = workerService.layer(() => ({
+    handlers: [ordinaryHandler] as const,
+    flows: [route] as const,
+    concurrency: 2,
+    pollIntervalMs: 1,
+    flowSweepIntervalMs: 2,
+    flowBatchSize: 4
+  }))
+  const flowToken = FlowStore.for(ParentStore)
+  const application = Layer.complete(
+    Layer.merge(
+      Layer.merge(
+        Layer.succeed(ParentStore, ParentStore.of(jobStore)),
+        Layer.merge(
+          Layer.succeed(ChildStore, ChildStore.of(MemoryJobStore.make())),
+          Layer.succeed(flowToken, flowToken.of(flowStore))
+        )
+      ),
+      workerLayer
+    )
+  )
+  const runtime = await Runtime.make(application)
+  await runtime.warmup()
+
+  try {
+    await waitFor(
+      async () => (await unwrap(jobStore.getJob({ jobId: flowId })))?.state === 'failed'
+    )
+    expect((await unwrap(flowStore.getFlow({ flowId })))?.parent.state).toBe('failed')
+    expect((await unwrap(flowStore.getFlow({ flowId })))?.children).toHaveLength(1)
+  } finally {
+    await runtime.dispose()
   }
 })

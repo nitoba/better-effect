@@ -137,9 +137,13 @@ existing v1 methods and descriptor remain unchanged, so adapters can migrate
 explicitly by advertising the v2 descriptor and its migration metadata.
 `FlowStoreV2` continues to define durable terminal-report outbox append,
 bounded peek, parent confirmation, and exact-payload acknowledgement. A
-Layer-owned Worker supervises bounded relay and reconciliation cycles from the
-same Runtime root; cross-store enqueue remains at-least-once and converges via
-the durable manifest and deterministic child IDs.
+Layer-owned Worker supervises bounded relay, reconciliation, and child
+execution cycles from the same Runtime root; cross-store enqueue remains
+at-least-once and converges via the durable manifest and deterministic child
+IDs. Registered flow handlers execute `fanOut`, prepare and enqueue children
+(including children backed by another JobStore), wait for child reports, and
+then execute `collect`. Relay and reconciliation remain repairable; no
+cross-store transaction is implied.
 
 ## Schedule-store conformance
 
@@ -737,7 +741,13 @@ or a flow parent also registered as a plain Worker handler. After startup, the
 Worker runs bounded relay and reconciliation/sweeper cycles for the registered
 routes. Relay is at-least-once: it records reports in the parent before
 acknowledging the source outbox, and unknown routes do not block later entries.
-The Worker does not claim children or execute fan-out/collect phase callbacks.
+The Worker also claims registered flow parents, runs `fanOut`, enqueues each
+child through its declared JobStore, waits in `waiting-children`, and runs
+`collect` with typed `FlowResults.page`, `all`, and `forEach` accessors. A
+`fail` policy stops collection on the first child failure; a `continue` policy
+exposes settled failures to collection. Nested flows carry a bounded depth and
+ancestor chain, rejecting depth overflow and cycles before children are
+created.
 
 Each claimed Job runs through `executor.runWith(JobContext.layer(context), ...)`
 with a fresh child Scope and attempt-local `AbortSignal`. Root Services remain
@@ -1128,7 +1138,8 @@ are:
   cancelled job; it preserves delivery and attempt history in the external
   attempt ledger. If the retry budget was exhausted, retry starts a fresh
   budget; otherwise it preserves the current attempt counter.
-- Future states such as `waiting-children` require a protocol revision.
+- The v1 reducer does not accept `waiting-children`; flow execution uses the
+  additive v2 protocol and its `FlowStoreV2` transitions.
 
 The reducer is pure and immutable. `reduceJob` returns the new record and, when
 appropriate, the `AttemptRecord` that an adapter should persist atomically with
