@@ -26,6 +26,7 @@ export const makeHttpLimiter = (limits: HttpLimits | undefined) => {
     signal: AbortSignal | undefined
     resolve: () => void
     reject: (cause: unknown) => void
+    abort: () => void
   }[] = []
   const admissions: number[] = []
   const pump = () => {
@@ -40,9 +41,11 @@ export const makeHttpLimiter = (limits: HttpLimits | undefined) => {
     ) {
       const waiter = queue.shift()!
       if (waiter.signal?.aborted) {
+        waiter.signal.removeEventListener('abort', waiter.abort)
         waiter.reject(new HttpAbortError({ phase: 'abort', cause: waiter.signal.reason }))
         continue
       }
+      waiter.signal?.removeEventListener('abort', waiter.abort)
       active++
       if (limits.rate) admissions.push(time)
       waiter.resolve()
@@ -56,12 +59,13 @@ export const makeHttpLimiter = (limits: HttpLimits | undefined) => {
     if (limits.queue && queue.length >= limits.queue.maxSize)
       return Promise.reject(new HttpLimitError({ phase: 'admission', reason: 'queue-full' }))
     return new Promise<void>((resolve, reject) => {
-      const waiter = { signal, resolve, reject }
       const abort = () => {
         const i = queue.indexOf(waiter)
         if (i >= 0) queue.splice(i, 1)
+        signal?.removeEventListener('abort', abort)
         reject(new HttpAbortError({ phase: 'abort', cause: signal?.reason }))
       }
+      const waiter = { signal, resolve, reject, abort }
       signal?.addEventListener('abort', abort, { once: true })
       queue.push(waiter)
       pump()

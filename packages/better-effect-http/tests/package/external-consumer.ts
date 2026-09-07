@@ -8,6 +8,7 @@ const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const corePackageRoot = resolve(packageRoot, '../better-effect')
 const schemaPackageRoot = resolve(packageRoot, '../better-effect-schema')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
+const genericFixtureSource = join(packageRoot, 'tests/package/generic-consumer')
 const decoder = new TextDecoder()
 
 type CommandResult = {
@@ -89,6 +90,31 @@ const main = async (): Promise<void> => {
       coreArchiveName !== undefined,
       'Package packing did not create a better-effect archive'
     )
+
+    const genericFixture = join(root, 'generic-fixture')
+    await cp(genericFixtureSource, genericFixture, { recursive: true })
+    await mkdir(join(genericFixture, 'artifacts'))
+    await cp(
+      join(archiveDirectory, coreArchiveName),
+      join(genericFixture, 'artifacts', coreArchiveName)
+    )
+    await cp(
+      join(archiveDirectory, archiveName),
+      join(genericFixture, 'artifacts/better-effect-http.tgz')
+    )
+    await cp(
+      join(archiveDirectory, schemaArchiveName),
+      join(genericFixture, 'artifacts', schemaArchiveName)
+    )
+    assertSuccess(
+      run(['bun', 'install', '--ignore-scripts', '--omit=peer'], genericFixture),
+      'Installing generic external consumer'
+    )
+    assertSuccess(
+      run(['bun', 'x', 'tsc', '--noEmit', '-p', 'tsconfig.json'], genericFixture),
+      'Typechecking generic external consumer'
+    )
+    assertSuccess(run(['bun', 'smoke.mjs'], genericFixture), 'Running generic external consumer')
 
     const fixture = join(root, 'fixture')
     await cp(fixtureSource, fixture, { recursive: true })

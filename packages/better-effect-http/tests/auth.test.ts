@@ -127,6 +127,35 @@ test('maxReplays zero leaves an eligible 401 untouched', async () => {
   expect(refreshes).toBe(0)
 })
 
+test('normalizes a rejected refresh without leaking an unhandled rejection', async () => {
+  let unhandled: Error | undefined
+  const onUnhandled = (reason: Error) => {
+    unhandled = reason
+  }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const recovery = HttpAuth.refresh({
+      key: 'session-1',
+      refresh: () => Promise.reject(new Error('refresh secret'))
+    })
+    const request = HttpRequest.make(response.url)
+    const next = () =>
+      // oxlint-disable-next-line require-yield -- The fixture returns a completed Result through the generator-shaped Program API.
+      Effect.fn(async function* () {
+        return Result.err(unauthorized())
+      })()
+
+    const result = await run(recovery, request, next)
+
+    expect(Result.isError(result)).toBe(true)
+    expect(Result.isError(result) && result.error).toBeInstanceOf(HttpAuthRefreshError)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(unhandled).toBeUndefined()
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
 test('client hook composition applies authentication and bounded refresh', async () => {
   let token = 'expired'
   let sends = 0

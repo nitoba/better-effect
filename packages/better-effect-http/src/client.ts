@@ -144,8 +144,10 @@ const makeClient = <Tag extends string>(
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
     request(name, path, options)
   const client = {
-    stream: (path: string, options?: TransportRequestOptions) => makeStream(config, path, options),
-    ndjson: (path: string, options?: HttpNdjsonRequestOptions) => makeNdjson(config, path, options),
+    stream: (path: string, options?: TransportRequestOptions) =>
+      makeStream(config, path, options, limiter),
+    ndjson: (path: string, options?: HttpNdjsonRequestOptions) =>
+      makeNdjson(config, path, options, limiter),
     sse: (path: string, options?: SseRawOptions) =>
       // SAFETY: configured hook values are narrowed by the runtime hook guards before invocation.
       makeSse(config, path, options, limiter, hooks as unknown as readonly HttpHook[]),

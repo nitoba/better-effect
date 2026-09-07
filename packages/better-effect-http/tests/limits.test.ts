@@ -1,3 +1,4 @@
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the listener probe uses a structural AbortSignal test double.
 import { expect, test } from 'bun:test'
 import { makeHttpLimiter } from '../src/limits'
 
@@ -43,4 +44,28 @@ test('rejects a full queue with a typed admission error', async () => {
     reason: 'queue-full'
   })
   first.release()
+})
+
+test('removes the abort listener when an admission is granted', async () => {
+  const limiter = makeHttpLimiter({ concurrency: 1 })!
+  const target = new EventTarget()
+  let added = 0
+  let removed = 0
+  const add = target.addEventListener.bind(target)
+  const remove = target.removeEventListener.bind(target)
+  target.addEventListener = ((...args: Parameters<typeof target.addEventListener>) => {
+    added++
+    return add(...args)
+  }) as typeof target.addEventListener
+  target.removeEventListener = ((...args: Parameters<typeof target.removeEventListener>) => {
+    removed++
+    return remove(...args)
+  }) as typeof target.removeEventListener
+  const signal = Object.assign(target, { aborted: false }) as AbortSignal
+
+  const admission = await limiter.admit(signal)
+
+  expect(added).toBe(1)
+  expect(removed).toBe(1)
+  admission.release()
 })

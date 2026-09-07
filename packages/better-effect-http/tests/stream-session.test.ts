@@ -31,6 +31,22 @@ test('reads chunks on demand and releases the body at EOF', async () => {
   })
 })
 
+test('cancels an unopened body when the session closes', async () => {
+  let cancelled = 0
+  const body = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled++
+    }
+  })
+
+  await Scope.run(async () => {
+    const session = await StreamSession.make(new Response(body, { status: 200 }))
+    await session.close()
+  })
+
+  expect(cancelled).toBe(1)
+})
+
 test('turns a late reader failure into a typed stream error', async () => {
   const cause = new Error('late')
   const body = new ReadableStream<Uint8Array>({

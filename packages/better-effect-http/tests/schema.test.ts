@@ -117,6 +117,41 @@ test('response schemas discriminate successful and expected error statuses', asy
   expect(notFound.value.data).toEqual({ reason: 'gone' })
 })
 
+test('expected error statuses bypass retry classification and decode once', async () => {
+  let calls = 0
+  const missing = makeSchema<{ reason: string }>((value) => ({
+    value: { reason: (value as { message: string }).message }
+  }))
+
+  const result = await run(
+    operation(
+      {
+        fetch: Object.assign(
+          async () => {
+            calls++
+            return new Response('{"message":"gone"}', { status: 404 })
+          },
+          { preconnect: () => {} }
+        )
+      },
+      {
+        method: 'GET',
+        path: 'https://example.test/users/7',
+        options: {
+          responses: { 404: missing },
+          retry: { times: 3 }
+        }
+      }
+    )
+  )
+
+  expect(Result.isError(result)).toBe(false)
+  if (Result.isError(result)) return
+  expect(result.value.status).toBe(404)
+  expect(result.value.data).toEqual({ reason: 'gone' })
+  expect(calls).toBe(1)
+})
+
 test('an undeclared status is an HTTP status error and never uses another schema', async () => {
   let calls = 0
   const schema = makeSchema(() => {

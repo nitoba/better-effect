@@ -146,9 +146,16 @@ function refresh(options: HttpAuthRefreshOptions<any, AnyService>): unknown {
       throw refreshError(cause)
     })
     flights.set(key, flight)
-    void flight.finally(() => {
-      if (flights.get(key) === flight) flights.delete(key)
-    })
+    // Observe both settlement paths on the cleanup branch so a rejected shared
+    // refresh cannot create an unhandled rejection from Promise.prototype.finally.
+    void flight.then(
+      () => {
+        if (flights.get(key) === flight) flights.delete(key)
+      },
+      () => {
+        if (flights.get(key) === flight) flights.delete(key)
+      }
+    )
     return flight
   }
 

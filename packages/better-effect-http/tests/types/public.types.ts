@@ -1,6 +1,10 @@
 import * as Http from '../../src'
 import { expectTypeOf } from 'bun:test'
 import type {
+  HttpClientLayer,
+  HttpClientToken,
+  HttpInterceptor,
+  HttpMiddleware,
   HttpClientInstance,
   HttpOperation,
   HttpResponseOperation,
@@ -141,6 +145,24 @@ expectTypeOf<typeof typedNdjson>().toEqualTypeOf<HttpStream<{ readonly id: numbe
 expectTypeOf<typeof unknownNdjson>().toEqualTypeOf<HttpStream<unknown, NdjsonError>>()
 
 class UserRepository extends Service<UserRepository>()('UserRepository') {}
+class HookFailure extends Error {}
+const namedClient = Http.HttpClient.service('NamedClient')
+const namedLayer = namedClient.layer({})
+expectTypeOf<typeof namedClient>().toMatchTypeOf<HttpClientToken<'NamedClient'>>()
+expectTypeOf<typeof namedLayer>().toEqualTypeOf<HttpClientLayer<'NamedClient'>>()
+
+const interceptor: HttpInterceptor<UserRepository, HookFailure> = Http.HttpInterceptor.make({
+  name: 'repository-header',
+  onRequest: ({ request }) => Http.HttpRequest.setHeader(request, 'x-repository', 'ready')
+})
+const middleware: HttpMiddleware<unknown, HookFailure, UserRepository> = {
+  handle: (_request, next) => next(Http.HttpRequest.make('/next'))
+}
+const configuredClient = Http.HttpClient.service('ConfiguredTypes', {
+  interceptors: [interceptor],
+  middleware: [middleware]
+})
+expectTypeOf<typeof configuredClient>().toMatchTypeOf<HttpClientToken<'ConfiguredTypes'>>()
 const consuming = Effect.fn(async function* () {
   yield* typedNdjson.forEach(() =>
     Effect.fn(async function* () {

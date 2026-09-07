@@ -770,7 +770,7 @@ const make = <A extends SseMessage>(
             config,
             description,
             description.lastEventId,
-            undefined,
+            limiter,
             hooks
           )
           session = opened.session

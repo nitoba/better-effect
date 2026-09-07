@@ -8,7 +8,11 @@ export class HttpNdjsonParseError extends TaggedError('HttpNdjsonParseError')<{
   readonly recordIndex: number
   readonly byteOffset: number
   readonly cause?: unknown
-}> {}
+}> {
+  override toJSON() {
+    return { _tag: this._tag }
+  }
+}
 
 export class HttpNdjsonUtf8Error extends TaggedError('HttpNdjsonUtf8Error')<{
   readonly phase: 'ndjson'
@@ -16,7 +20,11 @@ export class HttpNdjsonUtf8Error extends TaggedError('HttpNdjsonUtf8Error')<{
   readonly recordIndex: number
   readonly byteOffset: number
   readonly cause?: unknown
-}> {}
+}> {
+  override toJSON() {
+    return { _tag: this._tag }
+  }
+}
 
 export class HttpNdjsonLimitError extends TaggedError('HttpNdjsonLimitError')<{
   readonly phase: 'ndjson'
@@ -24,7 +32,11 @@ export class HttpNdjsonLimitError extends TaggedError('HttpNdjsonLimitError')<{
   readonly recordIndex: number
   readonly byteOffset: number
   readonly maxRecordBytes: number
-}> {}
+}> {
+  override toJSON() {
+    return { _tag: this._tag }
+  }
+}
 
 export type HttpNdjsonBoundaryError =
   | HttpNdjsonParseError

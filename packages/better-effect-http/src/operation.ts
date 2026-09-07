@@ -133,7 +133,18 @@ export function operation(
         try {
           const responseType =
             'options' in request ? request.options.responseType : request.responseType
-          if (!response.ok) await classifyResponse(response, responseType, request.method)
+          const responseSchemas =
+            'responses' in requestOptions &&
+            requestOptions.responses !== null &&
+            requestOptions.responses !== undefined
+              ? requestOptions.responses
+              : undefined
+          const expectedStatus =
+            !response.ok &&
+            responseSchemas !== undefined &&
+            Object.prototype.hasOwnProperty.call(responseSchemas, response.status)
+          if (!response.ok && !expectedStatus)
+            await classifyResponse(response, responseType, request.method)
           break
         } catch (error) {
           // SAFETY: classifyResponse and executeRequest only reach this branch with a typed HTTP failure.

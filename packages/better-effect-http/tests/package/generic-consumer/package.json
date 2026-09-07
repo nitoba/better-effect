@@ -1,0 +1,18 @@
+{
+  "name": "better-effect-http-generic-consumer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "better-effect": "file:./artifacts/better-effect-0.13.0.tgz",
+    "better-effect-http": "file:./artifacts/better-effect-http.tgz",
+    "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz",
+    "better-result": "3.0.1"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "better-effect": "file:./artifacts/better-effect-0.13.0.tgz",
+    "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz"
+  }
+}

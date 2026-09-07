@@ -6,6 +6,11 @@ import { StreamSession } from '../../stream/session'
 import { forEach, takeUntil, use } from '../../stream/terminals'
 import { NdjsonSession } from './session'
 import type { NdjsonError, NdjsonOptions } from './parser'
+import type { HttpAdmission } from '../../limits'
+
+type NdjsonLimiter = Readonly<{
+  readonly admit: (signal?: AbortSignal) => Promise<HttpAdmission>
+}>
 
 export type HttpNdjsonRequestOptions<S extends HttpSchema | undefined = HttpSchema | undefined> =
   TransportRequestOptions & NdjsonOptions<S>
@@ -30,19 +35,35 @@ const splitOptions = <S extends HttpSchema | undefined>(options: HttpNdjsonReque
 export const ndjson = <S extends HttpSchema | undefined = undefined>(
   config: TransportOptions,
   path: string,
-  options: HttpNdjsonRequestOptions<S> = {} as HttpNdjsonRequestOptions<S>
+  options: HttpNdjsonRequestOptions<S> = {} as HttpNdjsonRequestOptions<S>,
+  limiter?: NdjsonLimiter
 ): HttpNdjsonStream<S> => {
   const { requestOptions, parserOptions } = splitOptions(options)
   const request = Object.freeze({ method: 'GET', path, options: { ...requestOptions } })
-  const open = async () =>
-    new NdjsonSession(
-      await StreamSession.make(await executeRequest(config, request)),
-      parserOptions
-    )
+  const open = async () => {
+    const admission = limiter === undefined ? undefined : await limiter.admit(options.signal)
+    try {
+      return {
+        session: new NdjsonSession(
+          await StreamSession.make(await executeRequest(config, request)),
+          parserOptions
+        ),
+        admission
+      }
+    } catch (cause) {
+      admission?.release()
+      throw cause
+    }
+  }
   return Object.freeze({
     request,
     results: async function* () {
-      yield* (await open()).results()
+      const opened = await open()
+      try {
+        yield* opened.session.results()
+      } finally {
+        opened.admission?.release()
+      }
     },
     use: (
       callback: (session: {
@@ -51,18 +72,33 @@ export const ndjson = <S extends HttpSchema | undefined = undefined>(
       }) => unknown
     ) =>
       (async function* () {
-        return yield* use(await open(), callback)
+        const opened = await open()
+        try {
+          return yield* use(opened.session, callback)
+        } finally {
+          opened.admission?.release()
+        }
       })(),
     forEach: (callback: (value: unknown, index: number) => unknown) =>
       (async function* () {
-        return yield* forEach(await open(), callback)
+        const opened = await open()
+        try {
+          return yield* forEach(opened.session, callback)
+        } finally {
+          opened.admission?.release()
+        }
       })(),
     takeUntil: (
       predicate: (value: unknown) => boolean | Promise<boolean>,
       opts?: { readonly requireMatch?: boolean }
     ) =>
       (async function* () {
-        return yield* takeUntil(await open(), predicate, opts)
+        const opened = await open()
+        try {
+          return yield* takeUntil(opened.session, predicate, opts)
+        } finally {
+          opened.admission?.release()
+        }
       })()
   }) as unknown as HttpNdjsonStream<S>
 }
