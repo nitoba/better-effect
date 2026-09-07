@@ -5,6 +5,7 @@ import type { CLASS_TYPE_ID } from '../internal/symbols.js'
 import type { ClassTypeMetadata } from './class-metadata.js'
 import type { GenericClassDefinition, GenericClassTypeMetadata } from './generic-class.js'
 import type { ClassDefinition, RawShape, Simplify } from './common.js'
+import type { TAGGED_ENCODED } from './tagged.js'
 
 export type Input<Schema> = Schema extends {
   readonly schema: infer Definition extends StandardSchemaV1
@@ -116,17 +117,21 @@ export type Struct<Class> = [GenericStruct<Class>] extends [never]
     : never
   : GenericStruct<Class>
 
-export type Encoded<Class> = [GenericEncoded<Class>] extends [never]
-  ? Class extends z.ZodType<unknown, infer Input>
-    ? Simplify<Input>
-    : Class extends {
-          readonly encodedSchema: infer Projection extends StandardSchemaV1
-        }
-      ? StandardSchemaV1.InferOutput<Projection>
-      : Class extends StandardSchemaV1
-        ? StandardSchemaV1.InferInput<Class>
-        : never
-  : GenericEncoded<Class>
+export type Encoded<Class> = Class extends {
+  readonly [TAGGED_ENCODED]: infer TaggedInput
+}
+  ? Simplify<TaggedInput>
+  : [GenericEncoded<Class>] extends [never]
+    ? Class extends z.ZodType<unknown, infer Input>
+      ? Simplify<Input>
+      : Class extends {
+            readonly encodedSchema: infer Projection extends StandardSchemaV1
+          }
+        ? StandardSchemaV1.InferOutput<Projection>
+        : Class extends StandardSchemaV1
+          ? StandardSchemaV1.InferInput<Class>
+          : never
+    : GenericEncoded<Class>
 
 export type Instance<Class> = [GenericInstance<Class>] extends [never]
   ? Class extends {
