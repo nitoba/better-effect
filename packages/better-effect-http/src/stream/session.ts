@@ -1,4 +1,5 @@
 import { Scope } from 'better-effect'
+import { Result } from 'better-result'
 import { HttpStreamBodyError, HttpStreamConsumedError, HttpStreamReadError } from './errors'
 
 export type StreamMetadata = Readonly<{
@@ -21,6 +22,11 @@ export class StreamSession {
   private closed = false
   private reading = false
   private bytesRead = 0
+
+  get bodyStream(): ReadableStream<Uint8Array> {
+    if (this.closed) throw new HttpStreamConsumedError({ phase: 'read' })
+    return this.body ?? new ReadableStream<Uint8Array>()
+  }
 
   private constructor(response: Response, scope: ReturnType<Scope['fork']>) {
     this.metadata = Object.freeze({
@@ -86,6 +92,22 @@ export class StreamSession {
     if (this.closed) return
     this.closed = true
     await this.scope.close({ status: 'success' })
+  }
+
+  /** Lazily exposes chunks as Results; a read failure is emitted once before EOF. */
+  async *results(): AsyncIterable<Result<Uint8Array, HttpStreamReadError>> {
+    try {
+      while (true) {
+        const chunk = await this.read()
+        if (chunk.done) return
+        yield Result.ok(chunk.value)
+      }
+    } catch (cause) {
+      if (cause instanceof HttpStreamReadError) yield Result.err(cause)
+      else throw cause
+    } finally {
+      await this.close().catch(() => undefined)
+    }
   }
 
   private async finish(): Promise<StreamChunk> {

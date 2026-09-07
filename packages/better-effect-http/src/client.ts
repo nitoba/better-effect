@@ -18,6 +18,8 @@ import type { HttpInterceptor, HttpObserver } from './interceptors'
 import type { HttpMiddleware } from './middleware'
 import type { HttpRetryPolicy } from './retry'
 import { makeHttpLimiter } from './limits'
+import { stream as makeStream } from './stream/description'
+import type { HttpStream } from './stream/description'
 
 export type HttpClientOptions = TransportOptions & {
   readonly limits?: import('./limits').HttpLimits
@@ -59,6 +61,7 @@ export type HttpRequestFunction = {
 }
 
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
+  readonly stream: (path: string, options?: TransportRequestOptions) => HttpStream
   readonly endpoints: <E extends Record<string, HttpEndpoint>>(
     endpoints: E
   ) => { [K in keyof E]: (args: HttpEndpointArgs<E[K]['definition']>) => HttpOperation }
@@ -106,6 +109,7 @@ const makeClient = <Tag extends string>(
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
     request(name, path, options)
   const client = {
+    stream: (path: string, options?: TransportRequestOptions) => makeStream(config, path, options),
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
     use: (...added: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[]) =>
       makeClient(config, [...hooks, ...added], limiter),
