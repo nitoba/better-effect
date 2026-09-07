@@ -3,6 +3,7 @@
 import { TaggedError } from 'better-result'
 
 import { hasTaggedError } from '../internal/tagged'
+import type { ControlsRevisionMismatchError } from './controlled'
 
 import type {
   InvalidJobTransitionError,
@@ -64,7 +65,10 @@ export type JobStoreTransitionError =
 export type JobStoreLeaseTransitionError = JobStoreTransitionError | LeaseLostError
 
 export type JobStoreEnqueueError = JobStoreFailure | JobDefinitionError
-export type JobStoreClaimError = JobStoreFailure | JobDefinitionError
+export type JobStoreClaimError =
+  | JobStoreFailure
+  | JobDefinitionError
+  | ControlsRevisionMismatchError
 export type JobStoreEnqueueManyError = JobStoreFailure | JobDefinitionError
 
 export type JobStoreSettlementError =
@@ -119,6 +123,7 @@ export type JobStoreResumeError = JobStorePauseError
  */
 export type JobStoreError =
   | JobStoreFailure
+  | ControlsRevisionMismatchError
   | JobStoreProtocolMismatchError
   | SettlementConflictError
   | UnsupportedJobStoreOperationError

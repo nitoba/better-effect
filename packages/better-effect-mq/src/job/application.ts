@@ -116,6 +116,7 @@ type JobScheduleFields =
 type JobEnqueueFields = {
   readonly jobId?: string
   readonly idempotencyKey?: string
+  readonly dispatchKey?: string
   readonly priority?: number
   readonly attempts?: number
   readonly backoff?: PersistedBackoff
@@ -410,6 +411,7 @@ type MutableRecord = Record<string, unknown>
 const enqueueFields = [
   'jobId',
   'idempotencyKey',
+  'dispatchKey',
   'delayMs',
   'at',
   'priority',
@@ -795,6 +797,26 @@ const normalizeIdempotencyValue = (
   return Result.ok(value)
 }
 
+const normalizeDispatchKeyValue = (
+  value: unknown
+): ResultType<string | undefined, JobDefinitionError> => {
+  if (value === undefined) return Result.ok(undefined)
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 512 ||
+    value === '__none__' ||
+    value.includes('\u0000') ||
+    hasUnpairedSurrogate(value)
+  ) {
+    return invalid(
+      'dispatchKey',
+      'must be a non-empty bounded well-formed string without NUL or the reserved __none__ value'
+    )
+  }
+  return Result.ok(value)
+}
+
 const invokeDefinitionCallback = (
   callback: unknown,
   value: unknown,
@@ -844,6 +866,9 @@ const makeEnqueueRequest = async (
   if (Result.isError(attempts)) return attempts
   if (Result.isError(timeout)) return timeout
   if (timeout.value === 0) return invalid('timeoutMs', 'must be greater than zero')
+
+  const dispatchKey = normalizeDispatchKeyValue(fields.dispatchKey)
+  if (Result.isError(dispatchKey)) return dispatchKey
 
   const backoff =
     fields.backoff === undefined
@@ -909,6 +934,7 @@ const makeEnqueueRequest = async (
   if (backoff.value !== undefined) request.backoff = backoff.value
   if (timeout.value !== undefined) request.timeoutMs = timeout.value
   if (idempotency.value !== undefined) request.idempotencyKey = idempotency.value
+  if (dispatchKey.value !== undefined) request.dispatchKey = dispatchKey.value
 
   return Result.ok(Object.freeze(request) as PreparedEnqueue)
 }

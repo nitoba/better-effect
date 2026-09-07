@@ -23,8 +23,18 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 - [Capabilities](./docs/protocol/capabilities-v1.md)
 - [Compatibility](./docs/protocol/compatibility-v1.md)
 - [Flow protocol v2](./docs/protocol/flows-v2.md)
+- [Controlled claim protocol v3](./docs/protocol/controls-v3.md)
 
 These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
+
+## Controlled claims
+
+`QueueControls` is the Layer-first, yieldable controls extension. It keeps
+global concurrency, per-key concurrency, and fixed-window rate limits in a
+durable revisioned record. Reconciliation is performed in the active Runtime;
+there is no auxiliary Runtime or legacy claim bypass. The Memory adapter is the
+reference atomic implementation. See the [v3 controls contract](./docs/protocol/controls-v3.md)
+for the revision, `dispatchKey`, no-key bucket, permit, and fairness rules.
 
 The flow v2 slice is additive to the v1 JobStore. It provides JSON-neutral
 flow contracts, pure `Flow.define`/`Flow.children`/`Flow.handle` descriptors,
