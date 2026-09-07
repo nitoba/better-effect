@@ -1,6 +1,8 @@
 export type { HttpStream } from './description'
 export { stream } from './description'
 export { HttpStreamBodyError, HttpStreamConsumedError, HttpStreamReadError } from './errors'
+export { HttpSinkError, HttpStreamUnexpectedEndError } from './errors'
 export type { HttpStreamError } from './errors'
 export { StreamSession } from './session'
 export type { StreamChunk, StreamMetadata } from './session'
+export * from './terminals'

@@ -14,5 +14,17 @@ export class HttpStreamBodyError extends TaggedError('HttpStreamBodyError')<{
   readonly phase: 'body'
   readonly status: number
 }> {}
+export class HttpStreamUnexpectedEndError extends TaggedError('HttpStreamUnexpectedEndError')<{
+  readonly phase: 'takeUntil'
+}> {}
+export class HttpSinkError extends TaggedError('HttpSinkError')<{
+  readonly phase: 'sink'
+  readonly cause?: unknown
+}> {}
 
-export type HttpStreamError = HttpStreamReadError | HttpStreamConsumedError | HttpStreamBodyError
+export type HttpStreamError =
+  | HttpStreamReadError
+  | HttpStreamConsumedError
+  | HttpStreamBodyError
+  | HttpStreamUnexpectedEndError
+  | HttpSinkError
