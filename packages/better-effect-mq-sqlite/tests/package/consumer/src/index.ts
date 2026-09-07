@@ -1,7 +1,8 @@
 import { Layer } from 'better-effect'
 import { OutboxStore } from 'better-effect-mq-outbox'
-import { JobScheduleStore, JobStore } from 'better-effect-mq'
+import { FlowStore, JobScheduleStore, JobStore } from 'better-effect-mq'
 import {
+  SqliteFlowStore,
   SqliteJobScheduleStore,
   SqliteJobStore,
   SqliteOutboxStore,
@@ -10,10 +11,16 @@ import {
 
 declare const database: SqliteDatabase
 const storeLayer = SqliteJobStore.layer({ database, validateSchema: false })
+const flowLayer = SqliteFlowStore.layer({ database, validateSchema: false })
 const scheduleLayer = SqliteJobScheduleStore.layer({ database, validateSchema: false })
-if (!(storeLayer instanceof Layer) || !(scheduleLayer instanceof Layer)) {
+if (
+  !(storeLayer instanceof Layer) ||
+  !(flowLayer instanceof Layer) ||
+  !(scheduleLayer instanceof Layer)
+) {
   throw new Error('Expected SQLite adapter layers')
 }
+void FlowStore
 const outboxLayer = SqliteOutboxStore.layer({ database, validateSchema: false })
 const NamedOutbox = OutboxStore.named('durable')
 const namedOutboxLayer = SqliteOutboxStore.layerFor(NamedOutbox, {

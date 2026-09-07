@@ -1,4 +1,5 @@
 export { SqliteJobStore } from './SqliteJobStore'
+export { SqliteFlowStore } from './SqliteFlowStore'
 export { SqliteJobScheduleStore } from './SqliteJobScheduleStore'
 export { SqliteOutbox, SqliteOutboxStore, SqliteOutboxTransactions } from './SqliteOutboxStore'
 export { SqliteClient } from './client'
@@ -7,6 +8,7 @@ export {
   MIGRATION_COMPONENT,
   SQLITE_INDEXES,
   SQLITE_TABLES,
+  flowMigrationSql,
   migrationSql,
   scheduleMigrationSql,
   outboxMigrationSql
@@ -23,6 +25,7 @@ export {
   SqliteAdapterError,
   SqliteConfigurationError,
   SqliteMigrationError,
+  SqliteFlowProtocolMismatchError,
   SqliteSchemaValidationError
 } from './errors'
 export type {
@@ -37,4 +40,5 @@ export type {
   SqliteOutboxStoreContract,
   SqliteTransaction
 } from './SqliteOutboxStore'
+export type { SqliteFlowStoreConfig, SqliteFlowStoreInstance } from './SqliteFlowStore'
 export type { SqliteMigrationOptions, SqliteMigrationResult } from './migrator'
