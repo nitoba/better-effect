@@ -16,6 +16,14 @@ export type HttpRequest = Readonly<{
   readonly body?: HttpBody | object
 }>
 
+type MutableHttpRequest = {
+  url: string
+  method: string
+  headers: Headers
+  query?: HttpQuery
+  body?: HttpBody | object
+}
+
 const copy = (request: HttpRequest, changes: Partial<HttpRequest>): HttpRequest => ({
   ...request,
   ...changes,
@@ -24,13 +32,14 @@ const copy = (request: HttpRequest, changes: Partial<HttpRequest>): HttpRequest 
 
 export const HttpRequest = {
   make(url: string, options: Omit<Partial<HttpRequest>, 'url'> = {}): HttpRequest {
-    return {
+    const request: MutableHttpRequest = {
       url,
       method: options.method ?? 'GET',
-      headers: new Headers(options.headers),
-      ...(options.query === undefined ? {} : { query: { ...options.query } }),
-      ...(options.body === undefined ? {} : { body: options.body })
+      headers: new Headers(options.headers)
     }
+    if (options.query !== undefined) request.query = { ...options.query }
+    if (options.body !== undefined) request.body = options.body
+    return request
   },
   setHeader(request: HttpRequest, name: string, value: string): HttpRequest {
     const headers = new Headers(request.headers)

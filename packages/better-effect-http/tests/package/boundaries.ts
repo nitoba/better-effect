@@ -202,11 +202,7 @@ const assertGeneratedPackage = async (): Promise<void> => {
   }
 
   const entrypoint = await import(pathToFileURL(join(distRoot, 'index.mjs')).href)
-  for (const exportName of [
-    'HttpRequest',
-    'HttpRequestError',
-    'validateHttpOptions'
-  ]) {
+  for (const exportName of ['HttpRequest', 'HttpRequestError', 'validateHttpOptions']) {
     assertCondition(
       exportName in entrypoint,
       `Missing public HTTP foundation export: ${exportName}`

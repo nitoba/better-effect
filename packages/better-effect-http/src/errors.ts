@@ -1,4 +1,15 @@
+// oxlint-disable anti-slop/no-unknown-parameters -- safeErrorJSON is the deliberate untrusted-failure boundary.
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- SafeErrorJSON is an allowlisted diagnostic envelope.
+// oxlint-disable anti-slop/no-known-value-widening -- the JSON helper intentionally erases unsafe failure details.
+// oxlint-disable anti-slop/no-runtime-typeof -- hostile failure values are narrowed at this serialization boundary.
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the assertion follows the _tag property check.
 import { TaggedError } from 'better-result'
+
+export type SafeErrorJSON = Readonly<{
+  readonly _tag: string
+  readonly status?: number
+  readonly statusText?: string
+}>
 
 export type HttpErrorPhase =
   | 'request'
@@ -26,7 +37,7 @@ export class HttpStatusError extends TaggedError('HttpStatusError')<{
   readonly url: string
   readonly body?: unknown
 }> {
-  override toJSON(): Record<string, unknown> {
+  override toJSON(): SafeErrorJSON {
     return { _tag: this._tag, status: this.status, statusText: this.statusText }
   }
 }
@@ -58,7 +69,7 @@ export type HttpError =
   | HttpDecodeError
   | HttpHookError
 
-export const safeErrorJSON = (error: unknown): Record<string, unknown> => {
+export const safeErrorJSON = (error: unknown): SafeErrorJSON => {
   if (error instanceof HttpStatusError) return error.toJSON()
   if (error !== null && typeof error === 'object' && '_tag' in error) {
     const tag = (error as { readonly _tag?: unknown })._tag
