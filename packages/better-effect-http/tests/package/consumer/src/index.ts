@@ -1,5 +1,7 @@
-// oxlint-disable anti-slop/no-chained-type-assertions, anti-slop/no-reflect-get, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/require-safety-comment-for-type-assertion -- packed consumer fixtures intentionally model external Standard Schema values.
+// oxlint-disable anti-slop/no-chained-type-assertions, anti-slop/no-reflect-get, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion -- packed consumer fixtures intentionally model external Standard Schema values.
 import { Effect, Runtime } from 'better-effect'
+import { WebEffect as Web } from 'better-effect/web'
+import { HonoEffect } from 'better-effect/hono'
 import { Schema, type StandardSchemaV1 } from 'better-effect-schema'
 import { ArkTypeAdapter } from 'better-effect-schema/arktype'
 import { ValibotAdapter } from 'better-effect-schema/valibot'
@@ -9,6 +11,7 @@ import type { Result as ResultType } from 'better-result'
 import { type as arkType } from 'arktype'
 import * as v from 'valibot'
 import * as z from 'zod'
+import { Hono } from 'hono'
 import * as Http from 'better-effect-http'
 import { HttpTest } from 'better-effect-http/testing'
 import packageJson from 'better-effect-http/package.json' with { type: 'json' }
@@ -102,3 +105,119 @@ const classResult = (await Runtime.run(
 if (Result.isError(classResult) || !(classResult.value instanceof userClass)) {
   throw new Error('Packed class schema did not preserve identity')
 }
+
+const eventSchema = <Output>(parse: (value: Record<string, unknown>) => Output) =>
+  ({
+    '~standard': {
+      version: 1,
+      vendor: 'external-consumer',
+      types: undefined as unknown as StandardSchemaV1.Types<unknown, Output>,
+      validate(value: unknown) {
+        if (typeof value !== 'object' || value === null) {
+          return { issues: [{ message: 'Expected an event object' }] }
+        }
+        return { value: parse(value as Record<string, unknown>) }
+      }
+    }
+  }) satisfies StandardSchemaV1<unknown, unknown>
+
+const progressEvent = eventSchema<{ readonly percent: number }>((value) => ({
+  percent: Number(value['percent'])
+}))
+const completedEvent = eventSchema<{ readonly ok: boolean }>((value) => ({
+  ok: Boolean(value['ok'])
+}))
+const deltaEvent = eventSchema<{ readonly text: string }>((value) => ({
+  text: String(value['text'])
+}))
+
+const externalStreamingApp = HonoEffect.app(
+  '@external/HonoHttpStreaming',
+  {},
+  async function* (routes) {
+    const app = new Hono()
+    app.use('*', yield* routes.middleware())
+
+    app.get(
+      '/proxy',
+      yield* routes.stream(
+        Effect.fn(async function* () {
+          const http = yield* Http.HttpClient
+          const upstream = http.stream('/download')
+          return Result.ok<Web.Stream>({
+            headers: { 'content-type': 'application/octet-stream' },
+            producer: async function* () {
+              for await (const item of upstream.results()) {
+                if (Result.isError(item)) throw item.error
+                yield item.value
+              }
+            }
+          })
+        })
+      )
+    )
+
+    app.get(
+      '/events',
+      yield* routes.stream(
+        Effect.fn(async function* () {
+          const http = yield* Http.HttpClient
+          const upstream = http.sse('/events', {
+            events: { progress: progressEvent, completed: completedEvent }
+          })
+          return Result.ok<Web.Stream>({
+            headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+            producer: async function* () {
+              let completed = false
+              for await (const item of upstream.results()) {
+                if (Result.isError(item)) throw item.error
+                const data = JSON.stringify(item.value.data)
+                yield new TextEncoder().encode(`event: ${item.value.event}\ndata: ${data}\n\n`)
+                if (item.value.event === 'completed') {
+                  completed = true
+                  break
+                }
+              }
+              if (!completed) throw new Error('progress ended before completed')
+            }
+          })
+        })
+      )
+    )
+
+    app.post(
+      '/generate',
+      yield* routes.stream(
+        Effect.fn(async function* () {
+          const http = yield* Http.HttpClient
+          const upstream = http.sse('/generate', {
+            method: 'POST',
+            body: { prompt: 'hello' },
+            reconnect: false,
+            events: { delta: deltaEvent, completed: completedEvent }
+          })
+          return Result.ok<Web.Stream>({
+            headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+            producer: async function* () {
+              let completed = false
+              for await (const item of upstream.results()) {
+                if (Result.isError(item)) throw item.error
+                const data = JSON.stringify(item.value.data)
+                yield new TextEncoder().encode(`event: ${item.value.event}\ndata: ${data}\n\n`)
+                if (item.value.event === 'completed') {
+                  completed = true
+                  break
+                }
+              }
+              if (!completed) throw new Error('generation ended before completed')
+            }
+          })
+        })
+      )
+    )
+
+    return app
+  }
+)
+
+void externalStreamingApp

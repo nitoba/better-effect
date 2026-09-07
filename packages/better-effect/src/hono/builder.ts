@@ -17,6 +17,7 @@ import {
   makeRequestBoundary,
   recordRequestFailure,
   recordRequestSuccess,
+  recordRequestStream,
   type RequestState
 } from './request-boundary'
 import { assertResponse } from '../web/responses'
@@ -28,6 +29,7 @@ import type {
   AnyProgramFactory,
   AnyResult,
   AnyRouteOptions,
+  CompleteHonoStreamProgram,
   CompleteProgram,
   GeneratorBody,
   GeneratorChecks,
@@ -36,6 +38,7 @@ import type {
   HonoEffectOperation,
   HonoEffectOptions,
   HonoEffectRouteOptions,
+  HonoEffectStreamOptions,
   HonoEffectSuccess,
   HonoProgramRequirements,
   MiddlewareEnvironment,
@@ -237,6 +240,56 @@ export class HonoEffectBuilder<Failure, RequestLayer extends LayerInput> {
     })
   }
 
+  stream<
+    E extends Env = Env,
+    Path extends string = string,
+    InputType extends Input = Input,
+    Program extends AnyProgram = AnyProgram
+  >(
+    program: CompleteHonoStreamProgram<Program, Failure>,
+    options?: HonoEffectStreamOptions
+  ): HonoEffectOperation<
+    Handler<E, Path, InputType, Promise<Response>>,
+    HonoProgramRequirements<RequestLayer, Program>
+  >
+  stream<
+    const Middlewares extends readonly AnyHonoMiddleware[],
+    E extends Env = MiddlewareEnvironment<Middlewares>,
+    Path extends string = MiddlewarePath<Middlewares>,
+    Program extends AnyProgram = AnyProgram
+  >(
+    ...args: HonoRouteArguments<
+      Middlewares,
+      CompleteHonoStreamProgram<Program, Failure>,
+      HonoEffectStreamOptions
+    >
+  ): HonoEffectOperation<
+    Handler<E, Path, MiddlewareInputs<Middlewares>, Promise<Response>>,
+    HonoProgramRequirements<RequestLayer, Program>
+  >
+  stream(...args: unknown[]): HonoEffectOperation<any, AnyService> {
+    const last = args.at(-1)
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- overload dispatch separates route options from the stream Program.
+    const hasOptions = args.length > 1 && (last === undefined || typeof last !== 'function')
+    // SAFETY: the overloads restrict the optional trailing argument to stream options.
+    const options = ((hasOptions ? last : {}) ?? {}) as HonoEffectStreamOptions
+    const programIndex = hasOptions ? args.length - 2 : args.length - 1
+    // SAFETY: the overloads place the stream Program immediately before route options.
+    const streamProgram = args[programIndex] as AnyProgram
+
+    return makeOperation(() => {
+      let handler = this.makeStreamHandler(streamProgram, options)
+
+      for (let index = programIndex - 1; index >= 0; index -= 1) {
+        // SAFETY: every argument before the stream Program is an input middleware by the overloads.
+        handler = this.composeInputMiddleware(args[index] as AnyHonoMiddleware, handler)
+      }
+
+      // SAFETY: the public overload restores Hono's concrete handler channels after this erased boundary.
+      return handler as Handler<any, any, any, Promise<Response>>
+    })
+  }
+
   guard<
     E extends Env = Env,
     Path extends string = string,
@@ -278,6 +331,22 @@ export class HonoEffectBuilder<Failure, RequestLayer extends LayerInput> {
 
       recordRequestSuccess(state, result.value, options)
       return await this.handleSuccess(result.value, options, context)
+    }
+  }
+
+  private makeStreamHandler(
+    streamProgram: AnyProgram,
+    options: HonoEffectStreamOptions
+  ): HonoInternalHandler {
+    return async (context) => {
+      const state = this.getState(context)
+      const result = await streamProgram()
+
+      if (Result.isError(result)) {
+        return await this.handleFailure(state, result.error, context)
+      }
+
+      recordRequestStream(state, result.value, options)
     }
   }
 

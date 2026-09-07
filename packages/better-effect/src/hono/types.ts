@@ -4,11 +4,13 @@ import type { Context, Env, HonoRequest, Input, MiddlewareHandler } from 'hono'
 import type {
   EffectError,
   EffectRequirements,
+  EffectSuccess,
   EffectYield,
   Program as ProgramType,
   ProgramFromGenerator,
   ServiceRequirement
 } from '../effect/types'
+import type { WebEffectStream } from '../web/types'
 import type { CurrentRequest } from '../standard-services/current-request'
 import type {
   LayerInput,
@@ -225,3 +227,25 @@ export type HonoEffectRouteOptions<A, ContextType extends HonoContext = HonoCont
   readonly serialize?: (value: A) => HonoJsonValue
   readonly respond?: (value: A, context: ContextType) => ResponseLike
 }
+
+/** Options for a managed Hono stream route. */
+export type HonoEffectStreamOptions = {
+  /** Cancel an unconsumed or abandoned body after this idle period. */
+  readonly unconsumedTimeoutMs?: number
+}
+
+type StreamValueCheck<Program extends AnyProgram> = [EffectSuccess<Program>] extends [
+  WebEffectStream
+]
+  ? unknown
+  : {
+      readonly __betterEffectInvalidHonoStream: {
+        readonly actual: EffectSuccess<Program>
+        readonly expected: WebEffectStream
+      }
+    }
+
+/** Validate a managed stream Program at the Hono builder boundary. */
+export type CompleteHonoStreamProgram<Program extends AnyProgram, Failure = unknown> = Program &
+  ProgramFailure<Failure, Program> &
+  StreamValueCheck<Program>

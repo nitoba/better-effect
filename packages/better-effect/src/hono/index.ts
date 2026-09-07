@@ -6,6 +6,7 @@ export type {
   HonoEffectOperation,
   HonoEffectOptions,
   HonoEffectRouteOptions,
+  HonoEffectStreamOptions,
   HonoEffectSuccess,
   HonoJsonValue
 } from './types'

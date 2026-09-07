@@ -7,6 +7,7 @@ import { validator } from 'hono/validator'
 import { Effect, Layer, Runtime, Service } from '../../src'
 import type { EffectError } from '../../src/effect'
 import { HonoEffect } from '../../src/hono'
+import { WebEffect } from '../../src/web'
 import type {
   HonoEffectOperation,
   HonoEffectContext,
@@ -238,6 +239,42 @@ const program = Effect.fn(async function* () {
   return Result.err(new OtherFailure())
 })
 expectTypeOf<EffectError<typeof program>>().toEqualTypeOf<OtherFailure>()
+
+const streamProgram = Effect.fn(async function* () {
+  yield* Missing
+  return Result.ok<WebEffect.Stream>({
+    headers: { 'content-type': 'text/plain' },
+    producer: async function* () {
+      yield new TextEncoder().encode('stream')
+    }
+  })
+})
+
+const streamApp = HonoEffect.app('@types/StreamApp', {}, async function* (http) {
+  const app = new Hono()
+  app.use('*', yield* http.middleware())
+  app.get('/stream', yield* http.stream(streamProgram))
+  return app
+})
+
+expectTypeOf<Layer.Required<typeof streamApp.layer>>().toEqualTypeOf<Missing>()
+
+const invalidStream = HonoEffect.app('@types/InvalidStreamApp', {}, async function* (http) {
+  const app = new Hono()
+  app.use('*', yield* http.middleware())
+  app.get(
+    '/stream',
+    yield* http.stream(
+      // @ts-expect-error Hono stream Programs must return an explicit WebEffect stream descriptor.
+      // oxlint-disable-next-line require-yield -- this negative fixture only checks stream result typing.
+      Effect.fn(async function* () {
+        return Result.ok('not a stream')
+      })
+    )
+  )
+  return app
+})
+void invalidStream
 // @ts-expect-error Runtime-first HonoEffect.make was removed from the public API.
 void HonoEffect.make
 

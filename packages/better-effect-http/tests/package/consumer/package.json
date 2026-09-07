@@ -8,6 +8,7 @@
     "better-effect-http": "file:./artifacts/better-effect-http.tgz",
     "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz",
     "better-result": "3.0.1",
+    "hono": "4.13.3",
     "valibot": "1.4.2",
     "zod": "4.5.4"
   },
