@@ -89,10 +89,10 @@ type TaggedClassType<Self, Tag extends string, Fields extends TaggedFieldMap> = 
   readonly kind: 'tagged-class'
   readonly fields: TaggedShape<Tag, Fields>
   readonly struct: StandardSchemaV1
-  readonly schema: StandardSchemaV1
-  readonly codec: StandardSchemaV1
-  readonly encodedSchema: StandardSchemaV1
-  readonly propsSchema: StandardSchemaV1
+  readonly schema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedInstance<Self, Tag, Fields>>
+  readonly codec: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedInstance<Self, Tag, Fields>>
+  readonly encodedSchema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedEncoded<Tag, Fields>>
+  readonly propsSchema: StandardSchemaV1<TaggedProps<Fields>, TaggedProps<Fields>>
   readonly '~standard': StandardSchemaV1<
     TaggedEncoded<Tag, Fields>,
     TaggedInstance<Self, Tag, Fields>
@@ -142,10 +142,10 @@ type TaggedErrorType<Self, Tag extends string, Fields extends TaggedFieldMap> = 
   readonly kind: 'tagged-error'
   readonly fields: TaggedShape<Tag, Fields>
   readonly struct: StandardSchemaV1
-  readonly schema: StandardSchemaV1
-  readonly codec: StandardSchemaV1
-  readonly encodedSchema: StandardSchemaV1
-  readonly propsSchema: StandardSchemaV1
+  readonly schema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedErrorProps<Tag, Fields>>
+  readonly codec: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedErrorProps<Tag, Fields>>
+  readonly encodedSchema: StandardSchemaV1<TaggedEncoded<Tag, Fields>, TaggedEncoded<Tag, Fields>>
+  readonly propsSchema: StandardSchemaV1<TaggedProps<Fields>, TaggedProps<Fields>>
   readonly '~standard': StandardSchemaV1<
     TaggedEncoded<Tag, Fields>,
     TaggedErrorProps<Tag, Fields>
