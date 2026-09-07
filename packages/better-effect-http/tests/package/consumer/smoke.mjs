@@ -1,7 +1,7 @@
 import * as Http from 'better-effect-http'
 import packageJson from 'better-effect-http/package.json' with { type: 'json' }
 
-for (const exportName of ['HttpRequest', 'HttpRequestError', 'validateHttpOptions']) {
+for (const exportName of ['HttpRequest', 'HttpRequestError', 'HttpClient', 'validateHttpOptions']) {
   if (!(exportName in Http)) {
     throw new Error(`Missing public HTTP foundation export: ${exportName}`)
   }

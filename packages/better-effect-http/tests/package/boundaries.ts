@@ -17,11 +17,17 @@ const expectedExports = {
 
 const expectedPeers = {
   'better-effect': '>=0.13.0 <0.14.0',
+  'better-effect-schema': '>=0.1.0 <0.2.0',
   'better-result': '^3.0.0',
   typescript: '>=6.0.0'
 } as const
 
-const allowedExternalImports = new Set(['ofetch', 'better-effect', 'better-result'])
+const allowedExternalImports = new Set([
+  'ofetch',
+  'better-effect',
+  'better-effect-schema',
+  'better-result'
+])
 const forbiddenPackagePrefixes = ['effect', '@effect', 'better-effect/', 'better-result/']
 
 type JsonPrimitive = string | number | boolean | null
@@ -134,7 +140,6 @@ const assertManifest = async (): Promise<void> => {
   const dependencies = manifest['dependencies']
   assertCondition(isJsonObject(dependencies), 'Runtime dependencies are missing')
   assertCondition(dependencies['ofetch'] === '^1.5.1', 'ofetch must remain on stable v1')
-  assertCondition(!('better-effect-schema' in peers), 'Schema is not a #231 dependency')
   assertCondition(!('effect' in dependencies), 'Effect TS must not be a dependency')
 }
 

@@ -5,6 +5,7 @@ import * as Http from '../src/index.ts'
 test('exports typed HTTP foundations', () => {
   expect(Http.HttpRequest.make('https://example.test').method).toBe('GET')
   expect(Object.keys(Http)).toContain('HttpRequest')
+  expect(Object.keys(Http)).toContain('HttpClient')
 })
 
 test('request helpers are immutable and preserve repeated headers', () => {

@@ -125,6 +125,7 @@
       "devDependencies": {
         "@types/bun": "1.4.1",
         "better-effect": "0.13.0",
+        "better-effect-schema": "0.1.0",
         "better-result": "^3.0.0",
         "oxfmt": "^0.63.0",
         "oxlint": "^1.78.0",
@@ -135,6 +136,7 @@
       },
       "peerDependencies": {
         "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect-schema": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
       },
