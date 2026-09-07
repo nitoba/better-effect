@@ -12,6 +12,8 @@ import type {
   ResponseData,
   SchemaOutput
 } from './schema'
+import { bindEndpoints } from './endpoints'
+import type { HttpEndpoint } from './endpoints'
 
 export type HttpClientOptions = TransportOptions
 export type HttpRequestOptions = TransportRequestOptions &
@@ -44,6 +46,7 @@ export type HttpRequestFunction = {
 }
 
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
+  readonly endpoints: <E extends Record<string, HttpEndpoint>>(endpoints: E) => Record<keyof E, (args: never) => HttpOperation>
   readonly get: HttpRequestMethod
   readonly post: HttpRequestMethod
   readonly put: HttpRequestMethod
@@ -76,7 +79,8 @@ const makeClient = <Tag extends string>(config: HttpClientOptions): HttpClientIn
     operation(config, { method, path, options })
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
     request(name, path, options)
-  return {
+  const client = {
+    endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
     request,
     get: method('GET'),
     post: method('POST'),
@@ -86,6 +90,7 @@ const makeClient = <Tag extends string>(config: HttpClientOptions): HttpClientIn
     head: method('HEAD'),
     response: (path, options) => request('GET', path, options)
   } as HttpClientInstance<Tag>
+  return client
 }
 
 // SAFETY: Service's runtime class is the token; this assertion restores its declared instance contract.
