@@ -8,6 +8,7 @@ import {
   jobStoreContract,
   type JobStoreContractScenario
 } from '../src/testing'
+import { jobEventStoreContract } from '../src/testing'
 
 import {
   makeMemoryJobStore,
@@ -180,6 +181,14 @@ test('JobStore contract reports capability coverage and skips', () => {
   expect(report.skipped.some((item) => item.id === 'wake-token-change')).toBe(true)
   expect(report.skipped.some((item) => item.id === 'batch-claim-order')).toBe(true)
   expect(report.capabilitiesNotTested).toEqual([])
+})
+
+test('MemoryJobEventStore passes the runner-agnostic event contract', async () => {
+  const suite = jobEventStoreContract()
+  for (const scenario of suite) await scenario.run()
+
+  expect(suite.report().failed).toEqual([])
+  expect(suite.report().passed).toHaveLength(suite.length)
 })
 
 test('JobStore contract reports declared extension capabilities without scenarios', async () => {

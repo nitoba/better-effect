@@ -53,6 +53,15 @@ export type {
   JobStoreContractSuite
 } from './job-store-contract'
 
+export { JobEventStoreConformanceError, jobEventStoreContract } from './job-event-store-contract'
+export type {
+  JobEventStoreContractClock,
+  JobEventStoreContractOptions,
+  JobEventStoreContractReport,
+  JobEventStoreContractScenario,
+  JobEventStoreContractSuite
+} from './job-event-store-contract'
+
 export type {
   JobScheduleStoreContractClient,
   JobScheduleStoreContractClock,

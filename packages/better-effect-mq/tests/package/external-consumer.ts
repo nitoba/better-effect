@@ -111,7 +111,8 @@ const assertArchiveContents = (entries: string[], name: string): void => {
           'package/docs/protocol/time-and-leases-v1.md',
           'package/docs/protocol/capabilities-v1.md',
           'package/docs/protocol/compatibility-v1.md',
-          'package/docs/protocol/flows-v2.md'
+          'package/docs/protocol/flows-v2.md',
+          'package/docs/protocol/durable-events-v1.md'
         ]
       : []),
     'package/dist/index.mjs',

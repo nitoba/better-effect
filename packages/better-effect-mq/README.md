@@ -19,6 +19,7 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 - [Operation atomicity](./docs/protocol/operation-atomicity-v1.md)
 - [Errors](./docs/protocol/errors-v1.md)
 - [Cursors and ordering](./docs/protocol/cursors-and-ordering-v1.md)
+- [Durable Job Events](./docs/protocol/durable-events-v1.md)
 - [Time and leases](./docs/protocol/time-and-leases-v1.md)
 - [Capabilities](./docs/protocol/capabilities-v1.md)
 - [Compatibility](./docs/protocol/compatibility-v1.md)
@@ -26,6 +27,16 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 - [Controlled claim protocol v3](./docs/protocol/controls-v3.md)
 
 These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
+
+## Durable Job Events
+
+`JobEventStore` is an optional Layer-first event log extension. The reference
+`MemoryJobEventStore` provides opaque monotonic cursors, filtered pagination,
+retention-aware cursor expiry, and deterministic `awaitEvents` wakeups. Pass
+the same event-store instance to `MemoryJobStore.make({ eventStore })` to append
+the Memory JobStore's committed transitions in its synchronous critical
+sections. Durable events intentionally omit payloads, results, complete failure
+data, and arbitrary metadata; see the [v1 event contract](./docs/protocol/durable-events-v1.md).
 
 ## Controlled claims
 
