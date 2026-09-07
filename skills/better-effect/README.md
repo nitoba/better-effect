@@ -39,6 +39,9 @@ bunx skills use nitoba/better-effect@better-effect
 - hierarchical Scope ownership, `Effect.acquireRelease`, `Effect.add`, and `Resource`;
 - standard services such as Config, Clock, Random, Logger, CurrentRequest, and CurrentAbortSignal;
 - Hono request-boundary integration with `HonoEffect`;
+- optional `better-effect-http` integration with Layer-first clients, typed
+  status responses, explicit retry/auth policies, NDJSON/SSE streams, and
+  managed Hono streaming;
 - `MapLayerBackend`, ITI, and custom DI adapters;
 - testing with explicit test Layers and compile-time type contracts;
 - architecture and refactoring guidance for existing TypeScript applications;

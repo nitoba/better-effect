@@ -43,7 +43,8 @@ bun run docs:dev
 ```
 
 The site is available at <http://localhost:3000>. The Kysely integration guide is
-available at <http://localhost:3000/docs/kysely>.
+available at <http://localhost:3000/docs/kysely>, and the HTTP client guide is
+available at <http://localhost:3000/docs/http>.
 
 ## Monorepo commands
 

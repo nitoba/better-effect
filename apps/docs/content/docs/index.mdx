@@ -40,8 +40,9 @@ release resources through Scope
 
 The library is intentionally small. It gives you a composition root and
 lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
-dependency injection to ordinary TypeScript libraries or adapters. For a
-server-side Better Auth integration that keeps Better Auth's own plugins,
+dependency injection to ordinary TypeScript libraries or adapters. For the
+Layer-first HTTP client with buffered responses, NDJSON, SSE, and opt-in Hono
+streaming, see [HTTP client](/docs/http). For a server-side Better Auth integration that keeps Better Auth's own plugins,
 cookies, and Web handler, see [Better Auth](/docs/better-auth). For a native
 Kysely database integration that preserves Kysely's builders, drivers and
 lifecycle boundaries, see [Kysely integration](/docs/kysely).
@@ -57,6 +58,7 @@ contains only dependencies that remain external.
     'I am new to better-effect',
     'I already use better-result',
     'I am integrating a container',
+    'I am integrating HTTP',
     'I am integrating Kysely'
   ]}
 >
@@ -73,6 +75,10 @@ contains only dependencies that remain external.
   <Tab>
     Read [Backends](/docs/backends). The core contracts are deliberately container-agnostic; ITI is
     the built-in `MapLayerBackend` by default; ITI remains an optional adapter.
+  </Tab>
+  <Tab>
+    Read the [HTTP client](/docs/http) guide for lazy requests, status-discriminated schemas,
+    retry/auth policies, NDJSON, SSE, and opt-in managed Hono streaming.
   </Tab>
   <Tab>
     Read [Kysely integration](/docs/kysely). It explains the `$call` Promise boundary, owned and

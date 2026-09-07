@@ -41,6 +41,8 @@ The docs application also supports Markdown content negotiation for documentatio
 - Layer provider recipes, composition, completeness, and override semantics: `/docs/layers`;
 - Runtime ownership, warmup, observers, cancellation, `runWith`, typed boundaries, and shutdown: `/docs/runtime`;
 - Hono request boundary integration: `/docs/hono`;
+- Layer-first HTTP client, response schemas, retry/auth policies, NDJSON/SSE,
+  and managed Hono streaming: `/docs/http`;
 - hierarchical Scope ownership and cleanup order: `/docs/scope`;
 - local acquire/use/release compatibility facade: `/docs/resource`;
 - `pipe` and Result-aware Effect combinators: `/docs/pipelines`;
@@ -104,6 +106,8 @@ The intended migration keeps `better-result` as the failure/control-flow model a
 
 Prioritize:
 
+- `http` for the optional `better-effect-http` client, policies, schemas, and
+  streaming terminals;
 - `hono`;
 - `runtime`;
 - `scope`;

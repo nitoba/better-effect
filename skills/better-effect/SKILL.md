@@ -519,6 +519,32 @@ Expected `Result.err` values should go through the configured failure policy. Th
 
 Use Hono/Standard Schema validation middleware before the Program rather than inventing a second validation contract inside the adapter.
 
+### better-effect-http integration
+
+`better-effect-http` is an optional, server-side HTTP client package. Keep it
+separate from the core package and install its declared `better-effect`,
+`better-result`, and `better-effect-schema` peers. `HttpClient` is a Service
+token and Layer factory: compose one client Layer into the application's one
+Runtime, then consume lazy operations with `yield*`. `.use(...)` returns a new
+immutable client; requests and buffered operations are single-use, while each
+stream terminal owns a one-shot reader/session.
+
+Prefer a Standard Schema value or an explicit status-to-schema map over a
+TypeScript generic that only claims a response shape. Keep retries explicit
+with `HttpRetry`; ofetch retry is disabled, safe methods do not imply replayable
+bodies, and auth recovery/SSE reconnect need their own bounded policies. Use
+the package's stream terminals (`results`, `forEach`, `use`, `takeUntil`, and
+`pipeTo`) so reader, permit, and Scope ownership remain visible. NDJSON
+consumers must decide what to do after partial delivery; SSE `Last-Event-ID`
+is a protocol cursor, not an exactly-once business checkpoint.
+
+For telemetry, use the optional OpenTelemetry observer without installing an
+SDK or global provider; propagate only to explicitly allowed origins and keep
+headers/bodies/cursors redacted. For Hono, use `routes.stream` as the explicit
+managed streaming boundary and keep the request Scope alive through readiness,
+EOF, errors, or downstream cancellation. The package README and `/docs/http`
+guide are the canonical HTTP API and recipe references.
+
 ## DI backends and adapters
 
 The default `MapLayerBackend` is usually enough. It is lazy, caches by Service tag, and deduplicates concurrent acquisition.
