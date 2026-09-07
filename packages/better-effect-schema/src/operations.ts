@@ -1,82 +1,83 @@
-import * as z from "zod"
+import * as z from 'zod'
+import { Result } from 'better-result'
 
 import {
   SchemaConstructionFailure,
   SchemaDecodeFailure,
-  SchemaEncodeFailure
-} from "./failure.js"
-import type { AnySchemaClass } from "./is-schema-class.js"
-import type { Instance, Props } from "./types.js"
-import { schemaFailure, schemaSuccess } from "./internal/result.js"
-import type { SchemaEffect } from "./schema-effect.js"
+  SchemaEncodeFailure,
+  SchemaAsyncRequired,
+  SchemaExecutionFailure
+} from './failure.js'
+import type { AnySchemaClass } from './is-schema-class.js'
+import type { Instance, Props } from './types.js'
+import { invokeAsync, invokeSync } from './internal/execution.js'
+import { schemaFailure, schemaSuccess } from './internal/result.js'
+import type { SchemaEffect } from './schema-effect.js'
 
-export type { SchemaEffect } from "./schema-effect.js"
+export type { SchemaEffect } from './schema-effect.js'
 
 type AnySchema = z.ZodType
 
-type DecodeOperation<Schema extends AnySchema> = SchemaEffect<
-  z.output<Schema>,
-  SchemaDecodeFailure
->
+type DecodeFailure = SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired
+type EncodeFailure = SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired
+type ConstructionFailure = SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired
 
-type EncodeOperation<Schema extends AnySchema> = SchemaEffect<
-  z.input<Schema>,
-  SchemaEncodeFailure
->
+type DecodeOperation<Schema extends AnySchema> = SchemaEffect<z.output<Schema>, DecodeFailure>
+
+type EncodeOperation<Schema extends AnySchema> = SchemaEffect<z.input<Schema>, EncodeFailure>
 
 type ConstructionOperation<Class extends AnySchemaClass> = SchemaEffect<
   Instance<Class>,
-  SchemaConstructionFailure
+  ConstructionFailure
 >
 
 type SchemaClassRuntime<Class extends AnySchemaClass> = {
   safeMake(props: Props<Class>): z.ZodSafeParseResult<Instance<Class>>
-  safeMakeAsync(
-    props: Props<Class>
-  ): Promise<z.ZodSafeParseResult<Instance<Class>>>
+  safeMakeAsync(props: Props<Class>): Promise<z.ZodSafeParseResult<Instance<Class>>>
 }
 
 const classRuntime = <Class extends AnySchemaClass>(
   schemaClass: Class
-): SchemaClassRuntime<Class> =>
-  schemaClass as unknown as SchemaClassRuntime<Class>
+): SchemaClassRuntime<Class> => schemaClass as unknown as SchemaClassRuntime<Class>
 
 const identifierOf = (schema: AnySchema): string => {
   try {
-    const identifier = Reflect.get(schema, "identifier") as unknown
-    if (typeof identifier === "string" && identifier.trim().length > 0) {
+    const identifier = Reflect.get(schema, 'identifier') as unknown
+    if (typeof identifier === 'string' && identifier.trim().length > 0) {
       return identifier
     }
   } catch {
     // A diagnostic label must never turn a validation failure into a defect.
   }
 
-  return "ZodSchema"
+  return 'ZodSchema'
 }
 
 const decodeResult = <Schema extends AnySchema>(
   schema: Schema,
   result: z.ZodSafeParseResult<z.output<Schema>>
-): DecodeOperation<Schema> => result.success
-  ? schemaSuccess<z.output<Schema>, SchemaDecodeFailure>(result.data)
-  : schemaFailure<z.output<Schema>, SchemaDecodeFailure>(
-      new SchemaDecodeFailure({
-        identifier: identifierOf(schema),
-        cause: result.error
-      })
-    )
+): DecodeOperation<Schema> =>
+  result.success
+    ? schemaSuccess<z.output<Schema>, DecodeFailure>(result.data)
+    : schemaFailure<z.output<Schema>, DecodeFailure>(
+        new SchemaDecodeFailure({
+          identifier: identifierOf(schema),
+          cause: result.error
+        })
+      )
 
 const encodeResult = <Schema extends AnySchema>(
   schema: Schema,
   result: z.ZodSafeParseResult<z.input<Schema>>
-): EncodeOperation<Schema> => result.success
-  ? schemaSuccess<z.input<Schema>, SchemaEncodeFailure>(result.data)
-  : schemaFailure<z.input<Schema>, SchemaEncodeFailure>(
-      new SchemaEncodeFailure({
-        identifier: identifierOf(schema),
-        cause: result.error
-      })
-    )
+): EncodeOperation<Schema> =>
+  result.success
+    ? schemaSuccess<z.input<Schema>, EncodeFailure>(result.data)
+    : schemaFailure<z.input<Schema>, EncodeFailure>(
+        new SchemaEncodeFailure({
+          identifier: identifierOf(schema),
+          cause: result.error
+        })
+      )
 
 /** Decode an unknown value with a typed failure instead of throwing a ZodError. */
 export function decodeUnknown<Schema extends AnySchema>(
@@ -91,7 +92,12 @@ export function decodeUnknown<Schema extends AnySchema>(
   input?: unknown
 ): DecodeOperation<Schema> | ((input: unknown) => DecodeOperation<Schema>) {
   const run = (value: unknown): DecodeOperation<Schema> =>
-    decodeResult(schema, z.safeParse(schema, value))
+    (() => {
+      const result = invokeSync('decodeUnknown', () => z.safeParse(schema, value))
+      return Result.isError(result)
+        ? (result as DecodeOperation<Schema>)
+        : decodeResult(schema, result.value)
+    })()
 
   return arguments.length === 1 ? run : run(input)
 }
@@ -109,7 +115,12 @@ export function decode<Schema extends AnySchema>(
   input?: z.input<Schema>
 ): DecodeOperation<Schema> | ((input: z.input<Schema>) => DecodeOperation<Schema>) {
   const run = (value: z.input<Schema>): DecodeOperation<Schema> =>
-    decodeResult(schema, z.safeDecode(schema, value))
+    (() => {
+      const result = invokeSync('decode', () => z.safeDecode(schema, value))
+      return Result.isError(result)
+        ? (result as DecodeOperation<Schema>)
+        : decodeResult(schema, result.value)
+    })()
 
   return arguments.length === 1 ? run : run(input as z.input<Schema>)
 }
@@ -126,8 +137,12 @@ export function decodeUnknownAsync<Schema extends AnySchema>(
   schema: Schema,
   input?: unknown
 ): Promise<DecodeOperation<Schema>> | ((input: unknown) => Promise<DecodeOperation<Schema>>) {
-  const run = async (value: unknown): Promise<DecodeOperation<Schema>> =>
-    decodeResult(schema, await z.safeParseAsync(schema, value))
+  const run = async (value: unknown): Promise<DecodeOperation<Schema>> => {
+    const result = await invokeAsync('decodeUnknownAsync', () => z.safeParseAsync(schema, value))
+    return Result.isError(result)
+      ? (result as DecodeOperation<Schema>)
+      : decodeResult(schema, result.value)
+  }
 
   return arguments.length === 1 ? run : run(input)
 }
@@ -143,9 +158,15 @@ export function decodeAsync<Schema extends AnySchema>(
 export function decodeAsync<Schema extends AnySchema>(
   schema: Schema,
   input?: z.input<Schema>
-): Promise<DecodeOperation<Schema>> | ((input: z.input<Schema>) => Promise<DecodeOperation<Schema>>) {
-  const run = async (value: z.input<Schema>): Promise<DecodeOperation<Schema>> =>
-    decodeResult(schema, await z.safeDecodeAsync(schema, value))
+):
+  | Promise<DecodeOperation<Schema>>
+  | ((input: z.input<Schema>) => Promise<DecodeOperation<Schema>>) {
+  const run = async (value: z.input<Schema>): Promise<DecodeOperation<Schema>> => {
+    const result = await invokeAsync('decodeAsync', () => z.safeDecodeAsync(schema, value))
+    return Result.isError(result)
+      ? (result as DecodeOperation<Schema>)
+      : decodeResult(schema, result.value)
+  }
 
   return arguments.length === 1 ? run : run(input as z.input<Schema>)
 }
@@ -163,7 +184,12 @@ export function encode<Schema extends AnySchema>(
   value?: z.output<Schema>
 ): EncodeOperation<Schema> | ((value: z.output<Schema>) => EncodeOperation<Schema>) {
   const run = (input: z.output<Schema>): EncodeOperation<Schema> =>
-    encodeResult(schema, z.safeEncode(schema, input))
+    (() => {
+      const result = invokeSync('encode', () => z.safeEncode(schema, input))
+      return Result.isError(result)
+        ? (result as EncodeOperation<Schema>)
+        : encodeResult(schema, result.value)
+    })()
 
   return arguments.length === 1 ? run : run(value as z.output<Schema>)
 }
@@ -179,9 +205,15 @@ export function encodeAsync<Schema extends AnySchema>(
 export function encodeAsync<Schema extends AnySchema>(
   schema: Schema,
   value?: z.output<Schema>
-): Promise<EncodeOperation<Schema>> | ((value: z.output<Schema>) => Promise<EncodeOperation<Schema>>) {
-  const run = async (input: z.output<Schema>): Promise<EncodeOperation<Schema>> =>
-    encodeResult(schema, await z.safeEncodeAsync(schema, input))
+):
+  | Promise<EncodeOperation<Schema>>
+  | ((value: z.output<Schema>) => Promise<EncodeOperation<Schema>>) {
+  const run = async (input: z.output<Schema>): Promise<EncodeOperation<Schema>> => {
+    const result = await invokeAsync('encodeAsync', () => z.safeEncodeAsync(schema, input))
+    return Result.isError(result)
+      ? (result as EncodeOperation<Schema>)
+      : encodeResult(schema, result.value)
+  }
 
   return arguments.length === 1 ? run : run(value as z.output<Schema>)
 }
@@ -199,16 +231,17 @@ export function make<Class extends AnySchemaClass>(
   props?: Props<Class>
 ): ConstructionOperation<Class> | ((props: Props<Class>) => ConstructionOperation<Class>) {
   const run = (input: Props<Class>): ConstructionOperation<Class> => {
-    const result = classRuntime(schemaClass).safeMake(input)
+    const result = invokeSync('make', () => classRuntime(schemaClass).safeMake(input))
 
-    return result.success
-      ? schemaSuccess<Instance<Class>, SchemaConstructionFailure>(
-          result.data as Instance<Class>
-        )
-      : schemaFailure<Instance<Class>, SchemaConstructionFailure>(
+    if (Result.isError(result)) return result as ConstructionOperation<Class>
+
+    const parsed = result.value
+    return parsed.success
+      ? schemaSuccess<Instance<Class>, ConstructionFailure>(parsed.data as Instance<Class>)
+      : schemaFailure<Instance<Class>, ConstructionFailure>(
           new SchemaConstructionFailure({
-            identifier: schemaClass.identifier,
-            cause: result.error
+            identifier: identifierOf(schemaClass as unknown as AnySchema),
+            cause: parsed.error
           })
         )
   }
@@ -227,18 +260,23 @@ export function makeAsync<Class extends AnySchemaClass>(
 export function makeAsync<Class extends AnySchemaClass>(
   schemaClass: Class,
   props?: Props<Class>
-): Promise<ConstructionOperation<Class>> | ((props: Props<Class>) => Promise<ConstructionOperation<Class>>) {
+):
+  | Promise<ConstructionOperation<Class>>
+  | ((props: Props<Class>) => Promise<ConstructionOperation<Class>>) {
   const run = async (input: Props<Class>): Promise<ConstructionOperation<Class>> => {
-    const result = await classRuntime(schemaClass).safeMakeAsync(input)
+    const result = await invokeAsync('makeAsync', () =>
+      classRuntime(schemaClass).safeMakeAsync(input)
+    )
 
-    return result.success
-      ? schemaSuccess<Instance<Class>, SchemaConstructionFailure>(
-          result.data as Instance<Class>
-        )
-      : schemaFailure<Instance<Class>, SchemaConstructionFailure>(
+    if (Result.isError(result)) return result as ConstructionOperation<Class>
+
+    const parsed = result.value
+    return parsed.success
+      ? schemaSuccess<Instance<Class>, ConstructionFailure>(parsed.data as Instance<Class>)
+      : schemaFailure<Instance<Class>, ConstructionFailure>(
           new SchemaConstructionFailure({
-            identifier: schemaClass.identifier,
-            cause: result.error
+            identifier: identifierOf(schemaClass as unknown as AnySchema),
+            cause: parsed.error
           })
         )
   }

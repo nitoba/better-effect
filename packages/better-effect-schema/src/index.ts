@@ -1,26 +1,24 @@
-export { Class } from "./class.js"
+export { Class } from './class.js'
+export { BetterEffectZodError, ZodClassError } from './errors.js'
+export type { BetterEffectZodErrorCode, ZodClassErrorCode } from './errors.js'
 export {
-  BetterEffectZodError,
-  ZodClassError
-} from "./errors.js"
-export type {
-  BetterEffectZodErrorCode,
-  ZodClassErrorCode
-} from "./errors.js"
-export {
+  SchemaAsyncRequired,
   SchemaConstructionFailure,
   SchemaDecodeFailure,
-  SchemaEncodeFailure
-} from "./failure.js"
+  SchemaDefinitionFailure,
+  SchemaEncodeFailure,
+  SchemaExecutionFailure,
+  SchemaUnsupportedOperation
+} from './failure.js'
 export type {
   SchemaFailureOptions,
   SchemaIssue,
   SchemaIssuePath,
   SchemaIssuePathSegment
-} from "./failure.js"
-export { isClassInstance } from "./is-class-instance.js"
-export { isSchemaClass } from "./is-schema-class.js"
-export type { AnySchemaClass } from "./is-schema-class.js"
+} from './failure.js'
+export { isClassInstance } from './is-class-instance.js'
+export { isSchemaClass } from './is-schema-class.js'
+export type { AnySchemaClass } from './is-schema-class.js'
 export {
   decode,
   decodeAsync,
@@ -30,11 +28,11 @@ export {
   encodeAsync,
   make,
   makeAsync
-} from "./operations.js"
-export type { SchemaEffect } from "./schema-effect.js"
-export { Schema } from "./schema.js"
-export { TaggedClass } from "./tagged-class.js"
-export { TaggedError } from "./tagged-error.js"
+} from './operations.js'
+export type { SchemaEffect } from './schema-effect.js'
+export { Schema } from './schema.js'
+export { TaggedClass } from './tagged-class.js'
+export { TaggedError } from './tagged-error.js'
 export type {
   AnyObjectCodec,
   AnyObjectSchema,
@@ -52,5 +50,5 @@ export type {
   SchemaClass,
   Struct,
   ToJSONSchemaParams
-} from "./types.js"
-export { Z } from "./z.js"
+} from './types.js'
+export { Z } from './z.js'

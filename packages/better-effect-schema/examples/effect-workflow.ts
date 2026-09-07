@@ -3,8 +3,10 @@ import { Effect } from "better-effect"
 import { Result } from "better-result"
 import {
   Schema,
+  SchemaAsyncRequired,
   SchemaDecodeFailure,
-  SchemaEncodeFailure
+  SchemaEncodeFailure,
+  SchemaExecutionFailure
 } from "better-effect-schema"
 
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
@@ -23,7 +25,11 @@ const input: unknown = {
 }
 
 const decoded = Schema.decodeUnknown(User)(input)
-decoded satisfies Effect<User, SchemaDecodeFailure, never>
+decoded satisfies Effect<
+  User,
+  SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  never
+>
 
 const roundTrip = Effect.gen(function* () {
   const user = yield* decoded
@@ -33,7 +39,10 @@ const roundTrip = Effect.gen(function* () {
 
 roundTrip satisfies Effect<
   Schema.Encoded<typeof User>,
-  SchemaDecodeFailure | SchemaEncodeFailure,
+  | SchemaDecodeFailure
+  | SchemaEncodeFailure
+  | SchemaExecutionFailure
+  | SchemaAsyncRequired,
   never
 >
 
