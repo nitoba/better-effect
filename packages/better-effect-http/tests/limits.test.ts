@@ -21,16 +21,24 @@ test('removes an aborted waiter without consuming capacity', async () => {
   const controller = new AbortController()
   const waiting = limiter.admit(controller.signal)
   controller.abort()
-  await expect(waiting).rejects.toMatchObject({ _tag: 'HttpAbortError' })
+  const aborted = await waiting.then(
+    () => undefined,
+    (error) => error
+  )
+  expect(aborted).toMatchObject({ _tag: 'HttpAbortError' })
   first.release()
-  await expect(limiter.admit()).resolves.toBeDefined()
+  expect(await limiter.admit()).toBeDefined()
 })
 
 test('rejects a full queue with a typed admission error', async () => {
   const limiter = makeHttpLimiter({ concurrency: 1, queue: { maxSize: 1 } })!
   const first = await limiter.admit()
   void limiter.admit()
-  await expect(limiter.admit()).rejects.toMatchObject({
+  const full = await limiter.admit().then(
+    () => undefined,
+    (error) => error
+  )
+  expect(full).toMatchObject({
     _tag: 'HttpLimitError',
     reason: 'queue-full'
   })
