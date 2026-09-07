@@ -24,7 +24,9 @@ export type TransportRequest = Readonly<{
   readonly headers?: RequestInit['headers']
   readonly body?: unknown
   readonly signal?: AbortSignal
-  readonly timeout?: number | Readonly<{ readonly attemptMs?: number; readonly totalMs?: number | false }>
+  readonly timeout?:
+    | number
+    | Readonly<{ readonly attemptMs?: number; readonly totalMs?: number | false }>
   readonly responseType?: 'json' | 'text' | 'blob' | 'arrayBuffer'
 }>
 
@@ -67,7 +69,8 @@ export const executeRequest = async (
     if (!headers.has('content-type')) headers.set('content-type', 'application/json')
   }
   try {
-    const timeout = typeof request.timeout === 'number' ? request.timeout : request.timeout?.attemptMs
+    const timeout =
+      typeof request.timeout === 'number' ? request.timeout : request.timeout?.attemptMs
     const timed = deadline(timeout)
     const linked = linkSignals(request.signal, yieldCurrentSignal(), timed?.signal)
     const requester = config.fetch ? createFetch({ fetch: config.fetch }) : ofetch
