@@ -8,7 +8,12 @@ import type { HttpSchema } from './schema'
 import type { AnySchemaCodec, CodecOutput } from 'better-effect-schema'
 import type { StandardSchemaV1 } from 'better-effect-schema'
 
-type Parts = Readonly<{ params?: HttpSchema; query?: HttpSchema; body?: HttpSchema }>
+type EndpointBody =
+  | Readonly<{ body?: never; bodyCodec?: never }>
+  | Readonly<{ body: HttpSchema; bodyCodec?: never }>
+  | Readonly<{ body?: never; bodyCodec: AnySchemaCodec }>
+
+type Parts = Readonly<{ params?: HttpSchema; query?: HttpSchema }> & EndpointBody
 type Definition = Readonly<
   Parts & {
     readonly bodyCodec?: AnySchemaCodec
@@ -87,6 +92,12 @@ export const bindEndpoints = <E extends Record<string, HttpEndpoint>>(
         const run = async function* (): HttpOperation {
           try {
             const input = (args ?? {}) as Record<string, unknown>
+            if (definition.body !== undefined && definition.bodyCodec !== undefined) {
+              throw new HttpRequestError({
+                phase: 'request',
+                details: 'body and bodyCodec are mutually exclusive'
+              })
+            }
             const params = await validated(definition.params, input.params)
             const query = await validated(definition.query, input.query)
             let body = await validated(definition.body, input.body)

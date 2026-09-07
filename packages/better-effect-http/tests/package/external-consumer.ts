@@ -1,9 +1,11 @@
+// oxlint-disable anti-slop/no-chained-type-assertions, anti-slop/require-safety-comment-for-type-assertion -- this script crosses packed artifact and subprocess boundaries.
 import { cp, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+const corePackageRoot = resolve(packageRoot, '../better-effect')
 const schemaPackageRoot = resolve(packageRoot, '../better-effect-schema')
 const fixtureSource = join(packageRoot, 'tests/package/consumer')
 const decoder = new TextDecoder()
@@ -41,8 +43,19 @@ const main = async (): Promise<void> => {
     const archiveDirectory = join(root, 'archives')
     await mkdir(archiveDirectory)
     assertSuccess(
+      run(['bun', 'run', 'build'], corePackageRoot),
+      'Building better-effect for the external consumer'
+    )
+    assertSuccess(
       run(['bun', 'run', 'build'], schemaPackageRoot),
       'Building better-effect-schema for the external consumer'
+    )
+    assertSuccess(
+      run(
+        ['bun', 'pm', 'pack', '--destination', archiveDirectory, '--ignore-scripts'],
+        corePackageRoot
+      ),
+      'Packing better-effect'
     )
     assertSuccess(
       run(
@@ -69,10 +82,18 @@ const main = async (): Promise<void> => {
       schemaArchiveName !== undefined,
       'Schema package packing did not create an archive'
     )
+    const coreArchiveName = (await readdir(archiveDirectory)).find(
+      (entry) => entry === 'better-effect-0.13.0.tgz'
+    )
+    assertCondition(
+      coreArchiveName !== undefined,
+      'Package packing did not create a better-effect archive'
+    )
 
     const fixture = join(root, 'fixture')
     await cp(fixtureSource, fixture, { recursive: true })
     await mkdir(join(fixture, 'artifacts'))
+    await cp(join(archiveDirectory, coreArchiveName), join(fixture, 'artifacts', coreArchiveName))
     await cp(join(archiveDirectory, archiveName), join(fixture, 'artifacts/better-effect-http.tgz'))
     await cp(
       join(archiveDirectory, schemaArchiveName),
