@@ -202,7 +202,16 @@ const assertGeneratedPackage = async (): Promise<void> => {
   }
 
   const entrypoint = await import(pathToFileURL(join(distRoot, 'index.mjs')).href)
-  assertCondition(Object.keys(entrypoint).length === 0, 'Initial package exports a placeholder API')
+  for (const exportName of [
+    'HttpRequest',
+    'HttpRequestError',
+    'validateHttpOptions'
+  ]) {
+    assertCondition(
+      exportName in entrypoint,
+      `Missing public HTTP foundation export: ${exportName}`
+    )
+  }
 }
 
 const assertPackedArtifact = async (): Promise<void> => {
