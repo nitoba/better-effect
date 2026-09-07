@@ -4,22 +4,26 @@ import { Result } from 'better-result'
 
 import {
   Schema,
-  type Encoded,
-  type Props,
+  SchemaAsyncRequired,
+  SchemaConstructionFailure,
   SchemaDecodeFailure,
   SchemaDefinitionFailure,
   SchemaEncodeFailure,
-  SchemaAsyncRequired,
-  SchemaExecutionFailure
+  SchemaExecutionFailure,
+  SchemaUnsupportedOperation,
+  type Encoded,
+  type Props
 } from '../src/index.js'
+import { ZodAdapter } from '../src/adapters/zod/index.js'
 import type { Equal, Expect } from './helpers.js'
 
+const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class User extends Schema.Class<User>('@type/OperationsUser')({
+class User extends local.Class<User>('@type/OperationsUser')({
   id: z.uuid(),
   createdAt: DateFromISOString
 }) {}
@@ -30,19 +34,24 @@ const decoded = Schema.decodeUnknown(User)({
 })
 decoded satisfies Effect<
   User,
-  SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  SchemaDecodeFailure |
+    SchemaConstructionFailure |
+    SchemaDefinitionFailure |
+    SchemaExecutionFailure |
+    SchemaAsyncRequired,
   never
 >
 
 const encoded = Schema.encode(User)(
-  new User({
-    id: '550e8400-e29b-41d4-a716-446655440000',
-    createdAt: new Date()
-  })
+  new User({ id: '550e8400-e29b-41d4-a716-446655440000', createdAt: new Date() })
 )
 encoded satisfies Effect<
   Encoded<typeof User>,
-  SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  SchemaEncodeFailure |
+    SchemaDefinitionFailure |
+    SchemaUnsupportedOperation |
+    SchemaExecutionFailure |
+    SchemaAsyncRequired,
   never
 >
 
@@ -52,10 +61,8 @@ Result.gen(function* () {
   return Result.ok(wire)
 })
 
-type _Props = Expect<Equal<Props<typeof User>, { readonly id: string; readonly createdAt: Date }>>
-type _Encoded = Expect<
-  Equal<Encoded<typeof User>, { readonly id: string; readonly createdAt: string }>
->
+type _Props = Expect<Equal<Props<typeof User>, { id: string; createdAt: Date }>>
+type _Encoded = Expect<Equal<Encoded<typeof User>, { id: string; createdAt: string }>>
 
-// @ts-expect-error typed decode does not accept decoded props
+// @ts-expect-error typed decode accepts the codec's encoded input, not decoded props
 Schema.decode(User)({ id: 'id', createdAt: new Date() })

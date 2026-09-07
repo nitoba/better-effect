@@ -50,7 +50,9 @@
         "VERIFICATION.md",
         "docs/api.md",
         "docs/architecture.md",
-        "docs/valibot.md"
+        "docs/arktype.md",
+        "docs/valibot.md",
+        "docs/zod.md"
       ]
     },
     {

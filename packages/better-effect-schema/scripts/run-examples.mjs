@@ -10,7 +10,7 @@ const examples = (await readdir(directory))
   .sort()
 
 for (const example of examples) {
-  const result = spawnSync(process.execPath, [join(directory, example)], {
+  const result = spawnSync("bun", [join(directory, example)], {
     cwd: root,
     stdio: "inherit"
   })

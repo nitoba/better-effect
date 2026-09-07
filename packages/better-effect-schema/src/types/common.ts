@@ -1,55 +1,36 @@
-import type * as z from 'zod'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 import type { SchemaAnnotations } from '../json-schema/metadata.js'
 
-/**
- * @deprecated Construction options were removed. Normal constructors always
- * validate; use the explicit static `unsafeMake` escape when required.
- */
-export type MakeOptions = never
-
+/** Provider-neutral class categories used by runtime diagnostics. */
 export type ClassKind = 'class' | 'tagged-class' | 'tagged-error'
 export type ClassAnnotations = SchemaAnnotations
-export type ToJSONSchemaParams = NonNullable<Parameters<typeof z.toJSONSchema>[1]>
-export type RawShape = z.core.$ZodShape
-export type AnyObjectSchema = z.ZodObject<z.core.$ZodShape, z.core.$ZodObjectConfig>
-export type AnyObjectCodec = z.ZodCodec<AnyObjectSchema, AnyObjectSchema>
-export type ClassDefinition = AnyObjectSchema | AnyObjectCodec
-export type ShapeOf<Schema extends AnyObjectSchema> = Schema['shape']
-export type ConfigOf<Schema extends AnyObjectSchema> =
-  Schema extends z.ZodObject<z.core.$ZodShape, infer Config> ? Config : z.core.$ZodObjectConfig
-
-export type DefinitionFields<Definition extends ClassDefinition> =
-  Definition extends AnyObjectSchema
-    ? ShapeOf<Definition>
-    : Definition extends z.ZodCodec<AnyObjectSchema, infer PropsSchema extends AnyObjectSchema>
-      ? ShapeOf<PropsSchema>
-      : never
-
+export type RawShape = Readonly<Record<string, StandardSchemaV1>>
+export type AnyObjectSchema = StandardSchemaV1
+export type AnyObjectCodec = StandardSchemaV1
+export type ClassDefinition = StandardSchemaV1
+export type ShapeOf<Schema extends AnyObjectSchema> = Readonly<Record<string, StandardSchemaV1>>
+export type ConfigOf<Schema extends AnyObjectSchema> = unknown
+export type DefinitionFields<Definition extends ClassDefinition> = ShapeOf<Definition>
 export type Simplify<Value> = Value extends object
   ? { readonly [Key in keyof Value]: Value[Key] }
   : Value
-
 export type ConstructorArgs<Props> = keyof Props extends never
   ? readonly [props?: Props]
   : {} extends Props
     ? readonly [props?: Props]
     : readonly [props: Props]
-
-export type FieldMask<Shape extends RawShape, ProtectedKeys extends PropertyKey = never> = {
+export type FieldMask<Shape extends object, ProtectedKeys extends PropertyKey = never> = {
   readonly [Key in Exclude<keyof Shape, ProtectedKeys>]?: true
 }
-
-export type ClassAugmentation<ProtectedKeys extends PropertyKey = never> = RawShape & {
-  readonly [Key in ProtectedKeys]?: never
-}
-
-export type ConstructionProps<
-  Definition extends z.ZodType,
-  ProtectedKeys extends PropertyKey = never
-> = Simplify<Omit<z.output<Definition>, Extract<ProtectedKeys, keyof z.output<Definition>>>>
-
-export type InheritedClassMembers<Self, Definition extends z.ZodType> = Omit<
+export type ClassAugmentation<ProtectedKeys extends PropertyKey = never> = Record<
+  string,
+  StandardSchemaV1
+> & { readonly [Key in ProtectedKeys]?: never }
+export type ConstructionProps<Definition extends StandardSchemaV1> = StandardSchemaV1.InferOutput<Definition>
+export type InheritedClassMembers<Self, Definition extends StandardSchemaV1> = Omit<
   Self,
-  keyof z.output<Definition>
+  keyof StandardSchemaV1.InferOutput<Definition>
 >
+export type MakeOptions = never
+export type ToJSONSchemaParams = Record<string, unknown>

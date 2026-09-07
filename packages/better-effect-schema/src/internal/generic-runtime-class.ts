@@ -40,7 +40,7 @@ type RuntimeClass = GenericSchemaClass<unknown, GenericClassDefinition>
 
 const markerFor = (
   descriptor: GenericClassDescriptor
-): Readonly<{ identifier: string; kind: 'class' }> =>
+): Readonly<{ identifier: string; kind: GenericClassDescriptor['kind'] }> =>
   Object.freeze({ identifier: descriptor.identifier, kind: descriptor.kind })
 
 const descriptorFor = (
@@ -106,7 +106,7 @@ const makeSync = (
 
   let candidate: Record<PropertyKey, unknown>
   try {
-    candidate = genericConstructionRecord(input)
+    candidate = genericConstructionRecord(descriptor.prepareConstruction?.(input) ?? input)
   } catch (cause) {
     return Result.err(constructionFailure(descriptor, cause))
   }
@@ -142,7 +142,7 @@ const makeAsync = async (
 
   let candidate: Record<PropertyKey, unknown>
   try {
-    candidate = genericConstructionRecord(input)
+    candidate = genericConstructionRecord(descriptor.prepareConstruction?.(input) ?? input)
   } catch (cause) {
     return Result.err(constructionFailure(descriptor, cause))
   }
@@ -179,24 +179,133 @@ const makeAsync = async (
   }
 }
 
+type StandardResult =
+  | { readonly value: unknown }
+  | { readonly issues: readonly { readonly message: string }[] }
+
+const standardFailure = (cause: unknown): StandardResult => ({
+  issues: [{ message: cause instanceof Error ? cause.message : String(cause) }]
+})
+
+const normalizeStandardResult = (
+  value: unknown,
+  identifier: string,
+  operation: string
+): StandardValidation<unknown> => {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {
+    return {
+      _tag: 'definition',
+      failure: new SchemaDefinitionFailure({ identifier, operation, cause: 'invalid-result' })
+    }
+  }
+
+  try {
+    const issues = Reflect.get(value, 'issues')
+    if (issues !== undefined) {
+      return Array.isArray(issues)
+        ? { _tag: 'failure', issues }
+        : {
+            _tag: 'definition',
+            failure: new SchemaDefinitionFailure({ identifier, operation, cause: 'invalid-issues' })
+          }
+    }
+
+    if (!Reflect.has(value, 'value')) {
+      return {
+        _tag: 'definition',
+        failure: new SchemaDefinitionFailure({ identifier, operation, cause: 'missing-value' })
+      }
+    }
+
+    return { _tag: 'success', value: Reflect.get(value, 'value') }
+  } catch (cause) {
+    return {
+      _tag: 'definition',
+      failure: new SchemaDefinitionFailure({ identifier, operation, cause })
+    }
+  }
+}
+
+const standardizeConstruction = (
+  constructor: RuntimeClass,
+  descriptor: GenericClassDescriptor,
+  validation: StandardValidation<unknown>
+): StandardResult | Promise<StandardResult> => {
+  switch (validation._tag) {
+    case 'definition':
+      return standardFailure(validation.failure)
+    case 'failure':
+      return standardFailure(validation.issues)
+    case 'success': {
+      const result = makeSync(constructor, descriptor, validation.value)
+      return Result.isError(result) ? standardFailure(result.error) : { value: result.value }
+    }
+  }
+}
+
+const standardizeAsyncConstruction = async (
+  constructor: RuntimeClass,
+  descriptor: GenericClassDescriptor,
+  validation: StandardValidation<unknown>
+): Promise<StandardResult> => {
+  switch (validation._tag) {
+    case 'definition':
+      return standardFailure(validation.failure)
+    case 'failure':
+      return standardFailure(validation.issues)
+    case 'success': {
+      const result = await makeAsync(constructor, descriptor, validation.value)
+      return Result.isError(result) ? standardFailure(result.error) : { value: result.value }
+    }
+  }
+}
+
+const standardizePending = async (
+  constructor: RuntimeClass,
+  descriptor: GenericClassDescriptor,
+  pending: unknown
+): Promise<StandardResult> => {
+  try {
+    const validation = normalizeStandardResult(pending, descriptor.identifier, 'decode')
+    return standardizeAsyncConstruction(constructor, descriptor, validation)
+  } catch (cause) {
+    return standardFailure(cause)
+  }
+}
+
 export const createGenericRuntimeClass = (descriptor: GenericClassDescriptor): RuntimeClass => {
-  class GeneratedSchemaClass {
+  const BaseClass =
+    descriptor.baseClass ??
+    (class EmptySchemaClass {
+      constructor(_props?: unknown) {}
+    })
+
+  class GeneratedSchemaClass extends (BaseClass as abstract new (props?: unknown) => object) {
     constructor(props?: unknown) {
       const concrete = new.target as Function
-      const inheritedDescriptor = descriptorFor(concrete, descriptor)
       const prepared = getPrevalidatedConstruction(concrete, props)
-      const candidate = prepared ?? genericConstructionRecord(props)
+      const candidate =
+        prepared ??
+        genericConstructionRecord(descriptorFor(concrete, descriptor).prepareConstruction?.(props) ?? props)
 
+      super(candidate)
       assignGenericProps(this, candidate)
-      registerGenericInstance(inheritedDescriptor, this)
+      let current: object | null = concrete
+      const seenConstructors = new Set<Function>()
+      while (typeof current === 'function' && !seenConstructors.has(current)) {
+        seenConstructors.add(current)
+        const currentDescriptor = findGenericDescriptor(current)
+        if (currentDescriptor !== undefined) registerGenericInstance(currentDescriptor, this)
+        current = Object.getPrototypeOf(current) as object | null
+      }
     }
 
     static get identifier(): string {
       return descriptorFor(this, descriptor).identifier
     }
 
-    static get kind(): 'class' {
-      return 'class'
+    static get kind(): GenericClassDescriptor['kind'] {
+      return descriptorFor(this, descriptor).kind
     }
 
     static get schema(): StandardSchemaV1 {
@@ -223,6 +332,37 @@ export const createGenericRuntimeClass = (descriptor: GenericClassDescriptor): R
       return descriptorFor(this, descriptor).codec
     }
 
+    static get ['~standard'](): StandardSchemaV1['~standard'] {
+      const current = descriptorFor(this, descriptor)
+      const constructor = this as unknown as RuntimeClass
+
+      return {
+        version: 1,
+        vendor: 'better-effect-schema',
+        validate(input: unknown, options?: StandardSchemaV1.Options) {
+          const decoded = validateStandardSync(
+            current.schema,
+            input,
+            current.identifier,
+            'decode',
+            options
+          )
+
+          if (Result.isError(decoded)) {
+            if (decoded.error instanceof SchemaAsyncRequired) {
+              return Promise.resolve(decoded.error.cause).then((pending) =>
+                standardizePending(constructor, current, pending)
+              )
+            }
+            return standardFailure(decoded.error)
+          }
+
+          const result = standardizeConstruction(constructor, current, decoded.value)
+          return result
+        }
+      }
+    }
+
     static make(input?: unknown): Result<object, GenericClassFailure> {
       const concrete = this as unknown as RuntimeClass
       const inheritedDescriptor = descriptorFor(concrete, descriptor)
@@ -237,7 +377,9 @@ export const createGenericRuntimeClass = (descriptor: GenericClassDescriptor): R
       }
 
       try {
-        const value = genericConstructionRecord(props)
+        const value = genericConstructionRecord(
+          inheritedDescriptor.prepareConstruction?.(props) ?? props
+        )
         return construct(concrete, inheritedDescriptor, value) as Result<
           object,
           GenericClassFailure
@@ -255,7 +397,7 @@ export const createGenericRuntimeClass = (descriptor: GenericClassDescriptor): R
       return makeAsync(concrete, inheritedDescriptor, input)
     }
 
-    static [Symbol.hasInstance](value: unknown): boolean {
+    static override [Symbol.hasInstance](value: unknown): boolean {
       return hasGenericIdentity(value, this)
     }
 

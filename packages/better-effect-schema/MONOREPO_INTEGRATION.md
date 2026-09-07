@@ -1,107 +1,52 @@
-# Integrating better-effect-schema in the better-effect monorepo
+# Monorepo integration
 
-Copy this directory to:
+`better-effect-schema` is an independent package. The `better-effect` core
+must not import or re-export it, and provider packages remain optional peers.
 
-```text
-packages/better-effect-schema/
-```
-
-The package is independent from the `better-effect` core. Do not re-export it from `better-effect` and do not add Zod to the core package's dependencies.
-
-## 1. Install the workspace
-
-From the monorepo root:
+## Workspace setup
 
 ```bash
-bun install
-```
-
-The package expects these peers:
-
-```text
-better-effect >=0.13.0 <0.14.0
-better-result ^3.0.0
-zod >=4.5.4 <5
-typescript >=6.0.0
-```
-
-## 2. Run the package gate
-
-```bash
+bun install --frozen-lockfile
 cd packages/better-effect-schema
 bun run check
 ```
 
-The scripts intentionally use portable Node.js and TypeScript commands, so they can be invoked by either `bun run` or `npm run`.
-
-Then run the complete repository gate:
-
-```bash
-cd ../..
-bun run check
-```
-
-## 3. Include the package in repository-wide publishing checks
-
-Add `better-effect-schema` to the root `publint` filter:
-
-```json
-{
-  "scripts": {
-    "publint": "turbo run publint --filter=better-effect --filter=better-effect-mq --filter=better-effect-better-auth --filter=better-effect-kysely --filter=better-effect-schema"
-  }
-}
-```
-
-The package performs its own source, archive-boundary, and external-consumer checks. Its `release:dry` script also invokes the shared artifact validator, so the package must be present in `scripts/release-packages.json` before that script is enabled. The allowlist entry includes the documentation files intentionally published by this package:
-
-```json
-{
-  "name": "better-effect-schema",
-  "directory": "packages/better-effect-schema",
-  "changelog": "packages/better-effect-schema/CHANGELOG.md",
-  "tagPrefix": "better-effect-schema-v",
-  "initialRelease": true,
-  "additionalFiles": [
-    "MIGRATION.md",
-    "MONOREPO_INTEGRATION.md",
-    "VERIFICATION.md",
-    "docs/api.md",
-    "docs/architecture.md"
-  ]
-}
-```
-
-Keep `scripts/release-route.test.ts` covered by both package-name and qualified-tag cases. The resulting release tag is:
+The package peers are:
 
 ```text
-better-effect-schema-v0.1.0
+better-effect >=0.13.0 <0.14.0
+better-result ^3.0.0
+typescript >=6.0.0
+arktype >=2.2.3 <3.0.0 (optional)
+valibot >=1.4.2 <2 (optional)
+zod >=4.5.4 <5 (optional)
 ```
 
-## 4. Documentation placement
+Keep package-qualified publishing and release configuration in the repository
+root. This package's implementation and checks do not create tags, publish
+artifacts, or alter unrelated worktrees.
 
-The package README is self-contained. A future site page can be created under:
+## Public boundaries
 
-```text
-apps/docs/content/docs/zod.mdx
-```
+The package exports `.`, `./zod`, `./valibot`, `./arktype`, and
+`./package.json`. The root declaration must stay provider-neutral; adapter
+declarations may reference their own provider.
 
-That page should link to this package rather than copying its entire API reference. Keep the following boundaries explicit:
+Schema operations are requirement-free `Effect<_, _, never>` values. Service
+composition belongs to `better-effect` application code, while provider
+translation belongs to the adapter subpaths.
 
-- Zod remains a required transitional peer while the `better-effect-schema` root entrypoint imports it.
-- Publishing remains blocked until the provider adapters are integrated and the root declarations are provider-neutral.
-- `better-result` remains the single Result and TaggedError protocol.
-- Schema operations are requirement-free `Effect<_, _, never>` values.
-- Database, HTTP, queue, and configuration integrations remain adapters or recipes rather than responsibilities of the schema package.
+## Documentation and archive audits
 
-## 5. Recommended root-level audits
+The published documentation includes `docs/api.md`, `docs/zod.md`,
+`docs/arktype.md`, and the existing `docs/valibot.md` allowlist entry. The
+package archive must not include `src`, tests, type-tests, examples, or
+workspace-only links.
 
-After copying the package, verify:
+Useful audits from the repository root:
 
 ```bash
-rg 'from ["\x27](effect|@effect/)' packages/better-effect-schema
+rg 'from ["\x27](effect|@effect/)' packages/better-effect-schema/src
 rg 'from ["\x27](better-effect|better-result)/' packages/better-effect-schema/src
-bun run check
+bun run --filter better-effect-schema check
 ```
-
-The first two searches should return no production imports. Historical migration text and compatibility aliases are allowed outside `src`.

@@ -18,9 +18,22 @@ if (packageJson.exports?.["."]?.require !== undefined) {
   failures.push("The ESM-only package must not publish a CommonJS require condition.")
 }
 
-for (const dependency of ["better-effect", "better-result", "typescript", "zod"]) {
+for (const dependency of [
+  "arktype",
+  "better-effect",
+  "better-result",
+  "typescript",
+  "valibot",
+  "zod"
+]) {
   if (typeof packageJson.peerDependencies?.[dependency] !== "string") {
     failures.push(`Missing peer dependency: ${dependency}`)
+  }
+}
+
+for (const dependency of ["arktype", "valibot", "zod"]) {
+  if (packageJson.peerDependenciesMeta?.[dependency]?.optional !== true) {
+    failures.push(`Optional peer dependency metadata is missing: ${dependency}`)
   }
 }
 
@@ -48,11 +61,22 @@ for (const path of sourceFiles) {
   }
 }
 
-for (const declaration of ["index.d.ts", "schema.d.ts", "operations.d.ts"]) {
+for (const declaration of [
+  "index.d.ts",
+  "schema.d.ts",
+  "operations.d.ts",
+  "arktype.d.ts",
+  "valibot.d.ts",
+  "zod.d.ts"
+]) {
   const path = join(root, "dist", "esm", declaration)
   const source = await readFile(path, "utf8")
   if (/from\s+["']\.\/internal\//u.test(source)) {
     failures.push(`${path}: public declarations must not expose internal type modules`)
+  }
+
+  if (declaration === "index.d.ts" && /(?:zod|ZodClass|safeMake|_zod|Legacy)/u.test(source)) {
+    failures.push(`${path}: the root declaration must remain provider-neutral`)
   }
 }
 

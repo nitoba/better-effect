@@ -1,45 +1,50 @@
 import * as z from "zod"
+import { Result } from "better-result"
 import { Schema } from "better-effect-schema"
+import { ZodAdapter } from "better-effect-schema/zod"
 
-type CategoryEncoded = {
+const local = Schema.with(ZodAdapter)
+
+type CategoryNode = {
   readonly name: string
-  readonly children: readonly CategoryEncoded[]
+  readonly children: readonly CategoryNode[]
 }
 
-const Children = z.lazy(
-  () => z.array(Category)
-) as z.ZodType<readonly Category[], readonly CategoryEncoded[]>
-
-class Category extends Schema.Class<Category>("examples/Category")({
+const categoryNode: z.ZodType<CategoryNode> = z.lazy(() => z.object({
   name: z.string(),
-  children: Children
+  children: z.array(categoryNode)
+}))
+
+class Category extends local.Class<Category>("examples/Category")({
+  name: z.string(),
+  children: z.array(categoryNode)
 }) {
   get descendantCount(): number {
-    return this.children.reduce(
-      (total, child) => total + 1 + child.descendantCount,
-      0
-    )
+    const count = (node: CategoryNode): number =>
+      node.children.reduce((total, child) => total + 1 + count(child), 0)
+    return count(this)
   }
 }
 
-const root = Category.parse({
+const decoded = Schema.decode(Category, {
   name: "root",
-  children: [{
-    name: "child",
-    children: []
-  }]
+  children: [{ name: "child", children: [] }]
 })
+if (Result.isError(decoded)) throw decoded.error
+const root = decoded.value
 
-if (!(root.children[0] instanceof Category)) {
-  throw new Error("recursive child was not decoded as Category")
-}
-if (root.descendantCount !== 1) {
-  throw new Error("recursive class behavior is unavailable")
-}
+if (!(root instanceof Category)) throw new Error("recursive class did not construct")
+if (root.descendantCount !== 1) throw new Error("recursive child count is incorrect")
 
-const encoded: CategoryEncoded = Category.encode(root)
-if (encoded.children[0]?.name !== "child") {
-  throw new Error("recursive class did not encode")
+const projected = Schema.decodeUnknown(Category.encodedSchema, {
+  name: "root",
+  children: [{ name: "child", children: [] }]
+})
+if (
+  Result.isError(projected) ||
+  (projected.value as CategoryNode).children[0]?.name !== "child"
+) {
+  throw new Error("recursive projection failed")
 }
 
 console.log("recursive: ok")

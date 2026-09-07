@@ -77,6 +77,7 @@ try {
 
   for (const dependency of [
     '@standard-schema/spec',
+    'arktype',
     'better-effect',
     'better-result',
     'valibot',
@@ -130,10 +131,12 @@ import { ValibotAdapter } from "better-effect-schema/valibot"
 import {
   Schema,
   SchemaAsyncRequired,
+  SchemaConstructionFailure,
   SchemaDecodeFailure,
   SchemaDefinitionFailure,
   SchemaEncodeFailure,
-  SchemaExecutionFailure
+  SchemaExecutionFailure,
+  SchemaUnsupportedOperation
 } from "better-effect-schema"
 import { ZodAdapter } from "better-effect-schema/zod"
 
@@ -146,7 +149,7 @@ const local = Schema.with(ZodAdapter)
 const bridged = local.bridge(z.object({ id: z.uuid() }))
 if (bridged.status === "error") throw bridged.error
 
-class User extends Schema.Class<User>("external/User")({
+class User extends local.Class<User>("external/User")({
   id: z.uuid(),
   createdAt: DateFromISOString
 }) {}
@@ -163,9 +166,11 @@ const operation = Effect.gen(function* () {
 operation satisfies Effect<
   Schema.Encoded<typeof User>,
   | SchemaDecodeFailure
+  | SchemaConstructionFailure
   | SchemaDefinitionFailure
   | SchemaEncodeFailure
   | SchemaExecutionFailure
+  | SchemaUnsupportedOperation
   | SchemaAsyncRequired,
   never
 >
@@ -175,7 +180,7 @@ if (operation.value.createdAt !== "2026-09-02T10:00:00.000Z") {
   throw new Error("Archive consumer round-trip failed")
 }
 
-class UserNotFound extends Schema.TaggedError<UserNotFound>()(
+class UserNotFound extends local.TaggedError<UserNotFound>()(
   "UserNotFound",
   { id: z.uuid() }
 ) {}
@@ -197,7 +202,7 @@ console.log("external-consumer: ok")
   )
 
   run('tsc', ['-p', 'tsconfig.json'], consumer)
-  run(process.execPath, [join(consumer, 'out', 'smoke.js')], consumer)
+  run('bun', [join(consumer, 'out', 'smoke.js')], consumer)
 
   const packageJson = JSON.parse(
     await readFile(join(consumerModules, 'better-effect-schema', 'package.json'), 'utf8')

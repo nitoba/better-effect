@@ -63,7 +63,7 @@ const encodedSchema: StandardSchemaV1<UserEventEncoded, UserEventEncoded> = {
 }
 
 const userEventCodec: Schema.Codec<UserEventEncoded, UserEvent, UserEvent, UserEventEncoded> = {
-  schema: UserEvent.schema,
+  schema: { '~standard': UserEvent['~standard'] },
   encodedSchema,
   encode(value) {
     return Result.ok({

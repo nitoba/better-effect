@@ -1,11 +1,36 @@
-import type * as z from 'zod'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-
 import type { CLASS_TYPE_ID } from '../internal/symbols.js'
-import type { ClassTypeMetadata } from './class-metadata.js'
-import type { GenericClassDefinition, GenericClassTypeMetadata } from './generic-class.js'
-import type { ClassDefinition, RawShape, Simplify } from './common.js'
-import type { TAGGED_ENCODED } from './tagged.js'
+import type { GenericClassDefinition, GenericSchemaClass } from './generic-class.js'
+
+type ClassMetadata<Class> = Class extends {
+  readonly [CLASS_TYPE_ID]: infer Metadata
+}
+  ? Metadata
+  : never
+
+type Simplify<Value> = { [Key in keyof Value]: Value[Key] }
+
+type ClassProps<Class> = Class extends {
+  readonly propsSchema: infer Schema extends StandardSchemaV1
+}
+  ? StandardSchemaV1.InferOutput<Schema>
+  : never
+
+type ClassFields<Class> = Class extends { readonly fields: infer Fields }
+  ? NonNullable<Fields>
+  : never
+
+type ClassStruct<Class> = Class extends { readonly struct: infer Struct }
+  ? NonNullable<Struct>
+  : never
+
+type ClassEncoded<Class> = Class extends { readonly encodedSchema: infer Schema }
+  ? NonNullable<Schema> extends StandardSchemaV1
+    ? Simplify<StandardSchemaV1.InferInput<NonNullable<Schema>>>
+    : never
+  : Class extends { readonly schema: infer Source extends StandardSchemaV1 }
+    ? Simplify<StandardSchemaV1.InferInput<Source>>
+    : never
 
 export type Input<Schema> = Schema extends {
   readonly schema: infer Definition extends StandardSchemaV1
@@ -23,128 +48,18 @@ export type Output<Schema> = Schema extends {
     ? StandardSchemaV1.InferOutput<Schema>
     : never
 
-type GenericProps<Class> = Class extends {
-  readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<
-    unknown,
-    infer Definition extends GenericClassDefinition
-  >
-}
-  ? Simplify<import('./generic-class.js').GenericClassProps<Definition>>
-  : never
-
-type GenericFields<Class> = Class extends {
-  readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<
-    unknown,
-    infer Definition extends GenericClassDefinition
-  >
-}
-  ? import('./generic-class.js').GenericClassFields<Definition>
-  : never
-
-type GenericStruct<Class> = Class extends {
-  readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<
-    unknown,
-    infer Definition extends GenericClassDefinition
-  >
-}
-  ? import('./generic-class.js').GenericClassStruct<Definition>
-  : never
-
-type GenericEncoded<Class> = Class extends {
-  readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<
-    unknown,
-    infer Definition extends GenericClassDefinition
-  >
-}
-  ? Simplify<import('./generic-class.js').GenericClassEncoded<Definition>>
-  : never
-
-type GenericInstance<Class> = Class extends {
-  readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<infer Self, GenericClassDefinition>
+export type Props<Class> = ClassProps<Class>
+export type Fields<Class> = ClassFields<Class>
+export type Struct<Class> = ClassStruct<Class>
+export type Encoded<Class> = ClassEncoded<Class>
+export type Instance<Class> = Class extends {
+  readonly make: (...args: never[]) => import('better-result').Result<infer Self, unknown>
 }
   ? Self
-  : never
-
-export type Props<Class> = [GenericProps<Class>] extends [never]
-  ? Class extends {
-      readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-        unknown,
-        ClassDefinition,
-        infer ConstructorProps,
-        unknown,
-        unknown,
-        PropertyKey,
-        RawShape
-      >
-    }
-    ? Simplify<ConstructorProps>
-    : Class extends {
-          readonly propsSchema: infer Projection extends StandardSchemaV1
-        }
-      ? StandardSchemaV1.InferOutput<Projection>
-      : never
-  : GenericProps<Class>
-
-export type Fields<Class> = [GenericFields<Class>] extends [never]
-  ? Class extends {
-      readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-        unknown,
-        ClassDefinition,
-        unknown,
-        unknown,
-        unknown,
-        PropertyKey,
-        infer ClassFields
-      >
-    }
-    ? ClassFields
-    : never
-  : GenericFields<Class>
-
-export type Struct<Class> = [GenericStruct<Class>] extends [never]
-  ? Class extends {
-      readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-        unknown,
-        infer Definition,
-        unknown,
-        unknown,
-        unknown,
-        PropertyKey,
-        RawShape
-      >
-    }
-    ? Definition
-    : never
-  : GenericStruct<Class>
-
-export type Encoded<Class> = Class extends {
-  readonly [TAGGED_ENCODED]: infer TaggedInput
-}
-  ? Simplify<TaggedInput>
-  : [GenericEncoded<Class>] extends [never]
-    ? Class extends z.ZodType<unknown, infer Input>
-      ? Simplify<Input>
-      : Class extends {
-            readonly encodedSchema: infer Projection extends StandardSchemaV1
-          }
-        ? StandardSchemaV1.InferOutput<Projection>
-        : Class extends StandardSchemaV1
-          ? StandardSchemaV1.InferInput<Class>
-          : never
-    : GenericEncoded<Class>
-
-export type Instance<Class> = [GenericInstance<Class>] extends [never]
-  ? Class extends {
-      readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-        infer Self,
-        ClassDefinition,
-        unknown,
-        unknown,
-        unknown,
-        PropertyKey,
-        RawShape
-      >
-    }
+  : Class extends GenericSchemaClass<infer Self, GenericClassDefinition>
     ? Self
-    : never
-  : GenericInstance<Class>
+  : ClassMetadata<Class> extends { readonly self: infer Self }
+    ? Self
+    : Class extends { new (...args: never[]): infer Value }
+      ? Value
+      : never

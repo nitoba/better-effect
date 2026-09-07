@@ -158,12 +158,18 @@ type CapabilityFacade<Adapter extends SchemaAdapter> = AddMethod<
   AddMethod<SelectedCapability<Adapter, 'jsonSchema'>, 'toJSONSchema'> &
   AddMethod<SelectedCapability<Adapter, 'bridge'>, 'bridge'>
 
+type AdapterExtensions<Adapter extends SchemaAdapter> = Adapter extends {
+  readonly classes: infer Classes
+}
+  ? Classes
+  : object
+
 export type SchemaFacade<Adapter extends SchemaAdapter> = {
   readonly decode: typeof decode
   readonly decodeAsync: typeof decodeAsync
   readonly decodeUnknown: typeof decodeUnknown
   readonly decodeUnknownAsync: typeof decodeUnknownAsync
-} & CapabilityFacade<Adapter>
+} & CapabilityFacade<Adapter> & AdapterExtensions<Adapter>
 
 const installSync = (
   target: Record<string, unknown>,
@@ -230,6 +236,20 @@ export const withAdapter = <Adapter extends SchemaAdapter>(
   installSync(facade, adapter, 'derivation', 'derive')
   installSync(facade, adapter, 'jsonSchema', 'toJSONSchema')
   installSync(facade, adapter, 'bridge', 'bridge')
+
+  let extensions: unknown
+  try {
+    extensions = Reflect.get(adapter, 'classes')
+  } catch {
+    extensions = undefined
+  }
+  if (isObjectLike(extensions)) {
+    for (const key of Reflect.ownKeys(extensions)) {
+      if (typeof key !== 'string') continue
+      const value = Reflect.get(extensions, key)
+      if (typeof value === 'function') facade[key] = value
+    }
+  }
 
   const frozenFacade = Object.freeze(facade)
   return new Proxy(frozenFacade, {

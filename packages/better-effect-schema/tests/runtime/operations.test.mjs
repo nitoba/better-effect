@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import test from "node:test"
+import { test } from "bun:test"
 import * as z from "zod"
 import { Result } from "better-result"
 
@@ -7,8 +7,12 @@ import {
   Schema,
   SchemaConstructionFailure,
   SchemaDecodeFailure,
-  SchemaEncodeFailure
+  SchemaExecutionFailure,
+  SchemaUnsupportedOperation
 } from "../../dist/esm/index.js"
+import { ZodAdapter } from "../../dist/esm/zod.js"
+
+const local = Schema.with(ZodAdapter)
 
 const DateFromISOString = z.codec(
   z.iso.datetime(),
@@ -19,7 +23,7 @@ const DateFromISOString = z.codec(
   }
 )
 
-class User extends Schema.Class("@test/OperationsUser")({
+class User extends local.Class("@test/OperationsUser")({
   id: z.uuid(),
   createdAt: DateFromISOString
 }) {}
@@ -108,5 +112,5 @@ test("encode and decode failures remain distinct", () => {
   assert.equal(Result.isError(decodeFailure), true)
   assert.equal(Result.isError(encodeFailure), true)
   if (Result.isError(decodeFailure)) assert.ok(decodeFailure.error instanceof SchemaDecodeFailure)
-  if (Result.isError(encodeFailure)) assert.ok(encodeFailure.error instanceof SchemaEncodeFailure)
+  if (Result.isError(encodeFailure)) assert.ok(encodeFailure.error instanceof SchemaExecutionFailure)
 })

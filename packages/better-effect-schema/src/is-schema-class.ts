@@ -1,29 +1,12 @@
-import type { CLASS_TYPE_ID } from './internal/symbols.js'
-import type { ClassDefinition, ClassKind, ClassTypeMetadata, RawShape } from './types.js'
-import { findDescriptor } from './internal/descriptor.js'
 import { findGenericDescriptor } from './internal/generic-descriptor.js'
-import type { GenericClassDefinition, GenericSchemaClass } from './types/generic-class.js'
-
-/**
- * Existential view of a schema class. Concrete input, props and instance types
- * remain available when a specific class is passed to a generic operation.
- */
-interface LegacySchemaClass {
-  readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
-    unknown,
-    ClassDefinition,
-    unknown,
-    unknown,
-    unknown,
-    PropertyKey,
-    RawShape
-  >
+export type AnyGenericSchemaClass = Function & {
   readonly identifier: string
-  readonly kind: ClassKind
+  readonly kind: 'class' | 'tagged-class' | 'tagged-error'
+  readonly make: (...args: never[]) => unknown
+  readonly unsafeMake: (...args: never[]) => unknown
+  readonly makeAsync: (...args: never[]) => Promise<unknown>
 }
-
-export type AnyGenericSchemaClass = GenericSchemaClass<unknown, GenericClassDefinition>
-export type AnySchemaClass = LegacySchemaClass | AnyGenericSchemaClass
+export type AnySchemaClass = AnyGenericSchemaClass
 
 export const isGenericSchemaClass = (value: unknown): value is AnyGenericSchemaClass => {
   if (typeof value !== 'function') return false
@@ -35,11 +18,4 @@ export const isGenericSchemaClass = (value: unknown): value is AnyGenericSchemaC
 }
 
 /** Returns whether a value is a class created by this package. */
-export const isSchemaClass = (value: unknown): value is AnySchemaClass => {
-  if (typeof value !== 'function') return false
-  try {
-    return findDescriptor(value) !== undefined || findGenericDescriptor(value) !== undefined
-  } catch {
-    return false
-  }
-}
+export const isSchemaClass = isGenericSchemaClass

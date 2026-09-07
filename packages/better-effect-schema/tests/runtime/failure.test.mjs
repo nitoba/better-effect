@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { test } from 'bun:test'
 import * as z from 'zod'
 import { Result } from 'better-result'
 
@@ -7,10 +7,13 @@ import {
   Schema,
   SchemaConstructionFailure,
   SchemaDecodeFailure,
-  SchemaEncodeFailure
+  SchemaUnsupportedOperation
 } from '../../dist/esm/index.js'
+import { ZodAdapter } from '../../dist/esm/zod.js'
 
-class User extends Schema.Class('@test/User')({
+const local = Schema.with(ZodAdapter)
+
+class User extends local.Class('@test/User')({
   id: z.uuid(),
   name: z.string().min(1)
 }) {}
@@ -50,7 +53,7 @@ test('encode failures are tagged and omit the rejected value', () => {
     name: 'Ada'
   })
 
-  expectFailure(result, SchemaEncodeFailure, 'SchemaEncodeFailure')
+  expectFailure(result, SchemaUnsupportedOperation, 'SchemaUnsupportedOperation')
 })
 
 test('construction failures use a distinct error channel', () => {

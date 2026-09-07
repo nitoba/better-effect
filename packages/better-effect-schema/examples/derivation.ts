@@ -1,5 +1,9 @@
 import * as z from "zod"
+import { Result } from "better-result"
 import { Schema } from "better-effect-schema"
+import { ZodAdapter } from "better-effect-schema/zod"
+
+const local = Schema.with(ZodAdapter)
 
 const assert: (condition: unknown, message: string) => asserts condition = (
   condition,
@@ -8,7 +12,7 @@ const assert: (condition: unknown, message: string) => asserts condition = (
   if (!condition) throw new Error(message)
 }
 
-class Person extends Schema.Class<Person>("examples/DerivationPerson")({
+class Person extends local.Class<Person>("examples/DerivationPerson")({
   id: z.int().positive(),
   name: z.string().min(1)
 }) {
@@ -34,16 +38,17 @@ class PersonSummary extends Person.pick<PersonSummary>(
   name: true
 }) {}
 
-const employee = Employee.parse({
+const employee = Schema.decode(Employee, {
   id: 1,
   name: "Ada",
   role: "admin"
 })
 
-assert(employee instanceof Employee, "decode must create Employee")
-assert(employee instanceof Person, "derived class must satisfy parent identity")
-assert(employee.label === "Ada #1", "parent getter must remain available")
-assert(employee.canManageUsers(), "child method must remain available")
+if (Result.isError(employee)) throw employee.error
+assert(employee.value instanceof Employee, "decode must create Employee")
+assert(employee.value instanceof Person, "derived class must satisfy parent identity")
+assert(employee.value.label === "Ada #1", "parent getter must remain available")
+assert(employee.value.canManageUsers(), "child method must remain available")
 
 const summary = new PersonSummary({ id: 1, name: "Ada" })
 assert(summary.label === "Ada #1", "meaningful inherited getter must work")

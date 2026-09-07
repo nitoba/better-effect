@@ -4,18 +4,22 @@ import { Result } from 'better-result'
 import {
   Schema,
   SchemaAsyncRequired,
+  SchemaConstructionFailure,
   SchemaDecodeFailure,
   SchemaDefinitionFailure,
   SchemaEncodeFailure,
   SchemaExecutionFailure
 } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const local = Schema.with(ZodAdapter)
 
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class User extends Schema.Class<User>('examples/EffectUser')({
+class User extends local.Class<User>('examples/EffectUser')({
   id: z.uuid(),
   createdAt: DateFromISOString
 }) {}
@@ -28,7 +32,11 @@ const input: unknown = {
 const decoded = Schema.decodeUnknown(User)(input)
 decoded satisfies Effect<
   User,
-  SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  | SchemaDecodeFailure
+  | SchemaConstructionFailure
+  | SchemaDefinitionFailure
+  | SchemaExecutionFailure
+  | SchemaAsyncRequired,
   never
 >
 
@@ -40,9 +48,11 @@ const roundTrip = Effect.gen(function* () {
 
 roundTrip satisfies Effect<
   Schema.Encoded<typeof User>,
+  | SchemaConstructionFailure
   | SchemaDecodeFailure
   | SchemaDefinitionFailure
   | SchemaEncodeFailure
+  | import('better-effect-schema').SchemaUnsupportedOperation
   | SchemaExecutionFailure
   | SchemaAsyncRequired,
   never
