@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion -- Stream terminals intentionally narrow callback/stream protocol values at the public consumption boundary. */
 import { Result } from 'better-result'
 import { HttpSinkError, HttpStreamUnexpectedEndError } from '../errors'
 import type { StreamSession } from '../session'
@@ -12,6 +13,7 @@ export type StreamSessionView = Readonly<{
   readonly cancel: (reason?: unknown) => Promise<void>
 }>
 export type StreamUseCallback<C> = (session: StreamSessionView) => C
+// oxlint-disable-next-line require-yield -- Terminal generators preserve Result/Effect-compatible lazy consumption.
 export const forEach = async function* <A, B, E>(
   session: StreamSession,
   callback: StreamCallback<A, B, E>
@@ -28,6 +30,7 @@ export const forEach = async function* <A, B, E>(
     await session.close().catch(() => undefined)
   }
 }
+// oxlint-disable-next-line require-yield -- Terminal generators preserve Result/Effect-compatible lazy consumption.
 export const takeUntil = async function* <A>(
   session: StreamSession,
   predicate: (value: A) => boolean | Promise<boolean>,
@@ -47,6 +50,7 @@ export const takeUntil = async function* <A>(
   }
 }
 
+// oxlint-disable-next-line require-yield -- Terminal generators preserve Result/Effect-compatible lazy consumption.
 export const use = async function* <C>(
   session: StreamSession,
   callback: StreamUseCallback<C>
@@ -62,6 +66,7 @@ export const use = async function* <C>(
     await session.close().catch(() => undefined)
   }
 }
+// oxlint-disable-next-line require-yield -- Terminal generators preserve Result/Effect-compatible lazy consumption.
 export const pipeTo = async function* (
   session: StreamSession,
   destination: WritableStream<Uint8Array>,
