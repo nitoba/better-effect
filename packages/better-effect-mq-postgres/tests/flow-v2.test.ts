@@ -4,6 +4,7 @@
 import { PGlite } from '@electric-sql/pglite'
 import { describe, expect, test } from 'bun:test'
 import { Runtime, ServiceRuntime } from 'better-effect'
+import { flowStoreContract } from 'better-effect-mq/testing'
 import {
   JobStore,
   makeFlowChildId,
@@ -427,6 +428,24 @@ describe('PostgreSQL flow protocol v2', () => {
       ).toBe(true)
     } finally {
       await store.dispose()
+      await database.close()
+    }
+  })
+
+  test('passes the shared FlowStore v2 conformance suite', async () => {
+    const { database, pool } = await makePool()
+    const schema = 'flow_contract'
+    const client = PostgresClient.fromPool({ pool, schema })
+    await client.migrate({ appliedAtMs: 1 })
+    try {
+      const suite = flowStoreContract({
+        makeStore: () => PostgresFlowStore.make({ pool, schema, validateSchema: false }),
+        createFlow: (_store, _scenario, input) => createParent(pool, schema, input.failFast),
+        prefix: `postgres-${process.pid}`
+      })
+      for (const scenario of suite) await scenario.run()
+      expect(suite.report().failed).toEqual([])
+    } finally {
       await database.close()
     }
   })

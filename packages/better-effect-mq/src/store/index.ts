@@ -22,6 +22,10 @@ export type {
   FlowStoreToken
 } from './flow-store'
 export type {
+  AckOutboxRequest,
+  AckOutboxResult,
+  AppendChildReportRequest,
+  AppendChildReportResult,
   CancelFlowRequest,
   CancelFlowResult,
   FlowChildObservation,
@@ -29,6 +33,7 @@ export type {
   FlowFanOutRequest,
   FlowFanOutResult,
   FlowParentRecord,
+  FlowOutboxPage,
   FlowParentState,
   FlowSnapshot,
   FlowStoreV2,
@@ -38,6 +43,7 @@ export type {
   GetFlowRequest,
   MarkCascadedRequest,
   MarkCascadedResult,
+  PeekOutboxRequest,
   ReconcileFlowRequest,
   ReconcileFlowResult,
   RecordChildResultsRequest,

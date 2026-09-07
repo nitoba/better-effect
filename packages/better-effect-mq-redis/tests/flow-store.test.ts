@@ -2,6 +2,7 @@
 
 import { expect, test } from 'bun:test'
 import { Result } from 'better-result'
+import { flowStoreContract } from 'better-effect-mq/testing'
 import {
   JobId,
   LeaseToken,
@@ -114,6 +115,20 @@ integration('executes the v2 atomic flow slice against Redis', async () => {
     const cascaded = await unwrapOperation(store.markCascaded({ flowId, childKeys: ['two'] }))
     expect(cascaded.marked).toBe(1)
     expect((await unwrapOperation(store.getFlow({ flowId })))?.children).toHaveLength(2)
+  } finally {
+    await client.dispose()
+  }
+})
+
+integration('passes the shared FlowStore v2 conformance suite against Redis', async () => {
+  const client = await RedisClient.fromConfig(config())
+  try {
+    const suite = flowStoreContract({
+      makeStore: () => RedisFlowStore.make(client),
+      prefix: `redis-${process.pid}`
+    })
+    for (const scenario of suite) await scenario.run()
+    expect(suite.report().failed).toEqual([])
   } finally {
     await client.dispose()
   }

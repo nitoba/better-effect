@@ -1,5 +1,5 @@
 import { JobStore } from '../../src'
-import { jobStoreContract } from '../../src/testing'
+import { jobStoreContract, flowStoreContract } from '../../src/testing'
 
 import type {
   ContractScenario,
@@ -12,7 +12,10 @@ import type {
   JobStoreContractReport,
   JobStoreContractRuntime,
   JobStoreContractSuite,
-  JobStoreContractSynchronization
+  JobStoreContractSynchronization,
+  FlowStoreContractOptions,
+  FlowStoreContractScenario,
+  FlowStoreContractSuite
 } from '../../src/testing'
 
 const runtime: JobStoreContractRuntime<InstanceType<typeof JobStore>> = {
@@ -110,3 +113,43 @@ void multiSuite
 
 void scenario
 void report
+
+const flowOptions: FlowStoreContractOptions = {
+  makeStore: async () => ({
+    descriptor: {
+      protocolVersion: 2,
+      layoutVersion: 1,
+      migration: { status: 'not-required', from: undefined, to: 1 }
+    },
+    fanOut: () => {
+      throw new Error('type-only fixture')
+    },
+    recordChildResults: () => {
+      throw new Error('type-only fixture')
+    },
+    cancel: () => {
+      throw new Error('type-only fixture')
+    },
+    reconcile: () => {
+      throw new Error('type-only fixture')
+    },
+    markCascaded: () => {
+      throw new Error('type-only fixture')
+    },
+    appendChildReport: () => {
+      throw new Error('type-only fixture')
+    },
+    peekOutbox: () => {
+      throw new Error('type-only fixture')
+    },
+    ackOutbox: () => {
+      throw new Error('type-only fixture')
+    },
+    getFlow: () => {
+      throw new Error('type-only fixture')
+    }
+  })
+}
+const flowSuite: FlowStoreContractSuite = flowStoreContract(flowOptions)
+const flowScenario: FlowStoreContractScenario = flowSuite[0]!
+void flowScenario

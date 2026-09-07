@@ -19,6 +19,7 @@ import {
   validateFlowChildReport,
   validateFlowChildRecord,
   validateFlowChildSpec,
+  validateFlowOutboxEntry,
   validateFlowManifest,
   validateParentEnvelope,
   validateSerializedJobFailure,
@@ -32,10 +33,15 @@ import {
   type FlowFanOutRequest,
   type FlowFanOutResult,
   type FlowOutboxEntry,
+  type FlowOutboxPage,
   type FlowParentRecord,
   type FlowSnapshot,
   type FlowStoreV2,
   type FlowStoreV2Error,
+  type AckOutboxRequest,
+  type AckOutboxResult,
+  type AppendChildReportRequest,
+  type AppendChildReportResult,
   type JsonValue,
   type GetFlowRequest,
   InvalidJobTransitionError,
@@ -45,6 +51,7 @@ import {
   LeaseLostError,
   type MarkCascadedRequest,
   type MarkCascadedResult,
+  type PeekOutboxRequest,
   type ReconcileFlowRequest,
   type ReconcileFlowResult,
   type RecordChildResultsRequest,
@@ -59,13 +66,20 @@ import { RedisConnectionError, RedisLayoutError, RedisScriptError } from './erro
 import {
   canonicalFlowJson,
   decodeFlowChildEntry,
+  decodeFlowOutboxEntry,
   decodeFlowParent,
   decodeFlowParentRecord,
-  encodeFlowChildEntry
+  encodeFlowChildEntry,
+  encodeFlowOutboxEntry
 } from './flow-codec'
-import { decodeFlowChildIndexMember, encodeFlowChildIndexMember, encodeFlowReference } from './keys'
+import {
+  decodeFlowChildIndexMember,
+  encodeFlowChildIndexMember,
+  encodeFlowReference,
+  validateKeySegment
+} from './keys'
 import { ensureRedisFlowLayout } from './layout'
-import { hashReply, scriptReply } from './internal/replies'
+import { hashReply, numberReply, scriptReply, stringsReply } from './internal/replies'
 import { runScript } from './internal/run-script'
 import {
   RedisScriptRegistry,
@@ -176,13 +190,9 @@ const mapFailure = (
       const id = makeJobId(flowId)
       if (!Result.isError(id)) return new JobNotFoundError({ jobId: id.value })
     }
-    if (
-      cause.code === 'MQ_SETTLEMENT_CONFLICT' &&
-      flowId !== undefined &&
-      leaseToken !== undefined
-    ) {
+    if (cause.code === 'MQ_SETTLEMENT_CONFLICT' && flowId !== undefined) {
       const id = makeJobId(flowId)
-      const token = makeLeaseToken(leaseToken)
+      const token = makeLeaseToken(leaseToken ?? 'outbox-conflict')
       if (!Result.isError(id) && !Result.isError(token)) {
         return new SettlementConflictError({ jobId: id.value, leaseToken: token.value })
       }
@@ -490,7 +500,12 @@ const normalizeReconcile = (request: ReconcileFlowRequest) => {
       reference: encodeFlowReference(flowId.value, observation.childKey)
     }
   })
-  return { flowId: flowId.value, now: now.value, observations: items }
+  return {
+    flowId: flowId.value,
+    now: now.value,
+    observations: items,
+    cascadeLimit: limit === undefined ? hardFlowMaxChildren : limit
+  }
 }
 
 const normalizeCancel = (request: CancelFlowRequest) => {
@@ -519,6 +534,62 @@ const normalizeMarkCascaded = (request: MarkCascadedRequest) => {
     return value
   })
   return { flowId: flowId.value, childKeys }
+}
+
+const normalizeAppend = (request: AppendChildReportRequest): FlowOutboxEntry => {
+  const fields = readFields(request, ['id', 'flowName', 'parentStoreKey', 'report'], 'request')
+  for (const field of ['id', 'flowName', 'parentStoreKey', 'report'] as const) {
+    required(fields, field, 'request')
+  }
+  const checked = validateFlowOutboxEntry(fields)
+  if (Result.isError(checked)) throw checked.error
+  // The shared protocol allows longer ids than a Redis dynamic key can hold.
+  validateKeySegment(checked.value.id, 'request.id')
+  return checked.value
+}
+
+const normalizePeek = (request: PeekOutboxRequest) => {
+  const fields = readFields(request, ['cursor', 'limit', 'parentStoreKey'], 'request')
+  const limit = fields.limit === undefined ? 100 : fields.limit
+  if (
+    typeof limit !== 'number' ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > hardFlowMaxChildren
+  ) {
+    throw invalid('request.limit', 'must be a positive bounded integer')
+  }
+  const cursor =
+    fields.cursor === undefined ? undefined : validateKeySegment(fields.cursor, 'request.cursor')
+  const parentStoreKey =
+    fields.parentStoreKey === undefined
+      ? undefined
+      : validateKeySegment(fields.parentStoreKey, 'request.parentStoreKey')
+  return { cursor, limit, parentStoreKey }
+}
+
+const normalizeAck = (request: AckOutboxRequest) => {
+  const fields = readFields(request, ['entries'], 'request')
+  const entries = required(fields, 'entries', 'request')
+  if (!Array.isArray(entries) || entries.length > hardFlowMaxChildren) {
+    throw invalid('request.entries', 'must be a bounded array')
+  }
+  const seen = new Map<string, string>()
+  const checkedEntries: FlowOutboxEntry[] = []
+  for (const [index, value] of entries.entries()) {
+    const checked = validateFlowOutboxEntry(value)
+    if (Result.isError(checked)) throw invalid(`request.entries[${index}]`, checked.error.message)
+    const encoded = encodeFlowOutboxEntry(checked.value)
+    const previous = seen.get(checked.value.id)
+    if (previous !== undefined && previous !== encoded) {
+      throw invalid('request.entries', 'contains conflicting duplicate outbox entries')
+    }
+    if (previous === undefined) {
+      seen.set(checked.value.id, encoded)
+      checkedEntries.push(checked.value)
+    }
+  }
+  return { entries: Object.freeze(checkedEntries) }
 }
 
 class RedisFlowStoreImplementation implements FlowStoreV2 {
@@ -586,6 +657,75 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     } catch (cause) {
       return fail(mapFailure(operation, cause, flowId, leaseToken))
     }
+  }
+
+  private async readOutboxPage(
+    normalized: ReturnType<typeof normalizePeek>
+  ): Promise<FlowOutboxPage> {
+    const rankReply =
+      normalized.cursor === undefined
+        ? undefined
+        : await this.command(['ZRANK', this.redis.layout.flowOutbox, normalized.cursor])
+    const rank =
+      rankReply === undefined || rankReply === null ? -1 : numberReply(rankReply, 'cursor')
+    const start = rank + 1
+    const scanLimit =
+      normalized.parentStoreKey === undefined ? normalized.limit + 1 : hardFlowMaxChildren
+    const batchSize = Math.min(256, scanLimit)
+    const entries: FlowOutboxEntry[] = []
+    let scanned = 0
+    let offset = start
+    let lastScanned: string | undefined
+    let hasMore = false
+
+    while (scanned < scanLimit) {
+      const count = Math.min(batchSize, scanLimit - scanned)
+      const ids = stringsReply(
+        await this.command([
+          'ZRANGE',
+          this.redis.layout.flowOutbox,
+          String(offset),
+          String(offset + count - 1)
+        ])
+      )
+      if (ids.length === 0) break
+      for (const id of ids) {
+        lastScanned = id
+        const raw = await this.command(['GET', this.redis.layout.flowOutboxEntry(id)])
+        if (typeof raw !== 'string') {
+          throw new RedisLayoutError('flow outbox entry is missing', 'outbox', 'INVALID_DATA')
+        }
+        const decoded = decodeFlowOutboxEntry(raw)
+        if (Result.isError(decoded)) throw decoded.error
+        if (
+          normalized.parentStoreKey === undefined ||
+          decoded.value.parentStoreKey === normalized.parentStoreKey
+        ) {
+          entries.push(decoded.value)
+          if (entries.length > normalized.limit) {
+            hasMore = true
+            break
+          }
+        }
+      }
+      scanned += ids.length
+      offset += ids.length
+      if (hasMore || ids.length < count) break
+    }
+
+    const page = Object.freeze(entries.slice(0, normalized.limit))
+    return Object.freeze({
+      entries: page,
+      cursor:
+        hasMore && page.length > 0
+          ? page.at(-1)!.id
+          : normalized.parentStoreKey !== undefined &&
+              lastScanned !== undefined &&
+              scanned >= scanLimit
+            ? lastScanned
+            : undefined,
+      hasMore
+    })
   }
 
   async fanOut(request: FlowFanOutRequest): Promise<FlowResult<FlowFanOutResult>> {
@@ -690,6 +830,95 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
     )
   }
 
+  async appendChildReport(
+    request: AppendChildReportRequest
+  ): Promise<FlowResult<AppendChildReportResult>> {
+    let entry: FlowOutboxEntry
+    try {
+      entry = normalizeAppend(request)
+    } catch (cause) {
+      return fail(mapFailure('flow-outbox-append', cause))
+    }
+    return this.operation(
+      'flow-outbox-append',
+      async () => {
+        const encoded = encodeFlowOutboxEntry(entry)
+        const values = await this.script(
+          'flow-outbox-append',
+          [
+            this.redis.layout.flowOutboxSequence,
+            this.redis.layout.flowOutbox,
+            this.redis.layout.flowOutboxEntry(entry.id)
+          ],
+          { mode: 'flow-outbox-append', id: entry.id, entry: encoded }
+        )
+        if (
+          (values.length !== 2 && values.length !== 3) ||
+          typeof values[0] !== 'string' ||
+          typeof values[values.length - 1] !== 'string'
+        ) {
+          throw new RedisLayoutError(
+            'flow outbox append returned an invalid reply',
+            'reply',
+            'INVALID_DATA'
+          )
+        }
+        const status = values[0]
+        if (status !== 'applied' && status !== 'already-applied') {
+          throw new RedisLayoutError(
+            'flow outbox append returned an invalid status',
+            'reply',
+            'INVALID_DATA'
+          )
+        }
+        const decoded = decodeFlowOutboxEntry(values[values.length - 1] as string)
+        if (Result.isError(decoded)) throw decoded.error
+        return { status, entry: decoded.value }
+      },
+      entry.report.flowId
+    )
+  }
+
+  async peekOutbox(request: PeekOutboxRequest): Promise<FlowResult<FlowOutboxPage>> {
+    let normalized: ReturnType<typeof normalizePeek>
+    try {
+      normalized = normalizePeek(request)
+    } catch (cause) {
+      return fail(mapFailure('flow-outbox-peek', cause))
+    }
+    return this.operation('flow-outbox-peek', () => this.readOutboxPage(normalized))
+  }
+
+  async ackOutbox(request: AckOutboxRequest): Promise<FlowResult<AckOutboxResult>> {
+    let normalized: ReturnType<typeof normalizeAck>
+    try {
+      normalized = normalizeAck(request)
+    } catch (cause) {
+      return fail(mapFailure('flow-outbox-ack', cause))
+    }
+    return this.operation('flow-outbox-ack', async () => {
+      let acknowledged = 0
+      let skipped = 0
+      for (const entry of normalized.entries) {
+        const values = await this.script(
+          'flow-outbox-ack',
+          [this.redis.layout.flowOutbox, this.redis.layout.flowOutboxEntry(entry.id)],
+          { mode: 'flow-outbox-ack', id: entry.id, entry: encodeFlowOutboxEntry(entry) }
+        )
+        if (values.length !== 1 || (values[0] !== 'acknowledged' && values[0] !== 'skipped')) {
+          throw new RedisLayoutError(
+            'flow outbox ack returned an invalid reply',
+            'reply',
+            'INVALID_DATA'
+          )
+        }
+        if (values[0] === 'acknowledged') acknowledged += 1
+        else skipped += 1
+      }
+      return { acknowledged, skipped }
+    })
+  }
+
   async cancel(request: CancelFlowRequest): Promise<FlowResult<CancelFlowResult>> {
     let normalized: ReturnType<typeof normalizeCancel>
     try {
@@ -751,7 +980,12 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
             this.redis.layout.flowChildren(normalized.flowId),
             this.redis.layout.flowPending
           ],
-          { mode: 'flow-reconcile', observations: normalized.observations, now: normalized.now }
+          {
+            mode: 'flow-reconcile',
+            observations: normalized.observations,
+            cascadeLimit: normalized.cascadeLimit,
+            now: normalized.now
+          }
         )
         if (values.length !== 3 || values.some((value) => typeof value !== 'string'))
           throw new RedisLayoutError(
@@ -832,7 +1066,14 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
             if (Result.isError(decoded)) throw decoded.error
             return decoded.value.record
           })
-        const outbox: readonly FlowOutboxEntry[] = Object.freeze([])
+        const outboxPage = await this.readOutboxPage({
+          cursor: undefined,
+          limit: hardFlowMaxChildren,
+          parentStoreKey: undefined
+        })
+        const outbox: readonly FlowOutboxEntry[] = Object.freeze(
+          outboxPage.entries.filter((entry) => entry.report.flowId === flowId.value)
+        )
         return Object.freeze({ parent, children: Object.freeze(children), outbox })
       },
       flowId.value

@@ -78,12 +78,33 @@ child store. `markCascaded` acknowledges each child at most once.
 
 `reconcile` reports missing children for enqueue, terminal observations for
 `recordChildResults`, and uncascaded cancelled children for cascade work. The
-contract accepts either an immediate `better-result` `Result` or a
+reconciliation and cascade responses are bounded by the request limit; work
+that is not acknowledged with `markCascaded` is returned by a later reconcile.
+The contract accepts either an immediate `better-result` `Result` or a
 `PromiseLike` of one so in-memory and SQL-backed stores can share the same
 protocol without adding a runtime or transaction abstraction.
 
+## Cross-store terminal reports
+
+`FlowStoreV2.appendChildReport` is the durable terminal-report boundary. A
+terminal child settlement appends one outbox entry identified by `id`; retries
+of the same full payload return `already-applied`, while a conflicting reuse
+of the id is a settlement conflict. `peekOutbox` returns an ordered bounded
+page without removing entries, so response loss is safe and redelivery is
+expected. A relay calls `recordChildResults` in the parent store and calls
+`ackOutbox` only with the exact payload confirmed by that parent. A mismatch or
+already-removed entry is reported as skipped. These operations are retryable
+and do not imply a cross-store transaction.
+
+PostgreSQL performs terminal report insertion in the child settlement
+transaction and indexes outbox pages by parent store key. Redis performs the
+append and exact-payload acknowledgement in Lua scripts; its bounded peek
+reads the ordered outbox without deleting entries. `MemoryFlowStore` is the
+reference implementation used by the shared flow-store conformance suite.
+
 PostgreSQL and Redis adapters provide durable flow storage. Cross-store enqueue,
-outbox delivery, result aggregation, and Worker supervision remain later waves.
+outbox delivery, result aggregation, and Worker supervision remain runner-owned
+integration work; this package only defines the storage boundary.
 
 ## Worker Layer composition
 

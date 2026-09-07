@@ -111,6 +111,43 @@ export interface FlowOutboxEntry {
   readonly report: FlowChildReport
 }
 
+const flowOutboxEntryFields = ['id', 'flowName', 'parentStoreKey', 'report'] as const
+
+export const validateFlowOutboxEntry = (
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- outbox records cross a persistence boundary.
+  value: unknown
+): ResultType<FlowOutboxEntry, JobDefinitionError> => {
+  const fields = readObjectFields(value, flowOutboxEntryFields, 'outbox')
+  if (Result.isError(fields)) return fields
+
+  for (const field of flowOutboxEntryFields) {
+    const present = required(fields.value, field)
+    if (Result.isError(present)) return invalid(field, present.error.message)
+  }
+
+  const id = validateBoundedText(fields.value.id, 'id', maxFlowChildIdLength)
+  const flowName = validateBoundedText(fields.value.flowName, 'flowName', maxFlowNameLength)
+  const parentStoreKey = validateBoundedText(
+    fields.value.parentStoreKey,
+    'parentStoreKey',
+    maxFlowStoreKeyLength
+  )
+  const report = validateFlowChildReport(fields.value.report)
+  if (Result.isError(id)) return id
+  if (Result.isError(flowName)) return flowName
+  if (Result.isError(parentStoreKey)) return parentStoreKey
+  if (Result.isError(report)) return report
+
+  return Result.ok(
+    Object.freeze({
+      id: id.value,
+      flowName: flowName.value,
+      parentStoreKey: parentStoreKey.value,
+      report: report.value
+    })
+  )
+}
+
 export interface FanOutOutcome {
   readonly type: 'FanOut'
   readonly failFast: boolean

@@ -13,6 +13,8 @@ import {
   makeFlowMigration,
   makeJobId,
   makeLeaseToken,
+  maxFlowChildIdLength,
+  maxFlowStoreKeyLength,
   protocolVersionV2,
   JobDefinitionError,
   JobNotFoundError,
@@ -23,17 +25,23 @@ import {
   validateFlowChildRecord,
   validateFlowChildReport,
   validateFlowChildSpec,
+  validateFlowOutboxEntry,
   validateFlowLimits,
   validateFlowState,
   validateParentEnvelope,
   validateSerializedJobFailure,
   type CancelFlowRequest,
   type CancelFlowResult,
+  type AckOutboxRequest,
+  type AckOutboxResult,
+  type AppendChildReportRequest,
+  type AppendChildReportResult,
   type FlowChildObservation,
   type FlowChildRecord,
   type FlowChildReport,
   type FlowChildSpec,
   type FlowOutboxEntry,
+  type FlowOutboxPage,
   type FlowParentRecord,
   type FlowSnapshot,
   type FlowStoreV2,
@@ -43,6 +51,7 @@ import {
   type SerializedJobFailure,
   type MarkCascadedRequest,
   type MarkCascadedResult,
+  type PeekOutboxRequest,
   type ReconcileFlowRequest,
   type ReconcileFlowResult,
   type RecordChildResultsRequest,
@@ -153,6 +162,12 @@ const rowNumber = (row: QueryRow, field: string): number => {
 
 const rowJson = (row: QueryRow, field: string): unknown => row[field]
 
+const reportWithOptionalFields = (value: unknown) => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const report = value as Record<string, unknown>
+  return { ...report, result: report.result, failure: report.failure }
+}
+
 const asFailure = (value: unknown): SerializedJobFailure | undefined => {
   if (value === null || value === undefined) return undefined
   const checked = validateSerializedJobFailure(value)
@@ -230,14 +245,14 @@ const asSpec = (row: QueryRow): FlowChildSpec => {
 }
 
 const asOutbox = (row: QueryRow): FlowOutboxEntry => {
-  const report = validateFlowChildReport(rowJson(row, 'report'))
-  if (Result.isError(report)) throw report.error
-  return Object.freeze({
+  const entry = validateFlowOutboxEntry({
     id: rowString(row, 'id'),
     flowName: rowString(row, 'flow_name'),
     parentStoreKey: rowString(row, 'parent_store_key'),
-    report: report.value
+    report: reportWithOptionalFields(rowJson(row, 'report'))
   })
+  if (Result.isError(entry)) throw entry.error
+  return entry.value
 }
 
 const loadSnapshot = async (
@@ -735,6 +750,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
       const enqueue: FlowChildSpec[] = []
       const reports: FlowChildReport[] = []
       const cascade: FlowChildSpec[] = []
+      const cascadeLimit = request.limit ?? hardFlowMaxChildren
       const seen = new Set<string>()
       for (const [index, observation] of observations.entries()) {
         const candidate = observation as FlowChildObservation
@@ -792,13 +808,19 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
             reports.push(checked.value)
           }
         }
-        if (entry.record.status === 'cancelled' && !entry.record.cascaded) cascade.push(entry.spec)
+        if (
+          entry.record.status === 'cancelled' &&
+          !entry.record.cascaded &&
+          cascade.length < cascadeLimit
+        )
+          cascade.push(entry.spec)
       }
       for (const entry of children.values()) {
         if (
           entry.record.status === 'cancelled' &&
           !entry.record.cascaded &&
-          !cascade.some((spec) => spec.childKey === entry.spec.childKey)
+          !cascade.some((spec) => spec.childKey === entry.spec.childKey) &&
+          cascade.length < cascadeLimit
         )
           cascade.push(entry.spec)
       }
@@ -850,6 +872,156 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
       }
       const snapshot = await loadSnapshot(transaction, this.schema, this.namespace, flowId.value)
       return ok({ marked, children: snapshot.children })
+    })
+  }
+
+  async appendChildReport(
+    request: AppendChildReportRequest
+  ): Promise<ResultType<AppendChildReportResult, FlowStoreV2Error>> {
+    const checked = validateFlowOutboxEntry(request)
+    if (Result.isError(checked)) return fail(checked.error)
+    const entry = checked.value
+    return withTransaction(this.client, 'appendChildReport', async (transaction) => {
+      const inserted = await transaction.query(
+        `INSERT INTO ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
+          (namespace, id, flow_name, parent_store_key, report, created_at_ms)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+         ON CONFLICT (namespace, id) DO NOTHING`,
+        [this.namespace, entry.id, entry.flowName, entry.parentStoreKey, json(entry.report), 0]
+      )
+      const result = await transaction.query<QueryRow>(
+        `SELECT id, flow_name, parent_store_key, report
+           FROM ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
+          WHERE namespace = $1 AND id = $2
+          FOR UPDATE`,
+        [this.namespace, entry.id]
+      )
+      const row = result.rows[0]
+      if (row === undefined) return fail(storageFailure('appendChildReport', 'missing row'))
+      const stored = asOutbox(asRowObject(row))
+      if (canonicalJson(stored) !== canonicalJson(entry)) {
+        return fail(
+          new SettlementConflictError({
+            jobId: entry.report.flowId,
+            leaseToken: makeLeaseToken('outbox-conflict').unwrap()
+          })
+        )
+      }
+      return ok({
+        status: inserted.rowCount === 1 ? 'applied' : 'already-applied',
+        entry: stored
+      })
+    })
+  }
+
+  async peekOutbox(
+    request: PeekOutboxRequest
+  ): Promise<ResultType<FlowOutboxPage, FlowStoreV2Error>> {
+    const limit = request.limit ?? 100
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > hardFlowMaxChildren)
+      return invalid('limit', 'must be a positive safe integer within the hard limit')
+    if (
+      request.cursor !== undefined &&
+      (typeof request.cursor !== 'string' ||
+        request.cursor.length === 0 ||
+        request.cursor.length > maxFlowChildIdLength)
+    )
+      return invalid('cursor', 'must be a bounded non-empty string')
+    if (
+      request.parentStoreKey !== undefined &&
+      (typeof request.parentStoreKey !== 'string' ||
+        request.parentStoreKey.length === 0 ||
+        request.parentStoreKey.length > maxFlowStoreKeyLength)
+    )
+      return invalid('parentStoreKey', 'must be a bounded non-empty string')
+
+    let connection: PoolClient | undefined
+    try {
+      connection = await this.client.pool.connect()
+      const values: unknown[] = [this.namespace]
+      const conditions = ['namespace = $1']
+      if (request.parentStoreKey !== undefined) {
+        values.push(request.parentStoreKey)
+        conditions.push(`parent_store_key = $${values.length}`)
+      }
+      if (request.cursor !== undefined) {
+        values.push(request.cursor)
+        conditions.push(
+          `(sequence > COALESCE((SELECT sequence FROM ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)} WHERE namespace = $1 AND id = $${values.length}), 0))`
+        )
+      }
+      values.push(limit + 1)
+      const rows = await connection.query<QueryRow>(
+        `SELECT id, flow_name, parent_store_key, report
+           FROM ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
+          WHERE ${conditions.join(' AND ')}
+          ORDER BY sequence ASC, id COLLATE "C" ASC
+          LIMIT $${values.length}`,
+        values
+      )
+      const all = rows.rows.map((row) => asOutbox(asRowObject(row)))
+      const hasMore = all.length > limit
+      const entries = Object.freeze(all.slice(0, limit))
+      return ok({
+        entries,
+        cursor: hasMore && entries.length > 0 ? entries.at(-1)!.id : undefined,
+        hasMore
+      })
+    } catch (cause) {
+      return fail(storageFailure('peekOutbox', cause))
+    } finally {
+      connection?.release()
+    }
+  }
+
+  async ackOutbox(
+    request: AckOutboxRequest
+  ): Promise<ResultType<AckOutboxResult, FlowStoreV2Error>> {
+    if (!Array.isArray(request.entries) || request.entries.length > hardFlowMaxChildren)
+      return invalid('entries', 'must be an array within the hard child limit')
+    const entries: FlowOutboxEntry[] = []
+    const seen = new Map<string, string>()
+    for (const [index, value] of request.entries.entries()) {
+      const checked = validateFlowOutboxEntry(value)
+      if (Result.isError(checked)) return invalid(`entries[${index}]`, checked.error.message)
+      const digest = canonicalJson(checked.value)
+      const previous = seen.get(checked.value.id)
+      if (previous !== undefined && previous !== digest)
+        return invalid('entries', 'contains conflicting duplicate outbox entries')
+      if (previous === undefined) {
+        seen.set(checked.value.id, digest)
+        entries.push(checked.value)
+      }
+    }
+    return withTransaction(this.client, 'ackOutbox', async (transaction) => {
+      let acknowledged = 0
+      let skipped = 0
+      for (const entry of entries) {
+        const result = await transaction.query<QueryRow>(
+          `SELECT id, flow_name, parent_store_key, report
+             FROM ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
+            WHERE namespace = $1 AND id = $2
+            FOR UPDATE`,
+          [this.namespace, entry.id]
+        )
+        const row = result.rows[0]
+        if (row === undefined) {
+          skipped += 1
+          continue
+        }
+        const stored = asOutbox(asRowObject(row))
+        if (canonicalJson(stored) !== canonicalJson(entry)) {
+          skipped += 1
+          continue
+        }
+        await transaction.query(
+          `DELETE FROM ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
+            WHERE namespace = $1 AND id = $2`,
+          [this.namespace, entry.id]
+        )
+        acknowledged += 1
+      }
+      return ok({ acknowledged, skipped })
     })
   }
 

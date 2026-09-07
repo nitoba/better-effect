@@ -63,7 +63,9 @@ for (const name of [
   'flow-record-child-results',
   'flow-cancel',
   'flow-reconcile',
-  'flow-mark-cascaded'
+  'flow-mark-cascaded',
+  'flow-outbox-append',
+  'flow-outbox-ack'
 ]) {
   const script = await readFile(join(scriptDirectory, `${name}.lua`), 'utf8')
   if (!script.includes('KEYS') || !script.includes('ARGV')) {

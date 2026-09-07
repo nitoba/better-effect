@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { Effect } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
+import { flowStoreContract } from '../src/testing'
 
 import {
   Codec,
@@ -429,6 +430,110 @@ test('MemoryFlowStore reconciliation returns deterministic enqueue, terminal rep
   expect(reconciliation.cascade).toEqual([])
   expect((await unwrap(store.getFlow({ flowId })))?.children[0]?.pendingSinceMs).toBe(10)
 })
+
+test('MemoryFlowStore appends every terminal child report and peeks it in bounded pages', async () => {
+  const store = MemoryFlowStore.make()
+  const failure = unwrapResult(
+    makeSerializedJobFailure({
+      kind: 'typed',
+      message: 'failed',
+      retryable: false,
+      recordedAt: 1
+    })
+  )
+  const reports = [
+    {
+      id: 'report-completed',
+      flowName: 'daily-digest',
+      parentStoreKey: 'parent-store',
+      report: {
+        flowId,
+        childKey: 'email:1',
+        outcome: 'completed' as const,
+        result: { sent: true },
+        failure: undefined
+      }
+    },
+    {
+      id: 'report-failed',
+      flowName: 'daily-digest',
+      parentStoreKey: 'parent-store',
+      report: {
+        flowId,
+        childKey: 'email:2',
+        outcome: 'failed' as const,
+        result: undefined,
+        failure
+      }
+    },
+    {
+      id: 'report-cancelled',
+      flowName: 'daily-digest',
+      parentStoreKey: 'parent-store',
+      report: {
+        flowId,
+        childKey: 'email:3',
+        outcome: 'cancelled' as const,
+        result: undefined,
+        failure: undefined
+      }
+    }
+  ]
+
+  for (const entry of reports) {
+    const appended = await unwrap(store.appendChildReport(entry))
+    expect(appended.status).toBe('applied')
+    expect((await unwrap(store.appendChildReport(entry))).status).toBe('already-applied')
+  }
+
+  const first = await unwrap(store.peekOutbox({ limit: 2 }))
+  expect(first.entries.map((entry) => entry.id)).toEqual(['report-completed', 'report-failed'])
+  expect(first.hasMore).toBe(true)
+  expect(first.cursor).toBeDefined()
+
+  const second = await unwrap(store.peekOutbox({ cursor: first.cursor, limit: 2 }))
+  expect(second.entries.map((entry) => entry.id)).toEqual(['report-cancelled'])
+  expect(second.hasMore).toBe(false)
+})
+
+test('MemoryFlowStore only acknowledges confirmed outbox entries and is duplicate-safe', async () => {
+  const store = MemoryFlowStore.make()
+  const entry = {
+    id: 'report-ack',
+    flowName: 'daily-digest',
+    parentStoreKey: 'parent-store',
+    report: {
+      flowId,
+      childKey: 'email:1',
+      outcome: 'completed' as const,
+      result: { sent: true },
+      failure: undefined
+    }
+  }
+  await unwrap(store.appendChildReport(entry))
+
+  const wrong = await unwrap(
+    store.ackOutbox({
+      entries: [{ ...entry, report: { ...entry.report, result: { sent: false } } }]
+    })
+  )
+  expect(wrong.acknowledged).toBe(0)
+  expect(wrong.skipped).toBe(1)
+  expect((await unwrap(store.peekOutbox({ limit: 10 }))).entries).toHaveLength(1)
+
+  const acknowledged = await unwrap(store.ackOutbox({ entries: [entry] }))
+  expect(acknowledged.acknowledged).toBe(1)
+  expect(acknowledged.skipped).toBe(0)
+  expect((await unwrap(store.ackOutbox({ entries: [entry] }))).acknowledged).toBe(0)
+  expect((await unwrap(store.peekOutbox({ limit: 10 }))).entries).toEqual([])
+})
+
+for (const scenario of flowStoreContract({
+  makeStore: () => MemoryFlowStore.make(),
+  prefix: `memory-${process.pid}`
+})) {
+  test(`MemoryFlowStore contract: ${scenario.name}`, scenario.run)
+}
 
 void Parent
 void Child

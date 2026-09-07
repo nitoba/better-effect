@@ -8,7 +8,7 @@ import { Result, type Result as ResultType } from 'better-result'
 import {
   makeJobId,
   makeLeaseToken,
-  validateFlowChildReport,
+  validateFlowOutboxEntry as validateProtocolFlowOutboxEntry,
   validateFlowChildRecord,
   validateFlowChildSpec,
   validateFlowState,
@@ -229,31 +229,12 @@ export const decodeFlowChildEntry = (value: string): RedisFlowDecodeResult<Redis
 }
 
 const validateOutboxEntry = (value: unknown): FlowOutboxEntry => {
-  if (!isPlainObject(value)) throw invalid('outbox', 'must be a plain object')
-  ownFields(value, ['id', 'flowName', 'parentStoreKey', 'report'], 'outbox')
-  const id = validateKeySegment(value.id, 'outbox.id')
-  if (!isPlainObject(value.report)) throw invalid('outbox.report', 'must be a plain object')
-  const rawReport = value.report
-  const report = validateFlowChildReport({
-    ...rawReport,
-    result: rawReport.result,
-    failure: rawReport.failure
-  })
-  if (Result.isError(report)) throw invalid('outbox.report', report.error.message)
-  const parent = validateParentEnvelope({
-    flowName: value.flowName,
-    flowId: report.value.flowId,
-    childKey: report.value.childKey,
-    parentStoreKey: value.parentStoreKey,
-    depth: 1
-  })
-  if (Result.isError(parent)) throw invalid('outbox', parent.error.message)
-  return Object.freeze({
-    id,
-    flowName: parent.value.flowName,
-    parentStoreKey: parent.value.parentStoreKey,
-    report: report.value
-  })
+  const checked = validateProtocolFlowOutboxEntry(value)
+  if (Result.isError(checked)) throw invalid('outbox', checked.error.message)
+  // Redis dynamic key segments are bounded more tightly than the protocol's
+  // general text bound because the entry id is part of a key.
+  const id = validateKeySegment(checked.value.id, 'outbox.id')
+  return Object.freeze({ ...checked.value, id })
 }
 
 export const encodeFlowOutboxEntry = (entry: FlowOutboxEntry): string =>

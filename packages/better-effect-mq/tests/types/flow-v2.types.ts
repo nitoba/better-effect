@@ -11,6 +11,12 @@ import type {
   FlowHandlerRequirements,
   FlowStoreV2,
   FlowStoreV2Operation,
+  AckOutboxRequest,
+  AckOutboxResult,
+  AppendChildReportRequest,
+  AppendChildReportResult,
+  FlowOutboxPage,
+  PeekOutboxRequest,
   JobState,
   JobStateV2,
   ParentEnvelope,
@@ -25,6 +31,16 @@ declare const fanOutResult: FlowStoreV2Operation<FlowFanOutResult>
 expectTypeOf(flowStore.descriptor.protocolVersion).toEqualTypeOf<2>()
 expectTypeOf(fanOutResult).toEqualTypeOf<FlowStoreV2Operation<FlowFanOutResult>>()
 expectTypeOf(MemoryFlowStore.make()).toEqualTypeOf<FlowStoreV2>()
+
+declare const appendRequest: AppendChildReportRequest
+declare const appendResult: FlowStoreV2Operation<AppendChildReportResult>
+declare const peekRequest: PeekOutboxRequest
+declare const peekResult: FlowStoreV2Operation<FlowOutboxPage>
+declare const ackRequest: AckOutboxRequest
+declare const ackResult: FlowStoreV2Operation<AckOutboxResult>
+expectTypeOf(flowStore.appendChildReport(appendRequest)).toEqualTypeOf(appendResult)
+expectTypeOf(flowStore.peekOutbox(peekRequest)).toEqualTypeOf(peekResult)
+expectTypeOf(flowStore.ackOutbox(ackRequest)).toEqualTypeOf(ackResult)
 
 const queue = Queue.define('flow-types')
 const parentJob = queue.job('parent', {
