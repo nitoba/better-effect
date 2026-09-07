@@ -273,6 +273,8 @@ export interface RedisKeyLayout {
   readonly queues: string
   readonly queue: (queue: string) => string
   readonly wake: string
+  readonly events: string
+  readonly eventsMeta: string
   readonly layoutLock: string
   readonly counts: string
   readonly controlsIndex: string
@@ -342,6 +344,8 @@ export const makeRedisKeyLayout = (prefixValue: string, namespaceValue: string):
     queues: suffix('queues'),
     queue: (queue: string) => suffix(`queue:${queueSegment(queue)}`),
     wake: suffix('wake'),
+    events: suffix('events'),
+    eventsMeta: suffix('events-meta'),
     layoutLock: suffix('layout-lock'),
     counts: suffix('counts'),
     controlsIndex: suffix('controls'),

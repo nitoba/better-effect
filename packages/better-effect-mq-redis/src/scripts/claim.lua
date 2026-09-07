@@ -116,6 +116,35 @@ local function keyTypeIs(key, expected)
   if type(actual) == "table" then actual = actual.ok end
   return actual == "none" or actual == expected
 end
+local function validEventRetention(retention)
+  if retention == nil then return true end
+  for key, value in pairs(retention) do if key ~= "ageMs" and key ~= "count" or type(value) ~= "number" or value <= 0 or value > MAX or math.floor(value) ~= value then return false end end
+  return true
+end
+local function appendClaimEvent(p, job)
+  if p.keys.events == nil then return true end
+  local event = {
+    type = "job-claimed",
+    recordedAtMs = p.now,
+    jobId = redis.call("HGET", job, "id"),
+    queue = redis.call("HGET", job, "queue"),
+    name = redis.call("HGET", job, "name"),
+    version = integer(redis.call("HGET", job, "version")),
+    state = "active",
+    delivery = integer(redis.call("HGET", job, "deliveryCount")),
+    workerId = redis.call("HGET", job, "leaseOwner"),
+    attributes = {}
+  }
+  if not validEventRetention(p.eventRetention) then return false end
+  redis.call("XADD", p.keys.events, "*", "data", cjson.encode(event))
+  redis.call("HSET", p.keys.eventsMeta, "initialized", "1")
+  local removed = 0
+  local retention = p.eventRetention or {}
+  if retention.ageMs then local cutoff = p.now - retention.ageMs; if cutoff < 0 then cutoff = 0 end; removed = removed + redis.call("XTRIM", p.keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
+  if retention.count then removed = removed + redis.call("XTRIM", p.keys.events, "MAXLEN", "=", tostring(retention.count)) end
+  if removed > 0 then local first = redis.call("XRANGE", p.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", p.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
+  return true
+end
 local function validJob(job)
   if not keyTypeIs(job, "hash") or redis.call("EXISTS", job) == 0 then return false end
   local knownFields = {
@@ -191,6 +220,7 @@ local function staticKeysValid(p)
     if not rememberKey(keys[name], "set") then return false end
   end
   if not rememberKey(keys.active, "zset") then return false end
+  if keys.events and (not rememberKey(keys.events, "stream") or not rememberKey(keys.eventsMeta, "hash")) then return false end
   for _, identity in ipairs(p.identities) do
     if not rememberKey(identity.waiting, "zset") or not rememberKey(identity.delayed, "zset") then return false end
   end
@@ -409,6 +439,7 @@ p.waitingScanLimit = integer(p.waitingScanLimit)
 if not p.now or not p.limit or p.limit <= 0 or p.limit > MAX_LIMIT or not p.leaseDuration or p.leaseDuration <= 0 or not p.promotionBudget or p.promotionBudget <= 0 or p.promotionBudget > MAX_PROMOTION_BUDGET or not p.waitingScanLimit or p.waitingScanLimit <= 0 or p.waitingScanLimit > MAX_WAITING_SCAN or type(p.queue) ~= "string" or p.queue == "" or type(p.workerId) ~= "string" or p.workerId == "" or type(p.jobPrefix) ~= "string" or p.jobPrefix == "" or type(p.tokens) ~= "table" then
   return errorReply("MQ_INVALID_ARGUMENT")
 end
+if not validEventRetention(p.eventRetention) then return errorReply("MQ_INVALID_ARGUMENT") end
 if #p.identities > MAX_IDENTITIES or #p.identities * (p.limit + p.promotionBudget + 128) > MAX_WORK then
   return errorReply("MQ_BATCH_LIMIT")
 end
@@ -514,6 +545,7 @@ while #jobs < p.limit and operations < operationLimit do
     redis.call("SET", chosen.revisionKey, tostring(chosen.revision + 1))
     redis.call("ZADD", p.keys.active, expiry, chosen.id)
     changeState(p.keys, chosen.id, "waiting", "active")
+    if not appendClaimEvent(p, chosen.job) then return errorReply("MQ_INVALID_ARGUMENT") end
     jobs[#jobs + 1] = redis.call("HGETALL", chosen.job)
     changed = true
   end

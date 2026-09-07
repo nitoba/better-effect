@@ -95,6 +95,52 @@ local function keyTypeIs(key, expected)
   if type(actual) == "table" then actual = actual.ok end
   return actual == "none" or actual == expected
 end
+local function validEvent(event)
+  if event == nil then return true end
+  if type(event) ~= "table" or type(event.type) ~= "string" or type(event.recordedAtMs) ~= "number" or
+    event.recordedAtMs < 0 or math.floor(event.recordedAtMs) ~= event.recordedAtMs or type(event.attributes) ~= "table" then
+    return false
+  end
+  local types = { ["queue-paused"] = true, ["queue-resumed"] = true }
+  if not types[event.type] then return false end
+  local allowed = { type=true, recordedAtMs=true, queue=true, attributes=true }
+  for key, value in pairs(event) do
+    if type(key) ~= "string" or not allowed[key] then return false end
+    if key ~= "attributes" and value ~= nil and type(value) ~= "string" and type(value) ~= "number" and type(value) ~= "boolean" then return false end
+  end
+  for key, value in pairs(event.attributes) do
+    if type(key) ~= "string" or type(value) ~= "string" then return false end
+  end
+  return true
+end
+local function validEventRetention(retention)
+  if retention == nil then return true end
+  for key, value in pairs(retention) do
+    if key ~= "ageMs" and key ~= "count" then return false end
+    if type(value) ~= "number" or value <= 0 or value > MAX or math.floor(value) ~= value then return false end
+  end
+  return true
+end
+local function appendEvent(item)
+  if item.event == nil then return true end
+  if not validEvent(item.event) or not validEventRetention(item.eventRetention) then return false end
+  local id = redis.call("XADD", item.keys.events, "*", "data", cjson.encode(item.event))
+  if type(id) ~= "string" then return false end
+  redis.call("HSET", item.keys.eventsMeta, "initialized", "1")
+  local retention = item.eventRetention or {}
+  local removed = 0
+  if retention.ageMs then
+    local cutoff = item.event.recordedAtMs - retention.ageMs
+    if cutoff < 0 then cutoff = 0 end
+    removed = removed + redis.call("XTRIM", item.keys.events, "MINID", "=", tostring(cutoff) .. "-0")
+  end
+  if retention.count then removed = removed + redis.call("XTRIM", item.keys.events, "MAXLEN", "=", tostring(retention.count)) end
+  if removed > 0 then
+    local first = redis.call("XRANGE", item.keys.events, "-", "+", "COUNT", "1")
+    if first[1] and first[1][1] then redis.call("HSET", item.keys.eventsMeta, "trimmedThrough", first[1][1]) end
+  end
+  return true
+end
 local function keyTypesValid(item)
   local keys = item.keys
   if type(keys) ~= "table" then return false end
@@ -123,6 +169,7 @@ local function keyTypesValid(item)
   for _, name in ipairs({"sequenceJobs", "revision"}) do
     if not check(name, "string") then return false end
   end
+  if not check("events", "stream") or not check("eventsMeta", "hash") then return false end
   return true
 end
 
@@ -402,10 +449,22 @@ if p.mode == "pause" or p.mode == "resume" then
     not keyTypeIs(keys.queueControls, "hash") or not keyTypeIs(keys.wake, "hash") then
     return errorReply("MQ_INVALID_ARGUMENT")
   end
+  if p.event ~= nil and (not keys.events or not keys.eventsMeta or not keyTypeIs(keys.events, "stream") or not keyTypeIs(keys.eventsMeta, "hash")) then
+    return errorReply("MQ_INVALID_ARGUMENT")
+  end
+  if not validEvent(p.event) or not validEventRetention(p.eventRetention) then return errorReply("MQ_INVALID_ARGUMENT") end
   if not wakeAvailable(p) then return errorReply("MQ_UNSAFE_INTEGER") end
-  redis.call("HSET", keys.queueControls, p.queue, p.paused and "1" or "0")
+  local desired = p.paused and "1" or "0"
+  local current = redis.call("HGET", keys.queueControls, p.queue) or "0"
+  if current == desired then
+    local currentVersion = safeNumber(redis.call("HGET", keys.wake, p.queue) or "0")
+    if currentVersion == nil then return errorReply("MQ_UNSAFE_INTEGER") end
+    return okReply("applied", p.queue, currentVersion)
+  end
+  redis.call("HSET", keys.queueControls, p.queue, desired)
   local version = bump(p)
   if version == nil then return errorReply("MQ_UNSAFE_INTEGER") end
+  if not appendEvent(p) then return errorReply("MQ_INVALID_ARGUMENT") end
   return okReply("applied", p.queue, version)
 end
 if p.mode == "heartbeat" then

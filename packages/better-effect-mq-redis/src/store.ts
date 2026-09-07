@@ -11,6 +11,7 @@ import { Layer, type ServiceContract } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 import {
   JobStore,
+  JobEventStore,
   ControlsRevisionMismatchError,
   JobStoreWakeAbortedError,
   JobStoreFailure,
@@ -37,6 +38,7 @@ import {
   type JobStore as J,
   type JobStoreDescriptor
 } from 'better-effect-mq'
+import type { DurableJobEventInput } from 'better-effect-mq'
 import type {
   AnyQueueControlsRegistry,
   ControlsReconcileOptions,
@@ -50,6 +52,16 @@ import type {
   ControlledCancelRequest
 } from 'better-effect-mq'
 import { RedisClient } from './client'
+import { RedisJobEventStore } from './event-store'
+import {
+  makeJobEvent,
+  makeQueueEvent,
+  normalizeEventOptions,
+  settlementEventType,
+  transitionEventType,
+  type RedisEventAppendOptions,
+  type RedisJobEventStoreOptions
+} from './event-codec'
 import { RedisConnectionError, RedisLayoutError } from './errors'
 import { encodeJobRecord, decodeJobRecord, encodeAttempt, decodeAttempt } from './codec'
 import { hashReply, stringsReply, scriptReply, type RedisScriptReply } from './internal/replies'
@@ -438,6 +450,8 @@ type MutationKeys = {
   readonly oldFinishedMember?: string
   readonly newFinishedMember?: string
   readonly identityMember?: string
+  readonly events?: string
+  readonly eventsMeta?: string
 }
 
 type AlreadyAppliedMutation = {
@@ -567,7 +581,14 @@ class RedisJobStoreImplementation {
     listener: () => void
     settled: boolean
   }>()
-  constructor(private readonly redis: RedisClient) {}
+  private readonly eventOptions: RedisEventAppendOptions | undefined
+
+  constructor(
+    private readonly redis: RedisClient,
+    eventOptions?: RedisJobEventStoreOptions
+  ) {
+    this.eventOptions = eventOptions === undefined ? undefined : normalizeEventOptions(eventOptions)
+  }
   async start(): Promise<void> {
     this.unsubscribeWake = await subscribeWake(
       this.redis.subscriber,
@@ -656,6 +677,9 @@ class RedisJobStoreImplementation {
       counts: this.layout.counts,
       wake: this.layout.wake,
       wakeChannel: this.layout.wakeChannel,
+      ...(this.eventOptions === undefined
+        ? {}
+        : { events: this.layout.events, eventsMeta: this.layout.eventsMeta }),
       queueControls: this.layout.queues,
       control: this.layout.controls(record.queue),
       controlPermits: this.layout.controlsPermits(record.queue),
@@ -724,6 +748,7 @@ class RedisJobStoreImplementation {
         readonly revision: number
       }
       readonly scriptName?: Parameters<typeof runScript>[1]
+      readonly event?: DurableJobEventInput
     } = {}
   ): Promise<MutationResult> {
     const scriptName =
@@ -779,6 +804,12 @@ class RedisJobStoreImplementation {
         : {
             controlled: true,
             controlledRevision: String(mutation.controlled.revision)
+          }),
+      ...(this.eventOptions === undefined
+        ? {}
+        : {
+            event: mutation.event,
+            eventRetention: this.eventOptions.retention
           })
     }
     const keyList = uniqueKeys(
@@ -886,7 +917,13 @@ class RedisJobStoreImplementation {
           expectedRevision: String(expectedRevision),
           queue: record.queue,
           idempotencyKey: record.idempotencyKey ?? '',
-          now
+          now,
+          ...(this.eventOptions === undefined
+            ? {}
+            : {
+                event: makeJobEvent('job-removed', record, { recordedAtMs: now }),
+                eventRetention: this.eventOptions.retention
+              })
         })
       ]
     )
@@ -1156,12 +1193,19 @@ class RedisJobStoreImplementation {
       const next = command(current)
       if (Result.isError(next)) throw next.error
       let record = next.value.record
+      const eventType =
+        this.eventOptions === undefined
+          ? undefined
+          : transitionEventType(operation, current, record)
       const mutation = await this.write(record, current, {
         expectedRevision: currentRevision,
         scriptName:
           operation === 'requestCancellation'
             ? 'cancel'
             : (operation as Parameters<typeof runScript>[1]),
+        ...(eventType === undefined
+          ? {}
+          : { event: makeJobEvent(eventType, record, { previous: current }) }),
         ...(controlledRevision === undefined
           ? {}
           : { controlled: { revision: controlledRevision } })
@@ -1291,7 +1335,8 @@ class RedisJobStoreImplementation {
       wakeChannel: this.layout.wakeChannel,
       declaredJobs: declared.jobs,
       declaredMappings: declared.mappings,
-      items
+      items,
+      ...(this.eventOptions === undefined ? {} : { eventRetention: this.eventOptions.retention })
     })
     if (Buffer.byteLength(body, 'utf8') > MAX_ENQUEUE_CHUNK_BYTES)
       throw new JobDefinitionError({
@@ -1417,7 +1462,10 @@ class RedisJobStoreImplementation {
           newWaitingMember:
             record.value.state === 'waiting' ? waitingMember(record.value) : undefined,
           newDelayedMember:
-            record.value.state === 'delayed' ? delayedMember(record.value) : undefined
+            record.value.state === 'delayed' ? delayedMember(record.value) : undefined,
+          ...(this.eventOptions === undefined
+            ? {}
+            : { event: makeJobEvent('job-enqueued', record.value, { duplicate: false }) })
         })
       }
       if (items.length === 0) return ok(Object.freeze([]))
@@ -1429,7 +1477,10 @@ class RedisJobStoreImplementation {
           reply: 'enqueue-many',
           mode: 'enqueue-many',
           wakeChannel: this.layout.wakeChannel,
-          items: candidate
+          items: candidate,
+          ...(this.eventOptions === undefined
+            ? {}
+            : { eventRetention: this.eventOptions.retention })
         })
         if (
           chunk.length > 0 &&
@@ -1559,7 +1610,10 @@ class RedisJobStoreImplementation {
         byQueue: this.layout.byQueue(q.value),
         byStateWaiting: this.layout.byState('waiting'),
         byStateDelayed: this.layout.byState('delayed'),
-        byStateActive: this.layout.byState('active')
+        byStateActive: this.layout.byState('active'),
+        ...(this.eventOptions === undefined
+          ? {}
+          : { events: this.layout.events, eventsMeta: this.layout.eventsMeta })
       }
       let discoveryLimit = Math.min(MAX_CLAIM_DISCOVERY_SCAN, Math.max(128, limit))
       let reply: Awaited<ReturnType<typeof this.script>> | undefined
@@ -1576,6 +1630,7 @@ class RedisJobStoreImplementation {
           keys.byStateWaiting,
           keys.byStateDelayed,
           keys.byStateActive,
+          ...(this.eventOptions === undefined ? [] : [this.layout.events, this.layout.eventsMeta]),
           ...identities.flatMap((item) => [item.waiting, item.delayed]),
           ...Object.values(discovered.jobs),
           ...Object.values(discovered.revisions),
@@ -1603,7 +1658,10 @@ class RedisJobStoreImplementation {
           now,
           limit,
           leaseDuration: duration,
-          promotionBudget
+          promotionBudget,
+          ...(this.eventOptions === undefined
+            ? {}
+            : { eventRetention: this.eventOptions.retention })
         })
         if (Buffer.byteLength(body, 'utf8') > MAX_CLAIM_BODY_BYTES)
           throw new JobDefinitionError({
@@ -1708,7 +1766,10 @@ class RedisJobStoreImplementation {
         byStateWaiting: this.layout.byState('waiting'),
         byStateDelayed: this.layout.byState('delayed'),
         byStateActive: this.layout.byState('active'),
-        ...control
+        ...control,
+        ...(this.eventOptions === undefined
+          ? {}
+          : { events: this.layout.events, eventsMeta: this.layout.eventsMeta })
       }
       const discoveryLimit = Math.min(MAX_CLAIM_DISCOVERY_SCAN, Math.max(128, limit))
       const discovered = await this.discoverClaimKeys(
@@ -1718,6 +1779,7 @@ class RedisJobStoreImplementation {
       )
       const keyList = uniqueKeys([
         ...Object.values(keys),
+        ...(this.eventOptions === undefined ? [] : [this.layout.events, this.layout.eventsMeta]),
         ...identities.flatMap((item) => [item.waiting, item.delayed]),
         ...Object.values(discovered.jobs),
         ...Object.values(discovered.revisions),
@@ -1739,7 +1801,8 @@ class RedisJobStoreImplementation {
         promotionBudget: Math.max(128, Math.min(10_000, limit * 4)),
         now,
         limit,
-        leaseDuration: duration
+        leaseDuration: duration,
+        ...(this.eventOptions === undefined ? {} : { eventRetention: this.eventOptions.retention })
       }
       if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_CLAIM_BODY_BYTES)
         throw new JobDefinitionError({
@@ -1885,6 +1948,14 @@ class RedisJobStoreImplementation {
         attempt: next.value.attempt,
         settlementToken: token.value,
         settlementDigest: canonicalJson(x.outcome),
+        ...(this.eventOptions === undefined
+          ? {}
+          : {
+              event: makeJobEvent(settlementEventType(next.value.attempt), record, {
+                previous: current,
+                attempt: next.value.attempt
+              })
+            }),
         ...(controlledRevision === undefined
           ? {}
           : { controlled: { revision: controlledRevision } })
@@ -2196,6 +2267,13 @@ class RedisJobStoreImplementation {
                 ? {
                     scriptName: 'recover-stalled',
                     expectedRevision: revision,
+                    ...(this.eventOptions === undefined
+                      ? {}
+                      : {
+                          event: makeJobEvent('job-stalled-recovered', t.value.record, {
+                            previous: record
+                          })
+                        }),
                     ...(controlledRevision === undefined
                       ? {}
                       : { controlled: { revision: controlledRevision } })
@@ -2204,6 +2282,14 @@ class RedisJobStoreImplementation {
                     scriptName: 'recover-stalled',
                     attempt: t.value.attempt,
                     expectedRevision: revision,
+                    ...(this.eventOptions === undefined
+                      ? {}
+                      : {
+                          event: makeJobEvent('job-stalled-recovered', t.value.record, {
+                            previous: record,
+                            ...(t.value.attempt === undefined ? {} : { attempt: t.value.attempt })
+                          })
+                        }),
                     ...(controlledRevision === undefined
                       ? {}
                       : { controlled: { revision: controlledRevision } })
@@ -2813,7 +2899,10 @@ class RedisJobStoreImplementation {
       const keys = {
         queueControls: this.layout.queues,
         wake: this.layout.wake,
-        wakeChannel: this.layout.wakeChannel
+        wakeChannel: this.layout.wakeChannel,
+        ...(this.eventOptions === undefined
+          ? {}
+          : { events: this.layout.events, eventsMeta: this.layout.eventsMeta })
       }
       const reply = await this.script(scriptName, uniqueKeys(Object.values(keys)), [
         JSON.stringify({
@@ -2822,7 +2911,13 @@ class RedisJobStoreImplementation {
           keys,
           queue: q.value,
           paused,
-          now
+          now,
+          ...(this.eventOptions === undefined
+            ? {}
+            : {
+                event: makeQueueEvent(paused ? 'queue-paused' : 'queue-resumed', q.value, now),
+                eventRetention: this.eventOptions.retention
+              })
         })
       ])
       const values = tupleReply(reply.values, scriptName, 3)
@@ -2902,7 +2997,8 @@ class RedisJobStoreImplementation {
 
 const makeLayer = <T extends AnyJobStoreToken>(
   token: T,
-  acquire: () => Promise<RedisClient>
+  acquire: () => Promise<RedisClient>,
+  eventOptions?: RedisJobEventStoreOptions
 ): Layer<InstanceType<T>, never> =>
   Layer.scoped(
     token,
@@ -2911,7 +3007,7 @@ const makeLayer = <T extends AnyJobStoreToken>(
       let implementation: RedisJobStoreImplementation | undefined
       try {
         await client.initialize()
-        implementation = new RedisJobStoreImplementation(client)
+        implementation = new RedisJobStoreImplementation(client, eventOptions)
         await implementation.start()
         return JobStore.of(implementation as never) as unknown as ServiceContract<InstanceType<T>>
       } catch (cause) {
@@ -2957,5 +3053,58 @@ export const RedisJobStore = Object.freeze({
         namespace: namespaceFor(token, config.namespace ?? 'default')
       })
     )
+  },
+  layerWithEvents(config: RedisJobStoreConfig, options?: RedisJobEventStoreOptions) {
+    return Layer.merge(
+      makeLayer(JobStore, async () => RedisClient.fromClients(config), options ?? {}),
+      RedisJobEventStore.layer(config, options)
+    ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
+  },
+  layerWithEventsFor<T extends AnyJobStoreToken>(
+    token: T,
+    config: RedisJobStoreConfig,
+    options?: RedisJobEventStoreOptions
+  ) {
+    const eventToken = JobEventStore.for(token)
+    return Layer.merge(
+      makeLayer(
+        token,
+        async () =>
+          RedisClient.fromClients({
+            ...config,
+            namespace: namespaceFor(token, config.namespace ?? 'default')
+          }),
+        options ?? {}
+      ) as Layer.Any,
+      RedisJobEventStore.layerFor(eventToken as never, config, options) as Layer.Any
+    ) as unknown as Layer<InstanceType<T> | InstanceType<typeof eventToken>, never>
+  },
+  layerWithEventsFromConfig(
+    config: RedisJobStoreConnectionConfig,
+    options?: RedisJobEventStoreOptions
+  ) {
+    return Layer.merge(
+      makeLayer(JobStore, async () => RedisClient.fromConfig(config), options ?? {}),
+      RedisJobEventStore.layerFromConfig(config, options)
+    ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
+  },
+  layerWithEventsFromConfigFor<T extends AnyJobStoreToken>(
+    token: T,
+    config: RedisJobStoreConnectionConfig,
+    options?: RedisJobEventStoreOptions
+  ) {
+    const eventToken = JobEventStore.for(token)
+    return Layer.merge(
+      makeLayer(
+        token,
+        async () =>
+          RedisClient.fromConfig({
+            ...config,
+            namespace: namespaceFor(token, config.namespace ?? 'default')
+          }),
+        options ?? {}
+      ) as Layer.Any,
+      RedisJobEventStore.layerFromConfigFor(eventToken as never, config, options) as Layer.Any
+    ) as unknown as Layer<InstanceType<T> | InstanceType<typeof eventToken>, never>
   }
 })

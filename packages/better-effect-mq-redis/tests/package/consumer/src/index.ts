@@ -2,6 +2,7 @@
 
 import {
   RedisClient,
+  RedisJobEventStore,
   RedisJobStore,
   decodeDelayedMember,
   encodeDelayedMember,
@@ -20,5 +21,8 @@ if (typeof RedisClient.layer !== 'function') throw new Error('client layer missi
 if (typeof RedisJobStore.layer !== 'function') throw new Error('job store layer missing')
 if (typeof RedisJobStore.layerFromConfig !== 'function') {
   throw new Error('job store connection layer missing')
+}
+if (typeof RedisJobEventStore.layerFromConfig !== 'function') {
+  throw new Error('event store connection layer missing')
 }
 console.log('redis consumer ok')

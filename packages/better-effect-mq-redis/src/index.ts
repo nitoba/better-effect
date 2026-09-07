@@ -1,4 +1,5 @@
 export { RedisJobStore } from './store'
+export { RedisJobEventStore } from './event-store'
 export { RedisFlowStore } from './flow-store'
 export { RedisJobScheduleStore } from './schedule-store'
 export {
@@ -16,6 +17,7 @@ export {
   validateCommandClient,
   validateSubscriberClient
 } from './config'
+export type { RedisJobEventStoreOptions } from './event-codec'
 export type {
   MaybePromise,
   NormalizedRedisJobStoreConfig,
