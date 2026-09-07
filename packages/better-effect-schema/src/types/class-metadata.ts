@@ -1,5 +1,5 @@
-import type * as z from "zod"
-import type { ClassDefinition, DefinitionFields, RawShape } from "./common.js"
+import type * as z from 'zod'
+import type { ClassDefinition, DefinitionFields } from './common.js'
 
 export interface ClassTypeMetadata<
   Self,
@@ -8,7 +8,7 @@ export interface ClassTypeMetadata<
   InstanceProps,
   Inherited = object,
   ProtectedKeys extends PropertyKey = never,
-  Fields extends RawShape = DefinitionFields<Definition>
+  Fields = DefinitionFields<Definition>
 > {
   readonly self: Self
   readonly definition: Definition
