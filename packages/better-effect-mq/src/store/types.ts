@@ -13,6 +13,7 @@ import type {
   PersistedBackoff,
   SettlementOutcome
 } from '../protocol'
+import type { ParentEnvelope } from '../protocol'
 import type {
   JobStoreCancelError,
   JobStoreClaimError,
@@ -102,6 +103,8 @@ export type EnqueueRequest = {
   readonly attemptsMax: number
   readonly backoff?: PersistedBackoff
   readonly timeoutMs?: number
+  /** v2 child ownership metadata; absent on ordinary v1 jobs. */
+  readonly parent?: ParentEnvelope
   readonly now: number
 } & (
   | {

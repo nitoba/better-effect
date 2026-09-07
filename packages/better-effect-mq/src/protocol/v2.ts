@@ -17,7 +17,10 @@ import { validatePreparedEnqueue } from '../job/prepared'
 import { makeJobId } from './brands'
 import { JobDefinitionError } from './errors'
 import { validateSerializedJobFailure } from './failures'
+import { validateJobRecord } from './records'
 import type {
+  AttemptOutcome,
+  AttemptRecord,
   JobRecord,
   JobState,
   JsonValue,
@@ -51,6 +54,13 @@ export const maxFlowStoreKeyLength = 512 as const
 export const maxFlowChildIdLength = 1_024 as const
 
 export type JobStateV2 = JobState | 'waiting-children'
+
+/** v2 extends the settlement ledger without changing the v1 validator. */
+export type AttemptOutcomeV2 = AttemptOutcome | 'fanned-out'
+
+export type AttemptRecordV2 = Omit<AttemptRecord, 'outcome'> & {
+  readonly outcome: AttemptOutcomeV2
+}
 
 export interface ParentEnvelope {
   readonly flowName: string
@@ -206,6 +216,39 @@ const flowChildReportFields = ['flowId', 'childKey', 'outcome', 'result', 'failu
 const fanOutFields = ['type', 'failFast', 'children'] as const
 const flowLimitsFields = ['maxChildren', 'maxDepth'] as const
 const migrationFields = ['status', 'from', 'to'] as const
+const jobRecordV2Fields = [
+  'id',
+  'name',
+  'version',
+  'queue',
+  'dispatchKey',
+  'state',
+  'payload',
+  'metadata',
+  'priority',
+  'runAt',
+  'orderingSequence',
+  'attemptsMax',
+  'attemptsMade',
+  'attemptSequence',
+  'deliveryCount',
+  'stalledCount',
+  'backoff',
+  'timeoutMs',
+  'idempotencyKey',
+  'createdAt',
+  'updatedAt',
+  'processedAt',
+  'finishedAt',
+  'leaseOwner',
+  'leaseToken',
+  'leaseExpiresAt',
+  'cancellationRequestedAt',
+  'result',
+  'failure',
+  'parent',
+  'flow'
+] as const
 
 const invalid = <Value>(field: string, message: string): ResultType<Value, JobDefinitionError> =>
   Result.err(new JobDefinitionError({ field, message }))
@@ -410,6 +453,61 @@ export const validateFlowState = (
       completed,
       failed,
       cancelled
+    })
+  )
+}
+
+/** Validate a v2 Job snapshot while keeping the v1 record validator unchanged. */
+export const validateJobRecordV2 = (
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- records cross an adapter boundary.
+  value: unknown
+): ResultType<JobRecordV2, JobDefinitionError> => {
+  const fields = readObjectFields(value, jobRecordV2Fields, 'record')
+  if (Result.isError(fields)) return fields
+
+  const parent =
+    fields.value.parent === undefined
+      ? Result.ok<ParentEnvelope | undefined>(undefined)
+      : validateParentEnvelope(fields.value.parent)
+  const flow =
+    fields.value.flow === undefined
+      ? Result.ok<FlowState | undefined>(undefined)
+      : validateFlowState(fields.value.flow)
+  if (Result.isError(parent)) return invalid('parent', parent.error.message)
+  if (Result.isError(flow)) return invalid('flow', flow.error.message)
+
+  // The v1 reducer is intentionally unaware of waiting-children. Validate the
+  // shared snapshot using its waiting representation, then restore the v2 state.
+  const legacyFields: Record<string, unknown> = {}
+  for (const field of jobRecordV2Fields) {
+    if (field === 'parent' || field === 'flow') continue
+    if (Object.prototype.hasOwnProperty.call(fields.value, field)) {
+      legacyFields[field] = fields.value[field]
+    }
+  }
+  if (fields.value.state === 'waiting-children') legacyFields.state = 'waiting'
+  const legacy = validateJobRecord(legacyFields)
+  if (Result.isError(legacy)) return legacy
+  if (fields.value.state === 'waiting-children' && flow.value === undefined) {
+    return invalid('flow', 'waiting-children records must contain flow metadata')
+  }
+  if (fields.value.state === 'waiting-children' && flow.value?.pending === 0) {
+    return invalid('flow.pending', 'waiting-children records must have pending children')
+  }
+  if (
+    fields.value.state !== 'waiting-children' &&
+    flow.value !== undefined &&
+    flow.value.pending > 0
+  ) {
+    return invalid('state', 'records with pending children must be waiting-children')
+  }
+
+  return Result.ok(
+    Object.freeze({
+      ...legacy.value,
+      state: fields.value.state as JobStateV2,
+      parent: parent.value,
+      flow: flow.value
     })
   )
 }
