@@ -1,5 +1,12 @@
+// oxlint-disable anti-slop/no-known-value-widening -- the ofetch options are assembled at the transport boundary.
+// oxlint-disable anti-slop/no-runtime-typeof -- BodyInit is narrowed at the JavaScript fetch boundary.
+// oxlint-disable anti-slop/no-unknown-parameters -- request bodies and JSON responses are intentionally untyped here.
+// oxlint-disable anti-slop/no-unknown-returns -- the default JSON response is deliberately unknown until a schema is applied.
+// oxlint-disable anti-slop/no-unsafe-dictionary-type -- the transport option object is checked by ofetch's named contract.
+// oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions restore the platform BodyInit contract after narrowing.
 import { createFetch, ofetch } from 'ofetch'
-import { HttpStatusError, HttpTransportError } from '../errors'
+import type { FetchOptions } from 'ofetch'
+import { HttpDecodeError, HttpStatusError, HttpTransportError } from '../errors'
 
 export type TransportOptions = Readonly<{
   readonly baseURL?: string
@@ -17,6 +24,17 @@ export type TransportRequest = Readonly<{
   readonly responseType?: 'json' | 'text' | 'blob' | 'arrayBuffer'
 }>
 
+export type TransportRequestOptions = Readonly<Omit<TransportRequest, 'method' | 'path'>>
+
+/** Request shape used by clients so option getters are not read until consumption. */
+export type DeferredTransportRequest = Readonly<{
+  readonly method: string
+  readonly path: string
+  readonly options: TransportRequestOptions
+}>
+
+export type TransportRequestInput = TransportRequest | DeferredTransportRequest
+
 const isBodyInit = (value: unknown): value is NonNullable<RequestInit['body']> =>
   typeof value === 'string' ||
   value instanceof Blob ||
@@ -33,8 +51,10 @@ const urlFor = (baseURL: string | undefined, path: string): string => {
 
 export const executeRequest = async (
   config: TransportOptions,
-  request: TransportRequest
+  input: TransportRequestInput
 ): Promise<Response> => {
+  const request: TransportRequest =
+    'options' in input ? { ...input.options, method: input.method, path: input.path } : input
   const headers = new Headers(config.headers)
   for (const [name, value] of new Headers(request.headers)) headers.set(name, value)
   let body = request.body
@@ -44,11 +64,13 @@ export const executeRequest = async (
   }
   try {
     const requester = config.fetch ? createFetch({ fetch: config.fetch }) : ofetch
-    const options: Record<string, unknown> = {
+    const options: FetchOptions<'stream'> = {
       method: request.method,
       headers,
       body: body as RequestInit['body'],
-      retry: 0
+      retry: 0,
+      ignoreResponseError: true,
+      responseType: 'stream'
     }
     if (request.query !== undefined) options.query = request.query
     if (request.signal !== undefined) options.signal = request.signal
@@ -60,9 +82,11 @@ export const executeRequest = async (
 
 export const readResponse = async (
   response: Response,
-  responseType: TransportRequest['responseType']
+  responseType: TransportRequest['responseType'],
+  method?: string
 ): Promise<unknown> => {
   if (
+    method === 'HEAD' ||
     response.status === 204 ||
     response.status === 205 ||
     response.status === 304 ||
@@ -77,23 +101,31 @@ export const readResponse = async (
     if (text.trim() === '') return undefined
     return JSON.parse(text) as unknown
   } catch (cause) {
-    throw new HttpTransportError({ phase: 'transport', cause })
+    throw new HttpDecodeError({ phase: 'decode', kind: 'provider', cause })
   }
 }
 
 export const classifyResponse = async (
   response: Response,
-  responseType: TransportRequest['responseType']
+  responseType: TransportRequest['responseType'],
+  method?: string
 ): Promise<unknown> => {
-  const data = await readResponse(response, responseType)
-  if (!response.ok)
+  if (!response.ok) {
+    let body: unknown
+    try {
+      body = await readResponse(response, responseType, method)
+    } catch {
+      // Preserve the HTTP status even when an error body cannot be decoded.
+      body = undefined
+    }
     throw new HttpStatusError({
       phase: 'status',
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
       url: response.url,
-      body: data
+      body
     })
-  return data
+  }
+  return await readResponse(response, responseType, method)
 }

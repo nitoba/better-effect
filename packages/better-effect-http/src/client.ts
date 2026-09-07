@@ -1,12 +1,14 @@
+/* oxlint-disable anti-slop/no-chained-type-assertions -- Service's erased factory instance is restored at one token boundary. */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- token assertions are justified by the structural contract below. */
 import { Layer, Service } from 'better-effect'
-import type { ServiceIdentity, ServiceToken as CoreServiceToken } from 'better-effect'
+import type { Layer as LayerType, ServiceIdentity, ServiceToken } from 'better-effect'
 import { operation } from './operation'
 import type { HttpOperation } from './operation'
-import type { TransportOptions, TransportRequest } from './internal/ofetch-transport'
+import type { TransportOptions, TransportRequestOptions } from './internal/ofetch-transport'
 
 export type HttpClientOptions = TransportOptions
-export type HttpRequestOptions = Omit<TransportRequest, 'method' | 'path'>
-export type HttpClientInstance = ServiceIdentity<string> & {
+export type HttpRequestOptions = TransportRequestOptions
+export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
   readonly get: (path: string, options?: HttpRequestOptions) => HttpOperation
   readonly post: (path: string, options?: HttpRequestOptions) => HttpOperation
   readonly put: (path: string, options?: HttpRequestOptions) => HttpOperation
@@ -15,14 +17,23 @@ export type HttpClientInstance = ServiceIdentity<string> & {
   readonly head: (path: string, options?: HttpRequestOptions) => HttpOperation
   readonly request: (method: string, path: string, options?: HttpRequestOptions) => HttpOperation
 }
-export type HttpClientToken<Tag extends string = 'HttpClient'> = CoreServiceToken<
+export type HttpClientToken<Tag extends string = 'HttpClient'> = ServiceToken<
   Tag,
-  HttpClientInstance
-> & { readonly layer: (options: HttpClientOptions) => ReturnType<typeof Layer.make> }
+  HttpClientInstance<Tag>
+>
 
-const makeClient = (config: HttpClientOptions): HttpClientInstance => {
+export type HttpClientLayer<Tag extends string = 'HttpClient'> = LayerType<
+  HttpClientInstance<Tag>,
+  never
+>
+
+type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
+  readonly layer: (options: HttpClientOptions) => HttpClientLayer<Tag>
+}
+
+const makeClient = <Tag extends string>(config: HttpClientOptions): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>
-    operation(config, { ...options, method, path })
+    operation(config, { method, path, options })
   return {
     request,
     get: (p, o) => request('GET', p, o),
@@ -31,32 +42,30 @@ const makeClient = (config: HttpClientOptions): HttpClientInstance => {
     patch: (p, o) => request('PATCH', p, o),
     delete: (p, o) => request('DELETE', p, o),
     head: (p, o) => request('HEAD', p, o)
-  } as HttpClientInstance
+  } as HttpClientInstance<Tag>
 }
 
-const token = Service<HttpClientInstance>()('HttpClient') as unknown as CoreServiceToken<
-  'HttpClient',
-  ServiceIdentity<'HttpClient'>
->
-const attach = <T>(
-  service: T
-): T & { readonly layer: (options: HttpClientOptions) => ReturnType<typeof Layer.make> } => {
+// SAFETY: Service's runtime class is the token; this assertion restores its declared instance contract.
+const token = Service<HttpClientInstance<'HttpClient'>>()(
+  'HttpClient'
+) as unknown as HttpClientToken<'HttpClient'>
+
+const attach = <Tag extends string>(
+  service: HttpClientToken<Tag>
+): HttpClientTokenWithLayer<Tag> => {
   Object.defineProperty(service, 'layer', {
-    value: (options: HttpClientOptions) =>
-      Layer.make(service as never, () => makeClient(options) as never)
+    value: (options: HttpClientOptions) => Layer.make(service, () => makeClient<Tag>(options))
   })
-  return service as T & {
-    readonly layer: (options: HttpClientOptions) => ReturnType<typeof Layer.make>
-  }
+  // SAFETY: `layer` was defined as a non-enumerable own property immediately above.
+  return service as HttpClientTokenWithLayer<Tag>
 }
 
 export const HttpClient = Object.assign(attach(token), {
-  service<const Tag extends string>(tag: Tag) {
-    return attach(
-      Service<HttpClientInstance>()(tag as never) as unknown as CoreServiceToken<
-        Tag,
-        ServiceIdentity<Tag>
-      >
-    )
+  service<const Tag extends string>(tag: Tag): HttpClientTokenWithLayer<Tag> {
+    // SAFETY: Service validates the non-empty literal tag at runtime; the cast restores the erased instance contract.
+    const service = Service<HttpClientInstance<Tag>>()(
+      tag as never
+    ) as unknown as HttpClientToken<Tag>
+    return attach(service)
   }
 })
