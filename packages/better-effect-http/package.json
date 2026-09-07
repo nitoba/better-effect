@@ -30,6 +30,7 @@
   "exports": {
     ".": "./dist/index.mjs",
     "./endpoints": "./dist/endpoints.mjs",
+    "./testing": "./dist/testing.mjs",
     "./package.json": "./package.json"
   },
   "publishConfig": {

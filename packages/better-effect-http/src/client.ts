@@ -14,6 +14,8 @@ import type {
 } from './schema'
 import { bindEndpoints } from './endpoints'
 import type { HttpEndpoint, HttpEndpointArgs } from './endpoints'
+import type { HttpInterceptor, HttpObserver } from './interceptors'
+import type { HttpMiddleware } from './middleware'
 
 export type HttpClientOptions = TransportOptions
 export type HttpRequestOptions = TransportRequestOptions &
@@ -49,6 +51,13 @@ export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Ta
   readonly endpoints: <E extends Record<string, HttpEndpoint>>(
     endpoints: E
   ) => { [K in keyof E]: (args: HttpEndpointArgs<E[K]['definition']>) => HttpOperation }
+  readonly use: (
+    ...hooks: readonly (
+      | HttpInterceptor<any, any>
+      | HttpObserver<any>
+      | HttpMiddleware<any, any, any>
+    )[]
+  ) => HttpClientInstance<Tag>
   readonly get: HttpRequestMethod
   readonly post: HttpRequestMethod
   readonly put: HttpRequestMethod
@@ -76,13 +85,17 @@ type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
   readonly layer: (options: HttpClientOptions) => HttpClientLayer<Tag>
 }
 
-const makeClient = <Tag extends string>(config: HttpClientOptions): HttpClientInstance<Tag> => {
+const makeClient = <Tag extends string>(
+  config: HttpClientOptions,
+  hooks: readonly unknown[] = []
+): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>
     operation(config, { method, path, options })
   const method = (name: string) => (path: string, options?: HttpRequestOptions) =>
     request(name, path, options)
   const client = {
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
+    use: (...added: readonly unknown[]) => makeClient(config, [...hooks, ...added]),
     request,
     get: method('GET'),
     post: method('POST'),
@@ -90,7 +103,13 @@ const makeClient = <Tag extends string>(config: HttpClientOptions): HttpClientIn
     patch: method('PATCH'),
     delete: method('DELETE'),
     head: method('HEAD'),
-    response: (path, options) => request('GET', path, options)
+    response: (
+      path: string,
+      options: TransportRequestOptions & {
+        readonly responses: HttpResponseSchemas
+        readonly schema?: never
+      }
+    ) => request('GET', path, options)
   } as HttpClientInstance<Tag>
   return client
 }
