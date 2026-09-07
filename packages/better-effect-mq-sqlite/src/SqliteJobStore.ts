@@ -8,6 +8,14 @@ import { Result, type Result as ResultType } from 'better-result'
 import {
   JobStore,
   JobStoreFailure,
+  type AnyQueueControlsRegistry,
+  type ControlsReconcileOptions,
+  type ControlledClaimRequest,
+  type ControlledCancelRequest,
+  type ControlledRecoverStalledRequest,
+  type ControlledReleaseRequest,
+  type ControlledSettleRequest,
+  type QueueControlsRecord,
   validateFlowChildReport,
   validateParentEnvelope,
   type AnyJobStoreToken,
@@ -79,8 +87,8 @@ const descriptor = Object.freeze({
     metadataIndex: 'residual' as const,
     transactionalEnqueue: false,
     durableChangeFeed: false,
-    globalConcurrency: false,
-    rateLimiting: false
+    globalConcurrency: true,
+    rateLimiting: true
   })
 })
 
@@ -152,12 +160,26 @@ class SqliteJobStoreImplementation {
     }
     const jobs = this.config.database
       .prepare(
-        `SELECT id, record_json FROM ${SQLITE_TABLES.jobs} WHERE namespace = ? AND state <> 'waiting-children'`
+        `SELECT id, dispatch_key, record_json FROM ${SQLITE_TABLES.jobs} WHERE namespace = ? AND state <> 'waiting-children'`
       )
       .all(this.config.namespace)
       .flatMap((row) =>
         row !== undefined && typeof row.id === 'string' && typeof row.record_json === 'string'
-          ? [[row.id, JSON.parse(row.record_json)]]
+          ? [
+              [
+                row.id,
+                (() => {
+                  const parsed: unknown = JSON.parse(row.record_json)
+                  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    return parsed
+                  }
+                  const record = parsed as Record<string, unknown>
+                  if (record.dispatchKey === undefined && typeof row.dispatch_key === 'string')
+                    record.dispatchKey = row.dispatch_key
+                  return record
+                })()
+              ]
+            ]
           : []
       )
     const attempts = this.config.database
@@ -200,6 +222,74 @@ class SqliteJobStoreImplementation {
         ? [[row.queue, Number(row.wake_version)]]
         : []
     )
+    base.controls = this.config.database
+      .prepare(
+        `SELECT queue, control_group, enabled, revision, global_concurrency, per_key_concurrency, rate_limit_max, rate_limit_duration_ms, created_at_ms, updated_at_ms FROM ${SQLITE_TABLES.controls} WHERE namespace = ?`
+      )
+      .all(this.config.namespace)
+      .flatMap((row) =>
+        typeof row?.queue === 'string' && typeof row.control_group === 'string'
+          ? [
+              [
+                row.queue,
+                {
+                  queue: row.queue,
+                  group: row.control_group,
+                  enabled: Number(row.enabled) === 1,
+                  revision: Number(row.revision),
+                  globalConcurrency:
+                    row.global_concurrency == null ? undefined : Number(row.global_concurrency),
+                  perKeyConcurrency:
+                    row.per_key_concurrency == null ? undefined : Number(row.per_key_concurrency),
+                  rateLimit:
+                    row.rate_limit_max == null || row.rate_limit_duration_ms == null
+                      ? undefined
+                      : {
+                          max: Number(row.rate_limit_max),
+                          durationMs: Number(row.rate_limit_duration_ms)
+                        },
+                  createdAtMs: Number(row.created_at_ms),
+                  updatedAtMs: Number(row.updated_at_ms)
+                }
+              ]
+            ]
+          : []
+      )
+    base.controlledPermits = this.config.database
+      .prepare(
+        `SELECT job_id, lease_token, dispatch_key FROM ${SQLITE_TABLES.permits} WHERE namespace = ?`
+      )
+      .all(this.config.namespace)
+      .flatMap((row) =>
+        typeof row?.job_id === 'string' &&
+        typeof row.lease_token === 'string' &&
+        typeof row.dispatch_key === 'string'
+          ? [[row.job_id, { leaseToken: row.lease_token, dispatchKey: row.dispatch_key }]]
+          : []
+      )
+    base.rateWindows = this.config.database
+      .prepare(
+        `SELECT queue, started_at_ms, claim_count FROM ${SQLITE_TABLES.rateWindows} WHERE namespace = ?`
+      )
+      .all(this.config.namespace)
+      .flatMap((row) =>
+        typeof row?.queue === 'string'
+          ? [
+              [
+                row.queue,
+                { startedAtMs: Number(row.started_at_ms), count: Number(row.claim_count) }
+              ]
+            ]
+          : []
+      )
+    base.rotations = this.config.database
+      .prepare(
+        `SELECT queue, cursor_sequence FROM ${SQLITE_TABLES.controlCursors} WHERE namespace = ?`
+      )
+      .all(this.config.namespace)
+      .flatMap((row) =>
+        typeof row?.queue === 'string' ? [[row.queue, Number(row.cursor_sequence)]] : []
+      )
     this.engine.restoreState(JSON.stringify(base))
   }
 
@@ -276,11 +366,18 @@ class SqliteJobStoreImplementation {
     delete metadata.attempts
     delete metadata.paused
     delete metadata.queueWakeVersions
+    delete metadata.controls
+    delete metadata.controlledPermits
+    delete metadata.rateWindows
+    delete metadata.rotations
     this.config.database
       .prepare(
         `INSERT INTO ${SQLITE_TABLES.state}(namespace, state_json, updated_at_ms) VALUES(?, ?, ?) ON CONFLICT(namespace) DO UPDATE SET state_json = excluded.state_json, updated_at_ms = excluded.updated_at_ms`
       )
       .run(this.config.namespace, JSON.stringify(metadata), Date.now())
+    this.persistControlledPermits(after)
+    this.persistRateWindows(after)
+    this.persistControls(after)
   }
 
   private writeJob(record: Record<string, unknown>): void {
@@ -291,6 +388,7 @@ class SqliteJobStoreImplementation {
       record.name,
       record.version,
       record.state,
+      record.dispatchKey ?? null,
       JSON.stringify(record.payload),
       JSON.stringify(record.metadata),
       JSON.stringify(record),
@@ -319,13 +417,13 @@ class SqliteJobStoreImplementation {
     ]
     const changed = this.config.database
       .prepare(
-        `UPDATE ${SQLITE_TABLES.jobs} SET queue=?, name=?, version=?, state=?, payload=?, metadata=?, record_json=?, priority=?, run_at_ms=?, order_sequence=?, attempts_max=?, attempts_made=?, attempt_sequence=?, delivery_count=?, stalled_count=?, backoff=?, timeout_ms=?, idempotency_key=?, created_at_ms=?, updated_at_ms=?, processed_at_ms=?, finished_at_ms=?, lease_owner=?, lease_token=?, lease_expires_at_ms=?, cancel_requested=?, cancellation_requested_at_ms=?, result=?, failure=? WHERE namespace=? AND id=?`
+        `UPDATE ${SQLITE_TABLES.jobs} SET queue=?, name=?, version=?, state=?, dispatch_key=?, payload=?, metadata=?, record_json=?, priority=?, run_at_ms=?, order_sequence=?, attempts_max=?, attempts_made=?, attempt_sequence=?, delivery_count=?, stalled_count=?, backoff=?, timeout_ms=?, idempotency_key=?, created_at_ms=?, updated_at_ms=?, processed_at_ms=?, finished_at_ms=?, lease_owner=?, lease_token=?, lease_expires_at_ms=?, cancel_requested=?, cancellation_requested_at_ms=?, result=?, failure=? WHERE namespace=? AND id=?`
       )
       .run(...values.slice(2), this.config.namespace, record.id).changes
     if (changed === 0) {
       this.config.database
         .prepare(
-          `INSERT INTO ${SQLITE_TABLES.jobs}(namespace,id,queue,name,version,state,payload,metadata,record_json,priority,run_at_ms,order_sequence,attempts_max,attempts_made,attempt_sequence,delivery_count,stalled_count,backoff,timeout_ms,idempotency_key,created_at_ms,updated_at_ms,processed_at_ms,finished_at_ms,lease_owner,lease_token,lease_expires_at_ms,cancel_requested,cancellation_requested_at_ms,result,failure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          `INSERT INTO ${SQLITE_TABLES.jobs}(namespace,id,queue,name,version,state,dispatch_key,payload,metadata,record_json,priority,run_at_ms,order_sequence,attempts_max,attempts_made,attempt_sequence,delivery_count,stalled_count,backoff,timeout_ms,idempotency_key,created_at_ms,updated_at_ms,processed_at_ms,finished_at_ms,lease_owner,lease_token,lease_expires_at_ms,cancel_requested,cancellation_requested_at_ms,result,failure) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(...values)
     }
@@ -399,6 +497,91 @@ class SqliteJobStoreImplementation {
     }
   }
 
+  private persistControls(after: Record<string, unknown>): void {
+    this.config.database
+      .prepare(`DELETE FROM ${SQLITE_TABLES.controlCursors} WHERE namespace = ?`)
+      .run(this.config.namespace)
+    this.config.database
+      .prepare(`DELETE FROM ${SQLITE_TABLES.controls} WHERE namespace = ?`)
+      .run(this.config.namespace)
+    for (const entry of (after.controls as readonly [string, QueueControlsRecord][]) ?? []) {
+      const record = entry[1]
+      this.config.database
+        .prepare(
+          `INSERT INTO ${SQLITE_TABLES.controls}(namespace,queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          this.config.namespace,
+          record.queue,
+          record.group,
+          record.enabled ? 1 : 0,
+          record.revision,
+          record.globalConcurrency ?? null,
+          record.perKeyConcurrency ?? null,
+          record.rateLimit?.max ?? null,
+          record.rateLimit?.durationMs ?? null,
+          record.createdAtMs,
+          record.updatedAtMs
+        )
+    }
+    this.persistControlCursors(after)
+  }
+
+  private persistControlledPermits(after: Record<string, unknown>): void {
+    this.config.database
+      .prepare(`DELETE FROM ${SQLITE_TABLES.permits} WHERE namespace = ?`)
+      .run(this.config.namespace)
+    const jobs = new Map(after.jobs as readonly [string, Record<string, unknown>][])
+    for (const entry of (after.controlledPermits as readonly [
+      string,
+      { readonly leaseToken: string; readonly dispatchKey: string }
+    ][]) ?? []) {
+      const job = jobs.get(entry[0])
+      if (job === undefined) continue
+      this.config.database
+        .prepare(
+          `INSERT INTO ${SQLITE_TABLES.permits}(namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES(?,?,?,?,?,?)`
+        )
+        .run(
+          this.config.namespace,
+          entry[0],
+          job.queue,
+          entry[1].dispatchKey,
+          entry[1].leaseToken,
+          job.updatedAt
+        )
+    }
+  }
+
+  private persistRateWindows(after: Record<string, unknown>): void {
+    this.config.database
+      .prepare(`DELETE FROM ${SQLITE_TABLES.rateWindows} WHERE namespace = ?`)
+      .run(this.config.namespace)
+    for (const entry of (after.rateWindows as readonly [
+      string,
+      { readonly startedAtMs: number; readonly count: number }
+    ][]) ?? []) {
+      this.config.database
+        .prepare(
+          `INSERT INTO ${SQLITE_TABLES.rateWindows}(namespace,queue,started_at_ms,claim_count,updated_at_ms) VALUES(?,?,?,?,?)`
+        )
+        .run(this.config.namespace, entry[0], entry[1].startedAtMs, entry[1].count, Date.now())
+    }
+  }
+
+  private persistControlCursors(after: Record<string, unknown>): void {
+    this.config.database
+      .prepare(`DELETE FROM ${SQLITE_TABLES.controlCursors} WHERE namespace = ?`)
+      .run(this.config.namespace)
+    for (const entry of (after.rotations as readonly [string, number][]) ?? []) {
+      this.config.database
+        .prepare(
+          `INSERT INTO ${SQLITE_TABLES.controlCursors}(namespace,queue,cursor_sequence,updated_at_ms) VALUES(?,?,?,?)`
+        )
+        .run(this.config.namespace, entry[0], entry[1], Date.now())
+    }
+  }
+
   enqueue(request: JobStoreNamespace.EnqueueRequest) {
     return this.execute(
       'enqueue',
@@ -418,6 +601,76 @@ class SqliteJobStoreImplementation {
       'claim',
       true,
       () => this.engine.claim(request) as SyncOperation<JobStoreNamespace.ClaimResult>
+    )
+  }
+  getControls(request: { readonly queue: import('better-effect-mq').QueueName }) {
+    return this.execute(
+      'getControls',
+      false,
+      () => this.engine.getControls(request) as SyncOperation<QueueControlsRecord | undefined>
+    )
+  }
+  get(queue: import('better-effect-mq').QueueName) {
+    return this.getControls({ queue })
+  }
+  reconcile(registry: AnyQueueControlsRegistry, options?: ControlsReconcileOptions) {
+    return this.execute(
+      'reconcile',
+      true,
+      () =>
+        this.engine.reconcile(registry, options) as SyncOperation<
+          import('better-effect-mq').ControlsReconcileReport
+        >
+    )
+  }
+  claimControlled(request: ControlledClaimRequest) {
+    return this.execute(
+      'claimControlled',
+      true,
+      () =>
+        this.engine.claimControlled(request) as SyncOperation<
+          import('better-effect-mq').ControlledClaimResult
+        >
+    )
+  }
+  settleControlled(request: ControlledSettleRequest) {
+    return this.execute(
+      'settleControlled',
+      true,
+      () =>
+        this.engine.settleControlled(request) as SyncOperation<
+          import('better-effect-mq').ControlledSettlementResult
+        >
+    )
+  }
+  releaseControlled(request: ControlledReleaseRequest) {
+    return this.execute(
+      'releaseControlled',
+      true,
+      () =>
+        this.engine.releaseControlled(request) as SyncOperation<
+          import('better-effect-mq').ReleaseResult
+        >
+    )
+  }
+  recoverStalledControlled(request: ControlledRecoverStalledRequest) {
+    return this.execute(
+      'recoverStalledControlled',
+      true,
+      () =>
+        this.engine.recoverStalledControlled(request) as SyncOperation<
+          import('better-effect-mq').RecoverStalledResult
+        >
+    )
+  }
+  cancelControlled(request: ControlledCancelRequest) {
+    return this.execute(
+      'cancelControlled',
+      true,
+      () =>
+        this.engine.cancelControlled(request) as SyncOperation<
+          import('better-effect-mq').CancelResult
+        >
     )
   }
   settle(request: JobStoreNamespace.SettleRequest) {

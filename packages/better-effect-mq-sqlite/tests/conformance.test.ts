@@ -47,8 +47,8 @@ const suite = jobStoreContract({
     metadataIndex: 'residual',
     transactionalEnqueue: false,
     durableChangeFeed: false,
-    globalConcurrency: false,
-    rateLimiting: false
+    globalConcurrency: true,
+    rateLimiting: true
   },
   makeRuntime: runtime,
   makeMultiStoreRuntime: async (context) => {

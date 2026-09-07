@@ -13,6 +13,7 @@ import {
   JobStoreFailure,
   LeaseLostError,
   SettlementConflictError,
+  ControlsRevisionMismatchError,
   UnsupportedJobStoreOperationError,
   compareJobOrder,
   makeJobId,
@@ -22,6 +23,7 @@ import {
   makeQueueName,
   makeWorkerId,
   reduceJob,
+  noDispatchKey,
   validateAttemptRecord,
   validateDuration,
   validateOptionalDuration,
@@ -53,6 +55,20 @@ import type {
   RecoverStalledRequest,
   SettleRequest,
   WakeToken
+} from 'better-effect-mq'
+
+import type {
+  AnyQueueControlsRegistry,
+  ControlsReconcileOptions,
+  ControlsReconcileReport,
+  ControlledClaimRequest,
+  ControlledClaimResult,
+  ControlledCancelRequest,
+  ControlledRecoverStalledRequest,
+  ControlledReleaseRequest,
+  ControlledSettleRequest,
+  QueueControlsRecord,
+  RateWindow
 } from 'better-effect-mq'
 
 import type { AttemptRecord, JobRecord, JobTransition } from 'better-effect-mq'
@@ -92,6 +108,7 @@ type NormalizedEnqueue = {
   readonly explicitId: boolean
   readonly identity: MemoryIdentity
   readonly payload: JobRecord['payload']
+  readonly dispatchKey: string | undefined
   readonly metadata: Readonly<Record<string, string>>
   readonly priority: number
   readonly runAt: number
@@ -139,8 +156,8 @@ const sqliteEngineCapabilities: JobStoreCapabilities = Object.freeze({
   metadataIndex: 'residual',
   transactionalEnqueue: false,
   durableChangeFeed: false,
-  globalConcurrency: false,
-  rateLimiting: false
+  globalConcurrency: true,
+  rateLimiting: true
 })
 
 const sqliteEngineDescriptor: JobStoreDescriptor = Object.freeze({
@@ -438,6 +455,13 @@ export class SqliteJobStoreEngine {
   private readonly generatedJobIds = new Set<string>()
   private readonly issuedLeaseTokens = new Set<string>()
   private readonly paused = new Set<string>()
+  private readonly controls = new Map<string, QueueControlsRecord>()
+  private readonly controlledPermits = new Map<
+    string,
+    { readonly leaseToken: LeaseToken; readonly dispatchKey: string }
+  >()
+  private readonly rateWindows = new Map<string, RateWindow>()
+  private readonly rotations = new Map<string, number>()
   private readonly waiters = new Set<WakeWaiter>()
   private readonly queueWakeVersions = new Map<string, number>()
   private readonly queueWakeGlobals = new Map<string, number>()
@@ -468,6 +492,10 @@ export class SqliteJobStoreEngine {
       generatedJobIds: [...this.generatedJobIds],
       issuedLeaseTokens: [...this.issuedLeaseTokens],
       paused: [...this.paused],
+      controls: [...this.controls.entries()],
+      controlledPermits: [...this.controlledPermits.entries()],
+      rateWindows: [...this.rateWindows.entries()],
+      rotations: [...this.rotations.entries()],
       queueWakeVersions: [...this.queueWakeVersions.entries()],
       queueWakeGlobals: [...this.queueWakeGlobals.entries()],
       sequence: this.sequence,
@@ -486,6 +514,10 @@ export class SqliteJobStoreEngine {
     this.generatedJobIds.clear()
     this.issuedLeaseTokens.clear()
     this.paused.clear()
+    this.controls.clear()
+    this.controlledPermits.clear()
+    this.rateWindows.clear()
+    this.rotations.clear()
     this.queueWakeVersions.clear()
     this.queueWakeGlobals.clear()
     this.listOrders.clear()
@@ -545,6 +577,55 @@ export class SqliteJobStoreEngine {
     for (const token of strings(input.issuedLeaseTokens, 'issuedLeaseTokens'))
       this.issuedLeaseTokens.add(token)
     for (const queue of strings(input.paused, 'paused')) this.paused.add(queue)
+    for (const [queue, raw] of entries(input.controls ?? [], 'controls')) {
+      if (typeof raw !== 'object' || raw === null)
+        throw new Error('SQLite state controls is invalid')
+      const record = raw as QueueControlsRecord
+      if (
+        typeof record.queue !== 'string' ||
+        typeof record.group !== 'string' ||
+        typeof record.enabled !== 'boolean' ||
+        !Number.isSafeInteger(record.revision) ||
+        record.revision <= 0
+      )
+        throw new Error('SQLite state controls is invalid')
+      this.controls.set(queue, Object.freeze({ ...record }))
+    }
+    for (const [jobId, raw] of entries(input.controlledPermits ?? [], 'controlledPermits')) {
+      if (typeof raw !== 'object' || raw === null) {
+        throw new Error('SQLite state controlledPermits is invalid')
+      }
+      const value = raw as { readonly leaseToken?: unknown; readonly dispatchKey?: unknown }
+      if (typeof value.leaseToken !== 'string' || typeof value.dispatchKey !== 'string') {
+        throw new Error('SQLite state controlledPermits is invalid')
+      }
+      this.controlledPermits.set(jobId, {
+        leaseToken: value.leaseToken as LeaseToken,
+        dispatchKey: value.dispatchKey
+      })
+    }
+    for (const [queue, raw] of entries(input.rateWindows ?? [], 'rateWindows')) {
+      if (typeof raw !== 'object' || raw === null)
+        throw new Error('SQLite state rateWindows is invalid')
+      const value = raw as { readonly startedAtMs?: unknown; readonly count?: unknown }
+      if (
+        !Number.isSafeInteger(value.startedAtMs) ||
+        !Number.isSafeInteger(value.count) ||
+        (value.startedAtMs as number) < 0 ||
+        (value.count as number) < 0
+      )
+        throw new Error('SQLite state rateWindows is invalid')
+      this.rateWindows.set(queue, {
+        startedAtMs: value.startedAtMs as number,
+        count: value.count as number
+      })
+    }
+    for (const [queue, value] of entries(input.rotations ?? [], 'rotations')) {
+      if (!Number.isSafeInteger(value) || (value as number) < 0) {
+        throw new Error('SQLite state rotations is invalid')
+      }
+      this.rotations.set(queue, value as number)
+    }
     for (const [queue, version] of entries(input.queueWakeVersions, 'queueWakeVersions')) {
       if (!Number.isSafeInteger(version))
         throw new Error('SQLite state queueWakeVersions is invalid')
@@ -656,6 +737,15 @@ export class SqliteJobStoreEngine {
       if (Result.isError(accepted)) return fail(accepted.error)
       if (Result.isError(limit)) return fail(limit.error)
       if (Result.isError(leaseDuration)) return fail(leaseDuration.error)
+      const controls = this.controls.get(queue.value)
+      if (controls?.enabled)
+        return fail(
+          new ControlsRevisionMismatchError({
+            queue: queue.value as QueueName,
+            expected: controls.revision,
+            actual: undefined
+          })
+        )
       if (now.value > maxSafeInteger - leaseDuration.value) {
         return fail(
           new JobDefinitionError({
@@ -711,6 +801,357 @@ export class SqliteJobStoreEngine {
     } finally {
       this.claimInProgress = false
     }
+  }
+
+  claimControlled(request: ControlledClaimRequest): Operation<ControlledClaimResult> {
+    if (this.claimInProgress)
+      return fail(jobStoreFailure('claimControlled', 'claim cannot be re-entered'))
+    this.claimInProgress = true
+    try {
+      const fields = readDto(
+        request,
+        ['queue', 'accepted', 'limit', 'workerId', 'leaseDurationMs', 'now', 'controlsRevision'],
+        'request'
+      )
+      if (Result.isError(fields)) return fail(fields.error)
+      const clock = this.readConfiguredClock()
+      if (Result.isError(clock)) return fail(clock.error)
+      const now = this.readOperationNow(fields.value.now, clock.value)
+      if (Result.isError(now)) return fail(now.error)
+      const queue = makeQueueName(fields.value.queue)
+      const workerId = makeWorkerId(fields.value.workerId)
+      const accepted = this.normalizeAccepted(fields.value.accepted)
+      const limit = this.positiveInteger(fields.value.limit, 'limit')
+      const leaseDuration = this.positiveDuration(fields.value.leaseDurationMs, 'leaseDurationMs')
+      const revision = this.positiveInteger(fields.value.controlsRevision, 'controlsRevision')
+      if (Result.isError(queue)) return fail(queue.error)
+      if (Result.isError(workerId)) return fail(workerId.error)
+      if (Result.isError(accepted)) return fail(accepted.error)
+      if (Result.isError(limit)) return fail(limit.error)
+      if (Result.isError(leaseDuration)) return fail(leaseDuration.error)
+      if (Result.isError(revision)) return fail(revision.error)
+      if (now.value > maxSafeInteger - leaseDuration.value) {
+        return fail(
+          new JobDefinitionError({
+            field: 'leaseDurationMs',
+            message: 'lease expiry exceeds safe integer range'
+          })
+        )
+      }
+      const control = this.controls.get(queue.value)
+      if (control === undefined || !control.enabled || control.revision !== revision.value) {
+        return fail(
+          new ControlsRevisionMismatchError({
+            queue: queue.value as QueueName,
+            expected: revision.value,
+            actual: control?.revision
+          })
+        )
+      }
+      const baseline = this.wakeBaseline(queue.value)
+      const nextRunAtMs = this.nextRunAt(queue.value, accepted.value, now.value)
+      if (this.paused.has(queue.value))
+        return ok(
+          this.emptyControlledClaim(makeWakeToken(baseline), nextRunAtMs, undefined, 'paused')
+        )
+
+      const globalActive = this.countControlledPermits(queue.value)
+      const globalRemaining =
+        control.globalConcurrency === undefined
+          ? maxSafeInteger
+          : control.globalConcurrency - globalActive
+      if (globalRemaining <= 0)
+        return ok(
+          this.emptyControlledClaim(
+            makeWakeToken(baseline),
+            nextRunAtMs,
+            undefined,
+            'global-concurrency'
+          )
+        )
+
+      let window = this.rateWindows.get(queue.value)
+      if (
+        control.rateLimit !== undefined &&
+        (window === undefined || now.value >= window.startedAtMs + control.rateLimit.durationMs)
+      ) {
+        window = undefined
+      }
+      const rateRemaining =
+        control.rateLimit === undefined
+          ? maxSafeInteger
+          : control.rateLimit.max - (window?.count ?? 0)
+      if (rateRemaining <= 0)
+        return ok(
+          this.emptyControlledClaim(
+            makeWakeToken(baseline),
+            nextRunAtMs,
+            window!.startedAtMs + control.rateLimit!.durationMs,
+            'rate-limited'
+          )
+        )
+
+      const candidates = this.claimCandidates(queue.value, accepted.value, now.value)
+      if (candidates.length === 0)
+        return ok(
+          this.emptyControlledClaim(makeWakeToken(baseline), nextRunAtMs, undefined, 'empty')
+        )
+
+      const start = this.rotations.get(queue.value) ?? 0
+      const capacity = Math.min(limit.value, globalRemaining, rateRemaining)
+      const scanBudget = Math.min(candidates.length, Math.max(limit.value * 4, 32))
+      const planned: {
+        readonly previous: JobRecord
+        readonly transition: JobTransition
+        readonly dispatchKey: string
+      }[] = []
+      let blockedByKey = false
+      let examined = 0
+      for (let step = 0; step < scanBudget && planned.length < capacity; step += 1) {
+        const candidate = candidates[(start + step) % candidates.length]
+        if (candidate === undefined) continue
+        examined = step + 1
+        const dispatchKey = candidate.dispatchKey ?? noDispatchKey
+        const plannedForKey = planned.filter((item) => item.dispatchKey === dispatchKey).length
+        if (
+          control.perKeyConcurrency !== undefined &&
+          this.countControlledPermits(queue.value, dispatchKey) + plannedForKey >=
+            control.perKeyConcurrency
+        ) {
+          blockedByKey = true
+          continue
+        }
+        const token = this.generateLeaseToken(
+          new Set(planned.map((item) => item.transition.record.leaseToken!))
+        )
+        if (Result.isError(token)) return fail(token.error)
+        const transition = reduceJob(candidate, {
+          type: 'claim',
+          jobId: candidate.id,
+          workerId: workerId.value,
+          leaseToken: token.value,
+          leaseExpiresAt: now.value + leaseDuration.value,
+          now: now.value
+        })
+        if (Result.isError(transition)) return fail(transition.error)
+        planned.push({ previous: candidate, transition: transition.value, dispatchKey })
+      }
+      this.rotations.set(queue.value, (start + Math.max(1, examined)) % candidates.length)
+      for (const item of planned) {
+        this.jobs.set(item.transition.record.id, item.transition.record)
+        this.issuedLeaseTokens.add(item.transition.record.leaseToken!)
+        this.controlledPermits.set(item.transition.record.id, {
+          leaseToken: item.transition.record.leaseToken!,
+          dispatchKey: item.dispatchKey
+        })
+      }
+      if (planned.length > 0) {
+        if (control.rateLimit !== undefined) {
+          this.rateWindows.set(queue.value, {
+            startedAtMs: window?.startedAtMs ?? now.value,
+            count: (window?.count ?? 0) + planned.length
+          })
+        }
+        this.invalidateListOrder(queue.value)
+        this.notifyQueues([queue.value])
+      }
+      if (planned.length === 0)
+        return ok(
+          this.emptyControlledClaim(
+            makeWakeToken(baseline),
+            nextRunAtMs,
+            undefined,
+            blockedByKey ? 'per-key-concurrency' : 'empty'
+          )
+        )
+      return ok({
+        jobs: Object.freeze(
+          planned.map((item) => cloneRecord(item.transition.record) as ActiveJobSnapshot)
+        ),
+        wakeToken: makeWakeToken(baseline),
+        nextRunAtMs,
+        nextEligibleAtMs: undefined,
+        reason: undefined
+      })
+    } catch {
+      return fail(
+        new JobDefinitionError({
+          field: 'request',
+          message: 'could not read controlled claim request'
+        })
+      )
+    } finally {
+      this.claimInProgress = false
+    }
+  }
+
+  settleControlled(
+    request: ControlledSettleRequest
+  ): Operation<JobStoreNamespace.SettlementResult> {
+    const checked = this.assertControlledJobRevision(request.jobId, request.controlsRevision)
+    if (Result.isError(checked)) return fail(checked.error)
+    const { controlsRevision: _controlsRevision, ...settlement } = request
+    return this.settle(settlement) as Operation<JobStoreNamespace.SettlementResult>
+  }
+
+  releaseControlled(request: ControlledReleaseRequest): Operation<JobStoreNamespace.ReleaseResult> {
+    const checked = this.assertControlledJobRevision(request.jobId, request.controlsRevision)
+    if (Result.isError(checked)) return fail(checked.error)
+    const permit = this.controlledPermits.get(request.jobId)
+    if (permit?.leaseToken !== request.leaseToken)
+      return fail(
+        new LeaseLostError({
+          jobId: request.jobId,
+          reason: 'mismatched-token',
+          leaseToken: request.leaseToken
+        })
+      )
+    const { controlsRevision: _controlsRevision, ...release } = request
+    return this.release(release)
+  }
+
+  recoverStalledControlled(
+    request: ControlledRecoverStalledRequest
+  ): Operation<JobStoreNamespace.RecoverStalledResult> {
+    const queue = makeQueueName(request.queue)
+    if (Result.isError(queue)) return fail(queue.error)
+    const control = this.controls.get(queue.value)
+    if (control === undefined || !control.enabled || control.revision !== request.controlsRevision)
+      return fail(
+        new ControlsRevisionMismatchError({
+          queue: queue.value,
+          expected: request.controlsRevision,
+          actual: control?.revision
+        })
+      )
+    const { controlsRevision: _controlsRevision, ...recovery } = request
+    return this.recoverStalled(recovery)
+  }
+
+  cancelControlled(request: ControlledCancelRequest): Operation<JobStoreNamespace.CancelResult> {
+    const checked = this.assertControlledJobRevision(request.jobId, request.controlsRevision)
+    if (Result.isError(checked)) return fail(checked.error)
+    const current = this.jobs.get(request.jobId)
+    const { controlsRevision: _controlsRevision, ...cancel } = request
+    return current?.state === 'active' ? this.requestCancellation(cancel) : this.cancel(cancel)
+  }
+
+  reconcile(
+    registry: AnyQueueControlsRegistry,
+    options: ControlsReconcileOptions = {}
+  ): Operation<ControlsReconcileReport> {
+    try {
+      if (registry === null || typeof registry !== 'object' || !Array.isArray(registry.controls)) {
+        return fail(
+          new JobDefinitionError({ field: 'registry', message: 'must be a controls registry' })
+        )
+      }
+      if (
+        typeof registry.group !== 'string' ||
+        registry.group.length === 0 ||
+        registry.group.length > 128
+      ) {
+        return fail(
+          new JobDefinitionError({
+            field: 'registry.group',
+            message: 'must be a bounded non-empty string'
+          })
+        )
+      }
+      const clock = this.readConfiguredClock()
+      if (Result.isError(clock)) return fail(clock.error)
+      const now = clock.value ?? Date.now()
+      const requested = new Map<string, QueueControlsRecord>()
+      for (const [index, definition] of registry.controls.entries()) {
+        const queue = makeQueueName(definition?.queue)
+        if (Result.isError(queue))
+          return fail(
+            new JobDefinitionError({
+              field: `controls[${index}].queue`,
+              message: queue.error.message
+            })
+          )
+        const record = this.normalizeControlRecord(
+          queue.value,
+          registry.group,
+          definition.options,
+          now
+        )
+        if (Result.isError(record)) return fail(record.error)
+        if (requested.has(queue.value))
+          return fail(
+            new JobDefinitionError({ field: 'controls', message: 'contains a duplicate queue' })
+          )
+        requested.set(queue.value, record.value)
+      }
+      const created: QueueControlsRecord[] = []
+      const updated: QueueControlsRecord[] = []
+      const unchanged: QueueControlsRecord[] = []
+      const disabled: QueueControlsRecord[] = []
+      const warnings: string[] = []
+      for (const [queue, proposed] of requested) {
+        const current = this.controls.get(queue)
+        if (current === undefined) {
+          this.controls.set(queue, proposed)
+          created.push(proposed)
+        } else if (
+          current.enabled &&
+          current.group === proposed.group &&
+          this.sameControlConfig(current, proposed)
+        ) {
+          unchanged.push(current)
+        } else {
+          const next = Object.freeze({
+            ...proposed,
+            revision: current.revision + 1,
+            createdAtMs: current.createdAtMs
+          })
+          this.controls.set(queue, next)
+          updated.push(next)
+        }
+      }
+      const removal = options.removal ?? 'warn'
+      for (const [queue, current] of this.controls) {
+        if (requested.has(queue)) continue
+        if (removal === 'warn')
+          warnings.push(`controls for queue "${queue}" are not present in the registry`)
+        if (removal === 'disable' && current.enabled) {
+          const next = Object.freeze({
+            ...current,
+            enabled: false,
+            revision: current.revision + 1,
+            updatedAtMs: now
+          })
+          this.controls.set(queue, next)
+          disabled.push(next)
+        }
+      }
+      return ok({
+        created: Object.freeze(created),
+        updated: Object.freeze(updated),
+        unchanged: Object.freeze(unchanged),
+        disabled: Object.freeze(disabled),
+        warnings: Object.freeze(warnings),
+        records: Object.freeze(
+          [...this.controls.values()].map((record) => Object.freeze({ ...record }))
+        )
+      })
+    } catch {
+      return fail(
+        new JobDefinitionError({ field: 'registry', message: 'could not read controls registry' })
+      )
+    }
+  }
+
+  getControls(request: { readonly queue: QueueName }): Operation<QueueControlsRecord | undefined> {
+    const queue = makeQueueName(request.queue)
+    if (Result.isError(queue)) return fail(queue.error)
+    const record = this.controls.get(queue.value)
+    return ok(record === undefined ? undefined : Object.freeze({ ...record }))
+  }
+
+  get(queue: QueueName): Operation<QueueControlsRecord | undefined> {
+    return this.getControls({ queue })
   }
 
   settle(request: SettleRequest): Operation<JobStoreNamespace.SettlementResult> {
@@ -790,6 +1231,7 @@ export class SqliteJobStoreEngine {
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
       this.commitPrepared([prepared.value], true)
+      this.releaseControlledPermit(jobId.value, leaseToken.value)
       this.settled.set(jobId.value, { leaseToken: leaseToken.value, outcomeDigest })
       return ok({
         record: cloneRecord(prepared.value.transition.record),
@@ -836,6 +1278,7 @@ export class SqliteJobStoreEngine {
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
       this.commitPrepared([prepared.value], true)
+      this.releaseControlledPermit(jobId.value, leaseToken.value)
       return ok(snapshotTransition(prepared.value.transition))
     } catch {
       return fail(
@@ -956,8 +1399,13 @@ export class SqliteJobStoreEngine {
     request: RecoverStalledRequest
   ): Operation<JobStoreNamespace.RecoverStalledResult> {
     try {
-      const fields = readDto(request, ['maxStalledCount', 'limit', 'now'], 'request')
+      const fields = readDto(request, ['queue', 'maxStalledCount', 'limit', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
+      const queue =
+        fields.value.queue === undefined
+          ? Result.ok<QueueName | undefined>(undefined)
+          : makeQueueName(fields.value.queue)
+      if (Result.isError(queue)) return fail(queue.error)
       const clock = this.readConfiguredClock()
       if (Result.isError(clock)) return fail(clock.error)
       const now = this.readOperationNow(fields.value.now, clock.value)
@@ -974,6 +1422,7 @@ export class SqliteJobStoreEngine {
       let nextSequence = this.sequence
       for (const current of this.jobs.values()) {
         if (planned.length >= limit.value) break
+        if (queue.value !== undefined && current.queue !== queue.value) continue
         if (
           current.state !== 'active' ||
           current.leaseExpiresAt === undefined ||
@@ -999,6 +1448,11 @@ export class SqliteJobStoreEngine {
       }
 
       this.commitPrepared(planned, true)
+      for (const item of planned) {
+        if (item.transition.record.state !== 'active') {
+          this.releaseControlledPermit(item.transition.record.id, item.previous.leaseToken!)
+        }
+      }
       return ok({
         transitions: Object.freeze(planned.map(({ transition }) => snapshotTransition(transition))),
         recovered: planned.length
@@ -1359,6 +1813,111 @@ export class SqliteJobStoreEngine {
     }
   }
 
+  private normalizeControlRecord(
+    queue: QueueName,
+    group: string,
+    options: AnyQueueControlsRegistry['controls'][number]['options'],
+    now: number
+  ): ResultType<QueueControlsRecord, JobStoreError> {
+    const positive = (value: unknown, field: string): ResultType<number, JobStoreError> =>
+      typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+        ? Result.ok(value)
+        : definitionFailure(field, 'must be a positive safe integer')
+    const global =
+      options.globalConcurrency === undefined
+        ? Result.ok<number | undefined>(undefined)
+        : positive(options.globalConcurrency, 'globalConcurrency')
+    const perKey =
+      options.perKeyConcurrency === undefined
+        ? Result.ok<number | undefined>(undefined)
+        : positive(options.perKeyConcurrency, 'perKeyConcurrency')
+    if (Result.isError(global)) return global
+    if (Result.isError(perKey)) return perKey
+    let rateLimit: QueueControlsRecord['rateLimit']
+    if (options.rateLimit === undefined) rateLimit = undefined
+    else {
+      const max = positive(options.rateLimit.max, 'rateLimit.max')
+      const durationMs = positive(options.rateLimit.durationMs, 'rateLimit.durationMs')
+      if (Result.isError(max)) return max
+      if (Result.isError(durationMs)) return durationMs
+      rateLimit = Object.freeze({ max: max.value, durationMs: durationMs.value })
+    }
+    return Result.ok(
+      Object.freeze({
+        queue,
+        group,
+        enabled: true,
+        revision: 1,
+        globalConcurrency: global.value,
+        perKeyConcurrency: perKey.value,
+        rateLimit,
+        createdAtMs: now,
+        updatedAtMs: now
+      })
+    )
+  }
+
+  private sameControlConfig(left: QueueControlsRecord, right: QueueControlsRecord): boolean {
+    return (
+      left.enabled === right.enabled &&
+      left.globalConcurrency === right.globalConcurrency &&
+      left.perKeyConcurrency === right.perKeyConcurrency &&
+      left.rateLimit?.max === right.rateLimit?.max &&
+      left.rateLimit?.durationMs === right.rateLimit?.durationMs
+    )
+  }
+
+  private emptyControlledClaim(
+    wakeToken: WakeToken,
+    nextRunAtMs: number | undefined,
+    nextEligibleAtMs: number | undefined,
+    reason: import('better-effect-mq').ControlledEmptyClaim['reason']
+  ): ControlledClaimResult {
+    return { jobs: Object.freeze([]), wakeToken, nextRunAtMs, nextEligibleAtMs, reason }
+  }
+
+  private countControlledPermits(queue: string, dispatchKey?: string): number {
+    let count = 0
+    for (const [jobId, permit] of this.controlledPermits) {
+      const job = this.jobs.get(jobId)
+      if (
+        job?.queue === queue &&
+        job.state === 'active' &&
+        (dispatchKey === undefined || permit.dispatchKey === dispatchKey)
+      )
+        count += 1
+    }
+    return count
+  }
+
+  private releaseControlledPermit(jobId: JobId, leaseToken: LeaseToken): void {
+    const permit = this.controlledPermits.get(jobId)
+    if (permit?.leaseToken === leaseToken) {
+      this.controlledPermits.delete(jobId)
+      const job = this.jobs.get(jobId)
+      if (job !== undefined) this.notifyQueues([job.queue])
+    }
+  }
+
+  private assertControlledJobRevision(
+    jobId: JobId,
+    expected: number
+  ): ResultType<void, JobStoreError> {
+    const job = this.jobs.get(jobId)
+    if (job === undefined) return Result.err(new JobNotFoundError({ jobId }))
+    const control = this.controls.get(job.queue)
+    if (control === undefined || !control.enabled || control.revision !== expected) {
+      return Result.err(
+        new ControlsRevisionMismatchError({
+          queue: job.queue,
+          expected,
+          actual: control?.revision
+        })
+      )
+    }
+    return Result.ok()
+  }
+
   private validateOptions(options: MemoryJobStoreOptions): void {
     if (!isObject(options)) throw new TypeError('MemoryJobStore options must be an object')
     if (options.clock !== undefined) {
@@ -1415,6 +1974,7 @@ export class SqliteJobStoreEngine {
         'id',
         'idempotencyKey',
         'payload',
+        'dispatchKey',
         'metadata',
         'priority',
         'runAt',
@@ -1450,6 +2010,7 @@ export class SqliteJobStoreEngine {
       queue: identity.value.queue,
       state: runAt.value <= now.value ? 'waiting' : 'delayed',
       payload: fields.value.payload,
+      dispatchKey: fields.value.dispatchKey,
       metadata: fields.value.metadata === undefined ? {} : fields.value.metadata,
       priority: fields.value.priority === undefined ? 0 : fields.value.priority,
       runAt: runAt.value,
@@ -1480,6 +2041,7 @@ export class SqliteJobStoreEngine {
       explicitId: fields.value.id !== undefined,
       identity: identity.value,
       payload: candidate.value.payload,
+      dispatchKey: candidate.value.dispatchKey,
       metadata: candidate.value.metadata,
       priority: candidate.value.priority,
       runAt: runAt.value,
@@ -1536,6 +2098,7 @@ export class SqliteJobStoreEngine {
       queue: input.identity.queue,
       state: input.runAt <= input.now ? 'waiting' : 'delayed',
       payload: input.payload,
+      dispatchKey: input.dispatchKey,
       metadata: input.metadata,
       priority: input.priority,
       runAt: input.runAt,
