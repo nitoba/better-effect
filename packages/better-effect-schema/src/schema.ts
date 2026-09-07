@@ -15,9 +15,12 @@ import { TaggedClass } from './tagged-class.js'
 import { TaggedError } from './tagged-error.js'
 import { withAdapter } from './capabilities/with.js'
 import type { SchemaEffect as SchemaEffectType } from './schema-effect.js'
+import type { SchemaCodec as SchemaCodecType } from './codecs/index.js'
 import type {
   Encoded as EncodedType,
   Fields as FieldsType,
+  Input as InputType,
+  Output as OutputType,
   Instance as InstanceType,
   Props as PropsType,
   Struct as StructType
@@ -42,6 +45,15 @@ export const Schema = Object.freeze({
 })
 
 export namespace Schema {
+  export type Codec<
+    Input,
+    Output,
+    Props = Output,
+    Encoded = Input,
+    EncodeFailure = never
+  > = SchemaCodecType<Input, Output, Props, Encoded, EncodeFailure>
+  export type Input<Schema> = InputType<Schema>
+  export type Output<Schema> = OutputType<Schema>
   export type Props<Class> = PropsType<Class>
   export type Fields<Class> = FieldsType<Class>
   export type Struct<Class> = StructType<Class>

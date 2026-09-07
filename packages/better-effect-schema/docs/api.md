@@ -104,12 +104,22 @@ Support synchronous or asynchronous Standard Schema validators and return
 ### encode and encodeAsync
 
 ```ts
-Schema.encode(schema)(value: z.output<typeof schema>)
-await Schema.encodeAsync(schema)(value)
+Schema.encode(codec)(value: Schema.Output<typeof codec>)
+await Schema.encodeAsync(codec)(value)
 ```
 
 Return the schema input representation or
 `SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired`.
+
+The codec must explicitly provide `schema`, `encodedSchema`, and `encode`.
+`encodedSchema` is the validation boundary for the representation produced by
+the encoder; the read schema is never run again during encoding. A missing
+encoder is `SchemaUnsupportedOperation` at runtime when reached through a JS
+call or cast, and a one-way Standard Schema is never treated as its own codec.
+
+The encoder is invoked once. Explicit `Result.err` values are preserved,
+unexpected throws/rejections become `SchemaExecutionFailure`, and a sync call
+that observes a thenable returns `SchemaAsyncRequired`.
 
 ### make and makeAsync
 
@@ -241,6 +251,8 @@ callbacks are invoked through the package's no-throw boundary.
 ## Type helpers
 
 ```ts
+Schema.Input<typeof Model>
+Schema.Output<typeof Model>
 Schema.Props<typeof Model>
 Schema.Fields<typeof Model>
 Schema.Struct<typeof Model>

@@ -10,7 +10,9 @@ import {
   SchemaAsyncRequired,
   SchemaExecutionFailure
 } from './failure.js'
-import type { AnySchemaClass } from './is-schema-class.js'
+import { isSchemaClass, type AnySchemaClass } from './is-schema-class.js'
+import { encodeCodec, encodeCodecAsync } from './codecs/operations.js'
+import type { AnySchemaCodec, CodecEncoded, CodecOutput } from './codecs/index.js'
 import type { Instance, Props } from './types.js'
 import { invokeAsync, invokeSync } from './internal/execution.js'
 import { schemaFailure, schemaSuccess } from './internal/result.js'
@@ -23,7 +25,6 @@ import type { SchemaEffect } from './schema-effect.js'
 
 export type { SchemaEffect } from './schema-effect.js'
 
-type AnySchema = z.ZodType
 type AnyStandardSchema = StandardSchemaV1
 
 type DecodeFailure =
@@ -31,7 +32,6 @@ type DecodeFailure =
   | SchemaDefinitionFailure
   | SchemaExecutionFailure
   | SchemaAsyncRequired
-type EncodeFailure = SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired
 type ConstructionFailure = SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired
 
 type DecodeOperation<Schema extends AnyStandardSchema> = SchemaEffect<
@@ -39,7 +39,22 @@ type DecodeOperation<Schema extends AnyStandardSchema> = SchemaEffect<
   DecodeFailure
 >
 
-type EncodeOperation<Schema extends AnySchema> = SchemaEffect<z.input<Schema>, EncodeFailure>
+type CodecEncodeOperation<Codec extends AnySchemaCodec> = ReturnType<typeof encodeCodec<Codec>>
+
+type CodecEncodeAsyncOperation<Codec extends AnySchemaCodec> = ReturnType<
+  typeof encodeCodecAsync<Codec>
+>
+
+type LegacySchemaCodec = AnySchemaClass & {
+  readonly schema: StandardSchemaV1
+  readonly encodedSchema: StandardSchemaV1
+  readonly encode: (...args: never[]) => unknown
+}
+
+type LegacyEncodeOperation<Schema extends LegacySchemaCodec> = SchemaEffect<
+  CodecEncoded<Schema>,
+  SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired
+>
 
 type ConstructionOperation<Class extends AnySchemaClass> = SchemaEffect<
   Instance<Class>,
@@ -87,19 +102,6 @@ const decodeResult = <Schema extends AnyStandardSchema>(
       )
   }
 }
-
-const encodeResult = <Schema extends AnySchema>(
-  schema: Schema,
-  result: z.ZodSafeParseResult<z.input<Schema>>
-): EncodeOperation<Schema> =>
-  result.success
-    ? schemaSuccess<z.input<Schema>, EncodeFailure>(result.data)
-    : schemaFailure<z.input<Schema>, EncodeFailure>(
-        new SchemaEncodeFailure({
-          identifier: identifierOf(schema),
-          cause: result.error
-        })
-      )
 
 /** Decode an unknown value with a typed failure instead of throwing a ZodError. */
 export function decodeUnknown<Schema extends AnyStandardSchema>(
@@ -239,51 +241,53 @@ export function decodeAsync<Schema extends AnyStandardSchema>(
   return arguments.length === 1 ? run : run(input as StandardSchemaV1.InferInput<Schema>)
 }
 
-/** Encode a decoded value with a typed failure instead of throwing a ZodError. */
-export function encode<Schema extends AnySchema>(
+/** Encode through an explicit codec and validate its encoded representation. */
+export function encode<Schema extends LegacySchemaCodec>(
   schema: Schema
-): (value: z.output<Schema>) => EncodeOperation<Schema>
-export function encode<Schema extends AnySchema>(
+): (value: CodecOutput<Schema>) => LegacyEncodeOperation<Schema>
+export function encode<Schema extends LegacySchemaCodec>(
   schema: Schema,
-  value: z.output<Schema>
-): EncodeOperation<Schema>
-export function encode<Schema extends AnySchema>(
-  schema: Schema,
-  value?: z.output<Schema>
-): EncodeOperation<Schema> | ((value: z.output<Schema>) => EncodeOperation<Schema>) {
-  const run = (input: z.output<Schema>): EncodeOperation<Schema> =>
-    (() => {
-      const result = invokeSync('encode', () => z.safeEncode(schema, input))
-      return Result.isError(result)
-        ? (result as EncodeOperation<Schema>)
-        : encodeResult(schema, result.value)
-    })()
-
-  return arguments.length === 1 ? run : run(value as z.output<Schema>)
-}
-
-/** Asynchronously encode a decoded value with a typed failure. */
-export function encodeAsync<Schema extends AnySchema>(
-  schema: Schema
-): (value: z.output<Schema>) => Promise<EncodeOperation<Schema>>
-export function encodeAsync<Schema extends AnySchema>(
-  schema: Schema,
-  value: z.output<Schema>
-): Promise<EncodeOperation<Schema>>
-export function encodeAsync<Schema extends AnySchema>(
-  schema: Schema,
-  value?: z.output<Schema>
-):
-  | Promise<EncodeOperation<Schema>>
-  | ((value: z.output<Schema>) => Promise<EncodeOperation<Schema>>) {
-  const run = async (input: z.output<Schema>): Promise<EncodeOperation<Schema>> => {
-    const result = await invokeAsync('encodeAsync', () => z.safeEncodeAsync(schema, input))
-    return Result.isError(result)
-      ? (result as EncodeOperation<Schema>)
-      : encodeResult(schema, result.value)
+  value: CodecOutput<Schema>
+): LegacyEncodeOperation<Schema>
+export function encode<Codec extends AnySchemaCodec>(
+  codec: Codec
+): (value: CodecOutput<Codec>) => CodecEncodeOperation<Codec>
+export function encode<Codec extends AnySchemaCodec>(
+  codec: Codec,
+  value: CodecOutput<Codec>
+): CodecEncodeOperation<Codec>
+export function encode<Codec extends AnySchemaCodec>(
+  codec: Codec,
+  value?: CodecOutput<Codec>
+): CodecEncodeOperation<Codec> | ((value: CodecOutput<Codec>) => CodecEncodeOperation<Codec>) {
+  const run = (input: CodecOutput<Codec>): CodecEncodeOperation<Codec> => {
+    if (isSchemaClass(codec)) {
+      return encodeCodec(codec as unknown as AnySchemaCodec, input) as CodecEncodeOperation<Codec>
+    }
+    return encodeCodec(codec, input)
   }
 
-  return arguments.length === 1 ? run : run(value as z.output<Schema>)
+  return arguments.length === 1 ? run : run(value as CodecOutput<Codec>)
+}
+
+/** Asynchronously encode through an explicit codec and validate its representation. */
+export function encodeAsync<Codec extends AnySchemaCodec>(
+  codec: Codec
+): (value: CodecOutput<Codec>) => CodecEncodeAsyncOperation<Codec>
+export function encodeAsync<Codec extends AnySchemaCodec>(
+  codec: Codec,
+  value: CodecOutput<Codec>
+): CodecEncodeAsyncOperation<Codec>
+export function encodeAsync<Codec extends AnySchemaCodec>(
+  codec: Codec,
+  value?: CodecOutput<Codec>
+):
+  | CodecEncodeAsyncOperation<Codec>
+  | ((value: CodecOutput<Codec>) => CodecEncodeAsyncOperation<Codec>) {
+  const run = (input: CodecOutput<Codec>): CodecEncodeAsyncOperation<Codec> =>
+    encodeCodecAsync(codec, input)
+
+  return arguments.length === 1 ? run : run(value as CodecOutput<Codec>)
 }
 
 /** Construct a schema class from decoded props with a typed failure. */
@@ -308,7 +312,7 @@ export function make<Class extends AnySchemaClass>(
       ? schemaSuccess<Instance<Class>, ConstructionFailure>(parsed.data as Instance<Class>)
       : schemaFailure<Instance<Class>, ConstructionFailure>(
           new SchemaConstructionFailure({
-            identifier: identifierOf(schemaClass as unknown as AnySchema),
+            identifier: identifierOf(schemaClass),
             cause: parsed.error
           })
         )
@@ -343,7 +347,7 @@ export function makeAsync<Class extends AnySchemaClass>(
       ? schemaSuccess<Instance<Class>, ConstructionFailure>(parsed.data as Instance<Class>)
       : schemaFailure<Instance<Class>, ConstructionFailure>(
           new SchemaConstructionFailure({
-            identifier: identifierOf(schemaClass as unknown as AnySchema),
+            identifier: identifierOf(schemaClass),
             cause: parsed.error
           })
         )
