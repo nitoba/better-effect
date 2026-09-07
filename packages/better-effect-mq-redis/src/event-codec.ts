@@ -6,15 +6,18 @@ import type {
   DurableJobEventInput,
   DurableJobEventType,
   JobEventRetention,
+  JobEventStoreWriter,
   JobRecord
 } from 'better-effect-mq'
 
 export interface RedisJobEventStoreOptions {
   readonly retention?: JobEventRetention
+  readonly writer?: JobEventStoreWriter
 }
 
 export interface RedisEventAppendOptions {
   readonly retention: Readonly<JobEventRetention>
+  readonly writer: JobEventStoreWriter
 }
 
 interface NormalizedEventRetention {
@@ -45,8 +48,27 @@ export const normalizeEventOptions = (
   const normalizedRetention: NormalizedEventRetention = {}
   if (retention.ageMs !== undefined) normalizedRetention.ageMs = retention.ageMs
   if (retention.count !== undefined) normalizedRetention.count = retention.count
+  const writer = options.writer ?? {
+    id: 'better-effect-mq-redis',
+    version: 'current',
+    canAppend: true
+  }
+  if (
+    writer === null ||
+    typeof writer !== 'object' ||
+    typeof writer.id !== 'string' ||
+    typeof writer.version !== 'string' ||
+    typeof writer.canAppend !== 'boolean'
+  ) {
+    throw new TypeError('Redis event writer must include string id/version and boolean canAppend')
+  }
   return Object.freeze({
-    retention: Object.freeze(normalizedRetention)
+    retention: Object.freeze(normalizedRetention),
+    writer: Object.freeze({
+      id: writer.id,
+      version: writer.version,
+      canAppend: writer.canAppend
+    })
   })
 }
 

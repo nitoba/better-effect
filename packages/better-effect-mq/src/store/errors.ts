@@ -4,6 +4,7 @@ import { TaggedError } from 'better-result'
 
 import { hasTaggedError } from '../internal/tagged'
 import type { ControlsRevisionMismatchError } from './controlled'
+import type { JobEventWriterRejectedError } from './event-errors'
 
 import type {
   InvalidJobTransitionError,
@@ -43,7 +44,7 @@ export class JobStoreWakeAbortedError extends TaggedError('JobStoreWakeAbortedEr
 }
 
 /** The infrastructure failure shared by operations that cross the storage boundary. */
-export type JobStoreInfrastructureError = JobStoreFailure
+export type JobStoreInfrastructureError = JobStoreFailure | JobEventWriterRejectedError
 
 /** Validation failures shared by operations that accept a request DTO. */
 export type JobStoreValidationError = JobDefinitionError
@@ -57,6 +58,7 @@ export type JobStoreQueryError =
 /** Errors common to state-changing operations without lease fencing. */
 export type JobStoreTransitionError =
   | JobStoreFailure
+  | JobEventWriterRejectedError
   | JobDefinitionError
   | JobNotFoundError
   | InvalidJobTransitionError
@@ -64,12 +66,19 @@ export type JobStoreTransitionError =
 /** Errors common to state-changing operations that require a valid lease. */
 export type JobStoreLeaseTransitionError = JobStoreTransitionError | LeaseLostError
 
-export type JobStoreEnqueueError = JobStoreFailure | JobDefinitionError
+export type JobStoreEnqueueError =
+  | JobStoreFailure
+  | JobEventWriterRejectedError
+  | JobDefinitionError
 export type JobStoreClaimError =
   | JobStoreFailure
+  | JobEventWriterRejectedError
   | JobDefinitionError
   | ControlsRevisionMismatchError
-export type JobStoreEnqueueManyError = JobStoreFailure | JobDefinitionError
+export type JobStoreEnqueueManyError =
+  | JobStoreFailure
+  | JobEventWriterRejectedError
+  | JobDefinitionError
 
 export type JobStoreSettlementError =
   | JobStoreLeaseTransitionError
@@ -77,9 +86,13 @@ export type JobStoreSettlementError =
   | SettlementConflictError
 
 export type JobStoreReleaseError = JobStoreLeaseTransitionError
-export type JobStoreHeartbeatError = JobStoreFailure | JobDefinitionError
+export type JobStoreHeartbeatError =
+  | JobStoreFailure
+  | JobEventWriterRejectedError
+  | JobDefinitionError
 export type JobStoreRecoverStalledError =
   | JobStoreFailure
+  | JobEventWriterRejectedError
   | JobDefinitionError
   | JobNotFoundError
   | JobNotPromotableError
@@ -95,12 +108,14 @@ export type JobStorePausedQueuesError = JobStoreFailure
 
 export type JobStoreRetryError =
   | JobStoreFailure
+  | JobEventWriterRejectedError
   | JobDefinitionError
   | JobNotFoundError
   | JobNotRetryableError
 
 export type JobStoreCancelError =
   | JobStoreFailure
+  | JobEventWriterRejectedError
   | JobDefinitionError
   | JobNotFoundError
   | JobNotCancellableError
@@ -109,12 +124,13 @@ export type JobStoreRequestCancellationError = JobStoreCancelError
 
 export type JobStorePromoteError =
   | JobStoreFailure
+  | JobEventWriterRejectedError
   | JobDefinitionError
   | JobNotFoundError
   | JobNotPromotableError
 
 export type JobStoreRemoveError = JobStoreTransitionError
-export type JobStorePauseError = JobStoreFailure | JobDefinitionError
+export type JobStorePauseError = JobStoreFailure | JobEventWriterRejectedError | JobDefinitionError
 export type JobStoreResumeError = JobStorePauseError
 
 /**
@@ -123,6 +139,7 @@ export type JobStoreResumeError = JobStorePauseError
  */
 export type JobStoreError =
   | JobStoreFailure
+  | import('./event-errors').JobEventWriterRejectedError
   | ControlsRevisionMismatchError
   | JobStoreProtocolMismatchError
   | SettlementConflictError

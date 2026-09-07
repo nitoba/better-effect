@@ -20,9 +20,17 @@ import {
   type JobEventRetention,
   type JobEventStoreContract,
   type JobEventStoreDescriptor,
+  type JobEventStoreActivation,
+  type JobEventStoreActivationOptions,
+  type JobEventStoreReadiness,
+  type JobEventStoreWriter,
   type JobEventStoreOperation
 } from './event-store'
-import { JobEventCursorExpiredError, JobEventStoreFailure } from './event-errors'
+import {
+  JobEventCursorExpiredError,
+  JobEventStoreFailure,
+  JobEventWriterRejectedError
+} from './event-errors'
 import type { JobEventStoreError } from './event-errors'
 import type { ServiceContract } from 'better-effect'
 
@@ -39,6 +47,7 @@ export interface MemoryJobEventStoreOptions {
 
 export interface MemoryJobEventStoreInternals {
   readonly append: (event: DurableJobEventInput) => DurableJobEvent
+  readonly ensureWriterReady: (writer?: JobEventStoreWriter) => void
 }
 
 type Waiter = {
@@ -58,6 +67,11 @@ const memoryEventDescriptor: JobEventStoreDescriptor = Object.freeze({
   extension: jobEventExtension,
   extensionVersion: jobEventExtensionVersion,
   jobStoreProtocolVersion: 1
+})
+const defaultWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq',
+  version: 'current',
+  canAppend: true
 })
 const memoryInternals = new WeakMap<object, MemoryJobEventStoreInternals>()
 let nextMemoryEventStoreId = 1
@@ -168,6 +182,10 @@ class MemoryJobEventStoreImplementation {
   private readonly retention: Readonly<JobEventRetention>
   private readonly cursorPrefix: string
   private nextSequence = 1
+  private activationState: 'inactive' | 'optional' | 'required' = 'inactive'
+  private activationCursor: JobEventCursor | undefined
+  private activationRevision = 0
+  private activatedAtMs: number | undefined
 
   constructor(options: MemoryJobEventStoreOptions = {}) {
     const checked = validateRetention(options.retention)
@@ -184,6 +202,12 @@ class MemoryJobEventStoreImplementation {
       throw new TypeError('event recordedAtMs must be a non-negative safe integer')
     }
     if (this.nextSequence > maxSafeInteger) throw new RangeError('event cursor exhausted')
+    if (this.activationState === 'inactive') {
+      this.activationState = 'optional'
+      this.activationCursor = this.encodeCursor(this.nextSequence - 1)
+      this.activationRevision = 1
+      this.activatedAtMs = input.recordedAtMs
+    }
     const event = Object.freeze({
       ...input,
       cursor: this.encodeCursor(this.nextSequence),
@@ -201,6 +225,81 @@ class MemoryJobEventStoreImplementation {
     if (Result.isError(current)) return fail(current.error)
     this.prune(current.value)
     return ok(this.encodeCursor(this.nextSequence - 1))
+  }
+
+  activation(): Operation<JobEventStoreActivation> {
+    return ok(this.activationSnapshot())
+  }
+
+  readiness(writer: JobEventStoreWriter = defaultWriter): Operation<JobEventStoreReadiness> {
+    const activation = this.activationSnapshot()
+    const ready = activation.state !== 'required' || writer.canAppend
+    return ok({
+      ...activation,
+      ready,
+      writer,
+      reason:
+        activation.state === 'required'
+          ? ready
+            ? 'required'
+            : 'append-unsupported'
+          : activation.state
+    })
+  }
+
+  activate(options: JobEventStoreActivationOptions): Operation<JobEventStoreActivation> {
+    try {
+      if (
+        options === null ||
+        typeof options !== 'object' ||
+        (options.mode !== 'optional' && options.mode !== 'required')
+      ) {
+        return fail(this.failure('activate', 'mode must be optional or required'))
+      }
+      const now =
+        options.now === undefined
+          ? nowValue(this.clock)
+          : Number.isSafeInteger(options.now) && options.now >= 0
+            ? Result.ok(options.now)
+            : Result.err(this.failure('activate', 'now must be a timestamp'))
+      if (Result.isError(now)) return fail(now.error)
+      if (this.activationState === 'inactive') {
+        this.activationState = options.mode
+        this.activationCursor = this.encodeCursor(this.nextSequence - 1)
+        this.activationRevision = 1
+        this.activatedAtMs = now.value
+      } else if (this.activationState === 'optional' && options.mode === 'required') {
+        this.activationState = 'required'
+        this.activationRevision += 1
+        this.activatedAtMs = now.value
+      } else if (this.activationState === 'required' && options.mode === 'optional') {
+        return fail(this.failure('activate', 'required activation cannot be downgraded'))
+      }
+      return ok(this.activationSnapshot())
+    } catch {
+      return fail(this.failure('activate', 'could not activate event extension'))
+    }
+  }
+
+  ensureWriterReady(writer: JobEventStoreWriter = defaultWriter): void {
+    if (this.activationState === 'required' && !writer.canAppend) {
+      throw new JobEventWriterRejectedError({
+        operation: 'mutation',
+        revision: this.activationRevision,
+        writerId: writer.id,
+        writerVersion: writer.version
+      })
+    }
+  }
+
+  private activationSnapshot(): JobEventStoreActivation {
+    return Object.freeze({
+      state: this.activationState,
+      mode: this.activationState === 'inactive' ? undefined : this.activationState,
+      activationCursor: this.activationCursor,
+      revision: this.activationRevision,
+      activatedAtMs: this.activatedAtMs
+    })
   }
 
   read(options: JobEventReadOptions): Operation<JobEventPage> {

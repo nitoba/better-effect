@@ -4,6 +4,7 @@ import { Layer, Runtime, ServiceRuntime } from 'better-effect'
 import {
   JobEventCursorExpiredError,
   JobEventStore,
+  JobEventWriterRejectedError,
   JobName,
   JobStore,
   QueueName,
@@ -243,6 +244,62 @@ describe('SQLite durable JobEventStore', () => {
       expect(result.isOk() && result.value.events).toHaveLength(1)
     } finally {
       await runtime.dispose()
+    }
+  })
+
+  test('coordinates required activation and rejects an old writer before mutation', async () => {
+    const database = new Database(':memory:')
+    databases.push(database)
+    SqliteJobStore.migrate({ database })
+    const firstRuntime = await Runtime.make(
+      SqliteJobStore.layerWithEvents({ database, namespace: 'rollout' })
+    )
+    try {
+      await firstRuntime.run(async () => {
+        const jobs = await ServiceRuntime.resolve(JobStore)
+        const events = await ServiceRuntime.resolve(JobEventStore)
+        const created = await jobs.enqueue({
+          job: identity,
+          payload: { value: 1 },
+          runAt: 0,
+          attemptsMax: 1,
+          now: 0
+        })
+        if (created.isErr()) throw created.error
+        const activation = await events.activate({ mode: 'required', now: 1 })
+        if (activation.isErr()) throw activation.error
+        expect(activation.value.state).toBe('required')
+      })
+    } finally {
+      await firstRuntime.dispose()
+    }
+
+    const oldRuntime = await Runtime.make(
+      SqliteJobStore.layerWithEvents(
+        { database, namespace: 'rollout' },
+        { writer: { id: 'old-writer', version: '0', canAppend: false } }
+      )
+    )
+    try {
+      const result = await oldRuntime.run(async () => {
+        const jobs = await ServiceRuntime.resolve(JobStore)
+        return jobs.enqueue({
+          job: { ...identity, name: JobName.make('old-writer-job').unwrap() },
+          payload: { value: 2 },
+          runAt: 0,
+          attemptsMax: 1,
+          now: 2
+        })
+      })
+      expect(result.isErr()).toBe(true)
+      expect(result.isErr() && result.error).toBeInstanceOf(JobEventWriterRejectedError)
+      expect(
+        database
+          .prepare('SELECT COUNT(*) AS count FROM better_effect_mq_jobs WHERE namespace = ?')
+          .get('rollout')
+      ).toEqual({ count: 1 })
+    } finally {
+      await oldRuntime.dispose()
     }
   })
 })

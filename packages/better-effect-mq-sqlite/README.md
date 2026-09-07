@@ -123,7 +123,11 @@ permit, cursor, and rate-window updates commit as one SQLite transaction. The ad
 
 `SqliteJobStore.layerWithEvents` composes the JobStore and its matching `JobEventStore` token. The
 event layout is installed by migration 6, but ordinary `SqliteJobStore` layers remain unchanged and
-do not add an event Service to the Runtime. Named stores use the matching event token:
+do not add an event Service to the Runtime. Activation is per namespace: the first append records
+`optional`, `activate({ mode: 'required' })` is an explicit promotion, and a writer without append
+capability is rejected before a JobStore mutation after promotion. The activation metadata table is
+created lazily so migration 6 checksums remain stable; event and state changes still share the
+adapter's `BEGIN IMMEDIATE` transaction. Named stores use the matching event token:
 
 ```ts
 import { JobEventStore, JobStore } from 'better-effect-mq'

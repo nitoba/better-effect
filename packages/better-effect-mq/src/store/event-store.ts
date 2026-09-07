@@ -47,6 +47,46 @@ export interface JobEventStoreDescriptor {
   readonly jobStoreProtocolVersion: ProtocolVersion
 }
 
+/** The rollout mode recorded for one namespace. */
+export type JobEventStoreMode = 'optional' | 'required'
+
+/** The durable activation state for one namespace. */
+export type JobEventStoreActivationState = 'inactive' | JobEventStoreMode
+
+/** The state that is shared by all writers of one event-store namespace. */
+export interface JobEventStoreActivation {
+  readonly state: JobEventStoreActivationState
+  readonly mode: JobEventStoreMode | undefined
+  /** The last event before activation; events after this cursor belong to the rollout. */
+  readonly activationCursor: JobEventCursor | undefined
+  readonly revision: number
+  readonly activatedAtMs: number | undefined
+}
+
+/** The capability identity used by the namespace readiness handshake. */
+export interface JobEventStoreWriter {
+  readonly id: string
+  readonly version: string
+  readonly canAppend: boolean
+}
+
+export type JobEventStoreReadinessReason =
+  | 'inactive'
+  | 'optional'
+  | 'required'
+  | 'append-unsupported'
+
+export interface JobEventStoreReadiness extends JobEventStoreActivation {
+  readonly ready: boolean
+  readonly writer: JobEventStoreWriter
+  readonly reason: JobEventStoreReadinessReason
+}
+
+export interface JobEventStoreActivationOptions {
+  readonly mode: JobEventStoreMode
+  readonly now?: number
+}
+
 export interface DurableJobEvent {
   readonly cursor: JobEventCursor
   readonly type: DurableJobEventType
@@ -106,6 +146,13 @@ export type JobEventStoreOperation<
 export interface JobEventStoreContract {
   readonly descriptor: JobEventStoreDescriptor
   tailCursor(): JobEventStoreOperation<JobEventCursor, JobEventStoreFailure>
+  activation(): JobEventStoreOperation<JobEventStoreActivation, JobEventStoreFailure>
+  readiness(
+    writer?: JobEventStoreWriter
+  ): JobEventStoreOperation<JobEventStoreReadiness, JobEventStoreFailure>
+  activate(
+    options: JobEventStoreActivationOptions
+  ): JobEventStoreOperation<JobEventStoreActivation, JobEventStoreFailure>
   read(
     options: JobEventReadOptions
   ): JobEventStoreOperation<
@@ -180,6 +227,11 @@ export declare namespace JobEventStore {
   export type Contract = JobEventStoreContract
   export type Cursor = JobEventCursor
   export type Descriptor = JobEventStoreDescriptor
+  export type Activation = JobEventStoreActivation
+  export type ActivationOptions = JobEventStoreActivationOptions
+  export type Readiness = JobEventStoreReadiness
+  export type Writer = JobEventStoreWriter
+  export type Mode = JobEventStoreMode
   export type Event = DurableJobEvent
   export type EventType = DurableJobEventType
   export type Page = JobEventPage

@@ -104,6 +104,13 @@ uses a process-local wake after commit with polling as the authoritative
 fallback. Event records contain only bounded operational fields and safe
 attributes, never payloads, results, full failures, or arbitrary metadata.
 
+Event rollout is coordinated per namespace through `JobEventStore.activation()`
+and `readiness()`. The first append records `optional`; promote explicitly with
+`activate({ mode: 'required' })`. A writer that cannot append is rejected before
+a JobStore mutation once the namespace is required. The activation metadata
+table is created lazily, while event and state changes remain in the same
+InnoDB transaction.
+
 ```ts
 import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
 import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'

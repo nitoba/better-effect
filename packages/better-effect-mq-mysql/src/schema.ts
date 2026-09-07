@@ -18,7 +18,8 @@ export const MYSQL_TABLES = Object.freeze({
   permits: 'better_effect_mq_controlled_permits',
   rateWindows: 'better_effect_mq_rate_windows',
   eventCursors: 'better_effect_mq_job_event_cursors',
-  events: 'better_effect_mq_job_events'
+  events: 'better_effect_mq_job_events',
+  eventActivation: 'better_effect_mq_job_event_activation'
 })
 /** Flow v2 uses separate tables so v1 layouts are never interpreted as flow layouts. */
 export const MYSQL_FLOW_TABLES = Object.freeze({

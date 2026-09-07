@@ -38,6 +38,13 @@ only a wake hint and cannot lose changes. Retention may be bounded by event age 
 count, and reads return `JobEventCursorExpiredError` when a requested position has
 been removed.
 
+Event rollout is coordinated per namespace through `JobEventStore.activation()`
+and `readiness()`. The first append records `optional`; promote explicitly with
+`activate({ mode: 'required' })`. A JobStore configured with a writer that cannot
+append is rejected before a mutation once the namespace is required. The
+activation table is created lazily, preserving checksums for existing
+migrations while event/state writes remain in the same PostgreSQL transaction.
+
 Named stores use the corresponding event token:
 
 ```ts

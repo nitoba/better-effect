@@ -28,6 +28,7 @@ import {
   type SettlementOutcome,
   type DurableJobEventInput,
   type DurableJobEventType,
+  type JobEventStoreWriter,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace,
   type JobStoreDescriptor
@@ -65,7 +66,12 @@ import {
   type FlowChildReport
 } from 'better-effect-mq'
 import { MySqlClient } from './client'
-import { appendMySqlJobEvent, flushMySqlJobEventWakes } from './event-store'
+import {
+  appendMySqlJobEvent,
+  assertMySqlJobEventWriterReady,
+  ensureMySqlJobEventActivationTable,
+  flushMySqlJobEventWakes
+} from './event-store'
 import { hasUnpairedSurrogate } from './internal/text'
 import { MYSQL_FLOW_TABLES, MYSQL_TABLES } from './schema'
 import {
@@ -95,6 +101,26 @@ const mysqlDescriptor = (queueFilteredNotifications: boolean): JobStoreDescripto
     })
   })
 const maxRetries = 3
+const eventMutationOperations = new Set([
+  'enqueue',
+  'claim',
+  'claimControlled',
+  'settle',
+  'settleControlled',
+  'release',
+  'releaseControlled',
+  'heartbeat',
+  'recoverStalled',
+  'recoverStalledControlled',
+  'cancel',
+  'cancelControlled',
+  'requestCancellation',
+  'retry',
+  'promote',
+  'remove',
+  'pause',
+  'resume'
+])
 
 type Row = Record<string, unknown>
 type StoreResult<T> = ResultType<T, unknown>
@@ -118,7 +144,8 @@ const taggedJobErrorTags = new Set([
   'JobNotCancellableError',
   'JobNotPromotableError',
   'UnsupportedJobStoreOperationError',
-  'ControlsRevisionMismatchError'
+  'ControlsRevisionMismatchError',
+  'JobEventWriterRejectedError'
 ])
 const isTaggedJobError = (cause: unknown): boolean => {
   try {
@@ -1004,16 +1031,26 @@ class MySqlJobStoreImplementation {
   private controlsLayoutChecked = false
   private eventsAvailable = false
   private eventsLayoutChecked = false
+  private activationLayoutChecked = false
   private flowReportsEnabled = false
   private readonly waiters = new Set<WakeWaiter>()
   private readonly pendingWakes = new WeakMap<Tx, Set<string>>()
   private disposal: Promise<void> | undefined
-  constructor(private readonly client: MySqlClient) {}
+  constructor(
+    private readonly client: MySqlClient,
+    private readonly eventWriter: JobEventStoreWriter = {
+      id: 'better-effect-mq-mysql',
+      version: 'current',
+      canAppend: true
+    }
+  ) {}
   get descriptor(): JobStoreDescriptor {
     return this.descriptorValue
   }
   /** MySQL has no cross-process push primitive in this adapter; local waiters are notified after commit. */
-  async start(): Promise<void> {}
+  async start(): Promise<void> {
+    await this.ensureActivationLayout()
+  }
   private table(name: string): string {
     return `\`${name}\``
   }
@@ -1059,11 +1096,41 @@ class MySqlJobStoreImplementation {
       // Event persistence is an optional extension; ordinary JobStore behavior remains valid.
     }
   }
+  private async ensureActivationLayout(): Promise<void> {
+    if (this.activationLayoutChecked) return
+    if (!this.eventsLayoutChecked) {
+      let connection: PoolConnection | undefined
+      try {
+        connection = await this.client.pool.getConnection()
+        const result = await connection.query<Row>(
+          `SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`,
+          [MYSQL_TABLES.events]
+        )
+        this.eventsAvailable = result.rows.length > 0
+      } catch {
+        // Layout detection is a compatibility aid; SQL errors remain authoritative.
+      } finally {
+        try {
+          connection?.release()
+        } catch {
+          // Pool cleanup cannot replace the layout probe.
+        }
+      }
+      this.eventsLayoutChecked = true
+    }
+    if (this.eventsAvailable) await ensureMySqlJobEventActivationTable(this.client)
+    this.activationLayoutChecked = true
+  }
   private async withTx<T>(
     operation: string,
     body: (tx: Tx) => Promise<T>
   ): Promise<StoreResult<T>> {
     if (this.closed) return fail(operation, new Error('store is closed'))
+    try {
+      await this.ensureActivationLayout()
+    } catch (cause) {
+      return fail(operation, cause)
+    }
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       let tx: PoolConnection | undefined
       let value: T | undefined
@@ -1078,6 +1145,14 @@ class MySqlJobStoreImplementation {
         await this.ensureDispatchKeyLayout(tx as Tx)
         await this.ensureControlsLayout(tx as Tx)
         await this.ensureEventsLayout(tx as Tx)
+        if (eventMutationOperations.has(operation))
+          await assertMySqlJobEventWriterReady(
+            tx as Tx,
+            this.client.namespace,
+            operation,
+            this.eventWriter,
+            this.eventsAvailable
+          )
         value = await body(tx as Tx)
         await tx.commit()
         committed = true
@@ -1213,7 +1288,7 @@ class MySqlJobStoreImplementation {
       readonly queue?: string
     } = {}
   ): Promise<void> {
-    if (!this.eventsAvailable) return
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
     const input: DurableJobEventInput = {
       type,
       recordedAtMs,
@@ -3552,7 +3627,8 @@ class MySqlJobStoreImplementation {
 const makeStoreLayer = <T extends AnyJobStoreToken>(
   token: T,
   acquire: () => Promise<MySqlClient>,
-  ownsClient: boolean
+  ownsClient: boolean,
+  eventWriter?: JobEventStoreWriter
 ): Layer<InstanceType<T>, never> =>
   Layer.scoped(
     token,
@@ -3562,7 +3638,7 @@ const makeStoreLayer = <T extends AnyJobStoreToken>(
       try {
         if (client.validateSchema) await client.validate()
         else await client.compatibility()
-        implementation = new MySqlJobStoreImplementation(client)
+        implementation = new MySqlJobStoreImplementation(client, eventWriter)
         await implementation.start()
         return JobStore.of(implementation as never) as unknown as ServiceContract<InstanceType<T>>
       } catch (cause) {
@@ -3598,10 +3674,11 @@ const borrowedClient = (
   config: MySqlJobStoreConfig
 ): (() => Promise<MySqlClient>) => {
   const normalized = normalizeMySqlJobStoreConfig(config)
+  const { eventWriter: _eventWriter, ...clientConfig } = normalized
   return async () =>
     MySqlClient.fromPool({
-      ...normalized,
-      namespace: namespaceForToken(token, normalized.namespace)
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
     })
 }
 const ownedClient = (
@@ -3609,24 +3686,45 @@ const ownedClient = (
   config: MySqlJobStoreConnectionConfig
 ): (() => Promise<MySqlClient>) => {
   const normalized = normalizeMySqlJobStoreConnectionConfig(config)
+  const { eventWriter: _eventWriter, ...clientConfig } = normalized
   return () =>
     MySqlClient.fromConfig({
-      ...normalized,
-      namespace: namespaceForToken(token, normalized.namespace)
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
     })
 }
 
 export const MySqlJobStore = Object.freeze({
   layer(config: MySqlJobStoreConfig) {
-    return makeStoreLayer(JobStore, borrowedClient(JobStore, config), false)
+    return makeStoreLayer(
+      JobStore,
+      borrowedClient(JobStore, config),
+      false,
+      normalizeMySqlJobStoreConfig(config).eventWriter
+    )
   },
   layerFor<T extends AnyJobStoreToken>(token: T, config: MySqlJobStoreConfig) {
-    return makeStoreLayer(token, borrowedClient(token, config), false)
+    return makeStoreLayer(
+      token,
+      borrowedClient(token, config),
+      false,
+      normalizeMySqlJobStoreConfig(config).eventWriter
+    )
   },
   layerFromConfig(config: MySqlJobStoreConnectionConfig) {
-    return makeStoreLayer(JobStore, ownedClient(JobStore, config), true)
+    return makeStoreLayer(
+      JobStore,
+      ownedClient(JobStore, config),
+      true,
+      normalizeMySqlJobStoreConnectionConfig(config).eventWriter
+    )
   },
   layerFromConfigFor<T extends AnyJobStoreToken>(token: T, config: MySqlJobStoreConnectionConfig) {
-    return makeStoreLayer(token, ownedClient(token, config), true)
+    return makeStoreLayer(
+      token,
+      ownedClient(token, config),
+      true,
+      normalizeMySqlJobStoreConnectionConfig(config).eventWriter
+    )
   }
 })

@@ -62,6 +62,12 @@ Each namespace has one Redis Stream for events. Enqueue, claim, settlement, leas
 
 `JobEventStore.read` uses opaque namespace-bound cursors and exclusive `after` semantics. Filtering is performed while scanning the stream, and `nextCursor` is the last examined event so filtered pages can resume without overlap. `awaitEvents` first checks the stream, then uses the existing wake channel as a wake hint and keeps a bounded polling fallback for lost notifications. The stream and all JobStore keys use the same namespace hash tag, so Redis Cluster script calls remain single-slot.
 
+Event rollout is coordinated in the stream metadata hash. The first
+event-capable writer records `optional`; promote explicitly through
+`JobEventStore.activate({ mode: 'required' })`. Required activation rejects a
+writer without append capability before its Lua mutation runs. Activation
+metadata is additive and uses the existing namespace hash slot.
+
 ## Queue controls protocol v3
 
 The Redis JobStore implements the `better-effect-mq` QueueControls protocol v3. Reconciliation persists one revisioned control record per queue. Controlled claims enforce global concurrency, producer-persisted `dispatchKey` concurrency, and a fixed-window rate limit atomically with the lease transition. Permits, per-key counts, the protocol-clock rate window, and fair rotation state share the namespace hash slot with the job indexes.

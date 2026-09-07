@@ -6,6 +6,7 @@
 
 import { PostgresConfigurationError } from './errors'
 import { hasUnpairedSurrogate } from './internal/text'
+import type { JobEventStoreWriter } from 'better-effect-mq'
 
 export interface QueryResult<Row = unknown> {
   readonly rows: readonly Row[]
@@ -31,6 +32,8 @@ export interface PostgresJobStoreConfig {
   readonly namespace?: string | undefined
   readonly schema?: string | undefined
   readonly validateSchema?: boolean | undefined
+  /** Optional writer capability override used during event-extension rollout. */
+  readonly eventWriter?: JobEventStoreWriter | undefined
 }
 
 export interface PostgresJobStoreConnectionConfig {
@@ -39,6 +42,7 @@ export interface PostgresJobStoreConnectionConfig {
   readonly namespace?: string | undefined
   readonly schema?: string | undefined
   readonly validateSchema?: boolean | undefined
+  readonly eventWriter?: JobEventStoreWriter | undefined
 }
 
 export interface NormalizedPostgresJobStoreConfig {
@@ -46,6 +50,7 @@ export interface NormalizedPostgresJobStoreConfig {
   readonly namespace: string
   readonly schema: string
   readonly validateSchema: boolean
+  readonly eventWriter: JobEventStoreWriter | undefined
 }
 
 export interface NormalizedPostgresJobStoreConnectionConfig {
@@ -54,6 +59,7 @@ export interface NormalizedPostgresJobStoreConnectionConfig {
   readonly namespace: string
   readonly schema: string
   readonly validateSchema: boolean
+  readonly eventWriter: JobEventStoreWriter | undefined
 }
 
 export const DEFAULT_NAMESPACE = 'default' as const
@@ -141,6 +147,24 @@ const validateBoolean = (value: unknown): boolean => {
   return value === undefined ? DEFAULT_VALIDATE_SCHEMA : value
 }
 
+const validateEventWriter = (value: unknown): JobEventStoreWriter | undefined => {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw configurationError('eventWriter', 'eventWriter must be an object')
+  const writer = value as Record<string, unknown>
+  if (
+    typeof writer.id !== 'string' ||
+    typeof writer.version !== 'string' ||
+    typeof writer.canAppend !== 'boolean'
+  )
+    throw configurationError('eventWriter', 'eventWriter must contain id, version and canAppend')
+  return Object.freeze({
+    id: writer.id,
+    version: writer.version,
+    canAppend: writer.canAppend
+  })
+}
+
 export const validatePool = (value: unknown): Pool => {
   if (!isObject(value)) {
     throw configurationError('pool', 'pool must expose a connect() method')
@@ -162,7 +186,13 @@ export const validatePool = (value: unknown): Pool => {
 export const normalizePostgresJobStoreConfig = (
   config: PostgresJobStoreConfig
 ): NormalizedPostgresJobStoreConfig => {
-  const input = readConfigObject(config, ['pool', 'namespace', 'schema', 'validateSchema'])
+  const input = readConfigObject(config, [
+    'pool',
+    'namespace',
+    'schema',
+    'validateSchema',
+    'eventWriter'
+  ])
 
   return Object.freeze({
     pool: validatePool(input.pool),
@@ -170,7 +200,8 @@ export const normalizePostgresJobStoreConfig = (
       input.namespace === undefined ? DEFAULT_NAMESPACE : input.namespace
     ),
     schema: validateSchema(input.schema === undefined ? DEFAULT_SCHEMA : input.schema),
-    validateSchema: validateBoolean(input.validateSchema)
+    validateSchema: validateBoolean(input.validateSchema),
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }
 
@@ -182,7 +213,8 @@ export const normalizePostgresJobStoreConnectionConfig = (
     'poolConfig',
     'namespace',
     'schema',
-    'validateSchema'
+    'validateSchema',
+    'eventWriter'
   ])
   if (input.connectionString !== undefined && typeof input.connectionString !== 'string') {
     throw configurationError('connectionString', 'connectionString must be a string when provided')
@@ -209,6 +241,7 @@ export const normalizePostgresJobStoreConnectionConfig = (
       input.namespace === undefined ? DEFAULT_NAMESPACE : input.namespace
     ),
     schema: validateSchema(input.schema === undefined ? DEFAULT_SCHEMA : input.schema),
-    validateSchema: validateBoolean(input.validateSchema)
+    validateSchema: validateBoolean(input.validateSchema),
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }

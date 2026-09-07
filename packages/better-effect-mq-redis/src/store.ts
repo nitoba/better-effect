@@ -38,6 +38,7 @@ import {
   type JobStore as J,
   type JobStoreDescriptor
 } from 'better-effect-mq'
+import type { JobEventStoreWriter } from 'better-effect-mq'
 import type { DurableJobEventInput } from 'better-effect-mq'
 import type {
   AnyQueueControlsRegistry,
@@ -52,7 +53,11 @@ import type {
   ControlledCancelRequest
 } from 'better-effect-mq'
 import { RedisClient } from './client'
-import { RedisJobEventStore } from './event-store'
+import {
+  RedisJobEventStore,
+  assertRedisJobEventWriterReady,
+  ensureRedisOptionalJobEventActivation
+} from './event-store'
 import {
   makeJobEvent,
   makeQueueEvent,
@@ -99,7 +104,8 @@ const tagged = new Set([
   'JobNotRetryableError',
   'JobNotCancellableError',
   'JobNotPromotableError',
-  'ControlsRevisionMismatchError'
+  'ControlsRevisionMismatchError',
+  'JobEventWriterRejectedError'
 ])
 const retryableRedisFailure = (cause: unknown): boolean => {
   if (cause instanceof RedisConnectionError) return true
@@ -582,12 +588,20 @@ class RedisJobStoreImplementation {
     settled: boolean
   }>()
   private readonly eventOptions: RedisEventAppendOptions | undefined
+  private readonly eventWriter: JobEventStoreWriter
 
   constructor(
     private readonly redis: RedisClient,
-    eventOptions?: RedisJobEventStoreOptions
+    eventOptions?: RedisJobEventStoreOptions,
+    eventWriter?: JobEventStoreWriter
   ) {
-    this.eventOptions = eventOptions === undefined ? undefined : normalizeEventOptions(eventOptions)
+    const normalized = eventOptions === undefined ? undefined : normalizeEventOptions(eventOptions)
+    this.eventWriter =
+      eventWriter ??
+      normalized?.writer ??
+      Object.freeze({ id: 'better-effect-mq-redis', version: 'current', canAppend: false })
+    this.eventOptions =
+      normalized === undefined || !this.eventWriter.canAppend ? undefined : normalized
   }
   async start(): Promise<void> {
     this.unsubscribeWake = await subscribeWake(
@@ -620,6 +634,15 @@ class RedisJobStoreImplementation {
     allowErrors = false
   ) {
     this.assertOpen(name)
+    if (this.eventOptions !== undefined) {
+      await ensureRedisOptionalJobEventActivation(this.redis, Date.now())
+    }
+    await assertRedisJobEventWriterReady(
+      this.redis,
+      name,
+      this.eventWriter,
+      this.eventOptions !== undefined
+    )
     const result = await runScript(this.redis.scripts, name, {
       keys,
       args,
@@ -2998,7 +3021,8 @@ class RedisJobStoreImplementation {
 const makeLayer = <T extends AnyJobStoreToken>(
   token: T,
   acquire: () => Promise<RedisClient>,
-  eventOptions?: RedisJobEventStoreOptions
+  eventOptions?: RedisJobEventStoreOptions,
+  eventWriter?: JobEventStoreWriter
 ): Layer<InstanceType<T>, never> =>
   Layer.scoped(
     token,
@@ -3007,7 +3031,7 @@ const makeLayer = <T extends AnyJobStoreToken>(
       let implementation: RedisJobStoreImplementation | undefined
       try {
         await client.initialize()
-        implementation = new RedisJobStoreImplementation(client, eventOptions)
+        implementation = new RedisJobStoreImplementation(client, eventOptions, eventWriter)
         await implementation.start()
         return JobStore.of(implementation as never) as unknown as ServiceContract<InstanceType<T>>
       } catch (cause) {
@@ -3033,31 +3057,58 @@ const namespaceFor = (token: AnyJobStoreToken, namespace: string) =>
     : `${namespace}:store-${Buffer.from(token.serviceTag).toString('base64url')}`
 export const RedisJobStore = Object.freeze({
   layer(config: RedisJobStoreConfig) {
-    return makeLayer(JobStore, async () => RedisClient.fromClients(config))
+    return makeLayer(
+      JobStore,
+      async () => RedisClient.fromClients(config),
+      undefined,
+      config.eventWriter
+    )
   },
   layerFor<T extends AnyJobStoreToken>(token: T, config: RedisJobStoreConfig) {
-    return makeLayer(token, async () =>
-      RedisClient.fromClients({
-        ...config,
-        namespace: namespaceFor(token, config.namespace ?? 'default')
-      })
+    return makeLayer(
+      token,
+      async () =>
+        RedisClient.fromClients({
+          ...config,
+          namespace: namespaceFor(token, config.namespace ?? 'default')
+        }),
+      undefined,
+      config.eventWriter
     )
   },
   layerFromConfig(config: RedisJobStoreConnectionConfig) {
-    return makeLayer(JobStore, async () => RedisClient.fromConfig(config))
+    return makeLayer(
+      JobStore,
+      async () => RedisClient.fromConfig(config),
+      undefined,
+      config.eventWriter
+    )
   },
   layerFromConfigFor<T extends AnyJobStoreToken>(token: T, config: RedisJobStoreConnectionConfig) {
-    return makeLayer(token, async () =>
-      RedisClient.fromConfig({
-        ...config,
-        namespace: namespaceFor(token, config.namespace ?? 'default')
-      })
+    return makeLayer(
+      token,
+      async () =>
+        RedisClient.fromConfig({
+          ...config,
+          namespace: namespaceFor(token, config.namespace ?? 'default')
+        }),
+      undefined,
+      config.eventWriter
     )
   },
   layerWithEvents(config: RedisJobStoreConfig, options?: RedisJobEventStoreOptions) {
+    const eventOptions =
+      options?.writer === undefined && config.eventWriter !== undefined
+        ? { ...options, writer: config.eventWriter }
+        : options
     return Layer.merge(
-      makeLayer(JobStore, async () => RedisClient.fromClients(config), options ?? {}),
-      RedisJobEventStore.layer(config, options)
+      makeLayer(
+        JobStore,
+        async () => RedisClient.fromClients(config),
+        eventOptions ?? {},
+        config.eventWriter
+      ),
+      RedisJobEventStore.layer(config, eventOptions)
     ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
   },
   layerWithEventsFor<T extends AnyJobStoreToken>(
@@ -3066,6 +3117,10 @@ export const RedisJobStore = Object.freeze({
     options?: RedisJobEventStoreOptions
   ) {
     const eventToken = JobEventStore.for(token)
+    const eventOptions =
+      options?.writer === undefined && config.eventWriter !== undefined
+        ? { ...options, writer: config.eventWriter }
+        : options
     return Layer.merge(
       makeLayer(
         token,
@@ -3074,18 +3129,28 @@ export const RedisJobStore = Object.freeze({
             ...config,
             namespace: namespaceFor(token, config.namespace ?? 'default')
           }),
-        options ?? {}
+        eventOptions ?? {},
+        config.eventWriter
       ) as Layer.Any,
-      RedisJobEventStore.layerFor(eventToken as never, config, options) as Layer.Any
+      RedisJobEventStore.layerFor(eventToken as never, config, eventOptions) as Layer.Any
     ) as unknown as Layer<InstanceType<T> | InstanceType<typeof eventToken>, never>
   },
   layerWithEventsFromConfig(
     config: RedisJobStoreConnectionConfig,
     options?: RedisJobEventStoreOptions
   ) {
+    const eventOptions =
+      options?.writer === undefined && config.eventWriter !== undefined
+        ? { ...options, writer: config.eventWriter }
+        : options
     return Layer.merge(
-      makeLayer(JobStore, async () => RedisClient.fromConfig(config), options ?? {}),
-      RedisJobEventStore.layerFromConfig(config, options)
+      makeLayer(
+        JobStore,
+        async () => RedisClient.fromConfig(config),
+        eventOptions ?? {},
+        config.eventWriter
+      ),
+      RedisJobEventStore.layerFromConfig(config, eventOptions)
     ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
   },
   layerWithEventsFromConfigFor<T extends AnyJobStoreToken>(
@@ -3094,6 +3159,10 @@ export const RedisJobStore = Object.freeze({
     options?: RedisJobEventStoreOptions
   ) {
     const eventToken = JobEventStore.for(token)
+    const eventOptions =
+      options?.writer === undefined && config.eventWriter !== undefined
+        ? { ...options, writer: config.eventWriter }
+        : options
     return Layer.merge(
       makeLayer(
         token,
@@ -3102,9 +3171,10 @@ export const RedisJobStore = Object.freeze({
             ...config,
             namespace: namespaceFor(token, config.namespace ?? 'default')
           }),
-        options ?? {}
+        eventOptions ?? {},
+        config.eventWriter
       ) as Layer.Any,
-      RedisJobEventStore.layerFromConfigFor(eventToken as never, config, options) as Layer.Any
+      RedisJobEventStore.layerFromConfigFor(eventToken as never, config, eventOptions) as Layer.Any
     ) as unknown as Layer<InstanceType<T> | InstanceType<typeof eventToken>, never>
   }
 })

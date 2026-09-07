@@ -19,7 +19,9 @@ import {
   type ControlledSettleRequest,
   type DurableJobEventInput,
   type DurableJobEventType,
+  type JobEventStoreWriter,
   JobEventStore,
+  JobEventWriterRejectedError,
   type QueueControlsRecord,
   validateFlowChildReport,
   validateParentEnvelope,
@@ -29,6 +31,7 @@ import {
 import type { JobStoreError, JobStoreOperation } from 'better-effect-mq'
 import {
   appendSqliteJobEvent,
+  assertSqliteJobEventWriterReady,
   normalizeSqliteJobEventStoreOptions,
   SqliteJobEventStore,
   type SqliteJobEventStoreOptions
@@ -234,6 +237,7 @@ class SqliteJobStoreImplementation {
   private readonly wakePollers = new Set<ReturnType<typeof setInterval>>()
 
   private readonly eventOptions: EventOptions | undefined
+  private readonly eventWriter: JobEventStoreWriter
 
   constructor(
     private readonly config: ReturnType<typeof normalizeSqliteJobStoreConfig>,
@@ -241,6 +245,11 @@ class SqliteJobStoreImplementation {
   ) {
     this.eventOptions =
       eventOptions === undefined ? undefined : normalizeSqliteJobEventStoreOptions(eventOptions)
+    this.eventWriter = eventOptions?.writer ?? {
+      id: 'better-effect-mq-sqlite',
+      version: 'current',
+      canAppend: eventOptions !== undefined
+    }
   }
 
   private execute<T>(
@@ -252,12 +261,20 @@ class SqliteJobStoreImplementation {
       if (this.closed) return failed<T>(operation, new SqliteAdapterError('store is closed'))
       try {
         if (mutable) this.config.database.exec('BEGIN IMMEDIATE')
+        if (mutable) {
+          assertSqliteJobEventWriterReady(
+            this.config.database,
+            this.config.namespace,
+            operation,
+            this.eventWriter
+          )
+        }
         this.restore()
         const before = mutable ? this.engine.exportState() : undefined
         const result = callback()
         if (mutable && Result.isOk(result)) {
           this.persist(before!)
-          if (this.eventOptions !== undefined) {
+          if (this.eventOptions !== undefined && this.eventWriter.canAppend) {
             this.appendEvents(operation, result.value, before!)
           }
         }
@@ -271,6 +288,7 @@ class SqliteJobStoreImplementation {
             /* primary error wins */
           }
         }
+        if (JobEventWriterRejectedError.is(cause)) return Result.err(cause) as Operation<T>
         return failed<T>(operation, sqliteError(operation, cause))
       }
     }

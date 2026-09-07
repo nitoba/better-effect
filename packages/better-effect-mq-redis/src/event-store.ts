@@ -11,6 +11,7 @@ import {
   JobEventStore,
   JobEventCursorExpiredError,
   JobEventStoreFailure,
+  JobEventWriterRejectedError,
   jobEventExtension,
   jobEventExtensionVersion,
   type AnyJobEventStoreToken,
@@ -20,7 +21,11 @@ import {
   type JobEventPage,
   type JobEventReadOptions,
   type JobEventStoreDescriptor,
-  type JobEventCursor
+  type JobEventCursor,
+  type JobEventStoreActivation,
+  type JobEventStoreActivationOptions,
+  type JobEventStoreReadiness,
+  type JobEventStoreWriter
 } from 'better-effect-mq'
 import { RedisClient } from './client'
 import {
@@ -241,6 +246,112 @@ const decodeCursor = (prefix: string, value: unknown): string => {
   return streamId(value.slice(prefix.length), 'cursor')
 }
 
+const activationFromMetadata = (
+  fields: Record<string, string>,
+  prefix: string,
+  operation: string
+): JobEventStoreActivation => {
+  const state = fields.activationState
+  if (state === undefined) {
+    return Object.freeze({
+      state: 'inactive',
+      mode: undefined,
+      activationCursor: undefined,
+      revision: 0,
+      activatedAtMs: undefined
+    })
+  }
+  if (state !== 'optional' && state !== 'required') {
+    throw failure(operation, 'Redis event activation state is malformed')
+  }
+  const rawCursor = fields.activationCursor
+  if (rawCursor === undefined || !STREAM_ID.test(rawCursor)) {
+    throw failure(operation, 'Redis event activation cursor is malformed')
+  }
+  const revision = Number(fields.activationRevision)
+  const activatedAtMs = Number(fields.activatedAtMs)
+  if (!Number.isSafeInteger(revision) || revision <= 0) {
+    throw failure(operation, 'Redis event activation revision is malformed')
+  }
+  if (!Number.isSafeInteger(activatedAtMs) || activatedAtMs < 0) {
+    throw failure(operation, 'Redis event activation timestamp is malformed')
+  }
+  return Object.freeze({
+    state,
+    mode: state,
+    activationCursor: cursorFromId(prefix, rawCursor),
+    revision,
+    activatedAtMs
+  })
+}
+
+const writerIsValid = (writer: JobEventStoreWriter): boolean =>
+  writer !== null &&
+  typeof writer === 'object' &&
+  typeof writer.id === 'string' &&
+  typeof writer.version === 'string' &&
+  typeof writer.canAppend === 'boolean'
+
+/** Ensure a first event-capable writer records optional activation metadata. */
+export const ensureRedisOptionalJobEventActivation = async (
+  redis: RedisClient,
+  now: number
+): Promise<void> => {
+  const fields = hashReply(
+    await sendRedisCommand(redis.client, ['HGETALL', redis.layout.eventsMeta], redis.layout.base)
+  )
+  if (fields.activationState !== undefined) return
+  const tail = await sendRedisCommand(
+    redis.client,
+    ['XREVRANGE', redis.layout.events, '+', '-', 'COUNT', '1'],
+    redis.layout.base
+  )
+  const entries = streamItems(tail, 'activation')
+  const cursor = entries.length === 0 ? '0-0' : parseEntry(entries[0], 'activation').id
+  await sendRedisCommand(
+    redis.client,
+    [
+      'HSET',
+      redis.layout.eventsMeta,
+      'activationState',
+      'optional',
+      'activationCursor',
+      cursor,
+      'activationRevision',
+      '1',
+      'activatedAtMs',
+      String(now)
+    ],
+    redis.layout.base
+  )
+}
+
+/** Gate a JobStore mutation before its Lua compare-and-set script runs. */
+export const assertRedisJobEventWriterReady = async (
+  redis: RedisClient,
+  operation: string,
+  writer: JobEventStoreWriter,
+  eventsAvailable: boolean
+): Promise<void> => {
+  if (!writerIsValid(writer)) throw failure(operation, 'Redis event writer is malformed')
+  const fields = hashReply(
+    await sendRedisCommand(redis.client, ['HGETALL', redis.layout.eventsMeta], redis.layout.base)
+  )
+  if (fields.activationState !== 'required') return
+  const revision = Number(fields.activationRevision)
+  if (!Number.isSafeInteger(revision) || revision <= 0) {
+    throw failure(operation, 'Redis event activation revision is malformed')
+  }
+  if (!writer.canAppend || !eventsAvailable) {
+    throw new JobEventWriterRejectedError({
+      operation,
+      revision,
+      writerId: writer.id,
+      writerVersion: writer.version
+    })
+  }
+}
+
 class RedisJobEventStoreImplementation {
   readonly descriptor = descriptor
   private readonly cursorPrefix: string
@@ -261,9 +372,12 @@ class RedisJobEventStoreImplementation {
     private readonly redis: RedisClient,
     options: RedisJobEventStoreOptions = {}
   ) {
-    normalizeEventOptions(options)
+    const normalized = normalizeEventOptions(options)
+    this.writer = normalized.writer
     this.cursorPrefix = `re1_${Buffer.from(redis.layout.base, 'utf8').toString('base64url')}_`
   }
+
+  private readonly writer: JobEventStoreWriter
 
   async start(): Promise<void> {
     this.unsubscribeWake = await subscribeWake(
@@ -294,6 +408,97 @@ class RedisJobEventStoreImplementation {
 
   private async metadata(): Promise<Record<string, string>> {
     return hashReply(await this.command(['HGETALL', this.redis.layout.eventsMeta]))
+  }
+
+  private async activationSnapshot(): Promise<JobEventStoreActivation> {
+    return activationFromMetadata(await this.metadata(), this.cursorPrefix, 'activation')
+  }
+
+  async activation(): Promise<EventStoreOperation<JobEventStoreActivation>> {
+    try {
+      return ok(await this.activationSnapshot())
+    } catch (cause) {
+      return fail('activation', cause)
+    }
+  }
+
+  async readiness(
+    writer?: JobEventStoreWriter
+  ): Promise<EventStoreOperation<JobEventStoreReadiness>> {
+    try {
+      const selected = writer ?? this.writer
+      if (!writerIsValid(selected)) throw failure('readiness', 'Redis event writer is malformed')
+      const activation = await this.activationSnapshot()
+      const ready = activation.state !== 'required' || selected.canAppend
+      return ok(
+        Object.freeze({
+          ...activation,
+          ready,
+          writer: Object.freeze({
+            id: selected.id,
+            version: selected.version,
+            canAppend: selected.canAppend
+          }),
+          reason:
+            activation.state === 'inactive'
+              ? 'inactive'
+              : activation.state === 'optional'
+                ? 'optional'
+                : ready
+                  ? 'required'
+                  : 'append-unsupported'
+        })
+      )
+    } catch (cause) {
+      return fail('readiness', cause)
+    }
+  }
+
+  async activate(
+    options: JobEventStoreActivationOptions
+  ): Promise<EventStoreOperation<JobEventStoreActivation>> {
+    try {
+      if (!isObject(options) || (options.mode !== 'optional' && options.mode !== 'required')) {
+        throw failure('activate', 'mode must be optional or required')
+      }
+      const now = options.now ?? Date.now()
+      if (!Number.isSafeInteger(now) || now < 0) throw failure('activate', 'now is malformed')
+      const current = await this.activationSnapshot()
+      if (current.state === 'required') {
+        if (options.mode === 'optional') {
+          throw failure('activate', 'required event activation cannot be downgraded')
+        }
+        return ok(current)
+      }
+      if (current.state === 'optional' && options.mode === 'optional') return ok(current)
+      const cursor =
+        current.activationCursor ??
+        cursorFromId(this.cursorPrefix, (await this.firstEntry(true))?.id ?? '0-0')
+      const revision = current.revision === 0 ? 1 : current.revision + 1
+      await this.command([
+        'HSET',
+        this.redis.layout.eventsMeta,
+        'activationState',
+        options.mode,
+        'activationCursor',
+        cursor.slice(this.cursorPrefix.length),
+        'activationRevision',
+        String(revision),
+        'activatedAtMs',
+        String(now)
+      ])
+      return ok(
+        Object.freeze({
+          state: options.mode,
+          mode: options.mode,
+          activationCursor: cursor,
+          revision,
+          activatedAtMs: now
+        })
+      )
+    } catch (cause) {
+      return fail('activate', cause)
+    }
   }
 
   private async assertCursor(after: string): Promise<void> {
@@ -518,6 +723,14 @@ const eventNamespaceFor = (token: AnyJobEventStoreToken, namespace: string): str
   return `${namespace}:store-${Buffer.from(`@better-effect/mq/JobStore/${suffix}`).toString('base64url')}`
 }
 
+const withConfiguredWriter = (
+  config: RedisJobStoreConfig | RedisJobStoreConnectionConfig,
+  options: RedisJobEventStoreOptions | undefined
+): RedisJobEventStoreOptions | undefined =>
+  options?.writer === undefined && config.eventWriter !== undefined
+    ? { ...options, writer: config.eventWriter }
+    : options
+
 const makeLayer = <Token extends AnyJobEventStoreToken>(
   token: Token,
   acquire: () => Promise<RedisClient>,
@@ -553,7 +766,11 @@ const makeLayer = <Token extends AnyJobEventStoreToken>(
 
 const eventStoreApi = {
   layer(config: RedisJobStoreConfig, options?: RedisJobEventStoreOptions) {
-    return makeLayer(JobEventStore, async () => RedisClient.fromClients(config), options)
+    return makeLayer(
+      JobEventStore,
+      async () => RedisClient.fromClients(config),
+      withConfiguredWriter(config, options)
+    )
   },
   layerFor<Token extends AnyJobEventStoreToken>(
     token: Token,
@@ -567,11 +784,15 @@ const eventStoreApi = {
           ...config,
           namespace: eventNamespaceFor(token, config.namespace ?? 'default')
         }),
-      options
+      withConfiguredWriter(config, options)
     )
   },
   layerFromConfig(config: RedisJobStoreConnectionConfig, options?: RedisJobEventStoreOptions) {
-    return makeLayer(JobEventStore, async () => RedisClient.fromConfig(config), options)
+    return makeLayer(
+      JobEventStore,
+      async () => RedisClient.fromConfig(config),
+      withConfiguredWriter(config, options)
+    )
   },
   layerFromConfigFor<Token extends AnyJobEventStoreToken>(
     token: Token,
@@ -585,7 +806,7 @@ const eventStoreApi = {
           ...config,
           namespace: eventNamespaceFor(token, config.namespace ?? 'default')
         }),
-      options
+      withConfiguredWriter(config, options)
     )
   }
 }

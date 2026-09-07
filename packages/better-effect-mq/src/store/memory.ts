@@ -80,12 +80,13 @@ import type {
 import type { AttemptRecord, JobRecord, JobTransition } from '../protocol'
 import type { JobStoreError } from './errors'
 import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from './store'
-import type { DurableJobEventType, JobEventStoreContract } from './event-store'
+import type { DurableJobEventType, JobEventStoreContract, JobEventStoreWriter } from './event-store'
 import { getMemoryJobEventStoreInternals } from './memory-event-store'
 import type { MemoryJobEventStoreInternals } from './memory-event-store'
 
 import { JobStore } from './store'
 import { JobStoreWakeAbortedError } from './errors'
+import { JobEventWriterRejectedError } from './event-errors'
 import { validatePreparedEnqueue } from '../job/prepared'
 import type { PreparedEnqueue } from '../job/prepared'
 
@@ -109,6 +110,8 @@ export interface MemoryJobStoreOptions {
   readonly idGenerator?: MemoryJobStoreIdGenerator
   /** Optional reference EventStore to receive atomic transition appends. */
   readonly eventStore?: JobEventStoreContract
+  /** Writer capability advertised to the event-store rollout handshake. */
+  readonly eventWriter?: JobEventStoreWriter
 }
 
 type Operation<Value> = JobStoreOperation<Value, JobStoreError>
@@ -504,12 +507,14 @@ class MemoryJobStoreImplementation {
   private readonly clock: MemoryJobStoreOptions['clock']
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
   private readonly eventAppender: MemoryJobEventStoreInternals | undefined
+  private readonly eventWriter: JobEventStoreWriter | undefined
   private claimInProgress = false
   private criticalSectionDepth = 0
 
   constructor(options: MemoryJobStoreOptions = {}) {
     this.clock = options.clock
     this.idGenerator = options.idGenerator
+    this.eventWriter = options.eventWriter
     this.eventAppender =
       options.eventStore === undefined
         ? undefined
@@ -558,6 +563,8 @@ class MemoryJobStoreImplementation {
 
   enqueue(request: EnqueueRequest): Operation<JobStoreNamespace.EnqueueResult> {
     try {
+      const eventFailure = this.eventWriterFailure('enqueue')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const clock = this.readConfiguredClock()
       if (Result.isError(clock)) return fail(clock.error)
       const normalized = this.normalizeEnqueue(request, clock.value)
@@ -575,6 +582,8 @@ class MemoryJobStoreImplementation {
 
   enqueueMany(requests: readonly EnqueueRequest[]): Operation<JobStoreNamespace.EnqueueManyResult> {
     try {
+      const eventFailure = this.eventWriterFailure('enqueueMany')
+      if (eventFailure !== undefined) return fail(eventFailure)
       if (!Array.isArray(requests)) {
         return fail(new JobDefinitionError({ field: 'requests', message: 'must be an array' }))
       }
@@ -610,6 +619,8 @@ class MemoryJobStoreImplementation {
   }
 
   claim(request: ClaimRequest): Operation<JobStoreNamespace.ClaimResult> {
+    const eventFailure = this.eventWriterFailure('claim')
+    if (eventFailure !== undefined) return fail(eventFailure)
     if (this.claimInProgress) {
       return fail(
         jobStoreFailure('claim', 'claim cannot be re-enter while an ID is being generated')
@@ -819,6 +830,8 @@ class MemoryJobStoreImplementation {
   }
 
   claimControlled(request: ControlledClaimRequest): Operation<ControlledClaimResult> {
+    const eventFailure = this.eventWriterFailure('claimControlled')
+    if (eventFailure !== undefined) return fail(eventFailure)
     if (this.claimInProgress) {
       return fail(
         jobStoreFailure('claim', 'claim cannot be re-enter while an ID is being generated')
@@ -1051,6 +1064,8 @@ class MemoryJobStoreImplementation {
 
   settle(request: SettleRequest): Operation<JobStoreNamespace.SettlementResult> {
     try {
+      const eventFailure = this.eventWriterFailure('settle')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(
         request,
         ['jobId', 'leaseToken', 'outcome', 'now', 'startedAt'],
@@ -1142,6 +1157,8 @@ class MemoryJobStoreImplementation {
 
   release(request: JobStoreNamespace.ReleaseRequest): Operation<JobStoreNamespace.ReleaseResult> {
     try {
+      const eventFailure = this.eventWriterFailure('release')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['jobId', 'leaseToken', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const clock = this.readConfiguredClock()
@@ -1184,6 +1201,8 @@ class MemoryJobStoreImplementation {
 
   heartbeat(request: HeartbeatRequest): Operation<JobStoreNamespace.HeartbeatResult> {
     try {
+      const eventFailure = this.eventWriterFailure('heartbeat')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['leases', 'leaseDurationMs', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const clock = this.readConfiguredClock()
@@ -1294,6 +1313,8 @@ class MemoryJobStoreImplementation {
     request: RecoverStalledRequest
   ): Operation<JobStoreNamespace.RecoverStalledResult> {
     try {
+      const eventFailure = this.eventWriterFailure('recoverStalled')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['queue', 'maxStalledCount', 'limit', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const queue =
@@ -1588,6 +1609,8 @@ class MemoryJobStoreImplementation {
 
   retry(request: JobStoreNamespace.RetryRequest): Operation<JobStoreNamespace.RetryResult> {
     try {
+      const eventFailure = this.eventWriterFailure('retry')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['jobId', 'runAt', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const clock = this.readConfiguredClock()
@@ -1632,6 +1655,8 @@ class MemoryJobStoreImplementation {
 
   remove(request: JobStoreNamespace.RemoveRequest): Operation<JobStoreNamespace.RemoveResult> {
     try {
+      const eventFailure = this.eventWriterFailure('remove')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['jobId', 'now', 'expectedState'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const clock = this.readConfiguredClock()
@@ -2310,7 +2335,7 @@ class MemoryJobStoreImplementation {
       readonly queue?: QueueName
     } = {}
   ): void {
-    if (this.eventAppender === undefined) return
+    if (this.eventAppender === undefined || this.eventWriter?.canAppend === false) return
     const workerId = record?.leaseOwner ?? context.previous?.leaseOwner
     this.eventAppender.append({
       type,
@@ -2328,6 +2353,24 @@ class MemoryJobStoreImplementation {
       duplicate: context.duplicate,
       attributes: Object.freeze({})
     })
+  }
+
+  private eventWriterFailure(operation: string): JobStoreError | undefined {
+    if (this.eventAppender === undefined) return undefined
+    try {
+      this.eventAppender.ensureWriterReady(this.eventWriter)
+      return undefined
+    } catch (cause) {
+      if (JobEventWriterRejectedError.is(cause)) {
+        return new JobEventWriterRejectedError({
+          operation,
+          revision: cause.revision,
+          writerId: cause.writerId,
+          writerVersion: cause.writerVersion
+        })
+      }
+      return jobStoreFailure(operation, 'event writer readiness check failed')
+    }
   }
 
   private transitionById(
@@ -2353,6 +2396,8 @@ class MemoryJobStoreImplementation {
     type: 'cancel' | 'request-cancellation' | 'promote'
   ): Operation<JobTransition> {
     try {
+      const eventFailure = this.eventWriterFailure(type)
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['jobId', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const clock = this.readConfiguredClock()
@@ -2376,6 +2421,8 @@ class MemoryJobStoreImplementation {
     shouldPause: boolean
   ): Operation<QueuePauseResult> {
     try {
+      const eventFailure = this.eventWriterFailure(shouldPause ? 'pause' : 'resume')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const fields = readDto(request, ['queue', 'now'], 'request')
       if (Result.isError(fields)) return fail(fields.error)
       const clock = this.readConfiguredClock()

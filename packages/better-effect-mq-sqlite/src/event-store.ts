@@ -32,9 +32,14 @@ import {
   type JobEventRetention,
   type JobEventStoreContract,
   type JobEventStoreDescriptor,
+  type JobEventStoreActivation,
+  type JobEventStoreActivationOptions,
+  type JobEventStoreReadiness,
+  type JobEventStoreWriter,
   type JobEventStoreOperation,
   type JobIdentity
 } from 'better-effect-mq'
+import { JobEventWriterRejectedError } from 'better-effect-mq'
 import { SqliteMigrator } from './migrator'
 import { SqliteSchemaValidationError } from './errors'
 import {
@@ -46,10 +51,12 @@ import { SQLITE_TABLES } from './schema'
 
 export interface SqliteJobEventStoreConfig extends SqliteJobStoreConfig {
   readonly retention?: JobEventRetention
+  readonly writer?: JobEventStoreWriter
 }
 
 export interface SqliteJobEventStoreOptions {
   readonly retention?: JobEventRetention
+  readonly writer?: JobEventStoreWriter
 }
 
 type Row = Record<string, unknown>
@@ -83,6 +90,11 @@ const descriptor: JobEventStoreDescriptor = Object.freeze({
   extension: jobEventExtension,
   extensionVersion: jobEventExtensionVersion,
   jobStoreProtocolVersion: 1
+})
+const defaultWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq-sqlite',
+  version: 'current',
+  canAppend: true
 })
 
 const waitersByDatabase = new WeakMap<object, Map<string, Set<EventWaiter>>>()
@@ -292,6 +304,7 @@ const appendEvent = (
     throw new TypeError('event recordedAtMs must be a non-negative safe integer')
   }
   const attributes = validateAttributes(input.attributes)
+  ensureOptionalActivation(database, namespace, input.recordedAtMs)
   database
     .prepare(
       `INSERT INTO ${SQLITE_TABLES.eventCursors}(namespace,next_cursor) VALUES(?,0) ON CONFLICT(namespace) DO NOTHING`
@@ -351,22 +364,107 @@ export const appendSqliteJobEvent = (
   retention: Readonly<JobEventRetention>
 ): void => appendEvent(database, namespace, input, retention)
 
+const ensureActivationTable = (database: SqliteDatabase): void => {
+  database.exec(
+    `CREATE TABLE IF NOT EXISTS ${SQLITE_TABLES.eventActivation} (
+      namespace TEXT PRIMARY KEY NOT NULL,
+      activation_state TEXT NOT NULL,
+      activation_cursor INTEGER NOT NULL,
+      activation_revision INTEGER NOT NULL,
+      activated_at_ms INTEGER NOT NULL,
+      CHECK (activation_state IN ('optional', 'required')),
+      CHECK (activation_cursor BETWEEN 0 AND 9007199254740991),
+      CHECK (activation_revision >= 1 AND activation_revision <= 9007199254740991),
+      CHECK (activated_at_ms BETWEEN 0 AND 9007199254740991)
+    )`
+  )
+}
+
+const activationRow = (database: SqliteDatabase, namespace: string): Row | undefined | null =>
+  database
+    .prepare(
+      `SELECT activation_state,activation_cursor,activation_revision,activated_at_ms FROM ${SQLITE_TABLES.eventActivation} WHERE namespace = ?`
+    )
+    .get(namespace)
+
+const activationFromRow = (
+  row: Row | undefined | null,
+  prefix: string,
+  encode: (value: number) => JobEventCursor
+): JobEventStoreActivation => {
+  if (row === undefined || row === null) {
+    return Object.freeze({
+      state: 'inactive',
+      mode: undefined,
+      activationCursor: undefined,
+      revision: 0,
+      activatedAtMs: undefined
+    })
+  }
+  const state = row.activation_state
+  if (state !== 'optional' && state !== 'required')
+    throw new Error(`${prefix}.activation_state is invalid`)
+  return Object.freeze({
+    state,
+    mode: state,
+    activationCursor: encode(safeNumber(row.activation_cursor, 'activation_cursor')),
+    revision: safeNumber(row.activation_revision, 'activation_revision'),
+    activatedAtMs: safeNumber(row.activated_at_ms, 'activated_at_ms')
+  })
+}
+
+const ensureOptionalActivation = (
+  database: SqliteDatabase,
+  namespace: string,
+  now: number
+): void => {
+  ensureActivationTable(database)
+  database
+    .prepare(
+      `INSERT INTO ${SQLITE_TABLES.eventActivation}(namespace,activation_state,activation_cursor,activation_revision,activated_at_ms)
+       SELECT ?, 'optional', COALESCE((SELECT next_cursor FROM ${SQLITE_TABLES.eventCursors} WHERE namespace = ?), 0), 1, ?
+       WHERE NOT EXISTS (SELECT 1 FROM ${SQLITE_TABLES.eventActivation} WHERE namespace = ?)`
+    )
+    .run(namespace, namespace, now, namespace)
+}
+
+export const assertSqliteJobEventWriterReady = (
+  database: SqliteDatabase,
+  namespace: string,
+  operation: string,
+  writer: JobEventStoreWriter
+): void => {
+  ensureActivationTable(database)
+  const row = activationRow(database, namespace)
+  if (row?.activation_state === 'required' && !writer.canAppend) {
+    throw new JobEventWriterRejectedError({
+      operation,
+      revision: safeNumber(row.activation_revision, 'activation_revision'),
+      writerId: writer.id,
+      writerVersion: writer.version
+    })
+  }
+}
+
 class SqliteJobEventStoreImplementation {
   readonly descriptor = descriptor
   private readonly prefix: string
   private readonly retention: Readonly<JobEventRetention>
   private readonly pollIntervalMs: number
+  private readonly writer: JobEventStoreWriter
   private closed = false
 
   constructor(
     private readonly database: SqliteDatabase,
     private readonly namespace: string,
     retention: JobEventRetention | undefined,
-    pollIntervalMs: number
+    pollIntervalMs: number,
+    writer: JobEventStoreWriter = defaultWriter
   ) {
     this.prefix = prefixFor(namespace)
     this.retention = validateRetention(retention)
     this.pollIntervalMs = pollIntervalMs
+    this.writer = writer
   }
 
   private decode(value: unknown): ResultType<number, JobEventStoreFailure> {
@@ -440,6 +538,117 @@ class SqliteJobEventStoreImplementation {
 
   private encode(value: number): JobEventCursor {
     return `${this.prefix}${encodeBase36(value)}` as JobEventCursor
+  }
+
+  private readActivation(): JobEventStoreActivation {
+    ensureActivationTable(this.database)
+    return activationFromRow(activationRow(this.database, this.namespace), this.prefix, (value) =>
+      this.encode(value)
+    )
+  }
+
+  activation(): Operation<JobEventStoreActivation> {
+    if (this.closed)
+      return asOperation(
+        fail(new JobEventStoreFailure({ operation: 'activation', message: 'store is closed' }))
+      )
+    try {
+      return asOperation(ok(this.readActivation()))
+    } catch {
+      return asOperation(
+        fail(
+          new JobEventStoreFailure({
+            operation: 'activation',
+            message: 'SQLite activation read failed'
+          })
+        )
+      )
+    }
+  }
+
+  readiness(writer: JobEventStoreWriter = this.writer): Operation<JobEventStoreReadiness> {
+    try {
+      const activation = this.readActivation()
+      const ready = activation.state !== 'required' || writer.canAppend
+      return asOperation(
+        ok({
+          ...activation,
+          ready,
+          writer,
+          reason:
+            activation.state === 'required'
+              ? ready
+                ? 'required'
+                : 'append-unsupported'
+              : activation.state
+        })
+      )
+    } catch {
+      return asOperation(
+        fail(
+          new JobEventStoreFailure({
+            operation: 'readiness',
+            message: 'SQLite activation read failed'
+          })
+        )
+      )
+    }
+  }
+
+  activate(options: JobEventStoreActivationOptions): Operation<JobEventStoreActivation> {
+    if (this.closed)
+      return asOperation(
+        fail(new JobEventStoreFailure({ operation: 'activate', message: 'store is closed' }))
+      )
+    try {
+      if (
+        options === null ||
+        typeof options !== 'object' ||
+        (options.mode !== 'optional' && options.mode !== 'required')
+      )
+        throw new Error('mode must be optional or required')
+      const now = options.now ?? Date.now()
+      if (!Number.isSafeInteger(now) || now < 0) throw new Error('now must be a timestamp')
+      this.database.exec('BEGIN IMMEDIATE')
+      try {
+        ensureActivationTable(this.database)
+        const current = activationRow(this.database, this.namespace)
+        if (current?.activation_state === 'required' && options.mode === 'optional')
+          throw new Error('required activation cannot be downgraded')
+        if (current === undefined || current === null) {
+          this.database
+            .prepare(
+              `INSERT INTO ${SQLITE_TABLES.eventActivation}(namespace,activation_state,activation_cursor,activation_revision,activated_at_ms) VALUES(?,?,?,?,?)`
+            )
+            .run(this.namespace, options.mode, this.tail(), 1, now)
+        } else if (current.activation_state === 'optional' && options.mode === 'required') {
+          this.database
+            .prepare(
+              `UPDATE ${SQLITE_TABLES.eventActivation} SET activation_state='required',activation_revision=activation_revision+1,activated_at_ms=? WHERE namespace=?`
+            )
+            .run(now, this.namespace)
+        }
+        const result = this.readActivation()
+        this.database.exec('COMMIT')
+        return asOperation(ok(result))
+      } catch (cause) {
+        try {
+          this.database.exec('ROLLBACK')
+        } catch {
+          /* preserve activation error */
+        }
+        throw cause
+      }
+    } catch (cause) {
+      return asOperation(
+        fail(
+          new JobEventStoreFailure({
+            operation: 'activate',
+            message: cause instanceof Error ? cause.message : 'SQLite activation failed'
+          })
+        )
+      )
+    }
   }
 
   tailCursor(): Operation<JobEventCursor> {
@@ -654,7 +863,7 @@ const makeLayer = <Token extends AnyJobEventStoreToken>(
   token: Token,
   config: SqliteJobEventStoreConfig
 ): Layer<InstanceType<Token>, never> => {
-  const { retention: _retention, ...storeConfig } = config
+  const { retention: _retention, writer: _writer, ...storeConfig } = config
   const normalized = normalizeSqliteJobStoreConfig(storeConfig)
   const retention = validateRetention(config.retention)
   return Layer.scoped(
@@ -674,7 +883,8 @@ const makeLayer = <Token extends AnyJobEventStoreToken>(
           scoped.database,
           scoped.namespace,
           retention,
-          scoped.pollIntervalMs
+          scoped.pollIntervalMs,
+          config.writer
         ) as never
       ) as unknown as ServiceContract<InstanceType<Token>>
     },
@@ -690,7 +900,7 @@ export const SqliteJobEventStore = Object.freeze({
     return makeLayer(token, config)
   },
   make(config: SqliteJobEventStoreConfig): JobEventStoreContract {
-    const { retention: _retention, ...storeConfig } = config
+    const { retention: _retention, writer: _writer, ...storeConfig } = config
     const normalized = normalizeSqliteJobStoreConfig(storeConfig)
     const schema = normalized.validateSchema
       ? SqliteMigrator.validate(normalized.database)
@@ -703,7 +913,8 @@ export const SqliteJobEventStore = Object.freeze({
         normalized.database,
         normalized.namespace,
         config.retention,
-        normalized.pollIntervalMs
+        normalized.pollIntervalMs,
+        config.writer
       ) as never
     ) as never
   }
@@ -713,5 +924,7 @@ export type SqliteJobEventStoreInstance = JobEventStoreContract
 
 export const normalizeSqliteJobEventStoreOptions = (
   options: SqliteJobEventStoreOptions | undefined
-): { readonly retention: Readonly<JobEventRetention> } =>
-  Object.freeze({ retention: validateRetention(options?.retention) })
+): {
+  readonly retention: Readonly<JobEventRetention>
+  readonly writer: JobEventStoreWriter | undefined
+} => Object.freeze({ retention: validateRetention(options?.retention), writer: options?.writer })

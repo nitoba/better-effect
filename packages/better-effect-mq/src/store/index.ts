@@ -9,7 +9,8 @@ export {
 export {
   JobEventConsumerAbortedError,
   JobEventCursorExpiredError,
-  JobEventStoreFailure
+  JobEventStoreFailure,
+  JobEventWriterRejectedError
 } from './event-errors'
 export { JobEvents } from './events'
 export { assertJobStoreProtocolCompatible, isJobStoreDescriptor } from './compatibility'
@@ -40,7 +41,14 @@ export type {
   JobEventStoreInstance,
   JobEventStoreOperation,
   JobEventStoreTag,
-  JobEventStoreToken
+  JobEventStoreToken,
+  JobEventStoreActivation,
+  JobEventStoreActivationOptions,
+  JobEventStoreActivationState,
+  JobEventStoreMode,
+  JobEventStoreReadiness,
+  JobEventStoreReadinessReason,
+  JobEventStoreWriter
 } from './event-store'
 export type { JobEventStoreError } from './event-errors'
 export type {

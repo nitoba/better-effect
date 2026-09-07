@@ -756,10 +756,12 @@ const borrowedClient = (
   config: MongoOutboxStoreConfig
 ) => {
   const normalized = normalizeMongoJobStoreConfig(config)
+  const { eventWriter: _eventWriter, ...base } = normalized
   return () =>
     Promise.resolve(
       MongoJobStoreClient.fromDb({
-        ...normalized,
+        ...base,
+        ...(normalized.eventWriter === undefined ? {} : { eventWriter: normalized.eventWriter }),
         namespace: namespaceFor(token, normalized.namespace)
       })
     )
