@@ -1,4 +1,8 @@
-import { expect, test } from 'bun:test'
+import assert from 'node:assert/strict'
+
+const { test } = await (typeof process.versions.bun === 'string'
+  ? import('bun:test')
+  : import('node:test'))
 
 import { Result } from 'better-result'
 
@@ -53,22 +57,22 @@ test('exposes provider-neutral Class through the Standard Schema protocol', asyn
   }
 
   const standard = standardOf(User)
-  expect(standard.version).toBe(1)
-  expect(standard.vendor).toBe('better-effect-schema')
-  expect('types' in standard).toBe(false)
+  assert.equal(standard.version, 1)
+  assert.equal(standard.vendor, 'better-effect-schema')
+  assert.equal('types' in standard, false)
 
   const result = await standard.validate({ id: 'u-1' }, { libraryOptions: { trace: true } })
 
-  expect(result).toHaveProperty('value')
-  expect(result).not.toHaveProperty('status')
+  assert.equal('value' in result, true)
+  assert.equal('status' in result, false)
   if ('value' in result) {
-    expect(result.value).toBeInstanceOf(User)
-    expect(result.value.label).toBe('user:U-1')
+    assert.ok(result.value instanceof User)
+    assert.equal(result.value.label, 'user:U-1')
   }
-  expect(inputValidations).toBe(1)
-  expect(propValidations).toBe(1)
-  expect(constructions).toBe(1)
-  expect(receivedOptions).toEqual({ libraryOptions: { trace: true } })
+  assert.equal(inputValidations, 1)
+  assert.equal(propValidations, 1)
+  assert.equal(constructions, 1)
+  assert.deepEqual(receivedOptions, { libraryOptions: { trace: true } })
 })
 
 test('returns Standard Schema issues for invalid input and thrown construction', async () => {
@@ -80,11 +84,11 @@ test('returns Standard Schema issues for invalid input and thrown construction',
   class Invalid extends Schema.Class('standard/Invalid')({ schema: input, propsSchema: props }) {}
 
   const invalid = await standardOf(Invalid).validate({ id: 1 })
-  expect('issues' in invalid).toBe(true)
-  expect('value' in invalid).toBe(false)
+  assert.equal('issues' in invalid, true)
+  assert.equal('value' in invalid, false)
   if ('issues' in invalid) {
-    expect(invalid.issues.length).toBeGreaterThan(0)
-    expect(invalid.issues[0].message).toBe('Validation failed')
+    assert.ok(invalid.issues.length > 0)
+    assert.equal(invalid.issues[0].message, 'Validation failed')
   }
 
   class Throws extends Schema.Class('standard/Throws')({ schema: input, propsSchema: props }) {
@@ -95,11 +99,11 @@ test('returns Standard Schema issues for invalid input and thrown construction',
   }
 
   const thrown = await standardOf(Throws).validate({ id: 'ok' })
-  expect('issues' in thrown).toBe(true)
-  expect('value' in thrown).toBe(false)
+  assert.equal('issues' in thrown, true)
+  assert.equal('value' in thrown, false)
   if ('issues' in thrown) {
-    expect(thrown.issues[0].message).toBe('Validation failed')
-    expect(JSON.stringify(thrown)).not.toContain('secret constructor detail')
+    assert.equal(thrown.issues[0].message, 'Validation failed')
+    assert.doesNotMatch(JSON.stringify(thrown), /secret constructor detail/)
   }
 })
 
@@ -126,10 +130,10 @@ test('supports asynchronous validation without a second execution', async () => 
 
   const result = await standardOf(AsyncUser).validate({ id: 'u-2' })
 
-  expect('value' in result).toBe(true)
-  if ('value' in result) expect(result.value).toBeInstanceOf(AsyncUser)
-  expect(validations).toBe(1)
-  expect(constructions).toBe(1)
+  assert.equal('value' in result, true)
+  if ('value' in result) assert.ok(result.value instanceof AsyncUser)
+  assert.equal(validations, 1)
+  assert.equal(constructions, 1)
 })
 
 test('keeps the facade Result boundary separate from the protocol result', async () => {
@@ -138,11 +142,11 @@ test('keeps the facade Result boundary separate from the protocol result', async
   class User extends Schema.Class('standard/FacadeUser')({ schema: input, propsSchema: props }) {}
 
   const syncDecoded = Schema.decodeUnknown(User, { id: 'u-sync' })
-  expect(Result.isOk(syncDecoded)).toBe(true)
+  assert.equal(Result.isOk(syncDecoded), true)
 
   const decoded = await Schema.decodeUnknownAsync(User, { id: 'u-3' })
-  expect(Result.isOk(decoded)).toBe(true)
-  if (Result.isOk(decoded)) expect(decoded.value).toBeInstanceOf(User)
+  assert.equal(Result.isOk(decoded), true)
+  if (Result.isOk(decoded)) assert.ok(decoded.value instanceof User)
 })
 
 test('TaggedClass and TaggedError return successful instances through Standard Schema', async () => {
@@ -158,19 +162,19 @@ test('TaggedClass and TaggedError return successful instances through Standard S
     { _tag: 'standard/UserCreated', id: 'u-4' },
     { libraryOptions: { source: 'tagged' } }
   )
-  expect('value' in taggedClass).toBe(true)
+  assert.equal('value' in taggedClass, true)
   if ('value' in taggedClass) {
-    expect(taggedClass.value).toBeInstanceOf(UserCreated)
-    expect(taggedClass.value._tag).toBe('standard/UserCreated')
+    assert.ok(taggedClass.value instanceof UserCreated)
+    assert.equal(taggedClass.value._tag, 'standard/UserCreated')
   }
 
   const taggedError = await standardOf(UserNotFound).validate({
     _tag: 'standard/UserNotFound',
     id: 'u-5'
   })
-  expect('value' in taggedError).toBe(true)
+  assert.equal('value' in taggedError, true)
   if ('value' in taggedError) {
-    expect(taggedError.value).toBeInstanceOf(UserNotFound)
-    expect(taggedError.value).toBeInstanceOf(Error)
+    assert.ok(taggedError.value instanceof UserNotFound)
+    assert.ok(taggedError.value instanceof Error)
   }
 })
