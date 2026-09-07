@@ -5,4 +5,6 @@
 export * from './errors'
 export * from './options'
 export * from './request'
-export * from './response'
+export type { HttpResponse as LegacyHttpResponse } from './response'
+export * from './operation'
+export * from './client'
