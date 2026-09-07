@@ -34,6 +34,9 @@ test('the immutable initial migration and forward-only InnoDB upgrades are shipp
   expect(controls?.version).toBe(6)
   expect(controls?.sql).toContain('better_effect_mq_queue_controls')
   expect(controls?.sql).toContain('better_effect_mq_controlled_permits')
+  expect(controls?.sql).toContain(
+    'namespace(191), queue(191), dispatch_key(191), state, priority DESC, run_at_ms, sequence, id(128)'
+  )
 })
 
 test('runs migration 004 when its SQL comments contain semicolons', async () => {
