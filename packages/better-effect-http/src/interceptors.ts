@@ -11,7 +11,11 @@ export type HookValue<A, E = HttpError, R extends AnyService = never> =
   | Promise<A | Result<A, E>>
 
 export type HttpRequestHookContext = Readonly<{ request: HttpRequest }>
-export type HttpResponseHookContext<A = unknown> = Readonly<{ response: HttpResponse<A> }>
+export type HttpResponseHookContext<A = unknown> = Readonly<{
+  readonly response: HttpResponse<A>
+  /** Stable identity of the logical HTTP call, when the pipeline provides it. */
+  readonly operationId?: string
+}>
 
 export type HttpInterceptor<R extends AnyService = never, E = HttpError> = Readonly<{
   readonly name: string
@@ -24,12 +28,20 @@ export type HttpInterceptor<R extends AnyService = never, E = HttpError> = Reado
 export type HttpObserver<R extends AnyService = never> = Readonly<{
   readonly name: string
   readonly onRetry?: (
-    context: Readonly<{ attempt: number; nextAttempt: number; delayMs: number }>
+    context: Readonly<{
+      attempt: number
+      nextAttempt: number
+      delayMs: number
+      /** Stable identity of the logical HTTP call, when the pipeline provides it. */
+      operationId?: string
+    }>
   ) => HookValue<void, never, R>
   readonly onSuccess?: <A>(
     context: Readonly<{ response: HttpResponse<A> }>
   ) => HookValue<void, never, R>
-  readonly onError?: (context: Readonly<{ error: HttpError }>) => HookValue<void, never, R>
+  readonly onError?: (
+    context: Readonly<{ error: HttpError; operationId?: string }>
+  ) => HookValue<void, never, R>
   readonly requirements?: EffectRequirements<R>
   readonly _kind: 'observe'
 }>

@@ -4,7 +4,8 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     endpoints: 'src/endpoints.ts',
-    testing: 'src/testing.ts'
+    testing: 'src/testing.ts',
+    opentelemetry: 'src/opentelemetry.ts'
   },
   format: ['esm'],
   dts: true,

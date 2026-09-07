@@ -123,6 +123,7 @@
         "ofetch": "^1.5.1",
       },
       "devDependencies": {
+        "@opentelemetry/api": "1.9.1",
         "@types/bun": "1.4.1",
         "better-effect": "0.13.0",
         "better-effect-schema": "0.1.0",
@@ -135,11 +136,15 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
+        "@opentelemetry/api": ">=1.9.0 <1.10.0",
         "better-effect": ">=0.13.0 <0.14.0",
         "better-effect-schema": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
       },
+      "optionalPeers": [
+        "@opentelemetry/api",
+      ],
     },
     "packages/better-effect-kysely": {
       "name": "better-effect-kysely",
@@ -194,6 +199,7 @@
         "@types/node": "^22.0.0",
         "better-effect": "0.13.0",
         "better-effect-mq": "0.1.0",
+        "better-effect-mq-outbox": "0.1.0",
         "better-result": "^3.0.0",
         "mongodb": "^6.21.0",
         "oxfmt": "^0.63.0",
@@ -205,6 +211,7 @@
       "peerDependencies": {
         "better-effect": ">=0.13.0 <0.14.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
+        "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
         "mongodb": ">=6.0.0 <8.0.0",
         "typescript": ">=6.0.0",
@@ -369,10 +376,13 @@
         "better-effect": ">=0.13.0 <0.14.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
+        "valibot": ">=1.4.2 <2",
         "zod": ">=4.5.4 <5",
       },
       "optionalPeers": [
         "arktype",
+        "valibot",
+        "zod",
       ],
     },
   },
