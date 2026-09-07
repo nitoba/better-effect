@@ -12,6 +12,7 @@ import {
 } from './generic-descriptor.js'
 import { createGenericRuntimeClass } from './generic-runtime-class.js'
 import { defaultGenericMetadata, setGenericMetadata } from './generic-metadata.js'
+import { genericBridgeFor, installStandardSchema } from '../standard/class.js'
 
 export const createGenericClass = <Self, Definition extends GenericClassDefinition>(
   identifier: string,
@@ -22,6 +23,7 @@ export const createGenericClass = <Self, Definition extends GenericClassDefiniti
   const runtimeClass = createGenericRuntimeClass(descriptor)
   setGenericMetadata(runtimeClass, defaultGenericMetadata(descriptor.identifier, annotations))
   registerGenericDescriptor(runtimeClass, descriptor)
+  installStandardSchema(runtimeClass, genericBridgeFor)
   return runtimeClass as unknown as GenericSchemaClass<Self, Definition>
 }
 

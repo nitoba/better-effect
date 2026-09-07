@@ -225,6 +225,21 @@ Model.is(value)
 
 ## Standard Schema and capabilities
 
+`Class`, `TaggedClass`, and `TaggedError` implement Standard Schema V1 through
+`Model['~standard']`. Its `validate` method returns the protocol shape directly:
+
+```ts
+const result = await Model['~standard'].validate(input, {
+  libraryOptions: { source: 'request' }
+})
+
+// success: { value: ModelInstance }
+// failure: { issues: readonly StandardSchemaV1.Issue[] }
+```
+
+The bridge never returns `Result`. A successful tagged error is a `value`, not
+a validation failure, and async validation/construction is executed once.
+
 The four `Schema.decode*` operations consume only the Standard Schema V1
 `~standard.validate` protocol. They accept any conforming provider, preserve
 the provider's transformed output, and return `Result` values through

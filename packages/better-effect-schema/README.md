@@ -570,9 +570,34 @@ const findUser = (id: string) =>
 
 This keeps Kysely inference and execution native while making row-to-domain conversion an explicit typed boundary.
 
-### better-effect-mq: Standard Schema plus explicit encoding
+### Standard Schema interoperability
 
-A schema class is a Zod schema and therefore exposes Zod's Standard Schema contract. It can be used as the decode side of `Codec.standardSchema`.
+`Class`, `TaggedClass`, and `TaggedError` expose the provider-neutral
+`StandardSchemaV1` contract through `Model['~standard']`. The protocol result is
+always `{ value }` or `{ issues }`; it is not a `better-result` `Result`.
+
+```ts
+const result = await Person['~standard'].validate({
+  id: 1,
+  name: 'Ada',
+  bornAt: '1990-12-10T00:00:00.000Z'
+})
+
+if (result.issues) {
+  console.log(result.issues)
+} else {
+  result.value.label
+}
+```
+
+The successful value is the concrete class instance, including methods,
+getters, and tagged-error identity. Async field validation is awaited once and
+construction failures are returned as sanitized issues. The optional Standard
+Schema `libraryOptions` value is accepted at the protocol boundary.
+
+The bridge is independent of any provider-specific native schema type. It can
+be passed to a generic Standard Schema consumer such as
+`Codec.standardSchema`.
 
 Class instances are not assumed to be JSON-safe. Supply an explicit encoder that delegates to the class's encoded side and maps any failure to the MQ codec failure expected by your job definition:
 
