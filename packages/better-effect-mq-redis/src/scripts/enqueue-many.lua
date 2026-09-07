@@ -78,6 +78,37 @@ local function keyTypeIs(key, expected)
   if type(actual) == "table" then actual = actual.ok end
   return actual == "none" or actual == expected
 end
+local function validEvent(event)
+  if event == nil then return true end
+  if type(event) ~= "table" or type(event.type) ~= "string" or type(event.recordedAtMs) ~= "number" or event.recordedAtMs < 0 or math.floor(event.recordedAtMs) ~= event.recordedAtMs or type(event.attributes) ~= "table" then return false end
+  local types = { ["job-enqueued"]=true, ["job-claimed"]=true, ["job-completed"]=true, ["job-retry-scheduled"]=true, ["job-failed"]=true, ["job-cancelled"]=true, ["job-cancel-requested"]=true, ["job-released"]=true, ["job-stalled-recovered"]=true, ["job-promoted"]=true, ["job-admin-retried"]=true, ["job-removed"]=true, ["queue-paused"]=true, ["queue-resumed"]=true }
+  if not types[event.type] then return false end
+  local allowed = { type=true, recordedAtMs=true, jobId=true, queue=true, name=true, version=true, state=true, attempt=true, delivery=true, workerId=true, outcome=true, failureKind=true, duplicate=true, attributes=true }
+  for key, value in pairs(event) do
+    if type(key) ~= "string" or not allowed[key] then return false end
+    if key ~= "attributes" and value ~= nil and type(value) ~= "string" and type(value) ~= "number" and type(value) ~= "boolean" then return false end
+  end
+  for key, value in pairs(event.attributes) do if type(key) ~= "string" or type(value) ~= "string" then return false end end
+  return true
+end
+local function validEventRetention(retention)
+  if retention == nil then return true end
+  for key, value in pairs(retention) do if key ~= "ageMs" and key ~= "count" or type(value) ~= "number" or value <= 0 or value > MAX or math.floor(value) ~= value then return false end end
+  return true
+end
+local function appendEvent(item, retention)
+  if item.event == nil then return true end
+  if not validEvent(item.event) or not validEventRetention(retention) then return false end
+  local id = redis.call("XADD", item.keys.events, "*", "data", cjson.encode(item.event))
+  if type(id) ~= "string" then return false end
+  redis.call("HSET", item.keys.eventsMeta, "initialized", "1")
+  local removed = 0
+  retention = retention or {}
+  if retention.ageMs then local cutoff = item.event.recordedAtMs - retention.ageMs; if cutoff < 0 then cutoff = 0 end; removed = removed + redis.call("XTRIM", item.keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
+  if retention.count then removed = removed + redis.call("XTRIM", item.keys.events, "MAXLEN", "=", tostring(retention.count)) end
+  if removed > 0 then local first = redis.call("XRANGE", item.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", item.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
+  return true
+end
 local physicalKeys = {}
 local function rememberKey(key, expected)
   if type(key) ~= "string" or key == "" then return false end
@@ -93,6 +124,8 @@ local function keyTypesValid(item)
     if keys[name] and not rememberKey(keys[name], expected) then return false end
   end
   if type(keys.wakeChannel) ~= "string" or keys.wakeChannel == "" or not declaredInputKeys[keys.wakeChannel] then return false end
+  if keys.events and not rememberKey(keys.events, "stream") then return false end
+  if keys.eventsMeta and not rememberKey(keys.eventsMeta, "hash") then return false end
   for _, name in ipairs({"all", "byQueue", "byIdentity", "byState", "identities"}) do
     if keys[name] and not rememberKey(keys[name], "set") then return false end
   end
@@ -148,7 +181,7 @@ local count = #p.items
 if count > MAX_ITEMS then return errorReply("MQ_BATCH_LIMIT") end
 local seenJobs, seenMappings = {}, {}
 local newItems, wakeCounts, wakeKeys = {}, {}, {}
-local sharedKeyNames = {"all", "counts", "wake", "wakeChannel", "queueControls", "active", "sequenceJobs", "created", "runAt", "finishedAt"}
+local sharedKeyNames = {"all", "counts", "wake", "wakeChannel", "queueControls", "active", "sequenceJobs", "created", "runAt", "finishedAt", "events", "eventsMeta"}
 local sharedKeys = {}
 local sequenceKey = nil
 for index, item in ipairs(p.items) do
@@ -172,6 +205,7 @@ for index, item in ipairs(p.items) do
     return errorReply("MQ_INVALID_ARGUMENT")
   end
   if not keyTypesValid(item) then return errorReply("MQ_INVALID_ARGUMENT") end
+  if not validEvent(item.event) or not validEventRetention(p.eventRetention) then return errorReply("MQ_INVALID_ARGUMENT") end
   if not keys.job or not keys.all or not keys.byQueue or not keys.byIdentity or not keys.identities or not keys.identityMember or not keys.byState or not keys.counts or not keys.wake or not keys.queueControls or not keys.sequenceJobs or not keys.revision or not keys.created or not keys.runAt or not keys.finishedAt or not keys.newCreatedMember or not keys.newRunAtMember or not keys.newFinishedMember then
     return errorReply("MQ_INVALID_ARGUMENT")
   end
@@ -314,6 +348,7 @@ for index, item in ipairs(p.items) do
     local finishedMember = encodeSequence(item.keys.newFinishedMember, nextSequence)
     if not finishedMember then return errorReply("MQ_INVALID_ARGUMENT") end
     redis.call("ZADD", item.keys.finishedAt, 0, finishedMember)
+    if not appendEvent(item, p.eventRetention) then return errorReply("MQ_INVALID_ARGUMENT") end
     output[#output + 1] = {"applied", record.id, jobFields(job)}
   end
 end

@@ -45,7 +45,22 @@ All keys produced by `makeRedisKeyLayout` share a Redis Cluster hash slot. Names
 
 A namespace can therefore be distributed by using several namespaces, but a single namespace/queue is intentionally concentrated in one Cluster slot. Redis Cluster script calls must pass only keys from one layout.
 
-The layout includes job hashes, attempt lists, monotonic sequences, identity waiting/delayed indexes, active leases, queue controls, wake versions, counters, idempotency mappings, listing indexes, and a layout marker. The marker records adapter, protocol, layout, index-configuration, and script-set versions. Existing data with no marker or incompatible values fails with `RedisLayoutMismatchError`; the adapter never deletes or rewrites data automatically. Initial marker creation takes a short namespaced Redis lock and rechecks the marker while the lock is held; deployments should use this adapter (or otherwise coordinate writers) during first namespace initialization. Set `validateLayout: false` only when that check is deliberately managed elsewhere. The JobStore descriptor reports protocol v1, layout `1`, and the capability matrix in the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
+The layout includes job hashes, attempt lists, monotonic sequences, identity waiting/delayed indexes, active leases, queue controls, wake versions, counters, idempotency mappings, listing indexes, the optional durable event stream and its metadata hash, and a layout marker. The marker records adapter, protocol, layout, index-configuration, and script-set versions. Existing data with no marker or incompatible values fails with `RedisLayoutMismatchError`; the adapter never deletes or rewrites data automatically. Initial marker creation takes a short namespaced Redis lock and rechecks the marker while the lock is held; deployments should use this adapter (or otherwise coordinate writers) during first namespace initialization. Set `validateLayout: false` only when that check is deliberately managed elsewhere. The JobStore descriptor reports protocol v1, layout `1`, and the capability matrix in the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
+
+## Durable Job events
+
+Event persistence is opt-in. `RedisJobStore.layerWithEvents(...)` and `layerWithEventsFromConfig(...)` provide the JobStore and its associated `JobEventStore` together; the `...For` variants do the same for a named JobStore.
+
+```ts
+const Live = RedisJobStore.layerWithEventsFromConfig(
+  { url: process.env.REDIS_URL, namespace: 'orders' },
+  { retention: { count: 100_000, ageMs: 7 * 24 * 60 * 60 * 1000 } }
+)
+```
+
+Each namespace has one Redis Stream for events. Enqueue, claim, settlement, lease release/recovery, administrative transitions, removal, and queue pause/resume append a bounded safe event inside the same Lua atomic unit as the state transition. Payloads, metadata, results, and failure bodies are never copied into events. Retention is applied with `XTRIM` after each append; `count` and `ageMs` are positive safe integers.
+
+`JobEventStore.read` uses opaque namespace-bound cursors and exclusive `after` semantics. Filtering is performed while scanning the stream, and `nextCursor` is the last examined event so filtered pages can resume without overlap. `awaitEvents` first checks the stream, then uses the existing wake channel as a wake hint and keeps a bounded polling fallback for lost notifications. The stream and all JobStore keys use the same namespace hash tag, so Redis Cluster script calls remain single-slot.
 
 ## Queue controls protocol v3
 

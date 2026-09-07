@@ -95,6 +95,37 @@ local function keyTypeIs(key, expected)
   if type(actual) == "table" then actual = actual.ok end
   return actual == "none" or actual == expected
 end
+local function validEvent(event)
+  if event == nil then return true end
+  if type(event) ~= "table" or type(event.type) ~= "string" or type(event.recordedAtMs) ~= "number" or event.recordedAtMs < 0 or math.floor(event.recordedAtMs) ~= event.recordedAtMs or type(event.attributes) ~= "table" then return false end
+  local types = { ["job-enqueued"]=true, ["job-claimed"]=true, ["job-completed"]=true, ["job-retry-scheduled"]=true, ["job-failed"]=true, ["job-cancelled"]=true, ["job-cancel-requested"]=true, ["job-released"]=true, ["job-stalled-recovered"]=true, ["job-promoted"]=true, ["job-admin-retried"]=true, ["job-removed"]=true, ["queue-paused"]=true, ["queue-resumed"]=true }
+  if not types[event.type] then return false end
+  local allowed = { type=true, recordedAtMs=true, jobId=true, queue=true, name=true, version=true, state=true, attempt=true, delivery=true, workerId=true, outcome=true, failureKind=true, duplicate=true, attributes=true }
+  for key, value in pairs(event) do
+    if type(key) ~= "string" or not allowed[key] then return false end
+    if key ~= "attributes" and value ~= nil and type(value) ~= "string" and type(value) ~= "number" and type(value) ~= "boolean" then return false end
+  end
+  for key, value in pairs(event.attributes) do if type(key) ~= "string" or type(value) ~= "string" then return false end end
+  return true
+end
+local function validEventRetention(retention)
+  if retention == nil then return true end
+  for key, value in pairs(retention) do if key ~= "ageMs" and key ~= "count" or type(value) ~= "number" or value <= 0 or value > MAX or math.floor(value) ~= value then return false end end
+  return true
+end
+local function appendEvent(item)
+  if item.event == nil then return true end
+  if not validEvent(item.event) or not validEventRetention(item.eventRetention) then return false end
+  local id = redis.call("XADD", item.keys.events, "*", "data", cjson.encode(item.event))
+  if type(id) ~= "string" then return false end
+  redis.call("HSET", item.keys.eventsMeta, "initialized", "1")
+  local removed = 0
+  local retention = item.eventRetention or {}
+  if retention.ageMs then local cutoff = item.event.recordedAtMs - retention.ageMs; if cutoff < 0 then cutoff = 0 end; removed = removed + redis.call("XTRIM", item.keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
+  if retention.count then removed = removed + redis.call("XTRIM", item.keys.events, "MAXLEN", "=", tostring(retention.count)) end
+  if removed > 0 then local first = redis.call("XRANGE", item.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", item.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
+  return true
+end
 local function keyTypesValid(item)
   local keys = item.keys
   if type(keys) ~= "table" then return false end
@@ -113,6 +144,7 @@ local function keyTypesValid(item)
   for _, name in ipairs({"job", "settlement", "counts", "wake", "idempotency", "queueControls"}) do
     if not check(name, "hash") then return false end
   end
+  if not check("events", "stream") or not check("eventsMeta", "hash") then return false end
   if not check("attempts", "list") then return false end
   for _, name in ipairs({"all", "byQueue", "byIdentity", "identities", "byState", "oldByState"}) do
     if not check(name, "set") then return false end
@@ -226,7 +258,7 @@ local function setRecord(item, mode)
     return "invalid"
   end
   local job = keys.job
-  if not validRecord(record) or not keyTypesValid(item) then return "invalid" end
+  if not validRecord(record) or not keyTypesValid(item) or not validEvent(item.event) or not validEventRetention(item.eventRetention) then return "invalid" end
   if mode ~= "enqueue" and item.settlementToken and keys.settlement then
     local existingToken = redis.call("HGET", keys.settlement, "token")
     if existingToken == item.settlementToken then
@@ -309,6 +341,7 @@ local function setRecord(item, mode)
   end
   local version = bump(item)
   if version == nil then return "unsafe" end
+  if not appendEvent(item) then return "invalid" end
   if allocatedSequence ~= nil then
     return "applied:" .. record.id .. ":" .. tostring(version) .. ":" .. tostring(allocatedSequence)
   end
