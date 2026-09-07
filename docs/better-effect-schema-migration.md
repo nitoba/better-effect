@@ -73,7 +73,7 @@ from a vendor name, a private field, or an inverse transform.
 
 ## Audited public API and parity map
 
-The current package was audited from `packages/better-effect-zod/src/index.ts`,
+The current package was audited from `packages/better-effect-schema/src/index.ts`,
 `schema.ts`, `z.ts`, the runtime sources under `src/internal/`, the runtime
 `.mjs` tests, the type tests, examples, package scripts, and repository-wide
 references. The current implementation is Zod-backed and the entries below
@@ -183,7 +183,7 @@ bun test                        -> 512 passed, 96 failed, 95 module-resolution e
 
 The failures are pre-existing workspace conditions in this fresh worktree:
 internal packages such as `better-effect`/`better-effect-mq` are not built for
-the source test runner, and `packages/better-effect-zod/dist` is absent before
+the source test runner, and `packages/better-effect-schema/dist` is absent before
 its package build. One Kysely side-effect test also fails independently. The
 baseline is recorded so later package/build gates can distinguish these facts;
 no assertion was weakened and no failure was marked as a feature success.

@@ -75,6 +75,7 @@ Allowlisted packages and tags:
   better-effect-better-auth better-effect-better-auth-v<version>
   better-effect-mq          better-effect-mq-v<version>
   better-effect-kysely      better-effect-kysely-v<version>
+  better-effect-schema      better-effect-schema-v<version>
   better-effect-mq-postgres better-effect-mq-postgres-v<version>
   better-effect-mq-redis    better-effect-mq-redis-v<version>
 
