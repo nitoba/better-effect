@@ -5,9 +5,9 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "noEmit": true,
-    "types": []
+    "types": ["node"]
   },
   "include": ["src/index.ts"]
 }

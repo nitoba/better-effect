@@ -22,5 +22,9 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src", "tests"],
-  "exclude": ["tests/package/consumer", "tests/package/generic-consumer"]
+  "exclude": [
+    "tests/package/consumer",
+    "tests/package/generic-consumer",
+    "tests/package/telemetry-consumer"
+  ]
 }

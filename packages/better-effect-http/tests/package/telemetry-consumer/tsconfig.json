@@ -2,14 +2,16 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "ESNext.Disposable"],
     "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "rootDir": "src",
     "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
     "skipLibCheck": false,
     "noEmit": false,
-    "outDir": "out",
-    "types": []
+    "types": [],
+    "outDir": "out"
   },
   "include": ["src/index.ts"]
 }

@@ -123,9 +123,12 @@ const assertManifest = async (): Promise<void> => {
   assertCondition(manifest['version'] === '0.1.0', 'Unexpected package version')
   assertCondition(manifest['type'] === 'module', 'Package must be ESM')
   assertCondition(manifest['sideEffects'] === false, 'Package must be side-effect free')
+  const engines = manifest['engines']
+  assertCondition(isJsonObject(engines), 'Package engines are missing')
+  assertCondition(engines['node'] === '>=20', 'Package must declare its Node.js floor')
   assertCondition(
     JSON.stringify(manifest['files']) ===
-      JSON.stringify(['dist', 'LICENSE', 'README.md', 'CHANGELOG.md']),
+      JSON.stringify(['dist', 'LICENSE', 'README.md', 'CHANGELOG.md', 'VERIFICATION.md']),
     'Package files allowlist changed'
   )
 
@@ -142,6 +145,12 @@ const assertManifest = async (): Promise<void> => {
   for (const [name, range] of Object.entries(expectedPeers)) {
     assertCondition(peers[name] === range, `Unexpected peer range for ${name}`)
   }
+  const peerMetadata = manifest['peerDependenciesMeta']
+  assertCondition(isJsonObject(peerMetadata), 'Peer dependency metadata is missing')
+  assertSameKeys(peerMetadata, { '@opentelemetry/api': 'optional' }, 'Peer dependency metadata')
+  const telemetryMetadata = peerMetadata['@opentelemetry/api']
+  assertCondition(isJsonObject(telemetryMetadata), 'OpenTelemetry peer metadata is invalid')
+  assertCondition(telemetryMetadata['optional'] === true, 'OpenTelemetry peer must be optional')
 
   const dependencies = manifest['dependencies']
   assertCondition(isJsonObject(dependencies), 'Runtime dependencies are missing')
@@ -186,6 +195,12 @@ const assertRepositoryIntegration = async (): Promise<void> => {
   )
   assertCondition(entry['tagPrefix'] === 'better-effect-http-v', 'Release tag prefix is wrong')
   assertCondition(entry['initialRelease'] === true, 'Release route must be an initial release')
+  const additionalFiles = entry['additionalFiles']
+  assertCondition(Array.isArray(additionalFiles), 'Release extra files are missing')
+  assertCondition(
+    additionalFiles.includes('VERIFICATION.md'),
+    'Release route must include VERIFICATION.md'
+  )
 }
 
 const assertCoreIsolation = async (): Promise<void> => {
@@ -237,6 +252,11 @@ const assertGeneratedPackage = async (): Promise<void> => {
   }
   const testingEntrypoint = await import(pathToFileURL(join(distRoot, 'testing.mjs')).href)
   assertCondition('HttpTest' in testingEntrypoint, 'Missing public HTTP testing export: HttpTest')
+  const endpointsEntrypoint = await import(pathToFileURL(join(distRoot, 'endpoints.mjs')).href)
+  assertCondition(
+    'HttpEndpoint' in endpointsEntrypoint,
+    'Missing public HTTP endpoint export: HttpEndpoint'
+  )
   const telemetryEntrypoint = await import(pathToFileURL(join(distRoot, 'opentelemetry.mjs')).href)
   assertCondition(
     'HttpTelemetry' in telemetryEntrypoint,
@@ -275,8 +295,11 @@ const assertPackedArtifact = async (): Promise<void> => {
       'package/LICENSE',
       'package/README.md',
       'package/CHANGELOG.md',
+      'package/VERIFICATION.md',
       'package/dist/index.mjs',
       'package/dist/index.d.mts',
+      'package/dist/endpoints.mjs',
+      'package/dist/endpoints.d.mts',
       'package/dist/opentelemetry.mjs',
       'package/dist/opentelemetry.d.mts',
       'package/dist/testing.mjs',

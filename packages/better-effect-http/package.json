@@ -23,7 +23,8 @@
     "dist",
     "LICENSE",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "VERIFICATION.md"
   ],
   "type": "module",
   "sideEffects": false,
@@ -64,6 +65,7 @@
   "devDependencies": {
     "@opentelemetry/api": "1.9.1",
     "@types/bun": "1.4.1",
+    "@types/node": "26.1.2",
     "arktype": "2.2.3",
     "better-effect": "0.13.0",
     "better-effect-schema": "0.1.0",
@@ -89,5 +91,8 @@
     "@opentelemetry/api": {
       "optional": true
     }
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
