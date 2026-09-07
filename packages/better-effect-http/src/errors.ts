@@ -55,6 +55,8 @@ export class HttpDecodeError extends TaggedError('HttpDecodeError')<{
   readonly phase: 'decode'
   readonly kind: 'schema' | 'provider'
   readonly cause?: unknown
+  readonly recordIndex?: number
+  readonly byteOffset?: number
 }> {}
 export class HttpHookError extends TaggedError('HttpHookError')<{
   readonly phase: 'hook'

@@ -1,11 +1,15 @@
+/* oxlint-disable anti-slop/no-unknown-returns -- the binary stream implementation erases the callback boundary before restoring its public generic contract. */
 import type { TransportOptions, TransportRequestOptions } from '../internal/ofetch-transport'
 import { executeRequest } from '../internal/ofetch-transport'
 import { StreamSession } from './session'
 import { forEach, pipeTo, takeUntil, use } from './terminals'
-import type { TerminalResult, StreamCallback, StreamUseCallback } from './terminals'
+import type { TerminalResult, StreamUseCallback } from './terminals'
 import type { Result } from 'better-result'
+import type { AnyService, EffectError, EffectRequirements, EffectSuccess } from 'better-effect'
+import type { HttpHookError } from '../errors'
+import type { HttpSinkError } from './errors'
 
-export type HttpStream<A = Uint8Array, E = unknown, R = never> = Readonly<{
+export type HttpStream<A = Uint8Array, E = unknown, R extends AnyService = never> = Readonly<{
   readonly _A?: A
   readonly _E?: E
   readonly _R?: R
@@ -16,20 +20,29 @@ export type HttpStream<A = Uint8Array, E = unknown, R = never> = Readonly<{
   }>
   readonly results: () => AsyncIterable<Result<A, E>>
   readonly use: <C>(
-    callback: StreamUseCallback<C>
+    callback: StreamUseCallback<A, C>
   ) => TerminalResult<
-    import('better-effect').EffectSuccess<C>,
-    E | import('better-effect').EffectError<C>
+    EffectSuccess<C>,
+    E | EffectError<C> | HttpHookError,
+    R | Extract<EffectRequirements<C>, AnyService>
   >
-  readonly forEach: <B>(callback: StreamCallback<A, B, E>) => TerminalResult<void, E>
+  readonly forEach: <C>(
+    callback: (value: A, index: number) => C
+  ) => TerminalResult<
+    void,
+    E | EffectError<C> | HttpHookError,
+    R | Extract<EffectRequirements<C>, AnyService>
+  >
   readonly takeUntil: (
     predicate: (value: A) => boolean | Promise<boolean>,
     options?: { readonly requireMatch?: boolean }
-  ) => TerminalResult<A, E>
-  readonly pipeTo: (
-    destination: WritableStream<Uint8Array>,
-    options?: { readonly preventClose?: boolean }
-  ) => TerminalResult<void, E>
+  ) => TerminalResult<A, E | HttpHookError, R>
+  readonly pipeTo: A extends Uint8Array
+    ? (
+        destination: WritableStream<Uint8Array>,
+        options?: { readonly preventClose?: boolean }
+      ) => TerminalResult<void, E | HttpSinkError, R>
+    : never
 }>
 
 export const stream = (
@@ -44,11 +57,11 @@ export const stream = (
     results: async function* () {
       yield* (await open()).results()
     },
-    use: (callback: StreamUseCallback<unknown>) =>
+    use: (callback: StreamUseCallback<Uint8Array, unknown>) =>
       (async function* () {
         return yield* use(await open(), callback)
       })(),
-    forEach: (callback: StreamCallback<Uint8Array, unknown, unknown>) =>
+    forEach: (callback: (value: Uint8Array, index: number) => unknown) =>
       (async function* () {
         return yield* forEach(await open(), callback)
       })(),
