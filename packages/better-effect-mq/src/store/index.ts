@@ -12,6 +12,28 @@ export type {
 
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'
+export {
+  controlledProtocolVersion,
+  protocolVersionV3,
+  noDispatchKey,
+  ControlsRevisionMismatchError
+} from './controlled'
+export type {
+  ControlledClaimOptions,
+  ControlledClaimRequest,
+  ControlledClaimResult,
+  ControlledCancelRequest,
+  ControlledEmptyClaim,
+  ControlledEmptyClaimReason,
+  ControlledJobStoreContract,
+  ControlledProtocolVersion,
+  ControlledRecoverStalledRequest,
+  ControlledReleaseRequest,
+  ControlledSettleRequest,
+  ControlledSettlementResult,
+  QueueControlsRecord,
+  RateWindow
+} from './controlled'
 export { MemoryFlowStore } from './memory-flow'
 export { FlowStore, flowStoreTag, isFlowStoreToken } from './flow-store'
 export type {

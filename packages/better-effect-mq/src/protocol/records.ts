@@ -37,6 +37,7 @@ const jobRecordFields = [
   'name',
   'version',
   'queue',
+  'dispatchKey',
   'state',
   'payload',
   'metadata',
@@ -217,6 +218,7 @@ const freezeRecord = (record: JobRecord): JobRecord =>
     name: record.name,
     version: record.version,
     queue: record.queue,
+    ...(record.dispatchKey === undefined ? {} : { dispatchKey: record.dispatchKey }),
     state: record.state,
     payload: cloneJsonValue(record.payload),
     metadata: cloneMetadata(record.metadata),
@@ -408,6 +410,20 @@ const validateJobRecordInternal = (
     fields.idempotencyKey === undefined
       ? Result.ok<string | undefined>(undefined)
       : validateTextValue(fields.idempotencyKey, 'idempotencyKey')
+  const dispatchKey =
+    fields.dispatchKey === undefined
+      ? Result.ok<string | undefined>(undefined)
+      : validateTextValue(fields.dispatchKey, 'dispatchKey').andThen((value) =>
+          value.length > 0 && value.length <= 512 && value !== '__none__' && !value.includes('\0')
+            ? Result.ok(value)
+            : Result.err(
+                new JobDefinitionError({
+                  field: 'dispatchKey',
+                  message:
+                    'must be a non-empty bounded string without NUL or the reserved __none__ value'
+                })
+              )
+        )
   const timeout = validateOptionalDurationValue(fields.timeoutMs, 'timeoutMs')
   const processedAt = validateOptionalTimestampValue(fields.processedAt, 'processedAt')
   const finishedAt = validateOptionalTimestampValue(fields.finishedAt, 'finishedAt')
@@ -419,6 +435,9 @@ const validateJobRecordInternal = (
 
   if (Result.isError(idempotencyKey)) {
     return invalidRecord('idempotencyKey', idempotencyKey.error.message)
+  }
+  if (Result.isError(dispatchKey)) {
+    return invalidRecord('dispatchKey', dispatchKey.error.message)
   }
 
   if (Result.isError(timeout)) return invalidRecord(timeout.error.field, timeout.error.message)
@@ -513,6 +532,7 @@ const validateJobRecordInternal = (
       name: name.value,
       version: version.value,
       queue: queue.value,
+      ...(dispatchKey.value === undefined ? {} : { dispatchKey: dispatchKey.value }),
       state: state.value,
       payload: payload.value,
       metadata: metadata.value,

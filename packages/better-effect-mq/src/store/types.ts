@@ -94,6 +94,8 @@ export type EnqueueRequest = {
   readonly id?: import('../protocol').JobId
   readonly idempotencyKey?: string
   readonly payload: JsonValue
+  /** Persisted by the producer; controlled workers never derive this again. */
+  readonly dispatchKey?: string
   readonly metadata?: Readonly<Record<string, string>>
   readonly priority?: number
   readonly runAt: number
@@ -223,6 +225,7 @@ export interface HeartbeatResult {
 
 /** Recover expired active leases without accepting a still-valid lease. */
 export interface RecoverStalledRequest {
+  readonly queue?: import('../protocol').QueueName
   readonly maxStalledCount: number
   readonly limit?: number
   readonly now: number

@@ -162,7 +162,7 @@ describe('Job producer and admin programs', () => {
         Effect.gen(async function* () {
           const first = yield* Send.enqueue(
             { id: 'one' },
-            { delayMs: 10, metadata: { source: 'call' } }
+            { delayMs: 10, metadata: { source: 'call' }, dispatchKey: 'tenant-a' }
           )
           const duplicate = yield* Send.enqueue({ id: 'one' })
           const batch = yield* Send.enqueueMany([{ id: 'two' }, { id: 'three' }], { chunkSize: 1 })
@@ -213,6 +213,7 @@ describe('Job producer and admin programs', () => {
       expect(explicitIdCallbackCalls).toBe(0)
       expect(result.value.listed.jobs).toHaveLength(5)
       expect(result.value.listed.jobs[0]?.metadata).toEqual({ source: 'call' })
+      expect(result.value.listed.jobs[0]?.dispatchKey).toBe('tenant-a')
       expect(result.value.listed.jobs[0]?.runAt).toBe(10)
     } finally {
       await runtime.dispose()

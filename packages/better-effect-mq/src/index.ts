@@ -15,6 +15,24 @@ export const WorkerId = WorkerIdFactory
 export { Codec, JobDecodeFailure, JobEncodeFailure } from './codec'
 export { Retry } from './retry'
 export { Flow } from './flow'
+export { QueueControls } from './controls'
+export type {
+  AnyQueueControlDefinition,
+  AnyQueueControlsRegistry,
+  ConcurrencyKeyOptions,
+  ControlsReconcileOptions,
+  ControlsReconcileReport,
+  ControlsReconcileRemoval,
+  DispatchKey,
+  QueueControlDefinition,
+  QueueControlsContract,
+  QueueControlsEffect,
+  QueueControlsInstance,
+  QueueControlsOptions,
+  QueueControlsRegistry,
+  QueueControlsToken,
+  RateLimitOptions
+} from './controls'
 export { JobMetricNames, JobObserver, makeJobDepthSampler } from './observability'
 export type {
   JobEvent,
@@ -266,6 +284,10 @@ export {
   isFlowStoreToken,
   JobStore,
   JobStoreWakeAbortedError,
+  ControlsRevisionMismatchError,
+  controlledProtocolVersion,
+  protocolVersionV3,
+  noDispatchKey,
   MemoryFlowStore,
   MemoryJobStore,
   assertJobStoreProtocolCompatible,
@@ -489,6 +511,20 @@ export type {
   JobStoreTransitionError,
   JobStoreValidationError,
   JobStoreWakeError,
+  ControlledClaimOptions,
+  ControlledClaimRequest,
+  ControlledClaimResult,
+  ControlledCancelRequest,
+  ControlledEmptyClaim,
+  ControlledEmptyClaimReason,
+  ControlledJobStoreContract,
+  ControlledProtocolVersion,
+  ControlledRecoverStalledRequest,
+  ControlledReleaseRequest,
+  ControlledSettleRequest,
+  ControlledSettlementResult,
+  QueueControlsRecord,
+  RateWindow,
   ListJobsRequest,
   MemoryJobStoreClock,
   MemoryJobStoreIdGenerator,

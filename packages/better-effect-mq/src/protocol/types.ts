@@ -59,6 +59,8 @@ export interface JobRecord {
   readonly name: JobName
   readonly version: number
   readonly queue: QueueName
+  /** Producer-persisted routing key used by controlled per-key concurrency. */
+  readonly dispatchKey?: string
   readonly state: JobState
   readonly payload: JsonValue
   readonly metadata: Readonly<Record<string, string>>

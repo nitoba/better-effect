@@ -30,6 +30,7 @@ export type PreparedEnqueue<
   readonly id?: import('../protocol').JobId
   readonly idempotencyKey?: string
   readonly payload: JsonValue
+  readonly dispatchKey?: string
   readonly metadata: Readonly<Record<string, string>>
   readonly priority: number
   readonly runAt: number
@@ -45,6 +46,7 @@ const fields = [
   'id',
   'idempotencyKey',
   'payload',
+  'dispatchKey',
   'metadata',
   'priority',
   'runAt',
@@ -92,7 +94,11 @@ export const makePreparedEnqueue = (
 
   const required = fields.filter(
     (field) =>
-      field !== 'id' && field !== 'idempotencyKey' && field !== 'backoff' && field !== 'timeoutMs'
+      field !== 'id' &&
+      field !== 'idempotencyKey' &&
+      field !== 'dispatchKey' &&
+      field !== 'backoff' &&
+      field !== 'timeoutMs'
   )
   for (const field of required) {
     const present = requireField(checked.value, field)
@@ -114,6 +120,20 @@ export const makePreparedEnqueue = (
 
   const metadata = normalizeMetadata(checked.value.metadata)
   if (Result.isError(metadata)) return metadata
+
+  const dispatchKey =
+    checked.value.dispatchKey === undefined
+      ? Result.ok<string | undefined>(undefined)
+      : typeof checked.value.dispatchKey === 'string' &&
+          checked.value.dispatchKey.length > 0 &&
+          checked.value.dispatchKey.length <= 512 &&
+          checked.value.dispatchKey !== '__none__' &&
+          !checked.value.dispatchKey.includes('\0')
+        ? Result.ok(checked.value.dispatchKey)
+        : invalid(
+            'dispatchKey',
+            'must be a non-empty bounded string without NUL or the reserved __none__ value'
+          )
 
   const priority = validatePriorityValue(checked.value.priority, 'priority')
   const runAt = validateTimestampValue(checked.value.runAt, 'runAt')
@@ -141,6 +161,7 @@ export const makePreparedEnqueue = (
   if (Result.isError(idempotencyKey)) return idempotencyKey
   if (Result.isError(backoff)) return backoff
   if (Result.isError(timeout)) return timeout
+  if (Result.isError(dispatchKey)) return dispatchKey
 
   const prepared: Record<string, unknown> = {
     protocolVersion,
@@ -154,6 +175,7 @@ export const makePreparedEnqueue = (
   }
   if (id.value !== undefined) prepared.id = id.value
   if (idempotencyKey.value !== undefined) prepared.idempotencyKey = idempotencyKey.value
+  if (dispatchKey.value !== undefined) prepared.dispatchKey = dispatchKey.value
   if (backoff.value !== undefined) prepared.backoff = backoff.value
   if (timeout.value !== undefined) prepared.timeoutMs = timeout.value
 
