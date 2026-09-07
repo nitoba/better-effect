@@ -192,6 +192,52 @@ jobs:
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=all)"
 
+  http-consumer:
+    name: HTTP artifact consumer (TypeScript ${{ matrix.typescript }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        typescript:
+          - 6.0.0-beta
+          - 7.0.2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build packed HTTP dependencies
+        run: bun run build --filter=better-effect-http
+
+      - name: Run isolated HTTP artifact consumer matrix
+        working-directory: packages/better-effect-http
+        env:
+          BETTER_EFFECT_HTTP_TYPESCRIPT_VERSION: ${{ matrix.typescript }}
+        run: bun run test:package-consumer
+
+      - name: Verify consumer gate did not modify the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
+
   postgres-integration:
     name: PostgreSQL integration
     runs-on: ubuntu-latest

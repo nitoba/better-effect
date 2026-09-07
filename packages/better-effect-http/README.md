@@ -38,6 +38,10 @@ passed as Standard Schema values, and their optional
 `better-effect-schema/{zod,valibot,arktype}` adapters are application choices
 when capabilities beyond Standard Schema are needed.
 
+The packed-artifact consumer matrix, export and peer audits, and Bun/Node
+interoperability checks are documented in [`VERIFICATION.md`](./VERIFICATION.md)
+and run as part of the package check.
+
 The public entry points are:
 
 | Import                             | Contents                                                                   |
