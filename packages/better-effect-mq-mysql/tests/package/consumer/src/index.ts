@@ -10,7 +10,7 @@ import {
 
 const migrations = await loadMySqlMigrations()
 if (
-  migrations.length !== 5 ||
+  migrations.length !== 6 ||
   !migrations[0]!.sql.includes('ENGINE=InnoDB') ||
   !migrations[1]!.sql.includes('dedupe_hash') ||
   !migrations[2]!.sql.includes('better_effect_mq_schedules') ||
