@@ -1,6 +1,7 @@
 export { SqliteJobStore } from './SqliteJobStore'
 export { SqliteFlowStore } from './SqliteFlowStore'
 export { SqliteJobScheduleStore } from './SqliteJobScheduleStore'
+export { SqliteJobEventStore } from './event-store'
 export { SqliteOutbox, SqliteOutboxStore, SqliteOutboxTransactions } from './SqliteOutboxStore'
 export { SqliteClient } from './client'
 export { SqliteMigrator, migrate } from './migrator'
@@ -12,7 +13,8 @@ export {
   controlsMigrationSql,
   migrationSql,
   scheduleMigrationSql,
-  outboxMigrationSql
+  outboxMigrationSql,
+  eventsMigrationSql
 } from './schema'
 export {
   DEFAULT_BUSY_TIMEOUT_MS,
@@ -42,4 +44,9 @@ export type {
   SqliteTransaction
 } from './SqliteOutboxStore'
 export type { SqliteFlowStoreConfig, SqliteFlowStoreInstance } from './SqliteFlowStore'
+export type {
+  SqliteJobEventStoreConfig,
+  SqliteJobEventStoreInstance,
+  SqliteJobEventStoreOptions
+} from './event-store'
 export type { SqliteMigrationOptions, SqliteMigrationResult } from './migrator'

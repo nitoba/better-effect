@@ -11,7 +11,9 @@ export const SQLITE_TABLES = {
   controls: 'better_effect_mq_queue_controls',
   controlCursors: 'better_effect_mq_queue_control_cursors',
   permits: 'better_effect_mq_controlled_permits',
-  rateWindows: 'better_effect_mq_rate_windows'
+  rateWindows: 'better_effect_mq_rate_windows',
+  eventCursors: 'better_effect_mq_job_event_cursors',
+  events: 'better_effect_mq_job_events'
 } as const
 
 export const MIGRATION_COMPONENT = 'better-effect-mq-sqlite' as const
@@ -300,6 +302,53 @@ CREATE INDEX IF NOT EXISTS better_effect_mq_rate_windows_expiry_idx
   ON better_effect_mq_rate_windows(namespace, queue, started_at_ms);
 `
 
+/** Durable JobEventStore extension migration. */
+export const eventsMigrationSql = `
+CREATE TABLE IF NOT EXISTS better_effect_mq_job_event_cursors (
+  namespace TEXT PRIMARY KEY NOT NULL,
+  next_cursor INTEGER NOT NULL DEFAULT 0,
+  CHECK (namespace <> '' AND next_cursor BETWEEN 0 AND 9007199254740991)
+);
+CREATE TABLE IF NOT EXISTS better_effect_mq_job_events (
+  namespace TEXT NOT NULL,
+  cursor INTEGER NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  job_id TEXT,
+  queue TEXT,
+  name TEXT,
+  version INTEGER,
+  state TEXT,
+  attempt INTEGER,
+  delivery INTEGER,
+  worker_id TEXT,
+  outcome TEXT,
+  failure_kind TEXT,
+  duplicate INTEGER CHECK (duplicate IS NULL OR duplicate IN (0, 1)),
+  attributes TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(attributes) AND json_type(attributes) = 'object'),
+  PRIMARY KEY (namespace, cursor),
+  CHECK (namespace <> '' AND cursor > 0),
+  CHECK (recorded_at_ms BETWEEN 0 AND 9007199254740991),
+  CHECK (job_id IS NULL OR job_id <> ''),
+  CHECK (queue IS NULL OR queue <> ''),
+  CHECK (name IS NULL OR name <> ''),
+  CHECK (version IS NULL OR version > 0),
+  CHECK (attempt IS NULL OR attempt > 0),
+  CHECK (delivery IS NULL OR delivery > 0),
+  CHECK (worker_id IS NULL OR worker_id <> ''),
+  CHECK (event_type IN (
+    'job-enqueued', 'job-claimed', 'job-completed', 'job-retry-scheduled',
+    'job-failed', 'job-cancelled', 'job-cancel-requested', 'job-released',
+    'job-stalled-recovered', 'job-promoted', 'job-admin-retried',
+    'job-removed', 'queue-paused', 'queue-resumed'
+  ))
+);
+CREATE INDEX IF NOT EXISTS better_effect_mq_job_events_queue_cursor_idx
+  ON better_effect_mq_job_events(namespace, queue, cursor);
+CREATE INDEX IF NOT EXISTS better_effect_mq_job_events_type_cursor_idx
+  ON better_effect_mq_job_events(namespace, event_type, cursor);
+`
+
 export const SQLITE_INDEXES = [
   'better_effect_mq_jobs_claim_idx',
   'better_effect_mq_jobs_active_lease_idx',
@@ -325,5 +374,7 @@ export const SQLITE_INDEXES = [
   'better_effect_mq_jobs_dispatch_idx',
   'better_effect_mq_controlled_permits_queue_key_idx',
   'better_effect_mq_controlled_permits_job_token_idx',
-  'better_effect_mq_rate_windows_expiry_idx'
+  'better_effect_mq_rate_windows_expiry_idx',
+  'better_effect_mq_job_events_queue_cursor_idx',
+  'better_effect_mq_job_events_type_cursor_idx'
 ] as const
