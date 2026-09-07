@@ -5,13 +5,16 @@ import { Result } from 'better-result'
 import {
   JobEventCursorExpiredError,
   JobEventStore,
+  JobEventWriterRejectedError,
   JobId,
   JobName,
   JobStore,
   MemoryJobEventStore,
   MemoryJobStore,
   QueueName,
-  WorkerId
+  WorkerId,
+  type JobStoreError,
+  type JobStoreOperation
 } from '../src'
 
 const unwrap = <Value, Failure>(
@@ -37,6 +40,14 @@ const request = (id: string, now = 0) => ({
   attemptsMax: 2,
   now
 })
+
+const resolveStoreOperation = async <Value>(
+  operation: JobStoreOperation<Value, JobStoreError>
+): Promise<Value> => {
+  const result = await operation
+  if (Result.isError(result)) throw result.error
+  return result.value
+}
 
 test('MemoryJobEventStore appends MemoryJobStore transitions atomically', () => {
   const events = MemoryJobEventStore.make()
@@ -173,4 +184,51 @@ test('JobEventStore is a Layer-first token associated with JobStore', async () =
   } finally {
     await runtime.dispose()
   }
+})
+
+test('event rollout activates optional state with a stable cursor and never auto-requires', () => {
+  const events = MemoryJobEventStore.make()
+  const initial = unwrap(events.tailCursor())
+  expect(unwrap(events.activation())).toMatchObject({
+    state: 'inactive',
+    activationCursor: undefined,
+    revision: 0
+  })
+
+  const jobs = MemoryJobStore.make({ eventStore: events })
+  unwrap(jobs.enqueue(request('rollout-job')))
+  const optional = unwrap(events.activation())
+  expect(optional.state).toBe('optional')
+  expect(optional.activationCursor).toBe(initial)
+  expect(optional.revision).toBe(1)
+
+  const repeatedOptional = unwrap(events.activate({ mode: 'optional', now: 1 }))
+  expect(repeatedOptional).toEqual(optional)
+  expect(unwrap(events.readiness({ id: 'current', version: '1', canAppend: true }))).toMatchObject({
+    ready: true,
+    reason: 'optional'
+  })
+})
+
+test('required activation rejects an old writer before it can mutate the store', async () => {
+  const events = MemoryJobEventStore.make()
+  unwrap(events.activate({ mode: 'required', now: 0 }))
+  const oldWriter = MemoryJobStore.make({
+    eventStore: events,
+    eventWriter: { id: 'old-worker', version: '0', canAppend: false }
+  })
+
+  let failure: unknown
+  try {
+    await resolveStoreOperation(oldWriter.enqueue(request('rejected-job')))
+  } catch (cause) {
+    failure = cause
+  }
+  expect(failure).toBeInstanceOf(JobEventWriterRejectedError)
+  expect(unwrap(oldWriter.getJob({ jobId: JobId.make('rejected-job').unwrap() }))).toBeUndefined()
+  expect(unwrap(events.read({})).events).toHaveLength(0)
+  expect(unwrap(events.activate({ mode: 'required', now: 1 }))).toMatchObject({
+    state: 'required',
+    revision: 1
+  })
 })

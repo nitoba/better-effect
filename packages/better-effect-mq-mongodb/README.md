@@ -68,6 +68,12 @@ MongoDB change stream only as a best-effort wake hint and always retains a
 polling fallback. With `layerWithEvents`, a transition and its event append
 commit or rollback together.
 
+Event rollout is coordinated per namespace in the counters collection. The
+first append records `optional`; promote explicitly with
+`JobEventStore.activate({ mode: 'required' })`. A writer that cannot append is
+rejected before a JobStore transaction mutates state. The activation document
+uses the same MongoDB transaction as event appends.
+
 Schedules use the associated `JobStore` token and are provided as a separate
 Layer. Named stores therefore remain isolated in MongoDB namespaces:
 

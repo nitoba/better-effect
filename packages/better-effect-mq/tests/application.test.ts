@@ -582,6 +582,9 @@ describe('Job producer and admin programs', () => {
     const brokenNotifications: JobEventStoreContract = {
       descriptor: events.descriptor,
       tailCursor: () => events.tailCursor(),
+      activation: () => events.activation(),
+      readiness: (writer) => events.readiness(writer),
+      activate: (options) => events.activate(options),
       read: (options) => events.read(options),
       awaitEvents: () => {
         const notificationFailure: unknown = Result.err(

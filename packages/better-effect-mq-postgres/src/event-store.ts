@@ -32,9 +32,14 @@ import {
   type JobEventStoreContract,
   type JobEventStoreError,
   type JobEventStoreDescriptor,
+  type JobEventStoreActivation,
+  type JobEventStoreActivationOptions,
+  type JobEventStoreReadiness,
+  type JobEventStoreWriter,
   type JobEventStoreOperation,
   type JobIdentity
 } from 'better-effect-mq'
+import { JobEventWriterRejectedError } from 'better-effect-mq'
 import { PostgresClient } from './client'
 import {
   normalizePostgresJobStoreConfig,
@@ -88,11 +93,18 @@ const descriptor: JobEventStoreDescriptor = Object.freeze({
   extensionVersion: jobEventExtensionVersion,
   jobStoreProtocolVersion: 1
 })
+const defaultWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq-postgres',
+  version: 'current',
+  canAppend: true
+})
 
 const eventTable = (schema: string): string =>
   `${quoteIdentifier(schema)}.${quoteIdentifier(POSTGRES_TABLES.events)}`
 const cursorTable = (schema: string): string =>
   `${quoteIdentifier(schema)}.${quoteIdentifier(POSTGRES_TABLES.eventCursors)}`
+const activationTable = (schema: string): string =>
+  `${quoteIdentifier(schema)}.${quoteIdentifier(POSTGRES_TABLES.eventActivation)}`
 
 const hash = (value: string): string =>
   createHash('sha256').update(value).digest('hex').slice(0, 48)
@@ -336,6 +348,7 @@ export const appendPostgresJobEvent = async (
   client: Pick<PostgresClient, 'namespace' | 'schema'>,
   input: DurableJobEventInput
 ): Promise<void> => {
+  await ensureOptionalActivation(tx, client, input.recordedAtMs)
   const counters = cursorTable(client.schema)
   const events = eventTable(client.schema)
   await tx.query(
@@ -354,6 +367,88 @@ export const appendPostgresJobEvent = async (
   )
 }
 
+const ensureActivationTable = async (tx: Tx, schema: string): Promise<void> => {
+  await tx.query(
+    `CREATE TABLE IF NOT EXISTS ${activationTable(schema)} (
+      namespace text PRIMARY KEY,
+      activation_state text NOT NULL,
+      activation_cursor bigint NOT NULL,
+      activation_revision bigint NOT NULL,
+      activated_at_ms bigint NOT NULL,
+      CONSTRAINT better_effect_mq_job_event_activation_state CHECK (activation_state IN ('optional','required')),
+      CONSTRAINT better_effect_mq_job_event_activation_values CHECK (
+        namespace <> '' AND activation_cursor BETWEEN 0 AND 9007199254740991
+        AND activation_revision BETWEEN 1 AND 9007199254740991
+        AND activated_at_ms BETWEEN 0 AND 9007199254740991
+      )
+    )`
+  )
+}
+
+const ensureOptionalActivation = async (
+  tx: Tx,
+  client: Pick<PostgresClient, 'namespace' | 'schema'>,
+  now: number
+): Promise<void> => {
+  await ensureActivationTable(tx, client.schema)
+  await tx.query(
+    `INSERT INTO ${activationTable(client.schema)}(namespace,activation_state,activation_cursor,activation_revision,activated_at_ms)
+     SELECT $1,'optional',COALESCE((SELECT next_cursor FROM ${cursorTable(client.schema)} WHERE namespace=$1),0),1,$2
+     WHERE NOT EXISTS (SELECT 1 FROM ${activationTable(client.schema)} WHERE namespace=$1)`,
+    [client.namespace, now]
+  )
+}
+
+const activationFromRow = (
+  row: Row | undefined,
+  encode: (value: bigint) => JobEventCursor
+): JobEventStoreActivation => {
+  if (row === undefined)
+    return Object.freeze({
+      state: 'inactive',
+      mode: undefined,
+      activationCursor: undefined,
+      revision: 0,
+      activatedAtMs: undefined
+    })
+  const state = row.activation_state
+  if (state !== 'optional' && state !== 'required') throw new Error('invalid activation state')
+  return Object.freeze({
+    state,
+    mode: state,
+    activationCursor: encode(rowBigInt(row.activation_cursor, 'activation_cursor')),
+    revision: Number(rowBigInt(row.activation_revision, 'activation_revision')),
+    activatedAtMs: Number(rowBigInt(row.activated_at_ms, 'activated_at_ms'))
+  })
+}
+
+export const assertPostgresJobEventWriterReady = async (
+  tx: Tx,
+  client: Pick<PostgresClient, 'namespace' | 'schema'>,
+  operation: string,
+  writer: JobEventStoreWriter,
+  eventsAvailable: boolean
+): Promise<void> => {
+  const available = await tx.query<Row>(
+    `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2) AS available`,
+    [client.schema, POSTGRES_TABLES.eventActivation]
+  )
+  if (available.rows[0]?.available !== true) return
+  const result = await tx.query<Row>(
+    `SELECT activation_state,activation_revision FROM ${activationTable(client.schema)} WHERE namespace=$1 FOR UPDATE`,
+    [client.namespace]
+  )
+  const row = result.rows[0]
+  if (row?.activation_state === 'required' && (!writer.canAppend || !eventsAvailable)) {
+    throw new JobEventWriterRejectedError({
+      operation,
+      revision: Number(rowBigInt(row.activation_revision, 'activation_revision')),
+      writerId: writer.id,
+      writerVersion: writer.version
+    })
+  }
+}
+
 type EventWaiter = {
   readonly finish: (result: EventResult<void>) => void
 }
@@ -368,7 +463,8 @@ class PostgresJobEventStoreImplementation {
 
   constructor(
     private readonly client: PostgresClient,
-    retention: JobEventRetention | undefined
+    retention: JobEventRetention | undefined,
+    private readonly writer: JobEventStoreWriter = defaultWriter
   ) {
     this.prefix = `pg1_${hash(`${client.schema}\u0000${client.namespace}`)}_`
     this.retention = validateRetention(retention)
@@ -462,6 +558,74 @@ class PostgresJobEventStoreImplementation {
       [this.client.namespace]
     )
     return result.rows[0] === undefined ? 0n : rowBigInt(result.rows[0].next_cursor, 'next_cursor')
+  }
+
+  private async readActivation(tx: Tx): Promise<JobEventStoreActivation> {
+    await ensureActivationTable(tx, this.client.schema)
+    const result = await tx.query<Row>(
+      `SELECT activation_state,activation_cursor,activation_revision,activated_at_ms FROM ${activationTable(this.client.schema)} WHERE namespace=$1`,
+      [this.client.namespace]
+    )
+    return activationFromRow(result.rows[0], (value) => this.encode(value))
+  }
+
+  activation(): Operation<JobEventStoreActivation> {
+    return asOperationPromise(this.withTx('activation', (tx) => this.readActivation(tx)))
+  }
+
+  readiness(writer: JobEventStoreWriter = this.writer): Operation<JobEventStoreReadiness> {
+    return asOperationPromise(
+      this.withTx('readiness', async (tx) => {
+        const activation = await this.readActivation(tx)
+        const ready = activation.state !== 'required' || writer.canAppend
+        return Object.freeze({
+          ...activation,
+          ready,
+          writer,
+          reason:
+            activation.state === 'required'
+              ? ready
+                ? 'required'
+                : 'append-unsupported'
+              : activation.state
+        })
+      })
+    )
+  }
+
+  activate(options: JobEventStoreActivationOptions): Operation<JobEventStoreActivation> {
+    return asOperationPromise(
+      this.withTx('activate', async (tx) => {
+        if (
+          options === null ||
+          typeof options !== 'object' ||
+          (options.mode !== 'optional' && options.mode !== 'required')
+        )
+          throw new Error('mode must be optional or required')
+        const now = options.now ?? Date.now()
+        if (!Number.isSafeInteger(now) || now < 0) throw new Error('now must be a timestamp')
+        await ensureActivationTable(tx, this.client.schema)
+        const currentResult = await tx.query<Row>(
+          `SELECT activation_state,activation_cursor,activation_revision,activated_at_ms FROM ${activationTable(this.client.schema)} WHERE namespace=$1 FOR UPDATE`,
+          [this.client.namespace]
+        )
+        const current = currentResult.rows[0]
+        if (current?.activation_state === 'required' && options.mode === 'optional')
+          throw new Error('required activation cannot be downgraded')
+        if (current === undefined) {
+          await tx.query(
+            `INSERT INTO ${activationTable(this.client.schema)}(namespace,activation_state,activation_cursor,activation_revision,activated_at_ms) VALUES($1,$2,$3,1,$4)`,
+            [this.client.namespace, options.mode, await this.tailSequence(tx), now]
+          )
+        } else if (current.activation_state === 'optional' && options.mode === 'required') {
+          await tx.query(
+            `UPDATE ${activationTable(this.client.schema)} SET activation_state='required',activation_revision=activation_revision+1,activated_at_ms=$2 WHERE namespace=$1`,
+            [this.client.namespace, now]
+          )
+        }
+        return this.readActivation(tx)
+      })
+    )
   }
 
   private async assertReadable(tx: Tx, after: bigint): Promise<void> {
@@ -687,7 +851,8 @@ const makeStoreLayer = <Token extends AnyJobEventStoreToken>(
   token: Token,
   acquire: () => Promise<PostgresClient>,
   retention: JobEventRetention,
-  ownsClient: boolean
+  ownsClient: boolean,
+  writer?: JobEventStoreWriter
 ): Layer<InstanceType<Token>, never> =>
   Layer.scoped(
     token,
@@ -696,7 +861,7 @@ const makeStoreLayer = <Token extends AnyJobEventStoreToken>(
       let implementation: PostgresJobEventStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
-        implementation = new PostgresJobEventStoreImplementation(client, retention)
+        implementation = new PostgresJobEventStoreImplementation(client, retention, writer)
         return JobEventStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
         >
@@ -763,22 +928,40 @@ const ownedClient = (
 export const PostgresJobEventStore = Object.freeze({
   layer(config: PostgresJobEventStoreConfig) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(JobEventStore, borrowedClient(JobEventStore, config), retention, false)
+    return makeStoreLayer(
+      JobEventStore,
+      borrowedClient(JobEventStore, config),
+      retention,
+      false,
+      config.eventWriter
+    )
   },
   layerFor<Token extends AnyJobEventStoreToken>(token: Token, config: PostgresJobEventStoreConfig) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(token, borrowedClient(token, config), retention, false)
+    return makeStoreLayer(
+      token,
+      borrowedClient(token, config),
+      retention,
+      false,
+      config.eventWriter
+    )
   },
   layerFromConfig(config: PostgresJobEventStoreConnectionConfig) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(JobEventStore, ownedClient(JobEventStore, config), retention, true)
+    return makeStoreLayer(
+      JobEventStore,
+      ownedClient(JobEventStore, config),
+      retention,
+      true,
+      config.eventWriter
+    )
   },
   layerFromConfigFor<Token extends AnyJobEventStoreToken>(
     token: Token,
     config: PostgresJobEventStoreConnectionConfig
   ) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(token, ownedClient(token, config), retention, true)
+    return makeStoreLayer(token, ownedClient(token, config), retention, true, config.eventWriter)
   }
 })
 

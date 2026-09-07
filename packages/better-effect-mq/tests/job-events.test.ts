@@ -134,6 +134,9 @@ test('JobEvents.forEach wakes through awaitEvents and falls back to polling', as
   const brokenNotifications: JobEventStoreContract = {
     descriptor: source.descriptor,
     tailCursor: () => source.tailCursor(),
+    activation: () => source.activation(),
+    readiness: (writer) => source.readiness(writer),
+    activate: (options) => source.activate(options),
     read: (options) => source.read(options),
     // SAFETY: the fixture deliberately supplies the typed Result shape required by the adapter contract.
     awaitEvents: () =>

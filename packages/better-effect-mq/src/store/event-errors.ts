@@ -64,4 +64,35 @@ export class JobEventConsumerAbortedError extends TaggedError('JobEventConsumerA
   }
 }
 
-export type JobEventStoreError = JobEventStoreFailure | JobEventCursorExpiredError
+/** Raised before a mutation when a required event extension cannot be honored. */
+export class JobEventWriterRejectedError extends TaggedError('JobEventWriterRejectedError')<{
+  readonly operation: string
+  readonly revision: number
+  readonly writerId: string
+  readonly writerVersion: string
+  readonly message: string
+}> {
+  constructor(input: {
+    readonly operation: string
+    readonly revision: number
+    readonly writerId: string
+    readonly writerVersion: string
+  }) {
+    super({
+      ...input,
+      message: `Job event writer "${input.writerId}@${input.writerVersion}" is not ready for required event extension revision ${input.revision}`
+    })
+  }
+
+  static override is<C extends TaggedErrorConstructor>(
+    this: C,
+    value: unknown
+  ): value is InstanceType<C> {
+    return hasTaggedError(value, 'JobEventWriterRejectedError')
+  }
+}
+
+export type JobEventStoreError =
+  | JobEventStoreFailure
+  | JobEventCursorExpiredError
+  | JobEventWriterRejectedError

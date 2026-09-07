@@ -961,7 +961,11 @@ const assertCompatible = async (
   migrations: readonly MySqlMigration[]
 ): Promise<void> => {
   await assertMySqlCompatibility(connection)
-  const tables = Object.values(MYSQL_TABLES)
+  // The rollout metadata table is created lazily so existing installations do
+  // not need a migration checksum change before they opt into activation.
+  const tables = Object.values(MYSQL_TABLES).filter(
+    (table) => table !== MYSQL_TABLES.eventActivation
+  )
   const found = await connection.query<{ table_name: string; engine: string | null }>(
     `SELECT table_name AS table_name, engine AS engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN (${tables.map(() => '?').join(',')})`,
     tables

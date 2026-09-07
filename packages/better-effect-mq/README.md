@@ -38,6 +38,33 @@ the Memory JobStore's committed transitions in its synchronous critical
 sections. Durable events intentionally omit payloads, results, complete failure
 data, and arbitrary metadata; see the [v1 event contract](./docs/protocol/durable-events-v1.md).
 
+#### Event extension rollout
+
+Event persistence has a per-namespace activation handshake. A namespace starts
+`inactive`; the first event-capable writer may establish only `optional`,
+never `required` implicitly. Operators can promote it explicitly:
+
+```ts
+const events = yield * JobEventStore
+yield * events.activate({ mode: 'required', now: Date.now() })
+const readiness =
+  yield *
+  events.readiness({
+    id: 'worker-release',
+    version: '1.0.0',
+    canAppend: true
+  })
+```
+
+Activation records a stable cursor and monotonic revision. Once a namespace is
+`required`, a JobStore writer that cannot append events is rejected before its
+mutation, so old writers cannot silently create state changes without matching
+events. `activate({ mode: 'required' })` is idempotent; downgrade is rejected.
+Memory, SQLite, PostgreSQL, MySQL, MongoDB, and Redis adapters persist the same
+state machine in their native storage metadata while retaining their existing
+atomic mutation unit. Relational adapters create the small activation metadata
+table lazily to avoid changing checksums of already-applied migrations.
+
 The public reader keeps cursor ownership with the caller. `JobEvents.page` is
 one finite, lazy/yieldable read; `JobEvents.forEach` is a continuous,
 sequential consumer that uses `awaitEvents` as a wake hint and bounded polling

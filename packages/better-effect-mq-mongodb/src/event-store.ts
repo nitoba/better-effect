@@ -32,9 +32,14 @@ import {
   type JobEventStoreContract,
   type JobEventStoreError,
   type JobEventStoreDescriptor,
+  type JobEventStoreActivation,
+  type JobEventStoreActivationOptions,
+  type JobEventStoreReadiness,
+  type JobEventStoreWriter,
   type JobEventStoreOperation,
   type JobIdentity
 } from 'better-effect-mq'
+import { JobEventWriterRejectedError } from 'better-effect-mq'
 import { MongoJobStoreClient } from './client'
 import type { MongoJobStoreConfig, MongoJobStoreConnectionConfig, MongoSession } from './config'
 import { mongoCollections, namespaceId, type MongoCollections } from './collections'
@@ -51,6 +56,7 @@ export interface MongoJobEventStoreConnectionConfig extends MongoJobStoreConnect
 
 export interface MongoJobEventStoreOptions {
   readonly retention?: JobEventRetention
+  readonly writer?: JobEventStoreWriter
 }
 
 type Doc = Record<string, unknown>
@@ -82,6 +88,11 @@ const descriptor: JobEventStoreDescriptor = Object.freeze({
   extension: jobEventExtension,
   extensionVersion: jobEventExtensionVersion,
   jobStoreProtocolVersion: 1
+})
+const defaultWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq-mongodb',
+  version: 'current',
+  canAppend: true
 })
 
 const hash = (value: string): string =>
@@ -303,6 +314,7 @@ export const appendMongoJobEvent = async (
   namespace: string,
   input: DurableJobEventInput
 ): Promise<JobEventCursor> => {
+  await ensureOptionalActivation(session, collections, namespace, input.recordedAtMs)
   const next = await collections.counters.findOneAndUpdate(
     {
       _id: namespaceId(namespace, 'job-event-sequence'),
@@ -319,6 +331,85 @@ export const appendMongoJobEvent = async (
   return `${cursor.toString(36)}` as JobEventCursor
 }
 
+const activationId = (namespace: string): string => namespaceId(namespace, 'job-event-activation')
+
+const activationDocument = (
+  namespace: string,
+  state: 'optional' | 'required',
+  cursor: number,
+  revision: number,
+  now: number
+): Doc => ({
+  _id: activationId(namespace),
+  namespace,
+  name: 'job-event-activation',
+  activationState: state,
+  activationCursor: cursor,
+  activationRevision: revision,
+  activatedAtMs: now
+})
+
+const activationFromDocument = (
+  document: Doc | null,
+  encode: (value: number) => JobEventCursor
+): JobEventStoreActivation => {
+  if (document === null)
+    return Object.freeze({
+      state: 'inactive',
+      mode: undefined,
+      activationCursor: undefined,
+      revision: 0,
+      activatedAtMs: undefined
+    })
+  const state = document.activationState
+  if (state !== 'optional' && state !== 'required') throw new Error('invalid activation state')
+  return Object.freeze({
+    state,
+    mode: state,
+    activationCursor: encode(integer(document.activationCursor, 'activationCursor')),
+    revision: integer(document.activationRevision, 'activationRevision', true),
+    activatedAtMs: integer(document.activatedAtMs, 'activatedAtMs')
+  })
+}
+
+const ensureOptionalActivation = async (
+  session: MongoSession,
+  collections: MongoCollections,
+  namespace: string,
+  now: number
+): Promise<void> => {
+  const current = await collections.counters.findOne({ _id: activationId(namespace) }, { session })
+  if (current !== null) return
+  const sequence = await collections.counters.findOne(
+    { _id: namespaceId(namespace, 'job-event-sequence') },
+    { session }
+  )
+  const tail = sequence === null ? 0 : integer(sequence.value, 'event cursor')
+  await collections.counters.findOneAndUpdate(
+    { _id: activationId(namespace), activationState: { $exists: false } },
+    { $setOnInsert: activationDocument(namespace, 'optional', tail, 1, now) },
+    { upsert: true, returnDocument: 'after', session }
+  )
+}
+
+export const assertMongoJobEventWriterReady = async (
+  session: MongoSession,
+  collections: MongoCollections,
+  namespace: string,
+  operation: string,
+  writer: JobEventStoreWriter
+): Promise<void> => {
+  const row = await collections.counters.findOne({ _id: activationId(namespace) }, { session })
+  if (row?.activationState === 'required' && !writer.canAppend) {
+    throw new JobEventWriterRejectedError({
+      operation,
+      revision: integer(row.activationRevision, 'activationRevision', true),
+      writerId: writer.id,
+      writerVersion: writer.version
+    })
+  }
+}
+
 type Waiter = { readonly wake: () => void }
 
 class MongoJobEventStoreImplementation {
@@ -327,6 +418,7 @@ class MongoJobEventStoreImplementation {
   private readonly prefix: string
   private readonly retention: JobEventRetention
   private readonly waiters = new Set<Waiter>()
+  private readonly writer: JobEventStoreWriter
   private stream:
     | { on(event: string, listener: (value: unknown) => void): unknown; close(): Promise<void> }
     | undefined
@@ -341,6 +433,7 @@ class MongoJobEventStoreImplementation {
     this.collections = mongoCollections(client.db, client.collectionPrefix)
     this.prefix = `mongo1_${hash(`${client.collectionPrefix}\u0000${client.namespace}`)}_`
     this.retention = validateRetention(options.retention)
+    this.writer = options.writer ?? defaultWriter
   }
 
   async start(): Promise<void> {
@@ -395,6 +488,92 @@ class MongoJobEventStoreImplementation {
       _id: namespaceId(this.client.namespace, 'job-event-sequence')
     })
     return row === null ? 0 : integer(row.value, 'event cursor')
+  }
+
+  private async readActivation(): Promise<JobEventStoreActivation> {
+    const row = await this.collections.counters.findOne({
+      _id: activationId(this.client.namespace)
+    })
+    return activationFromDocument(row, (value) => this.encode(value))
+  }
+
+  activation(): Operation<JobEventStoreActivation> {
+    return asPromiseOperation(
+      (async () => {
+        try {
+          return ok(await this.readActivation())
+        } catch {
+          return fail(failure('activation', 'MongoDB activation read failed'))
+        }
+      })()
+    )
+  }
+
+  readiness(writer: JobEventStoreWriter = this.writer): Operation<JobEventStoreReadiness> {
+    return asPromiseOperation(
+      (async () => {
+        try {
+          const activation = await this.readActivation()
+          const ready = activation.state !== 'required' || writer.canAppend
+          return ok({
+            ...activation,
+            ready,
+            writer,
+            reason:
+              activation.state === 'required'
+                ? ready
+                  ? 'required'
+                  : 'append-unsupported'
+                : activation.state
+          })
+        } catch {
+          return fail(failure('readiness', 'MongoDB readiness read failed'))
+        }
+      })()
+    )
+  }
+
+  activate(options: JobEventStoreActivationOptions): Operation<JobEventStoreActivation> {
+    return asPromiseOperation(
+      (async () => {
+        try {
+          if (
+            options === null ||
+            typeof options !== 'object' ||
+            (options.mode !== 'optional' && options.mode !== 'required')
+          )
+            throw new Error('mode must be optional or required')
+          const now = options.now ?? Date.now()
+          if (!Number.isSafeInteger(now) || now < 0) throw new Error('now must be a timestamp')
+          const current = await this.collections.counters.findOne({
+            _id: activationId(this.client.namespace)
+          })
+          if (current?.activationState === 'required' && options.mode === 'optional')
+            throw new Error('required activation cannot be downgraded')
+          if (current === null) {
+            await this.collections.counters.insertOne(
+              activationDocument(this.client.namespace, options.mode, await this.tail(), 1, now)
+            )
+          } else if (current.activationState === 'optional' && options.mode === 'required') {
+            await this.collections.counters.updateOne(
+              { _id: activationId(this.client.namespace), activationState: 'optional' },
+              {
+                $set: { activationState: 'required', activatedAtMs: now },
+                $inc: { activationRevision: 1 }
+              }
+            )
+          }
+          return ok(await this.readActivation())
+        } catch (cause) {
+          return fail(
+            failure(
+              'activate',
+              cause instanceof Error ? cause.message : 'MongoDB activation failed'
+            )
+          )
+        }
+      })()
+    )
   }
 
   private async prune(now: number): Promise<void> {
@@ -624,13 +803,15 @@ const makeLayer = <Token extends AnyJobEventStoreToken>(
 
 const retentionOf = (config: {
   readonly retention?: JobEventRetention
-}): MongoJobEventStoreOptions => ({
-  retention: validateRetention(config.retention)
-})
+  readonly eventWriter?: JobEventStoreWriter
+}): MongoJobEventStoreOptions =>
+  config.eventWriter === undefined
+    ? { retention: validateRetention(config.retention) }
+    : { retention: validateRetention(config.retention), writer: config.eventWriter }
 
 const clientFromDb =
   (token: AnyJobEventStoreToken, config: MongoJobEventStoreConfig) => async () => {
-    const { retention: _retention, ...base } = config
+    const { retention: _retention, eventWriter: _eventWriter, ...base } = config
     return MongoJobStoreClient.fromDb({
       ...base,
       namespace: namespaceFor(token, config.namespace ?? 'default')
@@ -639,7 +820,7 @@ const clientFromDb =
 
 const clientFromConfig =
   (token: AnyJobEventStoreToken, config: MongoJobEventStoreConnectionConfig) => () => {
-    const { retention: _retention, ...base } = config
+    const { retention: _retention, eventWriter: _eventWriter, ...base } = config
     return MongoJobStoreClient.fromConfig({
       ...base,
       namespace: namespaceFor(token, config.namespace ?? 'default')

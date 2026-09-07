@@ -45,7 +45,8 @@ import {
   type SettlementOutcome,
   type FlowChildReport,
   type DurableJobEventInput,
-  type DurableJobEventType
+  type DurableJobEventType,
+  type JobEventStoreWriter
 } from 'better-effect-mq'
 import type {
   AnyQueueControlsRegistry,
@@ -73,6 +74,7 @@ import { MongoJobStoreLayoutError, MongoJobStoreTopologyError } from './errors'
 import { MongoJobStoreMigrator } from './migrator'
 import {
   appendMongoJobEvent,
+  assertMongoJobEventWriterReady,
   MongoJobEventStore,
   type MongoJobEventStoreOptions
 } from './event-store'
@@ -82,6 +84,26 @@ type Op<T> = ResultType<T, any>
 type TxBody<T> = (session: MongoSession) => Promise<T>
 class MongoDuplicateConflict extends Error {}
 const MAX = Number.MAX_SAFE_INTEGER
+const eventMutationOperations = new Set([
+  'enqueue',
+  'claim',
+  'claimControlled',
+  'settle',
+  'settleControlled',
+  'release',
+  'releaseControlled',
+  'heartbeat',
+  'recoverStalled',
+  'recoverStalledControlled',
+  'cancel',
+  'cancelControlled',
+  'requestCancellation',
+  'retry',
+  'promote',
+  'remove',
+  'pause',
+  'resume'
+])
 const states = new Set([
   'waiting',
   'delayed',
@@ -102,7 +124,8 @@ const tagged = new Set([
   'JobNotCancellableError',
   'JobNotPromotableError',
   'UnsupportedJobStoreOperationError',
-  'ControlsRevisionMismatchError'
+  'ControlsRevisionMismatchError',
+  'JobEventWriterRejectedError'
 ])
 const descriptor = (notifications: boolean): JobStoreDescriptor =>
   Object.freeze({
@@ -615,11 +638,17 @@ class MongoJobStoreImplementation {
   private stream: MongoQueueChangeStream | undefined
   private disposed = false
   private disposal: Promise<void> | undefined
+  private readonly eventWriter: JobEventStoreWriter
   constructor(
     private readonly client: MongoJobStoreClient,
     private readonly eventOptions?: MongoJobEventStoreOptions
   ) {
     this.collections = mongoCollections(client.db, client.collectionPrefix)
+    this.eventWriter = eventOptions?.writer ?? {
+      id: 'better-effect-mq-mongodb',
+      version: 'current',
+      canAppend: eventOptions !== undefined
+    }
   }
   get descriptor(): JobStoreDescriptor {
     return this.descriptorValue
@@ -655,6 +684,14 @@ class MongoJobStoreImplementation {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           try {
             await session.startTransaction(options)
+            if (eventMutationOperations.has(operation))
+              await assertMongoJobEventWriterReady(
+                session,
+                this.collections,
+                this.client.namespace,
+                operation,
+                this.eventWriter
+              )
             const value = await body(session)
             await session.commitTransaction()
             return ok(value)
@@ -682,6 +719,14 @@ class MongoJobStoreImplementation {
         return fail(operation, new Error('MongoDB session does not support transactions'))
       let value: T | undefined
       await session.withTransaction(async () => {
+        if (eventMutationOperations.has(operation))
+          await assertMongoJobEventWriterReady(
+            session,
+            this.collections,
+            this.client.namespace,
+            operation,
+            this.eventWriter
+          )
         value = await body(session)
       }, options)
       return ok(value as T)
@@ -1049,7 +1094,7 @@ class MongoJobStoreImplementation {
     attempt?: AttemptRecord,
     extra: { readonly queue?: string; readonly duplicate?: boolean } = {}
   ): Promise<void> {
-    if (this.eventOptions === undefined) return
+    if (this.eventOptions === undefined || !this.eventWriter.canAppend) return
     const input: DurableJobEventInput = {
       type,
       recordedAtMs,
@@ -2637,6 +2682,8 @@ class MongoJobStoreImplementation {
 }
 const namespaceFor = (token: AnyJobStoreToken, namespace: string): string =>
   token.serviceTag === JobStore.serviceTag ? namespace : `${namespace}:store-${token.serviceTag}`
+const eventOptionsFor = (config: MongoJobStoreConfig | MongoJobStoreConnectionConfig) =>
+  config.eventWriter === undefined ? undefined : { writer: config.eventWriter }
 const layer = <T extends AnyJobStoreToken>(
   token: T,
   acquire: () => Promise<MongoJobStoreClient>,
@@ -2664,30 +2711,49 @@ export const MongoJobStore = Object.freeze({
     return MongoJobStoreMigrator.migrate(options)
   },
   layer(config: MongoJobStoreConfig) {
-    return layer(JobStore, async () => MongoJobStoreClient.fromDb(config))
+    const { eventWriter: _eventWriter, ...clientConfig } = config
+    return layer(
+      JobStore,
+      async () => MongoJobStoreClient.fromDb(clientConfig),
+      eventOptionsFor(config)
+    )
   },
   layerFor<T extends AnyJobStoreToken>(token: T, config: MongoJobStoreConfig) {
-    return layer(token, async () =>
-      MongoJobStoreClient.fromDb({
-        ...config,
-        namespace: namespaceFor(token, config.namespace ?? 'default')
-      })
+    const { eventWriter: _eventWriter, ...clientConfig } = config
+    return layer(
+      token,
+      async () =>
+        MongoJobStoreClient.fromDb({
+          ...clientConfig,
+          namespace: namespaceFor(token, config.namespace ?? 'default')
+        }),
+      eventOptionsFor(config)
     )
   },
   layerFromConfig(config: MongoJobStoreConnectionConfig) {
-    return layer(JobStore, () => MongoJobStoreClient.fromConfig(config))
+    const { eventWriter: _eventWriter, ...clientConfig } = config
+    return layer(
+      JobStore,
+      () => MongoJobStoreClient.fromConfig(clientConfig),
+      eventOptionsFor(config)
+    )
   },
   layerFromConfigFor<T extends AnyJobStoreToken>(token: T, config: MongoJobStoreConnectionConfig) {
-    return layer(token, () =>
-      MongoJobStoreClient.fromConfig({
-        ...config,
-        namespace: namespaceFor(token, config.namespace ?? 'default')
-      })
+    const { eventWriter: _eventWriter, ...clientConfig } = config
+    return layer(
+      token,
+      () =>
+        MongoJobStoreClient.fromConfig({
+          ...clientConfig,
+          namespace: namespaceFor(token, config.namespace ?? 'default')
+        }),
+      eventOptionsFor(config)
     )
   },
   layerWithEvents(config: MongoJobStoreConfig, options: MongoJobEventStoreOptions = {}) {
+    const { eventWriter: _eventWriter, ...clientConfig } = config
     return Layer.merge(
-      layer(JobStore, async () => MongoJobStoreClient.fromDb(config), options),
+      layer(JobStore, async () => MongoJobStoreClient.fromDb(clientConfig), options),
       MongoJobEventStore.layer({ ...config, ...options })
     ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
   },
@@ -2697,12 +2763,13 @@ export const MongoJobStore = Object.freeze({
     options: MongoJobEventStoreOptions = {}
   ) {
     const eventToken = JobEventStore.for(token)
+    const { eventWriter: _eventWriter, ...clientConfig } = config
     return Layer.merge(
       layer(
         token,
         async () =>
           MongoJobStoreClient.fromDb({
-            ...config,
+            ...clientConfig,
             namespace: namespaceFor(token, config.namespace ?? 'default')
           }),
         options
@@ -2714,8 +2781,9 @@ export const MongoJobStore = Object.freeze({
     config: MongoJobStoreConnectionConfig,
     options: MongoJobEventStoreOptions = {}
   ) {
+    const { eventWriter: _eventWriter, ...clientConfig } = config
     return Layer.merge(
-      layer(JobStore, () => MongoJobStoreClient.fromConfig(config), options),
+      layer(JobStore, () => MongoJobStoreClient.fromConfig(clientConfig), options),
       MongoJobEventStore.layerFromConfig({ ...config, ...options })
     ) as Layer<InstanceType<typeof JobStore> | InstanceType<typeof JobEventStore>, never>
   },
@@ -2725,12 +2793,13 @@ export const MongoJobStore = Object.freeze({
     options: MongoJobEventStoreOptions = {}
   ) {
     const eventToken = JobEventStore.for(token)
+    const { eventWriter: _eventWriter, ...clientConfig } = config
     return Layer.merge(
       layer(
         token,
         () =>
           MongoJobStoreClient.fromConfig({
-            ...config,
+            ...clientConfig,
             namespace: namespaceFor(token, config.namespace ?? 'default')
           }),
         options

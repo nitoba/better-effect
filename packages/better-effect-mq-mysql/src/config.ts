@@ -6,6 +6,7 @@
 
 import { MySqlConfigurationError } from './errors'
 import { hasUnpairedSurrogate } from './internal/text'
+import type { JobEventStoreWriter } from 'better-effect-mq'
 
 export interface QueryResult<Row = unknown> {
   readonly rows: readonly Row[]
@@ -35,6 +36,7 @@ export interface MySqlJobStoreConfig {
   readonly pool: Pool
   readonly namespace?: string | undefined
   readonly validateSchema?: boolean | undefined
+  readonly eventWriter?: JobEventStoreWriter | undefined
 }
 
 export interface MySqlJobStoreConnectionConfig {
@@ -42,12 +44,14 @@ export interface MySqlJobStoreConnectionConfig {
   readonly poolConfig?: MySqlPoolConfig | undefined
   readonly namespace?: string | undefined
   readonly validateSchema?: boolean | undefined
+  readonly eventWriter?: JobEventStoreWriter | undefined
 }
 
 export interface NormalizedMySqlJobStoreConfig {
   readonly pool: Pool
   readonly namespace: string
   readonly validateSchema: boolean
+  readonly eventWriter: JobEventStoreWriter | undefined
 }
 
 export interface NormalizedMySqlJobStoreConnectionConfig {
@@ -55,6 +59,7 @@ export interface NormalizedMySqlJobStoreConnectionConfig {
   readonly poolConfig: MySqlPoolConfig | undefined
   readonly namespace: string
   readonly validateSchema: boolean
+  readonly eventWriter: JobEventStoreWriter | undefined
 }
 
 export const DEFAULT_NAMESPACE = 'default' as const
@@ -113,6 +118,20 @@ const validateBoolean = (value: unknown): boolean => {
   return value === undefined ? DEFAULT_VALIDATE_SCHEMA : value
 }
 
+const validateEventWriter = (value: unknown): JobEventStoreWriter | undefined => {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw configurationError('eventWriter', 'eventWriter must be an object')
+  const writer = value as Record<string, unknown>
+  if (
+    typeof writer.id !== 'string' ||
+    typeof writer.version !== 'string' ||
+    typeof writer.canAppend !== 'boolean'
+  )
+    throw configurationError('eventWriter', 'eventWriter must contain id, version and canAppend')
+  return Object.freeze({ id: writer.id, version: writer.version, canAppend: writer.canAppend })
+}
+
 export const validatePool = (value: unknown): Pool => {
   if (!isObject(value))
     throw configurationError('pool', 'pool must expose a getConnection() method')
@@ -130,20 +149,27 @@ export const validatePool = (value: unknown): Pool => {
 export const normalizeMySqlJobStoreConfig = (
   config: MySqlJobStoreConfig
 ): NormalizedMySqlJobStoreConfig => {
-  const input = readConfigObject(config, ['pool', 'namespace', 'validateSchema'])
+  const input = readConfigObject(config, ['pool', 'namespace', 'validateSchema', 'eventWriter'])
   return Object.freeze({
     pool: validatePool(input.pool),
     namespace: validateNamespace(
       input.namespace === undefined ? DEFAULT_NAMESPACE : input.namespace
     ),
-    validateSchema: validateBoolean(input.validateSchema)
+    validateSchema: validateBoolean(input.validateSchema),
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }
 
 export const normalizeMySqlJobStoreConnectionConfig = (
   config: MySqlJobStoreConnectionConfig
 ): NormalizedMySqlJobStoreConnectionConfig => {
-  const input = readConfigObject(config, ['uri', 'poolConfig', 'namespace', 'validateSchema'])
+  const input = readConfigObject(config, [
+    'uri',
+    'poolConfig',
+    'namespace',
+    'validateSchema',
+    'eventWriter'
+  ])
   if (
     input.uri !== undefined &&
     (typeof input.uri !== 'string' ||
@@ -163,6 +189,7 @@ export const normalizeMySqlJobStoreConnectionConfig = (
     namespace: validateNamespace(
       input.namespace === undefined ? DEFAULT_NAMESPACE : input.namespace
     ),
-    validateSchema: validateBoolean(input.validateSchema)
+    validateSchema: validateBoolean(input.validateSchema),
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }

@@ -58,8 +58,12 @@ import {
   recoverStalledWithPolicy
 } from 'better-effect-mq'
 import { PostgresClient } from './client'
-import { appendPostgresJobEvent } from './event-store'
-import type { DurableJobEventInput, DurableJobEventType } from 'better-effect-mq'
+import { appendPostgresJobEvent, assertPostgresJobEventWriterReady } from './event-store'
+import type {
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventStoreWriter
+} from 'better-effect-mq'
 import { hasUnpairedSurrogate } from './internal/text'
 import {
   validateFlowChildReport,
@@ -95,6 +99,26 @@ const postgresDescriptor = (queueFilteredNotifications: boolean): JobStoreDescri
     })
   })
 const maxRetries = 3
+const eventMutationOperations = new Set([
+  'enqueue',
+  'claim',
+  'claimControlled',
+  'settle',
+  'settleControlled',
+  'release',
+  'releaseControlled',
+  'heartbeat',
+  'recoverStalled',
+  'recoverStalledControlled',
+  'cancel',
+  'cancelControlled',
+  'requestCancellation',
+  'retry',
+  'promote',
+  'remove',
+  'pause',
+  'resume'
+])
 
 type Row = Record<string, unknown>
 type StoreResult<T> = ResultType<T, unknown>
@@ -123,7 +147,8 @@ const taggedJobErrorTags = new Set([
   'JobNotCancellableError',
   'JobNotPromotableError',
   'UnsupportedJobStoreOperationError',
-  'ControlsRevisionMismatchError'
+  'ControlsRevisionMismatchError',
+  'JobEventWriterRejectedError'
 ])
 const isTaggedJobError = (cause: unknown): boolean => {
   try {
@@ -1003,7 +1028,14 @@ class PostgresJobStoreImplementation {
   private listenerReservationHeld = false
   private readonly waiters = new Set<WakeWaiter>()
   private disposal: Promise<void> | undefined
-  constructor(private readonly client: PostgresClient) {
+  constructor(
+    private readonly client: PostgresClient,
+    private readonly eventWriter: JobEventStoreWriter = {
+      id: 'better-effect-mq-postgres',
+      version: 'current',
+      canAppend: true
+    }
+  ) {
     this.channel = `mq_${hash(`${client.schema}:${client.namespace}`)}_wake`
   }
   get descriptor(): JobStoreDescriptor {
@@ -1181,6 +1213,14 @@ class PostgresJobStoreImplementation {
         await this.ensureDispatchKeyLayout(tx as Tx)
         await this.ensureControlsLayout(tx as Tx)
         await this.ensureEventsLayout(tx as Tx)
+        if (eventMutationOperations.has(operation))
+          await assertPostgresJobEventWriterReady(
+            tx as Tx,
+            this.client,
+            operation,
+            this.eventWriter,
+            this.eventsAvailable
+          )
         value = await body(tx as Tx)
         await tx.query('COMMIT')
         committed = true
@@ -1294,7 +1334,7 @@ class PostgresJobStoreImplementation {
       readonly queue?: string
     } = {}
   ): Promise<void> {
-    if (!this.eventsAvailable) return
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
     const input: DurableJobEventInput = {
       type,
       recordedAtMs,
@@ -3667,7 +3707,8 @@ class PostgresJobStoreImplementation {
 const makeStoreLayer = <T extends AnyJobStoreToken>(
   token: T,
   acquire: () => Promise<PostgresClient>,
-  ownsClient: boolean
+  ownsClient: boolean,
+  eventWriter?: JobEventStoreWriter
 ): Layer<InstanceType<T>, never> =>
   Layer.scoped(
     token,
@@ -3676,7 +3717,7 @@ const makeStoreLayer = <T extends AnyJobStoreToken>(
       let implementation: PostgresJobStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
-        implementation = new PostgresJobStoreImplementation(client)
+        implementation = new PostgresJobStoreImplementation(client, eventWriter)
         await implementation.start()
         return JobStore.of(implementation as never) as unknown as ServiceContract<InstanceType<T>>
       } catch (cause) {
@@ -3712,10 +3753,11 @@ const borrowedClient = (
   config: PostgresJobStoreConfig
 ): (() => Promise<PostgresClient>) => {
   const normalized = normalizePostgresJobStoreConfig(config)
+  const { eventWriter: _eventWriter, ...clientConfig } = normalized
   return async () =>
     PostgresClient.fromPool({
-      ...normalized,
-      namespace: namespaceForToken(token, normalized.namespace)
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
     })
 }
 const ownedClient = (
@@ -3723,27 +3765,48 @@ const ownedClient = (
   config: PostgresJobStoreConnectionConfig
 ): (() => Promise<PostgresClient>) => {
   const normalized = normalizePostgresJobStoreConnectionConfig(config)
+  const { eventWriter: _eventWriter, ...clientConfig } = normalized
   return () =>
     PostgresClient.fromConfig({
-      ...normalized,
-      namespace: namespaceForToken(token, normalized.namespace)
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
     })
 }
 
 export const PostgresJobStore = Object.freeze({
   layer(config: PostgresJobStoreConfig) {
-    return makeStoreLayer(JobStore, borrowedClient(JobStore, config), false)
+    return makeStoreLayer(
+      JobStore,
+      borrowedClient(JobStore, config),
+      false,
+      normalizePostgresJobStoreConfig(config).eventWriter
+    )
   },
   layerFor<T extends AnyJobStoreToken>(token: T, config: PostgresJobStoreConfig) {
-    return makeStoreLayer(token, borrowedClient(token, config), false)
+    return makeStoreLayer(
+      token,
+      borrowedClient(token, config),
+      false,
+      normalizePostgresJobStoreConfig(config).eventWriter
+    )
   },
   layerFromConfig(config: PostgresJobStoreConnectionConfig) {
-    return makeStoreLayer(JobStore, ownedClient(JobStore, config), true)
+    return makeStoreLayer(
+      JobStore,
+      ownedClient(JobStore, config),
+      true,
+      normalizePostgresJobStoreConnectionConfig(config).eventWriter
+    )
   },
   layerFromConfigFor<T extends AnyJobStoreToken>(
     token: T,
     config: PostgresJobStoreConnectionConfig
   ) {
-    return makeStoreLayer(token, ownedClient(token, config), true)
+    return makeStoreLayer(
+      token,
+      ownedClient(token, config),
+      true,
+      normalizePostgresJobStoreConnectionConfig(config).eventWriter
+    )
   }
 })

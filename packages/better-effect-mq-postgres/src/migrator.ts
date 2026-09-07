@@ -1009,7 +1009,11 @@ const findSchemaProblems = async (
   client: PoolClient,
   schema: string
 ): Promise<readonly string[]> => {
-  const tableNames = Object.values(POSTGRES_TABLES)
+  // The rollout metadata table is created lazily so existing installations do
+  // not need a migration checksum change before they opt into activation.
+  const tableNames = Object.values(POSTGRES_TABLES).filter(
+    (table) => table !== POSTGRES_TABLES.eventActivation
+  )
   const tableResult = await client.query<{ table_name: string }>(
     'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = ANY($2::text[])',
     [schema, tableNames]

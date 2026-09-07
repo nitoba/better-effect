@@ -9,6 +9,7 @@
 import { RedisConfigurationError } from './errors'
 import { hasUnpairedSurrogate, utf8ByteLength } from './internal/text'
 import { validateNamespace, validatePrefix } from './keys'
+import type { JobEventStoreWriter } from 'better-effect-mq'
 
 export type MaybePromise<T> = T | PromiseLike<T>
 
@@ -70,6 +71,7 @@ export interface RedisJobStoreConfig {
   readonly namespace?: string
   readonly prefix?: string
   readonly validateLayout?: boolean
+  readonly eventWriter?: JobEventStoreWriter
 }
 
 export interface RedisJobStoreConnectionConfig {
@@ -78,6 +80,7 @@ export interface RedisJobStoreConnectionConfig {
   readonly namespace?: string
   readonly prefix?: string
   readonly validateLayout?: boolean
+  readonly eventWriter?: JobEventStoreWriter
 }
 
 export interface NormalizedRedisJobStoreConfig {
@@ -86,6 +89,7 @@ export interface NormalizedRedisJobStoreConfig {
   readonly namespace: string
   readonly prefix: string
   readonly validateLayout: boolean
+  readonly eventWriter: JobEventStoreWriter | undefined
 }
 
 export interface NormalizedRedisJobStoreConnectionConfig {
@@ -94,6 +98,7 @@ export interface NormalizedRedisJobStoreConnectionConfig {
   readonly namespace: string
   readonly prefix: string
   readonly validateLayout: boolean
+  readonly eventWriter: JobEventStoreWriter | undefined
 }
 
 export const DEFAULT_NAMESPACE = 'default' as const
@@ -146,6 +151,21 @@ const validateBoolean = (value: unknown): boolean => {
     throw configurationError('validateLayout', 'validateLayout must be a boolean')
   }
   return value === undefined ? DEFAULT_VALIDATE_LAYOUT : value
+}
+
+const validateEventWriter = (value: unknown): JobEventStoreWriter | undefined => {
+  if (value === undefined) return undefined
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    typeof (value as Record<string, unknown>).id !== 'string' ||
+    typeof (value as Record<string, unknown>).version !== 'string' ||
+    typeof (value as Record<string, unknown>).canAppend !== 'boolean'
+  ) {
+    throw configurationError('eventWriter', 'must include string id/version and boolean canAppend')
+  }
+  const writer = value as JobEventStoreWriter
+  return Object.freeze({ id: writer.id, version: writer.version, canAppend: writer.canAppend })
 }
 
 const validateOptionalText = (
@@ -248,7 +268,8 @@ export const normalizeRedisJobStoreConfig = (
     'subscriber',
     'namespace',
     'prefix',
-    'validateLayout'
+    'validateLayout',
+    'eventWriter'
   ])
   return Object.freeze({
     client: validateCommandClient(input.client),
@@ -258,7 +279,8 @@ export const normalizeRedisJobStoreConfig = (
       input.namespace === undefined ? DEFAULT_NAMESPACE : input.namespace
     ),
     prefix: normalizePrefix(input.prefix === undefined ? DEFAULT_PREFIX : input.prefix),
-    validateLayout: validateBoolean(input.validateLayout)
+    validateLayout: validateBoolean(input.validateLayout),
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }
 
@@ -270,7 +292,8 @@ export const normalizeRedisJobStoreConnectionConfig = (
     'clientOptions',
     'namespace',
     'prefix',
-    'validateLayout'
+    'validateLayout',
+    'eventWriter'
   ])
   const url = validateOptionalText(input.url, 'url', 4096)
   return Object.freeze({
@@ -280,7 +303,8 @@ export const normalizeRedisJobStoreConnectionConfig = (
       input.namespace === undefined ? DEFAULT_NAMESPACE : input.namespace
     ),
     prefix: normalizePrefix(input.prefix === undefined ? DEFAULT_PREFIX : input.prefix),
-    validateLayout: validateBoolean(input.validateLayout)
+    validateLayout: validateBoolean(input.validateLayout),
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }
 

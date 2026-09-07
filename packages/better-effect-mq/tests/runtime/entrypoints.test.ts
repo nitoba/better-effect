@@ -20,6 +20,7 @@ const expectedCoreRuntimeExports = [
   'JobEventConsumerAbortedError',
   'JobEventCursorExpiredError',
   'JobEventStoreFailure',
+  'JobEventWriterRejectedError',
   'JobEvents',
   'QueueControls',
   'JobTimeoutError',

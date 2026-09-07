@@ -32,9 +32,14 @@ import {
   type JobEventStoreContract,
   type JobEventStoreError,
   type JobEventStoreDescriptor,
+  type JobEventStoreActivation,
+  type JobEventStoreActivationOptions,
+  type JobEventStoreReadiness,
+  type JobEventStoreWriter,
   type JobEventStoreOperation,
   type JobIdentity
 } from 'better-effect-mq'
+import { JobEventWriterRejectedError } from 'better-effect-mq'
 import { MySqlClient } from './client'
 import {
   normalizeMySqlJobStoreConfig,
@@ -83,9 +88,15 @@ const descriptor: JobEventStoreDescriptor = Object.freeze({
   extensionVersion: jobEventExtensionVersion,
   jobStoreProtocolVersion: 1
 })
+const defaultWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq-mysql',
+  version: 'current',
+  canAppend: true
+})
 
 const eventTable = (): string => quoteIdentifier(MYSQL_TABLES.events)
 const cursorTable = (): string => quoteIdentifier(MYSQL_TABLES.eventCursors)
+const activationTable = (): string => quoteIdentifier(MYSQL_TABLES.eventActivation)
 const eventCursorColumn = quoteIdentifier('cursor')
 
 const hash = (value: string): string =>
@@ -334,6 +345,7 @@ export const appendMySqlJobEvent = async (
   client: Pick<MySqlClient, 'namespace'>,
   input: DurableJobEventInput
 ): Promise<void> => {
+  await ensureOptionalActivation(tx, client.namespace, input.recordedAtMs)
   const counters = cursorTable()
   const events = eventTable()
   await tx.query(
@@ -355,6 +367,94 @@ export const appendMySqlJobEvent = async (
     [client.namespace, nextCursor, ...eventInputValues(input)]
   )
   markMySqlJobEventWake(tx, client.namespace)
+}
+
+const createActivationTable = async (connection: Pick<Tx, 'query'>): Promise<void> => {
+  await connection.query(
+    `CREATE TABLE IF NOT EXISTS ${activationTable()} (
+      namespace VARCHAR(255) NOT NULL PRIMARY KEY,
+      activation_state VARCHAR(16) NOT NULL,
+      activation_cursor BIGINT UNSIGNED NOT NULL,
+      activation_revision BIGINT UNSIGNED NOT NULL,
+      activated_at_ms BIGINT UNSIGNED NOT NULL,
+      CONSTRAINT better_effect_mq_job_event_activation_state CHECK (activation_state IN ('optional','required')),
+      CONSTRAINT better_effect_mq_job_event_activation_values CHECK (
+        activation_cursor <= 9007199254740991 AND activation_revision BETWEEN 1 AND 9007199254740991
+        AND activated_at_ms <= 9007199254740991
+      )
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`
+  )
+}
+
+/** Create activation metadata outside a caller-owned transaction. MySQL DDL can auto-commit. */
+export const ensureMySqlJobEventActivationTable = async (
+  client: Pick<MySqlClient, 'pool'>
+): Promise<void> => {
+  const connection = await client.pool.getConnection()
+  try {
+    await createActivationTable(connection)
+  } finally {
+    connection.release()
+  }
+}
+
+const ensureOptionalActivation = async (tx: Tx, namespace: string, now: number): Promise<void> => {
+  await tx.query(
+    `INSERT INTO ${activationTable()}(namespace,activation_state,activation_cursor,activation_revision,activated_at_ms)
+     SELECT ?, 'optional', COALESCE((SELECT next_cursor FROM ${cursorTable()} WHERE namespace=?), 0), 1, ?
+     WHERE NOT EXISTS (SELECT 1 FROM ${activationTable()} WHERE namespace=?)`,
+    [namespace, namespace, now, namespace]
+  )
+}
+
+const activationFromRow = (
+  row: Row | undefined,
+  encode: (value: bigint) => JobEventCursor
+): JobEventStoreActivation => {
+  if (row === undefined)
+    return Object.freeze({
+      state: 'inactive',
+      mode: undefined,
+      activationCursor: undefined,
+      revision: 0,
+      activatedAtMs: undefined
+    })
+  const state = row.activation_state
+  if (state !== 'optional' && state !== 'required') throw new Error('invalid activation state')
+  return Object.freeze({
+    state,
+    mode: state,
+    activationCursor: encode(rowBigInt(row.activation_cursor, 'activation_cursor')),
+    revision: Number(rowBigInt(row.activation_revision, 'activation_revision')),
+    activatedAtMs: Number(rowBigInt(row.activated_at_ms, 'activated_at_ms'))
+  })
+}
+
+export const assertMySqlJobEventWriterReady = async (
+  tx: Tx,
+  namespace: string,
+  operation: string,
+  writer: JobEventStoreWriter,
+  eventsAvailable: boolean
+): Promise<void> => {
+  const available = await tx.query<Row>(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`,
+    [MYSQL_TABLES.eventActivation]
+  )
+  if (available.rows.length === 0) return
+  const result = await tx.query<Row>(
+    `SELECT activation_state,activation_revision FROM ${activationTable()} WHERE namespace=? FOR UPDATE`,
+    [namespace]
+  )
+  const row = result.rows[0]
+  if (row?.activation_state === 'required' && (!writer.canAppend || !eventsAvailable)) {
+    throw new JobEventWriterRejectedError({
+      operation,
+      revision: Number(rowBigInt(row.activation_revision, 'activation_revision')),
+      writerId: writer.id,
+      writerVersion: writer.version
+    })
+  }
 }
 
 const eventWakeWaiters = new Map<string, Set<() => void>>()
@@ -389,10 +489,15 @@ class MySqlJobEventStoreImplementation {
 
   constructor(
     private readonly client: MySqlClient,
-    retention: JobEventRetention | undefined
+    retention: JobEventRetention | undefined,
+    private readonly writer: JobEventStoreWriter = defaultWriter
   ) {
     this.prefix = `mysql1_${hash(client.namespace)}_`
     this.retention = validateRetention(retention)
+  }
+
+  async start(): Promise<void> {
+    await ensureMySqlJobEventActivationTable(this.client)
   }
 
   private table(): string {
@@ -483,6 +588,72 @@ class MySqlJobEventStoreImplementation {
       [this.client.namespace]
     )
     return result.rows[0] === undefined ? 0n : rowBigInt(result.rows[0].next_cursor, 'next_cursor')
+  }
+
+  private async readActivation(tx: Tx): Promise<JobEventStoreActivation> {
+    const result = await tx.query<Row>(
+      `SELECT activation_state,activation_cursor,activation_revision,activated_at_ms FROM ${activationTable()} WHERE namespace=?`,
+      [this.client.namespace]
+    )
+    return activationFromRow(result.rows[0], (value) => this.encode(value))
+  }
+
+  activation(): Operation<JobEventStoreActivation> {
+    return asOperationPromise(this.withTx('activation', (tx) => this.readActivation(tx)))
+  }
+
+  readiness(writer: JobEventStoreWriter = this.writer): Operation<JobEventStoreReadiness> {
+    return asOperationPromise(
+      this.withTx('readiness', async (tx) => {
+        const activation = await this.readActivation(tx)
+        const ready = activation.state !== 'required' || writer.canAppend
+        return Object.freeze({
+          ...activation,
+          ready,
+          writer,
+          reason:
+            activation.state === 'required'
+              ? ready
+                ? 'required'
+                : 'append-unsupported'
+              : activation.state
+        })
+      })
+    )
+  }
+
+  activate(options: JobEventStoreActivationOptions): Operation<JobEventStoreActivation> {
+    return asOperationPromise(
+      this.withTx('activate', async (tx) => {
+        if (
+          options === null ||
+          typeof options !== 'object' ||
+          (options.mode !== 'optional' && options.mode !== 'required')
+        )
+          throw new Error('mode must be optional or required')
+        const now = options.now ?? Date.now()
+        if (!Number.isSafeInteger(now) || now < 0) throw new Error('now must be a timestamp')
+        const currentResult = await tx.query<Row>(
+          `SELECT activation_state,activation_cursor,activation_revision,activated_at_ms FROM ${activationTable()} WHERE namespace=? FOR UPDATE`,
+          [this.client.namespace]
+        )
+        const current = currentResult.rows[0]
+        if (current?.activation_state === 'required' && options.mode === 'optional')
+          throw new Error('required activation cannot be downgraded')
+        if (current === undefined) {
+          await tx.query(
+            `INSERT INTO ${activationTable()}(namespace,activation_state,activation_cursor,activation_revision,activated_at_ms) VALUES(?,?,?,1,?)`,
+            [this.client.namespace, options.mode, await this.tailSequence(tx), now]
+          )
+        } else if (current.activation_state === 'optional' && options.mode === 'required') {
+          await tx.query(
+            `UPDATE ${activationTable()} SET activation_state='required',activation_revision=activation_revision+1,activated_at_ms=? WHERE namespace=?`,
+            [now, this.client.namespace]
+          )
+        }
+        return this.readActivation(tx)
+      })
+    )
   }
 
   private async assertReadable(tx: Tx, after: bigint): Promise<void> {
@@ -718,7 +889,8 @@ const makeStoreLayer = <Token extends AnyJobEventStoreToken>(
   token: Token,
   acquire: () => Promise<MySqlClient>,
   retention: JobEventRetention,
-  ownsClient: boolean
+  ownsClient: boolean,
+  writer?: JobEventStoreWriter
 ): Layer<InstanceType<Token>, never> =>
   Layer.scoped(
     token,
@@ -727,7 +899,8 @@ const makeStoreLayer = <Token extends AnyJobEventStoreToken>(
       let implementation: MySqlJobEventStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
-        implementation = new MySqlJobEventStoreImplementation(client, retention)
+        implementation = new MySqlJobEventStoreImplementation(client, retention, writer)
+        await implementation.start()
         return JobEventStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
         >
@@ -792,22 +965,40 @@ const ownedClient = (
 export const MySqlJobEventStore = Object.freeze({
   layer(config: MySqlJobEventStoreConfig) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(JobEventStore, borrowedClient(JobEventStore, config), retention, false)
+    return makeStoreLayer(
+      JobEventStore,
+      borrowedClient(JobEventStore, config),
+      retention,
+      false,
+      config.eventWriter
+    )
   },
   layerFor<Token extends AnyJobEventStoreToken>(token: Token, config: MySqlJobEventStoreConfig) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(token, borrowedClient(token, config), retention, false)
+    return makeStoreLayer(
+      token,
+      borrowedClient(token, config),
+      retention,
+      false,
+      config.eventWriter
+    )
   },
   layerFromConfig(config: MySqlJobEventStoreConnectionConfig) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(JobEventStore, ownedClient(JobEventStore, config), retention, true)
+    return makeStoreLayer(
+      JobEventStore,
+      ownedClient(JobEventStore, config),
+      retention,
+      true,
+      config.eventWriter
+    )
   },
   layerFromConfigFor<Token extends AnyJobEventStoreToken>(
     token: Token,
     config: MySqlJobEventStoreConnectionConfig
   ) {
     const retention = normalizedRetention(config)
-    return makeStoreLayer(token, ownedClient(token, config), retention, true)
+    return makeStoreLayer(token, ownedClient(token, config), retention, true, config.eventWriter)
   }
 })
 

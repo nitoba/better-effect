@@ -6,6 +6,7 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- structural assertions follow explicit callable checks.
 
 import { MongoJobStoreConfigurationError } from './errors'
+import type { JobEventStoreWriter } from 'better-effect-mq'
 
 export interface MongoCollection {
   find(
@@ -60,6 +61,7 @@ export interface MongoJobStoreConfig {
   readonly collectionPrefix?: string
   readonly validateLayout?: boolean
   readonly notifications?: 'auto' | 'poll'
+  readonly eventWriter?: JobEventStoreWriter
 }
 
 export interface MongoJobStoreConnectionConfig {
@@ -70,6 +72,7 @@ export interface MongoJobStoreConnectionConfig {
   readonly validateLayout?: boolean
   readonly notifications?: 'auto' | 'poll'
   readonly clientOptions?: object
+  readonly eventWriter?: JobEventStoreWriter
 }
 
 export const DEFAULT_NAMESPACE = 'default' as const
@@ -78,6 +81,20 @@ export const DEFAULT_VALIDATE_LAYOUT = true as const
 
 const configError = (field: string, message: string): MongoJobStoreConfigurationError =>
   new MongoJobStoreConfigurationError(message, field)
+
+const validateEventWriter = (value: unknown): JobEventStoreWriter | undefined => {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw configError('eventWriter', 'must be an object')
+  const writer = value as Record<string, unknown>
+  if (
+    typeof writer.id !== 'string' ||
+    typeof writer.version !== 'string' ||
+    typeof writer.canAppend !== 'boolean'
+  )
+    throw configError('eventWriter', 'must contain id, version and canAppend')
+  return Object.freeze({ id: writer.id, version: writer.version, canAppend: writer.canAppend })
+}
 
 const readObject = (value: unknown, fields: readonly string[]): Record<string, unknown> => {
   if (value === null || typeof value !== 'object' || Array.isArray(value))
@@ -136,7 +153,8 @@ export const normalizeMongoJobStoreConfig = (config: MongoJobStoreConfig) => {
     'namespace',
     'collectionPrefix',
     'validateLayout',
-    'notifications'
+    'notifications',
+    'eventWriter'
   ])
   if (input.validateLayout !== undefined && typeof input.validateLayout !== 'boolean')
     throw configError('validateLayout', 'must be a boolean')
@@ -151,7 +169,8 @@ export const normalizeMongoJobStoreConfig = (config: MongoJobStoreConfig) => {
     namespace: validateNamespace(input.namespace ?? DEFAULT_NAMESPACE),
     collectionPrefix: validateCollectionPrefix(input.collectionPrefix ?? DEFAULT_COLLECTION_PREFIX),
     validateLayout: input.validateLayout ?? DEFAULT_VALIDATE_LAYOUT,
-    notifications: input.notifications ?? 'auto'
+    notifications: input.notifications ?? 'auto',
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }
 
@@ -163,7 +182,8 @@ export const normalizeMongoJobStoreConnectionConfig = (config: MongoJobStoreConn
     'collectionPrefix',
     'validateLayout',
     'notifications',
-    'clientOptions'
+    'clientOptions',
+    'eventWriter'
   ])
   if (typeof input.uri !== 'string' || input.uri.length === 0 || input.uri.includes('\0'))
     throw configError('uri', 'must be a non-empty MongoDB connection URI')
@@ -187,6 +207,7 @@ export const normalizeMongoJobStoreConnectionConfig = (config: MongoJobStoreConn
     collectionPrefix: validateCollectionPrefix(input.collectionPrefix ?? DEFAULT_COLLECTION_PREFIX),
     validateLayout: input.validateLayout ?? DEFAULT_VALIDATE_LAYOUT,
     notifications: input.notifications ?? 'auto',
-    clientOptions: input.clientOptions as object | undefined
+    clientOptions: input.clientOptions as object | undefined,
+    eventWriter: validateEventWriter(input.eventWriter)
   })
 }
