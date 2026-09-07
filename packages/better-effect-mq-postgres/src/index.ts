@@ -2,6 +2,7 @@ export { PostgresClient } from './client'
 export { PostgresMigrator } from './migrator'
 export { PostgresJobStore } from './layer'
 export { PostgresJobScheduleStore } from './layer'
+export { PostgresJobEventStore } from './event-store'
 export { PostgresFlowStore } from './flow'
 export type { PostgresFlowStoreInstance } from './flow'
 export {
@@ -66,3 +67,8 @@ export type {
   PostgresSchemaValidationResult
 } from './migrator'
 export type { PostgresJobScheduleStoreOptions } from './schedule'
+export type {
+  PostgresJobEventStoreConfig,
+  PostgresJobEventStoreConnectionConfig,
+  PostgresJobEventStoreInstance
+} from './event-store'

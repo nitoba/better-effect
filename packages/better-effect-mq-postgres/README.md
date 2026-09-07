@@ -13,6 +13,42 @@ and fenced permits. Claims lock controls, rate windows, permits, and jobs in
 that order and fail closed when a legacy claim or stale revision is presented.
 See the core [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
+## Durable job events
+
+Migration `006_events.sql` adds the `JobEventStore` event log and its per-namespace
+cursor counter. Compose the event layer with the matching `JobStore` layer:
+
+```ts
+import { Layer } from 'better-effect'
+import { JobEventStore, JobStore } from 'better-effect-mq'
+import { PostgresJobEventStore, PostgresJobStore } from 'better-effect-mq-postgres'
+
+const Live = Layer.merge(
+  PostgresJobStore.layer({ pool, namespace: 'billing' }),
+  PostgresJobEventStore.layer({ pool, namespace: 'billing', retention: { count: 100_000 } })
+)
+```
+
+Enqueue, claim, settlement, release, stalled recovery, administrative transitions,
+job removal, and queue pause/resume append safe event fields in the same transaction
+as the `JobStore` mutation. Duplicate enqueue and already-applied operations do not
+append duplicate events. `tailCursor()`, filtered `read()`, and `awaitEvents()` use
+opaque cursors; `awaitEvents()` polls the authoritative table, so LISTEN/NOTIFY is
+only a wake hint and cannot lose changes. Retention may be bounded by event age or
+count, and reads return `JobEventCursorExpiredError` when a requested position has
+been removed.
+
+Named stores use the corresponding event token:
+
+```ts
+const Durable = JobStore.named('durable')
+const DurableEvents = JobEventStore.for(Durable)
+const Live = Layer.merge(
+  PostgresJobStore.layerFor(Durable, { pool }),
+  PostgresJobEventStore.layerFor(DurableEvents, { pool })
+)
+```
+
 ## Flow protocol v2
 
 Migration `004_flows_v2.sql` is an additive, forward-only extension. It leaves
@@ -129,6 +165,8 @@ published-record index without modifying the JobStore or schedule tables.
 Migration `migrations/005_controls_v3.sql` adds the controlled-claim layout;
 its fixed-window rate limiter is anchored at the first accepted claim and does
 not refund capacity on settlement, release, cancellation, or recovery.
+Migration `migrations/006_events.sql` adds the durable job-event cursor and event
+tables described above.
 
 ## Upgrade and downgrade policy
 

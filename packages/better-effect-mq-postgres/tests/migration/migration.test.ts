@@ -118,6 +118,25 @@ const validColumnNames = {
     'claim_count',
     'updated_at_ms'
   ],
+  [POSTGRES_TABLES.eventCursors]: ['namespace', 'next_cursor'],
+  [POSTGRES_TABLES.events]: [
+    'namespace',
+    'cursor',
+    'recorded_at_ms',
+    'event_type',
+    'job_id',
+    'queue',
+    'name',
+    'version',
+    'state',
+    'attempt',
+    'delivery',
+    'worker_id',
+    'outcome',
+    'failure_kind',
+    'duplicate',
+    'attributes'
+  ],
   [POSTGRES_TABLES.schedules]: [
     'namespace',
     'schedule_key',
@@ -248,7 +267,11 @@ const validIndexDefinitions = {
   [POSTGRES_INDEXES[19]]:
     'CREATE INDEX better_effect_mq_controlled_permits_job_token_idx ON better_effect_mq_controlled_permits (namespace, job_id, lease_token)',
   [POSTGRES_INDEXES[20]]:
-    'CREATE INDEX better_effect_mq_rate_windows_expiry_idx ON better_effect_mq_rate_windows (namespace, queue, started_at_ms)'
+    'CREATE INDEX better_effect_mq_rate_windows_expiry_idx ON better_effect_mq_rate_windows (namespace, queue, started_at_ms)',
+  [POSTGRES_INDEXES[21]]:
+    'CREATE INDEX better_effect_mq_job_events_queue_cursor_idx ON better_effect_mq_job_events (namespace, queue COLLATE "C", cursor)',
+  [POSTGRES_INDEXES[22]]:
+    'CREATE INDEX better_effect_mq_job_events_type_cursor_idx ON better_effect_mq_job_events (namespace, event_type COLLATE "C", cursor)'
 } as const
 
 const validConstraintRows = (schema: string) => [
@@ -281,7 +304,11 @@ const validConstraintRows = (schema: string) => [
                     ? POSTGRES_TABLES.permits
                     : conname.startsWith('better_effect_mq_rate_windows_')
                       ? POSTGRES_TABLES.rateWindows
-                      : POSTGRES_TABLES.schemaVersions,
+                      : conname.startsWith('better_effect_mq_job_event_cursors_')
+                        ? POSTGRES_TABLES.eventCursors
+                        : conname.startsWith('better_effect_mq_job_events_')
+                          ? POSTGRES_TABLES.events
+                          : POSTGRES_TABLES.schemaVersions,
     constraint_type: 'c',
     validated: true,
     definition
@@ -342,6 +369,45 @@ const validConstraintRows = (schema: string) => [
     definition: 'PRIMARY KEY (namespace, id)',
     conkey: [1, 2],
     confkey: null
+  },
+  {
+    conname: 'better_effect_mq_job_event_cursors_pkey',
+    table_name: POSTGRES_TABLES.eventCursors,
+    constraint_type: 'p',
+    validated: true,
+    definition: 'PRIMARY KEY (namespace)',
+    conkey: [1],
+    confkey: null
+  },
+  {
+    conname: 'better_effect_mq_job_event_cursors_values',
+    table_name: POSTGRES_TABLES.eventCursors,
+    constraint_type: 'c',
+    validated: true,
+    definition: 'CHECK (namespace <> and next_cursor >= 0)'
+  },
+  {
+    conname: 'better_effect_mq_job_events_pkey',
+    table_name: POSTGRES_TABLES.events,
+    constraint_type: 'p',
+    validated: true,
+    definition: 'PRIMARY KEY (namespace, cursor)',
+    conkey: [1, 2],
+    confkey: null
+  },
+  {
+    conname: 'better_effect_mq_job_events_values',
+    table_name: POSTGRES_TABLES.events,
+    constraint_type: 'c',
+    validated: true,
+    definition: 'CHECK (event values)'
+  },
+  {
+    conname: 'better_effect_mq_job_events_type',
+    table_name: POSTGRES_TABLES.events,
+    constraint_type: 'c',
+    validated: true,
+    definition: 'CHECK (event type)'
   }
 ]
 
@@ -376,7 +442,9 @@ const fakePool = (options: FakeOptions = {}) => {
                   ? POSTGRES_TABLES.rateWindows
                   : indexname.startsWith('better_effect_mq_outbox_')
                     ? POSTGRES_TABLES.outbox
-                    : POSTGRES_TABLES.jobs,
+                    : indexname.startsWith('better_effect_mq_job_events_')
+                      ? POSTGRES_TABLES.events
+                      : POSTGRES_TABLES.jobs,
             indexdef: validIndexDefinitions[indexname],
             is_valid: indexname !== options.invalidIndex,
             is_ready: true,
@@ -435,7 +503,7 @@ describe('Postgres foundation', () => {
 
   test('loads the shipped migration with a stable checksum', async () => {
     const migrations = await loadPostgresMigrations()
-    expect(migrations).toHaveLength(5)
+    expect(migrations).toHaveLength(6)
     expect(migrations[0]?.version).toBe(1)
     expect(migrations[0]?.sql).toContain('better_effect_mq_jobs')
     expect(migrations[1]?.version).toBe(2)
@@ -446,6 +514,8 @@ describe('Postgres foundation', () => {
     expect(migrations[3]?.sql).toContain('better_effect_mq_flow_children')
     expect(migrations[4]?.version).toBe(5)
     expect(migrations[4]?.sql).toContain('better_effect_mq_queue_controls')
+    expect(migrations[5]?.version).toBe(6)
+    expect(migrations[5]?.sql).toContain('better_effect_mq_job_events')
     expect(migrations[0]?.checksum).toMatch(/^[0-9a-f]{64}$/u)
   })
 
@@ -531,7 +601,7 @@ describe('Postgres foundation', () => {
   test('migration is locked, explicit, and idempotency metadata is bound', async () => {
     const { pool, queries } = fakePool({ validSchema: true })
     const first = await PostgresMigrator.run(pool, { appliedAtMs: 1 })
-    expect(first).toMatchObject({ applied: [1, 2, 3, 4, 5], version: 5, schema: 'public' })
+    expect(first).toMatchObject({ applied: [1, 2, 3, 4, 5, 6], version: 6, schema: 'public' })
     expect(queries.some(({ sql }) => sql.includes('pg_advisory_xact_lock'))).toBe(true)
     expect(queries.some(({ sql }) => sql.includes('DROP TABLE'))).toBe(false)
     const lock = queries.find(({ sql }) => sql.includes('pg_advisory_xact_lock'))

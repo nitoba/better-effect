@@ -18,7 +18,9 @@ export const POSTGRES_TABLES = {
   controls: 'better_effect_mq_queue_controls',
   controlCursors: 'better_effect_mq_queue_control_cursors',
   permits: 'better_effect_mq_controlled_permits',
-  rateWindows: 'better_effect_mq_rate_windows'
+  rateWindows: 'better_effect_mq_rate_windows',
+  eventCursors: 'better_effect_mq_job_event_cursors',
+  events: 'better_effect_mq_job_events'
 } as const
 
 /** Flow v2 tables are intentionally separate from the v1/outbox table set. */
@@ -48,7 +50,9 @@ export const POSTGRES_INDEXES = [
   'better_effect_mq_jobs_dispatch_idx',
   'better_effect_mq_controlled_permits_queue_key_idx',
   'better_effect_mq_controlled_permits_job_token_idx',
-  'better_effect_mq_rate_windows_expiry_idx'
+  'better_effect_mq_rate_windows_expiry_idx',
+  'better_effect_mq_job_events_queue_cursor_idx',
+  'better_effect_mq_job_events_type_cursor_idx'
 ] as const
 
 export const POSTGRES_FLOW_INDEXES = [
