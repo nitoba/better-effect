@@ -46,6 +46,18 @@ export type {
 } from './capabilities/types.js'
 export type { SchemaFacade } from './capabilities/with.js'
 export type { StandardSchemaV1, StandardJSONSchemaV1 } from '@standard-schema/spec'
+export type {
+  AnySchemaCodec,
+  AsyncCodecResult,
+  CodecAsyncEncodeFailure,
+  CodecEncoded,
+  CodecEncodeFailure,
+  CodecInput,
+  CodecOutput,
+  CodecProps,
+  CodecResult,
+  SchemaCodec
+} from './codecs/index.js'
 export {
   decode,
   decodeAsync,
@@ -71,6 +83,8 @@ export type {
   ConstructorArgs,
   Encoded,
   Fields,
+  Input,
+  Output,
   Instance,
   MakeOptions,
   Props,

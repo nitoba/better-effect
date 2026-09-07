@@ -1,8 +1,25 @@
-import type * as z from "zod"
+import type * as z from 'zod'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 
-import type { CLASS_TYPE_ID } from "../internal/symbols.js"
-import type { ClassTypeMetadata } from "./class-metadata.js"
-import type { ClassDefinition, RawShape, Simplify } from "./common.js"
+import type { CLASS_TYPE_ID } from '../internal/symbols.js'
+import type { ClassTypeMetadata } from './class-metadata.js'
+import type { ClassDefinition, RawShape, Simplify } from './common.js'
+
+export type Input<Schema> = Schema extends {
+  readonly schema: infer Definition extends StandardSchemaV1
+}
+  ? StandardSchemaV1.InferInput<Definition>
+  : Schema extends StandardSchemaV1
+    ? StandardSchemaV1.InferInput<Schema>
+    : never
+
+export type Output<Schema> = Schema extends {
+  readonly schema: infer Definition extends StandardSchemaV1
+}
+  ? StandardSchemaV1.InferOutput<Definition>
+  : Schema extends StandardSchemaV1
+    ? StandardSchemaV1.InferOutput<Schema>
+    : never
 
 export type Props<Class> = Class extends {
   readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
@@ -14,7 +31,13 @@ export type Props<Class> = Class extends {
     PropertyKey,
     RawShape
   >
-} ? Simplify<ConstructorProps> : never
+}
+  ? Simplify<ConstructorProps>
+  : Class extends {
+        readonly propsSchema: infer Projection extends StandardSchemaV1
+      }
+    ? StandardSchemaV1.InferOutput<Projection>
+    : never
 
 export type Fields<Class> = Class extends {
   readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
@@ -26,7 +49,9 @@ export type Fields<Class> = Class extends {
     PropertyKey,
     infer ClassFields
   >
-} ? ClassFields : never
+}
+  ? ClassFields
+  : never
 
 export type Struct<Class> = Class extends {
   readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
@@ -38,11 +63,20 @@ export type Struct<Class> = Class extends {
     PropertyKey,
     RawShape
   >
-} ? Definition : never
-
-export type Encoded<Class> = Class extends z.ZodType<unknown, infer Input>
-  ? Simplify<Input>
+}
+  ? Definition
   : never
+
+export type Encoded<Class> =
+  Class extends z.ZodType<unknown, infer Input>
+    ? Simplify<Input>
+    : Class extends {
+          readonly encodedSchema: infer Projection extends StandardSchemaV1
+        }
+      ? StandardSchemaV1.InferOutput<Projection>
+      : Class extends StandardSchemaV1
+        ? StandardSchemaV1.InferInput<Class>
+        : never
 
 export type Instance<Class> = Class extends {
   readonly [CLASS_TYPE_ID]: ClassTypeMetadata<
@@ -54,4 +88,6 @@ export type Instance<Class> = Class extends {
     PropertyKey,
     RawShape
   >
-} ? Self : never
+}
+  ? Self
+  : never

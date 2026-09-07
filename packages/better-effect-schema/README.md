@@ -85,6 +85,30 @@ Person.encode(person)
 
 `Schema` is the preferred facade. The original `Z` facade remains available as a deprecated alias for migration.
 
+## Explicit codecs
+
+Standard Schema defines reading/decoding, but it does not define an inverse
+transform. Encoding therefore requires an explicit codec with an encoder and a
+representation schema:
+
+```ts
+const DateCodec = {
+  schema: DateFromISOString,
+  propsSchema: z.date(),
+  encodedSchema: z.iso.datetime(),
+  encode: (value: Date) => Result.ok(value.toISOString())
+}
+
+const encoded = Schema.encode(DateCodec, new Date())
+```
+
+`Schema.encode` invokes the encoder once, validates its result through
+`encodedSchema`, and returns the value produced by that validation. A plain
+Standard Schema, including a one-way transform, does not acquire an encoder by
+having equal input and output types. `Schema.encodeAsync` selects an explicit
+`encodeAsync` callback when present and accepts either synchronous or
+asynchronous validation.
+
 ## The three-type model
 
 A schema class represents three related types:
@@ -157,8 +181,8 @@ Schema.decode(schema)(encodedValue)
 Schema.decodeUnknownAsync(schema)(unknownValue)
 Schema.decodeAsync(schema)(encodedValue)
 
-Schema.encode(schema)(decodedValue)
-Schema.encodeAsync(schema)(decodedValue)
+Schema.encode(codec)(decodedValue)
+Schema.encodeAsync(codec)(decodedValue)
 
 Schema.make(SchemaClass)(decodedProps)
 Schema.makeAsync(SchemaClass)(decodedProps)
