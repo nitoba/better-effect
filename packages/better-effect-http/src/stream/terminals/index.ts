@@ -1,11 +1,17 @@
 import { Result } from 'better-result'
 import { HttpSinkError, HttpStreamUnexpectedEndError } from '../errors'
 import type { StreamSession } from '../session'
+import type { EffectError, EffectSuccess } from 'better-effect'
 export type TerminalResult<A, E> = AsyncGenerator<never, Result<A, E>, unknown>
 export type StreamCallback<A, B, E = unknown> = (
   value: A,
   index: number
 ) => Result<B, E> | Promise<Result<B, E>>
+export type StreamSessionView = Readonly<{
+  readonly body: ReadableStream<Uint8Array>
+  readonly cancel: (reason?: unknown) => Promise<void>
+}>
+export type StreamUseCallback<C> = (session: StreamSessionView) => C
 export const forEach = async function* <A, B, E>(
   session: StreamSession,
   callback: StreamCallback<A, B, E>
@@ -36,6 +42,22 @@ export const takeUntil = async function* <A>(
     return options?.requireMatch
       ? Result.err(new HttpStreamUnexpectedEndError({ phase: 'takeUntil' }))
       : Result.ok(undefined as never)
+  } finally {
+    await session.close().catch(() => undefined)
+  }
+}
+
+export const use = async function* <C>(
+  session: StreamSession,
+  callback: StreamUseCallback<C>
+): TerminalResult<EffectSuccess<C>, EffectError<C>> {
+  try {
+    const value = callback({
+      body: session.bodyStream,
+      cancel: async () => session.close()
+    })
+    const result = await (typeof value === 'function' ? value() : value)
+    return result as Result<EffectSuccess<C>, EffectError<C>>
   } finally {
     await session.close().catch(() => undefined)
   }

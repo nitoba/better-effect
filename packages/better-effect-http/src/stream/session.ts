@@ -23,6 +23,11 @@ export class StreamSession {
   private reading = false
   private bytesRead = 0
 
+  get bodyStream(): ReadableStream<Uint8Array> {
+    if (this.closed) throw new HttpStreamConsumedError({ phase: 'read' })
+    return this.body ?? new ReadableStream<Uint8Array>()
+  }
+
   private constructor(response: Response, scope: ReturnType<Scope['fork']>) {
     this.metadata = Object.freeze({
       status: response.status,
