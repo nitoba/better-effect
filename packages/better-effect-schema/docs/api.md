@@ -8,9 +8,12 @@ import {
   Class,
   TaggedClass,
   TaggedError,
+  SchemaAsyncRequired,
   SchemaDecodeFailure,
+  SchemaDefinitionFailure,
   SchemaEncodeFailure,
   SchemaConstructionFailure,
+  SchemaExecutionFailure,
   BetterEffectZodError
 } from 'better-effect-schema'
 ```
@@ -75,7 +78,9 @@ Schema.decodeUnknown(schema)(input: unknown)
 Schema.decodeUnknown(schema, input)
 ```
 
-Returns `SchemaDecodeFailure` for expected Zod validation failures.
+Accepts any Standard Schema validator and returns
+`SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure |
+SchemaAsyncRequired`.
 
 ### decode
 
@@ -84,7 +89,7 @@ Schema.decode(schema)(input: z.input<typeof schema>)
 Schema.decode(schema, input)
 ```
 
-Like `decodeUnknown`, but preserves the schema's encoded input type at the call site.
+Like `decodeUnknown`, but preserves the Standard Schema input type at the call site.
 
 ### decodeUnknownAsync and decodeAsync
 
@@ -93,7 +98,8 @@ await Schema.decodeUnknownAsync(schema)(input)
 await Schema.decodeAsync(schema)(input)
 ```
 
-Support asynchronous schemas and return `Promise<Effect<...>>`.
+Support synchronous or asynchronous Standard Schema validators and return
+`Promise<Effect<...>>` with the same decode failure channel.
 
 ### encode and encodeAsync
 
@@ -102,7 +108,8 @@ Schema.encode(schema)(value: z.output<typeof schema>)
 await Schema.encodeAsync(schema)(value)
 ```
 
-Return the schema input representation or `SchemaEncodeFailure`.
+Return the schema input representation or
+`SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired`.
 
 ### make and makeAsync
 
@@ -111,7 +118,8 @@ Schema.make(SchemaClass)(props)
 await Schema.makeAsync(SchemaClass)(props)
 ```
 
-Validate decoded constructor properties and return a concrete instance or `SchemaConstructionFailure`.
+Validate decoded constructor properties and return a concrete instance or
+`SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired`.
 
 ## Native construction APIs
 
@@ -247,9 +255,9 @@ Equivalent top-level types are exported as `Props`, `Fields`, `Struct`, `Encoded
 
 ```ts
 SchemaDecodeFailure
+SchemaDefinitionFailure
 SchemaEncodeFailure
 SchemaConstructionFailure
-SchemaDefinitionFailure
 SchemaExecutionFailure
 SchemaUnsupportedOperation
 SchemaAsyncRequired

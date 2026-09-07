@@ -85,9 +85,21 @@ const wire = yield* Schema.encode(User)(user)
 The operations return:
 
 ```ts
-Effect<User, SchemaDecodeFailure, never>
-Effect<z.input<typeof User>, SchemaEncodeFailure, never>
-Effect<User, SchemaConstructionFailure, never>
+Effect<
+  User,
+  SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  never
+>
+Effect<
+  z.input<typeof User>,
+  SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  never
+>
+Effect<
+  User,
+  SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
+  never
+>
 ```
 
 Async variants return `Promise<Effect<...>>`.

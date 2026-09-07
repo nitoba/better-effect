@@ -84,7 +84,7 @@ the replacement and behavior are recorded.
 | --- | --- | --- | --- | --- |
 | `Schema`, `Class`, `TaggedClass`, `TaggedError` | Zod-backed class/facade factories | `src/schema.ts`, `src/classes/`, root exports | declaration is lazy/declarative; malformed definitions become `SchemaDefinitionFailure` | class, tagged, and conformance suites |
 | `Z` | deprecated alias to the old facade | remove from root after documented cutover; no new alias | historical migration only; never preserve provider coupling | package boundary + migration docs |
-| `decodeUnknown` | `z.safeParse` with unknown input | generic Standard Schema operation | `SchemaDecodeFailure` or `SchemaExecutionFailure`; never throw | operations/adversarial tests |
+| `decodeUnknown` | `z.safeParse` with unknown input | generic Standard Schema operation | `SchemaDecodeFailure`, `SchemaDefinitionFailure`, `SchemaExecutionFailure`, or `SchemaAsyncRequired`; never throw | operations/adversarial tests |
 | `decode` | typed `z.input` plus safe decode | generic Standard Schema typed overload | preserve Input inference; same failure union | operation/type tests |
 | `decodeUnknownAsync`, `decodeAsync` | `safeParseAsync`/`safeDecodeAsync` | async Standard Schema operation | accept sync/async provider once; observe rejection | async operation tests |
 | `encode`, `encodeAsync` | Zod codec output/input conversion | explicit encoder capability | no implicit inverse transform; unsupported is typed | codec/projection tests |
@@ -108,13 +108,13 @@ The generic signatures are intentionally provider-neutral:
 type SchemaEffect<A, E> = Effect<A, E, never>
 
 decodeUnknown<S extends StandardSchema>(schema: S):
-  (input: unknown) => SchemaEffect<Output<S>, SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired>
+  (input: unknown) => SchemaEffect<Output<S>, SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired>
 
 decode<S extends StandardSchema>(schema: S):
-  (input: Input<S>) => SchemaEffect<Output<S>, SchemaDecodeFailure | SchemaExecutionFailure | SchemaAsyncRequired>
+  (input: Input<S>) => SchemaEffect<Output<S>, SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired>
 
 decodeUnknownAsync<S extends StandardSchema>(schema: S, input: unknown):
-  Promise<SchemaEffect<Output<S>, SchemaDecodeFailure | SchemaExecutionFailure>>
+  Promise<SchemaEffect<Output<S>, SchemaDecodeFailure | SchemaDefinitionFailure | SchemaExecutionFailure | SchemaAsyncRequired>>
 
 make<C extends SchemaClass>(model: C, props: Props<C>):
   SchemaEffect<Instance<C>, SchemaConstructionFailure | SchemaDefinitionFailure | SchemaExecutionFailure>

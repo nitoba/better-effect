@@ -1,105 +1,129 @@
-import { spawnSync } from "node:child_process"
-import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { spawnSync } from 'node:child_process'
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = fileURLToPath(new URL("../", import.meta.url))
-const temporary = await mkdtemp(join(tmpdir(), "better-effect-schema-consumer-"))
+const root = fileURLToPath(new URL('../', import.meta.url))
+const temporary = await mkdtemp(join(tmpdir(), 'better-effect-schema-consumer-'))
 
 const run = (command, args, cwd, capture = false) => {
   const result = spawnSync(command, args, {
     cwd,
-    encoding: "utf8",
-    stdio: capture ? "pipe" : "inherit"
+    encoding: 'utf8',
+    stdio: capture ? 'pipe' : 'inherit'
   })
 
   if (result.status !== 0) {
     if (capture) {
-      process.stderr.write(result.stdout ?? "")
-      process.stderr.write(result.stderr ?? "")
+      process.stderr.write(result.stdout ?? '')
+      process.stderr.write(result.stderr ?? '')
     }
-    throw new Error(`${command} ${args.join(" ")} failed`)
+    throw new Error(`${command} ${args.join(' ')} failed`)
   }
 
-  return result.stdout ?? ""
+  return result.stdout ?? ''
 }
 
 const linkDependency = async (name, consumerModules) => {
-  const source = await realpath(join(root, "node_modules", name))
+  const source = await realpath(join(root, 'node_modules', name))
   const destination = join(consumerModules, name)
   await mkdir(dirname(destination), { recursive: true })
-  await symlink(source, destination, process.platform === "win32" ? "junction" : "dir")
+  await symlink(source, destination, process.platform === 'win32' ? 'junction' : 'dir')
 }
 
 try {
-  const artifacts = join(temporary, "artifacts")
-  const extracted = join(temporary, "extracted")
-  const consumer = join(temporary, "consumer")
-  const consumerModules = join(consumer, "node_modules")
+  const artifacts = join(temporary, 'artifacts')
+  const extracted = join(temporary, 'extracted')
+  const consumer = join(temporary, 'consumer')
+  const consumerModules = join(consumer, 'node_modules')
 
   await mkdir(artifacts, { recursive: true })
   await mkdir(extracted, { recursive: true })
   await mkdir(consumerModules, { recursive: true })
 
-  run("npm", ["pack", "--ignore-scripts", "--pack-destination", artifacts], root, true)
+  run('npm', ['pack', '--ignore-scripts', '--pack-destination', artifacts], root, true)
 
-  const archives = (await readdir(artifacts)).filter((name) => name.endsWith(".tgz"))
+  const archives = (await readdir(artifacts)).filter((name) => name.endsWith('.tgz'))
   if (archives.length !== 1) {
     throw new Error(`Expected one package archive, found ${archives.length}`)
   }
 
   const archive = join(artifacts, archives[0])
-  const listing = run("tar", ["-tzf", archive], root, true)
+  const listing = run('tar', ['-tzf', archive], root, true)
   const forbiddenArchiveEntries = listing
-    .split("\n")
+    .split('\n')
     .filter(Boolean)
-    .filter((entry) => /(?:^|\/)(?:node_modules|src|tests|type-tests|examples|\.git)(?:\/|$)/u.test(entry))
+    .filter((entry) =>
+      /(?:^|\/)(?:node_modules|src|tests|type-tests|examples|\.git)(?:\/|$)/u.test(entry)
+    )
 
   if (forbiddenArchiveEntries.length > 0) {
-    throw new Error(`Unexpected archive entries:\n${forbiddenArchiveEntries.join("\n")}`)
+    throw new Error(`Unexpected archive entries:\n${forbiddenArchiveEntries.join('\n')}`)
   }
 
-  run("tar", ["-xzf", archive, "-C", extracted], root)
-  await rename(join(extracted, "package"), join(consumerModules, "better-effect-schema"))
+  run('tar', ['-xzf', archive, '-C', extracted], root)
+  await rename(join(extracted, 'package'), join(consumerModules, 'better-effect-schema'))
 
-  for (const dependency of [
-    "@standard-schema/spec",
-    "better-effect",
-    "better-result",
-    "zod"
-  ]) {
+  for (const dependency of ['@standard-schema/spec', 'better-effect', 'better-result', 'zod']) {
     await linkDependency(dependency, consumerModules)
   }
 
-  await writeFile(join(consumer, "package.json"), JSON.stringify({
-    name: "better-effect-schema-external-consumer",
-    private: true,
-    type: "module"
-  }, null, 2))
+  await writeFile(
+    join(consumer, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'better-effect-schema-external-consumer',
+        private: true,
+        type: 'module'
+      },
+      null,
+      2
+    )
+  )
 
-  await writeFile(join(consumer, "tsconfig.json"), JSON.stringify({
-    compilerOptions: {
-      lib: ["ES2022", "DOM", "ESNext.Disposable"],
-      target: "ES2022",
-      module: "NodeNext",
-      moduleResolution: "NodeNext",
-      strict: true,
-      exactOptionalPropertyTypes: true,
-      noUncheckedIndexedAccess: true,
-      skipLibCheck: false,
-      outDir: "out"
-    },
-    include: ["smoke.ts"]
-  }, null, 2))
+  await writeFile(
+    join(consumer, 'tsconfig.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2022', 'DOM', 'ESNext.Disposable'],
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          strict: true,
+          exactOptionalPropertyTypes: true,
+          noUncheckedIndexedAccess: true,
+          skipLibCheck: false,
+          outDir: 'out'
+        },
+        include: ['smoke.ts']
+      },
+      null,
+      2
+    )
+  )
 
-  await writeFile(join(consumer, "smoke.ts"), `import * as z from "zod"
+  await writeFile(
+    join(consumer, 'smoke.ts'),
+    `import * as z from "zod"
 import { Effect } from "better-effect"
 import { Result, TaggedError } from "better-result"
 import {
   Schema,
   SchemaAsyncRequired,
   SchemaDecodeFailure,
+  SchemaDefinitionFailure,
   SchemaEncodeFailure,
   SchemaExecutionFailure
 } from "better-effect-schema"
@@ -126,6 +150,7 @@ const operation = Effect.gen(function* () {
 operation satisfies Effect<
   Schema.Encoded<typeof User>,
   | SchemaDecodeFailure
+  | SchemaDefinitionFailure
   | SchemaEncodeFailure
   | SchemaExecutionFailure
   | SchemaAsyncRequired,
@@ -148,22 +173,23 @@ const failure = new UserNotFound({
 if (!TaggedError.is(failure)) throw new Error("TaggedError protocol was lost")
 
 console.log("external-consumer: ok")
-`)
+`
+  )
 
-  run("tsc", ["-p", "tsconfig.json"], consumer)
-  run(process.execPath, [join(consumer, "out", "smoke.js")], consumer)
+  run('tsc', ['-p', 'tsconfig.json'], consumer)
+  run(process.execPath, [join(consumer, 'out', 'smoke.js')], consumer)
 
   const packageJson = JSON.parse(
-    await readFile(join(consumerModules, "better-effect-schema", "package.json"), "utf8")
+    await readFile(join(consumerModules, 'better-effect-schema', 'package.json'), 'utf8')
   )
-  if (packageJson.name !== "better-effect-schema" || packageJson.version !== "0.1.0") {
-    throw new Error("Packed package identity is invalid")
+  if (packageJson.name !== 'better-effect-schema' || packageJson.version !== '0.1.0') {
+    throw new Error('Packed package identity is invalid')
   }
-  if (typeof packageJson.dependencies?.["@standard-schema/spec"] !== "string") {
-    throw new Error("Packed package must expose @standard-schema/spec as a production dependency")
+  if (typeof packageJson.dependencies?.['@standard-schema/spec'] !== 'string') {
+    throw new Error('Packed package must expose @standard-schema/spec as a production dependency')
   }
 
-  console.log("External tarball consumer check passed.")
+  console.log('External tarball consumer check passed.')
 } finally {
   await rm(temporary, { recursive: true, force: true })
 }
