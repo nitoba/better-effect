@@ -1519,8 +1519,7 @@ class MongoJobStoreImplementation {
               _id: cursorId,
               namespace: this.client.namespace,
               queue: queue.value,
-              cursorSequence: 0,
-              updatedAtMs: now
+              cursorSequence: 0
             },
             $set: { updatedAtMs: now }
           },
