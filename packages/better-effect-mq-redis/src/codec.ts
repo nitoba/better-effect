@@ -27,6 +27,7 @@ const jobFields = [
   'name',
   'version',
   'queue',
+  'dispatchKey',
   'state',
   'payload',
   'metadata',
@@ -249,6 +250,7 @@ const encodeJobFields = (record: JobRecord): RedisHashFields => {
   fields.name = record.name
   encodeNumber(fields, 'version', record.version)
   fields.queue = record.queue
+  if (record.dispatchKey !== undefined) fields.dispatchKey = record.dispatchKey
   fields.state = record.state
   fields.payload = canonicalJson(record.payload, 'payload')
   fields.metadata = canonicalJson(record.metadata, 'metadata')
@@ -357,6 +359,7 @@ const makeDecodedRecord = (fields: PlainRecord): JobRecord => {
   record.name = required(fields, 'name')
   record.version = parseInteger(required(fields, 'version'), 'version')
   record.queue = required(fields, 'queue')
+  set('dispatchKey', optional(fields, 'dispatchKey'))
   record.state = required(fields, 'state')
   record.payload = jsonValue(fields, 'payload')
   record.metadata = jsonValue(fields, 'metadata')

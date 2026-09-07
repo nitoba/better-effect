@@ -9,11 +9,12 @@ import {
 
 const manifest = await loadRedisScriptManifest()
 if (
-  manifest.length !== 14 ||
+  manifest.length !== 16 ||
   manifest.some(
     (script) =>
       !script.source.includes('MQ_FOUNDATION_READY') &&
-      !script.source.includes('MQ_SCHEDULES_READY')
+      !script.source.includes('MQ_SCHEDULES_READY') &&
+      !script.source.includes('MQ_CONTROLS_V3')
   )
 ) {
   throw new Error('Redis scripts are missing from the packed package')
