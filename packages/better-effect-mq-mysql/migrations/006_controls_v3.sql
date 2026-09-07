@@ -9,10 +9,10 @@ ALTER TABLE better_effect_mq_jobs
   ADD CONSTRAINT better_effect_mq_jobs_dispatch_key_values
   CHECK (dispatch_key IS NULL OR (dispatch_key <> '' AND dispatch_key <> '__none__'));
 
+-- Keep the namespace, queue, and dispatch-key prefixes at the established
+-- utf8mb4-safe bound. The shorter id suffix keeps this composite index below
+-- InnoDB's 3072-byte key limit while retaining the bounded dispatch-key lookup.
 CREATE INDEX better_effect_mq_jobs_dispatch_idx
-  -- namespace, queue, and dispatch_key retain the bounded lookup prefixes.
-  -- The unique sequence precedes id in the claim order, so a shorter id
-  -- tie-breaker keeps this utf8mb4 index below InnoDB's 3072-byte limit.
   ON better_effect_mq_jobs (namespace(191), queue(191), dispatch_key(191), state, priority DESC, run_at_ms, sequence, id(128));
 
 CREATE TABLE IF NOT EXISTS better_effect_mq_queue_controls (
