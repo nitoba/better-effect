@@ -244,14 +244,13 @@ describe('MongoDB JobStore protocol v1 conformance on a replica set', () => {
         })
       )
       expect(blocked.reason).toBe('global-concurrency')
-      await expect(
-        controlled.releaseControlled({
-          jobId: first.job.id,
-          leaseToken: 'stale-token' as never,
-          now: 1,
-          controlsRevision: 1
-        })
-      ).resolves.toSatisfy(Result.isError)
+      const staleRelease = await controlled.releaseControlled({
+        jobId: first.job.id,
+        leaseToken: 'stale-token' as never,
+        now: 1,
+        controlsRevision: 1
+      })
+      expect(staleRelease).toSatisfy(Result.isError)
       await resolve(
         controlled.settleControlled({
           jobId: first.job.id,
