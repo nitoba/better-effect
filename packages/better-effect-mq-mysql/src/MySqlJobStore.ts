@@ -13,6 +13,7 @@ import type { ServiceContract } from 'better-effect'
 import {
   JobStore,
   JobStoreWakeAbortedError,
+  type SettlementOutcome,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace,
   type JobStoreDescriptor
@@ -44,9 +45,14 @@ import {
   type JobListOrderBy,
   recoverStalledWithPolicy
 } from 'better-effect-mq'
+import {
+  validateFlowChildReport,
+  validateParentEnvelope,
+  type FlowChildReport
+} from 'better-effect-mq'
 import { MySqlClient } from './client'
 import { hasUnpairedSurrogate } from './internal/text'
-import { MYSQL_TABLES } from './schema'
+import { MYSQL_FLOW_TABLES, MYSQL_TABLES } from './schema'
 import {
   normalizeMySqlJobStoreConfig,
   normalizeMySqlJobStoreConnectionConfig,
@@ -158,6 +164,11 @@ const canonicalizeJson = (value: unknown): unknown => {
   return output
 }
 const canonicalJson = (value: unknown): string => JSON.stringify(canonicalizeJson(value))
+const flowIdentityHash = (...values: readonly string[]): Buffer => {
+  const hash = createHash('sha256')
+  for (const value of values) hash.update(String(value.length)).update(':').update(value)
+  return hash.digest()
+}
 const parseJson = (value: unknown): unknown => {
   const parsed = typeof value === 'string' ? JSON.parse(value) : value
   const snapshot = snapshotDataGraph(parsed, 'json', false)
@@ -839,9 +850,88 @@ const encodeRecord = (r: JobRecord): unknown[] => [
   r.failure === undefined ? null : json(r.failure)
 ]
 
+const appendFlowReport = async (
+  tx: Tx,
+  source: Row,
+  jobId: string,
+  attemptSequence: number,
+  outcome: SettlementOutcome,
+  now: number,
+  namespace: string
+): Promise<void> => {
+  const parentValue = optionalJson(source.parent)
+  if (parentValue === undefined) return
+  const parent = validateParentEnvelope(parentValue)
+  if (Result.isError(parent)) throw parent.error
+
+  const report: FlowChildReport | undefined =
+    outcome.type === 'complete'
+      ? {
+          flowId: parent.value.flowId,
+          childKey: parent.value.childKey,
+          outcome: 'completed',
+          result: outcome.result,
+          failure: undefined
+        }
+      : outcome.type === 'fail'
+        ? {
+            flowId: parent.value.flowId,
+            childKey: parent.value.childKey,
+            outcome: 'failed',
+            result: undefined,
+            failure: outcome.failure
+          }
+        : outcome.type === 'cancelled'
+          ? {
+              flowId: parent.value.flowId,
+              childKey: parent.value.childKey,
+              outcome: 'cancelled',
+              result: undefined,
+              failure: outcome.failure
+            }
+          : undefined
+  if (report === undefined) return
+  const checked = validateFlowChildReport(report)
+  if (Result.isError(checked)) throw checked.error
+  await tx.query(
+    `INSERT INTO \`${MYSQL_FLOW_TABLES.outbox}\` (namespace,id,id_identity,flow_name,parent_store_key,report,created_at_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id`,
+    [
+      namespace,
+      `flow-report/${jobId}/${attemptSequence}`,
+      flowIdentityHash(namespace, `flow-report/${jobId}/${attemptSequence}`),
+      parent.value.flowName,
+      parent.value.parentStoreKey,
+      json(checked.value),
+      now
+    ]
+  )
+}
+
+const settlementOutcomeForAttempt = (
+  attempt: AttemptRecord | undefined,
+  record: JobRecord
+): SettlementOutcome | undefined => {
+  if (attempt?.outcome === 'completed')
+    return attempt.result === undefined
+      ? { type: 'complete' }
+      : { type: 'complete', result: attempt.result }
+  if (
+    (attempt?.outcome === 'failed' ||
+      (attempt?.outcome === 'stalled' && record.state === 'failed')) &&
+    attempt.failure !== undefined
+  )
+    return { type: 'fail', failure: attempt.failure }
+  if (attempt?.outcome === 'cancelled')
+    return attempt.failure === undefined
+      ? { type: 'cancelled' }
+      : { type: 'cancelled', failure: attempt.failure }
+  return undefined
+}
+
 class MySqlJobStoreImplementation {
   private readonly descriptorValue = mysqlDescriptor(true)
   private closed = false
+  private flowReportsEnabled = false
   private readonly waiters = new Set<WakeWaiter>()
   private readonly pendingWakes = new WeakMap<Tx, Set<string>>()
   private disposal: Promise<void> | undefined
@@ -927,6 +1017,21 @@ class MySqlJobStoreImplementation {
     // A local wake is an optimization, but it must not be observable before
     // the queue version commits; withTx drains this set after COMMIT.
     this.pendingWakes.get(tx)?.add(queue)
+  }
+  private async flowReportsAvailable(tx: Tx): Promise<boolean> {
+    if (this.flowReportsEnabled) return true
+    const tables = await tx.query<Row>(
+      `SELECT table_name AS table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN (?,?)`,
+      [MYSQL_FLOW_TABLES.children, MYSQL_FLOW_TABLES.outbox]
+    )
+    const found = new Set(tables.rows.map((row) => row.table_name))
+    if (found.size !== 2) return false
+    const parent = await tx.query<Row>(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name='parent'`,
+      [MYSQL_TABLES.jobs]
+    )
+    this.flowReportsEnabled = parent.rows.length > 0
+    return this.flowReportsEnabled
   }
   private async wakeSnapshot(source?: Tx): Promise<WakeBaseline> {
     const connection = source ?? ((await this.client.pool.getConnection()) as Tx)
@@ -1066,6 +1171,22 @@ class MySqlJobStoreImplementation {
       if (operation === 'retry') await this.clearSettlement(tx, transition.record.id)
       if (transition.attempt !== undefined)
         await this.insertAttempt(tx, transition.attempt, transition.record.id, current.leaseOwner)
+      const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record)
+      if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx))) {
+        const parent = await tx.query<Row>(
+          `SELECT parent FROM \`${MYSQL_TABLES.jobs}\` WHERE namespace=? AND id=?`,
+          [this.client.namespace, current.id]
+        )
+        await appendFlowReport(
+          tx,
+          parent.rows[0] ?? {},
+          current.id,
+          transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+          flowOutcome,
+          request.now,
+          this.client.namespace
+        )
+      }
       await this.notify(tx, transition.record.queue, request.now)
       return transition
     })
@@ -1365,7 +1486,7 @@ class MySqlJobStoreImplementation {
       const settlementOutcome = outcome.value as typeof request.outcome
       return this.withTx('settle', async (tx) => {
         const raw = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+          `SELECT ${columnNames.join(',')},parent,last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
           [this.client.namespace, jobId.value]
         )
         const source = raw.rows[0]
@@ -1461,6 +1582,16 @@ class MySqlJobStoreImplementation {
             current.id
           ]
         )
+        if (await this.flowReportsAvailable(tx))
+          await appendFlowReport(
+            tx,
+            source,
+            current.id,
+            transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+            settlementOutcome,
+            now,
+            this.client.namespace
+          )
         await this.notify(tx, current.queue, now)
         return { record: transition.record, attempt: transition.attempt!, status: 'applied' }
       }) as Promise<StoreResult<JobStoreNamespace.SettlementResult>>
@@ -1652,7 +1783,7 @@ class MySqlJobStoreImplementation {
       if (limit < 1) return definition('limit', 'must be positive')
       return this.withTx('recoverStalled', async (tx) => {
         const rows = await tx.query<Row>(
-          `SELECT ${columnNames.join(',')} FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND state='active' AND lease_expires_at_ms <= ? ORDER BY lease_expires_at_ms LIMIT ? FOR UPDATE SKIP LOCKED`,
+          `SELECT ${columnNames.join(',')},parent FROM ${this.table(MYSQL_TABLES.jobs)} WHERE namespace=? AND state='active' AND lease_expires_at_ms <= ? ORDER BY lease_expires_at_ms LIMIT ? FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, now, limit]
         )
         const transitions = [] as JobTransition[]
@@ -1668,6 +1799,17 @@ class MySqlJobStoreImplementation {
           await this.save(tx, transition.record)
           if (transition.attempt)
             await this.insertAttempt(tx, transition.attempt, r.id, r.leaseOwner)
+          const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record)
+          if (flowOutcome !== undefined && (await this.flowReportsAvailable(tx)))
+            await appendFlowReport(
+              tx,
+              raw,
+              r.id,
+              transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+              flowOutcome,
+              now,
+              this.client.namespace
+            )
           await this.notify(tx, r.queue, now)
           transitions.push(transition)
         }

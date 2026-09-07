@@ -34,6 +34,7 @@ export type MySqlOutboxAppendOptions = Readonly<{
 }>
 export type MySqlOutboxTransaction = PoolConnection | DriverPoolConnection
 export type MySqlOutboxRow = Record<string, unknown>
+type MySqlOutboxQueryResult<Row> = QueryResult<Row> & { readonly insertId?: number }
 
 export const outboxColumnNames = [
   'id',
@@ -79,8 +80,8 @@ const query = async <Row>(
   connection: MySqlOutboxTransaction,
   sql: string,
   values?: readonly unknown[]
-): Promise<QueryResult<Row>> => {
-  const run = connection.query as unknown as (
+): Promise<MySqlOutboxQueryResult<Row>> => {
+  const run = connection.query.bind(connection) as unknown as (
     statement: string,
     parameters?: readonly unknown[]
   ) => PromiseLike<unknown>
@@ -88,12 +89,17 @@ const query = async <Row>(
   if (isQueryResult<Row>(output)) return output
   const rows = Array.isArray(output) ? output[0] : undefined
   const info = Array.isArray(rows) ? undefined : rows
+  const insertId =
+    typeof info === 'object' && info !== null && 'insertId' in info
+      ? Number((info as { readonly insertId?: unknown }).insertId)
+      : undefined
   return {
     rows: (Array.isArray(rows) ? rows : []) as readonly Row[],
     rowCount:
       typeof info === 'object' && info !== null && 'affectedRows' in info
         ? Number((info as { readonly affectedRows?: unknown }).affectedRows) || 0
-        : 0
+        : 0,
+    ...(insertId !== undefined && Number.isSafeInteger(insertId) ? { insertId } : {})
   }
 }
 
@@ -269,7 +275,10 @@ export const MySqlOutbox = Object.freeze({
             incomingDigest: record.requestDigest
           })
         )
-      return succeeded({ record: persisted, duplicate: inserted.rowCount !== 1 })
+      return succeeded({
+        record: persisted,
+        duplicate: inserted.rowCount !== 1 || inserted.insertId === 0
+      })
     } catch (cause) {
       if (isOutboxStoreError(cause)) return failed(cause as OutboxAppendError)
       return failed(mySqlFailure('append', cause))
