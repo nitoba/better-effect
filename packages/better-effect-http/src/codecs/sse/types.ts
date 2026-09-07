@@ -1,4 +1,5 @@
 import type { HttpSchema, SchemaOutput } from '../../schema'
+import type { HttpRetryDelay } from '../../retry'
 
 export type SseMessage<Name extends string = string, Data = string> = Readonly<{
   readonly event: Name
@@ -19,6 +20,16 @@ export type SseTimeout = Readonly<{
   readonly totalMs?: number | false
 }>
 
+export type SseReconnectReason = 'eof' | 'status' | 'transport' | 'read' | 'timeout'
+
+export type SseReconnectOptions = Readonly<{
+  readonly times: number
+  readonly delay?: HttpRetryDelay
+  readonly resume?: 'last-event-id'
+  readonly respectServerRetry?: boolean
+  readonly onEnd?: 'reconnect' | 'end'
+}>
+
 export type SseLimits = Readonly<{
   readonly maxLineBytes?: number
   readonly maxEventBytes?: number
@@ -32,7 +43,8 @@ export type SseRequestOptions = Readonly<{
   readonly headers?: RequestInit['headers']
   readonly body?: unknown
   readonly signal?: AbortSignal
-  readonly reconnect?: false
+  readonly lastEventId?: string
+  readonly reconnect?: false | SseReconnectOptions
   readonly timeout?: SseTimeout
   readonly limits?: SseLimits
 }>

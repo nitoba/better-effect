@@ -210,6 +210,14 @@ SSE aceita exatamente um dos modos:
 - `eventMap`, que mapeia cada nome de evento a um schema e produz uma união
   discriminada `{ type, data }`.
 
+Reconexão SSE é opt-in e usa um único orçamento de aberturas físicas. `times`
+conta somente as novas aberturas além da inicial, inclusive as que falham; a
+conexão libera sua admissão antes de qualquer espera. Quando `resume` é
+`last-event-id`, o cursor efetivamente entregue é enviado na próxima abertura,
+com validação de caracteres de header e remoção para o cursor vazio. Isso é
+retomada de protocolo, não ACK: se o servidor não mantém histórico, a
+biblioteca não o inventa, não deduplica eventos e não promete exactly-once.
+
 `schema` e `eventMap` não podem coexistir.
 
 ## 9. Endpoints

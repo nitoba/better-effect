@@ -3,7 +3,7 @@ import { Result } from 'better-result'
 import type { Result as ResultType } from 'better-result'
 import { HttpHookError } from '../errors'
 import type { HttpError } from '../errors'
-import type { HttpInterceptor, HttpObserver } from '../interceptors'
+import type { HttpInterceptor, HttpObserver, HttpStreamReconnectContext } from '../interceptors'
 import type { HttpMiddleware } from '../middleware'
 import type { HttpOperation, HttpOperationRequest, HttpResponse } from '../operation'
 import { operation } from '../operation'
@@ -14,7 +14,7 @@ import type { HttpAdmission } from '../limits'
 import type { TransportOptions } from './ofetch-transport'
 
 type AnyResult = ResultType<unknown, unknown>
-type HttpHook = HttpInterceptor<any, any> | HttpObserver<any> | HttpMiddleware<any, any, any>
+export type HttpHook = HttpInterceptor<any, any> | HttpObserver<any> | HttpMiddleware<any, any, any>
 type HttpLimiter = { readonly admit: (signal?: AbortSignal) => Promise<HttpAdmission> }
 type HookRequest = HttpOperationRequest<HttpSchema, HttpResponseSchemas>
 
@@ -111,6 +111,27 @@ const applyInterceptors = async (
     }
   }
   return Result.ok(request)
+}
+
+export const applyRequestInterceptors = applyInterceptors
+
+export const notifyStreamReconnect = async (
+  hooks: readonly HttpHook[],
+  context: HttpStreamReconnectContext
+): Promise<ResultType<void, HttpError>> => {
+  for (const hook of hooks) {
+    if (!isObserver(hook) || hook.onStreamReconnect === undefined) continue
+    try {
+      const output = await resolveValue(await hook.onStreamReconnect(context))
+      if (output !== undefined) {
+        const result = output as AnyResult
+        if (Result.isError(result)) return hookFailure(result.error)
+      }
+    } catch (cause) {
+      return hookFailure(cause)
+    }
+  }
+  return Result.ok(undefined)
 }
 
 const notifyObservers = async (
