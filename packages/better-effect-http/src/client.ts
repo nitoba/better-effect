@@ -23,9 +23,9 @@ export type HttpClientOptions = TransportOptions & {
   readonly limits?: import('./limits').HttpLimits
 }
 export type HttpClientHooks = Readonly<{
-  readonly interceptors?: readonly HttpInterceptor[]
-  readonly observers?: readonly HttpObserver[]
-  readonly middleware?: readonly HttpMiddleware[]
+  readonly interceptors?: readonly unknown[]
+  readonly observers?: readonly unknown[]
+  readonly middleware?: readonly unknown[]
 }>
 export type HttpClientServiceOptions = HttpClientHooks
 export type HttpRequestOptions = TransportRequestOptions & {
@@ -98,7 +98,7 @@ type HttpClientTokenWithLayer<Tag extends string> = HttpClientToken<Tag> & {
 
 const makeClient = <Tag extends string>(
   config: HttpClientOptions,
-  hooks: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[] = [],
+  hooks: readonly unknown[] = [],
   limiter = makeHttpLimiter(config.limits)
 ): HttpClientInstance<Tag> => {
   const request = (method: string, path: string, options: HttpRequestOptions = {}) =>

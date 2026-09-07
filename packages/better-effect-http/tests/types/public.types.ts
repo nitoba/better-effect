@@ -43,7 +43,12 @@ const recovery = Http.HttpAuth.refresh({
   refresh: 'token'
 })
 const typedRecovery: Http.HttpAuthMiddleware<never, never> = recovery
+const configured = Http.HttpClient.service('Configured', {
+  interceptors: [Http.HttpAuth.authentication({ credential: 'token' })],
+  middleware: [typedRecovery]
+})
 
 void expectedUser
 void expectedResponses
 void typedRecovery
+void configured
