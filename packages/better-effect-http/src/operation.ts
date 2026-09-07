@@ -7,7 +7,8 @@ import {
   HttpRequestError,
   HttpStatusError,
   HttpTimeoutError,
-  HttpTransportError
+  HttpTransportError,
+  HttpLimitError
 } from './errors'
 import type { HttpError } from './errors'
 import { classifyResponse, executeRequest } from './internal/ofetch-transport'
@@ -28,6 +29,7 @@ import type {
 import { responseWithSchema } from './response-status'
 import { retryAfterMs, retryableStatus } from './retry'
 import type { HttpRetryPolicy } from './retry'
+import type { HttpAdmission } from './limits'
 
 export type HttpResponse<A = unknown, Status extends number = number> = Readonly<{
   status: Status
@@ -76,8 +78,17 @@ export function operation<R extends HttpResponseSchemas>(
   config: TransportOptions,
   request: HttpOperationRequest<never, R>
 ): HttpResponseOperation<ResponseData<R>>
+export function operation(
+  config: TransportOptions,
+  request: AnyOperationRequest,
+  limiter?: { admit: (signal?: AbortSignal) => Promise<HttpAdmission> }
+): HttpOperation
 export function operation(config: TransportOptions, request: AnyOperationRequest): HttpOperation
-export function operation(config: TransportOptions, request: AnyOperationRequest): HttpOperation {
+export function operation(
+  config: TransportOptions,
+  request: AnyOperationRequest,
+  limiter?: { admit: (signal?: AbortSignal) => Promise<HttpAdmission> }
+): HttpOperation {
   const requestOptions = 'options' in request ? request.options : request
   const hasSchema = 'schema' in requestOptions
   const hasResponses = 'responses' in requestOptions
@@ -112,7 +123,12 @@ export function operation(config: TransportOptions, request: AnyOperationRequest
       const started = Date.now()
       let response: Response
       while (true) {
-        response = await executeRequest(config, request)
+        const admission = limiter ? await limiter.admit(requestOptions.signal) : undefined
+        try {
+          response = await executeRequest(config, request)
+        } finally {
+          admission?.release()
+        }
         if (policy === undefined) break
         try {
           const responseType =
@@ -174,7 +190,8 @@ export function operation(config: TransportOptions, request: AnyOperationRequest
         cause instanceof HttpRequestError ||
         cause instanceof HttpStatusError ||
         cause instanceof HttpTimeoutError ||
-        cause instanceof HttpTransportError
+        cause instanceof HttpTransportError ||
+        cause instanceof HttpLimitError
       )
         return yield* Result.err(cause)
       const signal = 'options' in request ? request.options.signal : request.signal
