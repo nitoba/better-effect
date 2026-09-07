@@ -1,5 +1,5 @@
 import { JobStore } from '../../src'
-import { jobStoreContract, flowStoreContract } from '../../src/testing'
+import { jobEventStoreContract, jobStoreContract, flowStoreContract } from '../../src/testing'
 
 import type {
   ContractScenario,
@@ -15,7 +15,13 @@ import type {
   JobStoreContractSynchronization,
   FlowStoreContractOptions,
   FlowStoreContractScenario,
-  FlowStoreContractSuite
+  FlowStoreContractSuite,
+  JobEventStoreContractCapabilities,
+  JobEventStoreContractExtension,
+  JobEventStoreContractOptions,
+  JobEventStoreContractReport,
+  JobEventStoreContractScenarioContext,
+  JobEventStoreContractSuite
 } from '../../src/testing'
 
 const runtime: JobStoreContractRuntime<InstanceType<typeof JobStore>> = {
@@ -113,6 +119,28 @@ void multiSuite
 
 void scenario
 void report
+
+const eventCapabilities: JobEventStoreContractCapabilities = {
+  retention: true,
+  cursorExpiry: true,
+  optionalEventStore: true
+}
+const eventExtension: JobEventStoreContractExtension = {
+  id: 'event-flow-transitions',
+  name: 'flow transitions',
+  category: 'flow',
+  run: async (context: JobEventStoreContractScenarioContext) => {
+    await context.checkpoint('flow')
+  }
+}
+const eventOptions: JobEventStoreContractOptions = {
+  capabilities: eventCapabilities,
+  extensions: [eventExtension]
+}
+const eventSuite: JobEventStoreContractSuite = jobEventStoreContract(eventOptions)
+const eventReport: JobEventStoreContractReport = eventSuite.report()
+void eventSuite
+void eventReport
 
 const flowOptions: FlowStoreContractOptions = {
   makeStore: async () => ({

@@ -4,6 +4,7 @@ import { Layer, Runtime } from 'better-effect'
 
 import { JobStore, MemoryJobStore } from '../src'
 import {
+  JobEventStoreConformanceError,
   JobStoreConformanceError,
   jobStoreContract,
   type JobStoreContractScenario
@@ -185,10 +186,79 @@ test('JobStore contract reports capability coverage and skips', () => {
 
 test('MemoryJobEventStore passes the runner-agnostic event contract', async () => {
   const suite = jobEventStoreContract()
+  expect(suite.map(({ id }) => id)).toEqual([
+    'event-enqueue-append',
+    'event-transition-append',
+    'event-rollback-no-event',
+    'event-response-loss-retry',
+    'event-cursor-order-pagination',
+    'event-filters-preserve-progress',
+    'event-concurrent-writers-total-order',
+    'event-retention-age-count',
+    'event-cursor-expired',
+    'event-await-wake',
+    'event-control-transitions',
+    'event-optional-job-store',
+    'event-safe-record'
+  ])
   for (const scenario of suite) await scenario.run()
 
   expect(suite.report().failed).toEqual([])
   expect(suite.report().passed).toHaveLength(suite.length)
+  expect(suite.report().skipped.map(({ id }) => id)).toEqual([
+    'event-await-result-race',
+    'event-wake-lost-poll-fallback',
+    'event-cancel-timeout-shutdown',
+    'event-required-extension',
+    'event-flow-transitions',
+    'event-schedule-transitions'
+  ])
+})
+
+test('event conformance extensions are runner-agnostic and preserve diagnostics', async () => {
+  const checkpoints: string[] = []
+  const suite = jobEventStoreContract({
+    hooks: {
+      checkpoint: (point) => {
+        checkpoints.push(point)
+      }
+    },
+    extensions: [
+      {
+        id: 'event-flow-transitions',
+        name: 'flow extension',
+        category: 'flow',
+        run: async (context) => {
+          await context.checkpoint('flow-installed')
+        }
+      },
+      {
+        id: 'event-extension-diagnostic',
+        name: 'diagnostic extension',
+        category: 'extension',
+        run: () => {
+          throw new Error('adapter failpoint')
+        }
+      }
+    ]
+  })
+
+  const flow = suite.find(({ id }) => id === 'event-flow-transitions')
+  if (flow === undefined) throw new Error('missing opt-in flow extension')
+  await flow.run()
+  expect(checkpoints).toEqual(['flow-installed'])
+  expect(suite.report().passed).toContain('event-flow-transitions')
+
+  const diagnostic = suite.find(({ id }) => id === 'event-extension-diagnostic')
+  if (diagnostic === undefined) throw new Error('missing custom extension')
+  try {
+    await diagnostic.run()
+    throw new Error('expected extension failure')
+  } catch (cause) {
+    if (!(cause instanceof JobEventStoreConformanceError)) throw cause
+    expect(cause.scenarioId).toBe('event-extension-diagnostic')
+    expect(cause.message).toContain('adapter failpoint')
+  }
 })
 
 test('JobStore contract reports declared extension capabilities without scenarios', async () => {

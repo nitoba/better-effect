@@ -85,6 +85,36 @@ a subscriber or a Runtime; it uses the active Runtime and Scope, and stops its
 wait when the caller's `AbortSignal` or Scope closes. Aborts are reported as
 `JobEventConsumerAbortedError`.
 
+### Runner-agnostic JobEventStore conformance
+
+The `better-effect-mq/testing` entrypoint also provides
+`jobEventStoreContract()`. Its built-in scenarios exercise atomic transition
+appends, rollback and idempotent retries, cursor order/pagination, filtered
+progress, concurrent writers, age/count retention, cursor expiry, queue wake
+filtering, queue controls, optional EventStore wiring, and sensitive-field
+redaction. The suite returns a versioned report with passed, failed, and
+skipped scenarios:
+
+```ts
+import { jobEventStoreContract } from 'better-effect-mq/testing'
+
+const suite = jobEventStoreContract({
+  makeEventStore: ({ retention } = {}) => makeEvents({ retention }),
+  makeJobStore: (eventStore) => makeJobs({ eventStore })
+})
+
+for (const scenario of suite) {
+  test(scenario.name, scenario.run)
+}
+```
+
+The factory is runner-neutral and may return a Promise. Retention and cursor
+expiry are declared with `capabilities` when an adapter supports the optional
+factory configuration. Adapter-specific awaitResult, polling, lifecycle,
+required-extension, flow, and schedule checks use the small `extensions` hook;
+without one they remain explicit `skipped` diagnostics instead of assuming an
+API that the adapter does not provide.
+
 ## Controlled claims
 
 `QueueControls` is the Layer-first, yieldable controls extension. It keeps
