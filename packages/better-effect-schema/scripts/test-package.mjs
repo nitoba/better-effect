@@ -127,11 +127,16 @@ import {
   SchemaEncodeFailure,
   SchemaExecutionFailure
 } from "better-effect-schema"
+import { ZodAdapter } from "better-effect-schema/zod"
 
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
+
+const local = Schema.with(ZodAdapter)
+const bridged = local.bridge(z.object({ id: z.uuid() }))
+if (bridged.status === "error") throw bridged.error
 
 class User extends Schema.Class<User>("external/User")({
   id: z.uuid(),
