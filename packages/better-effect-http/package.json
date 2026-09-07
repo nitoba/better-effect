@@ -55,6 +55,7 @@
     "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-http"
   },
   "dependencies": {
+    "eventsource-parser": "^3.0.6",
     "ofetch": "^1.5.1"
   },
   "devDependencies": {

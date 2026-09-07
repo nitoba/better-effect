@@ -90,3 +90,28 @@ the default 401 policy. Unsafe or one-shot requests return a typed
 `HttpAuthRefreshError`; refresh failures are never converted into network
 errors. Configure the refresh endpoint with a client or route that does not
 install this middleware to avoid recursion.
+
+SSE streams are consumed incrementally through `http.sse`. Raw streams expose
+string data; `schema` parses each event's data as JSON and validates it once,
+while `events` selects a schema by event name and returns a discriminated
+`SseMessage` union. Reconnection is intentionally disabled in this release;
+`id` is the identifier declared on the event and `lastEventId` is the effective
+protocol cursor, not a business acknowledgement:
+
+```ts
+const events = http.sse('/jobs/42/events', {
+  events: {
+    progress: ProgressSchema,
+    completed: CompletedSchema
+  },
+  reconnect: false,
+  timeout: { headersMs: 10_000, readIdleMs: 45_000, totalMs: false }
+})
+
+yield * events.forEach((message) => handleEvent(message))
+```
+
+The parser accepts UTF-8 chunks, LF/CRLF/CR line endings, comments, multiline
+data, and protocol `retry` controls without opening a second connection.
+Unknown event names fail by default when `events` is supplied; raw mode does
+not parse JSON or interpret provider-specific markers.

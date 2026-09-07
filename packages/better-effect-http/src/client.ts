@@ -22,6 +22,16 @@ import { stream as makeStream } from './stream/description'
 import type { HttpStream } from './stream/description'
 import { ndjson as makeNdjson } from './codecs/ndjson/description'
 import type { HttpNdjsonRequestOptions, HttpNdjsonStream } from './codecs/ndjson/description'
+import { sse as makeSse } from './codecs/sse/description'
+import type { SseStreamError } from './codecs/sse/description'
+import type {
+  SseEventMap,
+  SseEventMessage,
+  SseEventsOptions,
+  SseMessage,
+  SseRawOptions,
+  SseSchemaOptions
+} from './codecs/sse'
 
 export type HttpClientOptions = TransportOptions & {
   readonly limits?: import('./limits').HttpLimits
@@ -70,9 +80,22 @@ export type HttpNdjsonMethod = {
   (path: string, options?: HttpNdjsonRequestOptions<undefined>): HttpNdjsonStream<undefined>
 }
 
+export type HttpSseMethod = {
+  <S extends HttpSchema>(
+    path: string,
+    options: SseSchemaOptions<S>
+  ): HttpStream<SseMessage<string, SchemaOutput<S>>, SseStreamError>
+  <E extends SseEventMap>(
+    path: string,
+    options: SseEventsOptions<E>
+  ): HttpStream<SseEventMessage<E>, SseStreamError>
+  (path: string, options?: SseRawOptions): HttpStream<SseMessage<string, string>, SseStreamError>
+}
+
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
   readonly stream: (path: string, options?: TransportRequestOptions) => HttpStream
   readonly ndjson: HttpNdjsonMethod
+  readonly sse: HttpSseMethod
   readonly endpoints: <E extends Record<string, HttpEndpoint>>(
     endpoints: E
   ) => { [K in keyof E]: (args: HttpEndpointArgs<E[K]['definition']>) => HttpOperation }
@@ -122,6 +145,7 @@ const makeClient = <Tag extends string>(
   const client = {
     stream: (path: string, options?: TransportRequestOptions) => makeStream(config, path, options),
     ndjson: (path: string, options?: HttpNdjsonRequestOptions) => makeNdjson(config, path, options),
+    sse: (path: string, options?: SseRawOptions) => makeSse(config, path, options),
     endpoints: (endpoints: Record<string, HttpEndpoint>) => bindEndpoints(client, endpoints),
     use: (...added: readonly (HttpInterceptor | HttpObserver | HttpMiddleware)[]) =>
       makeClient(config, [...hooks, ...added], limiter),

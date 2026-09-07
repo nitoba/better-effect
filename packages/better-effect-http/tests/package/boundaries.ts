@@ -28,6 +28,7 @@ const expectedPeers = {
 
 const allowedExternalImports = new Set([
   '@opentelemetry/api',
+  'eventsource-parser',
   'ofetch',
   'better-effect',
   'better-effect-schema',
@@ -145,6 +146,10 @@ const assertManifest = async (): Promise<void> => {
   const dependencies = manifest['dependencies']
   assertCondition(isJsonObject(dependencies), 'Runtime dependencies are missing')
   assertCondition(dependencies['ofetch'] === '^1.5.1', 'ofetch must remain on stable v1')
+  assertCondition(
+    dependencies['eventsource-parser'] === '^3.0.6',
+    'eventsource-parser must remain on the audited v3 range'
+  )
   assertCondition(!('effect' in dependencies), 'Effect TS must not be a dependency')
 }
 
