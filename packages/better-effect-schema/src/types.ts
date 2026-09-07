@@ -19,6 +19,23 @@ export type {
 } from './types/common.js'
 export type { ClassTypeMetadata } from './types/class-metadata.js'
 export type {
+  GenericClassAnnotations,
+  GenericClassBuilder,
+  GenericClassConstructorInput,
+  GenericClassDefinition,
+  GenericClassEncoded,
+  GenericClassFailure,
+  GenericClassFactory,
+  GenericClassFields,
+  GenericClassInput,
+  GenericClassProps,
+  GenericClassStruct,
+  GenericClassTypeMetadata,
+  GenericConstructorArgs,
+  GenericSchemaClass,
+  GenericSchemaFieldMap
+} from './types/generic-class.js'
+export type {
   CatchallBuilder,
   ExtendBuilder,
   OmitBuilder,

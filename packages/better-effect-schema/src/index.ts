@@ -17,8 +17,24 @@ export type {
   SchemaIssuePathSegment
 } from './failure.js'
 export { isClassInstance } from './is-class-instance.js'
-export { isSchemaClass } from './is-schema-class.js'
-export type { AnySchemaClass } from './is-schema-class.js'
+export { isGenericSchemaClass, isSchemaClass } from './is-schema-class.js'
+export type { AnyGenericSchemaClass, AnySchemaClass } from './is-schema-class.js'
+export type {
+  GenericClassAnnotations,
+  GenericClassBuilder,
+  GenericClassConstructorInput,
+  GenericClassDefinition,
+  GenericClassEncoded,
+  GenericClassFailure,
+  GenericClassFactory,
+  GenericClassFields,
+  GenericClassInput,
+  GenericClassProps,
+  GenericClassStruct,
+  GenericClassTypeMetadata,
+  GenericConstructorArgs,
+  GenericSchemaClass
+} from './types/generic-class.js'
 export { withAdapter } from './capabilities/with.js'
 export type {
   AsyncCapabilityResult,

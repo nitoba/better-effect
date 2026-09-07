@@ -1,4 +1,5 @@
 import { Class } from './class.js'
+import { checkGenericClass as checkGenericClassInternal } from './internal/generic-factory.js'
 import { isClassInstance } from './is-class-instance.js'
 import { isSchemaClass } from './is-schema-class.js'
 import {
@@ -17,6 +18,9 @@ import { withAdapter } from './capabilities/with.js'
 import { toJSONSchema } from './json-schema/consumer.js'
 import type { SchemaEffect as SchemaEffectType } from './schema-effect.js'
 import type { SchemaCodec as SchemaCodecType } from './codecs/index.js'
+import type { Result } from 'better-result'
+import type { SchemaDefinitionFailure, SchemaExecutionFailure } from './failure.js'
+import type { GenericClassDefinition } from './types/generic-class.js'
 import type {
   Encoded as EncodedType,
   Fields as FieldsType,
@@ -27,6 +31,11 @@ import type {
   Struct as StructType
 } from './types.js'
 
+const check = (
+  constructor: Function
+): Result<GenericClassDefinition, SchemaDefinitionFailure | SchemaExecutionFailure> =>
+  checkGenericClassInternal(constructor)
+
 /** Preferred namespace-style facade for schema classes and typed boundaries. */
 export const Schema = Object.freeze({
   Class,
@@ -36,6 +45,7 @@ export const Schema = Object.freeze({
   toJSONSchema,
   isClassInstance,
   isSchemaClass,
+  check,
   decodeUnknown,
   decode,
   decodeUnknownAsync,

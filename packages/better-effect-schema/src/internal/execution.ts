@@ -6,22 +6,7 @@ export type SyncExecution<A> = SchemaEffect<A, SchemaExecutionFailure | SchemaAs
 
 export type AsyncExecution<A> = SchemaEffect<A, SchemaExecutionFailure>
 
-const asyncSignal = (cause: unknown): boolean => {
-  try {
-    if ((typeof cause !== 'object' || cause === null) && typeof cause !== 'function') {
-      return false
-    }
-
-    const constructor = Reflect.get(cause, 'constructor')
-    return (
-      (typeof constructor === 'function' &&
-        Reflect.get(constructor, 'name') === '$ZodAsyncError') ||
-      Reflect.get(cause, 'name') === '$ZodAsyncError'
-    )
-  } catch {
-    return false
-  }
-}
+const asyncSignal = (_cause: unknown): boolean => false
 
 const inspectThenable = (
   value: unknown
