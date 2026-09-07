@@ -1,4 +1,4 @@
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-known-value-widening, anti-slop/no-conditional-empty-object-spread, anti-slop/no-unknown-returns, eslint(require-yield) -- SSE translates untrusted bytes and heterogeneous Standard Schema outputs at one codec boundary. */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-known-value-widening, anti-slop/no-conditional-empty-object-spread, anti-slop/no-unknown-returns, anti-slop/no-chained-type-assertions, eslint(require-yield) -- SSE translates untrusted bytes and heterogeneous Standard Schema outputs at one codec boundary. */
 import { createParser } from 'eventsource-parser'
 import type { EventSourceMessage, ParseError } from 'eventsource-parser'
 import { SchemaExecutionFailure, decodeUnknownAsync } from 'better-effect-schema'
@@ -441,7 +441,7 @@ const make = <A extends SseMessage>(
           ? Result.err(new HttpStreamUnexpectedEndError({ phase: 'takeUntil' }))
           : Result.ok(undefined as never)
       })(),
-    use: (callback: StreamUseCallback<unknown>) =>
+    use: (callback: StreamUseCallback<unknown, unknown>) =>
       // oxlint-disable-next-line require-yield -- terminal preserves the existing lazy Result generator contract.
       (async function* () {
         let session: StreamSession | undefined
@@ -470,7 +470,7 @@ const make = <A extends SseMessage>(
           })
         )
       })()
-  }) as HttpStream<A, SseStreamError, never>
+  }) as unknown as HttpStream<A, SseStreamError, never>
 }
 
 export function sse<Schema extends HttpSchema>(
