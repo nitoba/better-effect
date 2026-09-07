@@ -12,6 +12,12 @@ import { INSTANCE_MARKER } from './symbols.js'
 import { invokeAsync, invokeSync, type AsyncExecution } from './execution.js'
 import { schemaFailure, schemaSuccess } from './result.js'
 import { validateStandardAsync, validateStandardSync, type StandardValidation } from './standard.js'
+import {
+  installStandardSchema,
+  standardFailure,
+  standardResultFromOperation,
+  type StandardBridge
+} from '../standard/class.js'
 
 export type TaggedFieldMap = Readonly<Record<string, StandardSchemaV1>>
 export type TaggedKind = 'tagged-class' | 'tagged-error'
@@ -51,8 +57,11 @@ interface TaggedRuntimeClass {
     | { readonly success: true; readonly data: object }
     | { readonly success: false; readonly error: TaggedFailure }
   >
-  decode(input: unknown): SchemaEffect<object, TaggedFailure>
-  decodeAsync(input: unknown): Promise<SchemaEffect<object, TaggedFailure>>
+  decode(input: unknown, options?: StandardSchemaV1.Options): SchemaEffect<object, TaggedFailure>
+  decodeAsync(
+    input: unknown,
+    options?: StandardSchemaV1.Options
+  ): Promise<SchemaEffect<object, TaggedFailure>>
   parse(input: unknown): object
   encode(input: object): Record<string, unknown>
   readonly identifier: string
@@ -292,7 +301,8 @@ const continueAsyncFields = async (
   output: Record<string, unknown>,
   index: number,
   operation: string,
-  pending: unknown
+  pending: unknown,
+  standardOptions: StandardSchemaV1.Options | undefined
 ): Promise<SchemaEffect<Record<string, unknown>, TaggedFailure>> => {
   const resumed = await invokeAsync(operation, () =>
     Promise.resolve(pending).then((result) =>
@@ -336,7 +346,7 @@ const continueAsyncFields = async (
       input.value,
       options.tag,
       operation,
-      undefined
+      standardOptions
     )
     if (Result.isError(result))
       return result as SchemaEffect<Record<string, unknown>, TaggedFailure>
@@ -354,7 +364,8 @@ const continueAsyncFields = async (
 const validateFieldsSync = (
   options: TaggedRuntimeOptions,
   props: Record<string, unknown>,
-  operation: string
+  operation: string,
+  standardOptions: StandardSchemaV1.Options | undefined
 ): SchemaEffect<Record<string, unknown>, TaggedFailure> => {
   const prepared = prepareProps(props, options.tag, operation.includes('decode'))
   if (Result.isError(prepared))
@@ -384,7 +395,7 @@ const validateFieldsSync = (
       input.value,
       options.tag,
       operation,
-      undefined
+      standardOptions
     )
     if (Result.isError(result)) {
       if (result.error instanceof SchemaAsyncRequired) {
@@ -408,7 +419,8 @@ const validateFieldsSync = (
             output,
             index,
             operation,
-            pending
+            pending,
+            standardOptions
           )
           return taggedFailure(
             new SchemaAsyncRequired({
@@ -435,7 +447,8 @@ const validateFieldsSync = (
 const validateFieldsAsync = async (
   options: TaggedRuntimeOptions,
   props: Record<string, unknown>,
-  operation: string
+  operation: string,
+  standardOptions: StandardSchemaV1.Options | undefined
 ): Promise<SchemaEffect<Record<string, unknown>, TaggedFailure>> => {
   const prepared = prepareProps(props, options.tag, operation.includes('decode'))
   if (Result.isError(prepared))
@@ -457,7 +470,7 @@ const validateFieldsAsync = async (
       input.value,
       options.tag,
       operation,
-      undefined
+      standardOptions
     )
     if (Result.isError(result))
       return result as SchemaEffect<Record<string, unknown>, TaggedFailure>
@@ -505,14 +518,16 @@ const makePortable = (
   constructor: Function,
   options: TaggedRuntimeOptions,
   props: unknown,
-  requireTag: boolean
+  requireTag: boolean,
+  standardOptions: StandardSchemaV1.Options | undefined = undefined
 ): SchemaEffect<object, TaggedFailure> => {
   if (options.definitionFailure !== undefined) return makeFailure(options)
 
   const prepared = validateFieldsSync(
     options,
     props as Record<string, unknown>,
-    requireTag ? 'tagged-decode' : 'tagged-make'
+    requireTag ? 'tagged-decode' : 'tagged-make',
+    standardOptions
   )
   if (Result.isError(prepared)) return prepared as SchemaEffect<object, TaggedFailure>
   return construct(constructor, prepared.value)
@@ -522,14 +537,16 @@ const makePortableAsync = async (
   constructor: Function,
   options: TaggedRuntimeOptions,
   props: unknown,
-  requireTag: boolean
+  requireTag: boolean,
+  standardOptions: StandardSchemaV1.Options | undefined = undefined
 ): Promise<SchemaEffect<object, TaggedFailure>> => {
   if (options.definitionFailure !== undefined) return makeFailure(options)
 
   const prepared = await validateFieldsAsync(
     options,
     props as Record<string, unknown>,
-    requireTag ? 'tagged-decode-async' : 'tagged-make-async'
+    requireTag ? 'tagged-decode-async' : 'tagged-make-async',
+    standardOptions
   )
   if (Result.isError(prepared)) return prepared as SchemaEffect<object, TaggedFailure>
   return constructAsync(constructor, prepared.value)
@@ -557,39 +574,32 @@ const tagSchema = (tag: string): StandardSchemaV1<unknown, string> => ({
   }
 })
 
-const createSchema = (
-  options: TaggedRuntimeOptions,
-  constructor: TaggedRuntimeClass
-): StandardSchemaV1 => ({
+const taggedBridgeFor = (constructor: Function): StandardBridge => ({
+  validate: (value: unknown, options?: StandardSchemaV1.Options) => {
+    try {
+      const runtime = constructor as unknown as TaggedRuntimeClass
+      const result = runtime.decode(value, options)
+      if (!Result.isError(result)) return standardResultFromOperation(result)
+
+      if (result.error instanceof SchemaAsyncRequired && isThenable(result.error.cause)) {
+        return Promise.resolve(result.error.cause).then(
+          (asyncResult) => standardResultFromOperation(asyncResult),
+          (cause) => standardFailure(cause)
+        )
+      }
+
+      return standardFailure(result.error)
+    } catch (cause) {
+      return standardFailure(cause)
+    }
+  }
+})
+
+const createSchema = (constructor: TaggedRuntimeClass): StandardSchemaV1 => ({
   '~standard': {
     version: 1,
     vendor: 'better-effect-schema',
-    validate(value: unknown) {
-      const result = makePortable(constructor, options, value, true)
-      if (Result.isError(result)) {
-        if (result.error instanceof SchemaAsyncRequired) {
-          let pending: unknown
-          try {
-            pending = result.error.cause
-          } catch (cause) {
-            return { issues: [{ message: String(cause) }] }
-          }
-
-          if (isThenable(pending)) {
-            return Promise.resolve(pending as Promise<SchemaEffect<object, TaggedFailure>>).then(
-              (asyncResult) =>
-                Result.isError(asyncResult)
-                  ? { issues: [{ message: asyncResult.error.message }] }
-                  : { value: asyncResult.value }
-            )
-          }
-        }
-
-        return { issues: [{ message: result.error.message }] }
-      }
-
-      return { value: result.value }
-    }
+    validate: taggedBridgeFor(constructor).validate
   }
 })
 
@@ -674,7 +684,7 @@ const defineStatics = (constructor: TaggedRuntimeClass, options: TaggedRuntimeOp
     })
   }
   const fields = Object.freeze(fieldValues) as TaggedRuntimeClass['fields']
-  const schema = createSchema(options, constructor)
+  const schema = createSchema(constructor)
 
   Object.defineProperties(constructor, {
     identifier: { configurable: false, enumerable: true, value: options.tag },
@@ -684,15 +694,9 @@ const defineStatics = (constructor: TaggedRuntimeClass, options: TaggedRuntimeOp
     struct: { configurable: false, enumerable: true, value: schema },
     codec: { configurable: false, enumerable: true, value: schema },
     encodedSchema: { configurable: false, enumerable: true, value: schema },
-    propsSchema: { configurable: false, enumerable: true, value: schema },
-    '~standard': {
-      configurable: false,
-      enumerable: false,
-      get(this: TaggedRuntimeClass) {
-        return createSchema(options, this)['~standard']
-      }
-    }
+    propsSchema: { configurable: false, enumerable: true, value: schema }
   })
+  installStandardSchema(constructor, taggedBridgeFor)
 }
 
 export const createPortableTaggedClass = (input: TaggedRuntimeOptions): TaggedRuntimeClass => {
@@ -751,12 +755,18 @@ export const createPortableTaggedClass = (input: TaggedRuntimeOptions): TaggedRu
         : { success: true, data: result.value }
     }
 
-    static decode(input: unknown): SchemaEffect<object, TaggedFailure> {
-      return makePortable(this, options, input, true)
+    static decode(
+      input: unknown,
+      standardOptions?: StandardSchemaV1.Options
+    ): SchemaEffect<object, TaggedFailure> {
+      return makePortable(this, options, input, true, standardOptions)
     }
 
-    static decodeAsync(input: unknown): Promise<SchemaEffect<object, TaggedFailure>> {
-      return makePortableAsync(this, options, input, true)
+    static decodeAsync(
+      input: unknown,
+      standardOptions?: StandardSchemaV1.Options
+    ): Promise<SchemaEffect<object, TaggedFailure>> {
+      return makePortableAsync(this, options, input, true, standardOptions)
     }
 
     static parse(input: unknown): object {

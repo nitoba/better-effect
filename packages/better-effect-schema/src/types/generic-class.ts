@@ -69,12 +69,23 @@ export type GenericConstructorArgs<Input> = keyof Input extends never
     ? readonly [input?: Input]
     : readonly [input: Input]
 
-export interface GenericSchemaClass<Self, Definition extends GenericClassDefinition> {
+interface GenericClassFluent<Self, Definition extends GenericClassDefinition> {
+  meta(): GenericClassAnnotations | undefined
+  meta(metadata: GenericClassAnnotations): this
+  describe(description: string): this
+  register<Metadata>(
+    registry: { add(value: object, metadata?: Metadata): unknown },
+    metadata?: Metadata
+  ): this
+}
+
+export type GenericSchemaClass<Self, Definition extends GenericClassDefinition> = {
   new (...args: GenericConstructorArgs<GenericClassProps<Definition>>): Self
 
   readonly [CLASS_TYPE_ID]: GenericClassTypeMetadata<Self, Definition>
   readonly identifier: string
   readonly kind: 'class'
+  readonly '~standard': StandardSchemaV1<GenericClassInput<Definition>, Self>['~standard']
   readonly schema: Definition['schema']
   readonly propsSchema: Definition['propsSchema']
   readonly encodedSchema: Definition['encodedSchema'] | undefined
@@ -98,19 +109,23 @@ export interface GenericSchemaClass<Self, Definition extends GenericClassDefinit
   >
 
   is(value: unknown): value is Self
-  meta(): GenericClassAnnotations | undefined
-  meta(metadata: GenericClassAnnotations): this
-  describe(description: string): this
-  register<Metadata>(
-    registry: { add(value: object, metadata?: Metadata): unknown },
-    metadata?: Metadata
-  ): this
+} & GenericClassFluent<Self, Definition>
+
+type GenericSchemaClassDeclaration<Self, Definition extends GenericClassDefinition> = Omit<
+  GenericSchemaClass<Self, Definition>,
+  never
+> & {
+  new (
+    ...args: GenericConstructorArgs<GenericClassProps<Definition>>
+  ): GenericClassProps<Definition> & {
+    readonly [CLASS_TYPE_ID]?: GenericClassTypeMetadata<Self, Definition>
+  }
 }
 
 export interface GenericClassBuilder<Self> {
   <Definition extends GenericClassDefinition>(
     definition: Definition
-  ): GenericSchemaClass<Self, Definition>
+  ): GenericSchemaClassDeclaration<Self, Definition>
 }
 
 type MissingSelfGeneric<Factory extends string> =
