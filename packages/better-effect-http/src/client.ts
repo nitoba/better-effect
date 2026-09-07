@@ -13,7 +13,7 @@ import type {
   SchemaOutput
 } from './schema'
 import { bindEndpoints } from './endpoints'
-import type { HttpEndpoint } from './endpoints'
+import type { HttpEndpoint, HttpEndpointArgs } from './endpoints'
 
 export type HttpClientOptions = TransportOptions
 export type HttpRequestOptions = TransportRequestOptions &
@@ -46,7 +46,9 @@ export type HttpRequestFunction = {
 }
 
 export type HttpClientInstance<Tag extends string = string> = ServiceIdentity<Tag> & {
-  readonly endpoints: <E extends Record<string, HttpEndpoint>>(endpoints: E) => Record<keyof E, (args: never) => HttpOperation>
+  readonly endpoints: <E extends Record<string, HttpEndpoint>>(
+    endpoints: E
+  ) => { [K in keyof E]: (args: HttpEndpointArgs<E[K]['definition']>) => HttpOperation }
   readonly get: HttpRequestMethod
   readonly post: HttpRequestMethod
   readonly put: HttpRequestMethod
