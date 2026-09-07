@@ -29,6 +29,9 @@ import {
   makeJobRecord,
   reduceJob,
   recoverStalledWithPolicy,
+  validateFlowChildReport,
+  validateFlowOutboxEntry,
+  validateParentEnvelope,
   type AnyJobStoreToken,
   type JobRecord,
   type AttemptRecord,
@@ -38,7 +41,7 @@ import {
   type JobStore as J,
   type JobStoreDescriptor
 } from 'better-effect-mq'
-import type { JobEventStoreWriter } from 'better-effect-mq'
+import type { FlowOutboxEntry, JobEventStoreWriter, ParentEnvelope } from 'better-effect-mq'
 import type { DurableJobEventInput } from 'better-effect-mq'
 import type {
   AnyQueueControlsRegistry,
@@ -72,11 +75,13 @@ import { encodeJobRecord, decodeJobRecord, encodeAttempt, decodeAttempt } from '
 import { hashReply, stringsReply, scriptReply, type RedisScriptReply } from './internal/replies'
 import { runScript } from './internal/run-script'
 import { subscribeWake } from './internal/wake'
+import { ensureRedisFlowLayout } from './layout'
 import {
   sendRedisCommand,
   type RedisJobStoreConnectionConfig,
   type RedisJobStoreConfig
 } from './config'
+import { loadRedisFlowScriptManifest, scriptSetChecksum } from './script-registry'
 import { hasUnpairedSurrogate } from './internal/text'
 import {
   decodeDelayedMember,
@@ -249,6 +254,80 @@ const redisNumber = (value: unknown, field: string): number => {
   if (typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value))
     return number(Number(value), field)
   throw new JobDefinitionError({ field, message: 'must be a canonical safe integer' })
+}
+
+const flowMetadataKeys = Object.freeze({
+  flowName: '__better_effect_flow_v2.flowName',
+  flowId: '__better_effect_flow_v2.flowId',
+  childKey: '__better_effect_flow_v2.childKey',
+  parentStoreKey: '__better_effect_flow_v2.parentStoreKey',
+  depth: '__better_effect_flow_v2.depth'
+})
+
+const parentFromMetadata = (
+  metadata: Readonly<Record<string, string>>
+): ParentEnvelope | undefined => {
+  const values = [
+    metadata[flowMetadataKeys.flowName],
+    metadata[flowMetadataKeys.flowId],
+    metadata[flowMetadataKeys.childKey],
+    metadata[flowMetadataKeys.parentStoreKey],
+    metadata[flowMetadataKeys.depth]
+  ]
+  if (values.every((value) => value === undefined)) return undefined
+  if (values.some((value) => value === undefined)) {
+    throw new JobDefinitionError({
+      field: 'metadata',
+      message: 'contains incomplete Flow parent context'
+    })
+  }
+  const depth = Number(metadata[flowMetadataKeys.depth])
+  const checked = validateParentEnvelope({
+    flowName: metadata[flowMetadataKeys.flowName],
+    flowId: metadata[flowMetadataKeys.flowId],
+    childKey: metadata[flowMetadataKeys.childKey],
+    parentStoreKey: metadata[flowMetadataKeys.parentStoreKey],
+    depth
+  })
+  if (Result.isError(checked)) throw checked.error
+  return checked.value
+}
+
+const terminalFlowReport = (
+  attempt: AttemptRecord | undefined,
+  parent: ParentEnvelope | undefined,
+  jobId: string,
+  terminalState: JobRecord['state']
+): FlowOutboxEntry | undefined => {
+  if (parent === undefined || attempt === undefined) return undefined
+  const outcome =
+    attempt.outcome === 'completed'
+      ? 'completed'
+      : attempt.outcome === 'failed'
+        ? 'failed'
+        : attempt.outcome === 'cancelled'
+          ? 'cancelled'
+          : attempt.outcome === 'stalled' && terminalState === 'failed'
+            ? 'failed'
+            : undefined
+  if (outcome === undefined) return undefined
+  const checked = validateFlowChildReport({
+    flowId: parent.flowId,
+    childKey: parent.childKey,
+    outcome,
+    result: outcome === 'completed' ? attempt.result : undefined,
+    failure: outcome === 'completed' ? undefined : attempt.failure
+  })
+  if (Result.isError(checked)) throw checked.error
+  const entry = {
+    id: `flow-report/${jobId}/${attempt.attemptSequence ?? attempt.attempt}`,
+    flowName: parent.flowName,
+    parentStoreKey: parent.parentStoreKey,
+    report: checked.value
+  }
+  const checkedEntry = validateFlowOutboxEntry(entry)
+  if (Result.isError(checkedEntry)) throw checkedEntry.error
+  return checkedEntry.value
 }
 const text = (v: unknown, field: string): string => {
   if (typeof v !== 'string' || v.length === 0 || v.includes('\0') || hasUnpairedSurrogate(v))
@@ -458,6 +537,9 @@ type MutationKeys = {
   readonly identityMember?: string
   readonly events?: string
   readonly eventsMeta?: string
+  readonly flowOutbox: string
+  readonly flowOutboxSequence: string
+  readonly flowOutboxEntry?: string
 }
 
 type AlreadyAppliedMutation = {
@@ -589,6 +671,7 @@ class RedisJobStoreImplementation {
   }>()
   private readonly eventOptions: RedisEventAppendOptions | undefined
   private readonly eventWriter: JobEventStoreWriter
+  private flowLayoutReady: Promise<void> | undefined
 
   constructor(
     private readonly redis: RedisClient,
@@ -604,6 +687,7 @@ class RedisJobStoreImplementation {
       normalized === undefined || !this.eventWriter.canAppend ? undefined : normalized
   }
   async start(): Promise<void> {
+    await this.ensureFlowLayout()
     this.unsubscribeWake = await subscribeWake(
       this.redis.subscriber,
       this.layout.wakeChannel,
@@ -611,6 +695,19 @@ class RedisJobStoreImplementation {
       () => this.checkWaiters(),
       this.redis.ownsSubscriber
     )
+  }
+  private ensureFlowLayout(): Promise<void> {
+    if (this.flowLayoutReady !== undefined) return this.flowLayoutReady
+    this.flowLayoutReady = (async () => {
+      const manifest = await loadRedisFlowScriptManifest()
+      await ensureRedisFlowLayout(
+        this.redis.client,
+        this.redis.layout,
+        scriptSetChecksum(manifest),
+        this.redis.validateLayout
+      )
+    })()
+    return this.flowLayoutReady
   }
   private get layout(): RedisKeyLayout {
     return this.redis.layout
@@ -669,7 +766,11 @@ class RedisJobStoreImplementation {
     return value === null ? 0 : redisNumber(value, 'revision')
   }
   /** Return all keys referenced by a mutation. Every key shares the namespace hash tag. */
-  private mutationKeys(record: JobRecord, previous?: JobRecord): MutationKeys {
+  private mutationKeys(
+    record: JobRecord,
+    previous?: JobRecord,
+    flowReport?: { readonly id: string }
+  ): MutationKeys {
     const oldWaiting =
       previous?.state === 'waiting'
         ? this.layout.waiting(previous.queue, previous.name, previous.version)
@@ -703,6 +804,11 @@ class RedisJobStoreImplementation {
       ...(this.eventOptions === undefined
         ? {}
         : { events: this.layout.events, eventsMeta: this.layout.eventsMeta }),
+      flowOutbox: this.layout.flowOutbox,
+      flowOutboxSequence: this.layout.flowOutboxSequence,
+      ...(flowReport === undefined
+        ? {}
+        : { flowOutboxEntry: this.layout.flowOutboxEntry(flowReport.id) }),
       queueControls: this.layout.queues,
       control: this.layout.controls(record.queue),
       controlPermits: this.layout.controlsPermits(record.queue),
@@ -778,9 +884,11 @@ class RedisJobStoreImplementation {
       mutation.controlled === undefined
         ? (mutation.scriptName ?? (previous === undefined ? 'enqueue' : 'claim'))
         : 'settle'
+    const parent = parentFromMetadata(record.metadata)
+    const flowReport = terminalFlowReport(mutation.attempt, parent, record.id, record.state)
     const fields = encodeJobRecord(record)
     const prior = previous === undefined ? {} : encodeJobRecord(previous)
-    const keys = this.mutationKeys(record, previous)
+    const keys = this.mutationKeys(record, previous, flowReport)
     const item = {
       reply: scriptName,
       mode: previous === undefined ? 'enqueue' : 'write',
@@ -833,7 +941,8 @@ class RedisJobStoreImplementation {
         : {
             event: mutation.event,
             eventRetention: this.eventOptions.retention
-          })
+          }),
+      ...(flowReport === undefined ? {} : { flowReport })
     }
     const keyList = uniqueKeys(
       Object.entries(keys)
@@ -1229,6 +1338,7 @@ class RedisJobStoreImplementation {
         ...(eventType === undefined
           ? {}
           : { event: makeJobEvent(eventType, record, { previous: current }) }),
+        ...(next.value.attempt === undefined ? {} : { attempt: next.value.attempt }),
         ...(controlledRevision === undefined
           ? {}
           : { controlled: { revision: controlledRevision } })
