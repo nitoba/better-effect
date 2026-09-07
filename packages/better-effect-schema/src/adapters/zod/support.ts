@@ -137,7 +137,18 @@ export const definitionFailure = <Value = never>(
 export const invokeZodSync = <Value>(
   operation: string,
   thunk: () => Value
-): ZodCapabilityResult<Value> => invokeSync(operation, thunk)
+): ZodCapabilityResult<Value> => invokeSync(operation, thunk, { isAsyncError: isZodAsyncError })
+
+const isZodAsyncError = (cause: unknown): boolean => {
+  if (!isObjectLike(cause)) return false
+
+  try {
+    const constructor = Reflect.get(cause, 'constructor')
+    return isObjectLike(constructor) && Reflect.get(constructor, 'name') === '$ZodAsyncError'
+  } catch {
+    return false
+  }
+}
 
 export const invokeZodAsync = async <Value>(
   operation: string,
