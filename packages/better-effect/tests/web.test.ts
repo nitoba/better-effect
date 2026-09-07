@@ -12,7 +12,7 @@ import {
   type ScopeOutcome
 } from '../src'
 import { CurrentRequest } from '../src/standard-services'
-import { WebEffect, WebEffectSerializationError } from '../src/web'
+import { WebEffect, WebEffectSerializationError, type WebEffectStream } from '../src/web'
 
 class RootService extends Service<RootService>()('WebRootService') {
   value(): string {
@@ -49,6 +49,14 @@ const makeRuntime = async (onRootRelease?: () => void) =>
 
 const request = (url: string, signal?: AbortSignal): Request =>
   new Request(`https://example.test${url}`, signal === undefined ? undefined : { signal })
+
+const waitFor = async (check: () => boolean, timeoutMs = 500): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error('timed out waiting for WebEffect stream cleanup')
+    await new Promise<void>((resolve) => setTimeout(resolve, 1))
+  }
+}
 
 test('WebEffect runs a lazy Program with CurrentRequest and the linked signal', async () => {
   const runtime = await makeRuntime()
@@ -107,6 +115,276 @@ test('WebEffect.handleWith runs through a Runtime executor', async () => {
 
     expect(programRuns).toBe(1)
     expect(await response.json()).toEqual({ data: 'https://example.test/executor' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect.streamWith resolves headers before the producer finishes and retains request resources', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  let releaseEnd!: () => void
+  const released = new Promise<void>((resolve) => {
+    releaseEnd = resolve
+  })
+  let requestOutcome: ScopeOutcome | undefined
+  let resolveRequestRelease!: () => void
+  const requestReleased = new Promise<void>((resolve) => {
+    resolveRequestRelease = resolve
+  })
+  const requestLayer = Layer.scoped(
+    RequestService,
+    () => new RequestService('stream-local'),
+    (_service, outcome) => {
+      requestOutcome = outcome
+      resolveRequestRelease()
+    }
+  )
+  let started = false
+
+  const streamProgram = Effect.fn(async function* () {
+    const service = yield* RequestService
+    const descriptor: WebEffectStream = {
+      status: 206,
+      headers: { 'content-type': 'application/octet-stream' },
+      producer: async function* () {
+        started = true
+        yield new TextEncoder().encode(service.url)
+        await released
+      }
+    }
+    return Result.ok(descriptor)
+  })
+
+  try {
+    const response = await WebEffect.streamWith(
+      runtime.executor,
+      request('/stream'),
+      streamProgram,
+      { requestLayer: () => requestLayer, unconsumedTimeoutMs: 100 }
+    )
+
+    expect(response.status).toBe(206)
+    expect(started).toBe(false)
+    expect(requestOutcome).toBeUndefined()
+
+    const reader = response.body!.getReader()
+    const first = await reader.read()
+    expect(new TextDecoder().decode(first.value)).toBe('stream-local')
+    expect(requestOutcome).toBeUndefined()
+
+    releaseEnd()
+    expect(await reader.read()).toEqual({ done: true, value: undefined })
+    reader.releaseLock()
+    await requestReleased
+    expect(requestOutcome).toEqual({ status: 'success' })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect.streamWith turns a late producer failure into a body error and cleans once', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const failure = new Error('late producer failure')
+  let releases = 0
+  let requestOutcome: ScopeOutcome | undefined
+  const requestLayer = Layer.scoped(
+    RequestService,
+    () => new RequestService('failure'),
+    (_service, outcome) => {
+      releases += 1
+      requestOutcome = outcome
+    }
+  )
+  const streamProgram = Effect.fn(async function* () {
+    const service = yield* RequestService
+    void service
+    const descriptor: WebEffectStream = {
+      producer: async function* () {
+        yield new Uint8Array([1])
+        throw failure
+      }
+    }
+    return Result.ok(descriptor)
+  })
+
+  try {
+    const response = await WebEffect.streamWith(
+      runtime.executor,
+      request('/late-error'),
+      streamProgram,
+      { requestLayer: () => requestLayer, unconsumedTimeoutMs: 100 }
+    )
+    const reader = response.body!.getReader()
+
+    expect(await reader.read()).toEqual({ done: false, value: new Uint8Array([1]) })
+    const lateFailure = await reader.read().catch((cause) => cause)
+    expect(lateFailure).toBe(failure)
+    await waitFor(() => releases === 1)
+    expect(requestOutcome).toEqual({ status: 'failure', cause: failure })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect.streamWith cancels an abandoned body after the configured timeout', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  let releases = 0
+  const requestLayer = Layer.scoped(
+    RequestService,
+    () => new RequestService('abandoned'),
+    () => {
+      releases += 1
+    }
+  )
+  const streamProgram = Effect.fn(async function* () {
+    const service = yield* RequestService
+    void service
+    return Result.ok<WebEffectStream>({
+      producer: async function* () {
+        await new Promise<void>(() => {})
+        yield new Uint8Array([1])
+      }
+    })
+  })
+
+  try {
+    const response = await WebEffect.streamWith(
+      runtime.executor,
+      request('/abandoned'),
+      streamProgram,
+      { requestLayer: () => requestLayer, unconsumedTimeoutMs: 10 }
+    )
+
+    expect(response.status).toBe(200)
+    await waitFor(() => releases === 1)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect.streamWith keeps parallel request Services isolated through body pulls', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const streamProgram = Effect.fn(async function* () {
+    const service = yield* RequestService
+    return Result.ok<WebEffectStream>({
+      headers: { 'x-request-value': service.url },
+      producer: async function* () {
+        await Promise.resolve()
+        yield new TextEncoder().encode(service.url)
+      }
+    })
+  })
+
+  try {
+    const [first, second] = await Promise.all([
+      WebEffect.streamWith(runtime.executor, request('/first'), streamProgram, {
+        requestLayer: () => Layer.succeed(RequestService, new RequestService('first')),
+        unconsumedTimeoutMs: 100
+      }),
+      WebEffect.streamWith(runtime.executor, request('/second'), streamProgram, {
+        requestLayer: () => Layer.succeed(RequestService, new RequestService('second')),
+        unconsumedTimeoutMs: 100
+      })
+    ])
+
+    expect(first.headers.get('x-request-value')).toBe('first')
+    expect(second.headers.get('x-request-value')).toBe('second')
+    expect(await first.text()).toBe('first')
+    expect(await second.text()).toBe('second')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('WebEffect.streamWith aborts an unconsumed response and closes its request Scope', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const controller = new AbortController()
+  const abortCause = new Error('request aborted')
+  let requestOutcome: ScopeOutcome | undefined
+  const requestLayer = Layer.scoped(
+    RequestService,
+    () => new RequestService('aborted'),
+    (_service, outcome) => {
+      requestOutcome = outcome
+    }
+  )
+  const streamProgram = Effect.fn(async function* () {
+    const service = yield* RequestService
+    void service
+    return Result.ok<WebEffectStream>({
+      producer: async function* () {
+        yield new Uint8Array([1])
+      }
+    })
+  })
+
+  try {
+    const response = await WebEffect.streamWith(
+      runtime.executor,
+      request('/abort', controller.signal),
+      streamProgram,
+      { requestLayer: () => requestLayer, unconsumedTimeoutMs: 1_000 }
+    )
+
+    expect(response.status).toBe(200)
+    controller.abort(abortCause)
+    await waitFor(() => requestOutcome !== undefined)
+    expect(requestOutcome).toEqual({ status: 'failure', cause: abortCause })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('Runtime shutdown drains a ready but unconsumed Web stream before releasing root resources', async () => {
+  let rootReleased = false
+  const runtime = await Runtime.make(
+    Layer.scoped(
+      RootService,
+      () => new RootService(),
+      () => {
+        rootReleased = true
+      }
+    )
+  )
+  const streamProgram = Effect.fn(async function* () {
+    const root = yield* RootService
+    void root
+    return Result.ok<WebEffectStream>({
+      producer: async function* () {
+        await new Promise<void>(() => {})
+        yield new Uint8Array([1])
+      }
+    })
+  })
+
+  const response = await WebEffect.streamWith(
+    runtime.executor,
+    request('/shutdown'),
+    streamProgram,
+    { unconsumedTimeoutMs: 10_000 }
+  )
+  expect(response.status).toBe(200)
+
+  await runtime.dispose({ gracePeriod: 10, abortAfterGracePeriod: true })
+  expect(rootReleased).toBe(true)
+})
+
+test('WebEffect.streamWith rejects arbitrary Response values instead of adopting their body', async () => {
+  const runtime = await Runtime.make(Layer.empty)
+  const invalidProgram = Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok(new Response('not a managed descriptor'))
+  })
+
+  try {
+    const failure = await WebEffect.streamWith(
+      runtime.executor,
+      request('/invalid-descriptor'),
+      // SAFETY: This fixture intentionally exercises runtime descriptor validation.
+      invalidProgram as never
+    ).catch((cause) => cause)
+
+    expect(String(failure)).toContain('explicit stream descriptor')
   } finally {
     await runtime.dispose()
   }

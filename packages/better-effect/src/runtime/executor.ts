@@ -12,6 +12,24 @@ import type {
 } from '../layer/inference'
 import type { RuntimeRunOptions } from './outcome'
 
+/* oxlint-disable anti-slop/no-unknown-parameters -- managed cancellation preserves caller-defined reasons. */
+
+/** The value published by one managed execution before its work completes. */
+export type RuntimeManagedPlan<A> = {
+  readonly readiness: A | PromiseLike<A>
+  readonly completion: PromiseLike<void>
+  readonly cancel?: (reason?: unknown) => PromiseLike<void>
+}
+
+/** A non-owning handle for an execution whose readiness is separate from completion. */
+export type RuntimeManagedExecution<A> = {
+  readonly readiness: Promise<Awaited<A>>
+  readonly completion: Promise<void>
+  readonly signal: AbortSignal
+  readonly run: <B>(program: () => B | PromiseLike<B>) => Promise<Awaited<B>>
+  readonly cancel: (reason?: unknown) => Promise<void>
+}
+
 /**
  * A non-owning view of a Runtime that can start isolated executions.
  *
@@ -29,6 +47,12 @@ export interface RuntimeExecutor<in out Provided extends AnyService = any> {
     program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>,
     options?: RuntimeRunOptions
   ) => Promise<Awaited<A>>
+
+  readonly runWithManaged: <Request extends LayerInput, A>(
+    layer: Request & CompleteExecutionLayer<Provided, Request>,
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, RuntimeManagedPlan<A>>,
+    options?: RuntimeRunOptions
+  ) => RuntimeManagedExecution<A>
 }
 
 /** Yieldable request for the executor active in the current Runtime context. */

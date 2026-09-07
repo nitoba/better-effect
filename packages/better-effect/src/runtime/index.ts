@@ -10,7 +10,7 @@ export {
   RuntimeExecutorNotConfiguredError
 } from './errors'
 
-export type { RuntimeExecutor } from './executor'
+export type { RuntimeExecutor, RuntimeManagedExecution, RuntimeManagedPlan } from './executor'
 
 export type { RuntimeContext, RuntimeContextStorage } from './context'
 

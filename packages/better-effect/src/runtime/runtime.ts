@@ -33,7 +33,8 @@ import {
   createRuntimeExecutor,
   makeRuntimeExecutorRequest,
   type RuntimeExecutor,
-  type RuntimeExecutorRequest
+  type RuntimeExecutorRequest,
+  type RuntimeManagedPlan
 } from './executor'
 
 type RuntimeOptionsInput = RuntimeOptions & RuntimeRunOptions
@@ -129,7 +130,15 @@ export class Runtime<Provided extends AnyService = any> {
         request: Request & CompleteExecutionLayer<ProvidedEnvironment<L>, Request>,
         program: CompleteExecution<ProvidedEnvironment<L> | ProvidedEnvironment<Request>, A>,
         runOptions?: RuntimeRunOptions
-      ) => handle.runWith(request, program, runOptions)
+      ) => handle.runWith(request, program, runOptions),
+      runWithManaged: <Request extends LayerInput, A>(
+        request: Request & CompleteExecutionLayer<ProvidedEnvironment<L>, Request>,
+        program: CompleteExecution<
+          ProvidedEnvironment<L> | ProvidedEnvironment<Request>,
+          RuntimeManagedPlan<A>
+        >,
+        runOptions?: RuntimeRunOptions
+      ) => handle.runWithManaged(request, program, runOptions)
     })
     handle = await createRuntimeHandle(layer, backend, options, {}, executor)
     const runtime = new Runtime<ProvidedEnvironment<L>>(handle, executor)
