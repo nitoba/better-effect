@@ -17,7 +17,6 @@ import { schemaFailure, schemaSuccess } from './internal/result.js'
 import {
   validateStandardAsync,
   validateStandardSync,
-  type StandardSchema,
   type StandardValidation
 } from './internal/standard.js'
 import type { SchemaEffect } from './schema-effect.js'
@@ -25,7 +24,7 @@ import type { SchemaEffect } from './schema-effect.js'
 export type { SchemaEffect } from './schema-effect.js'
 
 type AnySchema = z.ZodType
-type AnyStandardSchema = StandardSchema
+type AnyStandardSchema = StandardSchemaV1
 
 type DecodeFailure =
   | SchemaDecodeFailure
