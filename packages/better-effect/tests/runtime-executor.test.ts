@@ -173,6 +173,45 @@ describe('Runtime.Executor', () => {
     }
   })
 
+  test('runWithManaged separates readiness from completion and reuses one execution context', async () => {
+    let releaseRequest!: () => void
+    const requestReleased = new Promise<void>((resolve) => {
+      releaseRequest = resolve
+    })
+    const completion = deferred()
+    const runtime = await Runtime.make(rootLayer('root'))
+
+    try {
+      const managed = runtime.executor.runWithManaged(
+        Layer.scoped(
+          RequestService,
+          () => new RequestService('managed'),
+          () => releaseRequest()
+        ),
+        async () => {
+          const request = await ServiceRuntime.resolve(RequestService)
+          return {
+            readiness: request.label,
+            completion: completion.promise
+          }
+        }
+      )
+
+      expect(await managed.readiness).toBe('managed')
+      expect(runtime.inspect().activeExecutions).toBe(1)
+      expect(await managed.run(() => ServiceRuntime.resolve(RequestService))).toMatchObject({
+        label: 'managed'
+      })
+
+      completion.resolve()
+      expect(await managed.completion).toBeUndefined()
+      await requestReleased
+      expect(runtime.inspect().activeExecutions).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   test('does not capture request-local Services from the capture execution', async () => {
     const runtime = await Runtime.make(rootLayer('root'))
 

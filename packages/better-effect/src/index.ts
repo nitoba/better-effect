@@ -95,6 +95,8 @@ export type {
   RuntimeContext,
   RuntimeContextStorage,
   RuntimeExecutor,
+  RuntimeManagedExecution,
+  RuntimeManagedPlan,
   RuntimeFor,
   RuntimeExecutionInspection,
   RuntimeInspection,

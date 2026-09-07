@@ -1,4 +1,4 @@
-import type { EffectError, Program as ProgramType } from '../effect/types'
+import type { EffectError, EffectSuccess, Program as ProgramType } from '../effect/types'
 import type {
   ExecutionMissing,
   LayerInput,
@@ -38,6 +38,24 @@ export type WebEffectProgram<A = unknown, E = unknown, R extends AnyService = ne
   R
 >
 
+/** The lazy source accepted by an opt-in managed Web response. */
+export type WebEffectStreamSource = ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>
+
+/** Context passed to a managed Web response producer. */
+export type WebEffectStreamContext = {
+  readonly signal: AbortSignal
+}
+
+/** An explicit response descriptor whose producer owns the response body lifetime. */
+export type WebEffectStream = {
+  readonly status?: number
+  readonly statusText?: string
+  readonly headers?: HeadersInit
+  readonly producer: (
+    context: WebEffectStreamContext
+  ) => WebEffectStreamSource | PromiseLike<WebEffectStreamSource>
+}
+
 /** @internal */
 export type AnyProgram = WebEffectProgram<any, any, AnyService>
 
@@ -68,6 +86,17 @@ type InvalidFailure<Actual, Expected> = {
 type FailureCheck<Failure, Actual> = [Actual] extends [Failure]
   ? unknown
   : InvalidFailure<Actual, Failure>
+
+type StreamValueCheck<Program extends AnyProgram> = [EffectSuccess<Program>] extends [
+  WebEffectStream
+]
+  ? unknown
+  : {
+      readonly __betterEffectInvalidWebStream: {
+        readonly actual: EffectSuccess<Program>
+        readonly expected: WebEffectStream
+      }
+    }
 
 type RequestLayerMissing<
   Provided extends AnyService,
@@ -105,6 +134,22 @@ export type CompleteWebProgram<
   Failure = unknown
 > = Program & WebProgramChecks<Provided, RequestLayer, Program, Failure>
 
+/** @internal Validate the explicit stream descriptor returned by a Program. */
+export type CompleteWebStreamProgram<
+  Provided extends AnyService,
+  RequestLayer extends LayerInput,
+  Program extends AnyProgram,
+  Failure = unknown
+> = Program & WebProgramChecks<Provided, RequestLayer, Program, Failure> & StreamValueCheck<Program>
+
+/** @internal Checks applied to a streaming Program after the request Layer is inferred. */
+export type WebStreamProgramChecks<
+  Provided extends AnyService,
+  RequestLayer extends LayerInput,
+  Program extends AnyProgram,
+  Failure = unknown
+> = WebProgramChecks<Provided, RequestLayer, Program, Failure> & StreamValueCheck<Program>
+
 /** @internal Checks applied to a Program after the request Layer has been inferred. */
 export type WebProgramChecks<
   Provided extends AnyService,
@@ -128,4 +173,13 @@ export type WebEffectOptions<
   readonly onSuccess?: (result: WebEffectSuccess<Success>) => ResponseLike
   /** Convert a typed Program failure into a Response. */
   readonly onFailure?: (error: Failure) => ResponseLike
+}
+
+/** Options for the opt-in managed Web streaming boundary. */
+export type WebEffectStreamOptions<
+  Failure = unknown,
+  RequestLayer extends LayerInput = DefaultRequestLayer
+> = Pick<WebEffectOptions<Failure, RequestLayer, WebEffectStream>, 'requestLayer' | 'onFailure'> & {
+  /** Cancel an unconsumed or abandoned body after this idle period. */
+  readonly unconsumedTimeoutMs?: number
 }

@@ -9,13 +9,16 @@ import {
   getRuntimeContext,
   makeRuntimeContext,
   runRuntimeContext,
+  type CompleteRuntimeContext,
   type RuntimeContextStorage
 } from '../runtime/context'
 
 import {
   createRuntimeExecutor,
   eraseRuntimeExecutor,
-  type RuntimeExecutor
+  type RuntimeExecutor,
+  type RuntimeManagedExecution,
+  type RuntimeManagedPlan
 } from '../runtime/executor'
 
 import { defaultRuntimeContextStorage } from '../runtime/default'
@@ -102,6 +105,13 @@ interface RuntimeHandleCore<Provided extends AnyService> {
     program: CompleteExecution<Provided | ProvidedEnvironment<Request>, A>,
     options?: RuntimeRunOptions
   ): Promise<Awaited<A>>
+
+  /** Run a program until its managed completion while exposing earlier readiness. */
+  runWithManaged<Request extends LayerInput, A>(
+    layer: Request & CompleteExecutionLayer<Provided, Request>,
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, RuntimeManagedPlan<A>>,
+    options?: RuntimeRunOptions
+  ): RuntimeManagedExecution<A>
 
   /** Resolve every registered provider before accepting normal executions. */
   warmup(): Promise<void>
@@ -202,10 +212,11 @@ const prepareExecution = <ProgramValue>(
   options: RuntimeRunOptions | undefined,
   dependencies: RuntimeExecutionDependencies,
   runtimeSignal: AbortSignal | undefined,
-  shutdownSignal: AbortSignal
+  shutdownSignal: AbortSignal,
+  additionalSignal?: AbortSignal
 ): PreparedExecution => ({
   metadata: makeExecutionMetadata(program, options?.attributes, dependencies),
-  signalLink: linkAbortSignals(runtimeSignal, options?.signal, shutdownSignal)
+  signalLink: linkAbortSignals(runtimeSignal, options?.signal, additionalSignal, shutdownSignal)
 })
 
 const makeExecutionMetadata = (
@@ -713,6 +724,204 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     )
   }
 
+  runWithManaged<Request extends LayerInput, A>(
+    layer: Request & CompleteExecutionLayer<Provided, Request>,
+    program: CompleteExecution<Provided | ProvidedEnvironment<Request>, RuntimeManagedPlan<A>>,
+    options?: RuntimeRunOptions
+  ): RuntimeManagedExecution<A> {
+    this.assertActive()
+
+    const managedController = new AbortController()
+    let prepared: PreparedExecution
+
+    prepared = prepareExecution(
+      program,
+      options,
+      this.executionDependencies,
+      this.signal,
+      this.shutdownController.signal,
+      managedController.signal
+    )
+
+    try {
+      this.assertActive()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+
+    const localBackend = new MapLayerBackend()
+    const backend = new ExecutionLayerBackend(localBackend, this.backend)
+    const resolver = createResolutionResolver(backend, this.contextStorage, this.observers)
+    let executionScope: CloseableScope
+
+    try {
+      executionScope = this.rootScope.fork()
+    } catch (cause) {
+      prepared.signalLink.dispose()
+      throw cause
+    }
+    this.taskSupervisor.bindScope(executionScope)
+    const executionContext = makeRuntimeContext(
+      resolver,
+      executionScope,
+      [],
+      prepared.signalLink.signal,
+      undefined,
+      prepared.metadata.executionId,
+      this.executor
+    )
+
+    let plan: RuntimeManagedPlan<A> | undefined
+    let pendingCancel: unknown
+    let cancelPromise: Promise<void> | undefined
+    let executionPromise!: Promise<void>
+    let settled = false
+    let resolveReadiness!: (value: Awaited<A>) => void
+    let rejectReadiness!: (cause?: unknown) => void
+    const readiness = new Promise<Awaited<A>>((resolve, reject) => {
+      resolveReadiness = resolve
+      rejectReadiness = reject
+    })
+    void readiness.catch(() => undefined)
+
+    const runInExecution = <B>(operation: () => B | PromiseLike<B>): Promise<Awaited<B>> => {
+      if (settled) {
+        return Promise.reject(new RuntimeHandleDisposedError())
+      }
+
+      return Promise.resolve(
+        runRuntimeContext(this.contextStorage, executionContext, () =>
+          ScopeRuntime.run(executionScope, operation, this.contextStorage)
+        )
+      )
+    }
+
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- preserve caller-defined cancellation reasons.
+    const cancel = (reason?: unknown): Promise<void> => {
+      if (cancelPromise !== undefined) {
+        return cancelPromise
+      }
+
+      cancelPromise = (async () => {
+        pendingCancel = reason === undefined ? new Error('Managed execution cancelled') : reason
+
+        if (!managedController.signal.aborted) {
+          managedController.abort(pendingCancel)
+        }
+
+        const currentPlan = plan
+        if (currentPlan?.cancel !== undefined) {
+          try {
+            await currentPlan.cancel(pendingCancel)
+          } catch {
+            // The execution outcome remains the primary cancellation result.
+          }
+        }
+
+        if (executionPromise !== undefined) {
+          await executionPromise.catch(() => undefined)
+        }
+      })()
+
+      return cancelPromise
+    }
+
+    const run = async (): Promise<void> => {
+      try {
+        for (const provider of layer.providers) {
+          backend.register(
+            bindProviderToScope(
+              provider,
+              executionScope,
+              this.contextStorage,
+              resolver,
+              this.observers,
+              this.executor,
+              prepared.metadata.executionId
+            )
+          )
+        }
+
+        const next = await program()
+        plan = next
+
+        if (pendingCancel !== undefined) {
+          rejectReadiness(pendingCancel)
+          await next.cancel?.(pendingCancel)
+          throw pendingCancel
+        }
+
+        try {
+          resolveReadiness(await next.readiness)
+        } catch (cause) {
+          rejectReadiness(cause)
+          await next.cancel?.(cause)
+          throw cause
+        }
+
+        return await next.completion
+      } catch (cause) {
+        rejectReadiness(cause)
+        throw cause
+      }
+    }
+
+    executionPromise = this.startExecution<void>(
+      prepared.signalLink,
+      prepared.metadata,
+      async () => {
+        try {
+          return await this.runExecution(
+            executionScope,
+            run,
+            resolver,
+            prepared.signalLink.signal,
+            prepared.metadata,
+            executionContext
+          )
+        } finally {
+          await localBackend.disposeAll()
+        }
+      }
+    )
+
+    void executionPromise.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+    void executionPromise.catch(() => undefined)
+
+    const signalListener = (): void => {
+      void cancel(prepared.signalLink.signal.reason)
+    }
+    if (prepared.signalLink.signal.aborted) {
+      signalListener()
+    } else {
+      prepared.signalLink.signal.addEventListener('abort', signalListener, { once: true })
+    }
+
+    void executionPromise.then(
+      () => prepared.signalLink.signal.removeEventListener('abort', signalListener),
+      () => prepared.signalLink.signal.removeEventListener('abort', signalListener)
+    )
+
+    const completion = executionPromise.then(() => undefined)
+    void completion.catch(() => undefined)
+
+    return Object.freeze({
+      readiness,
+      completion,
+      signal: prepared.signalLink.signal,
+      run: runInExecution,
+      cancel
+    })
+  }
+
   warmup(): Promise<void> {
     this.assertActive()
 
@@ -881,7 +1090,8 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
     program: () => A | PromiseLike<A>,
     resolver: ServiceResolver = this.resolver,
     signal: AbortSignal = this.shutdownController.signal,
-    metadata: RuntimeExecutionMetadata
+    metadata: RuntimeExecutionMetadata,
+    executionContext?: CompleteRuntimeContext
   ): Promise<Awaited<A>> {
     let outcome: ScopeOutcome | undefined
     let cleanupFailure: ScopeCloseError | undefined
@@ -940,15 +1150,17 @@ class RuntimeHandleImpl<Provided extends AnyService> implements RuntimeHandleCor
       execution = runScoped(executionScope, program, {
         ...runOptions,
         contextStorage: this.contextStorage,
-        context: makeRuntimeContext(
-          resolver,
-          executionScope,
-          [],
-          signal,
-          undefined,
-          metadata.executionId,
-          this.executor
-        )
+        context:
+          executionContext ??
+          makeRuntimeContext(
+            resolver,
+            executionScope,
+            [],
+            signal,
+            undefined,
+            metadata.executionId,
+            this.executor
+          )
       })
     } catch (cause) {
       const failure: ScopeOutcome = {
@@ -1175,7 +1387,9 @@ export const createRuntimeHandle = async <L extends LayerInput>(
     providedExecutor ??
     createRuntimeExecutor<ProvidedEnvironment<L>>({
       run: (program, runOptions) => handle!.run(program, runOptions),
-      runWith: (request, program, runOptions) => handle!.runWith(request, program, runOptions)
+      runWith: (request, program, runOptions) => handle!.runWith(request, program, runOptions),
+      runWithManaged: (request, program, runOptions) =>
+        handle!.runWithManaged(request, program, runOptions)
     })
   const contextExecutor = eraseRuntimeExecutor(executor)
   let current: LayerProvider | undefined

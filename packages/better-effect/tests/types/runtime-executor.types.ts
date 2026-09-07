@@ -65,7 +65,9 @@ expectTypeOf<RuntimeExecutor<Database>>().toEqualTypeOf<Runtime.Executor<Databas
 expectTypeOf<RuntimeContext['executor']>().toEqualTypeOf<RuntimeExecutor<AnyService> | undefined>()
 expectTypeOf<EffectRequirements<typeof capture>>().toEqualTypeOf<Database | Logger>()
 expectTypeOf<EffectSuccess<typeof capture>>().toEqualTypeOf<Runtime.Executor<Database | Logger>>()
-expectTypeOf<keyof Runtime.Executor<Database>>().toEqualTypeOf<'run' | 'runWith'>()
+expectTypeOf<keyof Runtime.Executor<Database>>().toEqualTypeOf<
+  'run' | 'runWith' | 'runWithManaged'
+>()
 
 void executor.run(databaseProgram)
 // @ts-expect-error Logger is not available from an executor containing only Database.

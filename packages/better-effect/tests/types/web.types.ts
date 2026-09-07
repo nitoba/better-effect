@@ -5,7 +5,7 @@ import { Effect, Layer, Runtime, Service } from '../../src'
 import type { EffectError } from '../../src/effect/types'
 import { CurrentRequest } from '../../src/standard-services'
 import { WebEffect } from '../../src/web'
-import type { WebEffectOptions } from '../../src/web'
+import type { WebEffectOptions, WebEffectStream } from '../../src/web'
 
 class Available extends Service<Available>()('WebTypeAvailable') {}
 class Missing extends Service<Missing>()('WebTypeMissing') {}
@@ -393,3 +393,70 @@ const invalidRootOverride = WebEffect.handleWith(
   invalidRootOverrideOptions
 )
 void invalidRootOverride
+
+const streamResponse = WebEffect.streamWith(
+  runtime.executor,
+  new Request('https://example.test/stream'),
+  Effect.fn(async function* () {
+    const available = yield* Available
+    const request = yield* CurrentRequest
+    const descriptor: WebEffectStream = {
+      status: 206,
+      headers: { 'content-type': 'application/octet-stream' },
+      producer: async function* ({ signal }) {
+        expectTypeOf(signal).toEqualTypeOf<AbortSignal>()
+        void available
+        void request
+        yield new Uint8Array([1])
+      }
+    }
+    return Result.ok(descriptor)
+  })
+)
+expectTypeOf(streamResponse).toEqualTypeOf<Promise<Response>>()
+
+const streamingFailureResponse = WebEffect.streamWith(
+  runtime.executor,
+  new Request('https://example.test/stream-failure'),
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.err(new ExpectedFailure())
+  }),
+  {
+    onFailure: (error: ExpectedFailure) => {
+      expectTypeOf(error).toEqualTypeOf<ExpectedFailure>()
+      return Response.json({ error: error.message }, { status: 422 })
+    }
+  }
+)
+expectTypeOf(streamingFailureResponse).toEqualTypeOf<Promise<Response>>()
+
+const missingStreamingProgram = Effect.fn(async function* () {
+  const missing = yield* Missing
+  void missing
+  return Result.ok<WebEffectStream>({
+    producer: async function* () {
+      yield new Uint8Array([1])
+    }
+  })
+})
+const invalidStreamingProgram = WebEffect.streamWith(
+  runtime.executor,
+  new Request('https://example.test/missing-stream-service'),
+  // @ts-expect-error Streaming Programs cannot require a Service absent from the root/request Layers.
+  missingStreamingProgram
+)
+void invalidStreamingProgram
+
+const invalidStreamingDescriptor = WebEffect.streamWith(
+  runtime.executor,
+  new Request('https://example.test/invalid-stream'),
+  // @ts-expect-error Streaming Programs must return an explicit descriptor with a producer.
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok({
+      status: 200
+    })
+  })
+)
+void invalidStreamingDescriptor

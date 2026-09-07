@@ -162,9 +162,12 @@ const executor = (await runtime.run(captureExecutor)).unwrap()
 await executor.run(inspectDatabase)
 ```
 
-`Runtime.Executor<R>` exposes only `run` and `runWith`. It always starts a new
-child execution on the same Runtime root, so it does not retain request-local
-Services or expose `dispose`, `warmup`, `inspect`, backend or Scope ownership.
+`Runtime.Executor<R>` exposes `run`, `runWith`, and the opt-in
+`runWithManaged` capability. The first two start a child execution and resolve
+after its Scope closes; `runWithManaged` additionally separates readiness from
+completion for boundaries such as `WebEffect.streamWith`, while keeping the
+same request-local Services and Scope active until completion. The executor
+does not expose `dispose`, `warmup`, `inspect`, backend or Scope ownership.
 Applications normally use `runtime.run`; the contextual executor is mainly for
 framework adapters and long-lived components.
 
@@ -764,6 +767,35 @@ accepted without `instanceof Response`; missing capabilities and forged
 rejected. The Program's Service and failure channels, request-Layer
 requirements, and override compatibility are checked at the TypeScript
 boundary.
+
+For a response whose body is still produced by request-scoped work, opt in to
+the managed streaming boundary with an explicit descriptor. The descriptor's
+metadata is committed immediately, while its lazy producer is pulled with
+backpressure in the same execution context:
+
+```ts
+const response = await WebEffect.streamWith(
+  runtime.executor,
+  request,
+  Effect.fn(async function* () {
+    const file = yield* FileService
+
+    return Result.ok<WebEffect.Stream>({
+      status: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+      producer: async function* ({ signal }) {
+        yield* file.bytes({ signal })
+      }
+    })
+  }),
+  { unconsumedTimeoutMs: 30_000 }
+)
+```
+
+`WebEffect.streamWith` retains the request execution until EOF, downstream
+cancel/error, request abort, timeout, or Runtime shutdown. It accepts only the
+explicit descriptor—not an arbitrary `Response`—and never maps failures to a
+new status after headers have been committed.
 
 ### Next.js App Router request boundaries
 
