@@ -44,6 +44,21 @@ const expectedResponses: HttpResponseOperation<
   ResponseData<{ 200: typeof userSchema; 404: typeof notFoundSchema }>
 > = responses
 
+const endpointCodec = {
+  schema: userSchema,
+  encodedSchema: userSchema,
+  encode(value: { readonly id: number }) {
+    return Result.ok({ id: value.id })
+  }
+}
+const codecEndpoint = Http.HttpEndpoint.post('/users', { bodyCodec: endpointCodec })
+expectTypeOf<Http.HttpEndpointArgs<typeof codecEndpoint.definition>>().toEqualTypeOf<{
+  readonly body: { readonly id: number }
+}>()
+
+// @ts-expect-error endpoint body validation and explicit body encoding are mutually exclusive.
+Http.HttpEndpoint.post('/users', { body: userSchema, bodyCodec: endpointCodec })
+
 const rawEvents = client.sse('/events')
 const typedEvents = client.sse('/events', { schema: userSchema })
 const namedEvents = client.sse('/events', {

@@ -61,6 +61,7 @@
   "devDependencies": {
     "@opentelemetry/api": "1.9.1",
     "@types/bun": "1.4.1",
+    "arktype": "2.2.3",
     "better-effect": "0.13.0",
     "better-effect-schema": "0.1.0",
     "better-result": "^3.0.0",
@@ -69,7 +70,9 @@
     "oxlint-tsgolint": "^7.0.2001",
     "publint": "^0.3.23",
     "tsdown": "^0.22.14",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "valibot": "1.4.2",
+    "zod": "4.5.4"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.9.0 <1.10.0",

@@ -3,15 +3,19 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "better-effect": "0.13.0",
+    "arktype": "2.2.3",
+    "better-effect": "file:./artifacts/better-effect-0.13.0.tgz",
     "better-effect-http": "file:./artifacts/better-effect-http.tgz",
     "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz",
-    "better-result": "3.0.1"
+    "better-result": "3.0.1",
+    "valibot": "1.4.2",
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "typescript": "7.0.2"
   },
   "overrides": {
+    "better-effect": "file:./artifacts/better-effect-0.13.0.tgz",
     "better-effect-schema": "file:./artifacts/better-effect-schema-0.1.0.tgz"
   }
 }

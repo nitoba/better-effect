@@ -42,6 +42,25 @@ const result = await Runtime.run(HttpClient.layer({ baseURL: 'https://api.exampl
 the final status, preserving the status/data correlation in TypeScript. A
 status that is not declared in `responses` is returned as `HttpStatusError`.
 
+Declarative endpoints use the same provider-neutral schema boundary. `body`
+validates the representation sent over the wire; `bodyCodec` is the explicit
+alternative for encoding a domain value, and the two options are mutually
+exclusive. Encoding runs once when the endpoint operation is consumed:
+
+```ts
+const createUser = HttpEndpoint.post('/users', {
+  bodyCodec: UserCodec,
+  schema: UserSchema
+})
+const users = http.endpoints({ createUser })
+const saved = yield * users.createUser({ body: user })
+```
+
+Classes, transforms, and provider schemas are consumed through Standard
+Schema. HTTP does not import provider adapters; import an optional
+`better-effect-schema` adapter only when defining capabilities beyond that
+protocol.
+
 NDJSON responses are decoded incrementally, one UTF-8 JSON record at a time. A
 schema is optional; when present its transformed output is delivered to the
 consumer exactly once per record:
