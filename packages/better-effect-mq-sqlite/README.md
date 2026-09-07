@@ -1,7 +1,7 @@
 # better-effect-mq-sqlite
 
 Optional embedded SQLite implementation of the `better-effect-mq` protocol-v1 `JobStore`,
-`JobScheduleStore`, and `better-effect-mq-outbox` contracts.
+protocol-v2 `FlowStore`, `JobScheduleStore`, and `better-effect-mq-outbox` contracts.
 
 SQLite is a good fit for CLIs, desktop applications, persistent tests, single-node services, and low-to-moderate volume queues. It is **not** a multi-host broker and is not recommended for high writer contention or network filesystems/NFS. SQLite allows concurrent readers but has one writer; this adapter deliberately uses short `BEGIN IMMEDIATE` write transactions and never holds a transaction while a worker handler executes.
 
@@ -11,7 +11,12 @@ The generic entrypoint does not import a SQLite driver. Supply a structural data
 
 ```ts
 import { Database } from 'bun:sqlite'
-import { SqliteJobScheduleStore, SqliteJobStore, SqliteOutboxStore } from 'better-effect-mq-sqlite'
+import {
+  SqliteFlowStore,
+  SqliteJobScheduleStore,
+  SqliteJobStore,
+  SqliteOutboxStore
+} from 'better-effect-mq-sqlite'
 
 const database = new Database('./jobs.sqlite')
 SqliteJobStore.migrate({ database }) // explicit; never run automatically
@@ -29,6 +34,12 @@ const ScheduleLive = SqliteJobScheduleStore.layer({
 })
 
 const OutboxLive = SqliteOutboxStore.layer({
+  database,
+  namespace: 'desktop-app',
+  configurePragmas: true
+})
+
+const FlowLive = SqliteFlowStore.layer({
   database,
   namespace: 'desktop-app',
   configurePragmas: true
@@ -72,7 +83,10 @@ The caller owns a supplied database and must close it. `:memory:` databases are 
 
 Run migrations deliberately, preferably after a backup for file databases. Migration 2 adds the
 durable schedules table and due/group/key indexes; migration 3 adds the durable outbox table and
-claim, lease, target/state, and recent indexes. Startup only validates the schema by default.
+claim, lease, target/state, and recent indexes; migration 4 adds the FlowStore v2 parent columns,
+child manifest table, and durable flow-report outbox. Startup only validates the schema by default.
+`SqliteFlowStore.make` and its layers require the explicit migration-4 marker and fail with
+`SqliteFlowProtocolMismatchError` on a v1-v3 schema; they never upgrade the database implicitly.
 For caller-owned connections, PRAGMAs are changed only with `configurePragmas: true`; enable
 `foreign_keys`, use a finite `busyTimeoutMs`, and use WAL for file databases where appropriate:
 
@@ -81,6 +95,28 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA synchronous = NORMAL;
 ```
+
+## FlowStore v2
+
+`SqliteFlowStore` stores a parent flow marker and deterministic child manifest in SQLite. `fanOut`
+is idempotent for the same manifest and lease, child settlement reports are appended to the flow
+outbox atomically with terminal `JobStore` transitions, and `recordChildResults`, `cancel`,
+`reconcile`, and `markCascaded` are bounded and retry-safe. Flow transitions use short
+`BEGIN IMMEDIATE` transactions; they do not claim to make a job store and a different store key
+transactional.
+
+The generic entrypoint accepts a caller-owned `database`:
+
+```ts
+import { SqliteFlowStore } from 'better-effect-mq-sqlite'
+
+const FlowLive = SqliteFlowStore.layer({ database, namespace: 'desktop-app' })
+```
+
+For a file-backed database, `better-effect-mq-sqlite/bun` and
+`better-effect-mq-sqlite/node` additionally export `flowLayerFromFile`, which opens and closes the
+host database as part of the Layer scope. Run `SqliteMigrator.migrate` first, then construct the
+file layer just like the existing JobStore layer.
 
 Wake notifications are local to one store instance. Separate processes rely on SQLite file locking for correctness and polling for discovery. File permissions and local-disk backups remain application operational responsibilities.
 

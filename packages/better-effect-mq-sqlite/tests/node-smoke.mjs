@@ -3,11 +3,11 @@ import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Runtime, ServiceRuntime, Layer } from 'better-effect'
-import { JobScheduleStore, JobStore } from 'better-effect-mq'
+import { FlowStore, JobScheduleStore, JobStore } from 'better-effect-mq'
 import { OutboxStore } from 'better-effect-mq-outbox'
 import { SqliteJobScheduleStore, SqliteJobStore } from '../dist/index.mjs'
 import { SqliteOutboxStore } from '../dist/index.mjs'
-import { openSqlite, layerFromFile, outboxLayerFromFile } from '../dist/node.mjs'
+import { openSqlite, flowLayerFromFile, layerFromFile, outboxLayerFromFile } from '../dist/node.mjs'
 
 const path = join(tmpdir(), `better-effect-mq-sqlite-node-${crypto.randomUUID()}.sqlite`)
 
@@ -18,6 +18,11 @@ try {
 
   const runtime = await Runtime.make(layerFromFile({ path }))
   await runtime.dispose()
+
+  const flowRuntime = await Runtime.make(flowLayerFromFile({ path }))
+  const flow = await flowRuntime.run(() => ServiceRuntime.resolve(FlowStore))
+  assert.equal(flow.descriptor.protocolVersion, 2)
+  await flowRuntime.dispose()
 
   const outboxRuntime = await Runtime.make(outboxLayerFromFile({ path }))
   const outbox = await outboxRuntime.run(() => ServiceRuntime.resolve(OutboxStore))

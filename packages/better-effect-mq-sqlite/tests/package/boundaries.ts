@@ -67,4 +67,12 @@ for (const required of [
 ]) {
   if (!migration.includes(required)) throw new Error(`Outbox migration is missing ${required}`)
 }
+const flowMigration = await readFile(join(packageRoot, 'migrations/004_flows_v2.sql'), 'utf8')
+for (const required of [
+  'better_effect_mq_flow_children',
+  'better_effect_mq_flow_outbox',
+  'better_effect_mq_jobs_waiting_children_idx'
+]) {
+  if (!flowMigration.includes(required)) throw new Error(`Flow migration is missing ${required}`)
+}
 console.log('SQLite package boundaries passed')

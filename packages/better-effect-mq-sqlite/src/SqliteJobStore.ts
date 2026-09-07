@@ -8,6 +8,8 @@ import { Result, type Result as ResultType } from 'better-result'
 import {
   JobStore,
   JobStoreFailure,
+  validateFlowChildReport,
+  validateParentEnvelope,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace
 } from 'better-effect-mq'
@@ -17,9 +19,53 @@ import { SqliteAdapterError, sqliteError } from './errors'
 import { SqliteMigrator } from './migrator'
 import { SQLITE_TABLES } from './schema'
 import { SqliteJobStoreEngine } from './internal/engine'
+import { withSqliteTransaction } from './internal/transactions'
 
 type Operation<T> = JobStoreOperation<T, JobStoreError>
 type SyncOperation<T> = ResultType<T, JobStoreError>
+
+const terminalFlowReport = (
+  attempt: import('better-effect-mq').AttemptRecord | undefined,
+  parent: string | undefined,
+  jobId: string
+):
+  | {
+      readonly report: import('better-effect-mq').FlowChildReport
+      readonly id: string
+      readonly flowName: string
+      readonly parentStoreKey: string
+    }
+  | undefined => {
+  const outcome =
+    attempt?.outcome === 'completed'
+      ? 'completed'
+      : attempt?.outcome === 'failed'
+        ? 'failed'
+        : attempt?.outcome === 'cancelled'
+          ? 'cancelled'
+          : attempt?.outcome === 'stalled' && attempt.failure?.retryable === false
+            ? 'failed'
+            : undefined
+  if (attempt === undefined || outcome === undefined) return undefined
+  if (parent === undefined || parent === null) return undefined
+  const parsed = typeof parent === 'string' ? JSON.parse(parent) : parent
+  const envelope = validateParentEnvelope(parsed)
+  if (Result.isError(envelope)) throw envelope.error
+  const report = validateFlowChildReport({
+    flowId: envelope.value.flowId,
+    childKey: envelope.value.childKey,
+    outcome,
+    result: attempt.outcome === 'completed' ? attempt.result : undefined,
+    failure: attempt.outcome === 'completed' ? undefined : attempt.failure
+  })
+  if (Result.isError(report)) throw report.error
+  return {
+    report: report.value,
+    id: `flow-report/${jobId}/${attempt.attemptSequence ?? attempt.attempt}`,
+    flowName: envelope.value.flowName,
+    parentStoreKey: envelope.value.parentStoreKey
+  }
+}
 
 const descriptor = Object.freeze({
   protocolVersion: 1 as const,
@@ -51,6 +97,7 @@ class SqliteJobStoreImplementation {
   private readonly engine = new SqliteJobStoreEngine()
   private chain: Promise<void> = Promise.resolve()
   private closed = false
+  private flowReportsEnabled: boolean | undefined
   private readonly wakePollers = new Set<ReturnType<typeof setInterval>>()
 
   constructor(private readonly config: ReturnType<typeof normalizeSqliteJobStoreConfig>) {}
@@ -81,7 +128,10 @@ class SqliteJobStoreImplementation {
         return failed<T>(operation, sqliteError(operation, cause))
       }
     }
-    const result = this.chain.then(run, run)
+    const result = this.chain.then(
+      () => (mutable ? withSqliteTransaction(this.config.database, run) : run()),
+      () => (mutable ? withSqliteTransaction(this.config.database, run) : run())
+    )
     this.chain = result.then(
       () => undefined,
       () => undefined
@@ -101,7 +151,9 @@ class SqliteJobStoreImplementation {
       } else throw new SqliteAdapterError('persisted SQLite metadata is invalid')
     }
     const jobs = this.config.database
-      .prepare(`SELECT id, record_json FROM ${SQLITE_TABLES.jobs} WHERE namespace = ?`)
+      .prepare(
+        `SELECT id, record_json FROM ${SQLITE_TABLES.jobs} WHERE namespace = ? AND state <> 'waiting-children'`
+      )
       .all(this.config.namespace)
       .flatMap((row) =>
         row !== undefined && typeof row.id === 'string' && typeof row.record_json === 'string'
@@ -149,6 +201,53 @@ class SqliteJobStoreImplementation {
         : []
     )
     this.engine.restoreState(JSON.stringify(base))
+  }
+
+  private flowReportsAvailable(): boolean {
+    if (this.flowReportsEnabled !== undefined) return this.flowReportsEnabled
+    try {
+      const outbox = this.config.database
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get(SQLITE_TABLES.flowOutbox)
+      const columns = this.config.database.prepare(`PRAGMA table_info(${SQLITE_TABLES.jobs})`).all()
+      this.flowReportsEnabled =
+        outbox !== undefined && outbox !== null && columns.some((row) => row?.name === 'parent')
+    } catch {
+      this.flowReportsEnabled = false
+    }
+    return this.flowReportsEnabled
+  }
+
+  private parentFor(jobId: string): string | undefined {
+    if (!this.flowReportsAvailable()) return undefined
+    const parent = this.config.database
+      .prepare(`SELECT parent FROM ${SQLITE_TABLES.jobs} WHERE namespace = ? AND id = ?`)
+      .get(this.config.namespace, jobId)?.parent
+    return typeof parent === 'string' ? parent : undefined
+  }
+
+  private appendTerminalReport(
+    parent: string | undefined,
+    attempt: import('better-effect-mq').AttemptRecord | undefined,
+    jobId: string,
+    now: number
+  ): void {
+    const normalized = terminalFlowReport(attempt, parent, jobId)
+    if (normalized === undefined) return
+    this.config.database
+      .prepare(
+        `INSERT INTO ${SQLITE_TABLES.flowOutbox}(namespace, id, flow_name, parent_store_key, report_json, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(namespace, id) DO NOTHING`
+      )
+      .run(
+        this.config.namespace,
+        normalized.id,
+        normalized.flowName,
+        normalized.parentStoreKey,
+        JSON.stringify(normalized.report),
+        now
+      )
   }
 
   private persist(previous: string): void {
@@ -322,18 +421,24 @@ class SqliteJobStoreImplementation {
     )
   }
   settle(request: JobStoreNamespace.SettleRequest) {
-    return this.execute(
-      'settle',
-      true,
-      () => this.engine.settle(request) as SyncOperation<JobStoreNamespace.SettlementResult>
-    )
+    return this.execute('settle', true, () => {
+      const parent = this.parentFor(request.jobId)
+      const result = this.engine.settle(
+        request
+      ) as SyncOperation<JobStoreNamespace.SettlementResult>
+      if (Result.isOk(result))
+        this.appendTerminalReport(parent, result.value.attempt, request.jobId, request.now)
+      return result
+    })
   }
   release(request: JobStoreNamespace.ReleaseRequest) {
-    return this.execute(
-      'release',
-      true,
-      () => this.engine.release(request) as SyncOperation<JobStoreNamespace.ReleaseResult>
-    )
+    return this.execute('release', true, () => {
+      const parent = this.parentFor(request.jobId)
+      const result = this.engine.release(request) as SyncOperation<JobStoreNamespace.ReleaseResult>
+      if (Result.isOk(result))
+        this.appendTerminalReport(parent, result.value.attempt, request.jobId, request.now)
+      return result
+    })
   }
   heartbeat(request: JobStoreNamespace.HeartbeatRequest) {
     return this.execute(
@@ -343,12 +448,18 @@ class SqliteJobStoreImplementation {
     )
   }
   recoverStalled(request: JobStoreNamespace.RecoverStalledRequest) {
-    return this.execute(
-      'recoverStalled',
-      true,
-      () =>
-        this.engine.recoverStalled(request) as SyncOperation<JobStoreNamespace.RecoverStalledResult>
-    )
+    return this.execute('recoverStalled', true, () => {
+      const result = this.engine.recoverStalled(
+        request
+      ) as SyncOperation<JobStoreNamespace.RecoverStalledResult>
+      if (Result.isOk(result)) {
+        for (const transition of result.value.transitions) {
+          const parent = this.parentFor(transition.record.id)
+          this.appendTerminalReport(parent, transition.attempt, transition.record.id, request.now)
+        }
+      }
+      return result
+    })
   }
   getJob(request: JobStoreNamespace.GetJobRequest) {
     return this.execute(
@@ -392,11 +503,13 @@ class SqliteJobStoreImplementation {
     )
   }
   cancel(request: JobStoreNamespace.CancelRequest) {
-    return this.execute(
-      'cancel',
-      true,
-      () => this.engine.cancel(request) as SyncOperation<JobStoreNamespace.CancelResult>
-    )
+    return this.execute('cancel', true, () => {
+      const parent = this.parentFor(request.jobId)
+      const result = this.engine.cancel(request) as SyncOperation<JobStoreNamespace.CancelResult>
+      if (Result.isOk(result))
+        this.appendTerminalReport(parent, result.value.attempt, request.jobId, request.now)
+      return result
+    })
   }
   requestCancellation(request: JobStoreNamespace.RequestCancellationRequest) {
     return this.execute(

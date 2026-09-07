@@ -31,17 +31,17 @@ const open = (): Database => {
 type CatalogRow = { readonly name?: unknown }
 type VersionRow = { readonly version?: unknown }
 
-test('migration 3 installs schedules and outbox tables and is idempotent', () => {
+test('migration 4 installs schedules, outbox, and flow tables and is idempotent', () => {
   const database = open()
 
   expect(SqliteMigrator.migrate({ database, appliedAtMs: 7 })).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 3,
-    applied: [1, 2, 3]
+    version: 4,
+    applied: [1, 2, 3, 4]
   })
   expect(SqliteMigrator.migrate({ database, appliedAtMs: 8 })).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 3,
+    version: 4,
     applied: []
   })
 
@@ -55,6 +55,8 @@ test('migration 3 installs schedules and outbox tables and is idempotent', () =>
   )
   expect(tables.has(SQLITE_TABLES.schedules)).toBe(true)
   expect(tables.has(SQLITE_TABLES.outbox)).toBe(true)
+  expect(tables.has(SQLITE_TABLES.flowChildren)).toBe(true)
+  expect(tables.has(SQLITE_TABLES.flowOutbox)).toBe(true)
   const indexes = new Set(
     (
       database.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as readonly (
@@ -68,10 +70,19 @@ test('migration 3 installs schedules and outbox tables and is idempotent', () =>
     | VersionRow
     | null
     | undefined
-  expect(version?.version).toBe(3)
+  expect(version?.version).toBe(4)
 })
 
-test('migration 2 upgrades a version-one layout', () => {
+test('migration 4 preserves foreign-key integrity when the connection has enforcement enabled', () => {
+  const database = open()
+  database.exec('PRAGMA foreign_keys = ON')
+
+  expect(SqliteMigrator.migrate({ database }).version).toBe(4)
+  expect(database.prepare('PRAGMA foreign_keys').get()).toMatchObject({ foreign_keys: 1 })
+  expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+})
+
+test('migration 4 upgrades a version-one layout', () => {
   const database = open()
   database.exec(migrationSql)
   const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
@@ -81,11 +92,11 @@ test('migration 2 upgrades a version-one layout', () => {
     )
     .run(MIGRATION_COMPONENT, 1, 1, initialChecksum)
 
-  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([2, 3])
-  expect(SqliteMigrator.validate(database).version).toBe(3)
+  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([2, 3, 4])
+  expect(SqliteMigrator.validate(database).version).toBe(4)
 })
 
-test('migration 2 upgrades to migration 3 without changing the v2 checksum', () => {
+test('migration 4 upgrades a version-two layout without changing the v2 checksum', () => {
   const database = open()
   database.exec(migrationSql)
   const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
@@ -100,8 +111,8 @@ test('migration 2 upgrades to migration 3 without changing the v2 checksum', () 
     )
     .run(MIGRATION_COMPONENT, 2, 1, versionTwoChecksum)
 
-  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([3])
-  expect(SqliteMigrator.validate(database).version).toBe(3)
+  expect(SqliteMigrator.migrate({ database, appliedAtMs: 9 }).applied).toEqual([3, 4])
+  expect(SqliteMigrator.validate(database).version).toBe(4)
 })
 
 describe('migration 3 layout validation', () => {

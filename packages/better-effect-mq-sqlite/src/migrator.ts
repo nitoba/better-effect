@@ -9,7 +9,8 @@ import {
   SQLITE_TABLES,
   migrationSql,
   scheduleMigrationSql,
-  outboxMigrationSql
+  outboxMigrationSql,
+  flowMigrationSql
 } from './schema'
 
 const initialChecksum = createHash('sha256').update(migrationSql, 'utf8').digest('hex')
@@ -18,8 +19,15 @@ const outboxChecksum = createHash('sha256').update(outboxMigrationSql, 'utf8').d
 const versionTwoChecksum = createHash('sha256')
   .update(`1:${initialChecksum}\n2:${scheduleChecksum}\n`, 'utf8')
   .digest('hex')
-const checksum = createHash('sha256')
+const versionThreeChecksum = createHash('sha256')
   .update(`1:${initialChecksum}\n2:${scheduleChecksum}\n3:${outboxChecksum}\n`, 'utf8')
+  .digest('hex')
+const flowChecksum = createHash('sha256').update(flowMigrationSql, 'utf8').digest('hex')
+const checksum = createHash('sha256')
+  .update(
+    `1:${initialChecksum}\n2:${scheduleChecksum}\n3:${outboxChecksum}\n4:${flowChecksum}\n`,
+    'utf8'
+  )
   .digest('hex')
 
 export interface SqliteMigrationOptions {
@@ -29,7 +37,7 @@ export interface SqliteMigrationOptions {
 
 export interface SqliteMigrationResult {
   readonly component: typeof MIGRATION_COMPONENT
-  readonly version: 3
+  readonly version: 4
   readonly applied: readonly number[]
 }
 
@@ -49,7 +57,10 @@ export const SqliteMigrator = {
     if (!Number.isSafeInteger(appliedAtMs) || appliedAtMs < 0) {
       throw new SqliteMigrationError('appliedAtMs must be a non-negative safe integer')
     }
+    const foreignKeys = database.prepare('PRAGMA foreign_keys').get()
+    const restoreForeignKeys = Number(foreignKeys?.foreign_keys) === 1
     try {
+      if (restoreForeignKeys) database.exec('PRAGMA foreign_keys = OFF')
       begin(database)
       database.exec(migrationSql)
       const existing = database
@@ -69,9 +80,12 @@ export const SqliteMigrator = {
             throw new SqliteMigrationError('migration checksum mismatch')
           }
         } else if (version === 3) {
-          if (existing.checksum !== checksum) {
+          if (existing.checksum !== versionThreeChecksum) {
             throw new SqliteMigrationError('migration checksum mismatch')
           }
+        } else if (version === 4) {
+          if (existing.checksum !== checksum)
+            throw new SqliteMigrationError('migration checksum mismatch')
         } else {
           throw new SqliteMigrationError('unsupported SQLite migration version')
         }
@@ -83,34 +97,48 @@ export const SqliteMigrator = {
           .run(MIGRATION_COMPONENT, 1, appliedAtMs, initialChecksum)
         applied.push(1)
       }
-      if (existing == null || Number(existing.version) === 1) {
+      let currentVersion = existing == null ? 0 : Number(existing.version)
+      if (currentVersion < 2) {
         database.exec(scheduleMigrationSql)
         database
           .prepare(
             `UPDATE ${SQLITE_TABLES.schemaVersions} SET version = ?, applied_at_ms = ?, checksum = ? WHERE component = ?`
           )
-          .run(2, appliedAtMs, checksum, MIGRATION_COMPONENT)
+          .run(2, appliedAtMs, versionTwoChecksum, MIGRATION_COMPONENT)
         applied.push(2)
+        currentVersion = 2
       }
-      if (existing == null || Number(existing.version) < 3) {
+      if (currentVersion < 3) {
         database.exec(outboxMigrationSql)
         database
           .prepare(
             `UPDATE ${SQLITE_TABLES.schemaVersions} SET version = ?, applied_at_ms = ?, checksum = ? WHERE component = ?`
           )
-          .run(3, appliedAtMs, checksum, MIGRATION_COMPONENT)
+          .run(3, appliedAtMs, versionThreeChecksum, MIGRATION_COMPONENT)
         applied.push(3)
+        currentVersion = 3
+      }
+      if (currentVersion < 4) {
+        database.exec(flowMigrationSql)
+        database
+          .prepare(
+            `UPDATE ${SQLITE_TABLES.schemaVersions} SET version = ?, applied_at_ms = ?, checksum = ? WHERE component = ?`
+          )
+          .run(4, appliedAtMs, checksum, MIGRATION_COMPONENT)
+        applied.push(4)
       }
       database.exec('COMMIT')
-      return { component: MIGRATION_COMPONENT, version: 3, applied }
+      return { component: MIGRATION_COMPONENT, version: 4, applied }
     } catch (cause) {
       rollback(database)
       if (cause instanceof SqliteMigrationError) throw cause
       throw new SqliteMigrationError('SQLite migration failed', { cause })
+    } finally {
+      if (restoreForeignKeys) database.exec('PRAGMA foreign_keys = ON')
     }
   },
 
-  validate(database: SqliteDatabase): { readonly version: 3 } {
+  validate(database: SqliteDatabase): { readonly version: 3 | 4 } {
     try {
       const names = new Set(
         database
@@ -118,7 +146,7 @@ export const SqliteMigrator = {
           .all()
           .flatMap((row) => (typeof row?.name === 'string' ? [row.name] : []))
       )
-      for (const table of Object.values(SQLITE_TABLES)) {
+      for (const table of Object.values(SQLITE_TABLES).slice(0, 7)) {
         if (!names.has(table)) throw new SqliteSchemaValidationError(`missing table ${table}`)
       }
       const requiredColumns: Readonly<Record<string, readonly string[]>> = {
@@ -189,20 +217,53 @@ export const SqliteMigrator = {
           .all()
           .flatMap((row) => (typeof row?.name === 'string' ? [row.name] : []))
       )
-      for (const index of SQLITE_INDEXES) {
-        if (!indexes.has(index)) throw new SqliteSchemaValidationError(`missing index ${index}`)
-      }
       const row = database
         .prepare(
           `SELECT version, checksum FROM ${SQLITE_TABLES.schemaVersions} WHERE component = ?`
         )
         .get(MIGRATION_COMPONENT)
-      if (row == null || Number(row.version) !== 3 || row.checksum !== checksum) {
+      if (row == null || (Number(row.version) !== 3 && Number(row.version) !== 4)) {
         throw new SqliteSchemaValidationError(
           'schema is not migrated to the supported SQLite layout'
         )
       }
-      return { version: 3 }
+      const numericVersion = Number(row.version)
+      const version = numericVersion === 3 ? 3 : 4
+      const expectedChecksum = version === 3 ? versionThreeChecksum : checksum
+      if (row.checksum !== expectedChecksum) {
+        throw new SqliteSchemaValidationError('schema migration checksum mismatch')
+      }
+      const indexesToCheck =
+        version === 3
+          ? SQLITE_INDEXES.filter(
+              (index) =>
+                !index.includes('flow_') && index !== 'better_effect_mq_jobs_waiting_children_idx'
+            )
+          : SQLITE_INDEXES
+      for (const index of indexesToCheck) {
+        if (!indexes.has(index)) throw new SqliteSchemaValidationError(`missing index ${index}`)
+      }
+      if (version === 4) {
+        const flowColumns = new Set(
+          database
+            .prepare(`PRAGMA table_info(${SQLITE_TABLES.jobs})`)
+            .all()
+            .flatMap((item) => (typeof item?.name === 'string' ? [item.name] : []))
+        )
+        for (const column of [
+          'parent',
+          'flow',
+          'flow_manifest_digest',
+          'flow_lease_token',
+          'flow_name',
+          'flow_parent_store_key',
+          'flow_depth'
+        ]) {
+          if (!flowColumns.has(column))
+            throw new SqliteSchemaValidationError(`missing column ${SQLITE_TABLES.jobs}.${column}`)
+        }
+      }
+      return { version }
     } catch (cause) {
       if (cause instanceof SqliteSchemaValidationError) throw cause
       throw new SqliteSchemaValidationError('SQLite schema validation failed')

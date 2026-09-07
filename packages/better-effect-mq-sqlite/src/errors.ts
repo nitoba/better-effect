@@ -31,6 +31,15 @@ export class SqliteSchemaValidationError extends SqliteAdapterError {
   }
 }
 
+export class SqliteFlowProtocolMismatchError extends SqliteAdapterError {
+  constructor(readonly actualLayoutVersion: number | undefined) {
+    super(
+      `SQLite flow protocol v2 requires layout 4; found ${actualLayoutVersion === undefined ? 'unknown' : actualLayoutVersion}`
+    )
+    this.name = 'SqliteFlowProtocolMismatchError'
+  }
+}
+
 export const sqliteError = (operation: string, cause: unknown): SqliteAdapterError => {
   const code =
     cause !== null && typeof cause === 'object' && 'code' in cause

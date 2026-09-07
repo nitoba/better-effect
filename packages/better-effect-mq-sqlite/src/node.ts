@@ -4,8 +4,11 @@
 import { DatabaseSync } from 'node:sqlite'
 import { Layer } from 'better-effect'
 import {
+  FlowStore,
   JobStore,
   type AnyJobStoreToken,
+  type AnyFlowStoreToken,
+  type FlowStore as FlowStoreNamespace,
   type JobStore as JobStoreNamespace
 } from 'better-effect-mq'
 import {
@@ -16,6 +19,7 @@ import {
 import type { SqliteDatabase } from './config'
 import type { SqliteJobStoreConfig } from './config'
 import { SqliteJobStore } from './SqliteJobStore'
+import { SqliteFlowStore, type SqliteFlowStoreConfig } from './SqliteFlowStore'
 import { SqliteOutboxStore, type SqliteOutboxStoreConfig } from './SqliteOutboxStore'
 
 /** Node 24 host binding. It is isolated from the generic adapter entrypoint. */
@@ -70,6 +74,45 @@ export const layerFromFileFor = <Token extends AnyJobStoreToken>(
   token: Token,
   config: SqliteFileJobStoreConfig
 ): Layer<InstanceType<Token>, never> => ownedLayer(token, config)
+
+export interface SqliteFileFlowStoreConfig extends Omit<SqliteFlowStoreConfig, 'database'> {
+  readonly path: string
+}
+
+const ownedFlowLayer = <Token extends AnyFlowStoreToken>(
+  token: Token,
+  config: SqliteFileFlowStoreConfig
+) =>
+  Layer.scoped(
+    token,
+    () => {
+      const { path, ...options } = config
+      const database = openSqlite(path)
+      try {
+        database.exec('PRAGMA journal_mode = WAL;')
+        const store = SqliteFlowStore.make({
+          ...options,
+          database,
+          configurePragmas: options.configurePragmas ?? true
+        })
+        const provided = token.of(store as never)
+        databases.set(provided as object, database)
+        return provided as never
+      } catch (cause) {
+        return closeOwnedDatabase(database, cause)
+      }
+    },
+    (store) => databases.get(store as object)?.close?.()
+  )
+
+/** Adapter-owned Node database lifecycle for FlowStore v2. */
+export const flowLayerFromFile = (
+  config: SqliteFileFlowStoreConfig
+): Layer<FlowStoreNamespace.Instance, never> => ownedFlowLayer(FlowStore, config)
+export const flowLayerFromFileFor = <Token extends AnyFlowStoreToken>(
+  token: Token,
+  config: SqliteFileFlowStoreConfig
+): Layer<InstanceType<Token>, never> => ownedFlowLayer(token, config)
 
 export interface SqliteFileOutboxStoreConfig extends Omit<SqliteOutboxStoreConfig, 'database'> {
   readonly path: string
