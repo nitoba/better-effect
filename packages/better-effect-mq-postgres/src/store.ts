@@ -58,6 +58,8 @@ import {
   recoverStalledWithPolicy
 } from 'better-effect-mq'
 import { PostgresClient } from './client'
+import { appendPostgresJobEvent } from './event-store'
+import type { DurableJobEventInput, DurableJobEventType } from 'better-effect-mq'
 import { hasUnpairedSurrogate } from './internal/text'
 import {
   validateFlowChildReport,
@@ -986,6 +988,8 @@ class PostgresJobStoreImplementation {
   private closed = false
   private dispatchKeyAvailable = true
   private dispatchKeyLayoutChecked = false
+  private eventsAvailable = false
+  private eventsLayoutChecked = false
   private controlsAvailable = false
   private controlsLayoutChecked = false
   private flowReportsEnabled = false
@@ -1116,6 +1120,32 @@ class PostgresJobStoreImplementation {
       // Layout detection is only a compatibility aid; normal SQL remains authoritative.
     }
   }
+  private async ensureEventsLayout(tx?: Tx): Promise<void> {
+    if (this.eventsLayoutChecked) return
+    this.eventsLayoutChecked = true
+    let connection: Tx | undefined = tx
+    let owned = false
+    try {
+      if (connection === undefined) {
+        connection = (await this.client.pool.connect()) as Tx
+        owned = true
+      }
+      const result = await connection.query<Row>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables
+            WHERE table_schema=$1 AND table_name=$2
+         ) AS available`,
+        [this.client.schema, POSTGRES_TABLES.events]
+      )
+      this.eventsAvailable = result.rows[0]?.available === true
+    } catch {
+      // The event extension is optional. A broken event table is not hidden once
+      // the layout is observed; this branch only covers an unavailable catalog.
+      this.eventsAvailable = false
+    } finally {
+      if (owned) connection?.release()
+    }
+  }
   private async ensureControlsLayout(tx: Tx): Promise<void> {
     if (this.controlsLayoutChecked) return
     this.controlsLayoutChecked = true
@@ -1150,6 +1180,7 @@ class PostgresJobStoreImplementation {
         await tx.query('BEGIN')
         await this.ensureDispatchKeyLayout(tx as Tx)
         await this.ensureControlsLayout(tx as Tx)
+        await this.ensureEventsLayout(tx as Tx)
         value = await body(tx as Tx)
         await tx.query('COMMIT')
         committed = true
@@ -1200,6 +1231,91 @@ class PostgresJobStoreImplementation {
     }
     integer(result.rows[0].wake_version, 'wake_version')
     await this.emitNotification(tx, queue)
+  }
+  private settlementEventType(attempt: AttemptRecord): DurableJobEventType {
+    switch (attempt.outcome) {
+      case 'completed':
+        return 'job-completed'
+      case 'retried':
+        return 'job-retry-scheduled'
+      case 'failed':
+        return 'job-failed'
+      case 'cancelled':
+        return 'job-cancelled'
+      case 'stalled':
+        return 'job-stalled-recovered'
+      case 'released':
+        return 'job-released'
+    }
+  }
+  private transitionEventType(
+    operation: string,
+    previous: JobRecord,
+    next: JobRecord,
+    attempt: AttemptRecord | undefined
+  ): DurableJobEventType | undefined {
+    if (attempt !== undefined) {
+      if (operation === 'recoverStalled' || operation === 'recoverStalledControlled') {
+        return 'job-stalled-recovered'
+      }
+      return this.settlementEventType(attempt)
+    }
+    switch (operation) {
+      case 'cancel':
+      case 'cancelControlled':
+        return 'job-cancelled'
+      case 'requestCancellation':
+        return previous.cancellationRequestedAt === next.cancellationRequestedAt
+          ? undefined
+          : 'job-cancel-requested'
+      case 'promote':
+        return 'job-promoted'
+      case 'retry':
+        return 'job-admin-retried'
+      case 'release':
+      case 'releaseControlled':
+        return 'job-released'
+      case 'recoverStalled':
+      case 'recoverStalledControlled':
+        return 'job-stalled-recovered'
+      default:
+        return undefined
+    }
+  }
+  private async appendEvent(
+    tx: Tx,
+    type: DurableJobEventType,
+    record: JobRecord | undefined,
+    recordedAtMs: number,
+    context: {
+      readonly previous?: JobRecord
+      readonly attempt?: AttemptRecord
+      readonly duplicate?: boolean
+      readonly queue?: string
+    } = {}
+  ): Promise<void> {
+    if (!this.eventsAvailable) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record?.id,
+      queue: record?.queue ?? (context.queue as never),
+      name: record?.name,
+      version: record?.version,
+      state: record?.state,
+      attempt: context.attempt?.attemptSequence ?? context.attempt?.attempt,
+      delivery:
+        context.attempt?.delivery ??
+        (record?.deliveryCount !== undefined && record.deliveryCount > 0
+          ? record.deliveryCount
+          : undefined),
+      workerId: (record?.leaseOwner ?? context.previous?.leaseOwner) as never,
+      outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
+      failureKind: (record?.failure?.kind ?? context.previous?.failure?.kind) as never,
+      duplicate: context.duplicate,
+      attributes: Object.freeze({})
+    }
+    await appendPostgresJobEvent(tx, this.client, input)
   }
   private async flowReportsAvailable(tx: Tx): Promise<boolean> {
     if (this.flowReportsEnabled) return true
@@ -1594,6 +1710,18 @@ class PostgresJobStoreImplementation {
         this.client.namespace
       )
     }
+    const eventType = this.transitionEventType(
+      operation,
+      current,
+      transition.record,
+      transition.attempt
+    )
+    if (eventType !== undefined) {
+      await this.appendEvent(tx, eventType, transition.record, request.now, {
+        previous: current,
+        ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+      })
+    }
     await this.notify(tx, transition.record.queue, request.now)
     return transition
   }
@@ -1719,6 +1847,10 @@ class PostgresJobStoreImplementation {
         this.client.namespace
       )
     }
+    await this.appendEvent(tx, this.settlementEventType(attempt), transition.record, request.now, {
+      previous: current,
+      attempt
+    })
     await this.notify(tx, current.queue, request.now)
     return { record: transition.record, attempt, status: 'applied' }
   }
@@ -1883,6 +2015,9 @@ class PostgresJobStoreImplementation {
         }
         const record = decodeJob(createdRow)
         out.push({ job: record, duplicate: false })
+        await this.appendEvent(tx, 'job-enqueued', record, input.now as number, {
+          duplicate: false
+        })
         await this.notify(tx, record.queue, input.now as number)
       }
       return Object.freeze(out)
@@ -1975,6 +2110,9 @@ class PostgresJobStoreImplementation {
           const saved = await this.save(tx, changed.value.record, current)
           if (!saved) continue
           await this.clearSettlement(tx, changed.value.record.id)
+          await this.appendEvent(tx, 'job-claimed', changed.value.record, now, {
+            previous: current
+          })
           jobs.push(changed.value.record)
         }
         const due = await tx.query<Row>(
@@ -2221,6 +2359,7 @@ class PostgresJobStoreImplementation {
           readonly record: JobRecord
           readonly dispatchKey: string
           readonly token: string
+          readonly previous: JobRecord
         }> = []
         let blocked = false
         let examinedSequence = cursor
@@ -2249,7 +2388,8 @@ class PostgresJobStoreImplementation {
           planned.push({
             record: changed.value.record,
             dispatchKey,
-            token: changed.value.record.leaseToken!
+            token: changed.value.record.leaseToken!,
+            previous: current
           })
           if (planned.length >= capacity) break
         }
@@ -2265,6 +2405,7 @@ class PostgresJobStoreImplementation {
               message: 'controlled claim lost its job row'
             })
           await this.clearSettlement(tx, item.record.id)
+          await this.appendEvent(tx, 'job-claimed', item.record, now, { previous: item.previous })
           await tx.query(
             `INSERT INTO ${this.table(POSTGRES_TABLES.permits)} (namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES ($1,$2,$3,$4,$5,$6)`,
             [this.client.namespace, item.record.id, queue.value, item.dispatchKey, item.token, now]
@@ -2690,6 +2831,16 @@ class PostgresJobStoreImplementation {
             this.client.namespace
           )
         }
+        await this.appendEvent(
+          tx,
+          this.settlementEventType(transition.attempt!),
+          transition.record,
+          now,
+          {
+            previous: current,
+            ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+          }
+        )
         await this.notify(tx, current.queue, now)
         return { record: transition.record, attempt: transition.attempt!, status: 'applied' }
       }) as Promise<StoreResult<JobStoreNamespace.SettlementResult>>
@@ -2920,6 +3071,10 @@ class PostgresJobStoreImplementation {
               this.client.namespace
             )
           }
+          await this.appendEvent(tx, 'job-stalled-recovered', transition.record, now, {
+            previous: r,
+            ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+          })
           await this.notify(tx, r.queue, now)
           transitions.push(transition)
         }
@@ -3376,6 +3531,7 @@ class PostgresJobStoreImplementation {
           `DELETE FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2`,
           [this.client.namespace, r.id]
         )
+        await this.appendEvent(tx, 'job-removed', r, now)
         await this.notify(tx, r.queue, now)
         return { job: r, removed: true }
       }) as Promise<StoreResult<JobStoreNamespace.RemoveResult>>
@@ -3418,6 +3574,11 @@ class PostgresJobStoreImplementation {
     paused: boolean
   ): Promise<StoreResult<JobStoreNamespace.QueuePauseResult>> {
     return this.withTx(paused ? 'pause' : 'resume', async (tx) => {
+      const current = await tx.query<Row>(
+        `SELECT paused FROM ${this.table(POSTGRES_TABLES.queues)} WHERE namespace=$1 AND queue=$2 FOR UPDATE`,
+        [this.client.namespace, request.queue]
+      )
+      const changed = current.rows[0] === undefined || current.rows[0].paused !== paused
       const result = await tx.query<Row>(
         `INSERT INTO ${this.table(POSTGRES_TABLES.queues)} (namespace,queue,paused,wake_version,updated_at_ms) VALUES ($1,$2,$3,1,$4) ON CONFLICT(namespace,queue) DO UPDATE SET paused=EXCLUDED.paused,updated_at_ms=EXCLUDED.updated_at_ms,wake_version=${this.table(POSTGRES_TABLES.queues)}.wake_version+1 WHERE ${this.table(POSTGRES_TABLES.queues)}.wake_version < 9007199254740991 RETURNING wake_version`,
         [this.client.namespace, request.queue, paused, request.now]
@@ -3429,6 +3590,15 @@ class PostgresJobStoreImplementation {
         })
       }
       integer(result.rows[0].wake_version, 'wake_version')
+      if (changed) {
+        await this.appendEvent(
+          tx,
+          paused ? 'queue-paused' : 'queue-resumed',
+          undefined,
+          request.now,
+          { queue: request.queue }
+        )
+      }
       await this.emitNotification(tx, request.queue)
       return { queue: request.queue as never, paused }
     })

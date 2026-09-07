@@ -220,6 +220,25 @@ const requiredColumns = {
     'lease_expires_at_ms',
     'failure'
   ],
+  [POSTGRES_TABLES.eventCursors]: ['namespace', 'next_cursor'],
+  [POSTGRES_TABLES.events]: [
+    'namespace',
+    'cursor',
+    'recorded_at_ms',
+    'event_type',
+    'job_id',
+    'queue',
+    'name',
+    'version',
+    'state',
+    'attempt',
+    'delivery',
+    'worker_id',
+    'outcome',
+    'failure_kind',
+    'duplicate',
+    'attributes'
+  ],
   [POSTGRES_TABLES.schemaVersions]: ['component', 'version', 'applied_at_ms', 'checksum']
 } as const satisfies Record<string, readonly string[]>
 
@@ -347,6 +366,24 @@ const expectedColumnTypes = {
   [`${POSTGRES_TABLES.outbox}.lease_token`]: 'text',
   [`${POSTGRES_TABLES.outbox}.lease_expires_at_ms`]: 'bigint',
   [`${POSTGRES_TABLES.outbox}.failure`]: 'jsonb',
+  [`${POSTGRES_TABLES.eventCursors}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.eventCursors}.next_cursor`]: 'bigint',
+  [`${POSTGRES_TABLES.events}.namespace`]: 'text',
+  [`${POSTGRES_TABLES.events}.cursor`]: 'bigint',
+  [`${POSTGRES_TABLES.events}.recorded_at_ms`]: 'bigint',
+  [`${POSTGRES_TABLES.events}.event_type`]: 'text',
+  [`${POSTGRES_TABLES.events}.job_id`]: 'text',
+  [`${POSTGRES_TABLES.events}.queue`]: 'text',
+  [`${POSTGRES_TABLES.events}.name`]: 'text',
+  [`${POSTGRES_TABLES.events}.version`]: 'bigint',
+  [`${POSTGRES_TABLES.events}.state`]: 'text',
+  [`${POSTGRES_TABLES.events}.attempt`]: 'bigint',
+  [`${POSTGRES_TABLES.events}.delivery`]: 'bigint',
+  [`${POSTGRES_TABLES.events}.worker_id`]: 'text',
+  [`${POSTGRES_TABLES.events}.outcome`]: 'text',
+  [`${POSTGRES_TABLES.events}.failure_kind`]: 'text',
+  [`${POSTGRES_TABLES.events}.duplicate`]: 'boolean',
+  [`${POSTGRES_TABLES.events}.attributes`]: 'jsonb',
   [`${POSTGRES_TABLES.schemaVersions}.component`]: 'text',
   [`${POSTGRES_TABLES.schemaVersions}.version`]: 'integer',
   [`${POSTGRES_TABLES.schemaVersions}.applied_at_ms`]: 'bigint',
@@ -389,6 +426,17 @@ const nullableColumns = new Set([
   `${POSTGRES_TABLES.outbox}.lease_token`,
   `${POSTGRES_TABLES.outbox}.lease_expires_at_ms`,
   `${POSTGRES_TABLES.outbox}.failure`,
+  `${POSTGRES_TABLES.events}.job_id`,
+  `${POSTGRES_TABLES.events}.queue`,
+  `${POSTGRES_TABLES.events}.name`,
+  `${POSTGRES_TABLES.events}.version`,
+  `${POSTGRES_TABLES.events}.state`,
+  `${POSTGRES_TABLES.events}.attempt`,
+  `${POSTGRES_TABLES.events}.delivery`,
+  `${POSTGRES_TABLES.events}.worker_id`,
+  `${POSTGRES_TABLES.events}.outcome`,
+  `${POSTGRES_TABLES.events}.failure_kind`,
+  `${POSTGRES_TABLES.events}.duplicate`,
   `${POSTGRES_TABLES.controls}.global_concurrency`,
   `${POSTGRES_TABLES.controls}.per_key_concurrency`,
   `${POSTGRES_TABLES.controls}.rate_limit_max`,
@@ -483,7 +531,9 @@ const expectedIndexFragments = {
   [POSTGRES_INDEXES[17]]: ['namespace', 'queue', 'dispatch_key', 'state', 'priority DESC'],
   [POSTGRES_INDEXES[18]]: ['namespace', 'queue', 'dispatch_key', 'job_id'],
   [POSTGRES_INDEXES[19]]: ['namespace', 'job_id', 'lease_token'],
-  [POSTGRES_INDEXES[20]]: ['namespace', 'queue', 'started_at_ms']
+  [POSTGRES_INDEXES[20]]: ['namespace', 'queue', 'started_at_ms'],
+  [POSTGRES_INDEXES[21]]: ['namespace', 'queue COLLATE "C"', 'cursor'],
+  [POSTGRES_INDEXES[22]]: ['namespace', 'event_type COLLATE "C"', 'cursor']
 } as const satisfies Partial<Record<PostgresIndexName, readonly string[]>>
 
 const requiredConstraints = [
@@ -528,7 +578,12 @@ const requiredConstraints = [
   'better_effect_mq_outbox_json',
   'better_effect_mq_outbox_tokens',
   'better_effect_mq_outbox_active_lease',
-  'better_effect_mq_outbox_published_time'
+  'better_effect_mq_outbox_published_time',
+  'better_effect_mq_job_event_cursors_pkey',
+  'better_effect_mq_job_event_cursors_values',
+  'better_effect_mq_job_events_pkey',
+  'better_effect_mq_job_events_values',
+  'better_effect_mq_job_events_type'
 ] as const
 
 type PostgresConstraintName = (typeof requiredConstraints)[number]
@@ -540,7 +595,9 @@ const expectedConstraintTypes = {
   better_effect_mq_queues_pkey: 'p',
   better_effect_mq_schema_versions_pkey: 'p',
   better_effect_mq_schedules_pkey: 'p',
-  better_effect_mq_outbox_pkey: 'p'
+  better_effect_mq_outbox_pkey: 'p',
+  better_effect_mq_job_event_cursors_pkey: 'p',
+  better_effect_mq_job_events_pkey: 'p'
 } satisfies Partial<Record<PostgresConstraintName, 'p' | 'f'>>
 
 const expectedConstraintColumns = {
@@ -553,7 +610,9 @@ const expectedConstraintColumns = {
   better_effect_mq_queues_pkey: { local: ['namespace', 'queue'] },
   better_effect_mq_schema_versions_pkey: { local: ['component'] },
   better_effect_mq_schedules_pkey: { local: ['namespace', 'schedule_group', 'schedule_key'] },
-  better_effect_mq_outbox_pkey: { local: ['namespace', 'id'] }
+  better_effect_mq_outbox_pkey: { local: ['namespace', 'id'] },
+  better_effect_mq_job_event_cursors_pkey: { local: ['namespace'] },
+  better_effect_mq_job_events_pkey: { local: ['namespace', 'cursor'] }
 } satisfies Partial<
   Record<
     PostgresConstraintName,
@@ -660,6 +719,9 @@ const rowTableForConstraint = (constraint: string): string => {
   if (constraint.startsWith('better_effect_mq_queues_')) return POSTGRES_TABLES.queues
   if (constraint.startsWith('better_effect_mq_schedules_')) return POSTGRES_TABLES.schedules
   if (constraint.startsWith('better_effect_mq_outbox_')) return POSTGRES_TABLES.outbox
+  if (constraint.startsWith('better_effect_mq_job_event_cursors_'))
+    return POSTGRES_TABLES.eventCursors
+  if (constraint.startsWith('better_effect_mq_job_events_')) return POSTGRES_TABLES.events
   return POSTGRES_TABLES.schemaVersions
 }
 
@@ -1072,7 +1134,9 @@ const findSchemaProblems = async (
           ? POSTGRES_TABLES.rateWindows
           : index.startsWith('better_effect_mq_outbox_')
             ? POSTGRES_TABLES.outbox
-            : POSTGRES_TABLES.jobs
+            : index.startsWith('better_effect_mq_job_events_')
+              ? POSTGRES_TABLES.events
+              : POSTGRES_TABLES.jobs
     const incompatibleCatalog =
       entry.table !== expectedTable ||
       entry.valid !== true ||

@@ -3,11 +3,12 @@
 
 import { PGlite } from '@electric-sql/pglite'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { Layer, Runtime } from 'better-effect'
-import { JobStore, type AnyJobStoreToken } from 'better-effect-mq'
-import { jobStoreContract } from 'better-effect-mq/testing'
+import { Layer, Runtime, ServiceRuntime } from 'better-effect'
+import { JobEventStore, JobStore, type AnyJobStoreToken } from 'better-effect-mq'
+import { jobEventStoreContract, jobStoreContract } from 'better-effect-mq/testing'
 import {
   PostgresClient,
+  PostgresJobEventStore,
   PostgresJobStore,
   type Pool,
   type PoolClient,
@@ -24,6 +25,9 @@ const schema = 'mq_conformance_test'
 const namespace = 'contract'
 let database: PGliteDatabase
 let pool: Pool
+let eventRuntime: Awaited<ReturnType<typeof Runtime.make>> | undefined
+let eventStore: JobEventStore.Contract | undefined
+let eventJobStore: JobStore.Contract | undefined
 
 const runQuery = async <Row>(
   text: string,
@@ -53,9 +57,20 @@ beforeAll(async () => {
     })
   }
   await PostgresClient.fromPool({ pool, schema }).migrate({ appliedAtMs: 1 })
+  eventRuntime = await Runtime.make(
+    Layer.merge(
+      PostgresJobStore.layer({ pool, schema, namespace, validateSchema: false }),
+      PostgresJobEventStore.layer({ pool, schema, namespace, validateSchema: false })
+    )
+  )
+  await eventRuntime.run(async () => {
+    eventStore = await ServiceRuntime.resolve(JobEventStore)
+    eventJobStore = await ServiceRuntime.resolve(JobStore)
+  })
 })
 
 afterAll(async () => {
+  await eventRuntime?.dispose()
   await database.close()
 })
 
@@ -79,22 +94,53 @@ const suite = jobStoreContract({
     globalConcurrency: true,
     rateLimiting: true
   },
-  makeRuntime: async () =>
-    Runtime.make(PostgresJobStore.layer({ pool, schema, namespace, validateSchema: false })),
-  makeMultiStoreRuntime: async () =>
-    Runtime.make(
+  makeRuntime: async () => {
+    const runtime = await Runtime.make(
+      PostgresJobStore.layer({ pool, schema, namespace, validateSchema: false })
+    )
+    await runtime.run(async () => {
+      const store = await ServiceRuntime.resolve(JobStore)
+      await store.pausedQueues()
+    })
+    return runtime
+  },
+  makeMultiStoreRuntime: async () => {
+    const runtime = await Runtime.make(
       Layer.merge(
         PostgresJobStore.layer({ pool, schema, namespace, validateSchema: false }),
         makeLayer(JobStore.named('contract-store-a')),
         makeLayer(JobStore.named('contract-store-b'))
       )
-    ),
+    )
+    await runtime.run(async () => {
+      const stores = await Promise.all([
+        ServiceRuntime.resolve(JobStore),
+        ServiceRuntime.resolve(JobStore.named('contract-store-a')),
+        ServiceRuntime.resolve(JobStore.named('contract-store-b'))
+      ])
+      await Promise.all(stores.map((store) => store.pausedQueues()))
+    })
+    return runtime
+  },
   reset: async () => {
     await database.exec(
-      `DELETE FROM "${schema}".better_effect_mq_attempts;
+      `DELETE FROM "${schema}".better_effect_mq_job_events;
+       DELETE FROM "${schema}".better_effect_mq_job_event_cursors;
+       DELETE FROM "${schema}".better_effect_mq_attempts;
        DELETE FROM "${schema}".better_effect_mq_jobs;
        DELETE FROM "${schema}".better_effect_mq_queues;`
     )
+  }
+})
+
+const eventSuite = jobEventStoreContract({
+  makeEventStore: () => {
+    if (eventStore === undefined) throw new Error('event store runtime is not initialized')
+    return eventStore
+  },
+  makeJobStore: () => {
+    if (eventJobStore === undefined) throw new Error('job store runtime is not initialized')
+    return eventJobStore
   }
 })
 
@@ -122,5 +168,25 @@ describe('PostgreSQL JobStore conformance via PGlite', () => {
     })
     expect(report.descriptor?.capabilities).toEqual(report.capabilities)
     expect(report.capabilitiesNotTested).toEqual(['globalConcurrency', 'rateLimiting'])
+  })
+
+  for (const scenario of eventSuite) {
+    test(`event extension: ${scenario.name}`, async () => {
+      await database.exec(
+        `DELETE FROM "${schema}".better_effect_mq_job_events;
+         DELETE FROM "${schema}".better_effect_mq_job_event_cursors;
+         DELETE FROM "${schema}".better_effect_mq_attempts;
+         DELETE FROM "${schema}".better_effect_mq_jobs;
+         DELETE FROM "${schema}".better_effect_mq_queues;`
+      )
+      await scenario.run()
+    })
+  }
+
+  test('executes every durable event contract scenario', () => {
+    const report = eventSuite.report()
+    expect(report.failed).toEqual([])
+    expect(report.executed).toHaveLength(eventSuite.length)
+    expect(report.passed).toHaveLength(eventSuite.length)
   })
 })
