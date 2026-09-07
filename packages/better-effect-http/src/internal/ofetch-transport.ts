@@ -10,6 +10,7 @@ import type { FetchOptions } from 'ofetch'
 import { HttpDecodeError, HttpStatusError, HttpTransportError } from '../errors'
 import { linkSignals } from './signals'
 import { deadline } from './deadlines'
+import type { HttpRetryPolicy } from '../retry'
 
 export type TransportOptions = Readonly<{
   readonly baseURL?: string
@@ -28,6 +29,7 @@ export type TransportRequest = Readonly<{
     | number
     | Readonly<{ readonly attemptMs?: number; readonly totalMs?: number | false }>
   readonly responseType?: 'json' | 'text' | 'blob' | 'arrayBuffer'
+  readonly retry?: HttpRetryPolicy | false
 }>
 
 export type TransportRequestOptions = Readonly<Omit<TransportRequest, 'method' | 'path'>>
