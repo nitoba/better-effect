@@ -1,7 +1,7 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-known-value-widening, eslint(require-yield) -- Hook execution is the erased runtime boundary between heterogeneous HTTP callbacks and the typed transport operation. */
 import { Result } from 'better-result'
 import type { Result as ResultType } from 'better-result'
-import { HttpHookError } from '../errors'
+import { HttpHookError, HttpRequestError } from '../errors'
 import type { HttpError } from '../errors'
 import type { HttpInterceptor, HttpObserver, HttpStreamReconnectContext } from '../interceptors'
 import type { HttpMiddleware } from '../middleware'
@@ -158,7 +158,12 @@ const runWithHooks = async (
   hooks: readonly HttpHook[]
 ): Promise<ResultType<HttpResponse, HttpError>> => {
   const middleware = hooks.filter(isMiddleware)
-  const base = requestFor(input)
+  let base: HttpRequestType
+  try {
+    base = requestFor(input)
+  } catch (cause) {
+    return Result.err(new HttpRequestError({ phase: 'request', cause }))
+  }
   let nextCalls = 0
 
   const runBase = async (request: HttpRequestType): Promise<AnyResult> => {

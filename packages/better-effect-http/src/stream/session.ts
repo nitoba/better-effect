@@ -41,7 +41,8 @@ export class StreamSession {
     scope.addFinalizer(async () => {
       this.closed = true
       try {
-        await this.reader?.cancel()
+        if (this.reader) await this.reader.cancel()
+        else await this.body?.cancel()
       } finally {
         this.reader?.releaseLock()
       }

@@ -25,11 +25,19 @@ export class HttpRequestError extends TaggedError('HttpRequestError')<{
   readonly phase: 'request'
   readonly cause?: unknown
   readonly details?: string
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpTransportError extends TaggedError('HttpTransportError')<{
   readonly phase: 'transport'
   readonly cause?: unknown
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpStatusError extends TaggedError('HttpStatusError')<{
   readonly phase: 'status'
   readonly status: number
@@ -46,31 +54,55 @@ export class HttpTimeoutError extends TaggedError('HttpTimeoutError')<{
   readonly phase: 'timeout'
   readonly timeout: number
   readonly cause?: unknown
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpAbortError extends TaggedError('HttpAbortError')<{
   readonly phase: 'abort'
   readonly cause?: unknown
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpDecodeError extends TaggedError('HttpDecodeError')<{
   readonly phase: 'decode'
   readonly kind: 'schema' | 'provider'
   readonly cause?: unknown
   readonly recordIndex?: number
   readonly byteOffset?: number
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpHookError extends TaggedError('HttpHookError')<{
   readonly phase: 'hook'
   readonly cause: unknown
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpLimitError extends TaggedError('HttpLimitError')<{
   readonly phase: 'admission'
   readonly reason: 'queue-full'
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 export class HttpAuthRefreshError extends TaggedError('HttpAuthRefreshError')<{
   readonly phase: 'auth'
   readonly reason: 'not-replayable' | 'refresh-failed'
   readonly cause?: unknown
-}> {}
+}> {
+  override toJSON(): SafeErrorJSON {
+    return { _tag: this._tag }
+  }
+}
 
 export type HttpError =
   | HttpRequestError
