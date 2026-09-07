@@ -96,6 +96,13 @@
       "tagPrefix": "better-effect-mq-mysql-v",
       "initialRelease": true,
       "extraFiles": ["migrations"]
+    },
+    {
+      "name": "better-effect-http",
+      "directory": "packages/better-effect-http",
+      "changelog": "packages/better-effect-http/CHANGELOG.md",
+      "tagPrefix": "better-effect-http-v",
+      "initialRelease": true
     }
   ]
 }
