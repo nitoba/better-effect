@@ -78,8 +78,8 @@ User.encode(user)
 For better-effect workflows, replace local `try/catch` or ad hoc Zod-error mapping with the new operations:
 
 ```ts
-const user = yield* Schema.decodeUnknown(User)(input)
-const wire = yield* Schema.encode(User)(user)
+const user = yield * Schema.decodeUnknown(User)(input)
+const wire = yield * Schema.encode(User)(user)
 ```
 
 The operations return:
@@ -95,11 +95,7 @@ Effect<
   SchemaEncodeFailure | SchemaExecutionFailure | SchemaAsyncRequired,
   never
 >
-Effect<
-  User,
-  SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired,
-  never
->
+Effect<User, SchemaConstructionFailure | SchemaExecutionFailure | SchemaAsyncRequired, never>
 ```
 
 Async variants return `Promise<Effect<...>>`.
@@ -133,7 +129,7 @@ New behavior is available:
 
 ```ts
 error.match({ ErrorTag: (value) => value })
-yield* error
+yield * error
 TaggedError.is(error)
 ```
 
@@ -167,7 +163,7 @@ The original package exposed CommonJS output. `better-effect-zod` is ESM-only be
 Use ESM imports:
 
 ```ts
-import { Schema } from "better-effect-zod"
+import { Schema } from 'better-effect-zod'
 ```
 
 A CommonJS application must load the package through dynamic `import()` or migrate its package boundary to ESM.

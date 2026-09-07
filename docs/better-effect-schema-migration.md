@@ -6,15 +6,15 @@ provider-neutral decisions in issue #209.
 
 ## Migration rules
 
-| Legacy surface | `better-effect-schema` destination |
-| --- | --- |
-| `better-effect-zod` import | `better-effect-schema`, plus an optional adapter only when a capability needs one |
-| `decode*` / `encode*` throwing provider calls | `Schema.decode*` / `Schema.encode*` returning `Result` through `SchemaEffect` |
-| `new Model(props)` as validation | `Model.make(props)` / `makeAsync(props)` returning a Result |
-| Zod safe-parse result | `better-result` `Result.ok` / `Result.err` |
-| Zod-specific error type | operation-specific `Schema*Failure` |
-| implicit encoding | explicit codec/encoder capability |
-| class used as a provider-specific schema | Standard Schema protocol or an explicit bridge |
+| Legacy surface                                | `better-effect-schema` destination                                                |
+| --------------------------------------------- | --------------------------------------------------------------------------------- |
+| `better-effect-zod` import                    | `better-effect-schema`, plus an optional adapter only when a capability needs one |
+| `decode*` / `encode*` throwing provider calls | `Schema.decode*` / `Schema.encode*` returning `Result` through `SchemaEffect`     |
+| `new Model(props)` as validation              | `Model.make(props)` / `makeAsync(props)` returning a Result                       |
+| Zod safe-parse result                         | `better-result` `Result.ok` / `Result.err`                                        |
+| Zod-specific error type                       | operation-specific `Schema*Failure`                                               |
+| implicit encoding                             | explicit codec/encoder capability                                                 |
+| class used as a provider-specific schema      | Standard Schema protocol or an explicit bridge                                    |
 
 ## Stable contracts
 
@@ -59,14 +59,14 @@ props construction, structural derivation, and JSON Schema require explicit
 capabilities. Each adapter documents the capabilities it actually supports;
 missing or non-preservable operations return `SchemaUnsupportedOperation`.
 
-| Capability | Core protocol | Zod adapter | Valibot adapter | ArkType adapter |
-| --- | --- | --- | --- | --- |
-| sync/async decode | yes | yes | yes | yes |
-| explicit encoding | capability | supported where lossless | supported where lossless | provider-dependent |
-| fields/props | capability | adapter | adapter | adapter |
-| classes | core | bridge/native adapter | bridge/native adapter | bridge/native adapter |
-| derivation | core engine from capabilities | native adapter where safe | supported subset | supported subset |
-| JSON Schema | Standard JSON Schema/capability | adapter/converter | adapter/converter | adapter/converter |
+| Capability        | Core protocol                   | Zod adapter               | Valibot adapter          | ArkType adapter       |
+| ----------------- | ------------------------------- | ------------------------- | ------------------------ | --------------------- |
+| sync/async decode | yes                             | yes                       | yes                      | yes                   |
+| explicit encoding | capability                      | supported where lossless  | supported where lossless | provider-dependent    |
+| fields/props      | capability                      | adapter                   | adapter                  | adapter               |
+| classes           | core                            | bridge/native adapter     | bridge/native adapter    | bridge/native adapter |
+| derivation        | core engine from capabilities   | native adapter where safe | supported subset         | supported subset      |
+| JSON Schema       | Standard JSON Schema/capability | adapter/converter         | adapter/converter        | adapter/converter     |
 
 This matrix is intentionally conservative: a provider feature is never inferred
 from a vendor name, a private field, or an inverse transform.
@@ -80,25 +80,25 @@ references. The current implementation is Zod-backed and the entries below
 describe the required destination; removal is not considered migration unless
 the replacement and behavior are recorded.
 
-| Current export/surface | Current behavior | Destination | Failure/migration rule | Regression coverage |
-| --- | --- | --- | --- | --- |
-| `Schema`, `Class`, `TaggedClass`, `TaggedError` | Zod-backed class/facade factories | `src/schema.ts`, `src/classes/`, root exports | declaration is lazy/declarative; malformed definitions become `SchemaDefinitionFailure` | class, tagged, and conformance suites |
-| `Z` | deprecated alias to the old facade | remove from root after documented cutover; no new alias | historical migration only; never preserve provider coupling | package boundary + migration docs |
-| `decodeUnknown` | `z.safeParse` with unknown input | generic Standard Schema operation | `SchemaDecodeFailure`, `SchemaDefinitionFailure`, `SchemaExecutionFailure`, or `SchemaAsyncRequired`; never throw | operations/adversarial tests |
-| `decode` | typed `z.input` plus safe decode | generic Standard Schema typed overload | preserve Input inference; same failure union | operation/type tests |
-| `decodeUnknownAsync`, `decodeAsync` | `safeParseAsync`/`safeDecodeAsync` | async Standard Schema operation | accept sync/async provider once; observe rejection | async operation tests |
-| `encode`, `encodeAsync` | Zod codec output/input conversion | explicit encoder capability | no implicit inverse transform; unsupported is typed | codec/projection tests |
-| `make`, `makeAsync` | validates decoded props through class runtime | `Schema.Class` safe factories | return `Result`; capture callback/constructor defects | construction tests |
-| `safeMake`, `safeMakeAsync` | Zod safe-parse result shape | remove provider result from public API; use `make` | use `Result.ok`/`Result.err`, not `.success/.data/.error` | construction/type tests |
-| `unsafeMake` | bypasses decoded-props validation | retain explicit unsafe factory | only validation is skipped; runtime object identity remains real | unsafe construction tests |
-| `new Model(props)` | generated constructor validates in the old implementation | non-validating construction detail only | do not advertise `new` as a validation boundary; package cannot catch consumer code outside a call | class docs + type fixtures |
-| `identifier`, `kind`, identity guards | descriptor and prototype markers | portable class identity contract | invalid identifier/tag is a typed definition failure | identity/definition tests |
-| `fields`, `struct`, `schema` | Zod object shape/projections | `Fields`/structure capability | available only when declared; no provider internals in root | capability tests |
-| `codec`, `encodedSchema`, `propsSchema` | Zod input/output/props projections | explicit codec and construction capabilities | preserve Input/Output/Props distinctions | codec/class tests |
-| metadata, `describe`, `register`, `toJSONSchema` | Zod registry/JSON Schema helpers | portable metadata + Standard JSON Schema capability | conversion returns Result; no permissive fallback | JSON Schema tests |
-| `extend`, `pick`, `omit`, `partial`, `exactPartial`, `deepPartial`, `required` | native/derived Zod object schemas | generic derivation engine | preserve protected tags, defaults, codecs, refinements | derivation/conformance tests |
-| `strict`, `loose`, `strip`, `catchall` | Zod object policies | portable object-policy capability | unsupported provider policy is explicit typed failure | derivation/adapters tests |
-| better-result TaggedError integration | schema-backed errors inherit better-result protocol | core `TaggedError` built on better-result | constructing a tagged error is a value; throwing is never the API | tagged/error tests |
+| Current export/surface                                                         | Current behavior                                          | Destination                                             | Failure/migration rule                                                                                            | Regression coverage                   |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `Schema`, `Class`, `TaggedClass`, `TaggedError`                                | Zod-backed class/facade factories                         | `src/schema.ts`, `src/classes/`, root exports           | declaration is lazy/declarative; malformed definitions become `SchemaDefinitionFailure`                           | class, tagged, and conformance suites |
+| `Z`                                                                            | deprecated alias to the old facade                        | remove from root after documented cutover; no new alias | historical migration only; never preserve provider coupling                                                       | package boundary + migration docs     |
+| `decodeUnknown`                                                                | `z.safeParse` with unknown input                          | generic Standard Schema operation                       | `SchemaDecodeFailure`, `SchemaDefinitionFailure`, `SchemaExecutionFailure`, or `SchemaAsyncRequired`; never throw | operations/adversarial tests          |
+| `decode`                                                                       | typed `z.input` plus safe decode                          | generic Standard Schema typed overload                  | preserve Input inference; same failure union                                                                      | operation/type tests                  |
+| `decodeUnknownAsync`, `decodeAsync`                                            | `safeParseAsync`/`safeDecodeAsync`                        | async Standard Schema operation                         | accept sync/async provider once; observe rejection                                                                | async operation tests                 |
+| `encode`, `encodeAsync`                                                        | Zod codec output/input conversion                         | explicit encoder capability                             | no implicit inverse transform; unsupported is typed                                                               | codec/projection tests                |
+| `make`, `makeAsync`                                                            | validates decoded props through class runtime             | `Schema.Class` safe factories                           | return `Result`; capture callback/constructor defects                                                             | construction tests                    |
+| `safeMake`, `safeMakeAsync`                                                    | Zod safe-parse result shape                               | remove provider result from public API; use `make`      | use `Result.ok`/`Result.err`, not `.success/.data/.error`                                                         | construction/type tests               |
+| `unsafeMake`                                                                   | bypasses decoded-props validation                         | retain explicit unsafe factory                          | only validation is skipped; runtime object identity remains real                                                  | unsafe construction tests             |
+| `new Model(props)`                                                             | generated constructor validates in the old implementation | non-validating construction detail only                 | do not advertise `new` as a validation boundary; package cannot catch consumer code outside a call                | class docs + type fixtures            |
+| `identifier`, `kind`, identity guards                                          | descriptor and prototype markers                          | portable class identity contract                        | invalid identifier/tag is a typed definition failure                                                              | identity/definition tests             |
+| `fields`, `struct`, `schema`                                                   | Zod object shape/projections                              | `Fields`/structure capability                           | available only when declared; no provider internals in root                                                       | capability tests                      |
+| `codec`, `encodedSchema`, `propsSchema`                                        | Zod input/output/props projections                        | explicit codec and construction capabilities            | preserve Input/Output/Props distinctions                                                                          | codec/class tests                     |
+| metadata, `describe`, `register`, `toJSONSchema`                               | Zod registry/JSON Schema helpers                          | portable metadata + Standard JSON Schema capability     | conversion returns Result; no permissive fallback                                                                 | JSON Schema tests                     |
+| `extend`, `pick`, `omit`, `partial`, `exactPartial`, `deepPartial`, `required` | native/derived Zod object schemas                         | generic derivation engine                               | preserve protected tags, defaults, codecs, refinements                                                            | derivation/conformance tests          |
+| `strict`, `loose`, `strip`, `catchall`                                         | Zod object policies                                       | portable object-policy capability                       | unsupported provider policy is explicit typed failure                                                             | derivation/adapters tests             |
+| better-result TaggedError integration                                          | schema-backed errors inherit better-result protocol       | core `TaggedError` built on better-result               | constructing a tagged error is a value; throwing is never the API                                                 | tagged/error tests                    |
 
 ### Operation signatures to preserve
 
@@ -147,26 +147,26 @@ consumer import exists.
 
 Repository references were classified as follows:
 
-| Reference kind | Current locations | Action |
-| --- | --- | --- |
-| executable package identity | `package.json`, package scripts, `scripts/check-*.mjs`, release routing | update during #211/#227 |
-| source imports | package examples/tests and any `rg` result outside historical docs | migrate semantically in #226 |
-| provider-specific implementation | `src/`, `src/internal/`, type imports | move to `src/adapters/zod/` in #220 or replace in core |
-| documentation/history | README, API/architecture docs, migration/spec records | update or mark historical; never remove migration guidance blindly |
-| original reference fixture | `docs/reference/original-zod-class.ts` | retain as historical comparison, not executable package code |
+| Reference kind                   | Current locations                                                       | Action                                                             |
+| -------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| executable package identity      | `package.json`, package scripts, `scripts/check-*.mjs`, release routing | update during #211/#227                                            |
+| source imports                   | package examples/tests and any `rg` result outside historical docs      | migrate semantically in #226                                       |
+| provider-specific implementation | `src/`, `src/internal/`, type imports                                   | move to `src/adapters/zod/` in #220 or replace in core             |
+| documentation/history            | README, API/architecture docs, migration/spec records                   | update or mark historical; never remove migration guidance blindly |
+| original reference fixture       | `docs/reference/original-zod-class.ts`                                  | retain as historical comparison, not executable package code       |
 
 ## Ownership and dependency contract
 
-| Owner | Files/modules | Must not change independently |
-| --- | --- | --- |
-| integration | root manifest, lockfile, `src/index.ts`, workflows, release routing | provider capability semantics owned by feature branches |
-| failures/operations | `failure.ts`, `schema-effect.ts`, `internal/`, `operations/`, `standard/` | adapters and class runtime |
-| portable types | `types/`, `capabilities/`, `Schema.with` | provider-specific imports |
-| classes | `classes/`, class type fixtures | derivation algorithms and adapters |
-| derivations | `derivation/` and object policy tests | tagged/class identity declarations |
-| adapters | `adapters/{zod,valibot,arktype}/` and local tests | root barrels, manifest, lockfile |
-| JSON Schema | `json-schema/` and metadata tests | provider adapter implementation |
-| conformance/release | `tests/conformance/`, external fixtures, `VERIFICATION.md` | production feature implementation |
+| Owner               | Files/modules                                                             | Must not change independently                           |
+| ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------- |
+| integration         | root manifest, lockfile, `src/index.ts`, workflows, release routing       | provider capability semantics owned by feature branches |
+| failures/operations | `failure.ts`, `schema-effect.ts`, `internal/`, `operations/`, `standard/` | adapters and class runtime                              |
+| portable types      | `types/`, `capabilities/`, `Schema.with`                                  | provider-specific imports                               |
+| classes             | `classes/`, class type fixtures                                           | derivation algorithms and adapters                      |
+| derivations         | `derivation/` and object policy tests                                     | tagged/class identity declarations                      |
+| adapters            | `adapters/{zod,valibot,arktype}/` and local tests                         | root barrels, manifest, lockfile                        |
+| JSON Schema         | `json-schema/` and metadata tests                                         | provider adapter implementation                         |
+| conformance/release | `tests/conformance/`, external fixtures, `VERIFICATION.md`                | production feature implementation                       |
 
 The dependency order is #210 → #211 → #213 → (#214 and #215) → #216 →
 (#217, #220, #221, #222, #224), then #218/#219 → #223, followed by #225/#226
@@ -194,13 +194,13 @@ no assertion was weakened and no failure was marked as a feature success.
 
 ```ts
 const Positive = {
-  "~standard": {
+  '~standard': {
     version: 1,
-    vendor: "example",
+    vendor: 'example',
     validate(value: unknown) {
-      return typeof value === "number" && value > 0
+      return typeof value === 'number' && value > 0
         ? { value }
-        : { issues: [{ message: "Expected a positive number" }] }
+        : { issues: [{ message: 'Expected a positive number' }] }
     }
   }
 }
@@ -211,7 +211,7 @@ const result = Schema.decodeUnknown(Positive, 3)
 ### Result-returning class construction
 
 ```ts
-class User extends Schema.Class<User>("User")({
+class User extends Schema.Class<User>('User')({
   schema: UserInput,
   propsSchema: UserProps
 }) {
@@ -220,7 +220,7 @@ class User extends Schema.Class<User>("User")({
   }
 }
 
-const user = User.make({ name: "Ada" })
+const user = User.make({ name: 'Ada' })
 ```
 
 ### Explicit provider capability
