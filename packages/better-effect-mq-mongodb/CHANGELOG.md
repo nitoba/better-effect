@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add MongoDB QueueControls protocol v3 support with durable revisioned
+  controls, persisted dispatch keys, transactional global/per-key permits,
+  anchored fixed-window rate limits, bounded fairness cursors, fail-closed
+  legacy claims, and owner-fenced settlement/recovery.
+- Advance the MongoDB layout to version 4 with dedicated controls, permits,
+  rate-window, and fairness-cursor collections and indexes.
 - Add the protocol-v2 `MongoFlowStore` with explicit flow migration, atomic
   child settlement reports, durable flow outbox delivery, and named layers.
 

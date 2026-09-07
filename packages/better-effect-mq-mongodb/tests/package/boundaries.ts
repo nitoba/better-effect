@@ -56,6 +56,11 @@ if (
   throw new Error('MongoDB FlowStore v2 surface is missing')
 
 const collections = await readFile(join(packageRoot, 'src/collections.ts'), 'utf8')
-if (!collections.includes('MONGODB_LAYOUT_VERSION = 3') || !collections.includes('outbox:'))
+if (
+  !collections.includes('MONGODB_LAYOUT_VERSION = 4') ||
+  !collections.includes('outbox:') ||
+  !collections.includes('controls:') ||
+  !collections.includes('controlled_permits')
+)
   throw new Error('MongoDB outbox layout is missing')
 console.log('MongoDB package boundaries passed')

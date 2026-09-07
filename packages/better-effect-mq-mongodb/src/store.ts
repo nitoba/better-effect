@@ -18,12 +18,14 @@ import {
   LeaseLostError,
   SettlementConflictError,
   UnsupportedJobStoreOperationError,
+  ControlsRevisionMismatchError,
   makeJobId,
   makeJobName,
   makeJobRecord,
   makeLeaseToken,
   makeQueueName,
   makeWorkerId,
+  noDispatchKey,
   recoverStalledWithPolicy,
   reduceJob,
   validateFlowChildReport,
@@ -38,8 +40,21 @@ import {
   type LostLease,
   type JobStore as J,
   type JobStoreDescriptor,
+  type QueueName,
   type SettlementOutcome,
   type FlowChildReport
+} from 'better-effect-mq'
+import type {
+  AnyQueueControlsRegistry,
+  ControlsReconcileOptions,
+  ControlsReconcileReport,
+  ControlledClaimRequest,
+  ControlledClaimResult,
+  ControlledCancelRequest,
+  ControlledRecoverStalledRequest,
+  ControlledReleaseRequest,
+  ControlledSettleRequest,
+  QueueControlsRecord
 } from 'better-effect-mq'
 import { MongoQueueChangeStream } from './change-stream'
 import {
@@ -78,7 +93,8 @@ const tagged = new Set([
   'JobNotRetryableError',
   'JobNotCancellableError',
   'JobNotPromotableError',
-  'UnsupportedJobStoreOperationError'
+  'UnsupportedJobStoreOperationError',
+  'ControlsRevisionMismatchError'
 ])
 const descriptor = (notifications: boolean): JobStoreDescriptor =>
   Object.freeze({
@@ -93,8 +109,8 @@ const descriptor = (notifications: boolean): JobStoreDescriptor =>
       metadataIndex: 'indexed',
       transactionalEnqueue: true,
       durableChangeFeed: false,
-      globalConcurrency: false,
-      rateLimiting: false
+      globalConcurrency: true,
+      rateLimiting: true
     })
   })
 const ok = <T>(value: T): Op<T> => Result.ok(value) as Op<T>
@@ -112,6 +128,7 @@ const retryable = (cause: unknown): boolean => {
         (label) =>
           label === 'TransientTransactionError' || label === 'UnknownTransactionCommitResult'
       )) ||
+    value.code === 11000 ||
     value.code === 91 ||
     value.code === 10107 ||
     value.name === 'MongoNetworkError'
@@ -149,6 +166,29 @@ const optionalNumber = (value: unknown, field: string): number | undefined =>
   value == null ? undefined : integer(value, field)
 const optionalText = (value: unknown, field: string): string | undefined =>
   value == null ? undefined : docText(value, field)
+const dispatchText = (value: unknown, field: string): string => {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 512 ||
+    value === noDispatchKey ||
+    value.includes('\u0000')
+  )
+    throw new JobDefinitionError({
+      field,
+      message: 'must be a non-empty bounded string without NUL or the reserved __none__ value'
+    })
+  return value
+}
+const optionalDispatchText = (value: unknown, field: string): string | undefined =>
+  value == null
+    ? undefined
+    : (() => {
+        const text = docText(value, field)
+        if (text.length > 512 || text === noDispatchKey || text.includes('\u0000'))
+          throw new MongoJobStoreLayoutError(`MongoDB document has invalid ${field}`)
+        return text
+      })()
 const identity = (queue: string, name: string, version: number): string =>
   JSON.stringify([queue, name, version])
 const id = (namespace: string, jobId: string): string => namespaceId(namespace, jobId)
@@ -341,6 +381,7 @@ const encodeJob = (
   ...(record.backoff === undefined ? {} : { backoff: record.backoff }),
   ...(record.timeoutMs === undefined ? {} : { timeoutMs: record.timeoutMs }),
   ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: record.idempotencyKey }),
+  ...(record.dispatchKey === undefined ? {} : { dispatchKey: record.dispatchKey }),
   createdAtMs: record.createdAt,
   updatedAtMs: record.updatedAt,
   ...(record.processedAt === undefined ? {} : { processedAtMs: record.processedAt }),
@@ -391,6 +432,7 @@ const decodeJob = (document: Doc): JobRecord => {
     backoff: document.backoff as JobRecord['backoff'],
     timeoutMs: optionalNumber(document.timeoutMs, 'job.timeoutMs'),
     idempotencyKey: optionalText(document.idempotencyKey, 'job.idempotencyKey'),
+    dispatchKey: optionalDispatchText(document.dispatchKey, 'job.dispatchKey'),
     createdAt: integer(document.createdAtMs, 'job.createdAtMs'),
     updatedAt: integer(document.updatedAtMs, 'job.updatedAtMs'),
     processedAt: optionalNumber(document.processedAtMs, 'job.processedAtMs'),
@@ -452,6 +494,112 @@ const decodeAttempt = (document: Doc): AttemptRecord => {
   return attempt.value
 }
 
+const encodeControls = (namespace: string, record: QueueControlsRecord): Doc => ({
+  _id: namespaceId(namespace, record.queue),
+  namespace,
+  queue: record.queue,
+  controlGroup: record.group,
+  enabled: record.enabled,
+  revision: record.revision,
+  ...(record.globalConcurrency === undefined
+    ? {}
+    : { globalConcurrency: record.globalConcurrency }),
+  ...(record.perKeyConcurrency === undefined
+    ? {}
+    : { perKeyConcurrency: record.perKeyConcurrency }),
+  ...(record.rateLimit === undefined
+    ? {}
+    : {
+        rateLimitMax: record.rateLimit.max,
+        rateLimitDurationMs: record.rateLimit.durationMs
+      }),
+  createdAtMs: record.createdAtMs,
+  updatedAtMs: record.updatedAtMs
+})
+
+const decodeControls = (document: Doc): QueueControlsRecord => {
+  if (typeof document.enabled !== 'boolean')
+    throw new MongoJobStoreLayoutError('MongoDB controls document has invalid controls.enabled')
+  const rateMax = optionalNumber(document.rateLimitMax, 'controls.rateLimitMax')
+  const rateDuration = optionalNumber(document.rateLimitDurationMs, 'controls.rateLimitDurationMs')
+  if ((rateMax === undefined) !== (rateDuration === undefined))
+    throw new MongoJobStoreLayoutError('MongoDB controls document has a partial rate limit')
+  return Object.freeze({
+    queue: makeQueueName(docText(document.queue, 'controls.queue')).unwrap(),
+    group: docText(document.controlGroup, 'controls.controlGroup'),
+    enabled: document.enabled === true,
+    revision: integer(document.revision, 'controls.revision', 1),
+    globalConcurrency:
+      document.globalConcurrency == null
+        ? undefined
+        : integer(document.globalConcurrency, 'controls.globalConcurrency', 1),
+    perKeyConcurrency:
+      document.perKeyConcurrency == null
+        ? undefined
+        : integer(document.perKeyConcurrency, 'controls.perKeyConcurrency', 1),
+    rateLimit:
+      rateMax === undefined
+        ? undefined
+        : Object.freeze({
+            max: integer(rateMax, 'controls.rateLimitMax', 1),
+            durationMs: integer(rateDuration!, 'controls.rateLimitDurationMs', 1)
+          }),
+    createdAtMs: integer(document.createdAtMs, 'controls.createdAtMs'),
+    updatedAtMs: integer(document.updatedAtMs, 'controls.updatedAtMs')
+  })
+}
+
+const sameControls = (left: QueueControlsRecord, right: QueueControlsRecord): boolean =>
+  left.globalConcurrency === right.globalConcurrency &&
+  left.perKeyConcurrency === right.perKeyConcurrency &&
+  left.rateLimit?.max === right.rateLimit?.max &&
+  left.rateLimit?.durationMs === right.rateLimit?.durationMs
+
+const normalizeControls = (
+  queue: string,
+  group: string,
+  options: AnyQueueControlsRegistry['controls'][number]['options'],
+  now: number
+): QueueControlsRecord => {
+  const positive = (value: unknown, field: string): number => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+      throw new JobDefinitionError({ field, message: 'must be a positive safe integer' })
+    return value
+  }
+  const globalConcurrency =
+    options.globalConcurrency === undefined
+      ? undefined
+      : positive(options.globalConcurrency, 'globalConcurrency')
+  const perKeyConcurrency =
+    (options.perKeyConcurrency ?? options.concurrencyKey?.max) === undefined
+      ? undefined
+      : positive(options.perKeyConcurrency ?? options.concurrencyKey?.max, 'perKeyConcurrency')
+  const rateLimit =
+    options.rateLimit === undefined
+      ? undefined
+      : Object.freeze({
+          max: positive(options.rateLimit.max, 'rateLimit.max'),
+          durationMs: positive(options.rateLimit.durationMs, 'rateLimit.durationMs')
+        })
+  return Object.freeze({
+    queue: makeQueueName(queue).unwrap(),
+    group,
+    enabled: true,
+    revision: 1,
+    globalConcurrency,
+    perKeyConcurrency,
+    rateLimit,
+    createdAtMs: now,
+    updatedAtMs: now
+  })
+}
+
+const addSafe = (left: number, right: number, field: string): number => {
+  if (left > MAX - right)
+    throw new JobDefinitionError({ field, message: 'exceeds safe integer range' })
+  return left + right
+}
+
 class MongoJobStoreImplementation {
   private descriptorValue = descriptor(false)
   private readonly collections: MongoCollections
@@ -491,13 +639,40 @@ class MongoJobStoreImplementation {
     if (this.disposed) return fail(operation, new Error('store is disposed'))
     const session = this.client.client.startSession()
     try {
+      const options = { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } }
+      if (session.startTransaction !== undefined && session.commitTransaction !== undefined) {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await session.startTransaction(options)
+            const value = await body(session)
+            await session.commitTransaction()
+            return ok(value)
+          } catch (cause) {
+            try {
+              await session.abortTransaction?.()
+            } catch {
+              /* the original transaction failure remains primary */
+            }
+            if (cause instanceof MongoDuplicateConflict) return Result.err(cause) as Op<T>
+            if (retryable(cause) && attempt < 2) continue
+            return fail(operation, cause)
+          }
+        }
+        return fail(
+          operation,
+          new JobStoreFailure({
+            operation,
+            retryable: true,
+            message: 'MongoDB transaction retry budget exhausted'
+          })
+        )
+      }
+      if (session.withTransaction === undefined)
+        return fail(operation, new Error('MongoDB session does not support transactions'))
       let value: T | undefined
-      await session.withTransaction(
-        async () => {
-          value = await body(session)
-        },
-        { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } }
-      )
+      await session.withTransaction(async () => {
+        value = await body(session)
+      }, options)
       return ok(value as T)
     } catch (cause) {
       if (cause instanceof MongoDuplicateConflict) return Result.err(cause) as Op<T>
@@ -509,6 +684,145 @@ class MongoJobStoreImplementation {
         /* primary operation result is retained */
       }
     }
+  }
+  private async lockControls(
+    session: MongoSession,
+    queue: string,
+    expected: number,
+    operation: string
+  ): Promise<QueueControlsRecord> {
+    const current = await this.collections.controls.findOne(
+      { _id: namespaceId(this.client.namespace, queue) },
+      { session }
+    )
+    const actual = current === null ? undefined : integer(current.revision, 'controls.revision', 1)
+    if (current === null || current.enabled !== true || actual !== expected)
+      throw new ControlsRevisionMismatchError({
+        queue: makeQueueName(queue).unwrap(),
+        expected,
+        actual
+      })
+    const locked = await this.collections.controls.findOneAndUpdate(
+      { _id: namespaceId(this.client.namespace, queue), enabled: true, revision: expected },
+      { $set: { updatedAtMs: integer(current.updatedAtMs, 'controls.updatedAtMs') } },
+      { returnDocument: 'after', session }
+    )
+    const document = this.findOneResult(locked)
+    if (document === undefined)
+      throw new JobStoreFailure({
+        operation,
+        retryable: true,
+        message: 'MongoDB controls changed during the transaction'
+      })
+    return decodeControls(document)
+  }
+  private async lockOptionalControls(
+    session: MongoSession,
+    queue: string,
+    operation: string
+  ): Promise<QueueControlsRecord | undefined> {
+    const current = await this.collections.controls.findOne(
+      { _id: namespaceId(this.client.namespace, queue), enabled: true },
+      { session }
+    )
+    if (current === null) return undefined
+    const revision = integer(current.revision, 'controls.revision', 1)
+    const locked = await this.collections.controls.findOneAndUpdate(
+      { _id: namespaceId(this.client.namespace, queue), enabled: true, revision },
+      { $set: { updatedAtMs: integer(current.updatedAtMs, 'controls.updatedAtMs') } },
+      { returnDocument: 'after', session }
+    )
+    const document = this.findOneResult(locked)
+    if (document === undefined)
+      throw new JobStoreFailure({
+        operation,
+        retryable: true,
+        message: 'MongoDB controls changed during the transaction'
+      })
+    return decodeControls(document)
+  }
+  private async lockRateWindow(
+    session: MongoSession,
+    control: QueueControlsRecord,
+    now: number,
+    operation: string
+  ): Promise<{ readonly startedAtMs: number; readonly count: number } | undefined> {
+    if (control.rateLimit === undefined) return undefined
+    const windowId = namespaceId(this.client.namespace, control.queue)
+    const initial = await this.collections.rateWindows.findOneAndUpdate(
+      { _id: windowId },
+      {
+        $setOnInsert: {
+          _id: windowId,
+          namespace: this.client.namespace,
+          queue: control.queue,
+          startedAtMs: now,
+          claimCount: 0,
+          updatedAtMs: now
+        }
+      },
+      { upsert: true, returnDocument: 'after', session }
+    )
+    const document = this.findOneResult(initial)
+    if (document === undefined)
+      throw new JobStoreFailure({
+        operation,
+        retryable: true,
+        message: 'MongoDB rate window row is missing'
+      })
+    let startedAtMs = integer(document.startedAtMs, 'rateWindow.startedAtMs')
+    let count = integer(document.claimCount, 'rateWindow.claimCount')
+    if (now >= startedAtMs && now - startedAtMs >= control.rateLimit.durationMs) {
+      const updated = await this.collections.rateWindows.updateOne(
+        { _id: windowId, startedAtMs, claimCount: count },
+        { $set: { startedAtMs: now, claimCount: 0, updatedAtMs: now } },
+        { session }
+      )
+      if (updated.matchedCount !== 1)
+        throw new JobStoreFailure({
+          operation,
+          retryable: true,
+          message: 'MongoDB rate window changed during the transaction'
+        })
+      startedAtMs = now
+      count = 0
+    }
+    return { startedAtMs, count }
+  }
+  private async countActive(session: MongoSession, queue: string): Promise<Map<string, number>> {
+    const rows = await this.collections.jobs
+      .find({ namespace: this.client.namespace, queue, state: 'active' }, { session })
+      .toArray()
+    const counts = new Map<string, number>()
+    for (const row of rows) {
+      const key = optionalDispatchText(row.dispatchKey, 'job.dispatchKey') ?? noDispatchKey
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
+  }
+  private async deletePermit(
+    session: MongoSession,
+    jobId: string,
+    leaseToken: string | undefined
+  ): Promise<void> {
+    if (leaseToken === undefined) return
+    await this.collections.permits.deleteOne(
+      {
+        _id: namespaceId(this.client.namespace, jobId),
+        namespace: this.client.namespace,
+        jobId,
+        leaseToken
+      },
+      { session }
+    )
+  }
+  private emptyControlled(
+    wakeToken: J.WakeToken,
+    nextRunAtMs: number | undefined,
+    nextEligibleAtMs: number | undefined,
+    reason: import('better-effect-mq').ControlledEmptyClaimReason
+  ): ControlledClaimResult {
+    return { jobs: Object.freeze([]), wakeToken, nextRunAtMs, nextEligibleAtMs, reason }
   }
   private async sequence(session: MongoSession): Promise<number> {
     const result = await this.collections.counters.findOneAndUpdate(
@@ -573,6 +887,7 @@ class MongoJobStoreImplementation {
       'backoff',
       'timeoutMs',
       'idempotencyKey',
+      'dispatchKey',
       'processedAtMs',
       'finishedAtMs',
       'leaseOwner',
@@ -593,55 +908,71 @@ class MongoJobStoreImplementation {
     )
     return result.matchedCount === 1
   }
+  private async transitionInTransaction(
+    operation: string,
+    session: MongoSession,
+    request: { jobId: string; now: number },
+    command: (record: JobRecord) => ResultType<JobTransition, any>
+  ): Promise<JobTransition> {
+    let found = await this.readJob(request.jobId, session)
+    if (found === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    const control = await this.lockOptionalControls(session, found.record.queue, operation)
+    if (control !== undefined) {
+      await this.lockRateWindow(session, control, request.now, operation)
+      found = await this.readJob(request.jobId, session)
+      if (found === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    }
+    const reduced = command(found.record)
+    if (Result.isError(reduced)) throw reduced.error
+    let transition = reduced.value
+    if (isRequeue(found.record, transition.record)) {
+      const orderingSequence = await this.sequence(session)
+      const changed = makeJobRecord({ ...transition.record, orderingSequence })
+      if (Result.isError(changed)) throw changed.error
+      transition = { ...transition, record: changed.value }
+    }
+    if (!(await this.save(transition.record, session, found.record)))
+      throw new JobStoreFailure({
+        operation,
+        retryable: true,
+        message: 'MongoDB conditional transition conflicted'
+      })
+    if (found.record.state === 'active' && transition.record.state !== 'active')
+      await this.deletePermit(session, found.record.id, found.record.leaseToken)
+    if (transition.attempt !== undefined)
+      await this.collections.attempts.insertOne(
+        encodeAttempt(
+          this.client.namespace,
+          transition.record.id,
+          transition.record.attemptSequence ?? transition.record.attemptsMade,
+          transition.attempt,
+          found.record.leaseOwner
+        ),
+        { session }
+      )
+    const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record.state)
+    if (flowOutcome !== undefined)
+      await appendFlowReport(
+        this.collections,
+        this.client.namespace,
+        found.doc,
+        transition.record.id,
+        transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
+        flowOutcome,
+        request.now,
+        session
+      )
+    await this.notify(transition.record.queue, request.now, session)
+    return transition
+  }
   private async transition(
     operation: string,
     request: { jobId: string; now: number },
     command: (record: JobRecord) => ResultType<JobTransition, any>
   ): Promise<Op<JobTransition>> {
-    return this.transaction(operation, async (session) => {
-      const found = await this.readJob(request.jobId, session)
-      if (found === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
-      const reduced = command(found.record)
-      if (Result.isError(reduced)) throw reduced.error
-      let transition = reduced.value
-      if (isRequeue(found.record, transition.record)) {
-        const orderingSequence = await this.sequence(session)
-        const changed = makeJobRecord({ ...transition.record, orderingSequence })
-        if (Result.isError(changed)) throw changed.error
-        transition = { ...transition, record: changed.value }
-      }
-      if (!(await this.save(transition.record, session, found.record)))
-        throw new JobStoreFailure({
-          operation,
-          retryable: true,
-          message: 'MongoDB conditional transition conflicted'
-        })
-      if (transition.attempt !== undefined)
-        await this.collections.attempts.insertOne(
-          encodeAttempt(
-            this.client.namespace,
-            transition.record.id,
-            transition.record.attemptSequence ?? transition.record.attemptsMade,
-            transition.attempt,
-            found.record.leaseOwner
-          ),
-          { session }
-        )
-      const flowOutcome = settlementOutcomeForAttempt(transition.attempt, transition.record.state)
-      if (flowOutcome !== undefined)
-        await appendFlowReport(
-          this.collections,
-          this.client.namespace,
-          found.doc,
-          transition.record.id,
-          transition.attempt!.attemptSequence ?? transition.attempt!.attempt,
-          flowOutcome,
-          request.now,
-          session
-        )
-      await this.notify(transition.record.queue, request.now, session)
-      return transition
-    })
+    return this.transaction(operation, (session) =>
+      this.transitionInTransaction(operation, session, request, command)
+    )
   }
   async enqueue(request: J.EnqueueRequest): Promise<Op<J.EnqueueResult>> {
     const all = await this.enqueueMany([request])
@@ -739,6 +1070,8 @@ class MongoJobStoreImplementation {
     const now = inputNumber(raw.now, 'now')
     const runAt = inputNumber(raw.runAt, 'runAt')
     const attemptsMax = inputNumber(raw.attemptsMax, 'attemptsMax', 1)
+    const dispatchKey =
+      raw.dispatchKey === undefined ? undefined : dispatchText(raw.dispatchKey, 'dispatchKey')
     const explicit = raw.id !== undefined
     const jobId = explicit ? makeJobId(raw.id) : makeJobId(randomUUID())
     if (Result.isError(jobId)) throw jobId.error
@@ -771,6 +1104,7 @@ class MongoJobStoreImplementation {
       backoff: raw.backoff as never,
       timeoutMs: raw.timeoutMs as never,
       idempotencyKey: raw.idempotencyKey as never,
+      dispatchKey,
       createdAt: now,
       updatedAt: now,
       processedAt: undefined,
@@ -819,6 +1153,19 @@ class MongoJobStoreImplementation {
         return identity(queue.value, name.value, inputNumber(item.version, 'accepted.version', 1))
       })
       const result = await this.transaction('claim', async (session) => {
+        const controls = await this.collections.controls.findOne(
+          {
+            _id: namespaceId(this.client.namespace, queue.value),
+            enabled: true
+          },
+          { session }
+        )
+        if (controls !== null)
+          throw new ControlsRevisionMismatchError({
+            queue: queue.value,
+            expected: integer(controls.revision, 'controls.revision'),
+            actual: undefined
+          })
         const control = await this.collections.queues.findOne(
           { _id: namespaceId(this.client.namespace, queue.value) },
           { session }
@@ -902,6 +1249,167 @@ class MongoJobStoreImplementation {
       return fail('claim', cause)
     }
   }
+  async getControls(request: {
+    readonly queue: QueueName
+  }): Promise<Op<QueueControlsRecord | undefined>> {
+    try {
+      const queue = makeQueueName(request.queue)
+      if (Result.isError(queue)) throw queue.error
+      return this.transaction('getControls', async (session) => {
+        const document = await this.collections.controls.findOne(
+          { _id: namespaceId(this.client.namespace, queue.value) },
+          { session }
+        )
+        return document === null ? undefined : decodeControls(document)
+      })
+    } catch (cause) {
+      return fail('getControls', cause)
+    }
+  }
+  async get(queue: QueueName): Promise<Op<QueueControlsRecord | undefined>> {
+    return this.getControls({ queue })
+  }
+  async reconcile(
+    registry: AnyQueueControlsRegistry,
+    options: ControlsReconcileOptions = {}
+  ): Promise<Op<ControlsReconcileReport>> {
+    try {
+      if (
+        registry === null ||
+        typeof registry !== 'object' ||
+        !Array.isArray(registry.controls) ||
+        typeof registry.group !== 'string' ||
+        registry.group.length === 0 ||
+        registry.group.length > 128
+      )
+        throw new JobDefinitionError({
+          field: 'registry',
+          message: 'must be a valid controls registry'
+        })
+      const removal = options.removal ?? 'warn'
+      if (removal !== 'ignore' && removal !== 'warn' && removal !== 'disable')
+        throw new JobDefinitionError({
+          field: 'removal',
+          message: 'must be ignore, warn, or disable'
+        })
+      const proposed = new Map<string, QueueControlsRecord>()
+      for (const definition of registry.controls) {
+        const queue = makeQueueName(definition?.queue)
+        if (Result.isError(queue)) throw queue.error
+        if (proposed.has(queue.value))
+          throw new JobDefinitionError({ field: 'controls', message: 'contains a duplicate queue' })
+        proposed.set(
+          queue.value,
+          normalizeControls(queue.value, registry.group, definition.options, 0)
+        )
+      }
+      return this.transaction('reconcile', async (session) => {
+        const now = Date.now()
+        const created: QueueControlsRecord[] = []
+        const updated: QueueControlsRecord[] = []
+        const unchanged: QueueControlsRecord[] = []
+        const disabled: QueueControlsRecord[] = []
+        for (const [queue, candidate] of proposed) {
+          const currentDocument = await this.collections.controls.findOne(
+            { _id: namespaceId(this.client.namespace, queue) },
+            { session }
+          )
+          if (currentDocument === null) {
+            const createdRecord = Object.freeze({
+              ...candidate,
+              createdAtMs: now,
+              updatedAtMs: now
+            })
+            await this.collections.controls.insertOne(
+              encodeControls(this.client.namespace, createdRecord),
+              {
+                session
+              }
+            )
+            created.push(createdRecord)
+            continue
+          }
+          const current = decodeControls(currentDocument)
+          if (
+            current.enabled &&
+            current.group === registry.group &&
+            sameControls(current, candidate)
+          ) {
+            unchanged.push(current)
+            continue
+          }
+          const next = Object.freeze({
+            ...candidate,
+            revision: addSafe(current.revision, 1, 'controls.revision'),
+            createdAtMs: current.createdAtMs,
+            updatedAtMs: now
+          })
+          const encoded = encodeControls(this.client.namespace, next)
+          delete encoded._id
+          const changed = await this.collections.controls.updateOne(
+            { _id: namespaceId(this.client.namespace, queue), revision: current.revision },
+            { $set: encoded },
+            { session }
+          )
+          if (changed.matchedCount !== 1)
+            throw new JobStoreFailure({
+              operation: 'reconcile',
+              retryable: true,
+              message: 'MongoDB controls changed during reconciliation'
+            })
+          updated.push(next)
+        }
+        const warnings: string[] = []
+        const existing = await this.collections.controls
+          .find({ namespace: this.client.namespace, controlGroup: registry.group }, { session })
+          .toArray()
+        for (const document of existing) {
+          const current = decodeControls(document)
+          if (proposed.has(current.queue)) continue
+          if (removal === 'warn')
+            warnings.push(`controls for queue "${current.queue}" are not present in the registry`)
+          if (removal === 'disable' && current.enabled) {
+            const next = Object.freeze({
+              ...current,
+              enabled: false,
+              revision: addSafe(current.revision, 1, 'controls.revision'),
+              updatedAtMs: now
+            })
+            const encoded = encodeControls(this.client.namespace, next)
+            delete encoded._id
+            const changed = await this.collections.controls.updateOne(
+              {
+                _id: namespaceId(this.client.namespace, current.queue),
+                revision: current.revision
+              },
+              { $set: encoded },
+              { session }
+            )
+            if (changed.matchedCount !== 1)
+              throw new JobStoreFailure({
+                operation: 'reconcile',
+                retryable: true,
+                message: 'MongoDB controls changed during removal'
+              })
+            disabled.push(next)
+          }
+        }
+        const records = await this.collections.controls
+          .find({ namespace: this.client.namespace }, { sort: { queue: 1 }, session })
+          .toArray()
+        return {
+          created: Object.freeze(created),
+          updated: Object.freeze(updated),
+          unchanged: Object.freeze(unchanged),
+          disabled: Object.freeze(disabled),
+          warnings: Object.freeze(warnings),
+          records: Object.freeze(records.map(decodeControls))
+        }
+      })
+    } catch (cause) {
+      return fail('reconcile', cause)
+    }
+  }
   private findOneResult(value: unknown): Doc | undefined {
     if (value === null) return undefined
     if (
@@ -913,105 +1421,540 @@ class MongoJobStoreImplementation {
       return (value as { value?: Doc | null }).value ?? undefined
     return value as Doc
   }
+  private async nextControlledRunAt(
+    session: MongoSession,
+    queue: string,
+    accepted: readonly string[],
+    now: number
+  ): Promise<number | undefined> {
+    const row = await this.collections.jobs.findOne(
+      {
+        namespace: this.client.namespace,
+        queue,
+        identity: { $in: accepted },
+        state: 'delayed',
+        runAtMs: { $gt: now }
+      },
+      { sort: { runAtMs: 1 }, session }
+    )
+    return row === null ? undefined : integer(row.runAtMs, 'job.runAtMs')
+  }
+  async claimControlled(request: ControlledClaimRequest): Promise<Op<ControlledClaimResult>> {
+    try {
+      const raw = request as unknown as Doc
+      const queue = makeQueueName(raw.queue)
+      const worker = makeWorkerId(raw.workerId)
+      if (Result.isError(queue)) throw queue.error
+      if (Result.isError(worker)) throw worker.error
+      const now = inputNumber(raw.now, 'now')
+      const limit = inputNumber(raw.limit, 'limit', 1)
+      const duration = inputNumber(raw.leaseDurationMs, 'leaseDurationMs', 1)
+      const revision = inputNumber(raw.controlsRevision, 'controlsRevision', 1)
+      if (now > MAX - duration)
+        throw new JobDefinitionError({
+          field: 'leaseDurationMs',
+          message: 'lease expiry exceeds safe integer range'
+        })
+      if (!Array.isArray(raw.accepted))
+        throw new JobDefinitionError({ field: 'accepted', message: 'must be an array' })
+      const accepted: string[] = []
+      for (const value of raw.accepted) {
+        if (value === null || typeof value !== 'object')
+          throw new JobDefinitionError({ field: 'accepted', message: 'contains invalid identity' })
+        const item = value as Doc
+        const name = makeJobName(item.name)
+        if (Result.isError(name)) throw name.error
+        const version = inputNumber(item.version, 'accepted.version', 1)
+        accepted.push(identity(queue.value, name.value, version))
+      }
+      return this.transaction('claimControlled', async (session) => {
+        const control = await this.lockControls(session, queue.value, revision, 'claimControlled')
+        const rate = await this.lockRateWindow(session, control, now, 'claimControlled')
+        const queueDocument = await this.collections.queues.findOneAndUpdate(
+          { _id: namespaceId(this.client.namespace, queue.value) },
+          {
+            $setOnInsert: {
+              _id: namespaceId(this.client.namespace, queue.value),
+              namespace: this.client.namespace,
+              queue: queue.value,
+              paused: false,
+              wakeVersion: 0
+            },
+            $set: { updatedAtMs: now }
+          },
+          { upsert: true, returnDocument: 'after', session }
+        )
+        const queueRow = this.findOneResult(queueDocument)
+        const paused = queueRow?.paused === true
+        const wakeVersion = integer(queueRow?.wakeVersion ?? 0, 'queue.wakeVersion')
+        const wakeToken = this.wakeTokenFor({ [queue.value]: wakeVersion })
+        const nextRunAtMs = await this.nextControlledRunAt(session, queue.value, accepted, now)
+        if (paused) return this.emptyControlled(wakeToken, nextRunAtMs, undefined, 'paused')
+
+        const counts = await this.countActive(session, queue.value)
+        const globalActive = [...counts.values()].reduce((sum, value) => sum + value, 0)
+        const globalRemaining =
+          control.globalConcurrency === undefined
+            ? Number.MAX_SAFE_INTEGER
+            : control.globalConcurrency - globalActive
+        if (globalRemaining <= 0)
+          return this.emptyControlled(wakeToken, nextRunAtMs, undefined, 'global-concurrency')
+        const rateRemaining =
+          control.rateLimit === undefined
+            ? Number.MAX_SAFE_INTEGER
+            : control.rateLimit.max - (rate?.count ?? 0)
+        if (rateRemaining <= 0)
+          return this.emptyControlled(
+            wakeToken,
+            nextRunAtMs,
+            addSafe(rate!.startedAtMs, control.rateLimit!.durationMs, 'nextEligibleAtMs'),
+            'rate-limited'
+          )
+
+        const cursorId = namespaceId(this.client.namespace, queue.value)
+        const cursorDocument = await this.collections.controlCursors.findOneAndUpdate(
+          { _id: cursorId },
+          {
+            $setOnInsert: {
+              _id: cursorId,
+              namespace: this.client.namespace,
+              queue: queue.value,
+              cursorSequence: 0,
+              updatedAtMs: now
+            },
+            $set: { updatedAtMs: now }
+          },
+          { upsert: true, returnDocument: 'after', session }
+        )
+        const cursorRow = this.findOneResult(cursorDocument)
+        const cursor = integer(cursorRow?.cursorSequence ?? 0, 'controlCursor.cursorSequence')
+        const scanBudget = Math.min(Math.max(limit * 4, 32), 256)
+        const candidateFilter = {
+          namespace: this.client.namespace,
+          queue: queue.value,
+          identity: { $in: accepted },
+          state: { $in: ['waiting', 'delayed'] },
+          runAtMs: { $lte: now }
+        }
+        const candidateOptions = {
+          sort: { priority: -1, runAtMs: 1, orderSequence: 1, id: 1 },
+          session
+        }
+        const afterCursor = await this.collections.jobs
+          .find(
+            { ...candidateFilter, orderSequence: { $gt: cursor } },
+            {
+              ...candidateOptions,
+              limit: scanBudget
+            }
+          )
+          .toArray()
+        const beforeCursor =
+          afterCursor.length >= scanBudget
+            ? []
+            : await this.collections.jobs
+                .find(
+                  { ...candidateFilter, orderSequence: { $lte: cursor } },
+                  { ...candidateOptions, limit: scanBudget - afterCursor.length }
+                )
+                .toArray()
+        const ordered = [...afterCursor, ...beforeCursor]
+        const capacity = Math.min(limit, globalRemaining, rateRemaining)
+        const planned: Array<{
+          readonly previous: JobRecord
+          readonly record: JobRecord
+          readonly dispatchKey: string
+        }> = []
+        let blocked = false
+        let examinedSequence = cursor
+        for (const candidate of ordered) {
+          const current = decodeJob(candidate)
+          examinedSequence = current.orderingSequence
+          const dispatchKey = current.dispatchKey ?? noDispatchKey
+          const plannedForKey = planned.filter((item) => item.dispatchKey === dispatchKey).length
+          if (
+            control.perKeyConcurrency !== undefined &&
+            (counts.get(dispatchKey) ?? 0) + plannedForKey >= control.perKeyConcurrency
+          ) {
+            blocked = true
+            continue
+          }
+          const changed = reduceJob(current, {
+            type: 'claim',
+            jobId: current.id,
+            workerId: worker.value,
+            leaseToken: randomUUID() as never,
+            leaseExpiresAt: addSafe(now, duration, 'leaseExpiresAt'),
+            now
+          })
+          if (Result.isError(changed)) throw changed.error
+          planned.push({ previous: current, record: changed.value.record, dispatchKey })
+          if (planned.length >= capacity) break
+        }
+        await this.collections.controlCursors.updateOne(
+          { _id: cursorId, cursorSequence: cursor },
+          { $set: { cursorSequence: examinedSequence, updatedAtMs: now } },
+          { session }
+        )
+        for (const item of planned) {
+          if (!(await this.save(item.record, session, item.previous)))
+            throw new JobStoreFailure({
+              operation: 'claimControlled',
+              retryable: true,
+              message: 'MongoDB controlled claim lost its job row'
+            })
+          await this.collections.jobs.updateOne(
+            { _id: id(this.client.namespace, item.record.id) },
+            {
+              $unset: {
+                lastSettlementToken: '',
+                lastSettlementDigest: '',
+                lastSettlementOutcome: ''
+              }
+            },
+            { session }
+          )
+          await this.collections.permits.insertOne(
+            {
+              _id: namespaceId(this.client.namespace, item.record.id),
+              namespace: this.client.namespace,
+              jobId: item.record.id,
+              queue: queue.value,
+              dispatchKey: item.dispatchKey,
+              leaseToken: item.record.leaseToken,
+              acquiredAtMs: now
+            },
+            { session }
+          )
+        }
+        if (planned.length > 0 && rate !== undefined) {
+          const updated = await this.collections.rateWindows.updateOne(
+            {
+              _id: namespaceId(this.client.namespace, queue.value),
+              startedAtMs: rate.startedAtMs,
+              claimCount: rate.count
+            },
+            { $inc: { claimCount: planned.length }, $set: { updatedAtMs: now } },
+            { session }
+          )
+          if (updated.matchedCount !== 1)
+            throw new JobStoreFailure({
+              operation: 'claimControlled',
+              retryable: true,
+              message: 'MongoDB rate window changed during controlled claim'
+            })
+        }
+        if (planned.length > 0) await this.notify(queue.value, now, session)
+        return planned.length === 0
+          ? this.emptyControlled(
+              wakeToken,
+              nextRunAtMs,
+              undefined,
+              blocked ? 'per-key-concurrency' : 'empty'
+            )
+          : {
+              jobs: Object.freeze(planned.map((item) => item.record as ActiveJobSnapshot)),
+              wakeToken,
+              nextRunAtMs,
+              nextEligibleAtMs: undefined,
+              reason: undefined
+            }
+      })
+    } catch (cause) {
+      return fail('claimControlled', cause)
+    }
+  }
+  private async settleInTransaction(
+    session: MongoSession,
+    request: J.SettleRequest
+  ): Promise<J.SettlementResult> {
+    const jobId = makeJobId(request.jobId)
+    const token = makeLeaseToken(request.leaseToken)
+    if (Result.isError(jobId)) throw jobId.error
+    if (Result.isError(token)) throw token.error
+    const digest = canonical(request.outcome)
+    let found = await this.readJob(jobId.value, session)
+    if (found === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+    const control = await this.lockOptionalControls(session, found.record.queue, 'settle')
+    if (control !== undefined) await this.lockRateWindow(session, control, request.now, 'settle')
+    if (control !== undefined) {
+      found = await this.readJob(jobId.value, session)
+      if (found === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+    }
+    if (found.record.state !== 'active') {
+      if (found.doc.lastSettlementToken === token.value) {
+        if (found.doc.lastSettlementDigest !== digest)
+          throw new SettlementConflictError({ jobId: jobId.value, leaseToken: token.value })
+        const last = await this.collections.attempts.findOne(
+          {
+            namespace: this.client.namespace,
+            jobId: jobId.value,
+            ledgerSequence: found.record.attemptSequence ?? found.record.attemptsMade
+          },
+          { session }
+        )
+        if (last === null) throw new MongoJobStoreLayoutError('settlement ledger entry is missing')
+        return { record: found.record, attempt: decodeAttempt(last), status: 'already-applied' }
+      }
+      throw new LeaseLostError({
+        jobId: jobId.value,
+        leaseToken: token.value,
+        reason: 'missing-lease'
+      })
+    }
+    const reduced = reduceJob(
+      found.record,
+      request.startedAt === undefined
+        ? {
+            type: 'settle',
+            jobId: jobId.value,
+            leaseToken: token.value,
+            outcome: request.outcome,
+            now: request.now
+          }
+        : {
+            type: 'settle',
+            jobId: jobId.value,
+            leaseToken: token.value,
+            outcome: request.outcome,
+            now: request.now,
+            startedAt: request.startedAt
+          }
+    )
+    if (Result.isError(reduced) || reduced.value.attempt === undefined)
+      throw Result.isError(reduced)
+        ? reduced.error
+        : new JobDefinitionError({
+            field: 'attempt',
+            message: 'settlement did not record an attempt'
+          })
+    let next = reduced.value.record
+    if (isRequeue(found.record, next)) {
+      const sequence = await this.sequence(session)
+      const changed = makeJobRecord({ ...next, orderingSequence: sequence })
+      if (Result.isError(changed)) throw changed.error
+      next = changed.value
+    }
+    const ledger = next.attemptSequence ?? next.attemptsMade
+    await this.collections.attempts.insertOne(
+      encodeAttempt(
+        this.client.namespace,
+        jobId.value,
+        ledger,
+        reduced.value.attempt,
+        found.record.leaseOwner
+      ),
+      { session }
+    )
+    if (!(await this.save(next, session, found.record, { token: token.value, digest })))
+      throw new LeaseLostError({
+        jobId: jobId.value,
+        leaseToken: token.value,
+        reason: 'mismatched-token'
+      })
+    await this.deletePermit(session, jobId.value, token.value)
+    const flowOutcome = settlementOutcomeForAttempt(reduced.value.attempt, next.state)
+    if (flowOutcome !== undefined)
+      await appendFlowReport(
+        this.collections,
+        this.client.namespace,
+        found.doc,
+        next.id,
+        reduced.value.attempt.attemptSequence ?? reduced.value.attempt.attempt,
+        flowOutcome,
+        request.now,
+        session
+      )
+    await this.notify(next.queue, request.now, session)
+    return { record: next, attempt: reduced.value.attempt, status: 'applied' }
+  }
   async settle(request: J.SettleRequest): Promise<Op<J.SettlementResult>> {
+    try {
+      return this.transaction('settle', (session) => this.settleInTransaction(session, request))
+    } catch (cause) {
+      return fail('settle', cause)
+    }
+  }
+  async settleControlled(request: ControlledSettleRequest): Promise<Op<J.SettlementResult>> {
     try {
       const jobId = makeJobId(request.jobId)
       const token = makeLeaseToken(request.leaseToken)
+      const revision = inputNumber(request.controlsRevision, 'controlsRevision', 1)
+      const now = inputNumber(request.now, 'now')
       if (Result.isError(jobId)) throw jobId.error
       if (Result.isError(token)) throw token.error
-      const digest = canonical(request.outcome)
-      return this.transaction('settle', async (session) => {
+      return this.transaction('settleControlled', async (session) => {
         const found = await this.readJob(jobId.value, session)
         if (found === undefined) throw new JobNotFoundError({ jobId: jobId.value })
-        if (found.record.state !== 'active') {
-          if (found.doc.lastSettlementToken === token.value) {
-            if (found.doc.lastSettlementDigest !== digest)
-              throw new SettlementConflictError({ jobId: jobId.value, leaseToken: token.value })
-            const last = await this.collections.attempts.findOne(
-              {
-                namespace: this.client.namespace,
-                jobId: jobId.value,
-                ledgerSequence: found.record.attemptSequence ?? found.record.attemptsMade
-              },
-              { session }
-            )
-            if (last === null)
-              throw new MongoJobStoreLayoutError('settlement ledger entry is missing')
-            return { record: found.record, attempt: decodeAttempt(last), status: 'already-applied' }
-          }
-          throw new LeaseLostError({
-            jobId: jobId.value,
-            leaseToken: token.value,
-            reason: 'missing-lease'
-          })
-        }
-        const reduced = reduceJob(
-          found.record,
-          request.startedAt === undefined
-            ? {
-                type: 'settle',
-                jobId: jobId.value,
-                leaseToken: token.value,
-                outcome: request.outcome,
-                now: request.now
-              }
-            : {
-                type: 'settle',
-                jobId: jobId.value,
-                leaseToken: token.value,
-                outcome: request.outcome,
-                now: request.now,
-                startedAt: request.startedAt
-              }
+        const control = await this.lockControls(
+          session,
+          found.record.queue,
+          revision,
+          'settleControlled'
         )
-        if (Result.isError(reduced) || reduced.value.attempt === undefined)
-          throw Result.isError(reduced)
-            ? reduced.error
-            : new JobDefinitionError({
-                field: 'attempt',
-                message: 'settlement did not record an attempt'
-              })
-        let next = reduced.value.record
-        if (isRequeue(found.record, next)) {
-          const sequence = await this.sequence(session)
-          const changed = makeJobRecord({ ...next, orderingSequence: sequence })
-          if (Result.isError(changed)) throw changed.error
-          next = changed.value
-        }
-        const ledger = next.attemptSequence ?? next.attemptsMade
-        await this.collections.attempts.insertOne(
-          encodeAttempt(
-            this.client.namespace,
-            jobId.value,
-            ledger,
-            reduced.value.attempt,
-            found.record.leaseOwner
-          ),
-          { session }
-        )
-        if (!(await this.save(next, session, found.record, { token: token.value, digest })))
-          throw new LeaseLostError({
-            jobId: jobId.value,
-            leaseToken: token.value,
-            reason: 'mismatched-token'
-          })
-        const flowOutcome = settlementOutcomeForAttempt(reduced.value.attempt, next.state)
-        if (flowOutcome !== undefined)
-          await appendFlowReport(
-            this.collections,
-            this.client.namespace,
-            found.doc,
-            next.id,
-            reduced.value.attempt.attemptSequence ?? reduced.value.attempt.attempt,
-            flowOutcome,
-            request.now,
-            session
-          )
-        await this.notify(next.queue, request.now, session)
-        return { record: next, attempt: reduced.value.attempt, status: 'applied' }
+        await this.lockRateWindow(session, control, now, 'settleControlled')
+        return this.settleInTransaction(session, request)
       })
     } catch (cause) {
-      return fail('settle', cause)
+      return fail('settleControlled', cause)
+    }
+  }
+  async releaseControlled(request: ControlledReleaseRequest): Promise<Op<J.ReleaseResult>> {
+    try {
+      const jobId = makeJobId(request.jobId)
+      const leaseToken = makeLeaseToken(request.leaseToken)
+      const revision = inputNumber(request.controlsRevision, 'controlsRevision', 1)
+      const now = inputNumber(request.now, 'now')
+      if (Result.isError(jobId)) throw jobId.error
+      if (Result.isError(leaseToken)) throw leaseToken.error
+      return this.transaction('releaseControlled', async (session) => {
+        const found = await this.readJob(jobId.value, session)
+        if (found === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(
+          session,
+          found.record.queue,
+          revision,
+          'releaseControlled'
+        )
+        await this.lockRateWindow(session, control, now, 'releaseControlled')
+        const permit = await this.collections.permits.findOne(
+          { _id: namespaceId(this.client.namespace, jobId.value) },
+          { session }
+        )
+        if (permit === null || permit.leaseToken !== leaseToken.value)
+          throw new LeaseLostError({
+            jobId: jobId.value,
+            leaseToken: leaseToken.value,
+            reason: 'mismatched-token'
+          })
+        return this.transitionInTransaction(
+          'releaseControlled',
+          session,
+          { jobId: jobId.value, now },
+          (record) => {
+            if (record.state !== 'active')
+              return Result.err(
+                new LeaseLostError({
+                  jobId: record.id,
+                  leaseToken: leaseToken.value,
+                  reason: 'missing-lease'
+                })
+              ) as ResultType<JobTransition, unknown>
+            return reduceJob(record, {
+              type: 'release',
+              jobId: record.id,
+              leaseToken: leaseToken.value,
+              now
+            })
+          }
+        )
+      })
+    } catch (cause) {
+      return fail('releaseControlled', cause)
+    }
+  }
+  async cancelControlled(request: ControlledCancelRequest): Promise<Op<J.CancelResult>> {
+    try {
+      const jobId = makeJobId(request.jobId)
+      const revision = inputNumber(request.controlsRevision, 'controlsRevision', 1)
+      const now = inputNumber(request.now, 'now')
+      if (Result.isError(jobId)) throw jobId.error
+      return this.transaction('cancelControlled', async (session) => {
+        const found = await this.readJob(jobId.value, session)
+        if (found === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        const control = await this.lockControls(
+          session,
+          found.record.queue,
+          revision,
+          'cancelControlled'
+        )
+        await this.lockRateWindow(session, control, now, 'cancelControlled')
+        const wasActive = found.record.state === 'active'
+        const transition = await this.transitionInTransaction(
+          'cancelControlled',
+          session,
+          { jobId: jobId.value, now },
+          (record) =>
+            record.state === 'active'
+              ? reduceJob(record, { type: 'request-cancellation', jobId: record.id, now })
+              : reduceJob(record, { type: 'cancel', jobId: record.id, now })
+        )
+        if (!wasActive)
+          await this.collections.permits.deleteOne(
+            {
+              _id: namespaceId(this.client.namespace, jobId.value),
+              namespace: this.client.namespace,
+              jobId: jobId.value
+            },
+            { session }
+          )
+        return transition
+      })
+    } catch (cause) {
+      return fail('cancelControlled', cause)
+    }
+  }
+  async recoverStalledControlled(
+    request: ControlledRecoverStalledRequest
+  ): Promise<Op<J.RecoverStalledResult>> {
+    try {
+      const queue = makeQueueName(request.queue)
+      const maximum = inputNumber(request.maxStalledCount, 'maxStalledCount')
+      const limit = request.limit === undefined ? 1_000 : inputNumber(request.limit, 'limit', 1)
+      const revision = inputNumber(request.controlsRevision, 'controlsRevision', 1)
+      const now = inputNumber(request.now, 'now')
+      if (Result.isError(queue)) throw queue.error
+      return this.transaction('recoverStalledControlled', async (session) => {
+        const control = await this.lockControls(
+          session,
+          queue.value,
+          revision,
+          'recoverStalledControlled'
+        )
+        await this.lockRateWindow(session, control, now, 'recoverStalledControlled')
+        const candidates = await this.collections.jobs
+          .find(
+            {
+              namespace: this.client.namespace,
+              queue: queue.value,
+              state: 'active',
+              leaseExpiresAtMs: { $lte: now }
+            },
+            { sort: { leaseExpiresAtMs: 1, orderSequence: 1, id: 1 }, limit, session }
+          )
+          .toArray()
+        const transitions: JobTransition[] = []
+        for (const candidate of candidates) {
+          const current = await this.readJob(docText(candidate.id, 'job.id'), session)
+          if (
+            current === undefined ||
+            current.record.state !== 'active' ||
+            current.record.leaseExpiresAt === undefined ||
+            current.record.leaseExpiresAt > now
+          )
+            continue
+          const permit = await this.collections.permits.findOne(
+            { _id: namespaceId(this.client.namespace, current.record.id) },
+            { session }
+          )
+          if (permit !== null && permit.leaseToken !== current.record.leaseToken) continue
+          const transition = await this.transitionInTransaction(
+            'recoverStalledControlled',
+            session,
+            { jobId: current.record.id, now },
+            (record) =>
+              recoverStalledWithPolicy(
+                record,
+                { type: 'recover-stalled', jobId: record.id, now },
+                record.stalledCount >= maximum
+              )
+          )
+          transitions.push(transition)
+        }
+        return { transitions: Object.freeze(transitions), recovered: transitions.length }
+      })
+    } catch (cause) {
+      return fail('recoverStalledControlled', cause)
     }
   }
   async release(request: J.ReleaseRequest): Promise<Op<J.ReleaseResult>> {
@@ -1123,6 +2066,7 @@ class MongoJobStoreImplementation {
             next = changed.value
           }
           if (!(await this.save(next, session, found.record))) return undefined
+          await this.deletePermit(session, found.record.id, found.record.leaseToken)
           if (reduced.value.attempt !== undefined)
             await this.collections.attempts.insertOne(
               encodeAttempt(
