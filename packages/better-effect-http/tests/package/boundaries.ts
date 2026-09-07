@@ -12,6 +12,7 @@ const coreSourceRoot = join(repositoryRoot, 'packages/better-effect/src')
 
 const expectedExports = {
   '.': './dist/index.mjs',
+  './testing': './dist/testing.mjs',
   './package.json': './package.json'
 } as const
 
@@ -189,7 +190,7 @@ const assertCoreIsolation = async (): Promise<void> => {
 }
 
 const assertGeneratedPackage = async (): Promise<void> => {
-  for (const name of ['index.mjs', 'index.d.mts']) {
+  for (const name of ['index.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts']) {
     assertCondition(
       (await collectFiles(distRoot)).includes(join(distRoot, name)),
       `Missing generated ${name}`
@@ -213,6 +214,8 @@ const assertGeneratedPackage = async (): Promise<void> => {
       `Missing public HTTP foundation export: ${exportName}`
     )
   }
+  const testingEntrypoint = await import(pathToFileURL(join(distRoot, 'testing.mjs')).href)
+  assertCondition('HttpTest' in testingEntrypoint, 'Missing public HTTP testing export: HttpTest')
 }
 
 const assertPackedArtifact = async (): Promise<void> => {
@@ -247,7 +250,9 @@ const assertPackedArtifact = async (): Promise<void> => {
       'package/README.md',
       'package/CHANGELOG.md',
       'package/dist/index.mjs',
-      'package/dist/index.d.mts'
+      'package/dist/index.d.mts',
+      'package/dist/testing.mjs',
+      'package/dist/testing.d.mts'
     ]) {
       assertCondition(entries.includes(required), `Archive is missing ${required}`)
     }
