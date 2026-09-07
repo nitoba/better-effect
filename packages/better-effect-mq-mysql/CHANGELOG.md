@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add the durable `JobEventStore` extension with migration 007, opaque
+  namespace cursors, atomic transition appends, keyset reads, retention, and
+  polling/local-wake event waits.
 - Add QueueControls protocol v3 with additive migration 006, durable dispatch
   keys and revisioned controls, atomic InnoDB permits, fixed-window rate limits,
   bounded per-key fairness, stale-token fencing, and controlled lifecycle

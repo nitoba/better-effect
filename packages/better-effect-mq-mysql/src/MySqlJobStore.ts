@@ -26,6 +26,8 @@ import {
   type ControlledSettleRequest,
   type QueueControlsRecord,
   type SettlementOutcome,
+  type DurableJobEventInput,
+  type DurableJobEventType,
   type AnyJobStoreToken,
   type JobStore as JobStoreNamespace,
   type JobStoreDescriptor
@@ -63,6 +65,7 @@ import {
   type FlowChildReport
 } from 'better-effect-mq'
 import { MySqlClient } from './client'
+import { appendMySqlJobEvent, flushMySqlJobEventWakes } from './event-store'
 import { hasUnpairedSurrogate } from './internal/text'
 import { MYSQL_FLOW_TABLES, MYSQL_TABLES } from './schema'
 import {
@@ -999,6 +1002,8 @@ class MySqlJobStoreImplementation {
   private dispatchKeyLayoutChecked = false
   private controlsAvailable = false
   private controlsLayoutChecked = false
+  private eventsAvailable = false
+  private eventsLayoutChecked = false
   private flowReportsEnabled = false
   private readonly waiters = new Set<WakeWaiter>()
   private readonly pendingWakes = new WeakMap<Tx, Set<string>>()
@@ -1041,6 +1046,19 @@ class MySqlJobStoreImplementation {
       // Layout detection is a compatibility aid; SQL errors remain authoritative.
     }
   }
+  private async ensureEventsLayout(tx: Tx): Promise<void> {
+    if (this.eventsLayoutChecked) return
+    this.eventsLayoutChecked = true
+    try {
+      const result = await tx.query<Row>(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`,
+        [MYSQL_TABLES.events]
+      )
+      this.eventsAvailable = result.rows.length > 0
+    } catch {
+      // Event persistence is an optional extension; ordinary JobStore behavior remains valid.
+    }
+  }
   private async withTx<T>(
     operation: string,
     body: (tx: Tx) => Promise<T>
@@ -1059,9 +1077,11 @@ class MySqlJobStoreImplementation {
         this.pendingWakes.set(tx, new Set())
         await this.ensureDispatchKeyLayout(tx as Tx)
         await this.ensureControlsLayout(tx as Tx)
+        await this.ensureEventsLayout(tx as Tx)
         value = await body(tx as Tx)
         await tx.commit()
         committed = true
+        flushMySqlJobEventWakes(tx)
         for (const queue of this.pendingWakes.get(tx) ?? []) this.wakeWaiters(queue)
       } catch (cause) {
         failed = true
@@ -1131,6 +1151,90 @@ class MySqlJobStoreImplementation {
     )
     this.flowReportsEnabled = parent.rows.length > 0
     return this.flowReportsEnabled
+  }
+  private settlementEventType(attempt: AttemptRecord): DurableJobEventType {
+    switch (attempt.outcome) {
+      case 'completed':
+        return 'job-completed'
+      case 'retried':
+        return 'job-retry-scheduled'
+      case 'failed':
+        return 'job-failed'
+      case 'cancelled':
+        return 'job-cancelled'
+      case 'stalled':
+        return 'job-stalled-recovered'
+      case 'released':
+        return 'job-released'
+    }
+  }
+  private transitionEventType(
+    operation: string,
+    previous: JobRecord,
+    next: JobRecord,
+    attempt: AttemptRecord | undefined
+  ): DurableJobEventType | undefined {
+    if (attempt !== undefined) {
+      if (operation === 'recoverStalled' || operation === 'recoverStalledControlled')
+        return 'job-stalled-recovered'
+      return this.settlementEventType(attempt)
+    }
+    switch (operation) {
+      case 'cancel':
+      case 'cancelControlled':
+        return 'job-cancelled'
+      case 'requestCancellation':
+        return previous.cancellationRequestedAt === next.cancellationRequestedAt
+          ? undefined
+          : 'job-cancel-requested'
+      case 'promote':
+        return 'job-promoted'
+      case 'retry':
+        return 'job-admin-retried'
+      case 'release':
+      case 'releaseControlled':
+        return 'job-released'
+      case 'recoverStalled':
+      case 'recoverStalledControlled':
+        return 'job-stalled-recovered'
+      default:
+        return undefined
+    }
+  }
+  private async appendEvent(
+    tx: Tx,
+    type: DurableJobEventType,
+    record: JobRecord | undefined,
+    recordedAtMs: number,
+    context: {
+      readonly previous?: JobRecord
+      readonly attempt?: AttemptRecord
+      readonly duplicate?: boolean
+      readonly queue?: string
+    } = {}
+  ): Promise<void> {
+    if (!this.eventsAvailable) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record?.id,
+      queue: record?.queue ?? (context.queue as never),
+      name: record?.name,
+      version: record?.version,
+      state: record?.state,
+      attempt: context.attempt?.attemptSequence ?? context.attempt?.attempt,
+      delivery:
+        context.attempt?.delivery ??
+        (record?.deliveryCount !== undefined && record.deliveryCount > 0
+          ? record.deliveryCount
+          : undefined),
+      workerId: (record?.leaseOwner ?? context.previous?.leaseOwner) as never,
+      outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
+      failureKind: (record?.failure?.kind ?? context.previous?.failure?.kind) as never,
+      duplicate: context.duplicate,
+      attributes: Object.freeze({})
+    }
+    await appendMySqlJobEvent(tx, this.client, input)
   }
   private async wakeSnapshot(source?: Tx): Promise<WakeBaseline> {
     const connection = source ?? ((await this.client.pool.getConnection()) as Tx)
@@ -1292,6 +1396,17 @@ class MySqlJobStoreImplementation {
           this.client.namespace
         )
       }
+      const eventType = this.transitionEventType(
+        operation,
+        current,
+        transition.record,
+        transition.attempt
+      )
+      if (eventType !== undefined)
+        await this.appendEvent(tx, eventType, transition.record, request.now, {
+          previous: current,
+          ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+        })
       await this.notify(tx, transition.record.queue, request.now)
       return transition
     })
@@ -1481,6 +1596,17 @@ class MySqlJobStoreImplementation {
         this.client.namespace
       )
     }
+    const eventType = this.transitionEventType(
+      operation,
+      current,
+      transition.record,
+      transition.attempt
+    )
+    if (eventType !== undefined)
+      await this.appendEvent(tx, eventType, transition.record, request.now, {
+        previous: current,
+        ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+      })
     await this.notify(tx, transition.record.queue, request.now)
     return transition
   }
@@ -1688,6 +1814,9 @@ class MySqlJobStoreImplementation {
         }
         const record = decodeJob(createdRow)
         out.push({ job: record, duplicate: false })
+        await this.appendEvent(tx, 'job-enqueued', record, input.now as number, {
+          duplicate: false
+        })
         await this.notify(tx, record.queue, input.now as number)
       }
       return Object.freeze(out)
@@ -1779,6 +1908,9 @@ class MySqlJobStoreImplementation {
           const saved = await this.save(tx, changed.value.record, current)
           if (!saved) continue
           await this.clearSettlement(tx, changed.value.record.id)
+          await this.appendEvent(tx, 'job-claimed', changed.value.record, now, {
+            previous: current
+          })
           jobs.push(changed.value.record)
         }
         const due = await tx.query<Row>(
@@ -2077,6 +2209,7 @@ class MySqlJobStoreImplementation {
               message: 'controlled claim lost its job row'
             })
           await this.clearSettlement(tx, item.record.id)
+          await this.appendEvent(tx, 'job-claimed', item.record, now)
           await tx.query(
             `INSERT INTO ${this.table(MYSQL_TABLES.permits)} (namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES (?,?,?,?,?,?)`,
             [this.client.namespace, item.record.id, queue.value, item.dispatchKey, item.token, now]
@@ -2237,6 +2370,10 @@ class MySqlJobStoreImplementation {
         request.now,
         this.client.namespace
       )
+    await this.appendEvent(tx, this.settlementEventType(attempt), transition.record, request.now, {
+      previous: current,
+      attempt
+    })
     await this.notify(tx, current.queue, request.now)
     return { record: transition.record, attempt, status: 'applied' }
   }
@@ -2373,6 +2510,13 @@ class MySqlJobStoreImplementation {
             now,
             this.client.namespace
           )
+        await this.appendEvent(
+          tx,
+          this.settlementEventType(transition.attempt!),
+          transition.record,
+          now,
+          { previous: current, attempt: transition.attempt! }
+        )
         await this.notify(tx, current.queue, now)
         return { record: transition.record, attempt: transition.attempt!, status: 'applied' }
       }) as Promise<StoreResult<JobStoreNamespace.SettlementResult>>
@@ -2830,6 +2974,10 @@ class MySqlJobStoreImplementation {
               now,
               this.client.namespace
             )
+          await this.appendEvent(tx, 'job-stalled-recovered', transition.record, now, {
+            previous: r,
+            ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+          })
           await this.notify(tx, r.queue, now)
           transitions.push(transition)
         }
@@ -3288,6 +3436,7 @@ class MySqlJobStoreImplementation {
           this.client.namespace,
           r.id
         ])
+        await this.appendEvent(tx, 'job-removed', r, now)
         await this.notify(tx, r.queue, now)
         return { job: r, removed: true }
       }) as Promise<StoreResult<JobStoreNamespace.RemoveResult>>
@@ -3330,10 +3479,32 @@ class MySqlJobStoreImplementation {
     paused: boolean
   ): Promise<StoreResult<JobStoreNamespace.QueuePauseResult>> {
     return this.withTx(paused ? 'pause' : 'resume', async (tx) => {
+      const current = await tx.query<Row>(
+        `SELECT paused FROM ${this.table(MYSQL_TABLES.queues)} WHERE namespace=? AND queue=? FOR UPDATE`,
+        [this.client.namespace, request.queue]
+      )
+      const previous = current.rows[0]?.paused
+      const changed =
+        current.rows[0] === undefined ||
+        !(
+          previous === paused ||
+          (paused && (previous === 1 || previous === '1')) ||
+          (!paused && (previous === 0 || previous === '0'))
+        )
       await tx.query<Row>(
         `INSERT INTO ${this.table(MYSQL_TABLES.queues)} (namespace,queue,paused,wake_version,updated_at_ms) VALUES (?,?,?,1,?) ON DUPLICATE KEY UPDATE paused=VALUES(paused),updated_at_ms=VALUES(updated_at_ms),wake_version=wake_version+1`,
         [this.client.namespace, request.queue, paused, request.now]
       )
+      if (changed)
+        await this.appendEvent(
+          tx,
+          paused ? 'queue-paused' : 'queue-resumed',
+          undefined,
+          request.now,
+          {
+            queue: request.queue
+          }
+        )
       this.pendingWakes.get(tx)?.add(request.queue)
       return { queue: request.queue as never, paused }
     })

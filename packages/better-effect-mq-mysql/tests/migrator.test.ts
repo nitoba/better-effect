@@ -9,7 +9,8 @@ import {
 } from '../src'
 
 test('the immutable initial migration and forward-only InnoDB upgrades are shipped', async () => {
-  const [migration, upgrade, schedules, outbox, flows, controls] = await loadMySqlMigrations()
+  const [migration, upgrade, schedules, outbox, flows, controls, events] =
+    await loadMySqlMigrations()
   expect(migration?.sql).toContain('ENGINE=InnoDB')
   expect(migration?.sql).toContain('AUTO_INCREMENT')
   expect(migration?.sql).not.toMatch(/NOW\(\)|CURRENT_TIMESTAMP/u)
@@ -37,6 +38,9 @@ test('the immutable initial migration and forward-only InnoDB upgrades are shipp
   expect(controls?.sql).toContain(
     'namespace(191), queue(191), dispatch_key(191), state, priority DESC, run_at_ms, sequence, id(128)'
   )
+  expect(events?.version).toBe(7)
+  expect(events?.sql).toContain('better_effect_mq_job_event_cursors')
+  expect(events?.sql).toContain('better_effect_mq_job_events')
 })
 
 test('runs migration 004 when its SQL comments contain semicolons', async () => {
@@ -45,7 +49,8 @@ test('runs migration 004 when its SQL comments contain semicolons', async () => 
     3: migrationManifestChecksum(migrations, 3),
     4: migrationManifestChecksum(migrations, 4),
     5: migrationManifestChecksum(migrations, 5),
-    6: migrationManifestChecksum(migrations, 6)
+    6: migrationManifestChecksum(migrations, 6),
+    7: migrationManifestChecksum(migrations, 7)
   }
   const queries: string[] = []
   let versionQueries = 0
@@ -59,7 +64,7 @@ test('runs migration 004 when its SQL comments contain semicolons', async () => 
         if (sql.includes('RELEASE_LOCK')) return { rows: [], rowCount: 0 }
         if (sql.includes('SELECT version, checksum')) {
           versionQueries += 1
-          const version = versionQueries === 1 ? 3 : 6
+          const version = versionQueries === 1 ? 3 : 7
           return { rows: [{ version, checksum: checksums[version] }], rowCount: 1 }
         }
         if (sql.includes('VERSION()'))
@@ -116,8 +121,8 @@ test('runs migration 004 when its SQL comments contain semicolons', async () => 
 
   expect(result).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 6,
-    applied: [4, 5, 6]
+    version: 7,
+    applied: [4, 5, 6, 7]
   })
   expect(
     queries.filter(
@@ -133,7 +138,7 @@ test('runs migration 004 when its SQL comments contain semicolons', async () => 
 
 test('schema validation performs the mandatory version, SQL-mode, engine, and protocol handshake', async () => {
   const migrations = await loadMySqlMigrations()
-  const checksum = migrationManifestChecksum(migrations, 6)
+  const checksum = migrationManifestChecksum(migrations, 7)
   const queries: string[] = []
   const pool: Pool = {
     getConnection: async () => ({
@@ -177,7 +182,7 @@ test('schema validation performs the mandatory version, SQL-mode, engine, and pr
             rowCount: 19
           }
         if (sql.includes('SELECT version, checksum'))
-          return { rows: [{ version: 6, checksum }], rowCount: 1 }
+          return { rows: [{ version: 7, checksum }], rowCount: 1 }
         return { rows: [], rowCount: 0 }
       },
       execute: async () => ({ rows: [], rowCount: 0 }),
@@ -191,7 +196,7 @@ test('schema validation performs the mandatory version, SQL-mode, engine, and pr
   const validation = await MySqlMigrator.validate(pool)
   expect(validation).toEqual({
     component: MIGRATION_COMPONENT,
-    version: 6
+    version: 7
   })
   expect(queries.some((sql) => sql.includes('VERSION()'))).toBe(true)
   expect(queries.some((sql) => sql.includes('information_schema.tables'))).toBe(true)

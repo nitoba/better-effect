@@ -163,6 +163,8 @@ const dropLayout = async (): Promise<void> => {
       MYSQL_TABLES.permits,
       MYSQL_TABLES.controlCursors,
       MYSQL_TABLES.controls,
+      MYSQL_TABLES.events,
+      MYSQL_TABLES.eventCursors,
       MYSQL_TABLES.schemaVersions
     ])
       await sql.query(`DROP TABLE IF EXISTS ${table}`)
@@ -190,11 +192,11 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
     if (uri === undefined) return
     pool = createPool({ uri, connectionLimit: 12 })
     const client = MySqlClient.fromPool({ pool: configuredPool(), namespace })
-    expect(await client.migrate()).toMatchObject({ version: 6, applied: [1, 2, 3, 4, 5, 6] })
+    expect(await client.migrate()).toMatchObject({ version: 7, applied: [1, 2, 3, 4, 5, 6, 7] })
     await dropLayout()
     await installLegacyLayout()
     const upgrade = await client.migrate()
-    expect(upgrade).toMatchObject({ version: 6, applied: [2, 3, 4, 5, 6] })
+    expect(upgrade).toMatchObject({ version: 7, applied: [2, 3, 4, 5, 6, 7] })
     upgradeApplied = upgrade.applied
     const [columns] = await configuredPool().query<
       Array<
@@ -223,7 +225,7 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
         ['dispatch_key', 'varchar']
       ])
     )
-    await expect(client.validate()).resolves.toMatchObject({ version: 6 })
+    await expect(client.validate()).resolves.toMatchObject({ version: 7 })
     await expect(client.migrate()).resolves.toMatchObject({ applied: [] })
   })
   integration(
@@ -241,8 +243,8 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
         for (const statement of ddl.slice(0, interruptedAfter + 1))
           await configuredPool().query(statement)
 
-        expect(await client.migrate()).toMatchObject({ version: 6, applied: [2, 3, 4, 5, 6] })
-        await expect(client.validate()).resolves.toMatchObject({ version: 6 })
+        expect(await client.migrate()).toMatchObject({ version: 7, applied: [2, 3, 4, 5, 6, 7] })
+        await expect(client.validate()).resolves.toMatchObject({ version: 7 })
       }
     },
     60_000
@@ -259,7 +261,7 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
       for (const interruptedAfter of ddl.keys()) {
         await dropLayout()
         await installLegacyLayout()
-        expect(await client.migrate()).toMatchObject({ version: 6, applied: [2, 3, 4, 5, 6] })
+        expect(await client.migrate()).toMatchObject({ version: 7, applied: [2, 3, 4, 5, 6, 7] })
         await configuredPool().query(`DROP TABLE IF EXISTS ${MYSQL_TABLES.schedules}`)
         await configuredPool().query(
           `UPDATE ${MYSQL_TABLES.schemaVersions} SET version=2, checksum=? WHERE component=?`,
@@ -268,8 +270,8 @@ describe('MySQL JobStore conformance on MySQL 8.0.16+', () => {
         for (const statement of ddl.slice(0, interruptedAfter + 1))
           await configuredPool().query(statement)
 
-        expect(await client.migrate()).toMatchObject({ version: 6, applied: [3, 4, 5, 6] })
-        await expect(client.validate()).resolves.toMatchObject({ version: 6 })
+        expect(await client.migrate()).toMatchObject({ version: 7, applied: [3, 4, 5, 6, 7] })
+        await expect(client.validate()).resolves.toMatchObject({ version: 7 })
       }
     },
     60_000
