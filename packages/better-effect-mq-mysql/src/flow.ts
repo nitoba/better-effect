@@ -3,6 +3,7 @@
 // oxlint-disable anti-slop/no-unsafe-dictionary-type -- fixed protocol objects are assembled after validation.
 // oxlint-disable anti-slop/no-runtime-typeof -- database and public DTO boundaries are narrowed here.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts are confined to validated SQL rows.
+// oxlint-disable anti-slop/no-chained-type-assertions -- the legacy FlowStoreV2Error union predates the event readiness error.
 
 import { createHash } from 'node:crypto'
 import { Result, type Result as ResultType } from 'better-result'
@@ -18,6 +19,7 @@ import {
   maxFlowStoreKeyLength,
   protocolVersionV2,
   JobDefinitionError,
+  JobEventWriterRejectedError,
   JobNotFoundError,
   JobStoreFailure,
   LeaseLostError,
@@ -31,6 +33,9 @@ import {
   validateFlowState,
   validateParentEnvelope,
   validateSerializedJobFailure,
+  type DurableJobEventInput,
+  type DurableJobEventType,
+  type JobEventStoreWriter,
   type AckOutboxRequest,
   type AckOutboxResult,
   type AppendChildReportRequest,
@@ -69,6 +74,12 @@ import {
   type PoolConnection
 } from './config'
 import { MySqlClient } from './client'
+import {
+  appendMySqlJobEvent,
+  assertMySqlJobEventWriterReady,
+  ensureMySqlJobEventActivationTable,
+  flushMySqlJobEventWakes
+} from './event-store'
 import { MySqlFlowProtocolMismatchError } from './errors'
 import { MYSQL_FLOW_TABLES, MYSQL_TABLES, quoteIdentifier } from './schema'
 
@@ -80,10 +91,28 @@ const flowDescriptor: FlowStoreV2Descriptor = Object.freeze({
 
 const flowMigrationVersion = 5
 const maxRetries = 3
+const eventMutationOperations = new Set([
+  'fanOut',
+  'recordChildResults',
+  'cancel',
+  'reconcile',
+  'markCascaded',
+  'appendChildReport',
+  'ackOutbox'
+])
+const defaultEventWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq-mysql',
+  version: 'current',
+  canAppend: true
+})
 
 type QueryRow = Readonly<Record<string, unknown>>
 type FlowResult<Value> = ResultType<Value, FlowStoreV2Error>
 type Transaction = PoolConnection
+type EventTransactionOptions = {
+  readonly eventsAvailable: boolean
+  readonly eventWriter: JobEventStoreWriter
+}
 
 const ok = <Value>(value: Value): FlowResult<Value> => Result.ok(value)
 const fail = <Value>(error: FlowStoreV2Error): FlowResult<Value> => Result.err(error)
@@ -106,12 +135,17 @@ const retryable = (cause: unknown): boolean => {
     error.sqlState === '40001'
   )
 }
-const storageFailure = (operation: string, cause: unknown): FlowStoreV2Error =>
-  new JobStoreFailure({
+const storageFailure = (operation: string, cause: unknown): FlowStoreV2Error => {
+  if (JobEventWriterRejectedError.is(cause)) {
+    // SAFETY: the adapter preserves this tagged readiness failure at runtime; the legacy FlowStoreV2Error union predates the event extension.
+    return cause as unknown as FlowStoreV2Error
+  }
+  return new JobStoreFailure({
     operation: `flow.${operation}`,
     retryable: retryable(cause),
     message: `MySQL flow operation failed: ${cause instanceof Error ? cause.message : 'storage error'}`
   })
+}
 
 const canonicalJson = (value: unknown): string => {
   const seen = new Set<object>()
@@ -310,7 +344,8 @@ const loadSnapshot = async (
 const withTransaction = async <Value>(
   client: MySqlClient,
   operation: string,
-  callback: (transaction: Transaction) => Promise<FlowResult<Value>>
+  callback: (transaction: Transaction) => Promise<FlowResult<Value>>,
+  options: EventTransactionOptions
 ): Promise<FlowResult<Value>> => {
   for (let attempt = 0; attempt < maxRetries; attempt += 1) {
     let connection: Transaction | undefined
@@ -318,6 +353,14 @@ const withTransaction = async <Value>(
     try {
       connection = await client.pool.getConnection()
       await connection.beginTransaction()
+      if (eventMutationOperations.has(operation))
+        await assertMySqlJobEventWriterReady(
+          connection,
+          client.namespace,
+          operation,
+          options.eventWriter,
+          options.eventsAvailable
+        )
       const result = await callback(connection)
       if (Result.isError(result)) {
         await connection.rollback()
@@ -325,6 +368,7 @@ const withTransaction = async <Value>(
       }
       await connection.commit()
       committed = true
+      flushMySqlJobEventWakes(connection)
       return result
     } catch (cause) {
       if (connection !== undefined && !committed) {
@@ -438,94 +482,145 @@ class MySqlFlowStoreImplementation implements FlowStoreV2 {
 
   constructor(
     private readonly client: MySqlClient,
-    private readonly ownsClient: boolean
+    private readonly ownsClient: boolean,
+    private readonly eventsAvailable: boolean,
+    private readonly eventWriter: JobEventStoreWriter
   ) {}
+
+  private transactionOptions(): EventTransactionOptions {
+    return { eventsAvailable: this.eventsAvailable, eventWriter: this.eventWriter }
+  }
+
+  private async appendEvent(
+    transaction: Transaction,
+    type: DurableJobEventType,
+    flowId: string | undefined,
+    flowName: string | undefined,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): Promise<void> {
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: flowId as never,
+      queue: undefined,
+      name: flowName,
+      version: undefined,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes: Object.freeze({ ...attributes })
+    }
+    await appendMySqlJobEvent(transaction, this.client, input)
+  }
 
   async fanOut(request: FlowFanOutRequest): Promise<FlowResult<FlowFanOutResult>> {
     const checked = normalizeFanOut(request)
     if (Result.isError(checked)) return checked
     const normalized = checked.value
     const digest = flowDigest(normalized)
-    return withTransaction(this.client, 'fanOut', async (transaction) => {
-      const result = await transaction.query<QueryRow>(
-        `SELECT ${parentSelect},flow_manifest_digest FROM ${quoteIdentifier(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
-        [this.client.namespace, normalized.flowId]
-      )
-      const row = result.rows[0]
-      if (row === undefined) return fail(new JobNotFoundError({ jobId: normalized.flowId }))
-      const current = asRowObject(row)
-      const currentFlow = rowJson(current, 'flow')
-      if (currentFlow !== undefined) {
-        if (rowString(current, 'flow_manifest_digest') === digest) {
-          const snapshot = await loadSnapshot(transaction, this.client.namespace, normalized.flowId)
-          return ok({
-            status: 'already-applied',
-            parent: snapshot.parent,
-            children: snapshot.children
-          })
+    return withTransaction(
+      this.client,
+      'fanOut',
+      async (transaction) => {
+        const result = await transaction.query<QueryRow>(
+          `SELECT ${parentSelect},flow_manifest_digest FROM ${quoteIdentifier(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+          [this.client.namespace, normalized.flowId]
+        )
+        const row = result.rows[0]
+        if (row === undefined) return fail(new JobNotFoundError({ jobId: normalized.flowId }))
+        const current = asRowObject(row)
+        const currentFlow = rowJson(current, 'flow')
+        if (currentFlow !== undefined) {
+          if (rowString(current, 'flow_manifest_digest') === digest) {
+            const snapshot = await loadSnapshot(
+              transaction,
+              this.client.namespace,
+              normalized.flowId
+            )
+            return ok({
+              status: 'already-applied',
+              parent: snapshot.parent,
+              children: snapshot.children
+            })
+          }
+          return fail(
+            new SettlementConflictError({
+              jobId: normalized.flowId,
+              leaseToken: normalized.leaseToken
+            })
+          )
         }
-        return fail(
-          new SettlementConflictError({
-            jobId: normalized.flowId,
-            leaseToken: normalized.leaseToken
-          })
+        if (
+          rowString(current, 'state') !== 'active' ||
+          rowString(current, 'lease_token') !== normalized.leaseToken
         )
-      }
-      if (
-        rowString(current, 'state') !== 'active' ||
-        rowString(current, 'lease_token') !== normalized.leaseToken
-      )
-        return fail(
-          new LeaseLostError({
-            jobId: normalized.flowId,
-            leaseToken: normalized.leaseToken,
-            reason: 'mismatched-token'
-          })
-        )
-      const flow = Object.freeze({
-        flowName: normalized.flowName,
-        failFast: normalized.failFast,
-        pending: normalized.children.length,
-        completed: 0,
-        failed: 0,
-        cancelled: 0
-      })
-      for (const child of normalized.children)
+          return fail(
+            new LeaseLostError({
+              jobId: normalized.flowId,
+              leaseToken: normalized.leaseToken,
+              reason: 'mismatched-token'
+            })
+          )
+        const flow = Object.freeze({
+          flowName: normalized.flowName,
+          failFast: normalized.failFast,
+          pending: normalized.children.length,
+          completed: 0,
+          failed: 0,
+          cancelled: 0
+        })
+        for (const child of normalized.children)
+          await transaction.query(
+            `INSERT INTO ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} (namespace,flow_id,child_key,name,version,store_key,child_job_id,request,status,result,failure,cascaded,pending_since_ms,flow_child_identity,child_job_identity) VALUES (?,?,?,?,?,?,?,?,'pending',NULL,NULL,FALSE,?,?,?)`,
+            [
+              this.client.namespace,
+              normalized.flowId,
+              child.childKey,
+              child.name,
+              child.version,
+              child.storeKey,
+              child.childJobId,
+              json(child.request),
+              normalized.now,
+              identityHash(this.client.namespace, normalized.flowId, child.childKey),
+              identityHash(this.client.namespace, child.childJobId)
+            ]
+          )
         await transaction.query(
-          `INSERT INTO ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} (namespace,flow_id,child_key,name,version,store_key,child_job_id,request,status,result,failure,cascaded,pending_since_ms,flow_child_identity,child_job_identity) VALUES (?,?,?,?,?,?,?,?,'pending',NULL,NULL,FALSE,?,?,?)`,
+          `UPDATE ${quoteIdentifier(MYSQL_TABLES.jobs)} SET state=?,flow=?,flow_manifest_digest=?,flow_lease_token=?,flow_name=?,flow_parent_store_key=?,flow_depth=?,lease_owner=NULL,lease_token=NULL,lease_expires_at_ms=NULL,cancel_requested=FALSE,cancellation_requested_at_ms=NULL,updated_at_ms=?,processed_at_ms=? WHERE namespace=? AND id=?`,
           [
-            this.client.namespace,
-            normalized.flowId,
-            child.childKey,
-            child.name,
-            child.version,
-            child.storeKey,
-            child.childJobId,
-            json(child.request),
+            normalized.children.length === 0 ? 'waiting' : 'waiting-children',
+            json(flow),
+            digest,
+            normalized.leaseToken,
+            normalized.flowName,
+            normalized.parentStoreKey,
+            normalized.depth,
             normalized.now,
-            identityHash(this.client.namespace, normalized.flowId, child.childKey),
-            identityHash(this.client.namespace, child.childJobId)
+            normalized.now,
+            this.client.namespace,
+            normalized.flowId
           ]
         )
-      await transaction.query(
-        `UPDATE ${quoteIdentifier(MYSQL_TABLES.jobs)} SET state=?,flow=?,flow_manifest_digest=?,flow_lease_token=?,flow_name=?,flow_parent_store_key=?,flow_depth=?,lease_owner=NULL,lease_token=NULL,lease_expires_at_ms=NULL,cancel_requested=FALSE,cancellation_requested_at_ms=NULL,updated_at_ms=?,processed_at_ms=? WHERE namespace=? AND id=?`,
-        [
-          normalized.children.length === 0 ? 'waiting' : 'waiting-children',
-          json(flow),
-          digest,
-          normalized.leaseToken,
+        const snapshot = await loadSnapshot(transaction, this.client.namespace, normalized.flowId)
+        await this.appendEvent(
+          transaction,
+          'flow-fan-out',
+          normalized.flowId,
           normalized.flowName,
-          normalized.parentStoreKey,
-          normalized.depth,
           normalized.now,
-          normalized.now,
-          this.client.namespace,
-          normalized.flowId
-        ]
-      )
-      const snapshot = await loadSnapshot(transaction, this.client.namespace, normalized.flowId)
-      return ok({ status: 'applied', parent: snapshot.parent, children: snapshot.children })
-    })
+          { children: String(normalized.children.length) }
+        )
+        return ok({ status: 'applied', parent: snapshot.parent, children: snapshot.children })
+      },
+      this.transactionOptions()
+    )
   }
 
   async recordChildResults(
@@ -533,156 +628,197 @@ class MySqlFlowStoreImplementation implements FlowStoreV2 {
   ): Promise<FlowResult<RecordChildResultsResult>> {
     const normalized = normalizeReports(request)
     if (Result.isError(normalized)) return normalized
-    return withTransaction(this.client, 'recordChildResults', async (transaction) => {
-      const childRows = await transaction.query<QueryRow>(
-        `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
-        [this.client.namespace, normalized.value.flowId]
-      )
-      const children = new Map(
-        childRows.rows.map((row) => {
-          const value = asChild(asRowObject(row))
-          return [value.childKey, value] as const
-        })
-      )
-      if (children.size === 0) return fail(new JobNotFoundError({ jobId: normalized.value.flowId }))
-      const parentResult = await transaction.query<QueryRow>(
-        `SELECT ${parentSelect} FROM ${quoteIdentifier(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
-        [this.client.namespace, normalized.value.flowId]
-      )
-      if (parentResult.rows[0] === undefined)
-        return fail(new JobNotFoundError({ jobId: normalized.value.flowId }))
-      const parentRow = asRowObject(parentResult.rows[0])
-      const flowChecked = validateFlowState(rowJson(parentRow, 'flow'))
-      if (Result.isError(flowChecked)) return fail(flowChecked.error)
-      let flow = flowChecked.value
-      let applied = 0
-      let firstFailure: FlowChildReport | undefined
-      for (const report of normalized.value.reports) {
-        const child = children.get(report.childKey)
-        if (child === undefined)
-          return fail(
-            new JobStoreFailure({
-              operation: 'flow.recordChildResults',
-              retryable: false,
-              message: 'unknown child key'
-            })
+    return withTransaction(
+      this.client,
+      'recordChildResults',
+      async (transaction) => {
+        const childRows = await transaction.query<QueryRow>(
+          `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
+          [this.client.namespace, normalized.value.flowId]
+        )
+        const children = new Map(
+          childRows.rows.map((row) => {
+            const value = asChild(asRowObject(row))
+            return [value.childKey, value] as const
+          })
+        )
+        if (children.size === 0)
+          return fail(new JobNotFoundError({ jobId: normalized.value.flowId }))
+        const parentResult = await transaction.query<QueryRow>(
+          `SELECT ${parentSelect} FROM ${quoteIdentifier(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+          [this.client.namespace, normalized.value.flowId]
+        )
+        if (parentResult.rows[0] === undefined)
+          return fail(new JobNotFoundError({ jobId: normalized.value.flowId }))
+        const parentRow = asRowObject(parentResult.rows[0])
+        const flowChecked = validateFlowState(rowJson(parentRow, 'flow'))
+        if (Result.isError(flowChecked)) return fail(flowChecked.error)
+        let flow = flowChecked.value
+        let applied = 0
+        let firstFailure: FlowChildReport | undefined
+        for (const report of normalized.value.reports) {
+          const child = children.get(report.childKey)
+          if (child === undefined)
+            return fail(
+              new JobStoreFailure({
+                operation: 'flow.recordChildResults',
+                retryable: false,
+                message: 'unknown child key'
+              })
+            )
+          if (child.status !== 'pending') continue
+          applied += 1
+          if (firstFailure === undefined && report.outcome === 'failed') firstFailure = report
+          flow = Object.freeze({
+            ...flow,
+            pending: flow.pending - 1,
+            completed: flow.completed + (report.outcome === 'completed' ? 1 : 0),
+            failed: flow.failed + (report.outcome === 'failed' ? 1 : 0),
+            cancelled: flow.cancelled + (report.outcome === 'cancelled' ? 1 : 0)
+          })
+          await transaction.query(
+            `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET status=?,result=?,failure=? WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
+            [
+              report.outcome,
+              report.result === undefined ? null : json(report.result),
+              report.failure === undefined ? null : json(report.failure),
+              this.client.namespace,
+              normalized.value.flowId,
+              report.childKey
+            ]
           )
-        if (child.status !== 'pending') continue
-        applied += 1
-        if (firstFailure === undefined && report.outcome === 'failed') firstFailure = report
-        flow = Object.freeze({
-          ...flow,
-          pending: flow.pending - 1,
-          completed: flow.completed + (report.outcome === 'completed' ? 1 : 0),
-          failed: flow.failed + (report.outcome === 'failed' ? 1 : 0),
-          cancelled: flow.cancelled + (report.outcome === 'cancelled' ? 1 : 0)
-        })
+        }
+        let state = rowString(parentRow, 'state')
+        let failure = asFailure(rowJson(parentRow, 'failure'))
+        let parentSettled = false
+        if (state === 'waiting-children' && flow.failFast && firstFailure !== undefined) {
+          const reported = new Set(normalized.value.reports.map((report) => report.childKey))
+          const remaining = [...children.values()].filter(
+            (child) => child.status === 'pending' && !reported.has(child.childKey)
+          )
+          for (const child of remaining)
+            await transaction.query(
+              `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET status='cancelled',result=NULL,failure=NULL,cascaded=FALSE WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
+              [this.client.namespace, normalized.value.flowId, child.childKey]
+            )
+          flow = Object.freeze({
+            ...flow,
+            pending: 0,
+            cancelled: flow.cancelled + remaining.length
+          })
+          state = 'failed'
+          failure = firstFailure.failure
+          parentSettled = true
+        } else if (state === 'waiting-children' && flow.pending === 0) {
+          state = 'waiting'
+          parentSettled = true
+        }
         await transaction.query(
-          `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET status=?,result=?,failure=? WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
+          `UPDATE ${quoteIdentifier(MYSQL_TABLES.jobs)} SET state=?,flow=?,failure=?,finished_at_ms=CASE WHEN ? IN ('failed','cancelled') THEN ? ELSE finished_at_ms END,updated_at_ms=? WHERE namespace=? AND id=?`,
           [
-            report.outcome,
-            report.result === undefined ? null : json(report.result),
-            report.failure === undefined ? null : json(report.failure),
+            state,
+            json(flow),
+            failure === undefined ? null : json(failure),
+            state,
+            normalized.value.now,
+            normalized.value.now,
             this.client.namespace,
-            normalized.value.flowId,
-            report.childKey
+            normalized.value.flowId
           ]
         )
-      }
-      let state = rowString(parentRow, 'state')
-      let failure = asFailure(rowJson(parentRow, 'failure'))
-      let parentSettled = false
-      if (state === 'waiting-children' && flow.failFast && firstFailure !== undefined) {
-        const reported = new Set(normalized.value.reports.map((report) => report.childKey))
-        const remaining = [...children.values()].filter(
-          (child) => child.status === 'pending' && !reported.has(child.childKey)
-        )
-        for (const child of remaining)
-          await transaction.query(
-            `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET status='cancelled',result=NULL,failure=NULL,cascaded=FALSE WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
-            [this.client.namespace, normalized.value.flowId, child.childKey]
-          )
-        flow = Object.freeze({ ...flow, pending: 0, cancelled: flow.cancelled + remaining.length })
-        state = 'failed'
-        failure = firstFailure.failure
-        parentSettled = true
-      } else if (state === 'waiting-children' && flow.pending === 0) {
-        state = 'waiting'
-        parentSettled = true
-      }
-      await transaction.query(
-        `UPDATE ${quoteIdentifier(MYSQL_TABLES.jobs)} SET state=?,flow=?,failure=?,finished_at_ms=CASE WHEN ? IN ('failed','cancelled') THEN ? ELSE finished_at_ms END,updated_at_ms=? WHERE namespace=? AND id=?`,
-        [
-          state,
-          json(flow),
-          failure === undefined ? null : json(failure),
-          state,
-          normalized.value.now,
-          normalized.value.now,
+        const snapshot = await loadSnapshot(
+          transaction,
           this.client.namespace,
           normalized.value.flowId
-        ]
-      )
-      const snapshot = await loadSnapshot(
-        transaction,
-        this.client.namespace,
-        normalized.value.flowId
-      )
-      return ok({ applied, parentSettled, parent: snapshot.parent, children: snapshot.children })
-    })
+        )
+        if (applied > 0)
+          await this.appendEvent(
+            transaction,
+            'flow-child-results-recorded',
+            normalized.value.flowId,
+            snapshot.parent.flowName,
+            normalized.value.now,
+            { applied: String(applied), parentSettled: String(parentSettled) }
+          )
+        return ok({ applied, parentSettled, parent: snapshot.parent, children: snapshot.children })
+      },
+      this.transactionOptions()
+    )
   }
 
   async cancel(request: CancelFlowRequest): Promise<FlowResult<CancelFlowResult>> {
     const flowId = makeJobId(request.flowId)
     if (Result.isError(flowId)) return fail(flowId.error)
     if (!validTimestamp(request.now)) return invalid('now', 'must be a non-negative safe integer')
-    return withTransaction(this.client, 'cancel', async (transaction) => {
-      const childRows = await transaction.query<QueryRow>(
-        `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
-        [this.client.namespace, flowId.value]
-      )
-      const parentResult = await transaction.query<QueryRow>(
-        `SELECT ${parentSelect} FROM ${quoteIdentifier(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
-        [this.client.namespace, flowId.value]
-      )
-      if (parentResult.rows[0] === undefined)
-        return fail(new JobNotFoundError({ jobId: flowId.value }))
-      const parentRow = asRowObject(parentResult.rows[0])
-      const flowChecked = validateFlowState(rowJson(parentRow, 'flow'))
-      if (Result.isError(flowChecked)) return fail(flowChecked.error)
-      const children = childRows.rows.map((row) => asChild(asRowObject(row)))
-      if (rowString(parentRow, 'state') !== 'waiting-children') {
+    return withTransaction(
+      this.client,
+      'cancel',
+      async (transaction) => {
+        const childRows = await transaction.query<QueryRow>(
+          `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
+          [this.client.namespace, flowId.value]
+        )
+        const parentResult = await transaction.query<QueryRow>(
+          `SELECT ${parentSelect} FROM ${quoteIdentifier(MYSQL_TABLES.jobs)} WHERE namespace=? AND id=? FOR UPDATE`,
+          [this.client.namespace, flowId.value]
+        )
+        if (parentResult.rows[0] === undefined)
+          return fail(new JobNotFoundError({ jobId: flowId.value }))
+        const parentRow = asRowObject(parentResult.rows[0])
+        const flowChecked = validateFlowState(rowJson(parentRow, 'flow'))
+        if (Result.isError(flowChecked)) return fail(flowChecked.error)
+        const children = childRows.rows.map((row) => asChild(asRowObject(row)))
+        if (rowString(parentRow, 'state') !== 'waiting-children') {
+          const snapshot = await loadSnapshot(transaction, this.client.namespace, flowId.value)
+          return ok({
+            cancelled: 0,
+            parentSettled: false,
+            parent: snapshot.parent,
+            children: snapshot.children
+          })
+        }
+        const pending = children.filter((child) => child.status === 'pending')
+        if (pending.length === 0) {
+          const snapshot = await loadSnapshot(transaction, this.client.namespace, flowId.value)
+          return ok({
+            cancelled: 0,
+            parentSettled: false,
+            parent: snapshot.parent,
+            children: snapshot.children
+          })
+        }
+        for (const child of pending)
+          await transaction.query(
+            `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET status='cancelled',result=NULL,failure=NULL,cascaded=FALSE WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
+            [this.client.namespace, flowId.value, child.childKey]
+          )
+        const flow = Object.freeze({
+          ...flowChecked.value,
+          pending: 0,
+          cancelled: flowChecked.value.cancelled + pending.length
+        })
+        await transaction.query(
+          `UPDATE ${quoteIdentifier(MYSQL_TABLES.jobs)} SET state='cancelled',flow=?,finished_at_ms=?,updated_at_ms=? WHERE namespace=? AND id=?`,
+          [json(flow), request.now, request.now, this.client.namespace, flowId.value]
+        )
         const snapshot = await loadSnapshot(transaction, this.client.namespace, flowId.value)
+        await this.appendEvent(
+          transaction,
+          'flow-cancelled',
+          flowId.value,
+          snapshot.parent.flowName,
+          request.now,
+          { cancelled: String(pending.length) }
+        )
         return ok({
-          cancelled: 0,
-          parentSettled: false,
+          cancelled: pending.length,
+          parentSettled: true,
           parent: snapshot.parent,
           children: snapshot.children
         })
-      }
-      const pending = children.filter((child) => child.status === 'pending')
-      for (const child of pending)
-        await transaction.query(
-          `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET status='cancelled',result=NULL,failure=NULL,cascaded=FALSE WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
-          [this.client.namespace, flowId.value, child.childKey]
-        )
-      const flow = Object.freeze({
-        ...flowChecked.value,
-        pending: 0,
-        cancelled: flowChecked.value.cancelled + pending.length
-      })
-      await transaction.query(
-        `UPDATE ${quoteIdentifier(MYSQL_TABLES.jobs)} SET state='cancelled',flow=?,finished_at_ms=?,updated_at_ms=? WHERE namespace=? AND id=?`,
-        [json(flow), request.now, request.now, this.client.namespace, flowId.value]
-      )
-      const snapshot = await loadSnapshot(transaction, this.client.namespace, flowId.value)
-      return ok({
-        cancelled: pending.length,
-        parentSettled: true,
-        parent: snapshot.parent,
-        children: snapshot.children
-      })
-    })
+      },
+      this.transactionOptions()
+    )
   }
 
   async reconcile(request: ReconcileFlowRequest): Promise<FlowResult<ReconcileFlowResult>> {
@@ -696,95 +832,100 @@ class MySqlFlowStoreImplementation implements FlowStoreV2 {
     if (request.limit !== undefined && request.limit > hardFlowMaxChildren)
       return invalid('limit', 'must not exceed the hard child limit')
     const observations = request.observations.slice(0, request.limit ?? request.observations.length)
-    return withTransaction(this.client, 'reconcile', async (transaction) => {
-      const rows = await transaction.query<QueryRow>(
-        `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
-        [this.client.namespace, flowId.value]
-      )
-      const children = new Map(
-        rows.rows.map((row) => {
-          const value = asChild(asRowObject(row))
-          return [value.childKey, { record: value, spec: asSpec(asRowObject(row)) }] as const
-        })
-      )
-      if (children.size === 0) return fail(new JobNotFoundError({ jobId: flowId.value }))
-      const enqueue: FlowChildSpec[] = []
-      const reports: FlowChildReport[] = []
-      const cascade: FlowChildSpec[] = []
-      const cascadeLimit = request.limit ?? hardFlowMaxChildren
-      const seen = new Set<string>()
-      for (const [index, candidate] of observations.entries()) {
-        if (
-          typeof candidate.childKey !== 'string' ||
-          candidate.childKey.length === 0 ||
-          candidate.childKey.length > 512
+    return withTransaction(
+      this.client,
+      'reconcile',
+      async (transaction) => {
+        const rows = await transaction.query<QueryRow>(
+          `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
+          [this.client.namespace, flowId.value]
         )
-          return invalid(`observations[${index}].childKey`, 'must be bounded text')
-        if (seen.has(candidate.childKey)) return invalid('observations', 'duplicate childKey')
-        seen.add(candidate.childKey)
-        if (
-          candidate.state !== 'missing' &&
-          candidate.state !== 'waiting' &&
-          candidate.state !== 'delayed' &&
-          candidate.state !== 'active' &&
-          candidate.state !== 'waiting-children' &&
-          candidate.state !== 'completed' &&
-          candidate.state !== 'failed' &&
-          candidate.state !== 'cancelled'
+        const children = new Map(
+          rows.rows.map((row) => {
+            const value = asChild(asRowObject(row))
+            return [value.childKey, { record: value, spec: asSpec(asRowObject(row)) }] as const
+          })
         )
-          return invalid(`observations[${index}].state`, 'invalid child state')
-        const entry = children.get(candidate.childKey)
-        if (entry === undefined)
-          return fail(
-            new JobStoreFailure({
-              operation: 'flow.reconcile',
-              retryable: false,
-              message: 'unknown child key'
-            })
-          )
-        if (entry.record.status === 'pending') {
-          await transaction.query(
-            `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET pending_since_ms=? WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
-            [request.now, this.client.namespace, flowId.value, candidate.childKey]
-          )
-          if (candidate.state === 'missing') enqueue.push(entry.spec)
+        if (children.size === 0) return fail(new JobNotFoundError({ jobId: flowId.value }))
+        const enqueue: FlowChildSpec[] = []
+        const reports: FlowChildReport[] = []
+        const cascade: FlowChildSpec[] = []
+        const cascadeLimit = request.limit ?? hardFlowMaxChildren
+        const seen = new Set<string>()
+        for (const [index, candidate] of observations.entries()) {
           if (
-            candidate.state === 'completed' ||
-            candidate.state === 'failed' ||
-            candidate.state === 'cancelled'
-          ) {
-            const checked = validateFlowChildReport({
-              flowId: flowId.value,
-              childKey: candidate.childKey,
-              outcome: candidate.state,
-              result: candidate.result,
-              failure: candidate.failure
-            })
-            if (Result.isError(checked)) return fail(checked.error)
-            reports.push(checked.value)
+            typeof candidate.childKey !== 'string' ||
+            candidate.childKey.length === 0 ||
+            candidate.childKey.length > 512
+          )
+            return invalid(`observations[${index}].childKey`, 'must be bounded text')
+          if (seen.has(candidate.childKey)) return invalid('observations', 'duplicate childKey')
+          seen.add(candidate.childKey)
+          if (
+            candidate.state !== 'missing' &&
+            candidate.state !== 'waiting' &&
+            candidate.state !== 'delayed' &&
+            candidate.state !== 'active' &&
+            candidate.state !== 'waiting-children' &&
+            candidate.state !== 'completed' &&
+            candidate.state !== 'failed' &&
+            candidate.state !== 'cancelled'
+          )
+            return invalid(`observations[${index}].state`, 'invalid child state')
+          const entry = children.get(candidate.childKey)
+          if (entry === undefined)
+            return fail(
+              new JobStoreFailure({
+                operation: 'flow.reconcile',
+                retryable: false,
+                message: 'unknown child key'
+              })
+            )
+          if (entry.record.status === 'pending') {
+            await transaction.query(
+              `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET pending_since_ms=? WHERE namespace=? AND flow_id=? AND child_key=? AND status='pending'`,
+              [request.now, this.client.namespace, flowId.value, candidate.childKey]
+            )
+            if (candidate.state === 'missing') enqueue.push(entry.spec)
+            if (
+              candidate.state === 'completed' ||
+              candidate.state === 'failed' ||
+              candidate.state === 'cancelled'
+            ) {
+              const checked = validateFlowChildReport({
+                flowId: flowId.value,
+                childKey: candidate.childKey,
+                outcome: candidate.state,
+                result: candidate.result,
+                failure: candidate.failure
+              })
+              if (Result.isError(checked)) return fail(checked.error)
+              reports.push(checked.value)
+            }
           }
+          if (
+            entry.record.status === 'cancelled' &&
+            !entry.record.cascaded &&
+            cascade.length < cascadeLimit
+          )
+            cascade.push(entry.spec)
         }
-        if (
-          entry.record.status === 'cancelled' &&
-          !entry.record.cascaded &&
-          cascade.length < cascadeLimit
-        )
-          cascade.push(entry.spec)
-      }
-      for (const entry of children.values())
-        if (
-          entry.record.status === 'cancelled' &&
-          !entry.record.cascaded &&
-          !cascade.some((spec) => spec.childKey === entry.spec.childKey) &&
-          cascade.length < cascadeLimit
-        )
-          cascade.push(entry.spec)
-      return ok({
-        enqueue: Object.freeze(enqueue),
-        reports: Object.freeze(reports),
-        cascade: Object.freeze(cascade)
-      })
-    })
+        for (const entry of children.values())
+          if (
+            entry.record.status === 'cancelled' &&
+            !entry.record.cascaded &&
+            !cascade.some((spec) => spec.childKey === entry.spec.childKey) &&
+            cascade.length < cascadeLimit
+          )
+            cascade.push(entry.spec)
+        return ok({
+          enqueue: Object.freeze(enqueue),
+          reports: Object.freeze(reports),
+          cascade: Object.freeze(cascade)
+        })
+      },
+      this.transactionOptions()
+    )
   }
 
   async markCascaded(request: MarkCascadedRequest): Promise<FlowResult<MarkCascadedResult>> {
@@ -799,25 +940,39 @@ class MySqlFlowStoreImplementation implements FlowStoreV2 {
       if (keys.has(key)) return invalid('childKeys', 'duplicate childKey')
       keys.add(key)
     }
-    return withTransaction(this.client, 'markCascaded', async (transaction) => {
-      const rows = await transaction.query<QueryRow>(
-        `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
-        [this.client.namespace, flowId.value]
-      )
-      if (rows.rows.length === 0) return fail(new JobNotFoundError({ jobId: flowId.value }))
-      let marked = 0
-      for (const row of rows.rows) {
-        const child = asChild(asRowObject(row))
-        if (!keys.has(child.childKey) || child.status !== 'cancelled' || child.cascaded) continue
-        await transaction.query(
-          `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET cascaded=TRUE WHERE namespace=? AND flow_id=? AND child_key=? AND status='cancelled' AND cascaded=FALSE`,
-          [this.client.namespace, flowId.value, child.childKey]
+    return withTransaction(
+      this.client,
+      'markCascaded',
+      async (transaction) => {
+        const rows = await transaction.query<QueryRow>(
+          `SELECT ${childSelect} FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} WHERE namespace=? AND flow_id=? ORDER BY child_key COLLATE utf8mb4_bin ASC FOR UPDATE`,
+          [this.client.namespace, flowId.value]
         )
-        marked += 1
-      }
-      const snapshot = await loadSnapshot(transaction, this.client.namespace, flowId.value)
-      return ok({ marked, children: snapshot.children })
-    })
+        if (rows.rows.length === 0) return fail(new JobNotFoundError({ jobId: flowId.value }))
+        let marked = 0
+        for (const row of rows.rows) {
+          const child = asChild(asRowObject(row))
+          if (!keys.has(child.childKey) || child.status !== 'cancelled' || child.cascaded) continue
+          await transaction.query(
+            `UPDATE ${quoteIdentifier(MYSQL_FLOW_TABLES.children)} SET cascaded=TRUE WHERE namespace=? AND flow_id=? AND child_key=? AND status='cancelled' AND cascaded=FALSE`,
+            [this.client.namespace, flowId.value, child.childKey]
+          )
+          marked += 1
+        }
+        const snapshot = await loadSnapshot(transaction, this.client.namespace, flowId.value)
+        if (marked > 0)
+          await this.appendEvent(
+            transaction,
+            'flow-cascaded',
+            flowId.value,
+            snapshot.parent.flowName,
+            Date.now(),
+            { marked: String(marked) }
+          )
+        return ok({ marked, children: snapshot.children })
+      },
+      this.transactionOptions()
+    )
   }
 
   async appendChildReport(
@@ -826,36 +981,49 @@ class MySqlFlowStoreImplementation implements FlowStoreV2 {
     const checked = validateFlowOutboxEntry(request)
     if (Result.isError(checked)) return fail(checked.error)
     const entry = checked.value
-    return withTransaction(this.client, 'appendChildReport', async (transaction) => {
-      const existing = await transaction.query<QueryRow>(
-        `SELECT id,flow_name,parent_store_key,report FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} WHERE namespace=? AND id=? FOR UPDATE`,
-        [this.client.namespace, entry.id]
-      )
-      if (existing.rows[0] !== undefined) {
-        const stored = asOutbox(asRowObject(existing.rows[0]))
-        if (canonicalJson(stored) !== canonicalJson(entry))
-          return fail(
-            new SettlementConflictError({
-              jobId: entry.report.flowId,
-              leaseToken: makeLeaseToken('outbox-conflict').unwrap()
-            })
-          )
-        return ok({ status: 'already-applied', entry: stored })
-      }
-      await transaction.query(
-        `INSERT INTO ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} (namespace,id,id_identity,flow_name,parent_store_key,report,created_at_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id`,
-        [
-          this.client.namespace,
-          entry.id,
-          identityHash(this.client.namespace, entry.id),
+    return withTransaction(
+      this.client,
+      'appendChildReport',
+      async (transaction) => {
+        const existing = await transaction.query<QueryRow>(
+          `SELECT id,flow_name,parent_store_key,report FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} WHERE namespace=? AND id=? FOR UPDATE`,
+          [this.client.namespace, entry.id]
+        )
+        if (existing.rows[0] !== undefined) {
+          const stored = asOutbox(asRowObject(existing.rows[0]))
+          if (canonicalJson(stored) !== canonicalJson(entry))
+            return fail(
+              new SettlementConflictError({
+                jobId: entry.report.flowId,
+                leaseToken: makeLeaseToken('outbox-conflict').unwrap()
+              })
+            )
+          return ok({ status: 'already-applied', entry: stored })
+        }
+        await transaction.query(
+          `INSERT INTO ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} (namespace,id,id_identity,flow_name,parent_store_key,report,created_at_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id`,
+          [
+            this.client.namespace,
+            entry.id,
+            identityHash(this.client.namespace, entry.id),
+            entry.flowName,
+            entry.parentStoreKey,
+            json(entry.report),
+            0
+          ]
+        )
+        await this.appendEvent(
+          transaction,
+          'flow-outbox-appended',
+          entry.report.flowId,
           entry.flowName,
-          entry.parentStoreKey,
-          json(entry.report),
-          0
-        ]
-      )
-      return ok({ status: 'applied', entry })
-    })
+          Date.now(),
+          { action: 'append' }
+        )
+        return ok({ status: 'applied', entry })
+      },
+      this.transactionOptions()
+    )
   }
 
   async peekOutbox(request: PeekOutboxRequest): Promise<FlowResult<FlowOutboxPage>> {
@@ -928,32 +1096,50 @@ class MySqlFlowStoreImplementation implements FlowStoreV2 {
         entries.push(checked.value)
       }
     }
-    return withTransaction(this.client, 'ackOutbox', async (transaction) => {
-      let acknowledged = 0
-      let skipped = 0
-      for (const entry of entries) {
-        const result = await transaction.query<QueryRow>(
-          `SELECT id,flow_name,parent_store_key,report FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} WHERE namespace=? AND id=? FOR UPDATE`,
-          [this.client.namespace, entry.id]
-        )
-        const row = result.rows[0]
-        if (row === undefined) {
-          skipped += 1
-          continue
+    return withTransaction(
+      this.client,
+      'ackOutbox',
+      async (transaction) => {
+        let acknowledged = 0
+        let skipped = 0
+        const acknowledgedEntries: FlowOutboxEntry[] = []
+        for (const entry of entries) {
+          const result = await transaction.query<QueryRow>(
+            `SELECT id,flow_name,parent_store_key,report FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} WHERE namespace=? AND id=? FOR UPDATE`,
+            [this.client.namespace, entry.id]
+          )
+          const row = result.rows[0]
+          if (row === undefined) {
+            skipped += 1
+            continue
+          }
+          const stored = asOutbox(asRowObject(row))
+          if (canonicalJson(stored) !== canonicalJson(entry)) {
+            skipped += 1
+            continue
+          }
+          await transaction.query(
+            `DELETE FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} WHERE namespace=? AND id=?`,
+            [this.client.namespace, entry.id]
+          )
+          acknowledged += 1
+          acknowledgedEntries.push(entry)
         }
-        const stored = asOutbox(asRowObject(row))
-        if (canonicalJson(stored) !== canonicalJson(entry)) {
-          skipped += 1
-          continue
+        if (acknowledged > 0) {
+          const flowIds = new Set(acknowledgedEntries.map((entry) => entry.report.flowId))
+          await this.appendEvent(
+            transaction,
+            'flow-outbox-appended',
+            flowIds.size === 1 ? [...flowIds][0] : undefined,
+            undefined,
+            Date.now(),
+            { action: 'ack', acknowledged: String(acknowledged) }
+          )
         }
-        await transaction.query(
-          `DELETE FROM ${quoteIdentifier(MYSQL_FLOW_TABLES.outbox)} WHERE namespace=? AND id=?`,
-          [this.client.namespace, entry.id]
-        )
-        acknowledged += 1
-      }
-      return ok({ acknowledged, skipped })
-    })
+        return ok({ acknowledged, skipped })
+      },
+      this.transactionOptions()
+    )
   }
 
   async getFlow(request: GetFlowRequest): Promise<FlowResult<FlowSnapshot | undefined>> {
@@ -988,9 +1174,14 @@ export type MySqlFlowStoreInstance = FlowStoreV2 & {
   dispose(): Promise<void>
 }
 
-const open = async (client: MySqlClient, ownsClient: boolean): Promise<MySqlFlowStoreInstance> => {
+const open = async (
+  client: MySqlClient,
+  ownsClient: boolean,
+  eventWriter: JobEventStoreWriter | undefined
+): Promise<MySqlFlowStoreInstance> => {
   if (client.validateSchema) await client.validate()
   const connection = await client.pool.getConnection()
+  let eventsAvailable = false
   try {
     const version = await connection.query<{ version: number | string }>(
       `SELECT version FROM ${quoteIdentifier(MYSQL_TABLES.schemaVersions)} WHERE component=?`,
@@ -1017,22 +1208,33 @@ const open = async (client: MySqlClient, ownsClient: boolean): Promise<MySqlFlow
         expectedProtocolVersion: protocolVersionV2,
         actualLayoutVersion
       })
+    const events = await connection.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`,
+      [MYSQL_TABLES.events]
+    )
+    eventsAvailable = events.rows.length > 0
   } finally {
     connection.release()
   }
-  return new MySqlFlowStoreImplementation(client, ownsClient)
+  if (eventsAvailable) await ensureMySqlJobEventActivationTable(client)
+  return new MySqlFlowStoreImplementation(
+    client,
+    ownsClient,
+    eventsAvailable,
+    eventWriter ?? defaultEventWriter
+  )
 }
 
 export const MySqlFlowStore = Object.freeze({
   async make(config: MySqlJobStoreConfig): Promise<MySqlFlowStoreInstance> {
     const normalized = normalizeMySqlJobStoreConfig(config)
-    return open(MySqlClient.fromPool(normalized), false)
+    return open(MySqlClient.fromPool(normalized), false, normalized.eventWriter)
   },
   async makeFromConfig(config: MySqlJobStoreConnectionConfig): Promise<MySqlFlowStoreInstance> {
     const normalized = normalizeMySqlJobStoreConnectionConfig(config)
     const client = await MySqlClient.fromConfig(normalized)
     try {
-      return await open(client, true)
+      return await open(client, true, normalized.eventWriter)
     } catch (cause) {
       await client.dispose().catch(() => undefined)
       throw cause

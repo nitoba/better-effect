@@ -46,6 +46,11 @@ import type {
   TickScheduleResult,
   UpsertScheduleResult
 } from 'better-effect-mq'
+import type {
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventStoreWriter
+} from 'better-effect-mq'
 import {
   normalizeMySqlJobStoreConfig,
   normalizeMySqlJobStoreConnectionConfig,
@@ -54,6 +59,12 @@ import {
   type PoolConnection
 } from './config'
 import { MySqlClient } from './client'
+import {
+  appendMySqlJobEvent,
+  assertMySqlJobEventWriterReady,
+  ensureMySqlJobEventActivationTable,
+  flushMySqlJobEventWakes
+} from './event-store'
 import { MYSQL_TABLES } from './schema'
 
 export type MySqlJobScheduleStoreOptions = MySqlJobStoreConfig
@@ -65,6 +76,18 @@ type Tx = PoolConnection
 
 const maxOccurrencesPerTick = 256
 const maxSafeInteger = Number.MAX_SAFE_INTEGER
+const eventMutationOperations = new Set([
+  'upsertSchedule',
+  'removeSchedule',
+  'tickSchedule',
+  'pauseSchedule',
+  'resumeSchedule'
+])
+const defaultEventWriter: JobEventStoreWriter = Object.freeze({
+  id: 'better-effect-mq-mysql',
+  version: 'current',
+  canAppend: true
+})
 const scheduleDescriptor = Object.freeze({
   extension: 'better-effect-mq/schedules' as const,
   extensionVersion: 1 as const,
@@ -149,7 +172,8 @@ const errorTags = new Set([
   'ScheduleDefinitionError',
   'ScheduleNotFoundError',
   'ScheduleStoreFailure',
-  'DuplicateScheduleError'
+  'DuplicateScheduleError',
+  'JobEventWriterRejectedError'
 ])
 
 const isTaggedError = (cause: unknown): boolean => {
@@ -710,7 +734,79 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
   readonly descriptor = scheduleDescriptor
   private closed = false
   private disposal: Promise<void> | undefined
-  constructor(private readonly client: MySqlClient) {}
+  private eventsAvailable = false
+  constructor(
+    private readonly client: MySqlClient,
+    private readonly eventWriter: JobEventStoreWriter
+  ) {}
+
+  async start(): Promise<void> {
+    const connection = await this.client.pool.getConnection()
+    let available = false
+    try {
+      const result = await connection.query<Row>(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`,
+        [MYSQL_TABLES.events]
+      )
+      available = result.rows.length > 0
+    } finally {
+      connection.release()
+    }
+    this.eventsAvailable = available
+    if (available) await ensureMySqlJobEventActivationTable(this.client)
+  }
+
+  private async appendScheduleEvent(
+    tx: Tx,
+    type: DurableJobEventType,
+    record: ScheduleRecord,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): Promise<void> {
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record.lastJobId,
+      queue: record.queue,
+      name: record.job.name,
+      version: record.job.version,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes: Object.freeze({ ...attributes })
+    }
+    await appendMySqlJobEvent(tx, this.client, input)
+  }
+
+  private async appendJobEnqueuedEvent(
+    tx: Tx,
+    record: JobRecord,
+    recordedAtMs: number
+  ): Promise<void> {
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
+    const input: DurableJobEventInput = {
+      type: 'job-enqueued',
+      recordedAtMs,
+      jobId: record.id,
+      queue: record.queue,
+      name: record.name,
+      version: record.version,
+      state: record.state,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: false,
+      attributes: Object.freeze({})
+    }
+    await appendMySqlJobEvent(tx, this.client, input)
+  }
 
   private table(name: string): string {
     return `\`${name}\``
@@ -730,9 +826,18 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
       try {
         tx = await this.client.pool.getConnection()
         await tx.beginTransaction()
+        if (eventMutationOperations.has(operation))
+          await assertMySqlJobEventWriterReady(
+            tx,
+            this.client.namespace,
+            operation,
+            this.eventWriter,
+            this.eventsAvailable
+          )
         value = await body(tx)
         await tx.commit()
         committed = true
+        flushMySqlJobEventWakes(tx)
       } catch (cause) {
         primary = cause
       }
@@ -899,6 +1004,9 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
           )
           const row = await this.resolve(tx, selector, false)
           if (row === undefined) throw new Error('created schedule row is missing')
+          await this.appendScheduleEvent(tx, 'schedule-upserted', row, row.updatedAtMs, {
+            created: 'true'
+          })
           return { record: cloneRecord(row), created: true, changed: true }
         }
         if (logicalDigest(existing) === logicalDigest(normalized))
@@ -915,6 +1023,9 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
           updatedAtMs: Math.max(normalized.updatedAtMs, existing.updatedAtMs)
         }
         await this.updateSchedule(tx, updated)
+        await this.appendScheduleEvent(tx, 'schedule-upserted', updated, updated.updatedAtMs, {
+          created: 'false'
+        })
         return { record: cloneRecord(updated), created: false, changed: true }
       })
     )
@@ -940,6 +1051,8 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
           `DELETE FROM ${this.table(MYSQL_TABLES.schedules)} WHERE namespace=? AND schedule_group=? AND schedule_key=?`,
           [this.client.namespace, current.group, current.key]
         )
+        if (result.rowCount === 1)
+          await this.appendScheduleEvent(tx, 'schedule-removed', current, current.updatedAtMs, {})
         return result.rowCount === 1
       })
     )
@@ -1069,6 +1182,7 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
           const result = await this.insertJob(tx, current, item, now.value)
           jobs.push(result.job)
           createdJob ||= !result.duplicate
+          if (!result.duplicate) await this.appendJobEnqueuedEvent(tx, result.job, now.value)
         }
         const updated = cloneRecord({
           ...current,
@@ -1084,6 +1198,11 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
           updatedAtMs: now.value
         })
         await this.updateSchedule(tx, updated)
+        await this.appendScheduleEvent(tx, 'schedule-ticked', updated, now.value, {
+          status: jobs.length > 0 ? 'fired' : 'skipped',
+          jobs: String(jobs.length),
+          skipped: String(skippedSlots.length)
+        })
         if (createdJob) await this.notify(tx, current.queue, now.value)
         return this.tickResult(jobs.length > 0 ? 'fired' : 'skipped', updated, jobs, skippedSlots)
       })
@@ -1133,6 +1252,13 @@ class MySqlJobScheduleStoreImplementation implements JobScheduleStoreContract {
             current.key
           ]
         )
+        await this.appendScheduleEvent(
+          tx,
+          paused ? 'schedule-paused' : 'schedule-resumed',
+          { ...current, paused, revision: current.revision + 1 },
+          current.updatedAtMs,
+          {}
+        )
         return undefined
       })
     )
@@ -1153,7 +1279,8 @@ type ScheduleLayer<Token extends AnyJobScheduleStoreToken> = Layer<
 
 const makeScheduleLayer = <Token extends AnyJobScheduleStoreToken>(
   token: Token,
-  acquire: () => Promise<MySqlClient>
+  acquire: () => Promise<MySqlClient>,
+  eventWriter: JobEventStoreWriter | undefined
 ): ScheduleLayer<Token> =>
   Layer.scopedGen(
     token,
@@ -1164,7 +1291,11 @@ const makeScheduleLayer = <Token extends AnyJobScheduleStoreToken>(
       try {
         if (client.validateSchema) await client.validate()
         else await client.compatibility()
-        implementation = new MySqlJobScheduleStoreImplementation(client)
+        implementation = new MySqlJobScheduleStoreImplementation(
+          client,
+          eventWriter ?? defaultEventWriter
+        )
+        await implementation.start()
         return JobScheduleStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
         >
@@ -1224,18 +1355,30 @@ type MySqlJobScheduleStoreApi = {
 
 export const MySqlJobScheduleStore: MySqlJobScheduleStoreApi = Object.freeze({
   layer(config: MySqlJobStoreConfig) {
-    return makeScheduleLayer(JobScheduleStore, borrowedClient(JobScheduleStore, config))
+    const normalized = normalizeMySqlJobStoreConfig(config)
+    return makeScheduleLayer(
+      JobScheduleStore,
+      borrowedClient(JobScheduleStore, normalized),
+      normalized.eventWriter
+    )
   },
   layerFor<Token extends AnyJobScheduleStoreToken>(token: Token, config: MySqlJobStoreConfig) {
-    return makeScheduleLayer(token, borrowedClient(token, config))
+    const normalized = normalizeMySqlJobStoreConfig(config)
+    return makeScheduleLayer(token, borrowedClient(token, normalized), normalized.eventWriter)
   },
   layerFromConfig(config: MySqlJobStoreConnectionConfig) {
-    return makeScheduleLayer(JobScheduleStore, ownedClient(JobScheduleStore, config))
+    const normalized = normalizeMySqlJobStoreConnectionConfig(config)
+    return makeScheduleLayer(
+      JobScheduleStore,
+      ownedClient(JobScheduleStore, normalized),
+      normalized.eventWriter
+    )
   },
   layerFromConfigFor<Token extends AnyJobScheduleStoreToken>(
     token: Token,
     config: MySqlJobStoreConnectionConfig
   ) {
-    return makeScheduleLayer(token, ownedClient(token, config))
+    const normalized = normalizeMySqlJobStoreConnectionConfig(config)
+    return makeScheduleLayer(token, ownedClient(token, normalized), normalized.eventWriter)
   }
 })

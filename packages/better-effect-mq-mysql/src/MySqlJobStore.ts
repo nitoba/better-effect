@@ -1286,6 +1286,7 @@ class MySqlJobStoreImplementation {
       readonly attempt?: AttemptRecord
       readonly duplicate?: boolean
       readonly queue?: string
+      readonly attributes?: Readonly<Record<string, string>>
     } = {}
   ): Promise<void> {
     if (!this.eventsAvailable || !this.eventWriter.canAppend) return
@@ -1307,9 +1308,23 @@ class MySqlJobStoreImplementation {
       outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
       failureKind: (record?.failure?.kind ?? context.previous?.failure?.kind) as never,
       duplicate: context.duplicate,
-      attributes: Object.freeze({})
+      attributes: Object.freeze({ ...context.attributes })
     }
     await appendMySqlJobEvent(tx, this.client, input)
+  }
+
+  private async appendTransitionEvents(
+    tx: Tx,
+    eventType: DurableJobEventType | undefined,
+    additionalEventType: DurableJobEventType | undefined,
+    record: JobRecord,
+    recordedAtMs: number,
+    context: { readonly previous: JobRecord; readonly attempt?: AttemptRecord }
+  ): Promise<void> {
+    if (eventType === undefined) return
+    await this.appendEvent(tx, eventType, record, recordedAtMs, context)
+    if (additionalEventType !== undefined && additionalEventType !== eventType)
+      await this.appendEvent(tx, additionalEventType, record, recordedAtMs, context)
   }
   private async wakeSnapshot(source?: Tx): Promise<WakeBaseline> {
     const connection = source ?? ((await this.client.pool.getConnection()) as Tx)
@@ -1642,7 +1657,8 @@ class MySqlJobStoreImplementation {
     tx: Tx,
     operation: string,
     request: { readonly jobId: string; readonly now: number },
-    command: (record: JobRecord) => ResultType<JobTransition, unknown>
+    command: (record: JobRecord) => ResultType<JobTransition, unknown>,
+    additionalEventType?: DurableJobEventType
   ): Promise<JobTransition> {
     const current = await this.row(tx, request.jobId, true)
     if (current === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
@@ -1677,11 +1693,17 @@ class MySqlJobStoreImplementation {
       transition.record,
       transition.attempt
     )
-    if (eventType !== undefined)
-      await this.appendEvent(tx, eventType, transition.record, request.now, {
+    await this.appendTransitionEvents(
+      tx,
+      eventType,
+      additionalEventType,
+      transition.record,
+      request.now,
+      {
         previous: current,
         ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
-      })
+      }
+    )
     await this.notify(tx, transition.record.queue, request.now)
     return transition
   }
@@ -2134,6 +2156,21 @@ class MySqlJobStoreImplementation {
             disabled.push(this.decodeControls(disabledRow.rows[0]!))
           }
         }
+        for (const record of created)
+          await this.appendEvent(tx, 'controls-reconciled', undefined, now, {
+            queue: record.queue as string,
+            attributes: { action: 'created' }
+          })
+        for (const record of updated)
+          await this.appendEvent(tx, 'controls-reconciled', undefined, now, {
+            queue: record.queue as string,
+            attributes: { action: 'updated' }
+          })
+        for (const record of disabled)
+          await this.appendEvent(tx, 'controls-reconciled', undefined, now, {
+            queue: record.queue as string,
+            attributes: { action: 'disabled' }
+          })
         const all = await tx.query<Row>(
           `${select} WHERE namespace=? ORDER BY queue COLLATE utf8mb4_bin`,
           [this.client.namespace]
@@ -2285,6 +2322,7 @@ class MySqlJobStoreImplementation {
             })
           await this.clearSettlement(tx, item.record.id)
           await this.appendEvent(tx, 'job-claimed', item.record, now)
+          await this.appendEvent(tx, 'controls-claimed', item.record, now)
           await tx.query(
             `INSERT INTO ${this.table(MYSQL_TABLES.permits)} (namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES (?,?,?,?,?,?)`,
             [this.client.namespace, item.record.id, queue.value, item.dispatchKey, item.token, now]
@@ -2336,6 +2374,7 @@ class MySqlJobStoreImplementation {
       readonly outcome: SettlementOutcome
       readonly now: number
       readonly startedAt?: number
+      readonly additionalEventType?: DurableJobEventType
     }
   ): Promise<JobStoreNamespace.SettlementResult> {
     const raw = await tx.query<Row>(
@@ -2445,10 +2484,14 @@ class MySqlJobStoreImplementation {
         request.now,
         this.client.namespace
       )
-    await this.appendEvent(tx, this.settlementEventType(attempt), transition.record, request.now, {
-      previous: current,
-      attempt
-    })
+    await this.appendTransitionEvents(
+      tx,
+      this.settlementEventType(attempt),
+      request.additionalEventType,
+      transition.record,
+      request.now,
+      { previous: current, attempt }
+    )
     await this.notify(tx, current.queue, request.now)
     return { record: transition.record, attempt, status: 'applied' }
   }
@@ -2639,7 +2682,8 @@ class MySqlJobStoreImplementation {
           now,
           ...(checked.value.startedAt === undefined
             ? {}
-            : { startedAt: safeNumber(checked.value.startedAt, 'startedAt') })
+            : { startedAt: safeNumber(checked.value.startedAt, 'startedAt') }),
+          additionalEventType: 'controls-settled'
         })
         if (
           result.status === 'applied' &&
@@ -2712,7 +2756,8 @@ class MySqlJobStoreImplementation {
               leaseToken: leaseToken.value,
               now
             })
-          }
+          },
+          'controls-released'
         )
         await this.clearPermit(tx, jobId.value, leaseToken.value)
         return transition
@@ -2756,7 +2801,8 @@ class MySqlJobStoreImplementation {
           (record) =>
             record.state === 'active'
               ? reduceJob(record, { type: 'request-cancellation', jobId: record.id, now })
-              : reduceJob(record, { type: 'cancel', jobId: record.id, now })
+              : reduceJob(record, { type: 'cancel', jobId: record.id, now }),
+          'controls-cancelled'
         )
         if (identity.rows[0]?.state !== 'active' && permit.rows[0] !== undefined)
           await tx.query(
@@ -2826,7 +2872,8 @@ class MySqlJobStoreImplementation {
             tx,
             'recoverStalled',
             { jobId, now },
-            () => next
+            () => next,
+            'controls-stalled-recovered'
           )
           transitions.push(transition)
         }
