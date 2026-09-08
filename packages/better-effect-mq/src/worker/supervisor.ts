@@ -250,6 +250,8 @@ export class WorkerSupervisor<
   private readonly supervisionTasks = new Set<Promise<void>>()
   private readonly supervisionController = new AbortController()
   private readonly flowRoutes: readonly FlowRoute[]
+  private readonly jobStores: ReadonlyMap<string, JobStoreContract>
+  private readonly flowStores: ReadonlyMap<string, FlowStoreV2>
   private readonly flowRoutesByKey = new Map<string, FlowRoute>()
   private readonly flowSources = new Map<string, FlowSource>()
   private readonly flowIdsByRoute = new Map<string, Set<JobId>>()
@@ -268,11 +270,15 @@ export class WorkerSupervisor<
     executor: RuntimeExecutor<Environment>,
     handlers: readonly AnyWorkerHandler[],
     options: NormalizedWorkerOptions,
-    flows: readonly WorkerFlowRegistration[] = []
+    flows: readonly WorkerFlowRegistration[] = [],
+    jobStores: ReadonlyMap<string, JobStoreContract> = new Map(),
+    flowStores: ReadonlyMap<string, FlowStoreV2> = new Map()
   ) {
     this.executor = executor
     this.workerOptions = options
     this.workerId = options.id
+    this.jobStores = jobStores
+    this.flowStores = flowStores
     this.flowRoutes = makeFlowRoutes(flows)
     this.groups = makeGroups(handlers, options, this.flowRoutes)
     for (const route of this.flowRoutes) {
@@ -1007,7 +1013,8 @@ export class WorkerSupervisor<
       flowId,
       this.executor,
       this.workerOptions.flowBatchSize,
-      snapshot
+      snapshot,
+      this.flowStores.get(route.parentFlowStore.serviceTag)
     )
     const collect = Effect.fn(async function* () {
       const value = yield* Result.await(
@@ -1324,7 +1331,8 @@ export class WorkerSupervisor<
       undefined,
       this.workerOptions.pollIntervalMs,
       this.workerOptions.storeOperationTimeoutMs,
-      this.shutdownController.signal
+      this.shutdownController.signal,
+      this.jobStores.get(group.store.serviceTag)
     )
 
     if (Result.isError(result)) {
@@ -1517,7 +1525,8 @@ export class WorkerSupervisor<
       undefined,
       this.workerOptions.pollIntervalMs,
       this.workerOptions.storeOperationTimeoutMs,
-      this.shutdownController.signal
+      this.shutdownController.signal,
+      this.jobStores.get(group.store.serviceTag)
     )
 
     if (Result.isError(result)) {
@@ -1911,7 +1920,9 @@ export class WorkerSupervisor<
     operation: (store: FlowStoreV2) => FlowOperation<Value>
   ): Promise<ResultType<Value, unknown>> {
     try {
-      const store = (await this.executor.run(() => ServiceRuntime.resolve(token))) as FlowStoreV2
+      const store =
+        this.flowStores.get(token.serviceTag) ??
+        ((await this.executor.run(() => ServiceRuntime.resolve(token))) as FlowStoreV2)
       const result = await Promise.resolve(operation(store))
       if (!isResultLike(result)) {
         return Result.err(new Error('FlowStore operation did not return a Result')) as ResultType<
@@ -1930,7 +1941,9 @@ export class WorkerSupervisor<
     operation: (store: JobStoreContract) => StoreOperation<Value>
   ): Promise<ResultType<Value, unknown>> {
     try {
-      const store = await this.executor.run(() => ServiceRuntime.resolve(token))
+      const store =
+        this.jobStores.get(token.serviceTag) ??
+        (await this.executor.run(() => ServiceRuntime.resolve(token)))
       const result = await Promise.resolve(operation(store))
       if (!isResultLike(result)) {
         return Result.err(new Error('JobStore operation did not return a Result')) as ResultType<
@@ -1998,7 +2011,9 @@ export class WorkerSupervisor<
         }),
       this.supervisionController.signal,
       this.workerOptions.pollIntervalMs,
-      this.workerOptions.storeOperationTimeoutMs
+      this.workerOptions.storeOperationTimeoutMs,
+      this.supervisionController.signal,
+      this.jobStores.get(store.serviceTag)
     )
     if (Result.isError(result)) {
       this.emitStoreFailure('heartbeat', result.error)
@@ -2071,7 +2086,9 @@ export class WorkerSupervisor<
         }),
       this.supervisionController.signal,
       this.workerOptions.pollIntervalMs,
-      this.workerOptions.storeOperationTimeoutMs
+      this.workerOptions.storeOperationTimeoutMs,
+      this.supervisionController.signal,
+      this.jobStores.get(store.serviceTag)
     )
     if (Result.isError(result)) {
       this.emitStoreFailure('recoverStalled', result.error)
@@ -2135,12 +2152,20 @@ export class WorkerSupervisor<
       controller.abort()
     }
 
-    const wake = runStoreOperation(this.executor, group.store, (store) =>
-      store.awaitWake({
-        queues: [group.queue],
-        wakeToken: claim.wakeToken,
-        signal: controller.signal
-      })
+    const wake = runStoreOperation(
+      this.executor,
+      group.store,
+      (store) =>
+        store.awaitWake({
+          queues: [group.queue],
+          wakeToken: claim.wakeToken,
+          signal: controller.signal
+        }),
+      undefined,
+      1,
+      1,
+      undefined,
+      this.jobStores.get(group.store.serviceTag)
     )
     const wakeResult = wake.then(
       (result) => {
@@ -3202,12 +3227,14 @@ const makeFlowResults = (
   flowId: JobId,
   executor: AnyExecutor,
   defaultPageSize: number,
-  initial: import('../store').FlowSnapshot
+  initial: import('../store').FlowSnapshot,
+  resolvedStore?: FlowStoreV2
 ): import('../flow').FlowResults<any> => {
   const load = async (): Promise<ResultType<import('../store').FlowSnapshot, unknown>> => {
     try {
       const token = route.parentFlowStore
-      const store = (await executor.run(() => ServiceRuntime.resolve(token))) as FlowStoreV2
+      const store =
+        resolvedStore ?? ((await executor.run(() => ServiceRuntime.resolve(token))) as FlowStoreV2)
       const value = await Promise.resolve(store.getFlow({ flowId }))
       if (!isResultLike(value))
         return Result.err(new Error('FlowStore operation did not return a Result'))

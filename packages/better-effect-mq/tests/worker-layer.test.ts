@@ -133,6 +133,73 @@ test('Worker.service layer is lazy, starts once, and releases after Runtime drai
   }
 })
 
+test('Worker.service settles an admitted attempt after Runtime quiesces', async () => {
+  const store = MemoryJobStore.make()
+  const now = Date.now()
+  const enqueued = await resolveStoreOperation(
+    store.enqueue({
+      job: job.identity,
+      payload: { value: 3 },
+      runAt: now,
+      attemptsMax: 1,
+      metadata: {},
+      now
+    })
+  )
+
+  let markStarted!: () => void
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve
+  })
+  let releaseHandler!: () => void
+  const handlerReleased = new Promise<void>((resolve) => {
+    releaseHandler = resolve
+  })
+  const handler = Worker.handle(job, (input) =>
+    Effect.fn(async function* () {
+      markStarted()
+      yield* []
+      await handlerReleased
+      return Result.ok(`drained:${input.value}`)
+    })
+  )
+
+  const workerService = Worker.service('WorkerLayerDrainControl')
+  const workerLayer = workerService.layer(() => ({
+    handlers: [handler] as const,
+    concurrency: 1,
+    pollIntervalMs: 1,
+    now: () => now,
+    shutdown: {
+      gracePeriodMs: 100,
+      abortAfterGracePeriod: false
+    },
+    workerId: makeWorkerId('worker-layer-drain-test').unwrap()
+  }))
+  const runtime = await Runtime.make(
+    Layer.complete(Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), workerLayer))
+  )
+
+  try {
+    await runtime.warmup()
+    await started
+
+    const disposal = runtime.dispose()
+    expect(runtime.inspect().state).toBe('quiescing')
+    releaseHandler()
+    await disposal
+
+    const completed = await resolveStoreOperation(store.getJob({ jobId: enqueued.job.id }))
+    expect(completed?.state).toBe('completed')
+    expect(completed?.result).toBe('drained:3')
+  } finally {
+    if (runtime.inspect().state !== 'disposed') {
+      releaseHandler()
+      await runtime.dispose()
+    }
+  }
+})
+
 test('Worker.succeed provides caller-owned test doubles without registering lifecycle', async () => {
   const workerService = Worker.service('WorkerLayerTestDouble')
   let stopCalls = 0
