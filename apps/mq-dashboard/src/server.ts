@@ -3,8 +3,11 @@ import { BunEffect } from 'better-effect/bun'
 import {
   DashboardApp,
   DashboardAuthorization,
+  DashboardAuditSinkDisabled,
   DashboardControlCapabilityDisabled,
   DashboardFlowCapabilityDisabled,
+  DashboardMutationPolicy,
+  DashboardRateLimiter,
   DashboardScheduleCapabilityDisabled,
   dashboardEventFeedLayer
 } from './index'
@@ -26,8 +29,14 @@ const constantTimeEqual = (left: string, right: string): boolean => {
 const token = process.env.MQ_DASHBOARD_TOKEN
 const hostname = process.env.MQ_DASHBOARD_HOST ?? '127.0.0.1'
 const port = Number(process.env.MQ_DASHBOARD_PORT ?? 3000)
+const mutationWindowMs = 60_000
+const mutationLimit = 30
 
-if (hostname !== '127.0.0.1' && hostname !== 'localhost' && token === undefined) {
+if (
+  hostname !== '127.0.0.1' &&
+  hostname !== 'localhost' &&
+  (token === undefined || token.length === 0)
+) {
   throw new Error('MQ_DASHBOARD_TOKEN is required when the dashboard is not loopback-bound')
 }
 
@@ -46,7 +55,7 @@ export const DashboardLive = (() => {
     DashboardAuthorization,
     DashboardAuthorization.of({
       authorize: ({ request }) => {
-        if (token === undefined) return null
+        if (token === undefined || token.length === 0) return null
         return request.headers.get('authorization') === undefined
           ? null
           : constantTimeEqual(request.headers.get('authorization')!, `Bearer ${token}`)
@@ -55,6 +64,52 @@ export const DashboardLive = (() => {
       }
     })
   )
+  const mutationPolicy = Layer.succeed(
+    DashboardMutationPolicy,
+    DashboardMutationPolicy.of({
+      available: token !== undefined && token.length > 0,
+      check: ({ request }) => {
+        if (token === undefined || token.length === 0) {
+          return { allowed: false, reason: 'policy_unavailable' as const }
+        }
+        const confirmation = request.headers.get('x-dashboard-csrf')
+        if (confirmation === null) {
+          return { allowed: false, reason: 'confirmation_required' as const }
+        }
+        return constantTimeEqual(confirmation, token)
+          ? { allowed: true as const }
+          : { allowed: false, reason: 'csrf_invalid' as const }
+      }
+    })
+  )
+  const rateLimiter = (() => {
+    let windowStartedAt = Date.now()
+    let mutations = 0
+    return Layer.succeed(
+      DashboardRateLimiter,
+      DashboardRateLimiter.of({
+        available: true,
+        check: () => {
+          const now = Date.now()
+          if (now - windowStartedAt >= mutationWindowMs) {
+            windowStartedAt = now
+            mutations = 0
+          }
+          if (mutations >= mutationLimit) {
+            return {
+              allowed: false,
+              retryAfterSeconds: Math.max(
+                1,
+                Math.ceil((mutationWindowMs - (now - windowStartedAt)) / 1000)
+              )
+            }
+          }
+          mutations += 1
+          return { allowed: true, retryAfterSeconds: undefined }
+        }
+      })
+    )
+  })()
 
   return Layer.merge(
     Layer.succeed(JobStore, JobStore.of(store)),
@@ -67,9 +122,18 @@ export const DashboardLive = (() => {
           Layer.merge(
             Layer.merge(
               DashboardScheduleCapabilityDisabled,
-              Layer.merge(DashboardFlowCapabilityDisabled, DashboardControlCapabilityDisabled)
+              Layer.merge(
+                DashboardFlowCapabilityDisabled,
+                Layer.merge(DashboardControlCapabilityDisabled, DashboardAuditSinkDisabled)
+              )
             ),
-            Layer.merge(DashboardApp.layer, Layer.merge(authorization, DashboardServer.layer))
+            Layer.merge(
+              DashboardApp.layer,
+              Layer.merge(
+                authorization,
+                Layer.merge(mutationPolicy, Layer.merge(rateLimiter, DashboardServer.layer))
+              )
+            )
           )
         )
       )

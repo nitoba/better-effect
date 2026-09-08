@@ -5,9 +5,15 @@ import { ClockTestLayer } from 'better-effect/standard-services'
 import {
   DashboardApp,
   DashboardAuthorization,
+  DashboardAuditSink,
+  DashboardAuditSinkDisabled,
   DashboardControlCapabilityDisabled,
   DashboardEventFeedDisabled,
   DashboardFlowCapabilityDisabled,
+  DashboardMutationPolicy,
+  DashboardMutationPolicyDisabled,
+  DashboardRateLimiter,
+  DashboardRateLimiterDisabled,
   DashboardScheduleCapabilityDisabled,
   dashboardControlCapabilityLayer,
   dashboardEventFeedLayer,
@@ -30,6 +36,7 @@ import {
   QueueControls,
   QueueName
 } from 'better-effect-mq'
+import type { DashboardAuditEvent } from '../src'
 import type {
   FlowSnapshot,
   JobEventStoreError,
@@ -47,6 +54,19 @@ const allowAll = Layer.succeed(
   DashboardAuthorization.of({ authorize: () => ({ role: 'admin' as const }) })
 )
 
+const allowMutationPolicy = Layer.succeed(
+  DashboardMutationPolicy,
+  DashboardMutationPolicy.of({
+    available: true,
+    check: () => ({ allowed: true as const })
+  })
+)
+
+const allowMutations = Layer.merge(
+  allowMutationPolicy,
+  Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+)
+
 const denyAll = Layer.succeed(
   DashboardAuthorization,
   DashboardAuthorization.of({ authorize: () => null })
@@ -57,7 +77,15 @@ const disabledCapabilities = Layer.merge(
   Layer.merge(DashboardFlowCapabilityDisabled, DashboardControlCapabilityDisabled)
 )
 
-const disabledDashboard = Layer.merge(DashboardEventFeedDisabled, disabledCapabilities)
+const disabledMutationCapabilities = Layer.merge(
+  DashboardMutationPolicyDisabled,
+  Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+)
+
+const disabledDashboard = Layer.merge(
+  DashboardEventFeedDisabled,
+  Layer.merge(disabledCapabilities, disabledMutationCapabilities)
+)
 
 const resolve = async <Value>(
   operation: JobStoreOperation<Value, JobStoreError>
@@ -121,7 +149,10 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
           dashboardEventFeedLayer(),
           Layer.merge(
             ClockTestLayer(0),
-            Layer.merge(allowAll, Layer.merge(disabledCapabilities, DashboardApp.layer))
+            Layer.merge(
+              allowAll,
+              Layer.merge(allowMutations, Layer.merge(disabledCapabilities, DashboardApp.layer))
+            )
           )
         )
       )
@@ -130,6 +161,16 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
 
   try {
     const app = await resolveApp(runtime)
+    const health = await app.request('/health')
+    expect((await health.json()).data).toEqual({
+      ok: true,
+      service: 'better-effect-mq-dashboard',
+      capabilities: {
+        mutationPolicy: true,
+        audit: false,
+        rateLimit: false
+      }
+    })
     const overview = await app.request('/api/overview')
     expect(overview.status).toBe(200)
     expect((await overview.json()).data.counts.total).toBe(1)
@@ -206,7 +247,12 @@ test('dashboard keeps optional capability routes absent when their Layers are no
       events: false,
       schedules: false,
       flows: false,
-      controls: false
+      controls: false,
+      security: {
+        mutationPolicy: false,
+        audit: false,
+        rateLimit: false
+      }
     })
     const capabilities = await app.request('/api/capabilities')
     expect(capabilities.status).toBe(200)
@@ -214,7 +260,12 @@ test('dashboard keeps optional capability routes absent when their Layers are no
       events: false,
       schedules: false,
       flows: false,
-      controls: false
+      controls: false,
+      security: {
+        mutationPolicy: false,
+        audit: false,
+        rateLimit: false
+      }
     })
     expect((await app.request('/api/schedules')).status).toBe(404)
     expect((await app.request('/api/flows/flow-1')).status).toBe(404)
@@ -339,7 +390,10 @@ test('dashboard exposes public schedule, flow, and controls Layers with sanitize
                     dashboardFlowCapabilityLayer(),
                     Layer.merge(
                       QueueControls.layer(() => controlsStore),
-                      Layer.merge(dashboardControlCapabilityLayer(), DashboardApp.layer)
+                      Layer.merge(
+                        dashboardControlCapabilityLayer(),
+                        Layer.merge(allowMutations, DashboardApp.layer)
+                      )
                     )
                   )
                 )
@@ -413,6 +467,143 @@ test('dashboard keeps authentication and role checks at the host boundary', asyn
   }
 })
 
+test('dashboard keeps viewer reads available while mutation policy fails closed', async () => {
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(allowAll, Layer.merge(disabledDashboard, DashboardApp.layer))
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    expect((await app.request('/api/overview')).status).toBe(200)
+    const mutation = await app.request('/api/jobs/unknown/promote', { method: 'POST' })
+    expect(mutation.status).toBe(503)
+    expect((await mutation.json()).error).toBe('mutation_policy_unavailable')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard returns stable confirmation and CSRF failures for mutations', async () => {
+  let rejection: 'confirmation_required' | 'csrf_invalid' = 'confirmation_required'
+  const policy = Layer.succeed(
+    DashboardMutationPolicy,
+    DashboardMutationPolicy.of({
+      available: true,
+      check: () => ({ allowed: false as const, reason: rejection })
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(
+          allowAll,
+          Layer.merge(
+            DashboardEventFeedDisabled,
+            Layer.merge(
+              disabledCapabilities,
+              Layer.merge(
+                policy,
+                Layer.merge(
+                  DashboardAuditSinkDisabled,
+                  Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const confirmation = await app.request('/api/jobs/unknown/promote', { method: 'POST' })
+    expect(confirmation.status).toBe(428)
+    expect((await confirmation.json()).error).toBe('confirmation_required')
+
+    rejection = 'csrf_invalid'
+    const csrf = await app.request('/api/jobs/unknown/promote', { method: 'POST' })
+    expect(csrf.status).toBe(403)
+    expect((await csrf.json()).error).toBe('csrf_invalid')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard rate-limits mutations and records safe audit outcomes', async () => {
+  const { store, jobId } = await seed()
+  const auditEvents: DashboardAuditEvent[] = []
+  let checks = 0
+  const audit = Layer.succeed(
+    DashboardAuditSink,
+    DashboardAuditSink.of({
+      available: true,
+      record: (event) => {
+        auditEvents.push(event)
+        if (event.outcome === 'success') throw new Error('audit sink unavailable')
+      }
+    })
+  )
+  const rateLimiter = Layer.succeed(
+    DashboardRateLimiter,
+    DashboardRateLimiter.of({
+      available: true,
+      check: () => {
+        checks += 1
+        return { allowed: checks === 1, retryAfterSeconds: checks === 1 ? undefined : 10 }
+      }
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(
+          allowAll,
+          Layer.merge(
+            DashboardEventFeedDisabled,
+            Layer.merge(
+              disabledCapabilities,
+              Layer.merge(
+                allowMutationPolicy,
+                Layer.merge(audit, Layer.merge(rateLimiter, DashboardApp.layer))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const first = await app.request(`/api/jobs/${jobId}/promote`, { method: 'POST' })
+    expect(first.status).toBe(200)
+    const second = await app.request(`/api/jobs/${jobId}/promote`, { method: 'POST' })
+    expect(second.status).toBe(429)
+    expect((await second.json()).retryAfterSeconds).toBe(10)
+    expect(
+      auditEvents.map(({ action, outcome, errorCode }) => ({ action, outcome, errorCode }))
+    ).toEqual([
+      { action: 'job.promote', outcome: 'success', errorCode: undefined },
+      { action: 'job.promote', outcome: 'denied', errorCode: 'rate_limited' }
+    ])
+    expect(auditEvents[0]?.path).toBe(`/api/jobs/${jobId}/promote`)
+    expect(auditEvents[0]?.subject).toBeUndefined()
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('SSE resumes after Last-Event-ID and emits non-durable heartbeats', async () => {
   const { events, store } = await seed()
   const first = await resolveEvent(events.read({}))
@@ -438,7 +629,13 @@ test('SSE resumes after Last-Event-ID and emits non-durable heartbeats', async (
           dashboardEventFeedLayer(),
           Layer.merge(
             ClockTestLayer(0),
-            Layer.merge(allowAll, Layer.merge(disabledCapabilities, DashboardApp.layer))
+            Layer.merge(
+              allowAll,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(disabledMutationCapabilities, DashboardApp.layer)
+              )
+            )
           )
         )
       )

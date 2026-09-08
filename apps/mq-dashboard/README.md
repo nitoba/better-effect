@@ -26,6 +26,25 @@ Use `dashboardScheduleCapabilityLayer()`,
 the public `JobScheduleStore`, `FlowStore`, and `QueueControls` Layers when
 those extensions are installed.
 
+The application also has explicit Layer-first operational security boundaries:
+
+```ts
+Layer.merge(
+  DashboardMutationPolicyDisabled,
+  Layer.merge(
+    DashboardAuditSinkDisabled,
+    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+  )
+)
+```
+
+`DashboardMutationPolicyDisabled` fails closed for every `POST`/`DELETE` route
+while leaving viewer/read-only routes available. Hosts should provide their
+own `DashboardMutationPolicy` for confirmation/CSRF checks, may provide an
+optional `DashboardAuditSink`, and may replace the basic rate limiter with a
+host-owned boundary. Audit delivery is best-effort and never changes the
+mutation result.
+
 ## Run the Memory example
 
 The host is loopback-only by default and requires an explicit token to answer
@@ -42,6 +61,21 @@ server rejects non-loopback binding without `MQ_DASHBOARD_TOKEN`.
 curl -H 'authorization: Bearer local-dev-token' \
   http://127.0.0.1:3000/api/overview
 ```
+
+Reference-host mutations require the configured token in the dedicated custom
+header as well:
+
+```bash
+curl -X POST \
+  -H 'authorization: Bearer local-dev-token' \
+  -H 'x-dashboard-csrf: local-dev-token' \
+  http://127.0.0.1:3000/api/queues/emails/pause
+```
+
+The reference limiter uses one process-local mutation bucket (30 mutations per
+minute) and does not use job or user identifiers as labels. `/health`,
+`/api/capabilities`, and `/api/overview` expose only boolean availability flags
+for the mutation policy, audit sink, and rate limiter.
 
 The shipped authorization layer is only a safe local example. Production
 applications should replace `DashboardAuthorization` with their host's
