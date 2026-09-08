@@ -1,0 +1,116 @@
+---
+title: Layer-first migration
+description: Replace removed Runtime-first integration APIs with the current ownership model.
+icon: ArrowRightLeft
+---
+
+The current public direction is Layer-first. Integrations are providers in the
+application graph and capture only a non-owning `Runtime.Executor` or another
+small capability while their Layer is acquired. The application owns one
+Runtime root and its shutdown; an integration must not create, dispose, or
+transport the whole Runtime.
+
+`Runtime.make(layer)` remains a valid application boundary. The removed APIs
+are the integration constructors and bridges that accepted a Runtime as an
+argument.
+
+## Replacement map
+
+| Removed Runtime-first surface                        | Current Layer-first surface                                                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `HonoEffect.make(runtime, ...)`                      | `HonoEffect.app(tag, options, factory)` or `HonoEffect.layer(service, options, factory)`                           |
+| `BunEffect.make(runtime, ...)`                       | `BunEffect.handler(...)` inside a Layer, or `BunEffect.server(tag, factory)`                                       |
+| `BetterAuth.service(tag, rawAuth)`                   | `BetterAuth.make(tag, rawFactory)` or `BetterAuth.from(tag, rawAuth)`                                              |
+| `BetterAuthHooks.make(tag, runtime)`                 | `BetterAuthHooks.define(tag)` with `yield* Hooks.gen(...)` or `yield* Hooks.middleware(...)` inside the Auth Layer |
+| `Worker.start`, `Worker.use`, and `Worker.startWith` | `Worker.service(tag).layer(factory)`; use `Worker.succeed(testDouble)` for tests                                   |
+| `Database.layer(...)`                                | `Database.scoped(factory)`, `Database.borrowed(factory)`, or `Database.succeed(database)`                          |
+| `NextEffect.make(...)`                               | `NextEffect.fromCurrent()` for an embedded route or `NextEffect.managed(layer)` for a Next-owned process           |
+| `ApplicationRuntimeAccess`                           | Remove the bridge and launch the composition root with `NodeRuntime.launch` or `NodeRuntime.runMain`               |
+| `runtime.run(dispatchOutbox)`                        | Represent the loop as `Layer.effectDiscard` plus `Effect.forkScoped`                                               |
+
+These names may appear in this table as migration vocabulary only. They are not
+exported compatibility aliases and must not be copied into new application
+code.
+
+## One composition root
+
+Build the complete application Layer once. Server, Worker, HTTP client, Auth,
+database and outbox components can share that root without passing a Runtime
+through their APIs:
+
+```ts
+import { Layer } from 'better-effect'
+import { NodeRuntime } from 'better-effect/node'
+
+const ApplicationLive = Layer.complete(
+  Layer.merge(
+    ConfigLive,
+    DatabasePoolLive,
+    Auth.layer,
+    HttpApp.layer,
+    ApiServer.layer,
+    ApplicationWorkerLive,
+    OutboxLive
+  )
+)
+
+await NodeRuntime.launch(ApplicationLive, {
+  warmup: true,
+  shutdown: {
+    gracePeriod: 10_000,
+    abortAfterGracePeriod: true
+  }
+})
+```
+
+`NodeRuntime` owns the process root. Layer activation starts ingress and
+background components, quiesce stops new admissions, draining waits for work
+already admitted, and release closes resources in reverse ownership order.
+Requests, hooks and attempts use child executions and child Scopes; they do not
+create additional application Runtimes.
+
+## Integration notes
+
+### Web, Hono, Bun and Next
+
+Use `WebEffect.handleWith` with a captured executor for a framework-neutral
+Request-to-Response boundary. Hono apps and Bun servers are acquired by their
+Layers. Next has two explicit modes: `fromCurrent` for a route already running
+inside a better-effect execution, and `managed` when Next owns initialization
+and disposal.
+
+### Better Auth
+
+Define hooks before the Auth Service, then yield the hook builder while the Auth
+Layer is acquired. The hook Context is request-local and application Services
+remain ordinary Layer requirements. Better Auth continues to own plugins,
+sessions, cookies, adapters and its Web handler.
+
+### Kysely and schemas
+
+Use `Database.scoped` only when the integration creates and owns Kysely. Use
+`Database.borrowed` for a database built from a pool owned by another Layer,
+and `Database.succeed` for an already-owned instance. Keep runtime validation
+at the `better-effect-schema` boundary; a TypeScript generic alone does not
+decode HTTP or database values.
+
+### MQ and outbox
+
+Workers and publishers are Layer-owned supervisors. Their handler, store and
+route requirements remain visible at the Layer boundary, while `JobContext`,
+request signals and executor capabilities stay execution-local. MQ delivery and
+outbox publishing are at-least-once; deterministic IDs and idempotent stores
+are part of the recovery design.
+
+## Release and package changes
+
+There is no in-package compatibility window for the removed constructors and
+bridges. Consumers should update imports, composition roots and ownership
+before upgrading. Breaking public removals require the appropriate package
+version and changelog entry. Install only the package and optional peers used
+by the application; see [Packages and integrations](/docs/packages) for the
+current package map.
+
+After migration, run the package's checks, the root `bun run check`, its real
+tarball consumer, `publint`, and the release artifact dry gate. The release
+workflow publishes only the package selected by its qualified tag.

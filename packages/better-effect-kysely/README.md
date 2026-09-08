@@ -147,8 +147,8 @@ finish. `borrowed` and `succeed` never register a destroy finalizer, so a
 shared pool remains open until its owning Layer releases it. The native Kysely
 instance and its private state remain untouched.
 
-There is intentionally no `Database.layer` compatibility alias. Choose
-`scoped`, `borrowed` or `succeed` so ownership is explicit at the call site.
+There is no legacy ownership alias. Choose `scoped`, `borrowed` or `succeed` so
+ownership is explicit at the call site.
 
 ## Execute queries
 

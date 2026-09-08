@@ -40,12 +40,17 @@ release resources through Scope
 
 The library is intentionally small. It gives you a composition root and
 lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
-dependency injection to ordinary TypeScript libraries or adapters. For the
-Layer-first HTTP client with buffered responses, NDJSON, SSE, and opt-in Hono
-streaming, see [HTTP client](/docs/http). For a server-side Better Auth integration that keeps Better Auth's own plugins,
-cookies, and Web handler, see [Better Auth](/docs/better-auth). For a native
-Kysely database integration that preserves Kysely's builders, drivers and
-lifecycle boundaries, see [Kysely integration](/docs/kysely).
+dependency injection to ordinary TypeScript libraries or adapters. Browse the
+[package catalog](/docs/packages) for the complete set of published packages.
+For the Layer-first HTTP client with buffered responses, NDJSON, SSE, and opt-in
+Hono streaming, see [HTTP client](/docs/http). For provider-neutral validation,
+see [Schema](/docs/schema). For Better Auth, Kysely and MQ integrations, see
+[Better Auth](/docs/better-auth), [Kysely integration](/docs/kysely), and the
+[MQ guide](/docs/mq).
+
+All integration APIs in the current release are Layer-first. If you are
+upgrading an older application, start with the [migration guide](/docs/migration)
+before copying an example from an older version.
 
 Layers expose a simple `Layer<Provided, Required>` contract. `Provided` and
 `Required` are tagged Service instance unions; after composition, `Required`
@@ -59,7 +64,8 @@ contains only dependencies that remain external.
     'I already use better-result',
     'I am integrating a container',
     'I am integrating HTTP',
-    'I am integrating Kysely'
+    'I am integrating Kysely',
+    'I am choosing a package'
   ]}
 >
   <Tab>
@@ -83,6 +89,10 @@ contains only dependencies that remain external.
   <Tab>
     Read [Kysely integration](/docs/kysely). It explains the `$call` Promise boundary, owned and
     borrowed database Layers, raw/compiled queries, transactions and cancellation limits.
+  </Tab>
+  <Tab>
+    Read [Packages and integrations](/docs/packages) to choose the right package, then follow its
+    focused guide. Use [Migration](/docs/migration) when replacing a Runtime-first integration.
   </Tab>
 </Tabs>
 

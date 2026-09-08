@@ -1,6 +1,6 @@
 ---
 title: Durable jobs with better-effect-mq
-description: Define durable jobs, run workers and build storage adapters around protocol v1.
+description: Define durable jobs, run workers and compose explicit MQ protocol extensions.
 icon: ListChecks
 ---
 
@@ -10,12 +10,19 @@ provides immutable Job definitions, producer operations, a Worker supervisor,
 and a `JobStore` Service contract. It does not open a database connection or
 choose a persistence technology.
 
-## Protocol v1: at-least-once delivery
+## Protocol versions and at-least-once delivery
 
-The exported `protocolVersion` is `1`. A successful settlement under the
-current lease is not normally delivered again. If a worker performs a side
-effect and crashes before settlement is persisted, the job can be delivered
-again. This is **at-least-once**, not exactly-once processing.
+The exported base `protocolVersion` is `1`. Flow parent/child composition is the
+explicit `FlowStoreV2` extension, and QueueControls is protocol v3; neither
+silently changes the v1 JobStore contract. Adapters validate the protocol and
+layout/migration version they support before a Worker starts.
+
+A successful settlement under the current lease is not normally delivered
+again. If a worker performs a side effect and crashes before settlement is
+persisted, the job can be delivered again. This is **at-least-once**, not
+exactly-once processing. Cross-store Flow enqueue and relay use durable
+manifests, deterministic child IDs and idempotent reports; they do not provide a
+distributed transaction.
 
 Design handlers so repeating the external operation is safe. Use the Job ID or
 a business idempotency key with the downstream API, and make the downstream
@@ -26,12 +33,16 @@ already happened before a crash.
 ```ts
 import { protocolVersion } from 'better-effect-mq'
 
-protocolVersion // 1
+protocolVersion // 1 (base JobStore protocol)
 ```
 
 Persisted records are JSON-safe DTOs. They contain identities, state, counters,
 leases, encoded payloads and bounded failure envelopes—not live `Error`,
 `Result`, Service or connection objects.
+
+For Flow v2, read the [Flow protocol](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md)
+before implementing parent/child stores. For driver compatibility and migration
+policy, read the [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
 
 ## Define a queue and jobs
 

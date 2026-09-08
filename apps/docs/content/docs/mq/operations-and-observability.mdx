@@ -28,9 +28,10 @@ Operational checklist before replacing `MemoryJobStore` with a real adapter:
 - run the full conformance suite and the external tarball consumer under Node.js
   24 and the supported Bun release.
 
-`protocolVersion === 1` identifies the persisted protocol, not a promise of
-stability. The package is experimental `0.x`: minor bumps may change the
-contract before protocol v1 is declared stable. A JobStore-breaking change
-must call out affected adapters, and package release notes must state both the
-package version and protocol version. Do not publish a driver placeholder with
-the MVP.
+`protocolVersion === 1` identifies the persisted base protocol, not a promise of
+stability. Flow v2, QueueControls v3, events, schedules and outbox are explicit
+extensions with their own capability and migration boundaries. The package is
+experimental `0.x`: minor bumps may change the contract before protocol v1 is
+declared stable. A breaking change must call out affected adapters, and package
+release notes must state the package version and every supported protocol or
+extension version. Do not publish a driver placeholder with the MVP.

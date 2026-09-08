@@ -1,0 +1,70 @@
+---
+title: Packages and integrations
+description: Choose the right better-effect package and keep ownership explicit.
+icon: Boxes
+---
+
+The monorepo is split into small packages. The core stays framework-neutral;
+integrations and storage drivers are optional and are installed only when an
+application uses them. Every integration follows the same rule: describe
+providers with Layers, capture only non-owning capabilities, and keep resource
+ownership at the composition root.
+
+## Core and application boundaries
+
+| Package                     | Use it for                                                                  | Public entry points                                              |
+| --------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `better-effect`             | `Effect`, `Layer`, `Runtime`, `Scope`, Web boundaries and standard services | `.`, `/web`, `/bun`, `/hono`, `/next`, `/node`, `/opentelemetry` |
+| `better-effect-http`        | Typed Fetch requests, status unions, retries, auth recovery and streaming   | `.`, `/endpoints`, `/testing`, `/opentelemetry`                  |
+| `better-effect-schema`      | Standard Schema classes, codecs, tagged classes and typed failures          | `.`, `/zod`, `/valibot`, `/arktype`                              |
+| `better-effect-better-auth` | Better Auth Services, hooks, plugin middleware and current sessions         | `.`, `/hooks`, `/hono`                                           |
+| `better-effect-kysely`      | Kysely query terminals, transactions and explicit database ownership        | `.`                                                              |
+
+The HTTP client consumes Standard Schema values directly. It does not install a
+schema provider. Use a `better-effect-schema` adapter only when an application
+needs provider-specific class derivations or helpers.
+
+## Durable queues and storage
+
+| Package                     | Use it for                                                                          | Ownership and compatibility                               |
+| --------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `better-effect-mq`          | Queues, immutable Jobs, producer Programs, Layer-first Workers, Flow v2 and testing | Storage-neutral; no database connection or driver         |
+| `better-effect-mq-outbox`   | Prepared enqueue records, routes, post-commit stores and publishers                 | Storage-neutral; delivery is at-least-once                |
+| `better-effect-mq-postgres` | PostgreSQL JobStore, Flow v2, events, schedules and outbox                          | Caller-owned or config-created PostgreSQL pool            |
+| `better-effect-mq-redis`    | Redis/Valkey JobStore, Flow v2, events, schedules and QueueControls                 | Caller-owned clients or adapter-created connections       |
+| `better-effect-mq-mongodb`  | MongoDB JobStore, Flow v2, events, schedules and outbox                             | Requires transaction-capable MongoDB deployment           |
+| `better-effect-mq-sqlite`   | Embedded SQLite JobStore, Flow v2, events, schedules and outbox                     | One writer; migration and database ownership are explicit |
+| `better-effect-mq-mysql`    | MySQL/InnoDB JobStore, Flow v2, events, schedules and outbox                        | MySQL 8/InnoDB; migration and pool ownership are explicit |
+
+The base MQ JobStore protocol remains v1. Flow v2, QueueControls v3, events,
+schedules and outbox are explicit extension contracts with their own layout and
+migration boundaries. A driver must validate the protocol and layout it
+supports; no adapter silently interprets a newer persisted layout as v1.
+
+Read the [MQ guide](/docs/mq) for the storage-neutral contracts and the
+[outbox guide](/docs/outbox) for post-commit publishing. Driver-specific
+migrations, connection options and deployment requirements live in each
+adapter's [package README](https://github.com/nitoba/better-effect/tree/main/packages).
+
+## Choosing an ownership model
+
+- Use `Layer.succeed` for a caller-owned value that a Runtime must not dispose.
+- Use a scoped Layer when the Layer creates the resource and should release it
+  with the Runtime root Scope.
+- Use an integration's `borrowed` or caller-owned form when another Layer owns a
+  shared pool, client or Kysely instance.
+- Use `NodeRuntime.launch` or `NodeRuntime.runMain` for a process-owned server
+  root. Use `NextEffect.managed` only when Next owns the process lifecycle.
+- Use `Worker.service(...).layer(...)` and `OutboxPublisher.service(...).layer(...)`
+  for supervised background components; do not start detached loops from an
+  application callback.
+
+## Optional peers
+
+The core package does not require Hono, Bun, Next.js, Better Auth, Kysely,
+OpenTelemetry, database drivers or schema providers. Optional peers belong to
+the subpath or package that uses them. This keeps a generic consumer small and
+lets package tarball tests prove that unused integrations are not loaded.
+
+For removed Runtime-first APIs and the exact replacement for each integration,
+see [Layer-first migration](/docs/migration).
