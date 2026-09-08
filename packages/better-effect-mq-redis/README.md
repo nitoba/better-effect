@@ -68,6 +68,45 @@ event-capable writer records `optional`; promote explicitly through
 writer without append capability before its Lua mutation runs. Activation
 metadata is additive and uses the existing namespace hash slot.
 
+## Layer composition with Runtime
+
+`layerWithEventsFromConfig` provides the matching `JobStore` and
+`JobEventStore` tokens in one Layer. Compose it with the application's other
+Services and create one Runtime:
+
+```ts
+import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+
+const DurableLive = Layer.complete(
+  Layer.merge(
+    RedisJobStore.layerWithEventsFromConfig(
+      { url: process.env.REDIS_URL, namespace: 'orders' },
+      { retention: { count: 100_000, ageMs: 7 * 24 * 60 * 60 * 1_000 } }
+    ),
+    ClockLive
+  )
+)
+
+const runtime = await Runtime.make(DurableLive)
+```
+
+With caller-owned clients use `RedisJobStore.layerWithEvents({ client,
+namespace: 'orders' }, options)`. The config form owns and closes the command
+and subscriber connections; the client form borrows them. `Job.awaitResult` can
+use `eventStore: JobEventStore` with `pollFallbackMs` so lost Pub/Sub wakeups
+do not block progress: the stream is checked first and bounded polling remains
+authoritative. A retained-away cursor is a `JobEventCursorExpiredError`, not an
+infinite archive request.
+
+The durable stream, detailed `AttemptRecord` ledger, and process-local
+best-effort observers are separate surfaces. Redis events intentionally omit
+payloads, results, complete failure bodies, and arbitrary metadata by default;
+do not use the event stream as a replacement for either the ledger or local
+telemetry. See the [core composition guide](../better-effect-mq/docs/composition.md)
+for the common at-least-once cursor/checkpoint rules and dashboard SSE
+heartbeat behavior.
+
 ## Queue controls protocol v3
 
 The Redis JobStore implements the `better-effect-mq` QueueControls protocol v3. Reconciliation persists one revisioned control record per queue. Controlled claims enforce global concurrency, producer-persisted `dispatchKey` concurrency, and a fixed-window rate limit atomically with the lease transition. Permits, per-key counts, the protocol-clock rate window, and fair rotation state share the namespace hash slot with the job indexes.

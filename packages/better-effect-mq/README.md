@@ -14,6 +14,7 @@ It does not open connections or provide a storage adapter.
 The packaged driver and protocol documentation is available under [`docs/`](./docs/):
 
 - [Writing a driver](./docs/writing-a-driver.md)
+- [Composition guide](./docs/composition.md)
 - [JobStore protocol](./docs/protocol/job-store-v1.md)
 - [State machine](./docs/protocol/state-machine-v1.md)
 - [Operation atomicity](./docs/protocol/operation-atomicity-v1.md)
@@ -27,6 +28,14 @@ The packaged driver and protocol documentation is available under [`docs/`](./do
 - [Controlled claim protocol v3](./docs/protocol/controls-v3.md)
 
 These documents define the storage-neutral protocol implemented by the current source; adapter-specific schemas and deployment behavior remain outside the core package.
+
+For a complete, runnable Memory composition and equivalent PostgreSQL/Redis
+Layer recipes, see the [composition guide](./docs/composition.md) and
+[`examples/composition`](./examples/composition/). The example provides one
+Runtime with both `JobStore` and `JobEventStore`, starts a Worker, waits with
+`Job.awaitResult({ strategy: 'events', pollFallbackMs })`, and reads a bounded
+event page. The adapter recipes use only the public factories currently
+provided by their packages.
 
 ## Durable Job Events
 
