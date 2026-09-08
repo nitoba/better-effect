@@ -1,0 +1,85 @@
+import { Effect, Layer, Runtime } from 'better-effect'
+import { BunEffect } from 'better-effect/bun'
+import { DashboardApp, DashboardAuthorization, dashboardEventFeedLayer } from './index'
+import { JobEventStore, JobStore, MemoryJobEventStore, MemoryJobStore } from 'better-effect-mq'
+import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+
+const constantTimeEqual = (left: string, right: string): boolean => {
+  const leftBytes = new TextEncoder().encode(left)
+  const rightBytes = new TextEncoder().encode(right)
+  let difference = leftBytes.length ^ rightBytes.length
+  const length = Math.max(leftBytes.length, rightBytes.length)
+  for (let index = 0; index < length; index += 1) {
+    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0)
+  }
+  return difference === 0
+}
+
+const token = process.env.MQ_DASHBOARD_TOKEN
+const hostname = process.env.MQ_DASHBOARD_HOST ?? '127.0.0.1'
+const port = Number(process.env.MQ_DASHBOARD_PORT ?? 3000)
+
+if (hostname !== '127.0.0.1' && hostname !== 'localhost' && token === undefined) {
+  throw new Error('MQ_DASHBOARD_TOKEN is required when the dashboard is not loopback-bound')
+}
+
+export const DashboardServer = BunEffect.server(
+  '@better-effect/mq-dashboard/Server',
+  async function* () {
+    const app = yield* DashboardApp
+    return { hostname, port, fetch: app.fetch }
+  }
+)
+
+export const DashboardLive = (() => {
+  const events = MemoryJobEventStore.make()
+  const store = MemoryJobStore.make({ eventStore: events })
+  const authorization = Layer.succeed(
+    DashboardAuthorization,
+    DashboardAuthorization.of({
+      authorize: ({ request }) => {
+        if (token === undefined) return null
+        return request.headers.get('authorization') === undefined
+          ? null
+          : constantTimeEqual(request.headers.get('authorization')!, `Bearer ${token}`)
+            ? { role: 'admin' as const }
+            : null
+      }
+    })
+  )
+
+  return Layer.merge(
+    Layer.succeed(JobStore, JobStore.of(store)),
+    Layer.merge(
+      Layer.succeed(JobEventStore, JobEventStore.of(events)),
+      Layer.merge(
+        dashboardEventFeedLayer(),
+        Layer.merge(
+          ClockLive,
+          Layer.merge(DashboardApp.layer, Layer.merge(authorization, DashboardServer.layer))
+        )
+      )
+    )
+  )
+})()
+
+export const startDashboard = async (): Promise<void> => {
+  const runtime = await Runtime.make(DashboardLive)
+  const resolved = await runtime.run(
+    Effect.fn(async function* () {
+      return Result.ok(yield* DashboardServer)
+    })
+  )
+  if (Result.isError(resolved)) throw resolved.error
+  console.log(`better-effect-mq dashboard listening on ${resolved.value.url}`)
+
+  const shutdown = async (): Promise<void> => {
+    await runtime.dispose()
+    process.exit(0)
+  }
+  process.once('SIGINT', shutdown)
+  process.once('SIGTERM', shutdown)
+}
+
+if (import.meta.main) void startDashboard()

@@ -1,0 +1,29 @@
+{
+  "name": "@better-effect/mq-dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Reference Hono backend for inspecting better-effect-mq stores.",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "oxlint --type-aware .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "check": "bun run typecheck && bun test && bun run format:check && bun run lint"
+  },
+  "dependencies": {
+    "better-effect": "workspace:*",
+    "better-effect-mq": "workspace:*",
+    "better-result": "^3.0.0",
+    "hono": "4.13.3"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.1",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "typescript": "^7.0.2"
+  }
+}
