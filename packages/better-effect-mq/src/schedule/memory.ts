@@ -50,6 +50,7 @@ import type {
   UpsertScheduleResult
 } from './types'
 import type { AnyJobScheduleStoreToken } from './store'
+import type { DurableJobEventInput, DurableJobEventType } from '../store/event-store'
 
 type Operation<Value> = ScheduleStoreOperation<Value, ScheduleStoreError>
 
@@ -428,8 +429,11 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
     const normalized = checked.value
     const existing = this.schedules.get(mapKey(normalized.group, normalized.key))
     if (existing === undefined) {
+      const eventFailure = this.memoryJobStore!.ensureEventWriterReady('upsertSchedule')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const snapshot = cloneRecord(normalized)
       this.schedules.set(mapKey(snapshot.group, snapshot.key), snapshot)
+      this.appendEvent('schedule-upserted', snapshot, snapshot.updatedAtMs, { created: 'true' })
       return ok({ record: cloneRecord(snapshot), created: true, changed: true })
     }
     if (logicalDigest(existing) === logicalDigest(normalized)) {
@@ -449,7 +453,10 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
       createdAtMs: existing.createdAtMs,
       updatedAtMs: Math.max(normalized.updatedAtMs, existing.updatedAtMs)
     })
+    const eventFailure = this.memoryJobStore!.ensureEventWriterReady('upsertSchedule')
+    if (eventFailure !== undefined) return fail(eventFailure)
     this.schedules.set(mapKey(updated.group, updated.key), updated)
+    this.appendEvent('schedule-upserted', updated, updated.updatedAtMs, { created: 'false' })
     return ok({ record: cloneRecord(updated), created: false, changed: true })
   }
 
@@ -458,7 +465,12 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
       const resolved = this.resolve(selector)
       if (Result.isError(resolved)) return fail(resolved.error)
       if (resolved.value === undefined) return ok(false)
+      const current = this.resolveAddress(resolved.value)
+      if (current === undefined) return ok(false)
+      const eventFailure = this.memoryJobStore!.ensureEventWriterReady('removeSchedule')
+      if (eventFailure !== undefined) return fail(eventFailure)
       this.schedules.delete(mapKey(resolved.value.group, resolved.value.key))
+      this.appendEvent('schedule-removed', current, current.updatedAtMs, {})
       return ok(true)
     })
   }
@@ -607,6 +619,8 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
         } as JobStoreNamespace.EnqueueRequest
       })
 
+      const eventFailure = this.memoryJobStore!.ensureEventWriterReady('tickSchedule')
+      if (eventFailure !== undefined) return fail(eventFailure)
       const enqueued = this.memoryJobStore!.enqueueManyWithinCritical(requests)
       if (Result.isError(enqueued)) return fail(enqueued.error)
       const jobs = enqueued.value.map((item) => item.job)
@@ -622,6 +636,11 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
         updatedAtMs: now.value
       })
       this.schedules.set(mapKey(updated.group, updated.key), updated)
+      this.appendEvent('schedule-ticked', updated, now.value, {
+        status: jobs.length > 0 ? 'fired' : 'skipped',
+        jobs: String(jobs.length),
+        skipped: String(skippedSlots.length)
+      })
       return ok(scheduleResult(jobs.length > 0 ? 'fired' : 'skipped', updated, jobs, skippedSlots))
     })
   }
@@ -648,7 +667,11 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
     }
     return this.runCritical(() => {
       const current = this.resolveAddress(resolved.value!)!
-      if (current.paused === paused) return ok(undefined)
+      if (current.paused === paused) return ok<void>(undefined)
+      const eventFailure = this.memoryJobStore!.ensureEventWriterReady(
+        paused ? 'pauseSchedule' : 'resumeSchedule'
+      )
+      if (eventFailure !== undefined) return fail<void>(eventFailure)
       const updated = cloneRecord({
         ...current,
         paused,
@@ -656,7 +679,13 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
         updatedAtMs: current.updatedAtMs
       })
       this.schedules.set(mapKey(updated.group, updated.key), updated)
-      return ok(undefined)
+      this.appendEvent(
+        paused ? 'schedule-paused' : 'schedule-resumed',
+        updated,
+        updated.updatedAtMs,
+        {}
+      )
+      return ok<void>(undefined)
     })
   }
 
@@ -687,6 +716,31 @@ class MemoryJobScheduleStoreImplementation implements JobScheduleStoreContract {
 
   private resolveAddress(value: ScheduleAddress): ScheduleRecord | undefined {
     return this.schedules.get(mapKey(value.group, value.key))
+  }
+
+  private appendEvent(
+    type: DurableJobEventType,
+    record: ScheduleRecord,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): void {
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record.lastJobId,
+      queue: record.queue,
+      name: record.job.name,
+      version: record.job.version,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes
+    }
+    this.memoryJobStore!.appendDurableEvent(input)
   }
 
   private hasActiveOverlap(jobId: JobId | undefined): boolean {
