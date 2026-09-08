@@ -228,13 +228,15 @@ const startWorkerWithExecutor = async (
   const flowsField = readOwnField(options, 'flows', 'options.flows')
   const normalizedFlows = normalizeFlows(flowsField.present ? flowsField.value : undefined)
   const normalizedOptions = normalizeWorkerOptions(options)
-  await assertStoresAvailable(executor, normalizedHandlers, normalizedFlows)
+  const resolvedStores = await assertStoresAvailable(executor, normalizedHandlers, normalizedFlows)
 
   const supervisor = new WorkerSupervisor(
     executor,
     normalizedHandlers,
     normalizedOptions,
-    normalizedFlows
+    normalizedFlows,
+    resolvedStores.job,
+    resolvedStores.flow
   )
   supervisor.start()
   return supervisor
@@ -491,7 +493,10 @@ const assertStoresAvailable = async (
   executor: RuntimeExecutor<any>,
   handlers: readonly AnyWorkerHandler[],
   flows: readonly WorkerFlowRegistration[]
-): Promise<void> => {
+): Promise<{
+  readonly job: ReadonlyMap<string, JobStoreNamespace.Contract>
+  readonly flow: ReadonlyMap<string, FlowStoreNamespace>
+}> => {
   const stores = new Map<string, AnyJobStoreToken>()
   const flowStores = new Map<string, AnyFlowStoreToken>()
   const handlerJobs = new Set(handlers.map((handler) => identityKeyFor(handler.job)))
@@ -524,18 +529,24 @@ const assertStoresAvailable = async (
     }
   }
 
+  const resolvedJobStores = new Map<string, JobStoreNamespace.Contract>()
   for (const store of stores.values()) {
-    await assertStoreAvailable(executor, store)
+    resolvedJobStores.set(store.serviceTag, await assertStoreAvailable(executor, store))
   }
+  const resolvedFlowStores = new Map<string, FlowStoreNamespace>()
   for (const flowStore of flowStores.values()) {
-    await assertFlowStoreAvailable(executor, flowStore)
+    resolvedFlowStores.set(
+      flowStore.serviceTag,
+      await assertFlowStoreAvailable(executor, flowStore)
+    )
   }
+  return { job: resolvedJobStores, flow: resolvedFlowStores }
 }
 
 const assertStoreAvailable = async (
   executor: RuntimeExecutor<any>,
   token: AnyJobStoreToken
-): Promise<void> => {
+): Promise<JobStoreNamespace.Contract> => {
   const result = (await executor.run(
     () =>
       Effect.gen(async function* () {
@@ -549,12 +560,13 @@ const assertStoreAvailable = async (
   }
 
   assertJobStoreProtocolCompatible(result.value.descriptor)
+  return result.value
 }
 
 const assertFlowStoreAvailable = async (
   executor: RuntimeExecutor<any>,
   token: AnyFlowStoreToken
-): Promise<void> => {
+): Promise<FlowStoreNamespace> => {
   const result = (await executor.run(
     () =>
       Effect.gen(async function* () {
@@ -570,4 +582,5 @@ const assertFlowStoreAvailable = async (
       message: 'FlowStore must implement protocol version 2'
     })
   }
+  return result.value
 }
