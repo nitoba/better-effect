@@ -47,6 +47,11 @@ import type {
   TickScheduleResult,
   UpsertScheduleResult
 } from 'better-effect-mq'
+import type {
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventStoreWriter
+} from 'better-effect-mq'
 import {
   metadataEntries,
   metadataFromEntries,
@@ -58,6 +63,7 @@ import { MongoJobStoreClient } from './client'
 import type { MongoJobStoreConfig, MongoJobStoreConnectionConfig, MongoSession } from './config'
 import { MongoJobStoreLayoutError, MongoJobStoreTopologyError } from './errors'
 import { MongoJobStoreMigrator } from './migrator'
+import { appendMongoExtensionEvent, assertMongoExtensionEventWriterReady } from './extension-events'
 
 type Doc = Record<string, unknown>
 type Operation<Value> = import('better-effect-mq').ScheduleStoreOperation<Value, ScheduleStoreError>
@@ -637,8 +643,53 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
   private disposal: Promise<void> | undefined
   private readonly collections: MongoCollections
 
-  constructor(private readonly client: MongoJobStoreClient) {
+  constructor(
+    private readonly client: MongoJobStoreClient,
+    private readonly eventWriter?: JobEventStoreWriter
+  ) {
     this.collections = mongoCollections(client.db, client.collectionPrefix)
+  }
+
+  private async ensureEventWriterReady(session: MongoSession, operation: string): Promise<void> {
+    await assertMongoExtensionEventWriterReady(
+      session,
+      this.collections,
+      this.client.namespace,
+      operation,
+      this.eventWriter
+    )
+  }
+
+  private async appendEvent(
+    session: MongoSession,
+    type: DurableJobEventType,
+    record: ScheduleRecord,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): Promise<void> {
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record.lastJobId,
+      queue: record.queue,
+      name: record.job.name,
+      version: record.job.version,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes
+    }
+    await appendMongoExtensionEvent(
+      session,
+      this.collections,
+      this.client.namespace,
+      this.eventWriter,
+      input
+    )
   }
 
   async start(): Promise<void> {
@@ -892,6 +943,7 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
           key: normalized.key
         })
         if (existing === undefined) {
+          await this.ensureEventWriterReady(session, 'upsertSchedule')
           try {
             await this.collections.schedules.insertOne(
               encodeSchedule(this.client.namespace, normalized),
@@ -907,6 +959,9 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
               throw new MongoDuplicateConflict()
             throw cause
           }
+          await this.appendEvent(session, 'schedule-upserted', normalized, normalized.updatedAtMs, {
+            created: 'true'
+          })
           return { record: cloneRecord(normalized), created: true, changed: true }
         }
         if (logicalDigest(existing) === logicalDigest(normalized))
@@ -922,7 +977,11 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
           createdAtMs: existing.createdAtMs,
           updatedAtMs: Math.max(normalized.updatedAtMs, existing.updatedAtMs)
         }
+        await this.ensureEventWriterReady(session, 'upsertSchedule')
         await this.saveSchedule(session, updated)
+        await this.appendEvent(session, 'schedule-upserted', updated, updated.updatedAtMs, {
+          created: 'false'
+        })
         return { record: cloneRecord(updated), created: false, changed: true }
       })
     )
@@ -935,11 +994,14 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
       this.transaction('removeSchedule', async (session) => {
         const current = await this.resolve(session, parsed.value)
         if (current === undefined) return false
+        await this.ensureEventWriterReady(session, 'removeSchedule')
         const result = await this.collections.schedules.deleteOne(
           { _id: namespaceId(this.client.namespace, current.group, current.key) },
           { session }
         )
-        return result.deletedCount === 1
+        if (result.deletedCount !== 1) return false
+        await this.appendEvent(session, 'schedule-removed', current, current.updatedAtMs, {})
+        return true
       })
     )
   }
@@ -1049,6 +1111,7 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
         if (current.paused) return scheduleResult('paused', current, [], [])
         if (current.revision !== revision.value || current.nextRunAtMs !== expectedRunAt.value)
           return scheduleResult('stale', current, [], [])
+        await this.ensureEventWriterReady(session, 'tickSchedule')
         const skippedSlots = [...skipped]
         let effective = slots.value
         if (current.overlap === 'skip' && current.lastJobId !== undefined) {
@@ -1080,6 +1143,11 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
           updatedAtMs: now.value
         })
         await this.saveSchedule(session, updated, current)
+        await this.appendEvent(session, 'schedule-ticked', updated, now.value, {
+          status: jobs.length > 0 ? 'fired' : 'skipped',
+          jobs: String(jobs.length),
+          skipped: String(skippedSlots.length)
+        })
         return scheduleResult(jobs.length > 0 ? 'fired' : 'skipped', updated, jobs, skippedSlots)
       })
     )
@@ -1100,8 +1168,16 @@ class MongoJobScheduleStoreImplementation implements JobScheduleStoreContract {
         const current = await this.resolve(session, parsed.value)
         if (current === undefined) throw notFound(parsed.value)
         if (current.paused === paused) return undefined
+        await this.ensureEventWriterReady(session, paused ? 'pauseSchedule' : 'resumeSchedule')
         const updated = { ...current, paused, revision: current.revision + 1 }
         await this.saveSchedule(session, updated, current)
+        await this.appendEvent(
+          session,
+          paused ? 'schedule-paused' : 'schedule-resumed',
+          updated,
+          updated.updatedAtMs,
+          {}
+        )
         return undefined
       })
     )
@@ -1127,14 +1203,15 @@ const namespaceFor = (token: AnyJobScheduleStoreToken, namespace: string): strin
 
 const makeLayer = <Token extends AnyJobScheduleStoreToken>(
   token: Token,
-  acquire: () => Promise<MongoJobStoreClient>
+  acquire: () => Promise<MongoJobStoreClient>,
+  eventWriter?: JobEventStoreWriter
 ): ScheduleLayer<Token> =>
   Layer.scopedGen(
     token,
     async function* () {
       yield* token.jobStore
       const client = await acquire()
-      const store = new MongoJobScheduleStoreImplementation(client)
+      const store = new MongoJobScheduleStoreImplementation(client, eventWriter)
       try {
         await store.start()
         return JobScheduleStore.of(store as never) as unknown as ServiceContract<
@@ -1168,20 +1245,36 @@ type MongoJobScheduleStoreApi = {
 
 export const MongoJobScheduleStore: MongoJobScheduleStoreApi = Object.freeze({
   layer(config: MongoJobStoreConfig) {
-    return makeLayer(JobScheduleStore, async () => MongoJobStoreClient.fromDb(config))
+    return makeLayer(
+      JobScheduleStore,
+      async () => MongoJobStoreClient.fromDb(config),
+      config.eventWriter
+    )
   },
   layerFor<Token extends AnyJobScheduleStoreToken>(token: Token, config: MongoJobStoreConfig) {
     const namespace = namespaceFor(token, config.namespace ?? 'default')
-    return makeLayer(token, async () => MongoJobStoreClient.fromDb({ ...config, namespace }))
+    return makeLayer(
+      token,
+      async () => MongoJobStoreClient.fromDb({ ...config, namespace }),
+      config.eventWriter
+    )
   },
   layerFromConfig(config: MongoJobStoreConnectionConfig) {
-    return makeLayer(JobScheduleStore, () => MongoJobStoreClient.fromConfig(config))
+    return makeLayer(
+      JobScheduleStore,
+      () => MongoJobStoreClient.fromConfig(config),
+      config.eventWriter
+    )
   },
   layerFromConfigFor<Token extends AnyJobScheduleStoreToken>(
     token: Token,
     config: MongoJobStoreConnectionConfig
   ) {
     const namespace = namespaceFor(token, config.namespace ?? 'default')
-    return makeLayer(token, () => MongoJobStoreClient.fromConfig({ ...config, namespace }))
+    return makeLayer(
+      token,
+      () => MongoJobStoreClient.fromConfig({ ...config, namespace }),
+      config.eventWriter
+    )
   }
 })

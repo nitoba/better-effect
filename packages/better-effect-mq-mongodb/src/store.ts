@@ -968,7 +968,8 @@ class MongoJobStoreImplementation {
     operation: string,
     session: MongoSession,
     request: { jobId: string; now: number },
-    command: (record: JobRecord) => ResultType<JobTransition, any>
+    command: (record: JobRecord) => ResultType<JobTransition, any>,
+    additionalEventType?: DurableJobEventType
   ): Promise<JobTransition> {
     let found = await this.readJob(request.jobId, session)
     if (found === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
@@ -1033,6 +1034,15 @@ class MongoJobStoreImplementation {
         found.record,
         transition.attempt
       )
+    if (additionalEventType !== undefined)
+      await this.appendEvent(
+        session,
+        additionalEventType,
+        transition.record,
+        request.now,
+        found.record,
+        transition.attempt
+      )
     await this.notify(transition.record.queue, request.now, session)
     return transition
   }
@@ -1092,7 +1102,11 @@ class MongoJobStoreImplementation {
     recordedAtMs: number,
     previous?: JobRecord,
     attempt?: AttemptRecord,
-    extra: { readonly queue?: string; readonly duplicate?: boolean } = {}
+    extra: {
+      readonly queue?: string
+      readonly duplicate?: boolean
+      readonly attributes?: Readonly<Record<string, string>>
+    } = {}
   ): Promise<void> {
     if (this.eventOptions === undefined || !this.eventWriter.canAppend) return
     const input: DurableJobEventInput = {
@@ -1110,7 +1124,7 @@ class MongoJobStoreImplementation {
       outcome: attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
       failureKind: (record?.failure?.kind ?? previous?.failure?.kind) as never,
       duplicate: extra.duplicate,
-      attributes: Object.freeze({})
+      attributes: extra.attributes ?? Object.freeze({})
     }
     await appendMongoJobEvent(session, this.collections, this.client.namespace, input)
   }
@@ -1482,11 +1496,27 @@ class MongoJobStoreImplementation {
               createdAtMs: now,
               updatedAtMs: now
             })
+            await assertMongoJobEventWriterReady(
+              session,
+              this.collections,
+              this.client.namespace,
+              'reconcile',
+              this.eventWriter
+            )
             await this.collections.controls.insertOne(
               encodeControls(this.client.namespace, createdRecord),
               {
                 session
               }
+            )
+            await this.appendEvent(
+              session,
+              'controls-reconciled',
+              undefined,
+              now,
+              undefined,
+              undefined,
+              { queue, attributes: { action: 'created' } }
             )
             created.push(createdRecord)
             continue
@@ -1508,6 +1538,13 @@ class MongoJobStoreImplementation {
           })
           const encoded = encodeControls(this.client.namespace, next)
           delete encoded._id
+          await assertMongoJobEventWriterReady(
+            session,
+            this.collections,
+            this.client.namespace,
+            'reconcile',
+            this.eventWriter
+          )
           const changed = await this.collections.controls.updateOne(
             { _id: namespaceId(this.client.namespace, queue), revision: current.revision },
             { $set: encoded },
@@ -1519,6 +1556,15 @@ class MongoJobStoreImplementation {
               retryable: true,
               message: 'MongoDB controls changed during reconciliation'
             })
+          await this.appendEvent(
+            session,
+            'controls-reconciled',
+            undefined,
+            now,
+            undefined,
+            undefined,
+            { queue, attributes: { action: 'updated' } }
+          )
           updated.push(next)
         }
         const warnings: string[] = []
@@ -1539,6 +1585,13 @@ class MongoJobStoreImplementation {
             })
             const encoded = encodeControls(this.client.namespace, next)
             delete encoded._id
+            await assertMongoJobEventWriterReady(
+              session,
+              this.collections,
+              this.client.namespace,
+              'reconcile',
+              this.eventWriter
+            )
             const changed = await this.collections.controls.updateOne(
               {
                 _id: namespaceId(this.client.namespace, current.queue),
@@ -1553,6 +1606,15 @@ class MongoJobStoreImplementation {
                 retryable: true,
                 message: 'MongoDB controls changed during removal'
               })
+            await this.appendEvent(
+              session,
+              'controls-reconciled',
+              undefined,
+              now,
+              undefined,
+              undefined,
+              { queue: current.queue, attributes: { action: 'disabled' } }
+            )
             disabled.push(next)
           }
         }
@@ -1788,6 +1850,7 @@ class MongoJobStoreImplementation {
             { session }
           )
           await this.appendEvent(session, 'job-claimed', item.record, now, item.previous)
+          await this.appendEvent(session, 'controls-claimed', item.record, now, item.previous)
         }
         if (planned.length > 0 && rate !== undefined) {
           const updated = await this.collections.rateWindows.updateOne(
@@ -1828,7 +1891,8 @@ class MongoJobStoreImplementation {
   }
   private async settleInTransaction(
     session: MongoSession,
-    request: J.SettleRequest
+    request: J.SettleRequest,
+    additionalEventType?: DurableJobEventType
   ): Promise<J.SettlementResult> {
     const jobId = makeJobId(request.jobId)
     const token = makeLeaseToken(request.leaseToken)
@@ -1945,6 +2009,15 @@ class MongoJobStoreImplementation {
       found.record,
       reduced.value.attempt
     )
+    if (additionalEventType !== undefined)
+      await this.appendEvent(
+        session,
+        additionalEventType,
+        next,
+        request.now,
+        found.record,
+        reduced.value.attempt
+      )
     await this.notify(next.queue, request.now, session)
     return { record: next, attempt: reduced.value.attempt, status: 'applied' }
   }
@@ -1973,7 +2046,7 @@ class MongoJobStoreImplementation {
           'settleControlled'
         )
         await this.lockRateWindow(session, control, now, 'settleControlled')
-        return this.settleInTransaction(session, request)
+        return this.settleInTransaction(session, request, 'controls-settled')
       })
     } catch (cause) {
       return fail('settleControlled', cause)
@@ -2026,7 +2099,8 @@ class MongoJobStoreImplementation {
               leaseToken: leaseToken.value,
               now
             })
-          }
+          },
+          'controls-released'
         )
       })
     } catch (cause) {
@@ -2057,7 +2131,8 @@ class MongoJobStoreImplementation {
           (record) =>
             record.state === 'active'
               ? reduceJob(record, { type: 'request-cancellation', jobId: record.id, now })
-              : reduceJob(record, { type: 'cancel', jobId: record.id, now })
+              : reduceJob(record, { type: 'cancel', jobId: record.id, now }),
+          'controls-cancelled'
         )
         if (!wasActive)
           await this.collections.permits.deleteOne(
@@ -2127,7 +2202,8 @@ class MongoJobStoreImplementation {
                 record,
                 { type: 'recover-stalled', jobId: record.id, now },
                 record.stalledCount >= maximum
-              )
+              ),
+            'controls-stalled-recovered'
           )
           transitions.push(transition)
         }
@@ -2373,6 +2449,11 @@ class MongoJobStoreImplementation {
       const queue = makeQueueName(request.queue)
       if (Result.isError(queue)) throw queue.error
       return this.transaction(paused ? 'pause' : 'resume', async (session) => {
+        const current = await this.collections.queues.findOne(
+          { _id: namespaceId(this.client.namespace, queue.value) },
+          { session }
+        )
+        if (current !== null && current.paused === paused) return { queue: queue.value, paused }
         await this.collections.queues.findOneAndUpdate(
           { _id: namespaceId(this.client.namespace, queue.value) },
           {

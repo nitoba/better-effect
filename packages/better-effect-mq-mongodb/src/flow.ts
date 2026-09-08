@@ -61,13 +61,17 @@ import {
   type ReconcileFlowResult,
   type RecordChildResultsRequest,
   type RecordChildResultsResult,
-  type SerializedJobFailure
+  type SerializedJobFailure,
+  type DurableJobEventInput,
+  type DurableJobEventType,
+  type JobEventStoreWriter
 } from 'better-effect-mq'
 import { MongoFlowMigrator, type MongoMigrationOptions } from './migrator'
 import { mongoCollections, namespaceId, type MongoCollections } from './collections'
 import { MongoJobStoreClient } from './client'
 import type { MongoJobStoreConfig, MongoJobStoreConnectionConfig, MongoSession } from './config'
 import { MongoJobStoreTopologyError } from './errors'
+import { appendMongoExtensionEvent, assertMongoExtensionEventWriterReady } from './extension-events'
 
 type Doc = Record<string, unknown>
 type FlowResult<Value> = ResultType<Value, FlowStoreV2Error>
@@ -472,10 +476,56 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
   private disposed = false
   private disposal: Promise<void> | undefined
 
-  constructor(private readonly client: MongoJobStoreClient) {}
+  constructor(
+    private readonly client: MongoJobStoreClient,
+    private readonly eventWriter?: JobEventStoreWriter
+  ) {}
 
   private get collections(): MongoCollections {
     return mongoCollections(this.client.db, this.client.collectionPrefix)
+  }
+
+  private async ensureEventWriterReady(session: MongoSession, operation: string): Promise<void> {
+    await assertMongoExtensionEventWriterReady(
+      session,
+      this.collections,
+      this.client.namespace,
+      operation,
+      this.eventWriter
+    )
+  }
+
+  private async appendEvent(
+    session: MongoSession,
+    type: DurableJobEventType,
+    flowId: string | undefined,
+    flowName: string | undefined,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): Promise<void> {
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: flowId as DurableJobEventInput['jobId'],
+      queue: undefined,
+      name: flowName,
+      version: undefined,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes
+    }
+    await appendMongoExtensionEvent(
+      session,
+      this.collections,
+      this.client.namespace,
+      this.eventWriter,
+      input
+    )
   }
 
   async fanOut(request: FlowFanOutRequest): Promise<FlowResult<FlowFanOutResult>> {
@@ -511,6 +561,7 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
           leaseToken: normalized.leaseToken,
           reason: 'mismatched-token'
         })
+      await this.ensureEventWriterReady(session, 'fanOut')
       const flow = Object.freeze({
         flowName: normalized.flowName,
         failFast: normalized.failFast,
@@ -573,6 +624,14 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
           retryable: true,
           message: 'MongoDB flow parent lease changed during fan-out'
         })
+      await this.appendEvent(
+        session,
+        'flow-fan-out',
+        normalized.flowId,
+        normalized.flowName,
+        normalized.now,
+        { children: String(normalized.children.length) }
+      )
       const snapshot = await readSnapshot(
         this.collections,
         this.client.namespace,
@@ -643,6 +702,11 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
       )
       if (parentDocument === null) throw new JobNotFoundError({ jobId: flowId.value })
       const currentParent = decodeParent(parentDocument)
+      const pendingReports = reports.filter(
+        (report) => children.get(report.childKey)!.record.status === 'pending'
+      )
+      if (pendingReports.length > 0)
+        await this.ensureEventWriterReady(session, 'recordChildResults')
       let flow = currentParent.flow
       let applied = 0
       let firstFailure: FlowChildReport | undefined
@@ -737,6 +801,15 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
         flowId.value,
         session
       )
+      if (applied > 0)
+        await this.appendEvent(
+          session,
+          'flow-child-results-recorded',
+          flowId.value,
+          currentParent.flowName,
+          request.now,
+          { applied: String(applied), parentSettled: String(parentSettled) }
+        )
       return { applied, parentSettled, parent: snapshot.parent, children: snapshot.children }
     })
   }
@@ -775,6 +848,21 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
         }
       }
       const pending = [...children.values()].filter(({ record }) => record.status === 'pending')
+      if (pending.length === 0) {
+        const snapshot = await readSnapshot(
+          this.collections,
+          this.client.namespace,
+          flowId.value,
+          session
+        )
+        return {
+          cancelled: 0,
+          parentSettled: false,
+          parent: snapshot.parent,
+          children: snapshot.children
+        }
+      }
+      await this.ensureEventWriterReady(session, 'cancel')
       for (const child of pending) {
         const changed = await this.collections.flowChildren.updateOne(
           {
@@ -813,6 +901,14 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
         this.client.namespace,
         flowId.value,
         session
+      )
+      await this.appendEvent(
+        session,
+        'flow-cancelled',
+        flowId.value,
+        snapshot.parent.flowName,
+        request.now,
+        { cancelled: String(pending.length) }
       )
       return {
         cancelled: pending.length,
@@ -968,6 +1064,13 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
       )
       if (children.size === 0) throw new JobNotFoundError({ jobId: flowId.value })
       let marked = 0
+      const candidates = [...children.values()].filter(
+        (child) =>
+          requested.has(child.record.childKey) &&
+          child.record.status === 'cancelled' &&
+          !child.record.cascaded
+      )
+      if (candidates.length > 0) await this.ensureEventWriterReady(session, 'markCascaded')
       for (const child of children.values()) {
         if (
           !requested.has(child.record.childKey) ||
@@ -992,6 +1095,15 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
         flowId.value,
         session
       )
+      if (marked > 0)
+        await this.appendEvent(
+          session,
+          'flow-cascaded',
+          flowId.value,
+          snapshot.parent.flowName,
+          Date.now(),
+          { marked: String(marked) }
+        )
       return { marked, children: snapshot.children }
     })
   }
@@ -1017,6 +1129,7 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
           })
         return { status: 'already-applied', entry: stored }
       }
+      await this.ensureEventWriterReady(session, 'appendChildReport')
       const sequenceReply = await this.collections.counters.findOneAndUpdate(
         {
           _id: namespaceId(this.client.namespace, 'flow-outbox-sequence'),
@@ -1052,6 +1165,14 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
           jobId: entry.report.flowId,
           leaseToken: makeLeaseToken('outbox-conflict').unwrap()
         })
+      await this.appendEvent(
+        session,
+        'flow-outbox-appended',
+        entry.report.flowId,
+        entry.flowName,
+        Date.now(),
+        { action: 'append' }
+      )
       return { status: 'applied', entry: stored }
     })
   }
@@ -1125,6 +1246,7 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
     return transaction(this.client, 'ackOutbox', async (session) => {
       let acknowledged = 0
       let skipped = 0
+      const acknowledgedEntries: FlowOutboxEntry[] = []
       for (const entry of entries) {
         const document = await this.collections.flowOutbox.findOne(
           { _id: namespaceId(this.client.namespace, entry.id) },
@@ -1139,12 +1261,27 @@ class MongoFlowStoreImplementation implements MongoFlowStoreInstance {
           skipped += 1
           continue
         }
+        acknowledgedEntries.push(stored)
+      }
+      if (acknowledgedEntries.length > 0) await this.ensureEventWriterReady(session, 'ackOutbox')
+      for (const entry of acknowledgedEntries) {
         const removed = await this.collections.flowOutbox.deleteOne(
           { _id: namespaceId(this.client.namespace, entry.id) },
           { session }
         )
         if (removed.deletedCount === 1) acknowledged += 1
         else skipped += 1
+      }
+      if (acknowledged > 0) {
+        const flowIds = new Set(acknowledgedEntries.map((entry) => entry.report.flowId))
+        await this.appendEvent(
+          session,
+          'flow-outbox-appended',
+          flowIds.size === 1 ? [...flowIds][0] : undefined,
+          flowIds.size === 1 ? acknowledgedEntries[0]?.flowName : undefined,
+          Date.now(),
+          { action: 'ack', acknowledged: String(acknowledged) }
+        )
       }
       return { acknowledged, skipped }
     })
@@ -1192,14 +1329,15 @@ const verifyTopology = async (client: MongoJobStoreClient): Promise<void> => {
 
 const open = async (
   client: MongoJobStoreClient,
-  ownsClient: boolean
+  ownsClient: boolean,
+  eventWriter?: JobEventStoreWriter
 ): Promise<MongoFlowStoreInstance> => {
   try {
     await verifyTopology(client)
     if (client.validateLayout) {
       await MongoFlowMigrator.validate(client.db, client.collectionPrefix)
     }
-    return new MongoFlowStoreImplementation(client)
+    return new MongoFlowStoreImplementation(client, eventWriter)
   } catch (cause) {
     if (ownsClient) await client.dispose().catch(() => undefined)
     throw cause
@@ -1224,13 +1362,14 @@ const disposeFlowService = async (value: unknown): Promise<void> => {
 
 const makeLayer = <Token extends AnyFlowStoreToken>(
   token: Token,
-  acquire: () => Promise<MongoJobStoreClient>
+  acquire: () => Promise<MongoJobStoreClient>,
+  eventWriter?: JobEventStoreWriter
 ): Layer<InstanceType<Token>, never> =>
   Layer.scoped(
     token,
     async () => {
       const client = await acquire()
-      const store = await open(client, client.ownsClient)
+      const store = await open(client, client.ownsClient, eventWriter)
       return provideFlowService<Token>(store)
     },
     disposeFlowService
@@ -1241,34 +1380,44 @@ export const MongoFlowStore = Object.freeze({
     return MongoFlowMigrator.migrate(options)
   },
   async make(config: MongoJobStoreConfig): Promise<MongoFlowStoreInstance> {
-    return open(MongoJobStoreClient.fromDb(config), false)
+    return open(MongoJobStoreClient.fromDb(config), false, config.eventWriter)
   },
   async makeFromConfig(config: MongoJobStoreConnectionConfig): Promise<MongoFlowStoreInstance> {
     const client = await MongoJobStoreClient.fromConfig(config)
-    return open(client, true)
+    return open(client, true, config.eventWriter)
   },
   layer(config: MongoJobStoreConfig) {
-    return makeLayer(FlowStore, () => Promise.resolve(MongoJobStoreClient.fromDb(config)))
+    return makeLayer(
+      FlowStore,
+      () => Promise.resolve(MongoJobStoreClient.fromDb(config)),
+      config.eventWriter
+    )
   },
   layerFor<T extends AnyJobStoreToken>(token: T, config: MongoJobStoreConfig) {
-    return makeLayer(FlowStore.for(token), () =>
-      Promise.resolve(
-        MongoJobStoreClient.fromDb({
-          ...config,
-          namespace: namespaceFor(token, config.namespace ?? 'default')
-        })
-      )
+    return makeLayer(
+      FlowStore.for(token),
+      () =>
+        Promise.resolve(
+          MongoJobStoreClient.fromDb({
+            ...config,
+            namespace: namespaceFor(token, config.namespace ?? 'default')
+          })
+        ),
+      config.eventWriter
     )
   },
   layerFromConfig(config: MongoJobStoreConnectionConfig) {
-    return makeLayer(FlowStore, () => MongoJobStoreClient.fromConfig(config))
+    return makeLayer(FlowStore, () => MongoJobStoreClient.fromConfig(config), config.eventWriter)
   },
   layerFromConfigFor<T extends AnyJobStoreToken>(token: T, config: MongoJobStoreConnectionConfig) {
-    return makeLayer(FlowStore.for(token), () =>
-      MongoJobStoreClient.fromConfig({
-        ...config,
-        namespace: namespaceFor(token, config.namespace ?? 'default')
-      })
+    return makeLayer(
+      FlowStore.for(token),
+      () =>
+        MongoJobStoreClient.fromConfig({
+          ...config,
+          namespace: namespaceFor(token, config.namespace ?? 'default')
+        }),
+      config.eventWriter
     )
   }
 })
