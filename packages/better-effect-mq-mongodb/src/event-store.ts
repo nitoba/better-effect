@@ -14,6 +14,7 @@ import {
   JobEventCursorExpiredError,
   JobEventStore,
   JobEventStoreFailure,
+  durableJobEventTypes,
   jobEventExtension,
   jobEventExtensionVersion,
   jobEventStoreTag,
@@ -67,22 +68,7 @@ const MAX = Number.MAX_SAFE_INTEGER
 const MAX_LIMIT = 10_000
 const MAX_SCAN = 20_000
 const POLL_MS = 250
-const EVENT_TYPES = new Set<DurableJobEventType>([
-  'job-enqueued',
-  'job-claimed',
-  'job-completed',
-  'job-retry-scheduled',
-  'job-failed',
-  'job-cancelled',
-  'job-cancel-requested',
-  'job-released',
-  'job-stalled-recovered',
-  'job-promoted',
-  'job-admin-retried',
-  'job-removed',
-  'queue-paused',
-  'queue-resumed'
-])
+const EVENT_TYPES = new Set<DurableJobEventType>(durableJobEventTypes)
 
 const descriptor: JobEventStoreDescriptor = Object.freeze({
   extension: jobEventExtension,

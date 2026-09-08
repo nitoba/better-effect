@@ -9,6 +9,7 @@ import { Result, type Result as ResultType } from 'better-result'
 import type { QueueName } from '../protocol'
 import {
   JobEventStore,
+  isDurableJobEventType,
   jobEventExtension,
   jobEventExtensionVersion,
   type AnyJobEventStoreToken,
@@ -319,6 +320,13 @@ class MemoryJobEventStoreImplementation {
       const limit = options.limit === undefined ? 100 : options.limit
       if (!Number.isSafeInteger(limit) || limit <= 0 || limit > maxLimit) {
         return fail(this.failure('read', 'limit must be between 1 and 10000'))
+      }
+      if (
+        options.types !== undefined &&
+        (!Array.isArray(options.types) ||
+          options.types.some((type) => !isDurableJobEventType(type)))
+      ) {
+        return fail(this.failure('read', 'types contains an unknown event type'))
       }
       const events: DurableJobEvent[] = []
       let examined: number | undefined

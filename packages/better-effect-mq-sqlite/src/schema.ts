@@ -341,7 +341,13 @@ CREATE TABLE IF NOT EXISTS better_effect_mq_job_events (
     'job-enqueued', 'job-claimed', 'job-completed', 'job-retry-scheduled',
     'job-failed', 'job-cancelled', 'job-cancel-requested', 'job-released',
     'job-stalled-recovered', 'job-promoted', 'job-admin-retried',
-    'job-removed', 'queue-paused', 'queue-resumed'
+    'job-removed', 'queue-paused', 'queue-resumed',
+    'flow-fan-out', 'flow-child-results-recorded', 'flow-cancelled',
+    'flow-cascaded', 'flow-outbox-appended',
+    'schedule-upserted', 'schedule-removed', 'schedule-ticked',
+    'schedule-paused', 'schedule-resumed',
+    'controls-reconciled', 'controls-claimed', 'controls-settled',
+    'controls-released', 'controls-stalled-recovered', 'controls-cancelled'
   ))
 );
 CREATE INDEX IF NOT EXISTS better_effect_mq_job_events_queue_cursor_idx

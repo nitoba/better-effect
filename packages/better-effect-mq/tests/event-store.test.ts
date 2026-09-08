@@ -13,6 +13,11 @@ import {
   MemoryJobStore,
   QueueName,
   WorkerId,
+  assertDurableJobEventType,
+  durableJobEventTaxonomies,
+  durableJobEventTypeDescriptors,
+  durableJobEventTypes,
+  isDurableJobEventType,
   type JobStoreError,
   type JobStoreOperation
 } from '../src'
@@ -30,6 +35,91 @@ const unwrap = <Value, Failure>(
 const queue = QueueName.make('events').unwrap()
 const name = JobName.make('send').unwrap()
 const identity = { queue, name, version: 1 } as const
+
+test('durable event taxonomy describes the versioned extension operations', () => {
+  expect(durableJobEventTypes).toHaveLength(30)
+  expect(durableJobEventTypes.slice(0, 14)).toEqual([
+    'job-enqueued',
+    'job-claimed',
+    'job-completed',
+    'job-retry-scheduled',
+    'job-failed',
+    'job-cancelled',
+    'job-cancel-requested',
+    'job-released',
+    'job-stalled-recovered',
+    'job-promoted',
+    'job-admin-retried',
+    'job-removed',
+    'queue-paused',
+    'queue-resumed'
+  ])
+  expect(durableJobEventTaxonomies.flowV2.types).toEqual([
+    'flow-fan-out',
+    'flow-child-results-recorded',
+    'flow-cancelled',
+    'flow-cascaded',
+    'flow-outbox-appended'
+  ])
+  expect(durableJobEventTaxonomies.scheduleV1.types).toEqual([
+    'schedule-upserted',
+    'schedule-removed',
+    'schedule-ticked',
+    'schedule-paused',
+    'schedule-resumed'
+  ])
+  expect(durableJobEventTaxonomies.controlsV3.types).toEqual([
+    'controls-reconciled',
+    'controls-claimed',
+    'controls-settled',
+    'controls-released',
+    'controls-stalled-recovered',
+    'controls-cancelled'
+  ])
+
+  expect(durableJobEventTypeDescriptors).toHaveLength(durableJobEventTypes.length)
+  expect(
+    durableJobEventTypeDescriptors.filter(
+      ({ family, protocolVersion }) => family === 'flow' && protocolVersion === 2
+    )
+  ).toHaveLength(5)
+  expect(
+    durableJobEventTypeDescriptors.filter(
+      ({ family, protocolVersion }) => family === 'schedule' && protocolVersion === 1
+    )
+  ).toHaveLength(5)
+  expect(
+    durableJobEventTypeDescriptors.filter(
+      ({ family, protocolVersion }) => family === 'controls' && protocolVersion === 3
+    )
+  ).toHaveLength(6)
+  expect(
+    durableJobEventTypeDescriptors
+      .filter(({ family }) => family === 'flow')
+      .map(({ operation }) => operation)
+  ).toEqual(['fanOut', 'recordChildResults', 'cancel', 'markCascaded', 'outbox'])
+  expect(Object.isFrozen(durableJobEventTypes)).toBe(true)
+  expect(Object.isFrozen(durableJobEventTaxonomies.flowV2)).toBe(true)
+  expect(Object.isFrozen(durableJobEventTypeDescriptors)).toBe(true)
+  expect(Object.isFrozen(durableJobEventTypeDescriptors[0])).toBe(true)
+})
+
+test('durable event type validation accepts the taxonomy and rejects unknown values', () => {
+  expect(isDurableJobEventType('flow-fan-out')).toBe(true)
+  expect(isDurableJobEventType('schedule-ticked')).toBe(true)
+  expect(isDurableJobEventType('controls-settled')).toBe(true)
+  expect(isDurableJobEventType('flow-started')).toBe(false)
+  expect(assertDurableJobEventType('flow-fan-out')).toBe('flow-fan-out')
+  expect(() => assertDurableJobEventType('flow-started')).toThrow(
+    'event type is not a supported durable job event type'
+  )
+
+  const events = MemoryJobEventStore.make()
+  expect(unwrap(events.read({ types: ['flow-fan-out'] })).events).toEqual([])
+  // SAFETY: MemoryJobEventStore.read is synchronous even though adapters may return a PromiseLike.
+  const invalid = events.read({ types: ['flow-started' as never] }) as Result<unknown, unknown>
+  expect(Result.isError(invalid)).toBe(true)
+})
 
 const request = (id: string, now = 0) => ({
   id: JobId.make(id).unwrap(),
