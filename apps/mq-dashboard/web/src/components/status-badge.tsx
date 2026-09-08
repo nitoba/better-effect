@@ -22,15 +22,17 @@ function isJobState(value: string): value is JobState {
 }
 
 export function StatusBadge({ state }: { state: string }) {
+  const label = state.replaceAll('-', ' ')
   return (
     <Badge
+      aria-label={`Estado: ${label}`}
       variant="outline"
       className={cn(
         'capitalize',
         isJobState(state) ? stateClasses[state] : 'border-border bg-muted text-muted-foreground'
       )}
     >
-      {state.replaceAll('-', ' ')}
+      {label}
     </Badge>
   )
 }

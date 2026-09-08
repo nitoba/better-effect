@@ -56,6 +56,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { StatusBadge } from '@/components/status-badge'
+import { MAX_EVENT_BUFFER, appendEventToBuffer, eventStreamPath } from '@/lib/event-tail'
 import {
   apiUrl,
   formatDuration,
@@ -72,7 +73,6 @@ import {
   type Schedule
 } from '@/lib/dashboard-api'
 
-const MAX_EVENT_BUFFER = 200
 const jobStates: readonly JobState[] = [
   'waiting',
   'delayed',
@@ -769,16 +769,16 @@ function EventTail() {
   useEffect(() => {
     const initialCursor = cursorRef.current
     if (error || initialCursor === undefined) return undefined
-    const query = new URLSearchParams({
-      limit: '50',
-      heartbeatMs: '15000',
-      after: initialCursor
-    })
-    if (queue.trim()) query.set('queue', queue.trim())
-    if (type !== 'all') query.set('type', type)
-    const source = new EventSource(apiUrl(`/api/events/stream?${query}`), {
-      withCredentials: true
-    })
+    const source = new EventSource(
+      apiUrl(
+        eventStreamPath({
+          after: initialCursor,
+          queue: queue.trim() || undefined,
+          type: type === 'all' ? undefined : type
+        })
+      ),
+      { withCredentials: true }
+    )
     setStatus('Conectado')
     source.addEventListener('job-event', (event) => {
       // SAFETY: EventSource delivers named event payloads as MessageEvent values.
@@ -788,10 +788,9 @@ function EventTail() {
       cursorRef.current = next.cursor
       setCursor(next.cursor)
       setEvents((current) => {
-        const combined = [...current, next]
-        const overflow = Math.max(0, combined.length - MAX_EVENT_BUFFER)
-        if (overflow > 0) setDropped((count) => count + overflow)
-        return combined.slice(-MAX_EVENT_BUFFER)
+        const nextState = appendEventToBuffer(current, next)
+        if (nextState.dropped > 0) setDropped((count) => count + nextState.dropped)
+        return nextState.events
       })
     })
     source.addEventListener('heartbeat', () => setStatus('Conectado · heartbeat recebido'))
@@ -834,7 +833,7 @@ function EventTail() {
               eventos.
             </CardDescription>
           </div>
-          <Badge variant="outline" className="gap-1.5">
+          <Badge role="status" aria-live="polite" variant="outline" className="gap-1.5">
             <Activity className="size-3.5 text-emerald-600" />
             {status}
           </Badge>
