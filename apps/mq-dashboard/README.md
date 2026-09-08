@@ -84,6 +84,16 @@ minute) and does not use job or user identifiers as labels. `/health`,
 `/api/capabilities`, and `/api/overview` expose only boolean availability flags
 for the job redaction policy, mutation policy, audit sink, and rate limiter.
 
+`/api/health` is the authenticated operational snapshot. It reports aggregate
+SSE connection counts (including reconnects and closed connections), observed
+event lag, cursor expiry, stream failures, and bounded-buffer drops/coalescing;
+when the host shares a `JobHealth` monitor with its EventStore and
+`JobEventConsumer`, the response also includes store failures, lease loss,
+stalled recovery, consumer handler failures, and retention count/age. These
+values are process-local health telemetry and do not replace the durable event
+log. The snapshot and its optional metrics sink never include job IDs, worker
+IDs, payloads, results, failures, or user identifiers.
+
 The shipped authorization layer is only a safe local example. Production
 applications should replace `DashboardAuthorization` with their host's
 authentication, role, CSRF, audit, and rate-limit boundary.
@@ -139,6 +149,25 @@ overview/list/detail/action routes remain available; event and SSE routes
 report `events_unavailable`. Schedules, flows, and controls follow the same
 optional-capability pattern with their `*CapabilityDisabled` Layers.
 
+To install the optional health feed without changing existing dashboard
+composition, share the process-local `JobHealth` monitor used by the store and
+consumer with a dashboard monitor:
+
+```ts
+const jobHealth = JobHealth.make({ metrics })
+const dashboardHealth = makeDashboardHealth({ jobHealth, metrics })
+const events = MemoryJobEventStore.make({ health: jobHealth })
+
+Layer.merge(
+  dashboardEventFeedLayer({ health: { available: true, ...dashboardHealth } }),
+  DashboardApp.layer
+)
+```
+
+The feed option is optional and existing `dashboardEventFeedLayer()` callers
+remain valid; without it, `/api/health` reports `health_unavailable` while SSE
+continues to work without process-local counters.
+
 ## HTTP contract
 
 Successful responses use the existing `better-effect/hono` JSON policy and are
@@ -157,6 +186,7 @@ authorized identity.
 | GET    | `/api/jobs/:id/attempts`            | viewer   | Sanitized attempt ledger.                                  |
 | GET    | `/api/events`                       | viewer   | One finite durable event page.                             |
 | GET    | `/api/events/stream`                | viewer   | Resumable SSE event tail.                                  |
+| GET    | `/api/health`                       | viewer   | Authenticated aggregate SSE and MQ health snapshot.        |
 | GET    | `/api/capabilities`                 | viewer   | Installed optional dashboard capabilities.                 |
 | GET    | `/api/schedules`                    | viewer   | List sanitized schedules when installed.                   |
 | GET    | `/api/schedules/:group/:key`        | viewer   | Get one sanitized schedule.                                |
@@ -203,6 +233,13 @@ data: {"error":"cursor_expired","oldestAvailableCursor":"...","refreshRequired":
 The client should refresh `/api/overview`, choose a new cursor policy, and
 reconnect. Request abort/disconnect is linked to the EventStore wait and the
 managed stream Scope; no durable subscriber or checkpoint is created.
+
+Browsers may reconnect the same `EventSource` URL after a transient network
+failure; the browser sends `Last-Event-ID` and the server resumes from that
+durable cursor. The client buffer is bounded to 200 entries: overflow is
+reported as dropped events and duplicate cursor updates are coalesced. These
+client-side counters are separate from server-side connection and stream
+health counters.
 
 If the EventStore extension is not installed, overview/list/detail/actions keep
 working and `/api/events`/SSE return `events_unavailable`. The disabled feed is

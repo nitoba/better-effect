@@ -104,6 +104,35 @@ export interface Overview {
   }
 }
 
+export interface JobHealthSnapshot {
+  storeOperationFailures: number
+  leaseLosses: number
+  stalledRecoveries: number
+  consumerHandlerFailures: number
+  latestEventLagMs: number | undefined
+  maxEventLagMs: number | undefined
+  retainedEventCount: number | undefined
+  oldestRetainedAgeMs: number | undefined
+  retentionCount: number | undefined
+  retentionAgeMs: number | undefined
+  cursorExpiries: number
+}
+
+export interface DashboardHealthSnapshot {
+  state: 'idle' | 'active' | 'degraded'
+  activeConnections: number
+  connectionsOpened: number
+  connectionsClosed: number
+  reconnects: number
+  cursorExpiries: number
+  latestObservedLagMs: number | undefined
+  maxObservedLagMs: number | undefined
+  backpressureDropped: number
+  eventsCoalesced: number
+  streamFailures: number
+  job: JobHealthSnapshot | undefined
+}
+
 export interface FlowSnapshot {
   parent: { flowId: string; flowName: string; depth: number; state: string }
   children: readonly {

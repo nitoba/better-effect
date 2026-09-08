@@ -64,6 +64,7 @@ import {
   requestJson,
   type Attempt,
   type DashboardTab,
+  type DashboardHealthSnapshot,
   type DurableEvent,
   type FlowSnapshot,
   type Job,
@@ -737,8 +738,8 @@ function EventTail() {
   const [status, setStatus] = useState('Carregando eventos...')
   const [error, setError] = useState<string | undefined>()
   const [dropped, setDropped] = useState(0)
+  const [coalesced, setCoalesced] = useState(0)
   const [streamGeneration, setStreamGeneration] = useState(0)
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const loadPage = useCallback(async () => {
     const query = new URLSearchParams({ limit: '50' })
@@ -779,7 +780,8 @@ function EventTail() {
       ),
       { withCredentials: true }
     )
-    setStatus('Conectado')
+    setStatus('Conectando…')
+    source.onopen = () => setStatus('Conectado')
     source.addEventListener('job-event', (event) => {
       // SAFETY: EventSource delivers named event payloads as MessageEvent values.
       const message = event as MessageEvent<string>
@@ -790,6 +792,9 @@ function EventTail() {
       setEvents((current) => {
         const nextState = appendEventToBuffer(current, next)
         if (nextState.dropped > 0) setDropped((count) => count + nextState.dropped)
+        if ((nextState.coalesced ?? 0) > 0) {
+          setCoalesced((count) => count + (nextState.coalesced ?? 0))
+        }
         return nextState.events
       })
     })
@@ -802,15 +807,10 @@ function EventTail() {
       )
     })
     source.onerror = () => {
-      source.close()
       setStatus('Reconectando…')
-      retryTimer.current = setTimeout(() => {
-        void loadPage()
-      }, 2_000)
     }
     return () => {
       source.close()
-      if (retryTimer.current !== undefined) clearTimeout(retryTimer.current)
     }
   }, [error, loadPage, queue, streamGeneration, type])
 
@@ -819,6 +819,7 @@ function EventTail() {
     setCursor(undefined)
     setError(undefined)
     setDropped(0)
+    setCoalesced(0)
     void loadPage()
   }
 
@@ -829,8 +830,8 @@ function EventTail() {
           <div>
             <CardTitle className="text-base">Live event tail</CardTitle>
             <CardDescription>
-              Reconexão por cursor, heartbeat não durável e buffer limitado a {MAX_EVENT_BUFFER}{' '}
-              eventos.
+              Reconexão automática por Last-Event-ID, heartbeat não durável e buffer limitado a{' '}
+              {MAX_EVENT_BUFFER} eventos.
             </CardDescription>
           </div>
           <Badge role="status" aria-live="polite" variant="outline" className="gap-1.5">
@@ -910,7 +911,10 @@ function EventTail() {
           <span>
             Cursor atual: <span className="font-mono">{cursor ?? '—'}</span>
           </span>
-          {dropped > 0 ? <span>{dropped} eventos antigos removidos do buffer local.</span> : null}
+          {dropped > 0 ? <span>{dropped} eventos descartados por backpressure local.</span> : null}
+          {coalesced > 0 ? (
+            <span>{coalesced} atualizações coalescidas no buffer local.</span>
+          ) : null}
         </div>
       </CardContent>
     </Card>
@@ -1200,7 +1204,13 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
   )
 }
 
-function HealthPanel({ overview }: { overview: Overview | undefined }) {
+function HealthPanel({
+  overview,
+  health
+}: {
+  overview: Overview | undefined
+  health: DashboardHealthSnapshot | undefined
+}) {
   return (
     <div className="space-y-6">
       <div>
@@ -1254,13 +1264,71 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
           )}
         </CardContent>
       </Card>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard
+          label="Conexões ativas"
+          value={health?.activeConnections ?? '—'}
+          icon={Activity}
+          tone={health?.state === 'degraded' ? 'warning' : 'positive'}
+        />
+        <MetricCard
+          label="Reconexões"
+          value={health?.reconnects ?? '—'}
+          icon={RotateCcw}
+          tone={health?.reconnects ? 'warning' : 'default'}
+        />
+        <MetricCard
+          label="Lag observado"
+          value={formatDuration(health?.latestObservedLagMs)}
+          icon={Clock3}
+          tone={
+            health?.latestObservedLagMs && health.latestObservedLagMs > 5_000
+              ? 'warning'
+              : 'default'
+          }
+        />
+        <MetricCard
+          label="Falhas de stream"
+          value={health?.streamFailures ?? '—'}
+          icon={AlertTriangle}
+          tone={health?.streamFailures ? 'danger' : 'default'}
+        />
+      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">SSE e retenção</CardTitle>
+          <CardDescription>
+            Contadores agregados do processo; nenhum identificador de job, usuário ou worker é
+            exposto.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ['Estado', health?.state ?? '—'],
+            ['Conexões encerradas', health?.connectionsClosed ?? '—'],
+            ['Cursor expirado', health?.cursorExpiries ?? '—'],
+            [
+              'Descartados / coalescidos',
+              `${health?.backpressureDropped ?? '—'} / ${health?.eventsCoalesced ?? '—'}`
+            ],
+            ['Eventos retidos', health?.job?.retainedEventCount ?? '—'],
+            ['Idade do evento mais antigo', formatDuration(health?.job?.oldestRetainedAgeMs)],
+            ['Falhas do store', health?.job?.storeOperationFailures ?? '—'],
+            ['Falhas de handler', health?.job?.consumerHandlerFailures ?? '—']
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-lg border bg-muted/20 p-3">
+              <div className="text-xs text-muted-foreground">{label}</div>
+              <div className="mt-1 font-mono text-sm">{value}</div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
       <Card className="border-dashed">
         <CardContent className="flex items-start gap-3 p-5 text-sm text-muted-foreground">
           <Gauge className="mt-0.5 size-4 shrink-0" />
           <span>
-            Falhas de lease, stalled recovery, lag de consumidores e status de notificações ainda
-            dependem de uma extensão de health no backend. Esta tela expõe o descriptor e as
-            capacidades públicas sem inventar métricas.
+            O health é process-local e complementar ao event log durável. Falhas de lease, stalled
+            recovery e lag de consumidores vêm do JobHealth compartilhado pelo host.
           </span>
         </CardContent>
       </Card>
@@ -1271,6 +1339,7 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
 export function App() {
   const [activeTab, setActiveTab] = useState<DashboardTab>('overview')
   const [overview, setOverview] = useState<Overview | undefined>()
+  const [health, setHealth] = useState<DashboardHealthSnapshot | undefined>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
 
@@ -1279,6 +1348,11 @@ export function App() {
       setLoading(true)
       setError(undefined)
       setOverview(await requestJson<Overview>('/api/overview'))
+      try {
+        setHealth(await requestJson<DashboardHealthSnapshot>('/api/health'))
+      } catch {
+        setHealth(undefined)
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Não foi possível conectar ao dashboard.')
     } finally {
@@ -1392,7 +1466,7 @@ export function App() {
                 <ExtensionsPanel overview={overview} />
               </TabsContent>
               <TabsContent value="health">
-                <HealthPanel overview={overview} />
+                <HealthPanel overview={overview} health={health} />
               </TabsContent>
             </Tabs>
           )}

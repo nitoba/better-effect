@@ -7,6 +7,8 @@ export interface CursorEvent {
 export interface EventTailState<Event extends CursorEvent> {
   readonly events: readonly Event[]
   readonly dropped: number
+  /** Number of duplicate cursor updates coalesced into an existing entry. */
+  readonly coalesced?: number
 }
 
 export interface EventStreamPathOptions {
@@ -20,13 +22,23 @@ export const appendEventToBuffer = <Event extends CursorEvent>(
   events: readonly Event[],
   next: Event,
   dropped = 0,
-  max = MAX_EVENT_BUFFER
+  max = MAX_EVENT_BUFFER,
+  coalesced = 0
 ): EventTailState<Event> => {
+  const existing = events.findIndex((event) => event.cursor === next.cursor)
+  if (existing >= 0) {
+    return {
+      events,
+      dropped,
+      coalesced: coalesced + 1
+    }
+  }
   const combined = [...events, next]
   const overflow = Math.max(0, combined.length - max)
   return {
     events: combined.slice(-max),
-    dropped: dropped + overflow
+    dropped: dropped + overflow,
+    coalesced
   }
 }
 
