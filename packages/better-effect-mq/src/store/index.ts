@@ -13,6 +13,7 @@ export {
   JobEventWriterRejectedError
 } from './event-errors'
 export { JobEvents } from './events'
+export { JobEventConsumer } from './job-event-consumer'
 export { assertJobStoreProtocolCompatible, isJobStoreDescriptor } from './compatibility'
 export type {
   GetAttemptsV2Request,
@@ -84,6 +85,18 @@ export type {
   JobEventsHandler,
   JobEventsPageOperation
 } from './events'
+export type {
+  JobEventConsumerApi,
+  JobEventConsumerFactory,
+  JobEventConsumerHandler,
+  JobEventConsumerHandle,
+  JobEventConsumerInstance,
+  JobEventConsumerLayerRequirements,
+  JobEventConsumerOptions,
+  JobEventConsumerState,
+  JobEventConsumerToken,
+  JobEventConsumerValueFactory
+} from './job-event-consumer'
 
 export { JobStoreWakeAbortedError } from './errors'
 export { MemoryJobStore } from './memory'

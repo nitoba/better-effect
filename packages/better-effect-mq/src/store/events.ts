@@ -368,6 +368,12 @@ const forEachOperation = async function* (
       )
 
       for (const event of page.events) {
+        if (linked.signal.aborted) {
+          return yield* Result.await(
+            Promise.resolve(Result.err(new JobEventConsumerAbortedError()))
+          )
+        }
+
         yield* Result.await(Promise.resolve(invokeHandler(handler(event))))
       }
 
