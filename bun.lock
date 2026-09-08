@@ -49,6 +49,22 @@
         "typescript": "^7.0.2",
       },
     },
+    "apps/mq-dashboard": {
+      "name": "@better-effect/mq-dashboard",
+      "version": "0.0.1",
+      "dependencies": {
+        "better-effect": "workspace:*",
+        "better-effect-mq": "workspace:*",
+        "better-result": "^3.0.0",
+        "hono": "4.13.3",
+      },
+      "devDependencies": {
+        "@types/bun": "1.4.1",
+        "oxfmt": "^0.63.0",
+        "oxlint": "^1.78.0",
+        "typescript": "^7.0.2",
+      },
+    },
     "packages/better-effect": {
       "name": "better-effect",
       "version": "0.13.0",
@@ -428,6 +444,8 @@
     "@better-auth/utils": ["@better-auth/utils@0.4.2", "", { "dependencies": { "@noble/hashes": "^2.0.1" } }, "sha512-AUxrvu+HaaODsUyzDxFgwd/8RZ1yZaYo42LXKSrU2oGgR38pS1ij8nqQKNgtTWoYGpNevNXtCfgTy6loHveW9A=="],
 
     "@better-effect/docs": ["@better-effect/docs@workspace:apps/docs"],
+
+    "@better-effect/mq-dashboard": ["@better-effect/mq-dashboard@workspace:apps/mq-dashboard"],
 
     "@better-fetch/fetch": ["@better-fetch/fetch@1.3.1", "", {}, "sha512-ABkD1WhyfPZprKRQI3bhATjeiFuNWC9PXhfGWqL+sg/gKrM977oFrYkdb4msM3hgUGonr7KlOsOFT5TU2rht9g=="],
 
