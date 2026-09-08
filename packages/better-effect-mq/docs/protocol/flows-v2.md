@@ -109,10 +109,13 @@ append and exact-payload acknowledgement in Lua scripts; its bounded peek
 reads the ordered outbox without deleting entries. `MemoryFlowStore` is the
 reference implementation used by the shared flow-store conformance suite.
 
-PostgreSQL and Redis adapters provide durable flow storage. Cross-store enqueue
-and flow phase execution remain outside this Worker integration; the Worker owns
-outbox delivery, result aggregation, and bounded reconciliation using the
-storage boundary.
+PostgreSQL and Redis adapters provide durable flow storage. The Layer-owned
+Worker executes registered flow phases from the same Runtime root: it prepares
+and enqueues children through their declared JobStores, including cross-store
+children, waits for terminal child reports, and invokes `collect` with bounded
+`FlowResults` pages. Cross-store enqueue is intentionally at-least-once and
+does not imply a cross-store transaction; relay, reconciliation, and the
+adapter's idempotent enqueue/settlement boundaries provide recovery.
 
 ## Worker Layer composition
 
@@ -143,12 +146,14 @@ token. Startup resolves and validates all of them before polling. Flow names
 must be unique within one Worker, and a flow parent cannot also be registered
 as a plain Worker handler.
 
-The Worker starts relay and sweeper supervision from the same Runtime root as
-ordinary job polling. Configure `flowSweepIntervalMs` for the periodic cadence,
-`flowBatchSize` for the per-cycle bound, and `flowSweepFlowIds` to seed Flow
-instances when no outbox entry has yet been observed. The FlowStore v2 contract
-does not enumerate Flow instances, so a seed or a previously observed outbox
-report is required for reconciliation. Relay uses each FlowStore's
-`parentStoreKey` route and leaves unknown entries durable while continuing
-through the bounded page. No cross-store transaction is implied: adapters retain
-ownership of atomic storage operations.
+The Worker starts relay, sweeper, and flow execution supervision from the same
+Runtime root as ordinary job polling. Configure `flowSweepIntervalMs` for the
+periodic cadence, `flowBatchSize` for the per-cycle bound, and
+`flowSweepFlowIds` to seed Flow instances when no outbox entry has yet been
+observed. The FlowStore v2 contract does not enumerate Flow instances, so a
+seed or a previously observed outbox report is required for reconciliation.
+Relay uses each FlowStore's `parentStoreKey` route and leaves unknown entries
+durable while continuing through the bounded page. Flow children carry a
+depth/ancestor chain so nested routes reject cycles and depth overflow before
+enqueue. No cross-store transaction is implied: adapters retain ownership of
+atomic storage operations.

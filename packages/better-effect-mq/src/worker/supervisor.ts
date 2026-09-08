@@ -6,18 +6,21 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions below are localized to checked runtime boundaries.
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- event snapshots omit optional fields.
 
-import { Program, ServiceRuntime } from 'better-effect'
+import { Effect, Layer, Program, ServiceRuntime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import type { RuntimeExecutor } from 'better-effect'
 import { Panic, Result, UnhandledException, type Result as ResultType } from 'better-result'
 
 import { Flow } from '../flow'
 import {
+  Job,
   isUnrecoverableFailure,
   runRetryable,
   type AnyJobDefinition,
   type CodecLike,
   type JobFailure
 } from '../job'
+import { makePreparedEnqueue } from '../job'
 import { Retry } from '../retry'
 import { parseJsonValue } from '../internal/json'
 import {
@@ -25,17 +28,20 @@ import {
   JobNotCancellableError,
   JobNotFoundError,
   JobStoreFailure,
+  JobId,
   LeaseLostError,
   hardFlowMaxChildren,
+  makeFlowChildId,
   makeJobId,
   makeSerializedJobFailure,
   makeWorkerId,
   makeQueueName
 } from '../protocol'
 import type {
+  FlowChildReport,
+  FlowChildRecord,
   FlowChildSpec,
   FlowOutboxEntry,
-  JobId,
   JobRecord,
   JsonValue,
   SerializedJobFailure,
@@ -86,6 +92,8 @@ type FlowRoute = {
   readonly key: string
   readonly flowName: string
   readonly parentStoreKey: string
+  readonly definition: import('../flow').AnyFlowDefinition
+  readonly handler: import('../flow').AnyFlowHandler | undefined
   readonly parentFlowStore: AnyFlowStoreToken
   readonly sourceFlowStores: readonly AnyFlowStoreToken[]
   readonly childStores: ReadonlyMap<string, AnyJobStoreToken>
@@ -95,13 +103,32 @@ type FlowSource = {
   readonly token: AnyFlowStoreToken
 }
 
+const flowMetadataKeys = Object.freeze({
+  flowName: '__better_effect_flow_v2.flowName',
+  flowId: '__better_effect_flow_v2.flowId',
+  childKey: '__better_effect_flow_v2.childKey',
+  parentStoreKey: '__better_effect_flow_v2.parentStoreKey',
+  depth: '__better_effect_flow_v2.depth',
+  chain: '__better_effect_flow_v2.chain'
+})
+
+type FlowMetadata = {
+  readonly flowName: string
+  readonly flowId: JobId
+  readonly childKey: string
+  readonly parentStoreKey: string
+  readonly depth: number
+  readonly chain: readonly string[]
+}
+
 type HandlerEntry = {
-  readonly handler: AnyWorkerHandler
+  readonly handler: AnyWorkerHandler | import('../flow').AnyFlowHandler
   readonly definition: AnyJobDefinition
   readonly identityKey: string
   readonly queue: JobRecord['queue']
   readonly store: AnyJobStoreToken
   readonly concurrency: number
+  readonly flow: FlowRoute | undefined
 }
 
 type ClaimGroup = {
@@ -246,8 +273,8 @@ export class WorkerSupervisor<
     this.executor = executor
     this.workerOptions = options
     this.workerId = options.id
-    this.groups = makeGroups(handlers, options)
     this.flowRoutes = makeFlowRoutes(flows)
+    this.groups = makeGroups(handlers, options, this.flowRoutes)
     for (const route of this.flowRoutes) {
       this.flowRoutesByKey.set(route.key, route)
       const ids = new Set<JobId>(options.flowSweepFlowIds)
@@ -461,7 +488,11 @@ export class WorkerSupervisor<
       return undefined
     }
 
-    const globalAvailable = this.workerOptions.concurrency - this.active - this.reserved
+    // A Flow parent remains admitted while its children run so its lease can be
+    // renewed and its execution Scope stays alive. It must not consume the only
+    // ordinary Worker slot, otherwise a concurrency-1 Worker deadlocks after fanOut.
+    const globalAvailable =
+      this.workerOptions.concurrency - this.activeNonFlowAttempts() - this.reserved
     const queueReserved = this.reservedByQueue.get(group.key) ?? 0
     const queueAvailable =
       this.workerOptions.queueLimit(group.queue) - queueReserved - this.activeInQueue(group)
@@ -492,6 +523,7 @@ export class WorkerSupervisor<
 
     for (const attempt of this.activeAttempts.values()) {
       if (
+        attempt.entry.flow === undefined &&
         attempt.entry.queue === group.queue &&
         attempt.entry.store.serviceTag === group.store.serviceTag
       ) {
@@ -710,10 +742,18 @@ export class WorkerSupervisor<
 
   private canStart(entry: HandlerEntry, group: ClaimGroup): boolean {
     return (
-      this.active < this.workerOptions.concurrency &&
+      this.activeNonFlowAttempts() < this.workerOptions.concurrency &&
       this.activeInQueue(group) < this.workerOptions.queueLimit(group.queue) &&
       this.availableForHandler(entry) > 0
     )
+  }
+
+  private activeNonFlowAttempts(): number {
+    let count = 0
+    for (const attempt of this.activeAttempts.values()) {
+      if (attempt.entry.flow === undefined) count += 1
+    }
+    return count
   }
 
   private startAttempt(group: ClaimGroup, entry: HandlerEntry, job: ActiveJobSnapshot): void {
@@ -868,6 +908,299 @@ export class WorkerSupervisor<
     await this.settleJob(group, attempt.job, outcome, startedAt)
   }
 
+  private async executeFlowProgram(
+    attempt: AttemptState,
+    context: JobContext,
+    payload: unknown
+  ): Promise<unknown> {
+    const route = attempt.entry.flow
+    if (route === undefined || route.handler === undefined) {
+      return Result.err(new JobDefinitionError({ field: 'flows', message: 'missing Flow handler' }))
+    }
+
+    const flowId = attempt.job.id
+    const current = await this.runFlowOperation(route.parentFlowStore, (store) =>
+      store.getFlow({ flowId })
+    )
+    if (Result.isError(current)) return Result.err(current.error)
+
+    let snapshot = current.value
+    if (snapshot === undefined) {
+      const flowContext = readFlowContext(attempt.job.metadata)
+      if (Result.isError(flowContext)) return Result.err(flowContext.error)
+      const depth = flowContext.value.depth + 1
+      if (depth > route.definition.maxDepth) {
+        return Result.err(
+          new JobDefinitionError({
+            field: 'flow.depth',
+            message: `maximum nesting depth ${route.definition.maxDepth} exceeded`
+          })
+        )
+      }
+      if (flowContext.value.chain.includes(route.flowName)) {
+        return Result.err(
+          new JobDefinitionError({
+            field: 'flow.name',
+            message: `nested Flow cycle detected for ${route.flowName}`
+          })
+        )
+      }
+
+      const phase = Effect.fn(async function* () {
+        const value = yield* Result.await(
+          Promise.resolve(route.handler!.fanOut(payload as never)())
+        )
+        return Result.ok(value)
+      })
+      const groups = await (this.executor as AnyExecutor).runWith(
+        JobContext.layer(context),
+        phase,
+        {
+          signal: attempt.controller.signal,
+          attributes: { 'mq.flow.phase': 'fanOut', 'mq.flow.name': route.flowName }
+        }
+      )
+      if (Result.isError(groups)) return groups
+
+      const specs = await this.materializeFlowChildren(
+        route,
+        attempt,
+        context,
+        groups.value,
+        depth,
+        [...flowContext.value.chain, route.flowName]
+      )
+      if (Result.isError(specs)) return specs
+
+      const fanOut = await this.runFlowOperation(route.parentFlowStore, (store) =>
+        store.fanOut({
+          flowId,
+          flowName: route.flowName,
+          parentStoreKey: route.parentStoreKey,
+          depth,
+          leaseToken: attempt.job.leaseToken,
+          failFast: route.definition.onChildFailure === 'fail',
+          children: specs.value,
+          now: this.readNow(),
+          maxChildren: route.definition.maxChildren
+        })
+      )
+      if (Result.isError(fanOut)) return Result.err(fanOut.error)
+      this.rememberFlowId(route, flowId)
+      snapshot = {
+        parent: fanOut.value.parent,
+        children: fanOut.value.children,
+        outbox: []
+      }
+      await this.enqueueFlowChildren(route, specs.value)
+    }
+
+    const settled = await this.awaitFlow(route, flowId, attempt.controller.signal)
+    if (Result.isError(settled)) return Result.err(settled.error)
+    snapshot = settled.value
+    if (snapshot.parent.state === 'failed' || snapshot.parent.state === 'cancelled') {
+      return Result.err(flowFailureForParent(snapshot.parent.failure))
+    }
+
+    const results = makeFlowResults(
+      route,
+      flowId,
+      this.executor,
+      this.workerOptions.flowBatchSize,
+      snapshot
+    )
+    const collect = Effect.fn(async function* () {
+      const value = yield* Result.await(
+        Promise.resolve(route.handler!.collect(payload as never, results as never)())
+      )
+      return Result.ok(value)
+    })
+    return await (this.executor as AnyExecutor).runWith(JobContext.layer(context), collect, {
+      signal: attempt.controller.signal,
+      attributes: { 'mq.flow.phase': 'collect', 'mq.flow.name': route.flowName }
+    })
+  }
+
+  private async materializeFlowChildren(
+    route: FlowRoute,
+    attempt: AttemptState,
+    context: JobContext,
+    groups: unknown,
+    depth: number,
+    chain: readonly string[]
+  ): Promise<ResultType<readonly FlowChildSpec[], unknown>> {
+    if (!Array.isArray(groups)) {
+      return Result.err(new JobDefinitionError({ field: 'fanOut', message: 'must return groups' }))
+    }
+
+    const specs: FlowChildSpec[] = []
+    const keys = new Set<string>()
+    for (const [groupIndex, groupValue] of groups.entries()) {
+      if (groupValue === null || typeof groupValue !== 'object') {
+        return Result.err(
+          new JobDefinitionError({ field: `fanOut[${groupIndex}]`, message: 'must be a group' })
+        )
+      }
+      const group = groupValue as { readonly job?: unknown; readonly items?: unknown }
+      const job = group.job
+      if (
+        !isAnyJobDefinition(job) ||
+        !route.definition.children.some((candidate) => candidate === job)
+      ) {
+        return Result.err(
+          new JobDefinitionError({
+            field: `fanOut[${groupIndex}].job`,
+            message: 'must reference a declared Flow child Job'
+          })
+        )
+      }
+      if (!Array.isArray(group.items)) {
+        return Result.err(
+          new JobDefinitionError({
+            field: `fanOut[${groupIndex}].items`,
+            message: 'must be an array'
+          })
+        )
+      }
+      for (const [itemIndex, itemValue] of group.items.entries()) {
+        if (itemValue === null || typeof itemValue !== 'object') {
+          return Result.err(
+            new JobDefinitionError({
+              field: `fanOut[${groupIndex}].items[${itemIndex}]`,
+              message: 'must be an item'
+            })
+          )
+        }
+        const item = itemValue as {
+          readonly key?: unknown
+          readonly payload?: unknown
+          // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- child options are normalized by Job.prepare at the boundary.
+          readonly options?: Record<string, unknown>
+        }
+        if (typeof item.key !== 'string' || item.key.length === 0) {
+          return Result.err(
+            new JobDefinitionError({
+              field: `fanOut[${groupIndex}].items[${itemIndex}].key`,
+              message: 'must be a non-empty string'
+            })
+          )
+        }
+        if (keys.has(item.key)) {
+          return Result.err(
+            new JobDefinitionError({ field: 'fanOut', message: `duplicate childKey "${item.key}"` })
+          )
+        }
+        keys.add(item.key)
+        if (specs.length >= route.definition.maxChildren) {
+          return Result.err(
+            new JobDefinitionError({
+              field: 'fanOut',
+              message: `must not exceed maxChildren ${route.definition.maxChildren}`
+            })
+          )
+        }
+        const child = job as AnyJobDefinition
+        const childId = makeFlowChildId({
+          parentStoreKey: route.parentStoreKey,
+          flowId: attempt.job.id,
+          childKey: item.key
+        })
+        if (Result.isError(childId)) return Result.err(childId.error)
+        const metadata = makeFlowChildMetadata(
+          route,
+          attempt.job.id,
+          item.key,
+          depth,
+          chain,
+          item.options?.metadata as Readonly<Record<string, string>> | undefined
+        )
+        const options = { ...item.options, jobId: childId.value, metadata }
+        const prepare = Effect.fn(async function* () {
+          const value = yield* child.prepare(item.payload as never, options as never)
+          return Result.ok(value)
+        })
+        const prepared = await (this.executor as AnyExecutor).runWith(
+          Layer.merge(JobContext.layer(context), ClockLive),
+          prepare,
+          {
+            signal: attempt.controller.signal,
+            attributes: { 'mq.flow.phase': 'prepare-child', 'mq.flow.name': route.flowName }
+          }
+        )
+        if (Result.isError(prepared)) return Result.err(prepared.error)
+        const checked = makePreparedEnqueue({ ...prepared.value, metadata })
+        if (Result.isError(checked)) return Result.err(checked.error)
+        specs.push({
+          childKey: item.key,
+          name: child.name,
+          version: child.version,
+          storeKey: child.store.serviceTag,
+          childJobId: childId.value,
+          request: checked.value
+        })
+      }
+    }
+    return Result.ok(Object.freeze(specs))
+  }
+
+  private async enqueueFlowChildren(
+    route: FlowRoute,
+    specs: readonly FlowChildSpec[]
+  ): Promise<void> {
+    const byStore = new Map<
+      string,
+      { store: AnyJobStoreToken; requests: import('../store').EnqueueRequest[] }
+    >()
+    for (const spec of specs) {
+      const store = route.childStores.get(spec.storeKey)
+      if (store === undefined) {
+        this.report(
+          new JobDefinitionError({
+            field: 'fanOut',
+            message: `unknown child store ${spec.storeKey}`
+          })
+        )
+        continue
+      }
+      const group = byStore.get(spec.storeKey)
+      if (group === undefined) {
+        byStore.set(spec.storeKey, { store, requests: [enqueueRequestFromPrepared(spec.request)] })
+      } else {
+        group.requests.push(enqueueRequestFromPrepared(spec.request))
+      }
+    }
+    for (const group of byStore.values()) {
+      const result = await this.runJobOperation(group.store, (store) =>
+        store.enqueueMany(group.requests)
+      )
+      if (Result.isError(result)) this.report(result.error)
+    }
+  }
+
+  private async awaitFlow(
+    route: FlowRoute,
+    flowId: JobId,
+    signal: AbortSignal
+  ): Promise<ResultType<import('../store').FlowSnapshot, unknown>> {
+    while (!signal.aborted) {
+      const current = await this.runFlowOperation(route.parentFlowStore, (store) =>
+        store.getFlow({ flowId })
+      )
+      if (Result.isError(current)) return Result.err(current.error)
+      if (current.value === undefined) {
+        return Result.err(new JobNotFoundError({ jobId: flowId }))
+      }
+      if (
+        current.value.parent.state !== 'waiting-children' ||
+        current.value.parent.flow.pending === 0
+      ) {
+        return Result.ok(current.value)
+      }
+      await this.sleep(this.workerOptions.pollIntervalMs, signal)
+    }
+    return Result.err(new Error('Flow execution was aborted'))
+  }
+
   private async executeProgram(attempt: AttemptState, context: JobContext): Promise<unknown> {
     const attemptNumber = attempt.job.attemptsMade + 1
     const attributes = {
@@ -886,7 +1219,12 @@ export class WorkerSupervisor<
         return Result.err(new DecodeOutcome(decoded.cause))
       }
 
-      const handlerProgram = attempt.entry.handler.handler(decoded.value as never)
+      if (attempt.entry.flow !== undefined) {
+        return this.executeFlowProgram(attempt, context, decoded.value)
+      }
+
+      const handler = attempt.entry.handler as AnyWorkerHandler
+      const handlerProgram = handler.handler(decoded.value as never)
       return handlerProgram()
     }
     const program = Program.named(
@@ -1004,6 +1342,7 @@ export class WorkerSupervisor<
       persisted.outcome === 'failed' ||
       persisted.outcome === 'cancelled'
     ) {
+      await this.appendFlowReport(group, job, persisted)
       this.requestFlowRelay()
     }
     if (attempt?.terminalNotified === true) return
@@ -1041,6 +1380,43 @@ export class WorkerSupervisor<
       attempt?.failureCause,
       attempt?.failureCauseSet === true
     )
+  }
+
+  private async appendFlowReport(
+    group: ClaimGroup,
+    job: ActiveJobSnapshot,
+    attempt: import('../protocol').AttemptRecord
+  ): Promise<void> {
+    const context = readFlowContext(job.metadata)
+    if (Result.isError(context)) {
+      this.report(context.error)
+      return
+    }
+    if (context.value.flowName.length === 0) return
+    const source = this.flowSources.get(group.store.serviceTag)
+    if (source === undefined) return
+    const outcome =
+      attempt.outcome === 'completed'
+        ? ('completed' as const)
+        : attempt.outcome === 'failed'
+          ? ('failed' as const)
+          : ('cancelled' as const)
+    const report: FlowChildReport = {
+      flowId: context.value.flowId,
+      childKey: context.value.childKey,
+      outcome,
+      result: attempt.result,
+      failure: attempt.failure
+    }
+    const result = await this.runFlowOperation(source.token, (store) =>
+      store.appendChildReport({
+        id: job.id,
+        flowName: context.value.flowName,
+        parentStoreKey: context.value.parentStoreKey,
+        report
+      })
+    )
+    if (Result.isError(result)) this.report(result.error)
   }
 
   private emitSettled(
@@ -2103,7 +2479,8 @@ export const normalizeWorkerOptions = (
 
 const makeGroups = (
   handlers: readonly AnyWorkerHandler[],
-  options: NormalizedWorkerOptions
+  options: NormalizedWorkerOptions,
+  flows: readonly FlowRoute[]
 ): readonly ClaimGroup[] => {
   const groups: {
     readonly queue: JobRecord['queue']
@@ -2111,8 +2488,12 @@ const makeGroups = (
     handlers: HandlerEntry[]
   }[] = []
 
-  for (const handler of handlers) {
-    const definition = handler.job
+  const add = (
+    handler: AnyWorkerHandler | import('../flow').AnyFlowHandler,
+    definition: AnyJobDefinition,
+    flow: FlowRoute | undefined,
+    concurrency: number
+  ): void => {
     const queue = makeQueueName(definition.queue)
 
     if (Result.isError(queue)) {
@@ -2126,7 +2507,8 @@ const makeGroups = (
       identityKey,
       queue: queue.value,
       store: definition.store,
-      concurrency: handler.concurrency ?? options.concurrency
+      concurrency,
+      flow
     }
     // Repeated named handles share a logical group by stable tag. Different tags are
     // the explicit identity boundary for separate storage backends.
@@ -2139,7 +2521,23 @@ const makeGroups = (
     if (group === undefined) {
       groups.push({ queue: queue.value, store: definition.store, handlers: [entry] })
     } else {
+      if (group.handlers.some((candidate) => candidate.identityKey === identityKey)) {
+        throw new JobDefinitionError({
+          field: 'flows',
+          message: `duplicate handler identity ${identityKey}`
+        })
+      }
       group.handlers.push(entry)
+    }
+  }
+
+  for (const handler of handlers) {
+    add(handler, handler.job, undefined, handler.concurrency ?? options.concurrency)
+  }
+
+  for (const flow of flows) {
+    if (flow.handler !== undefined) {
+      add(flow.handler, flow.definition.parent, flow, options.concurrency)
     }
   }
 
@@ -2665,6 +3063,8 @@ const makeFlowRoutes = (registrations: readonly WorkerFlowRegistration[]): reado
       key: flowRouteKey(flow.name, parentStore.serviceTag),
       flowName: flow.name,
       parentStoreKey: parentStore.serviceTag,
+      definition: flow,
+      handler: Flow.is(registration) ? undefined : registration,
       parentFlowStore: sourceFlowStores[0]!,
       sourceFlowStores: Object.freeze(sourceFlowStores),
       childStores: stores
@@ -2672,6 +3072,340 @@ const makeFlowRoutes = (registrations: readonly WorkerFlowRegistration[]): reado
   }
 
   return Object.freeze(routes)
+}
+
+const isAnyJobDefinition = (value: unknown): value is AnyJobDefinition => Job.is(value)
+
+const readFlowContext = (
+  metadata: Readonly<Record<string, string>>
+): ResultType<FlowMetadata, JobDefinitionError> => {
+  const flowName = metadata[flowMetadataKeys.flowName]
+  const flowIdValue = metadata[flowMetadataKeys.flowId]
+  const childKey = metadata[flowMetadataKeys.childKey]
+  const parentStoreKey = metadata[flowMetadataKeys.parentStoreKey]
+  const depthValue = metadata[flowMetadataKeys.depth]
+  const chainValue = metadata[flowMetadataKeys.chain]
+  const anyPresent = [flowName, flowIdValue, childKey, parentStoreKey, depthValue, chainValue].some(
+    (value) => value !== undefined
+  )
+  if (!anyPresent) {
+    return Result.ok({
+      flowName: '',
+      flowId: JobId.make('root').unwrap(),
+      childKey: '',
+      parentStoreKey: '',
+      depth: 0,
+      chain: []
+    })
+  }
+  if (
+    flowName === undefined ||
+    flowIdValue === undefined ||
+    childKey === undefined ||
+    parentStoreKey === undefined ||
+    depthValue === undefined ||
+    chainValue === undefined
+  ) {
+    return Result.err(
+      new JobDefinitionError({
+        field: 'flow.metadata',
+        message: 'contains incomplete flow context'
+      })
+    )
+  }
+  const flowId = makeJobId(flowIdValue)
+  if (Result.isError(flowId)) return Result.err(flowId.error)
+  const depth = Number(depthValue)
+  if (!Number.isSafeInteger(depth) || depth < 1) {
+    return Result.err(
+      new JobDefinitionError({
+        field: 'flow.metadata.depth',
+        message: 'must be a positive integer'
+      })
+    )
+  }
+  let chain: unknown
+  try {
+    chain = JSON.parse(chainValue)
+  } catch {
+    return Result.err(
+      new JobDefinitionError({ field: 'flow.metadata.chain', message: 'must be JSON' })
+    )
+  }
+  if (
+    !Array.isArray(chain) ||
+    chain.some((value) => typeof value !== 'string' || value.length === 0)
+  ) {
+    return Result.err(
+      new JobDefinitionError({ field: 'flow.metadata.chain', message: 'must be a string array' })
+    )
+  }
+  return Result.ok({
+    flowName,
+    flowId: flowId.value,
+    childKey,
+    parentStoreKey,
+    depth,
+    chain: Object.freeze(chain as string[])
+  })
+}
+
+const makeFlowChildMetadata = (
+  route: FlowRoute,
+  flowId: JobId,
+  childKey: string,
+  depth: number,
+  chain: readonly string[],
+  supplied: Readonly<Record<string, string>> | undefined
+): Readonly<Record<string, string>> =>
+  Object.freeze({
+    ...supplied,
+    [flowMetadataKeys.flowName]: route.flowName,
+    [flowMetadataKeys.flowId]: flowId,
+    [flowMetadataKeys.childKey]: childKey,
+    [flowMetadataKeys.parentStoreKey]: route.parentStoreKey,
+    [flowMetadataKeys.depth]: String(depth),
+    [flowMetadataKeys.chain]: JSON.stringify(chain)
+  })
+
+const flowFailureForParent = (failure: SerializedJobFailure | undefined): unknown => {
+  if (failure?.kind === 'typed' && failure.data !== undefined) return failure.data
+  return new Error(failure?.message ?? 'Flow child failed')
+}
+
+const decodeFlowValue = async (
+  codec: CodecLike | undefined,
+  value: JsonValue | undefined
+): Promise<ResultType<unknown, unknown>> => {
+  if (value === undefined) return Result.ok(undefined)
+  if (codec === undefined) {
+    return Result.err(new JobDefinitionError({ field: 'flow.results', message: 'missing codec' }))
+  }
+  try {
+    const decoded = await Promise.resolve(codec.decode(value as never))
+    if (!isResultLike(decoded)) {
+      return Result.err(
+        new JobDefinitionError({
+          field: 'flow.results',
+          message: 'codec returned an invalid Result'
+        })
+      )
+    }
+    return Result.isError(decoded) ? Result.err(decoded.error) : Result.ok(decoded.value)
+  } catch (cause) {
+    return Result.err(cause)
+  }
+}
+
+const makeFlowResults = (
+  route: FlowRoute,
+  flowId: JobId,
+  executor: AnyExecutor,
+  defaultPageSize: number,
+  initial: import('../store').FlowSnapshot
+): import('../flow').FlowResults<any> => {
+  const load = async (): Promise<ResultType<import('../store').FlowSnapshot, unknown>> => {
+    try {
+      const token = route.parentFlowStore
+      const store = (await executor.run(() => ServiceRuntime.resolve(token))) as FlowStoreV2
+      const value = await Promise.resolve(store.getFlow({ flowId }))
+      if (!isResultLike(value))
+        return Result.err(new Error('FlowStore operation did not return a Result'))
+      if (Result.isError(value)) return Result.err(value.error)
+      if (value.value === undefined) return Result.err(new JobNotFoundError({ jobId: flowId }))
+      return Result.ok(value.value)
+    } catch (cause) {
+      return Result.err(new WorkerRuntimeOwnershipError(cause))
+    }
+  }
+
+  const definitionFor = (child: FlowChildRecord): AnyJobDefinition | undefined =>
+    route.definition.children.find(
+      (candidate) =>
+        candidate.name === child.name &&
+        candidate.version === child.version &&
+        candidate.store.serviceTag === child.storeKey
+    )
+
+  const settledChild = async (
+    child: FlowChildRecord
+  ): Promise<ResultType<import('../flow').FlowSettledChild<any>, unknown>> => {
+    const definition = definitionFor(child)
+    if (definition === undefined) {
+      return Result.err(
+        new JobDefinitionError({
+          field: 'flow.results',
+          message: `unknown child definition ${child.name}@${child.version}`
+        })
+      )
+    }
+    const result = await decodeFlowValue(definition.result, child.result)
+    if (Result.isError(result)) return Result.err(result.error)
+    const failure =
+      child.failure?.kind === 'typed'
+        ? await decodeFlowValue(definition.failure, child.failure.data)
+        : Result.ok(undefined)
+    if (Result.isError(failure)) return Result.err(failure.error)
+    return Result.ok({
+      childKey: child.childKey,
+      definition,
+      outcome: child.status as 'completed' | 'failed' | 'cancelled',
+      result: result.value as never,
+      failure: failure.value as never
+    } as import('../flow').FlowSettledChild<any>)
+  }
+
+  const readPage = async (options: {
+    readonly cursor?: string
+    readonly limit?: number
+  }): Promise<ResultType<import('../flow').FlowChildPage<any>, unknown>> => {
+    const limit = options.limit ?? defaultPageSize
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      return Result.err(
+        new JobDefinitionError({ field: 'results.page.limit', message: 'must be positive' })
+      )
+    }
+    const current = await load()
+    if (Result.isError(current)) return Result.err(current.error)
+    const children = current.value.children
+    const cursorIndex =
+      options.cursor === undefined
+        ? -1
+        : children.findIndex((child) => child.childKey === options.cursor)
+    const start = cursorIndex < 0 ? 0 : cursorIndex + 1
+    const selected = children.slice(start, start + limit)
+    const items: import('../flow').FlowSettledChild<any>[] = []
+    for (const child of selected) {
+      const settled = await settledChild(child)
+      if (Result.isError(settled)) return Result.err(settled.error)
+      items.push(settled.value)
+    }
+    return Result.ok({
+      items: Object.freeze(items),
+      nextCursor:
+        start + selected.length < children.length && selected.length > 0
+          ? selected.at(-1)!.childKey
+          : undefined
+    })
+  }
+
+  const page = (options: { readonly cursor?: string; readonly limit?: number } = {}) =>
+    Program.named('better-effect-mq/flow/results/page', (async () =>
+      readPage(options)) as unknown as import('better-effect').Effect.Program<
+      import('../flow').FlowChildPage<any>,
+      import('../store').FlowStoreV2Error,
+      import('better-effect').AnyService
+    >) as import('better-effect').Effect.Program<
+      import('../flow').FlowChildPage<any>,
+      import('../store').FlowStoreV2Error,
+      never
+    >
+
+  const all = (options: { readonly maxItems?: number } = {}) =>
+    Program.named('better-effect-mq/flow/results/all', (async () => {
+      const maxItems = options.maxItems
+      if (maxItems !== undefined && (!Number.isSafeInteger(maxItems) || maxItems < 0)) {
+        return Result.err(
+          new JobDefinitionError({ field: 'results.all.maxItems', message: 'must be non-negative' })
+        )
+      }
+      const values: import('../flow').FlowSettledChild<any>[] = []
+      let cursor: string | undefined
+      while (true) {
+        const current = await readPage(
+          cursor === undefined ? { limit: defaultPageSize } : { cursor, limit: defaultPageSize }
+        )
+        if (Result.isError(current)) return current
+        values.push(...current.value.items)
+        if (maxItems !== undefined && values.length >= maxItems) {
+          values.length = maxItems
+          break
+        }
+        if (current.value.nextCursor === undefined) break
+        cursor = current.value.nextCursor
+      }
+      return Result.ok(Object.freeze(values))
+    }) as unknown as import('better-effect').Effect.Program<
+      readonly import('../flow').FlowSettledChild<any>[],
+      import('../store').FlowStoreV2Error,
+      import('better-effect').AnyService
+    >) as import('better-effect').Effect.Program<
+      readonly import('../flow').FlowSettledChild<any>[],
+      import('../store').FlowStoreV2Error,
+      never
+    >
+
+  const forEach = (
+    fn: (
+      child: import('../flow').FlowSettledChild<any>
+    ) => import('better-effect').Effect.Program<void, unknown, import('better-effect').AnyService>,
+    options: { readonly pageSize?: number; readonly concurrency?: number } = {}
+  ) =>
+    Program.named('better-effect-mq/flow/results/forEach', (async () => {
+      const concurrency = options.concurrency ?? 1
+      if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+        return Result.err(
+          new JobDefinitionError({
+            field: 'results.forEach.concurrency',
+            message: 'must be positive'
+          })
+        )
+      }
+      const values = await readPage({ limit: options.pageSize ?? defaultPageSize })
+      if (Result.isError(values)) return values
+      let cursor = values.value.nextCursor
+      const process = async (items: readonly import('../flow').FlowSettledChild<any>[]) => {
+        let next = 0
+        let firstError: unknown
+        const run = async (): Promise<void> => {
+          while (firstError === undefined) {
+            const index = next++
+            if (index >= items.length) return
+            try {
+              const result = (await executor.run(
+                () => fn(items[index]!)() as never
+              )) as UnknownResult
+              if (!isResultLike(result)) {
+                if (firstError === undefined)
+                  firstError = new Error('Flow callback returned an invalid Result')
+              } else if (Result.isError(result) && firstError === undefined) {
+                firstError = result.error
+              }
+            } catch (cause) {
+              if (firstError === undefined) firstError = cause
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => run()))
+        if (firstError !== undefined) return Result.err(firstError)
+        return Result.ok(undefined)
+      }
+      let processed = await process(values.value.items)
+      if (Result.isError(processed)) return processed
+      while (cursor !== undefined) {
+        const next = await readPage(
+          cursor === undefined
+            ? { limit: options.pageSize ?? defaultPageSize }
+            : { cursor, limit: options.pageSize ?? defaultPageSize }
+        )
+        if (Result.isError(next)) return next
+        processed = await process(next.value.items)
+        if (Result.isError(processed)) return processed
+        cursor = next.value.nextCursor
+      }
+      return Result.ok(undefined)
+    }) as unknown as import('better-effect').Effect.Program<
+      void,
+      import('../store').FlowStoreV2Error,
+      import('better-effect').AnyService
+    >) as import('better-effect').Effect.Program<void, import('../store').FlowStoreV2Error, never>
+
+  return {
+    counts: initial.parent.flow,
+    page,
+    all,
+    forEach
+  }
 }
 
 const observationForChild = (
