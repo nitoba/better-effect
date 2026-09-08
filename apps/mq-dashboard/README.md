@@ -81,6 +81,57 @@ The shipped authorization layer is only a safe local example. Production
 applications should replace `DashboardAuthorization` with their host's
 authentication, role, CSRF, audit, and rate-limit boundary.
 
+## Compose a persistent store
+
+The dashboard does not create a storage adapter or a second Runtime. Provide
+the public `JobStore` and (when installed) matching `JobEventStore` Layers,
+the host-owned `DashboardAuthorization` Layer, and adapt the event reader with
+`dashboardEventFeedLayer()`:
+
+```ts
+const DashboardLive = Layer.complete(
+  Layer.merge(
+    AuthorizationLive,
+    Layer.merge(
+      JobStoreLive,
+      Layer.merge(
+        JobEventStoreLive,
+        Layer.merge(
+          ClockLive,
+          Layer.merge(
+            DashboardScheduleCapabilityDisabled,
+            Layer.merge(
+              DashboardFlowCapabilityDisabled,
+              Layer.merge(
+                DashboardControlCapabilityDisabled,
+                Layer.merge(
+                  DashboardAuditSinkDisabled,
+                  Layer.merge(
+                    DashboardMutationPolicyDisabled,
+                    Layer.merge(
+                      DashboardRateLimiterDisabled,
+                      Layer.merge(dashboardEventFeedLayer(), DashboardApp.layer)
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+const runtime = await Runtime.make(DashboardLive)
+```
+
+For a dashboard without durable events, replace both `JobEventStoreLive` and
+`dashboardEventFeedLayer()` with `DashboardEventFeedDisabled`. The base
+overview/list/detail/action routes remain available; event and SSE routes
+report `events_unavailable`. Schedules, flows, and controls follow the same
+optional-capability pattern with their `*CapabilityDisabled` Layers.
+
 ## HTTP contract
 
 Successful responses use the existing `better-effect/hono` JSON policy and are
@@ -151,6 +202,12 @@ working and `/api/events`/SSE return `events_unavailable`. The disabled feed is
 The same rule applies to schedules, flows, and controls: their capability
 booleans appear in `/api/capabilities` and `/api/overview`, and absent
 capabilities leave their endpoint families out of the Hono app.
+
+SSE is a live view over the bounded event log, not an archive. A heartbeat has
+no durable cursor, and retention can expire a `Last-Event-ID`; clients must
+refresh their cursor policy after `cursor-expired`. The dashboard does not
+turn a dropped SSE connection into an acknowledgement or checkpoint, so an
+external consumer still owns its at-least-once cursor and replay policy.
 
 ## React/Vite reference web client
 

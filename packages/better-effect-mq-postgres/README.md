@@ -29,6 +29,57 @@ const Live = Layer.merge(
 )
 ```
 
+Both providers belong to the same Runtime. Add the clock and any Worker or
+application Services at the composition root; do not create a second Runtime
+for event readers:
+
+```ts
+import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+
+const DurableLive = Layer.complete(
+  Layer.merge(
+    PostgresJobStore.layer({ pool, namespace: 'billing' }),
+    Layer.merge(
+      PostgresJobEventStore.layer({
+        pool,
+        namespace: 'billing',
+        retention: { count: 100_000, ageMs: 7 * 24 * 60 * 60 * 1_000 }
+      }),
+      ClockLive
+    )
+  )
+)
+
+const runtime = await Runtime.make(DurableLive)
+```
+
+With that Runtime, a Job can wait on its matching event token and still make
+progress when a wake hint is lost:
+
+```ts
+const completed = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const jobId = yield* SendInvoice.enqueue(invoice)
+    return Result.ok(
+      yield* SendInvoice.awaitResult(jobId, {
+        strategy: 'events',
+        eventStore: JobEventStore,
+        pollFallbackMs: 5_000
+      })
+    )
+  })
+)
+```
+
+`awaitEvents()` is a wake hint; the bounded poll fallback remains authoritative.
+Retention is finite, so a removed cursor returns `JobEventCursorExpiredError`
+and the caller must rebase or request an explicit replay. The event log is not
+an infinite archive and never replaces the detailed `AttemptRecord` ledger or
+process-local best-effort observers; event fields omit payloads, results, and
+complete failure bodies by default. See the [composition guide](../better-effect-mq/docs/composition.md)
+for the shared Memory/PostgreSQL/Redis rules and the dashboard SSE boundary.
+
 Enqueue, claim, settlement, release, stalled recovery, administrative transitions,
 job removal, and queue pause/resume append safe event fields in the same transaction
 as the `JobStore` mutation. Duplicate enqueue and already-applied operations do not
