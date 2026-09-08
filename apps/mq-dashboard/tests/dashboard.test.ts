@@ -111,6 +111,25 @@ const resolveSchedule = async <Value>(
   return result.value
 }
 
+const readStreamChunk = async (response: Response): Promise<string> => {
+  if (response.body === null) throw new Error('stream response has no body')
+  const reader = response.body.getReader()
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const result = await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('timed out waiting for SSE chunk')), 1_000)
+      })
+    ])
+    if (result.done || result.value === undefined) return ''
+    return new TextDecoder().decode(result.value)
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+    await reader.cancel()
+  }
+}
+
 const resolveApp = async (runtime: Runtime<any>) => {
   const result = await runtime.run(
     Effect.fn(async function* () {
@@ -198,6 +217,18 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
     expect(promoted.status).toBe(200)
     expect((await promoted.json()).data.job.state).toBe('waiting')
 
+    const cancelled = await app.request(`/api/jobs/${jobId}/cancel`, { method: 'POST' })
+    expect(cancelled.status).toBe(200)
+    expect((await cancelled.json()).data.job.state).toBe('cancelled')
+
+    const retried = await app.request(`/api/jobs/${jobId}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({ delayMs: 0 }),
+      headers: { 'content-type': 'application/json' }
+    })
+    expect(retried.status).toBe(200)
+    expect((await retried.json()).data.job.state).toBe('waiting')
+
     const removed = await app.request(`/api/jobs/${jobId}`, { method: 'DELETE' })
     expect(removed.status).toBe(200)
     expect((await removed.json()).data.removed).toBe(true)
@@ -223,6 +254,150 @@ test('dashboard returns a safe authorization failure and keeps EventStore option
     const events = await app.request('/api/events')
     expect(events.status).toBe(503)
     expect((await events.json()).error).toBe('events_unavailable')
+
+    const stream = await app.request('/api/events/stream')
+    expect(stream.status).toBe(503)
+    expect((await stream.json()).error).toBe('events_unavailable')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard stream resumes from a cursor, honors Last-Event-ID, and emits non-durable heartbeats', async () => {
+  const events = MemoryJobEventStore.make({ clock: () => 0 })
+  const store = MemoryJobStore.make({ eventStore: events, clock: () => 0 })
+  await resolve(
+    store.enqueue({
+      id: JobId.make('stream-job-1').unwrap(),
+      job: { queue: 'events', name: 'first', version: 1 },
+      payload: { secret: 'do-not-return' },
+      metadata: {},
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    })
+  )
+  await resolve(
+    store.enqueue({
+      id: JobId.make('stream-job-2').unwrap(),
+      job: { queue: 'events', name: 'second', version: 1 },
+      payload: { secret: 'do-not-return' },
+      metadata: {},
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        Layer.succeed(JobEventStore, JobEventStore.of(events)),
+        Layer.merge(
+          dashboardEventFeedLayer(),
+          Layer.merge(
+            ClockTestLayer(0),
+            Layer.merge(
+              allowAll,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(disabledMutationCapabilities, DashboardApp.layer)
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const page = await app.request('/api/events?limit=50')
+    const pageEvents = (await page.json()).data.events
+    const firstCursor = pageEvents[0].cursor
+    const secondCursor = pageEvents[1].cursor
+
+    const resumed = await app.request(
+      `/api/events/stream?after=${encodeURIComponent(firstCursor)}&heartbeatMs=1`
+    )
+    expect(resumed.status).toBe(200)
+    const resumedChunk = await readStreamChunk(resumed)
+    expect(resumedChunk).toContain('event: job-event')
+    expect(resumedChunk).toContain(`id: ${secondCursor}`)
+    expect(resumedChunk).toContain('stream-job-2')
+
+    const fromLastEventId = await app.request(
+      `/api/events/stream?after=${encodeURIComponent(firstCursor)}&heartbeatMs=1`,
+      { headers: { 'last-event-id': secondCursor } }
+    )
+    const heartbeatChunk = await readStreamChunk(fromLastEventId)
+    expect(heartbeatChunk).toContain('event: heartbeat')
+    expect(heartbeatChunk).not.toContain('id:')
+    expect(heartbeatChunk).not.toContain('stream-job-2')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard stream reports cursor expiration and the oldest available cursor', async () => {
+  const events = MemoryJobEventStore.make({ clock: () => 0, retention: { count: 1 } })
+  const store = MemoryJobStore.make({ eventStore: events, clock: () => 0 })
+  const beforeEvents = await events.tailCursor()
+  if (Result.isError(beforeEvents)) throw beforeEvents.error
+  await resolve(
+    store.enqueue({
+      id: JobId.make('expired-job-1').unwrap(),
+      job: { queue: 'events', name: 'first', version: 1 },
+      payload: {},
+      metadata: {},
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    })
+  )
+  await resolve(
+    store.enqueue({
+      id: JobId.make('expired-job-2').unwrap(),
+      job: { queue: 'events', name: 'second', version: 1 },
+      payload: {},
+      metadata: {},
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        Layer.succeed(JobEventStore, JobEventStore.of(events)),
+        Layer.merge(
+          dashboardEventFeedLayer(),
+          Layer.merge(
+            ClockTestLayer(0),
+            Layer.merge(
+              allowAll,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(disabledMutationCapabilities, DashboardApp.layer)
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const stream = await app.request(
+      `/api/events/stream?after=${encodeURIComponent(beforeEvents.value)}&heartbeatMs=1`
+    )
+    expect(stream.status).toBe(200)
+    const chunk = await readStreamChunk(stream)
+    expect(chunk).toContain('event: cursor-expired')
+    expect(chunk).toContain('refreshRequired')
+    expect(chunk).toContain('oldestAvailableCursor')
   } finally {
     await runtime.dispose()
   }

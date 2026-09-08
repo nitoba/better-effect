@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "bun run build && bun test",
     "lint": "oxlint --type-aware .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "check": "bun run typecheck && bun run build && bun run lint && bun run format:check"
+    "check": "bun run typecheck && bun run build && bun run test && bun run lint && bun run format:check"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
