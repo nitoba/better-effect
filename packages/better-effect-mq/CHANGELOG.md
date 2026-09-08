@@ -12,6 +12,8 @@
   cooperative job timeouts, and best-effort failure notifications.
 - Process-local JobEvent observers, logging and metrics adapters, RecordedJobObserver,
   Runtime attempt metadata, and opt-in queue-depth sampling.
+- Process-local `JobHealth` snapshots and sinks for store failures, lease/stall
+  signals, consumer failures, event lag, retention, cursor expiry, and safe metrics.
 - Flow v2 phase handlers and associated `FlowStore` requirements for Layer-first
   Worker route validation, including duplicate-route checks.
 - Layer-owned Flow v2 relay and bounded reconciliation/sweeper supervision,

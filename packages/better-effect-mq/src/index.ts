@@ -33,7 +33,13 @@ export type {
   QueueControlsToken,
   RateLimitOptions
 } from './controls'
-export { JobMetricNames, JobObserver, makeJobDepthSampler } from './observability'
+export {
+  JobHealth,
+  JobMetricNames,
+  JobObserver,
+  makeJobDepthSampler,
+  makeJobHealth
+} from './observability'
 export type {
   JobEvent,
   JobEventBase,
@@ -60,6 +66,11 @@ export type {
   JobMetricAttributes,
   JobMetricsSink,
   JobObserver as JobObserverContract,
+  JobHealthMonitor,
+  JobHealthOptions,
+  JobHealthSignal,
+  JobHealthSink,
+  JobHealthSnapshot,
   JobDepthSampler,
   JobDepthSamplerOptions
 } from './observability'

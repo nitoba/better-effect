@@ -5,6 +5,7 @@
 
 import { freezeJobEvent, type JobEvent } from './events'
 import { makeJobDepthSampler } from './depth'
+import { notifyJobHealth, type JobHealthSink } from './health'
 
 /** A process-local, best-effort observer for storage-neutral MQ events. */
 export interface JobObserver {
@@ -72,7 +73,12 @@ export const JobMetricNames = Object.freeze({
   leasesLost: 'better_effect_mq_leases_lost_total',
   stalledRecovered: 'better_effect_mq_stalled_recovered_total',
   storeFailures: 'better_effect_mq_store_failures_total',
-  queueDepth: 'better_effect_mq_queue_depth'
+  queueDepth: 'better_effect_mq_queue_depth',
+  consumerHandlerFailures: 'better_effect_mq_consumer_handler_failures_total',
+  eventLag: 'better_effect_mq_event_lag_ms',
+  retainedEventCount: 'better_effect_mq_retained_event_count',
+  oldestRetainedAge: 'better_effect_mq_oldest_retained_age_ms',
+  cursorExpired: 'better_effect_mq_cursor_expired_total'
 } as const)
 
 const noOpObserver: JobObserver = Object.freeze({ onEvent: () => undefined })
@@ -357,10 +363,34 @@ const emitRunMetrics = (
   }
 }
 
+const health = (sink: JobHealthSink): JobObserver =>
+  Object.freeze({
+    onEvent: (event: JobEvent): void => {
+      switch (event.type) {
+        case 'store-operation-failed':
+          notifyJobHealth(sink, {
+            type: 'store-operation-failed',
+            operation: event.operation,
+            retryable: event.retryable
+          })
+          break
+        case 'lease-lost':
+          notifyJobHealth(sink, { type: 'lease-lost', reason: event.reason })
+          break
+        case 'stalled-recovered':
+          notifyJobHealth(sink, { type: 'stalled-recovered', outcome: event.outcome })
+          break
+        default:
+          break
+      }
+    }
+  })
+
 export const JobObserver = Object.freeze({
   compose,
   logger,
   metrics,
+  health,
   depthSampler: makeJobDepthSampler
 })
 

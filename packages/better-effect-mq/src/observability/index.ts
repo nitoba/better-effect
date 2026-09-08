@@ -1,5 +1,6 @@
 export { JobMetricNames, JobObserver } from './observer'
 export { makeJobDepthSampler } from './depth'
+export { JobHealth, makeJobHealth } from './health'
 
 export type {
   JobEvent,
@@ -31,5 +32,13 @@ export type {
   JobMetricsSink,
   JobObserver as JobObserverContract
 } from './observer'
+
+export type {
+  JobHealthMonitor,
+  JobHealthOptions,
+  JobHealthSignal,
+  JobHealthSink,
+  JobHealthSnapshot
+} from './health'
 
 export type { JobDepthSampler, JobDepthSamplerOptions } from './depth'

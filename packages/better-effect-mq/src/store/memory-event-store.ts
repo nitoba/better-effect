@@ -34,6 +34,8 @@ import {
 } from './event-errors'
 import type { JobEventStoreError } from './event-errors'
 import type { ServiceContract } from 'better-effect'
+import { notifyJobHealth } from '../observability/health'
+import type { JobHealthSink } from '../observability/health'
 
 type Operation<Value> = JobEventStoreOperation<Value, JobEventStoreError>
 
@@ -44,6 +46,8 @@ export interface MemoryJobEventStoreClock {
 export interface MemoryJobEventStoreOptions {
   readonly clock?: MemoryJobEventStoreClock | (() => number | Date)
   readonly retention?: JobEventRetention
+  /** Optional process-local health sink; durable events remain the source of truth. */
+  readonly health?: JobHealthSink
 }
 
 export interface MemoryJobEventStoreInternals {
@@ -181,6 +185,7 @@ class MemoryJobEventStoreImplementation {
   private readonly waiters = new Set<Waiter>()
   private readonly clock: MemoryJobEventStoreOptions['clock']
   private readonly retention: Readonly<JobEventRetention>
+  private readonly health: JobHealthSink | undefined
   private readonly cursorPrefix: string
   private nextSequence = 1
   private activationState: 'inactive' | 'optional' | 'required' = 'inactive'
@@ -192,10 +197,18 @@ class MemoryJobEventStoreImplementation {
     const checked = validateRetention(options.retention)
     if (Result.isError(checked)) throw checked.error
     this.clock = options.clock
+    this.health = options.health
     this.retention = checked.value
     if (nextMemoryEventStoreId > maxSafeInteger) throw new RangeError('event store IDs exhausted')
     this.cursorPrefix = `${cursorPrefixBase}${nextMemoryEventStoreId.toString(36)}_`
     nextMemoryEventStoreId += 1
+    notifyJobHealth(this.health, {
+      type: 'retention',
+      retainedEventCount: 0,
+      oldestRetainedAgeMs: undefined,
+      retentionCount: this.retention.count,
+      retentionAgeMs: this.retention.ageMs
+    })
   }
 
   append(input: DurableJobEventInput): DurableJobEvent {
@@ -217,14 +230,16 @@ class MemoryJobEventStoreImplementation {
     this.nextSequence += 1
     this.events.push(event)
     this.prune(input.recordedAtMs)
+    this.reportRetention(input.recordedAtMs)
     this.notify(event)
     return event
   }
 
   tailCursor(): Operation<JobEventCursor> {
     const current = nowValue(this.clock)
-    if (Result.isError(current)) return fail(current.error)
+    if (Result.isError(current)) return this.failureResult(current.error)
     this.prune(current.value)
+    this.reportRetention(current.value)
     return ok(this.encodeCursor(this.nextSequence - 1))
   }
 
@@ -255,7 +270,7 @@ class MemoryJobEventStoreImplementation {
         typeof options !== 'object' ||
         (options.mode !== 'optional' && options.mode !== 'required')
       ) {
-        return fail(this.failure('activate', 'mode must be optional or required'))
+        return this.failureResult(this.failure('activate', 'mode must be optional or required'))
       }
       const now =
         options.now === undefined
@@ -263,7 +278,7 @@ class MemoryJobEventStoreImplementation {
           : Number.isSafeInteger(options.now) && options.now >= 0
             ? Result.ok(options.now)
             : Result.err(this.failure('activate', 'now must be a timestamp'))
-      if (Result.isError(now)) return fail(now.error)
+      if (Result.isError(now)) return this.failureResult(now.error)
       if (this.activationState === 'inactive') {
         this.activationState = options.mode
         this.activationCursor = this.encodeCursor(this.nextSequence - 1)
@@ -274,11 +289,13 @@ class MemoryJobEventStoreImplementation {
         this.activationRevision += 1
         this.activatedAtMs = now.value
       } else if (this.activationState === 'required' && options.mode === 'optional') {
-        return fail(this.failure('activate', 'required activation cannot be downgraded'))
+        return this.failureResult(
+          this.failure('activate', 'required activation cannot be downgraded')
+        )
       }
       return ok(this.activationSnapshot())
     } catch {
-      return fail(this.failure('activate', 'could not activate event extension'))
+      return this.failureResult(this.failure('activate', 'could not activate event extension'))
     }
   }
 
@@ -305,28 +322,30 @@ class MemoryJobEventStoreImplementation {
 
   read(options: JobEventReadOptions): Operation<JobEventPage> {
     try {
-      if (!isObject(options)) return fail(this.failure('read', 'options must be an object'))
+      if (!isObject(options))
+        return this.failureResult(this.failure('read', 'options must be an object'))
       const current = nowValue(this.clock)
-      if (Result.isError(current)) return fail(current.error)
+      if (Result.isError(current)) return this.failureResult(current.error)
       this.prune(current.value)
+      this.reportRetention(current.value)
       const after: ResultType<number, JobEventStoreFailure> =
         options.after === undefined ? Result.ok(0) : this.decodeCursor(options.after)
-      if (Result.isError(after)) return fail(after.error)
+      if (Result.isError(after)) return this.failureResult(after.error)
       if (after.value > this.nextSequence - 1) {
-        return fail(this.failure('cursor', 'cursor is ahead of the store tail'))
+        return this.failureResult(this.failure('cursor', 'cursor is ahead of the store tail'))
       }
       const expired = this.expired(after.value)
-      if (expired !== undefined) return fail(expired)
+      if (expired !== undefined) return this.failureResult(expired)
       const limit = options.limit === undefined ? 100 : options.limit
       if (!Number.isSafeInteger(limit) || limit <= 0 || limit > maxLimit) {
-        return fail(this.failure('read', 'limit must be between 1 and 10000'))
+        return this.failureResult(this.failure('read', 'limit must be between 1 and 10000'))
       }
       if (
         options.types !== undefined &&
         (!Array.isArray(options.types) ||
           options.types.some((type) => !isDurableJobEventType(type)))
       ) {
-        return fail(this.failure('read', 'types contains an unknown event type'))
+        return this.failureResult(this.failure('read', 'types contains an unknown event type'))
       }
       const events: DurableJobEvent[] = []
       let examined: number | undefined
@@ -344,7 +363,7 @@ class MemoryJobEventStoreImplementation {
         })
       )
     } catch {
-      return fail(this.failure('read', 'could not read event options'))
+      return this.failureResult(this.failure('read', 'could not read event options'))
     }
   }
 
@@ -354,23 +373,23 @@ class MemoryJobEventStoreImplementation {
     readonly signal: AbortSignal
   }): Operation<void> {
     const after = this.decodeCursor(options?.after)
-    if (Result.isError(after)) return fail(after.error)
+    if (Result.isError(after)) return this.failureResult(after.error)
     if (after.value > this.nextSequence - 1) {
-      return fail(this.failure('cursor', 'cursor is ahead of the store tail'))
+      return this.failureResult(this.failure('cursor', 'cursor is ahead of the store tail'))
     }
     const current = nowValue(this.clock)
-    if (Result.isError(current)) return fail(current.error)
+    if (Result.isError(current)) return this.failureResult(current.error)
     this.prune(current.value)
+    this.reportRetention(current.value)
     const expired = this.expired(after.value)
     if (expired !== undefined) {
-      return fail(
-        this.failure('awaitEvents', `cursor expired; resume at ${expired.oldestAvailableCursor}`)
-      )
+      return this.failureResult(expired)
     }
     if (!isObject(options.signal) || typeof options.signal.addEventListener !== 'function') {
-      return fail(this.failure('awaitEvents', 'signal must be an AbortSignal'))
+      return this.failureResult(this.failure('awaitEvents', 'signal must be an AbortSignal'))
     }
-    if (options.signal.aborted) return fail(this.failure('awaitEvents', 'wait was aborted'))
+    if (options.signal.aborted)
+      return this.failureResult(this.failure('awaitEvents', 'wait was aborted'))
     const queues =
       options.queues === undefined || options.queues.length === 0
         ? undefined
@@ -435,6 +454,19 @@ class MemoryJobEventStoreImplementation {
     return new JobEventStoreFailure({ operation, message })
   }
 
+  private failureResult<Value>(error: JobEventStoreError): Operation<Value> {
+    if (JobEventCursorExpiredError.is(error)) {
+      notifyJobHealth(this.health, { type: 'cursor-expired' })
+    } else if (JobEventStoreFailure.is(error) || JobEventWriterRejectedError.is(error)) {
+      notifyJobHealth(this.health, {
+        type: 'store-operation-failed',
+        operation: error.operation,
+        retryable: false
+      })
+    }
+    return fail(error)
+  }
+
   private expired(after: number): JobEventCursorExpiredError | undefined {
     const first = this.events[0]
     if (first === undefined) {
@@ -464,6 +496,18 @@ class MemoryJobEventStoreImplementation {
     }
     if (count !== undefined) start = Math.max(start, this.events.length - count)
     if (start > 0) this.events.splice(0, start)
+  }
+
+  private reportRetention(now: number): void {
+    const oldest = this.events[0]
+    notifyJobHealth(this.health, {
+      type: 'retention',
+      retainedEventCount: this.events.length,
+      oldestRetainedAgeMs:
+        oldest === undefined ? undefined : Math.max(0, now - oldest.recordedAtMs),
+      retentionCount: this.retention.count,
+      retentionAgeMs: this.retention.ageMs
+    })
   }
 
   private notify(event: DurableJobEvent): void {

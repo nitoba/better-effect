@@ -45,6 +45,8 @@ const expectedCoreRuntimeExports = [
   'JobMetricNames',
   'JobObserver',
   'makeJobDepthSampler',
+  'JobHealth',
+  'makeJobHealth',
   'JobAdmin',
   'JobAwaitAbortedError',
   'JobCodecFailure',
