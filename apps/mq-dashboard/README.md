@@ -151,3 +151,32 @@ working and `/api/events`/SSE return `events_unavailable`. The disabled feed is
 The same rule applies to schedules, flows, and controls: their capability
 booleans appear in `/api/capabilities` and `/api/overview`, and absent
 capabilities leave their endpoint families out of the Hono app.
+
+## React/Vite reference web client
+
+The frontend lives in `apps/mq-dashboard/web` and is generated with the
+shadcn Base UI preset. It uses React, Vite, and the Base UI shadcn components
+for controls, dialogs, selects, tabs, tables, tooltips, and scrolling regions.
+Interactive controls are never implemented as ad-hoc native buttons, inputs,
+selects, or dialogs.
+
+Run the Memory backend and the Vite client in separate terminals:
+
+```bash
+MQ_DASHBOARD_TOKEN=local-dev-token bun run --cwd apps/mq-dashboard start
+MQ_DASHBOARD_TOKEN=local-dev-token bun run --cwd apps/mq-dashboard/web dev
+```
+
+Vite proxies `/api` and `/health` to the loopback backend. During local
+development it adds the token to the proxy request on the server side; the
+client sends same-origin credentials but never embeds a token or other secret
+in the bundle. Production hosts must serve the built `web/dist` assets with
+their own secure cookie/authentication, CSP, CSRF, and policy boundary.
+
+```bash
+bun run --cwd apps/mq-dashboard/web check
+```
+
+The web client keeps the event tail bounded to 200 entries, reconnects from
+the latest durable cursor, reports cursor expiration, and falls back to the
+finite public event endpoint when the live feed is unavailable.
