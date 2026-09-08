@@ -112,6 +112,35 @@ a subscriber or a Runtime; it uses the active Runtime and Scope, and stops its
 wait when the caller's `AbortSignal` or Scope closes. Aborts are reported as
 `JobEventConsumerAbortedError`.
 
+For an independently managed long-lived consumer, use the Layer-first Service
+API. The factory is lazy and yieldable; it starts only when the provider is
+acquired, and its factory, event-store, Clock, and handler Service
+requirements remain visible to Layer composition:
+
+```ts
+const AuditConsumer = JobEventConsumer.service('@audit/EventConsumer')
+const AuditConsumerLive = AuditConsumer.layer(async function* () {
+  const config = yield* AuditConfig
+
+  return {
+    eventStore: DurableEvents,
+    after: config.initialCursor,
+    concurrency: 1,
+    handler: (event) =>
+      Effect.fn(async function* () {
+        yield* auditEvent(event)
+        return Result.ok(undefined)
+      })
+  }
+})
+```
+
+`JobEventConsumer` owns only the polling/callback lifecycle. Runtime quiesce
+stops new waits and callbacks, admitted callbacks finish in their execution
+Scopes, and release waits for the loop to settle. It never persists a cursor,
+creates an ACK, or creates a Runtime; callers retain checkpoint ownership and
+can restart from the last checkpoint after a failure or cancellation.
+
 ### Runner-agnostic JobEventStore conformance
 
 The `better-effect-mq/testing` entrypoint also provides
