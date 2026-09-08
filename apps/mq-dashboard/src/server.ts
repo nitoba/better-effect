@@ -1,6 +1,13 @@
 import { Effect, Layer, Runtime } from 'better-effect'
 import { BunEffect } from 'better-effect/bun'
-import { DashboardApp, DashboardAuthorization, dashboardEventFeedLayer } from './index'
+import {
+  DashboardApp,
+  DashboardAuthorization,
+  DashboardControlCapabilityDisabled,
+  DashboardFlowCapabilityDisabled,
+  DashboardScheduleCapabilityDisabled,
+  dashboardEventFeedLayer
+} from './index'
 import { JobEventStore, JobStore, MemoryJobEventStore, MemoryJobStore } from 'better-effect-mq'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
@@ -57,7 +64,13 @@ export const DashboardLive = (() => {
         dashboardEventFeedLayer(),
         Layer.merge(
           ClockLive,
-          Layer.merge(DashboardApp.layer, Layer.merge(authorization, DashboardServer.layer))
+          Layer.merge(
+            Layer.merge(
+              DashboardScheduleCapabilityDisabled,
+              Layer.merge(DashboardFlowCapabilityDisabled, DashboardControlCapabilityDisabled)
+            ),
+            Layer.merge(DashboardApp.layer, Layer.merge(authorization, DashboardServer.layer))
+          )
         )
       )
     )

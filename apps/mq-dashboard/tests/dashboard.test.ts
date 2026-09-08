@@ -5,21 +5,40 @@ import { ClockTestLayer } from 'better-effect/standard-services'
 import {
   DashboardApp,
   DashboardAuthorization,
+  DashboardControlCapabilityDisabled,
   DashboardEventFeedDisabled,
-  dashboardEventFeedLayer
+  DashboardFlowCapabilityDisabled,
+  DashboardScheduleCapabilityDisabled,
+  dashboardControlCapabilityLayer,
+  dashboardEventFeedLayer,
+  dashboardFlowCapabilityLayer,
+  dashboardScheduleCapabilityLayer
 } from '../src'
 import {
+  FlowStore,
   JobEventStore,
   JobId,
+  JobName,
+  JobScheduleStore,
   JobStore,
+  makeLeaseToken,
+  makeSerializedJobFailure,
+  MemoryFlowStore,
   MemoryJobEventStore,
-  MemoryJobStore
+  MemoryJobScheduleStore,
+  MemoryJobStore,
+  QueueControls,
+  QueueName
 } from 'better-effect-mq'
 import type {
+  FlowSnapshot,
   JobEventStoreError,
   JobEventStoreOperation,
   JobStoreError,
-  JobStoreOperation
+  JobStoreOperation,
+  ScheduleRecord,
+  ScheduleStoreError,
+  ScheduleStoreOperation
 } from 'better-effect-mq'
 import { Result } from 'better-result'
 
@@ -33,6 +52,13 @@ const denyAll = Layer.succeed(
   DashboardAuthorization.of({ authorize: () => null })
 )
 
+const disabledCapabilities = Layer.merge(
+  DashboardScheduleCapabilityDisabled,
+  Layer.merge(DashboardFlowCapabilityDisabled, DashboardControlCapabilityDisabled)
+)
+
+const disabledDashboard = Layer.merge(DashboardEventFeedDisabled, disabledCapabilities)
+
 const resolve = async <Value>(
   operation: JobStoreOperation<Value, JobStoreError>
 ): Promise<Value> => {
@@ -43,6 +69,14 @@ const resolve = async <Value>(
 
 const resolveEvent = async <Value, Failure extends JobEventStoreError>(
   operation: JobEventStoreOperation<Value, Failure>
+): Promise<Value> => {
+  const result = await operation
+  if (Result.isError(result)) throw result.error
+  return result.value
+}
+
+const resolveSchedule = async <Value>(
+  operation: ScheduleStoreOperation<Value, ScheduleStoreError>
 ): Promise<Value> => {
   const result = await operation
   if (Result.isError(result)) throw result.error
@@ -85,7 +119,10 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
         Layer.succeed(JobEventStore, JobEventStore.of(events)),
         Layer.merge(
           dashboardEventFeedLayer(),
-          Layer.merge(ClockTestLayer(0), Layer.merge(allowAll, DashboardApp.layer))
+          Layer.merge(
+            ClockTestLayer(0),
+            Layer.merge(allowAll, Layer.merge(disabledCapabilities, DashboardApp.layer))
+          )
         )
       )
     )
@@ -135,7 +172,7 @@ test('dashboard returns a safe authorization failure and keeps EventStore option
       Layer.succeed(JobStore, JobStore.of(store)),
       Layer.merge(
         ClockTestLayer(0),
-        Layer.merge(allowAll, Layer.merge(DashboardEventFeedDisabled, DashboardApp.layer))
+        Layer.merge(allowAll, Layer.merge(disabledDashboard, DashboardApp.layer))
       )
     )
   )
@@ -150,13 +187,218 @@ test('dashboard returns a safe authorization failure and keeps EventStore option
   }
 })
 
+test('dashboard keeps optional capability routes absent when their Layers are not installed', async () => {
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(allowAll, Layer.merge(disabledDashboard, DashboardApp.layer))
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const overview = await app.request('/api/overview')
+    expect(overview.status).toBe(200)
+    expect((await overview.json()).data.capabilities).toEqual({
+      events: false,
+      schedules: false,
+      flows: false,
+      controls: false
+    })
+    const capabilities = await app.request('/api/capabilities')
+    expect(capabilities.status).toBe(200)
+    expect((await capabilities.json()).data).toEqual({
+      events: false,
+      schedules: false,
+      flows: false,
+      controls: false
+    })
+    expect((await app.request('/api/schedules')).status).toBe(404)
+    expect((await app.request('/api/flows/flow-1')).status).toBe(404)
+    expect((await app.request('/api/controls/emails')).status).toBe(404)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard exposes public schedule, flow, and controls Layers with sanitized optional APIs', async () => {
+  const emailQueue = QueueName.make('emails').unwrap()
+  const sendName = JobName.make('send').unwrap()
+  const schedule: ScheduleRecord = {
+    key: 'nightly',
+    group: 'billing',
+    job: { queue: emailQueue, name: sendName, version: 1 },
+    queue: emailQueue,
+    cron: '0 0 * * *',
+    everyMs: undefined,
+    timeZone: 'UTC',
+    payload: { secret: 'do-not-return' },
+    metadata: { tenant: 'do-not-return' },
+    priority: 1,
+    attemptsMax: 3,
+    backoff: undefined,
+    timeoutMs: undefined,
+    misfire: { strategy: 'run-once' },
+    overlap: 'skip',
+    paused: false,
+    revision: 2,
+    nextRunAtMs: 10_000,
+    lastScheduledAtMs: undefined,
+    lastJobId: undefined,
+    createdAtMs: 0,
+    updatedAtMs: 0
+  }
+  const scheduleStore = MemoryJobScheduleStore.make()
+  await resolveSchedule(scheduleStore.upsertSchedule(schedule))
+
+  const flowId = JobId.make('flow-1').unwrap()
+  const flowSnapshot: FlowSnapshot = {
+    parent: {
+      flowId,
+      flowName: 'billing-flow',
+      parentStoreKey: 'sensitive-parent-key',
+      depth: 1,
+      state: 'waiting-children',
+      leaseToken: makeLeaseToken('sensitive-lease-token').unwrap(),
+      flow: {
+        flowName: 'billing-flow',
+        failFast: true,
+        pending: 1,
+        completed: 0,
+        failed: 0,
+        cancelled: 0
+      },
+      failure: makeSerializedJobFailure({
+        kind: 'defect',
+        message: 'do-not-return',
+        retryable: false,
+        recordedAt: 0
+      }).unwrap()
+    },
+    children: [
+      {
+        flowId,
+        childKey: 'send-email',
+        name: 'send',
+        version: 1,
+        storeKey: 'sensitive-child-store-key',
+        childJobId: JobId.make('child-1').unwrap(),
+        status: 'failed',
+        result: { secret: 'do-not-return' },
+        failure: makeSerializedJobFailure({
+          kind: 'defect',
+          message: 'do-not-return',
+          retryable: false,
+          recordedAt: 0
+        }).unwrap(),
+        cascaded: false,
+        pendingSinceMs: 0
+      }
+    ],
+    outbox: []
+  }
+  const flowStore = Object.assign(MemoryFlowStore.make(), {
+    getFlow: () => Result.ok(flowSnapshot),
+    cancel: () =>
+      Result.ok({
+        cancelled: 1,
+        parentSettled: true,
+        parent: flowSnapshot.parent,
+        children: flowSnapshot.children
+      })
+  })
+  const controlsStore = MemoryJobStore.make()
+  const controlsQueue = (
+    await resolve(
+      controlsStore.reconcile({
+        group: 'billing',
+        controls: [{ queue: 'emails', options: { globalConcurrency: 2 } }]
+      })
+    )
+  ).records[0]!
+
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(
+          allowAll,
+          Layer.merge(
+            DashboardEventFeedDisabled,
+            Layer.merge(
+              Layer.succeed(JobScheduleStore, JobScheduleStore.of(scheduleStore)),
+              Layer.merge(
+                dashboardScheduleCapabilityLayer(),
+                Layer.merge(
+                  Layer.succeed(FlowStore, FlowStore.of(flowStore)),
+                  Layer.merge(
+                    dashboardFlowCapabilityLayer(),
+                    Layer.merge(
+                      QueueControls.layer(() => controlsStore),
+                      Layer.merge(dashboardControlCapabilityLayer(), DashboardApp.layer)
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const capabilities = (await (await app.request('/api/capabilities')).json()).data
+    expect(capabilities.schedules).toBe(true)
+    expect(capabilities.flows).toBe(true)
+    expect(capabilities.controls).toBe(true)
+
+    const schedules = await app.request('/api/schedules?group=billing')
+    const scheduleData = (await schedules.json()).data.schedules[0]
+    expect(scheduleData.key).toBe('nightly')
+    expect(scheduleData.payload).toBeUndefined()
+    expect(scheduleData.metadata).toBeUndefined()
+
+    const flow = await app.request('/api/flows/flow-1')
+    const flowData = (await flow.json()).data.flow
+    expect(flowData.parent.leaseToken).toBeUndefined()
+    expect(flowData.parent.parentStoreKey).toBeUndefined()
+    expect(flowData.children[0].result).toBeUndefined()
+    expect(flowData.children[0].failure).toBeUndefined()
+
+    const controls = await app.request('/api/controls/emails')
+    expect((await controls.json()).data.control).toEqual({
+      queue: controlsQueue.queue,
+      group: 'billing',
+      enabled: true,
+      revision: controlsQueue.revision,
+      globalConcurrency: 2,
+      perKeyConcurrency: undefined,
+      rateLimit: undefined,
+      createdAtMs: controlsQueue.createdAtMs,
+      updatedAtMs: controlsQueue.updatedAtMs
+    })
+
+    const cancelled = await app.request('/api/flows/flow-1/cancel', { method: 'POST' })
+    expect(cancelled.status).toBe(200)
+    expect((await cancelled.json()).data.cancelled).toBe(1)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('dashboard keeps authentication and role checks at the host boundary', async () => {
   const runtime = await Runtime.make(
     Layer.merge(
       Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
       Layer.merge(
         ClockTestLayer(0),
-        Layer.merge(denyAll, Layer.merge(DashboardEventFeedDisabled, DashboardApp.layer))
+        Layer.merge(denyAll, Layer.merge(disabledDashboard, DashboardApp.layer))
       )
     )
   )
@@ -194,7 +436,10 @@ test('SSE resumes after Last-Event-ID and emits non-durable heartbeats', async (
         Layer.succeed(JobEventStore, JobEventStore.of(events)),
         Layer.merge(
           dashboardEventFeedLayer(),
-          Layer.merge(ClockTestLayer(0), Layer.merge(allowAll, DashboardApp.layer))
+          Layer.merge(
+            ClockTestLayer(0),
+            Layer.merge(allowAll, Layer.merge(disabledCapabilities, DashboardApp.layer))
+          )
         )
       )
     )
