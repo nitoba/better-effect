@@ -13,6 +13,7 @@ import {
   JobEventConsumer,
   JobEventStore,
   JobEventStoreFailure,
+  JobHealth,
   JobId,
   JobName,
   JobStore,
@@ -128,9 +129,11 @@ test('JobEventConsumer preserves the caller cursor after handler failure for at-
   unwrap(jobs.enqueue(request('retry-consumer')))
 
   const failedConsumer = JobEventConsumer.service('@runtime/FailedConsumer')
+  const health = JobHealth.make()
   const failedLayer = failedConsumer.layer(() => ({
     eventStore: JobEventStore,
     after: initial,
+    health,
     handler: () =>
       Effect.fn(function* () {
         return Result.err('handler-failed' as const)
@@ -147,6 +150,8 @@ test('JobEventConsumer preserves the caller cursor after handler failure for at-
 
     // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
     await expect(resolved.value.awaitStopped()).rejects.toBe('handler-failed')
+    expect(health.snapshot().consumerHandlerFailures).toBe(1)
+    expect(health.snapshot().latestEventLagMs).toBeGreaterThanOrEqual(0)
     expect(initial).not.toBe(unwrap(events.tailCursor()))
   } finally {
     await failedRuntime.dispose()
@@ -326,6 +331,7 @@ test('named JobEventConsumers keep stores, cursors, and callbacks isolated', asy
 
 test('JobEventConsumer rejects unsupported concurrency and does not leak a failed store wait', async () => {
   const events = MemoryJobEventStore.make()
+  const health = JobHealth.make()
   const consumer = JobEventConsumer.service('@runtime/StoreFailureConsumer')
   const failingStore = new Proxy(events, {
     get(target, property, receiver) {
@@ -342,6 +348,7 @@ test('JobEventConsumer rejects unsupported concurrency and does not leak a faile
   }) as JobEventStoreContract
   const layer = consumer.layer(() => ({
     eventStore: JobEventStore,
+    health,
     handler: () =>
       Effect.fn(function* () {
         return Result.ok(undefined)
@@ -361,6 +368,7 @@ test('JobEventConsumer rejects unsupported concurrency and does not leak a faile
     if (Result.isError(resolved)) throw resolved.error
     // oxlint-disable-next-line typescript/await-thenable -- Bun's rejection matcher is thenable at runtime.
     await expect(resolved.value.awaitStopped()).rejects.toBeInstanceOf(JobEventStoreFailure)
+    expect(health.snapshot().storeOperationFailures).toBe(1)
   } finally {
     await runtime.dispose()
   }

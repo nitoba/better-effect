@@ -6,6 +6,7 @@ import {
   JobEventCursorExpiredError,
   JobEventStore,
   JobEventWriterRejectedError,
+  JobHealth,
   JobId,
   JobName,
   JobStore,
@@ -213,9 +214,11 @@ test('duplicate enqueue, heartbeat, and already-applied settlement do not append
 
 test('event cursors paginate through filtered gaps and retention expires old cursors', () => {
   let now = 0
+  const health = JobHealth.make()
   const events = MemoryJobEventStore.make({
     clock: () => now,
-    retention: { count: 2 }
+    retention: { count: 2, ageMs: 1 },
+    health
   })
   const jobs = MemoryJobStore.make({ eventStore: events, clock: () => now })
   const initial = unwrap(events.tailCursor())
@@ -236,6 +239,19 @@ test('event cursors paginate through filtered gaps and retention expires old cur
   const expired = events.read({ after: initial }) as Result<unknown, unknown>
   expect(Result.isError(expired)).toBe(true)
   if (Result.isError(expired)) expect(expired.error).toBeInstanceOf(JobEventCursorExpiredError)
+  // SAFETY: the fixture deliberately crosses the branded cursor boundary to exercise validation.
+  const malformed = events.read({ after: 'not-a-store-cursor' as never }) as Result<
+    unknown,
+    unknown
+  >
+  expect(Result.isError(malformed)).toBe(true)
+  expect(health.snapshot()).toMatchObject({
+    storeOperationFailures: 1,
+    retainedEventCount: 2,
+    retentionCount: 2,
+    retentionAgeMs: 1,
+    cursorExpiries: 1
+  })
 })
 
 test('awaitEvents wakes only for matching queues and aborts deterministically', async () => {

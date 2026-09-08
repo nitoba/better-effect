@@ -11,6 +11,7 @@ import {
   Codec,
   Job,
   JobAdmin,
+  JobHealth,
   JobMetricNames,
   JobObserver,
   makeJobDepthSampler,
@@ -560,6 +561,91 @@ test('logger and metrics adapters use stable messages and low-cardinality attrib
     JobMetricNames.jobsInFlight,
     JobMetricNames.storeFailures
   ])
+})
+
+test('JobHealth tracks operational signals and keeps health metrics identifier-free', () => {
+  const metrics: Array<{
+    operation: 'increment' | 'observe' | 'gauge'
+    name: string
+    attributes: Record<string, string | number | boolean>
+  }> = []
+  const health = JobHealth.make({
+    metrics: {
+      increment: (name, _value, attributes) => {
+        metrics.push({ operation: 'increment', name, attributes })
+      },
+      observe: (name, _value, attributes) => {
+        metrics.push({ operation: 'observe', name, attributes })
+      },
+      gauge: (name, _value, attributes) => {
+        metrics.push({ operation: 'gauge', name, attributes })
+      }
+    }
+  })
+
+  health.record({ type: 'store-operation-failed', operation: 'read', retryable: true })
+  health.record({ type: 'lease-lost', reason: 'expired-lease' })
+  health.record({ type: 'stalled-recovered', outcome: 'requeued' })
+  health.record({ type: 'consumer-handler-failed' })
+  health.record({ type: 'event-lag', lagMs: 42 })
+  health.record({
+    type: 'retention',
+    retainedEventCount: 3,
+    oldestRetainedAgeMs: 9,
+    retentionCount: 10,
+    retentionAgeMs: 100
+  })
+  health.record({ type: 'cursor-expired' })
+
+  expect(health.snapshot()).toMatchObject({
+    storeOperationFailures: 1,
+    leaseLosses: 1,
+    stalledRecoveries: 1,
+    consumerHandlerFailures: 1,
+    latestEventLagMs: 42,
+    maxEventLagMs: 42,
+    retainedEventCount: 3,
+    oldestRetainedAgeMs: 9,
+    retentionCount: 10,
+    retentionAgeMs: 100,
+    cursorExpiries: 1
+  })
+  expect(metrics.some(({ name }) => name === JobMetricNames.consumerHandlerFailures)).toBe(true)
+  expect(
+    metrics.every(({ attributes }) => !('jobId' in attributes) && !('workerId' in attributes))
+  ).toBe(true)
+})
+
+test('JobObserver.health feeds worker lease and stall events into the snapshot sink', () => {
+  const health = JobHealth.make()
+  const observer = JobObserver.health(health)
+
+  observer.onEvent({
+    type: 'lease-lost',
+    recordedAt: 1,
+    workerId: 'worker' as never,
+    jobId: 'job' as never,
+    queue: 'queue' as never,
+    name: 'job',
+    version: 1,
+    attempt: 1,
+    delivery: 1,
+    reason: 'expired-lease'
+  })
+  observer.onEvent({
+    type: 'stalled-recovered',
+    recordedAt: 2,
+    workerId: 'worker' as never,
+    jobId: 'job' as never,
+    queue: 'queue' as never,
+    name: 'job',
+    version: 1,
+    attempt: 1,
+    delivery: 1,
+    outcome: 'requeued'
+  })
+
+  expect(health.snapshot()).toMatchObject({ leaseLosses: 1, stalledRecoveries: 1 })
 })
 
 test('queue-depth sampling is opt-in and stops without publishing stale samples', async () => {

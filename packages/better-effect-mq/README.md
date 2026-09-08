@@ -959,6 +959,31 @@ and stopping the sampler ignores an in-flight result. Depth is `waiting +
 delayed` and is emitted as `better_effect_mq_queue_depth` with only a `queue`
 attribute.
 
+`JobHealth` is a small process-local snapshot/sink for operational signals that
+are not durable job transitions. It can be shared by the Memory event store,
+managed event consumers, and Worker observers:
+
+```ts
+const health = JobHealth.make({ metrics: metricsSink })
+const events = MemoryJobEventStore.make({ health, retention: { count: 10_000 } })
+const Consumer = JobEventConsumer.service('@app/Consumer')
+const ConsumerLive = Consumer.layer(() => ({
+  eventStore: DurableEvents,
+  health,
+  handler: (event) => handleEvent(event)
+}))
+const workerOptions = { observer: JobObserver.health(health) }
+
+health.snapshot()
+// store failures, lease loss, stalled recovery, handler failures, lag,
+// retained count/age, and cursor expiry; no payloads or identifiers
+```
+
+The snapshot is advisory and process-local; it does not replace the durable
+event log or the Job/Attempt records. Health metrics use bounded categories and
+never use JobId, WorkerId, payload, result, or failure data as labels. Sinks
+are best-effort and cannot change queue or consumer behavior.
+
 Worker handler attempts are also named for Runtime observers as
 `better-effect-mq/<queue>/<job>@<version>` with the allowlisted `mq.*`
 attributes (`mq.job.id`, `mq.job.name`, `mq.job.version`, `mq.job.queue`,

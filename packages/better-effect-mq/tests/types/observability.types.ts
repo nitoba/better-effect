@@ -5,12 +5,16 @@ import { expectTypeOf } from 'bun:test'
 
 import {
   JobMetricNames,
+  JobHealth,
   JobObserver,
   makeJobDepthSampler,
   type JobDepthSampler,
   type JobDepthSamplerOptions,
   type JobEvent,
   type JobMetricsSink,
+  type JobHealthSink,
+  type JobHealthMonitor,
+  type JobHealthSnapshot,
   type JobObserverContract,
   type QueueName
 } from '../../src'
@@ -43,8 +47,13 @@ const sink = undefined as unknown as JobMetricsSink
 const queue = undefined as unknown as QueueName
 const options = { queues: [queue], intervalMs: 1 } satisfies JobDepthSamplerOptions
 const sampler = makeJobDepthSampler(store, sink, options)
+const health: JobHealthSink = JobHealth.make()
+const monitor: JobHealthMonitor = JobHealth.make()
+const snapshot: JobHealthSnapshot = monitor.snapshot()
+health.record({ type: 'cursor-expired' })
 
 expectTypeOf(sampler).toEqualTypeOf<JobDepthSampler>()
 expectTypeOf(sampler.running).toEqualTypeOf<boolean>()
 
 void sampler
+void snapshot

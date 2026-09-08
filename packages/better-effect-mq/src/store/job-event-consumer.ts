@@ -18,6 +18,9 @@ import {
   type JobEventCursor
 } from './event-store'
 import { JobEvents, type JobEventFilters, type JobEventsHandler } from './events'
+import { JobEventCursorExpiredError, JobEventStoreFailure } from './event-errors'
+import { notifyJobHealth } from '../observability/health'
+import type { JobHealthSink } from '../observability/health'
 
 export type JobEventConsumerHandler = JobEventsHandler<any, any, AnyService>
 
@@ -31,6 +34,7 @@ export type JobEventConsumerOptions<
   readonly pageSize?: number
   readonly pollIntervalMs?: number
   readonly signal?: AbortSignal
+  readonly health?: JobHealthSink
   readonly concurrency?: 1
   readonly handler: Handler
 }
@@ -131,6 +135,9 @@ const isAbortSignal = (value: unknown): value is AbortSignal =>
 
 const isHandler = (value: unknown): value is JobEventConsumerHandler => typeof value === 'function'
 
+const isHealthSink = (value: unknown): value is JobHealthSink =>
+  isObject(value) && typeof value.record === 'function'
+
 const normalizeFactory = <
   Yield extends ServiceRequirement<unknown>,
   Options extends AnyJobEventConsumerOptions
@@ -169,6 +176,7 @@ const normalizeOptions = (value: unknown): AnyJobEventConsumerOptions => {
     'pageSize',
     'pollIntervalMs',
     'signal',
+    'health',
     'concurrency',
     'handler'
   ])
@@ -186,6 +194,10 @@ const normalizeOptions = (value: unknown): AnyJobEventConsumerOptions => {
 
   if (value.signal !== undefined && !isAbortSignal(value.signal)) {
     throw new TypeError('JobEventConsumer.signal must be an AbortSignal')
+  }
+
+  if (value.health !== undefined && !isHealthSink(value.health)) {
+    throw new TypeError('JobEventConsumer.health must implement record')
   }
 
   if (value.concurrency !== undefined && value.concurrency !== 1) {
@@ -323,7 +335,21 @@ const makeConsumer = async (
           yield* JobEvents.forEach(forEachOptions, (event) =>
             // oxlint-disable-next-line require-yield -- Effect.fn is the required lazy Program boundary for handlers.
             Effect.fn(async function* () {
-              return await executor.run(() => options.handler(event)())
+              const clock = yield* Clock
+              notifyJobHealth(options.health, {
+                type: 'event-lag',
+                lagMs: Math.max(0, clock.now().getTime() - event.recordedAtMs)
+              })
+              try {
+                const handled = await executor.run(() => options.handler(event)())
+                if (isResult(handled) && Result.isError(handled)) {
+                  notifyJobHealth(options.health, { type: 'consumer-handler-failed' })
+                }
+                return handled
+              } catch (cause) {
+                notifyJobHealth(options.health, { type: 'consumer-handler-failed' })
+                throw cause
+              }
             })
           )
         )
@@ -342,11 +368,23 @@ const makeConsumer = async (
     throw cause
   }
 
-  return new ConsumerHandle(
-    stopController,
-    loop.then(() => undefined),
-    linked
+  const completion = loop.then(
+    () => undefined,
+    (cause) => {
+      if (JobEventCursorExpiredError.is(cause)) {
+        notifyJobHealth(options.health, { type: 'cursor-expired' })
+      } else if (JobEventStoreFailure.is(cause)) {
+        notifyJobHealth(options.health, {
+          type: 'store-operation-failed',
+          operation: cause.operation,
+          retryable: false
+        })
+      }
+      throw cause
+    }
   )
+
+  return new ConsumerHandle(stopController, completion, linked)
 }
 
 /** A named, Layer-owned durable Job Event consumer. */
