@@ -13,6 +13,8 @@ import {
   DashboardFlowCapabilityDisabled,
   DashboardJobRedactionPolicy,
   DashboardJobRedactionPolicyDisabled,
+  DashboardMetricsSink,
+  DashboardMetricsSinkDisabled,
   DashboardMutationPolicy,
   DashboardMutationPolicyDisabled,
   DashboardRateLimiter,
@@ -73,7 +75,10 @@ const allowMutations = Layer.merge(
   DashboardJobRedactionPolicyDisabled,
   Layer.merge(
     allowMutationPolicy,
-    Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+    Layer.merge(
+      DashboardAuditSinkDisabled,
+      Layer.merge(DashboardMetricsSinkDisabled, DashboardRateLimiterDisabled)
+    )
   )
 )
 
@@ -91,7 +96,10 @@ const disabledMutationCapabilities = Layer.merge(
   DashboardJobRedactionPolicyDisabled,
   Layer.merge(
     DashboardMutationPolicyDisabled,
-    Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+    Layer.merge(
+      DashboardAuditSinkDisabled,
+      Layer.merge(DashboardMetricsSinkDisabled, DashboardRateLimiterDisabled)
+    )
   )
 )
 
@@ -321,7 +329,10 @@ test('dashboard applies job redaction policy by identity and principal context',
                   DashboardMutationPolicyDisabled,
                   Layer.merge(
                     DashboardAuditSinkDisabled,
-                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    Layer.merge(
+                      DashboardMetricsSinkDisabled,
+                      Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    )
                   )
                 )
               )
@@ -412,7 +423,10 @@ test('dashboard blocks job mutations when redaction policy denies the mutation t
                   allowMutationPolicy,
                   Layer.merge(
                     DashboardAuditSinkDisabled,
-                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    Layer.merge(
+                      DashboardMetricsSinkDisabled,
+                      Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    )
                   )
                 )
               )
@@ -498,7 +512,10 @@ test('dashboard fails closed when job redaction policy returns an invalid decisi
                   allowMutationPolicy,
                   Layer.merge(
                     DashboardAuditSinkDisabled,
-                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    Layer.merge(
+                      DashboardMetricsSinkDisabled,
+                      Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    )
                   )
                 )
               )
@@ -966,6 +983,7 @@ test('dashboard keeps viewer reads available while mutation policy fails closed'
 
 test('dashboard returns stable confirmation and CSRF failures for mutations', async () => {
   let rejection: 'confirmation_required' | 'csrf_invalid' = 'confirmation_required'
+  const metricOutcomes: Array<{ action: string; outcome: string }> = []
   const policy = Layer.succeed(
     DashboardMutationPolicy,
     DashboardMutationPolicy.of({
@@ -990,7 +1008,18 @@ test('dashboard returns stable confirmation and CSRF failures for mutations', as
                   DashboardJobRedactionPolicyDisabled,
                   Layer.merge(
                     DashboardAuditSinkDisabled,
-                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    Layer.merge(
+                      Layer.succeed(
+                        DashboardMetricsSink,
+                        DashboardMetricsSink.of({
+                          available: true,
+                          increment: (_name, _value, attributes) => {
+                            metricOutcomes.push(attributes)
+                          }
+                        })
+                      ),
+                      Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                    )
                   )
                 )
               )
@@ -1011,6 +1040,10 @@ test('dashboard returns stable confirmation and CSRF failures for mutations', as
     const csrf = await app.request('/api/jobs/unknown/promote', { method: 'POST' })
     expect(csrf.status).toBe(403)
     expect((await csrf.json()).error).toBe('csrf_invalid')
+    expect(metricOutcomes).toEqual([
+      { action: 'job.promote', outcome: 'denied' },
+      { action: 'job.promote', outcome: 'denied' }
+    ])
   } finally {
     await runtime.dispose()
   }
@@ -1055,7 +1088,10 @@ test('dashboard rate-limits mutations and records safe audit outcomes', async ()
                 allowMutationPolicy,
                 Layer.merge(
                   DashboardJobRedactionPolicyDisabled,
-                  Layer.merge(audit, Layer.merge(rateLimiter, DashboardApp.layer))
+                  Layer.merge(
+                    DashboardMetricsSinkDisabled,
+                    Layer.merge(audit, Layer.merge(rateLimiter, DashboardApp.layer))
+                  )
                 )
               )
             )
@@ -1180,7 +1216,13 @@ test('dashboard health endpoint reports SSE reconnections, closures, and observe
                     DashboardMutationPolicyDisabled,
                     Layer.merge(
                       DashboardAuditSinkDisabled,
-                      Layer.merge(DashboardRateLimiterDisabled, DashboardJobRedactionPolicyDisabled)
+                      Layer.merge(
+                        DashboardMetricsSinkDisabled,
+                        Layer.merge(
+                          DashboardRateLimiterDisabled,
+                          DashboardJobRedactionPolicyDisabled
+                        )
+                      )
                     )
                   ),
                   DashboardApp.layer

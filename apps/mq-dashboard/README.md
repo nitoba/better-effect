@@ -34,7 +34,10 @@ Layer.merge(
   DashboardMutationPolicyDisabled,
   Layer.merge(
     DashboardAuditSinkDisabled,
-    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+    Layer.merge(
+      DashboardMetricsSinkDisabled,
+      Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+    )
   )
 )
 ```
@@ -49,8 +52,13 @@ results, failures, and metadata redacted; hosts may provide
 selected fields or metadata keys for a principal. Its job identity includes the
 individual `id` alongside `queue`, `name`, and `version`; mutation decisions
 receive `target: "mutation"` plus the action and a denial returns `403` before
-the store operation runs. Audit delivery is best-effort and never changes the
-mutation result.
+the store operation runs. `DashboardMetricsSink` is an independent, optional
+bridge for the aggregate `DashboardMetricNames.adminActions` counter; it
+receives only bounded `action` and `outcome` (`success`, `failure`, `denied`, or
+`rate_limited`) attributes. It never receives audit paths, subjects, job IDs,
+payloads, or failure data. Audit and metrics delivery are both best-effort and
+never change the mutation result, and metrics remain available when the audit
+sink is disabled.
 
 ## Run the Memory example
 

@@ -214,6 +214,46 @@ export const DashboardAuditSinkDisabled = Layer.succeed(
   DashboardAuditSink.of({ available: false, record: undefined })
 )
 
+export type DashboardMutationMetricOutcome = 'success' | 'failure' | 'denied' | 'rate_limited'
+
+export interface DashboardMutationMetricAttributes {
+  readonly action: DashboardMutationAction
+  readonly outcome: DashboardMutationMetricOutcome
+}
+
+export interface DashboardMetricsSinkContract {
+  readonly available: boolean
+  /**
+   * Host-owned bridge for the aggregate administrative-action counter.
+   * Attributes are intentionally limited to bounded action and outcome values.
+   */
+  readonly increment: (
+    name: typeof DashboardMetricNames.adminActions,
+    value: number,
+    attributes: DashboardMutationMetricAttributes
+  ) => void | PromiseLike<void>
+}
+
+/** Optional host-owned metrics bridge for administrative mutation counters. */
+export class DashboardMetricsSink extends Service<DashboardMetricsSink>()(
+  '@better-effect/mq-dashboard/MetricsSink'
+) {
+  declare readonly available: boolean
+  declare readonly increment: DashboardMetricsSinkContract['increment']
+}
+
+export const DashboardMetricNames = Object.freeze({
+  adminActions: 'better_effect_mq_dashboard_admin_actions_total'
+} as const)
+
+export const DashboardMetricsSinkDisabled = Layer.succeed(
+  DashboardMetricsSink,
+  DashboardMetricsSink.of({
+    available: false,
+    increment: () => undefined
+  })
+)
+
 export interface DashboardRateLimitRequest {
   readonly request: Request
   readonly principal: DashboardPrincipal
@@ -802,6 +842,34 @@ const recordMutationAudit = async (
   }
 }
 
+const recordMutationMetric = (
+  sink: InstanceType<typeof DashboardMetricsSink>,
+  action: DashboardMutationAction,
+  outcome: DashboardMutationMetricOutcome
+): void => {
+  if (!sink.available) return
+  try {
+    const result = sink.increment(DashboardMetricNames.adminActions, 1, { action, outcome })
+    if (result !== undefined) void Promise.resolve(result).catch(() => undefined)
+  } catch {
+    // Dashboard metrics are best-effort and must never change the HTTP result.
+  }
+}
+
+const recordMutationOutcome = async (
+  metrics: InstanceType<typeof DashboardMetricsSink>,
+  audit: InstanceType<typeof DashboardAuditSink>,
+  request: Request,
+  principal: DashboardPrincipal,
+  action: DashboardMutationAction,
+  outcome: DashboardMutationMetricOutcome,
+  auditOutcome: DashboardAuditEvent['outcome'],
+  errorCode: string | undefined
+): Promise<void> => {
+  recordMutationMetric(metrics, action, outcome)
+  await recordMutationAudit(audit, request, principal, action, auditOutcome, errorCode)
+}
+
 const mutationPolicyError = (reason: DashboardMutationPolicyRejection): DashboardHttpError => {
   switch (reason) {
     case 'confirmation_required':
@@ -826,6 +894,7 @@ interface DashboardMutationGuardOptions {
   readonly policy: InstanceType<typeof DashboardMutationPolicy>
   readonly rateLimiter: InstanceType<typeof DashboardRateLimiter>
   readonly auditSink: InstanceType<typeof DashboardAuditSink>
+  readonly metricsSink: InstanceType<typeof DashboardMetricsSink>
   readonly request: Request
   readonly requiredRole: DashboardRole
   readonly action: DashboardMutationAction
@@ -835,7 +904,10 @@ const requireMutation = async (
   options: DashboardMutationGuardOptions
 ): Promise<DashboardResult<DashboardPrincipal>> => {
   const authorized = await requireRole(options.authorization, options.request, options.requiredRole)
-  if (Result.isError(authorized)) return authorized
+  if (Result.isError(authorized)) {
+    recordMutationMetric(options.metricsSink, options.action, 'denied')
+    return authorized
+  }
 
   const principal = authorized.value
   let rateLimit: DashboardRateLimitDecision
@@ -851,11 +923,13 @@ const requireMutation = async (
       'rate_limiter_unavailable',
       'Dashboard rate limiter unavailable'
     )
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       principal,
       options.action,
+      'denied',
       'denied',
       error.code
     )
@@ -870,11 +944,13 @@ const requireMutation = async (
       undefined,
       rateLimit.retryAfterSeconds
     )
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       principal,
       options.action,
+      'rate_limited',
       'denied',
       error.code
     )
@@ -883,11 +959,13 @@ const requireMutation = async (
 
   if (!options.policy.available) {
     const error = mutationPolicyError('policy_unavailable')
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       principal,
       options.action,
+      'denied',
       'denied',
       error.code
     )
@@ -907,11 +985,13 @@ const requireMutation = async (
       'mutation_policy_unavailable',
       'Dashboard mutation policy unavailable'
     )
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       principal,
       options.action,
+      'denied',
       'denied',
       error.code
     )
@@ -920,11 +1000,13 @@ const requireMutation = async (
 
   if (!policy.allowed) {
     const error = mutationPolicyError(policy.reason)
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       principal,
       options.action,
+      'denied',
       'denied',
       error.code
     )
@@ -936,16 +1018,19 @@ const requireMutation = async (
 
 const auditMutationResult = async <Value>(
   sink: InstanceType<typeof DashboardAuditSink>,
+  metrics: InstanceType<typeof DashboardMetricsSink>,
   request: Request,
   principal: DashboardPrincipal,
   action: DashboardMutationAction,
   result: DashboardResult<Value>
 ): Promise<DashboardResult<Value>> => {
-  await recordMutationAudit(
+  await recordMutationOutcome(
+    metrics,
     sink,
     request,
     principal,
     action,
+    Result.isError(result) ? 'failure' : 'success',
     Result.isError(result) ? 'failure' : 'success',
     Result.isError(result) ? result.error.code : undefined
   )
@@ -1145,6 +1230,7 @@ interface DashboardJobMutationGuardOptions {
   readonly policy: InstanceType<typeof DashboardMutationPolicy>
   readonly rateLimiter: InstanceType<typeof DashboardRateLimiter>
   readonly auditSink: InstanceType<typeof DashboardAuditSink>
+  readonly metricsSink: InstanceType<typeof DashboardMetricsSink>
   readonly jobRedactionPolicy: InstanceType<typeof DashboardJobRedactionPolicy>
   readonly store: InstanceType<typeof JobStore>
   readonly request: Request
@@ -1161,11 +1247,13 @@ const requireJobMutation = async (
 
   const job = await runOperation(options.store.getJob({ jobId: options.jobId }))
   if (Result.isError(job)) {
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       authorized.value,
       options.action,
+      'failure',
       'failure',
       job.error.code
     )
@@ -1173,11 +1261,13 @@ const requireJobMutation = async (
   }
   if (job.value === undefined) {
     const error = new DashboardHttpError(404, 'job_not_found', 'Job not found')
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       authorized.value,
       options.action,
+      'failure',
       'failure',
       error.code
     )
@@ -1193,11 +1283,13 @@ const requireJobMutation = async (
     options.action
   )
   if (Result.isError(decision)) {
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       authorized.value,
       options.action,
+      'denied',
       'denied',
       decision.error.code
     )
@@ -1205,11 +1297,13 @@ const requireJobMutation = async (
   }
   if (!decision.value.allowed) {
     const error = jobAccessDenied()
-    await recordMutationAudit(
+    await recordMutationOutcome(
+      options.metricsSink,
       options.auditSink,
       options.request,
       authorized.value,
       options.action,
+      'denied',
       'denied',
       error.code
     )
@@ -1793,6 +1887,7 @@ export const DashboardApp = HonoEffect.app(
     const jobRedactionPolicy = yield* DashboardJobRedactionPolicy
     const mutationPolicy = yield* DashboardMutationPolicy
     const auditSink = yield* DashboardAuditSink
+    const metricsSink = yield* DashboardMetricsSink
     const rateLimiter = yield* DashboardRateLimiter
     const schedules = yield* DashboardScheduleCapability
     const flows = yield* DashboardFlowCapability
@@ -1808,6 +1903,7 @@ export const DashboardApp = HonoEffect.app(
         policy: mutationPolicy,
         rateLimiter,
         auditSink,
+        metricsSink,
         request,
         requiredRole,
         action
@@ -1825,6 +1921,7 @@ export const DashboardApp = HonoEffect.app(
         policy: mutationPolicy,
         rateLimiter,
         auditSink,
+        metricsSink,
         jobRedactionPolicy,
         store,
         request,
@@ -2095,12 +2192,14 @@ export const DashboardApp = HonoEffect.app(
               group.length === 0 ||
               key.length === 0
             ) {
+              recordMutationMetric(metricsSink, 'schedule.pause', 'denied')
               return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
             }
             const selector: ScheduleSelector = { group, key }
             const result = await runCapabilityOperation(pauseSchedule(selector))
             const audited = await auditMutationResult(
               auditSink,
+              metricsSink,
               context.req.raw,
               authorized.value,
               'schedule.pause',
@@ -2131,12 +2230,14 @@ export const DashboardApp = HonoEffect.app(
               group.length === 0 ||
               key.length === 0
             ) {
+              recordMutationMetric(metricsSink, 'schedule.resume', 'denied')
               return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
             }
             const selector: ScheduleSelector = { group, key }
             const result = await runCapabilityOperation(resumeSchedule(selector))
             const audited = await auditMutationResult(
               auditSink,
+              metricsSink,
               context.req.raw,
               authorized.value,
               'schedule.resume',
@@ -2163,6 +2264,7 @@ export const DashboardApp = HonoEffect.app(
               group.length === 0 ||
               key.length === 0
             ) {
+              recordMutationMetric(metricsSink, 'schedule.remove', 'denied')
               return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
             }
             const selector: ScheduleSelector = { group, key }
@@ -2175,6 +2277,7 @@ export const DashboardApp = HonoEffect.app(
                   )
             const audited = await auditMutationResult(
               auditSink,
+              metricsSink,
               context.req.raw,
               authorized.value,
               'schedule.remove',
@@ -2216,11 +2319,15 @@ export const DashboardApp = HonoEffect.app(
             const authorized = await authorizeMutation(context.req.raw, 'operator', 'flow.cancel')
             if (Result.isError(authorized)) return authorized
             const flowId = parseJobId(context.req.param('id'))
-            if (Result.isError(flowId)) return flowId
+            if (Result.isError(flowId)) {
+              recordMutationMetric(metricsSink, 'flow.cancel', 'denied')
+              return flowId
+            }
             const now = (yield* Clock).now().getTime()
             const result = await runCapabilityOperation(cancelFlow({ flowId: flowId.value, now }))
             const audited = await auditMutationResult(
               auditSink,
+              metricsSink,
               context.req.raw,
               authorized.value,
               'flow.cancel',
@@ -2337,7 +2444,10 @@ export const DashboardApp = HonoEffect.app(
       '/api/jobs/:id/cancel',
       yield* http.gen(async function* (context) {
         const jobId = parseJobId(context.req.param('id'))
-        if (Result.isError(jobId)) return jobId
+        if (Result.isError(jobId)) {
+          recordMutationMetric(metricsSink, 'job.cancel', 'denied')
+          return jobId
+        }
         const store = yield* JobStore
         const authorized = await authorizeJobMutation(
           context.req.raw,
@@ -2351,6 +2461,7 @@ export const DashboardApp = HonoEffect.app(
         const result = await runOperation(store.cancel({ jobId: jobId.value, now }))
         const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value.principal,
           'job.cancel',
@@ -2366,7 +2477,10 @@ export const DashboardApp = HonoEffect.app(
       '/api/jobs/:id/promote',
       yield* http.gen(async function* (context) {
         const jobId = parseJobId(context.req.param('id'))
-        if (Result.isError(jobId)) return jobId
+        if (Result.isError(jobId)) {
+          recordMutationMetric(metricsSink, 'job.promote', 'denied')
+          return jobId
+        }
         const store = yield* JobStore
         const authorized = await authorizeJobMutation(
           context.req.raw,
@@ -2380,6 +2494,7 @@ export const DashboardApp = HonoEffect.app(
         const result = await runOperation(store.promote({ jobId: jobId.value, now }))
         const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value.principal,
           'job.promote',
@@ -2395,7 +2510,10 @@ export const DashboardApp = HonoEffect.app(
       '/api/jobs/:id/retry',
       yield* http.gen(async function* (context) {
         const jobId = parseJobId(context.req.param('id'))
-        if (Result.isError(jobId)) return jobId
+        if (Result.isError(jobId)) {
+          recordMutationMetric(metricsSink, 'job.retry', 'denied')
+          return jobId
+        }
         const store = yield* JobStore
         const authorized = await authorizeJobMutation(
           context.req.raw,
@@ -2407,12 +2525,16 @@ export const DashboardApp = HonoEffect.app(
         if (Result.isError(authorized)) return authorized
         const now = (yield* Clock).now().getTime()
         const body = await parseRetryBody(context.req.raw, now)
-        if (Result.isError(body)) return body
+        if (Result.isError(body)) {
+          recordMutationMetric(metricsSink, 'job.retry', 'denied')
+          return body
+        }
         const result = await runOperation(
           store.retry({ jobId: jobId.value, now, runAt: body.value.runAt })
         )
         const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value.principal,
           'job.retry',
@@ -2428,7 +2550,10 @@ export const DashboardApp = HonoEffect.app(
       '/api/jobs/:id/redrive',
       yield* http.gen(async function* (context) {
         const jobId = parseJobId(context.req.param('id'))
-        if (Result.isError(jobId)) return jobId
+        if (Result.isError(jobId)) {
+          recordMutationMetric(metricsSink, 'job.redrive', 'denied')
+          return jobId
+        }
         const store = yield* JobStore
         const authorized = await authorizeJobMutation(
           context.req.raw,
@@ -2440,12 +2565,16 @@ export const DashboardApp = HonoEffect.app(
         if (Result.isError(authorized)) return authorized
         const now = (yield* Clock).now().getTime()
         const body = await parseRetryBody(context.req.raw, now)
-        if (Result.isError(body)) return body
+        if (Result.isError(body)) {
+          recordMutationMetric(metricsSink, 'job.redrive', 'denied')
+          return body
+        }
         const result = await runOperation(
           store.retry({ jobId: jobId.value, now, runAt: body.value.runAt })
         )
         const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value.principal,
           'job.redrive',
@@ -2461,7 +2590,10 @@ export const DashboardApp = HonoEffect.app(
       '/api/jobs/:id',
       yield* http.gen(async function* (context) {
         const jobId = parseJobId(context.req.param('id'))
-        if (Result.isError(jobId)) return jobId
+        if (Result.isError(jobId)) {
+          recordMutationMetric(metricsSink, 'job.remove', 'denied')
+          return jobId
+        }
         const store = yield* JobStore
         const authorized = await authorizeJobMutation(
           context.req.raw,
@@ -2471,18 +2603,20 @@ export const DashboardApp = HonoEffect.app(
           store
         )
         if (Result.isError(authorized)) return authorized
-        const result = yield* JobAdmin.for(JobStore).remove(jobId.value)
-        await recordMutationAudit(
+        const now = (yield* Clock).now().getTime()
+        const result = await runOperation(store.remove({ jobId: jobId.value, now }))
+        const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value.principal,
           'job.remove',
-          'success',
-          undefined
+          result
         )
+        if (Result.isError(audited)) return audited
         return Result.ok({
           removed: true,
-          job: sanitizeJob(result.job, authorized.value.decision)
+          job: sanitizeJob(audited.value.job, authorized.value.decision)
         })
       })
     )
@@ -2491,18 +2625,24 @@ export const DashboardApp = HonoEffect.app(
       yield* http.gen(async function* (context) {
         const authorized = await authorizeMutation(context.req.raw, 'operator', 'queue.pause')
         if (Result.isError(authorized)) return authorized
-        const queue = parseQueue(context.req.param('queue'))
-        if (Result.isError(queue)) return queue
-        const result = yield* JobAdmin.for(JobStore).pause(queue.value)
-        await recordMutationAudit(
+        const queue = parseQueueName(context.req.param('queue'))
+        if (Result.isError(queue)) {
+          recordMutationMetric(metricsSink, 'queue.pause', 'denied')
+          return queue
+        }
+        const store = yield* JobStore
+        const now = (yield* Clock).now().getTime()
+        const result = await runOperation(store.pause({ queue: queue.value, now }))
+        const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value,
           'queue.pause',
-          'success',
-          undefined
+          result
         )
-        return Result.ok(result)
+        if (Result.isError(audited)) return audited
+        return audited
       })
     )
     app.post(
@@ -2510,18 +2650,24 @@ export const DashboardApp = HonoEffect.app(
       yield* http.gen(async function* (context) {
         const authorized = await authorizeMutation(context.req.raw, 'operator', 'queue.resume')
         if (Result.isError(authorized)) return authorized
-        const queue = parseQueue(context.req.param('queue'))
-        if (Result.isError(queue)) return queue
-        const result = yield* JobAdmin.for(JobStore).resume(queue.value)
-        await recordMutationAudit(
+        const queue = parseQueueName(context.req.param('queue'))
+        if (Result.isError(queue)) {
+          recordMutationMetric(metricsSink, 'queue.resume', 'denied')
+          return queue
+        }
+        const store = yield* JobStore
+        const now = (yield* Clock).now().getTime()
+        const result = await runOperation(store.resume({ queue: queue.value, now }))
+        const audited = await auditMutationResult(
           auditSink,
+          metricsSink,
           context.req.raw,
           authorized.value,
           'queue.resume',
-          'success',
-          undefined
+          result
         )
-        return Result.ok(result)
+        if (Result.isError(audited)) return audited
+        return audited
       })
     )
 
