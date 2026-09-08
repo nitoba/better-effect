@@ -6,6 +6,7 @@ import {
   DashboardAuditSinkDisabled,
   DashboardControlCapabilityDisabled,
   DashboardFlowCapabilityDisabled,
+  DashboardJobRedactionPolicyDisabled,
   DashboardMutationPolicy,
   DashboardRateLimiter,
   DashboardScheduleCapabilityDisabled,
@@ -124,7 +125,10 @@ export const DashboardLive = (() => {
               DashboardScheduleCapabilityDisabled,
               Layer.merge(
                 DashboardFlowCapabilityDisabled,
-                Layer.merge(DashboardControlCapabilityDisabled, DashboardAuditSinkDisabled)
+                Layer.merge(
+                  DashboardControlCapabilityDisabled,
+                  Layer.merge(DashboardJobRedactionPolicyDisabled, DashboardAuditSinkDisabled)
+                )
               )
             ),
             Layer.merge(

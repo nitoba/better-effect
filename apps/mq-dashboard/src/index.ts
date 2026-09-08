@@ -74,6 +74,61 @@ export class DashboardAuthorization extends Service<DashboardAuthorization>()(
   ) => DashboardPrincipal | null | PromiseLike<DashboardPrincipal | null>
 }
 
+export type DashboardJobRedactionTarget = 'list' | 'detail' | 'attempts'
+
+/** Stable job-definition identity supplied to host-owned dashboard policies. */
+export interface DashboardJobIdentity {
+  readonly queue: string
+  readonly name: string
+  readonly version: number
+}
+
+export interface DashboardJobRedactionRequest {
+  readonly request: Request
+  readonly principal: DashboardPrincipal
+  readonly job: DashboardJobIdentity
+  readonly target: DashboardJobRedactionTarget
+}
+
+export interface DashboardJobRedactionDecision {
+  /** Denied jobs are omitted from lists and rejected by detail/attempt routes. */
+  readonly allowed: boolean
+  readonly payload: boolean
+  readonly result: boolean
+  readonly failure: boolean
+  /** Only these persisted metadata keys may appear in a response. */
+  readonly metadataKeys: readonly string[]
+}
+
+export interface DashboardJobRedactionPolicyContract {
+  readonly available: boolean
+  readonly decide: (
+    request: DashboardJobRedactionRequest
+  ) => DashboardJobRedactionDecision | PromiseLike<DashboardJobRedactionDecision>
+}
+
+/** Host-owned, identity-aware authorization and sensitive-field redaction boundary. */
+export class DashboardJobRedactionPolicy extends Service<DashboardJobRedactionPolicy>()(
+  '@better-effect/mq-dashboard/JobRedactionPolicy'
+) {
+  declare readonly available: boolean
+  declare readonly decide: DashboardJobRedactionPolicyContract['decide']
+}
+
+export const DashboardJobRedactionPolicyDisabled = Layer.succeed(
+  DashboardJobRedactionPolicy,
+  DashboardJobRedactionPolicy.of({
+    available: false,
+    decide: () => ({
+      allowed: true,
+      payload: false,
+      result: false,
+      failure: false,
+      metadataKeys: []
+    })
+  })
+)
+
 export type DashboardMutationAction =
   | 'job.cancel'
   | 'job.promote'
@@ -660,29 +715,85 @@ const jsonError = (
   return context.json({ error: 'internal_error', message: 'Internal Server Error' }, 500)
 }
 
-const sanitizeJob = (job: JobRecord) => ({
-  id: job.id,
-  name: job.name,
-  version: job.version,
+const defaultJobRedactionDecision: DashboardJobRedactionDecision = {
+  allowed: true,
+  payload: false,
+  result: false,
+  failure: false,
+  metadataKeys: []
+}
+
+const jobIdentity = (job: JobRecord): DashboardJobIdentity => ({
   queue: job.queue,
-  state: job.state,
-  priority: job.priority,
-  runAt: job.runAt,
-  orderingSequence: job.orderingSequence,
-  attemptsMax: job.attemptsMax,
-  attemptsMade: job.attemptsMade,
-  attemptSequence: job.attemptSequence,
-  deliveryCount: job.deliveryCount,
-  stalledCount: job.stalledCount,
-  timeoutMs: job.timeoutMs,
-  createdAt: job.createdAt,
-  updatedAt: job.updatedAt,
-  processedAt: job.processedAt,
-  finishedAt: job.finishedAt,
-  cancellationRequestedAt: job.cancellationRequestedAt
+  name: job.name,
+  version: job.version
 })
 
-const sanitizeAttempt = (attempt: AttemptRecord) => ({
+const normalizeJobRedactionDecision = (
+  decision: unknown
+): DashboardJobRedactionDecision | undefined => {
+  if (decision === null || typeof decision !== 'object') return undefined
+  const candidate = decision as Partial<DashboardJobRedactionDecision>
+  if (
+    typeof candidate.allowed !== 'boolean' ||
+    typeof candidate.payload !== 'boolean' ||
+    typeof candidate.result !== 'boolean' ||
+    typeof candidate.failure !== 'boolean' ||
+    !Array.isArray(candidate.metadataKeys) ||
+    candidate.metadataKeys.some((key) => typeof key !== 'string')
+  ) {
+    return undefined
+  }
+  return {
+    allowed: candidate.allowed,
+    payload: candidate.payload,
+    result: candidate.result,
+    failure: candidate.failure,
+    metadataKeys: candidate.metadataKeys.filter((key) => key.length <= 128).slice(0, 32)
+  }
+}
+
+const sanitizeMetadata = (
+  metadata: Readonly<Record<string, string>>,
+  metadataKeys: readonly string[]
+): Readonly<Record<string, string>> | undefined => {
+  const selected = metadataKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(metadata, key))
+    .slice(0, 32)
+    .map((key) => [key, metadata[key]!.slice(0, 256)] as const)
+  return selected.length === 0 ? undefined : Object.fromEntries(selected)
+}
+
+const sanitizeJob = (job: JobRecord, decision: DashboardJobRedactionDecision) => {
+  const metadata = sanitizeMetadata(job.metadata, decision.metadataKeys)
+  return {
+    id: job.id,
+    name: job.name,
+    version: job.version,
+    queue: job.queue,
+    state: job.state,
+    priority: job.priority,
+    runAt: job.runAt,
+    orderingSequence: job.orderingSequence,
+    attemptsMax: job.attemptsMax,
+    attemptsMade: job.attemptsMade,
+    attemptSequence: job.attemptSequence,
+    deliveryCount: job.deliveryCount,
+    stalledCount: job.stalledCount,
+    timeoutMs: job.timeoutMs,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    processedAt: job.processedAt,
+    finishedAt: job.finishedAt,
+    cancellationRequestedAt: job.cancellationRequestedAt,
+    ...(decision.payload ? { payload: job.payload } : {}),
+    ...(decision.result ? { result: job.result } : {}),
+    ...(decision.failure ? { failure: job.failure } : {}),
+    ...(metadata === undefined ? {} : { metadata })
+  }
+}
+
+const sanitizeAttempt = (attempt: AttemptRecord, decision: DashboardJobRedactionDecision) => ({
   attempt: attempt.attempt,
   attemptSequence: attempt.attemptSequence,
   delivery: attempt.delivery,
@@ -690,8 +801,50 @@ const sanitizeAttempt = (attempt: AttemptRecord) => ({
   finishedAt: attempt.finishedAt,
   outcome: attempt.outcome,
   retryAt: attempt.retryAt,
-  retryDelayMs: attempt.retryDelayMs
+  retryDelayMs: attempt.retryDelayMs,
+  ...(decision.result ? { result: attempt.result } : {}),
+  ...(decision.failure ? { failure: attempt.failure } : {})
 })
+
+const jobRedactionPolicyError = (): DashboardHttpError =>
+  new DashboardHttpError(
+    503,
+    'job_redaction_policy_unavailable',
+    'Job redaction policy unavailable'
+  )
+
+const decideJobRedaction = async (
+  policy: InstanceType<typeof DashboardJobRedactionPolicy>,
+  request: Request,
+  principal: DashboardPrincipal,
+  job: JobRecord,
+  target: DashboardJobRedactionTarget
+): Promise<DashboardResult<DashboardJobRedactionDecision>> => {
+  if (!policy.available) return Result.ok(defaultJobRedactionDecision)
+  try {
+    const decision = normalizeJobRedactionDecision(
+      await policy.decide({ request, principal, job: jobIdentity(job), target })
+    )
+    return decision === undefined ? Result.err(jobRedactionPolicyError()) : Result.ok(decision)
+  } catch {
+    return Result.err(jobRedactionPolicyError())
+  }
+}
+
+const jobAccessDenied = (): DashboardHttpError =>
+  new DashboardHttpError(403, 'job_forbidden', 'Job access is not permitted')
+
+const decideMutationJobRedaction = async (
+  policy: InstanceType<typeof DashboardJobRedactionPolicy>,
+  request: Request,
+  principal: DashboardPrincipal,
+  job: JobRecord
+): Promise<DashboardJobRedactionDecision> => {
+  const decision = await decideJobRedaction(policy, request, principal, job, 'detail')
+  return Result.isError(decision) || !decision.value.allowed
+    ? defaultJobRedactionDecision
+    : decision.value
+}
 
 const safeEventAttributeKeys = new Set(['action', 'mq.flow.phase', 'mq.flow.name'])
 
@@ -1211,6 +1364,7 @@ export const DashboardApp = HonoEffect.app(
     const app = new Hono()
     app.use('*', yield* http.middleware())
     const authorization = yield* DashboardAuthorization
+    const jobRedactionPolicy = yield* DashboardJobRedactionPolicy
     const mutationPolicy = yield* DashboardMutationPolicy
     const auditSink = yield* DashboardAuditSink
     const rateLimiter = yield* DashboardRateLimiter
@@ -1241,6 +1395,7 @@ export const DashboardApp = HonoEffect.app(
           ok: true,
           service: 'better-effect-mq-dashboard',
           capabilities: {
+            jobRedactionPolicy: jobRedactionPolicy.available,
             mutationPolicy: mutationPolicy.available,
             audit: auditSink.available,
             rateLimit: rateLimiter.available
@@ -1261,6 +1416,7 @@ export const DashboardApp = HonoEffect.app(
           flows: flows.available,
           controls: controls.available,
           security: {
+            jobRedactionPolicy: jobRedactionPolicy.available,
             mutationPolicy: mutationPolicy.available,
             audit: auditSink.available,
             rateLimit: rateLimiter.available
@@ -1296,6 +1452,7 @@ export const DashboardApp = HonoEffect.app(
             flows: flows.available,
             controls: controls.available,
             security: {
+              jobRedactionPolicy: jobRedactionPolicy.available,
               mutationPolicy: mutationPolicy.available,
               audit: auditSink.available,
               rateLimit: rateLimiter.available
@@ -1314,8 +1471,21 @@ export const DashboardApp = HonoEffect.app(
         const options = parseListOptions(context.req.raw)
         if (Result.isError(options)) return options
         const result = yield* JobAdmin.for(JobStore).list(options.value)
+        const jobs = []
+        for (const job of result.jobs) {
+          const decision = await decideJobRedaction(
+            jobRedactionPolicy,
+            context.req.raw,
+            authorized.value,
+            job,
+            'list'
+          )
+          if (Result.isError(decision)) return decision
+          if (!decision.value.allowed) continue
+          jobs.push(sanitizeJob(job, decision.value))
+        }
         return Result.ok({
-          jobs: result.jobs.map(sanitizeJob),
+          jobs,
           nextCursor:
             result.nextCursor === undefined ? undefined : encodeOpaqueJson(result.nextCursor)
         })
@@ -1336,7 +1506,16 @@ export const DashboardApp = HonoEffect.app(
         if (result.value === undefined) {
           return Result.err(new DashboardHttpError(404, 'job_not_found', 'Job not found'))
         }
-        return Result.ok({ job: sanitizeJob(result.value) })
+        const decision = await decideJobRedaction(
+          jobRedactionPolicy,
+          context.req.raw,
+          authorized.value,
+          result.value,
+          'detail'
+        )
+        if (Result.isError(decision)) return decision
+        if (!decision.value.allowed) return Result.err(jobAccessDenied())
+        return Result.ok({ job: sanitizeJob(result.value, decision.value) })
       })
     )
 
@@ -1349,9 +1528,25 @@ export const DashboardApp = HonoEffect.app(
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
         const store = yield* JobStore
+        const job = await runOperation(store.getJob({ jobId: jobId.value }))
+        if (Result.isError(job)) return job
+        if (job.value === undefined) {
+          return Result.err(new DashboardHttpError(404, 'job_not_found', 'Job not found'))
+        }
+        const decision = await decideJobRedaction(
+          jobRedactionPolicy,
+          context.req.raw,
+          authorized.value,
+          job.value,
+          'attempts'
+        )
+        if (Result.isError(decision)) return decision
+        if (!decision.value.allowed) return Result.err(jobAccessDenied())
         const result = await runOperation(store.getAttempts({ jobId: jobId.value }))
         if (Result.isError(result)) return result
-        return Result.ok({ attempts: result.value.map(sanitizeAttempt) })
+        return Result.ok({
+          attempts: result.value.map((attempt) => sanitizeAttempt(attempt, decision.value))
+        })
       })
     )
 
@@ -1684,7 +1879,17 @@ export const DashboardApp = HonoEffect.app(
           result
         )
         if (Result.isError(audited)) return audited
-        return Result.ok({ job: sanitizeJob(audited.value.record) })
+        return Result.ok({
+          job: sanitizeJob(
+            audited.value.record,
+            await decideMutationJobRedaction(
+              jobRedactionPolicy,
+              context.req.raw,
+              authorized.value,
+              audited.value.record
+            )
+          )
+        })
       })
     )
     app.post(
@@ -1705,7 +1910,17 @@ export const DashboardApp = HonoEffect.app(
           result
         )
         if (Result.isError(audited)) return audited
-        return Result.ok({ job: sanitizeJob(audited.value.record) })
+        return Result.ok({
+          job: sanitizeJob(
+            audited.value.record,
+            await decideMutationJobRedaction(
+              jobRedactionPolicy,
+              context.req.raw,
+              authorized.value,
+              audited.value.record
+            )
+          )
+        })
       })
     )
     app.post(
@@ -1730,7 +1945,17 @@ export const DashboardApp = HonoEffect.app(
           result
         )
         if (Result.isError(audited)) return audited
-        return Result.ok({ job: sanitizeJob(audited.value.record) })
+        return Result.ok({
+          job: sanitizeJob(
+            audited.value.record,
+            await decideMutationJobRedaction(
+              jobRedactionPolicy,
+              context.req.raw,
+              authorized.value,
+              audited.value.record
+            )
+          )
+        })
       })
     )
     app.post(
@@ -1755,7 +1980,17 @@ export const DashboardApp = HonoEffect.app(
           result
         )
         if (Result.isError(audited)) return audited
-        return Result.ok({ job: sanitizeJob(audited.value.record) })
+        return Result.ok({
+          job: sanitizeJob(
+            audited.value.record,
+            await decideMutationJobRedaction(
+              jobRedactionPolicy,
+              context.req.raw,
+              authorized.value,
+              audited.value.record
+            )
+          )
+        })
       })
     )
     app.delete(
@@ -1774,7 +2009,18 @@ export const DashboardApp = HonoEffect.app(
           'success',
           undefined
         )
-        return Result.ok({ removed: true, job: sanitizeJob(result.job) })
+        return Result.ok({
+          removed: true,
+          job: sanitizeJob(
+            result.job,
+            await decideMutationJobRedaction(
+              jobRedactionPolicy,
+              context.req.raw,
+              authorized.value,
+              result.job
+            )
+          )
+        })
       })
     )
     app.post(
