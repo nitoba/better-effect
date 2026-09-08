@@ -314,7 +314,10 @@ export const SqliteMigrator = {
       for (const index of indexesToCheck) {
         if (!indexes.has(index)) throw new SqliteSchemaValidationError(`missing index ${index}`)
       }
-      if (version === 4) {
+      if (version >= 4) {
+        for (const table of [SQLITE_TABLES.flowChildren, SQLITE_TABLES.flowOutbox]) {
+          if (!names.has(table)) throw new SqliteSchemaValidationError(`missing table ${table}`)
+        }
         const flowColumns = new Set(
           database
             .prepare(`PRAGMA table_info(${SQLITE_TABLES.jobs})`)

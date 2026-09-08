@@ -84,7 +84,8 @@ const childSpec = (flowId: string, childKey: string, storeKey = 'emails'): FlowC
 const createParent = async (
   pool: Pool,
   schema: string,
-  failFast: boolean
+  failFast: boolean,
+  suffix = 'default'
 ): Promise<{ readonly flowId: string; readonly leaseToken: string }> => {
   const runtime = await Runtime.make(
     PostgresJobStore.layer({ pool, schema, validateSchema: false })
@@ -94,8 +95,9 @@ const createParent = async (
       const store = await ServiceRuntime.resolve(JobStore)
       const queue = makeQueueName('default').unwrap()
       const workerId = makeWorkerId('flow-worker').unwrap()
+      const name = `${failFast ? 'flow-fail-fast' : 'flow-continue'}-${suffix}`
       const enqueued = await store.enqueue({
-        job: { queue, name: failFast ? 'flow-fail-fast' : 'flow-continue', version: 1 },
+        job: { queue, name, version: 1 },
         payload: { flow: true },
         runAt: 0,
         attemptsMax: 2,
@@ -104,7 +106,7 @@ const createParent = async (
       if (enqueued.isErr()) throw enqueued.error
       const claimed = await store.claim({
         queue,
-        accepted: [{ queue, name: failFast ? 'flow-fail-fast' : 'flow-continue', version: 1 }],
+        accepted: [{ queue, name, version: 1 }],
         limit: 1,
         workerId,
         leaseDurationMs: 10_000,
@@ -371,6 +373,73 @@ describe('PostgreSQL flow protocol v2', () => {
     }
   })
 
+  test('reports an exhausted stalled child as a terminal failure', async () => {
+    const { database, pool } = await makePool()
+    const schema = 'flow_stalled'
+    const client = PostgresClient.fromPool({ pool, schema })
+    await client.migrate({ appliedAtMs: 1 })
+    const parent = await createParent(pool, schema, false, 'stalled-parent')
+    const runtime = await Runtime.make(
+      PostgresJobStore.layer({ pool, schema, validateSchema: false })
+    )
+    try {
+      const recovery = await runtime.run(async () => {
+        const store = await ServiceRuntime.resolve(JobStore)
+        const childId = makeJobId('pg-stalled-child').unwrap()
+        const queue = makeQueueName('default').unwrap()
+        const enqueued = await store.enqueue({
+          id: childId,
+          job: { queue, name: 'pg-stalled-child', version: 1 },
+          payload: { child: true },
+          runAt: 0,
+          attemptsMax: 1,
+          now: 0
+        })
+        if (enqueued.isErr()) throw enqueued.error
+        await database.query(
+          'UPDATE "flow_stalled".better_effect_mq_jobs SET parent = $2::jsonb WHERE id = $1',
+          [
+            childId,
+            JSON.stringify({
+              flowName: 'stalled-flow',
+              flowId: parent.flowId,
+              childKey: 'stalled',
+              parentStoreKey: 'stalled-parent',
+              depth: 1
+            })
+          ]
+        )
+        const claimed = await store.claim({
+          queue,
+          accepted: [{ queue, name: 'pg-stalled-child', version: 1 }],
+          limit: 1,
+          workerId: makeWorkerId('stalled-worker').unwrap(),
+          leaseDurationMs: 1,
+          now: 1
+        })
+        if (claimed.isErr()) throw claimed.error
+        return store.recoverStalled({ maxStalledCount: 0, limit: 1, now: 2 })
+      })
+      expect(recovery.isOk()).toBe(true)
+      expect(recovery.isOk() && recovery.value.transitions[0]?.attempt?.outcome).toBe('stalled')
+      const reports = await database.query(
+        'SELECT report, created_at_ms FROM "flow_stalled".better_effect_mq_flow_outbox WHERE id = $1',
+        ['flow-report/pg-stalled-child/1']
+      )
+      expect(reports.rows[0]).toMatchObject({
+        report: {
+          flowId: parent.flowId,
+          childKey: 'stalled',
+          outcome: 'failed'
+        },
+        created_at_ms: 2
+      })
+    } finally {
+      await runtime.dispose()
+      await database.close()
+    }
+  })
+
   test('settles fail-fast before the pending-zero branch and exposes cascade work', async () => {
     const { database, pool } = await makePool()
     const schema = 'flow_fail_fast'
@@ -442,7 +511,8 @@ describe('PostgreSQL flow protocol v2', () => {
     try {
       const suite = flowStoreContract({
         makeStore: () => PostgresFlowStore.make({ pool, schema, validateSchema: false }),
-        createFlow: (_store, _scenario, input) => createParent(pool, schema, input.failFast),
+        createFlow: (_store, scenario, input) =>
+          createParent(pool, schema, input.failFast, `contract-${scenario.id}`),
         prefix: `postgres-${process.pid}`
       })
       for (const scenario of suite) await scenario.run()

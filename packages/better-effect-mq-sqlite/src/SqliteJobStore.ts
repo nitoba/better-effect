@@ -898,14 +898,15 @@ class SqliteJobStoreImplementation {
     )
   }
   settleControlled(request: ControlledSettleRequest) {
-    return this.execute(
-      'settleControlled',
-      true,
-      () =>
-        this.engine.settleControlled(request) as SyncOperation<
-          import('better-effect-mq').ControlledSettlementResult
-        >
-    )
+    return this.execute('settleControlled', true, () => {
+      const parent = this.parentFor(request.jobId)
+      const result = this.engine.settleControlled(request) as SyncOperation<
+        import('better-effect-mq').ControlledSettlementResult
+      >
+      if (Result.isOk(result))
+        this.appendTerminalReport(parent, result.value.attempt, request.jobId, request.now)
+      return result
+    })
   }
   releaseControlled(request: ControlledReleaseRequest) {
     return this.execute(
@@ -918,24 +919,29 @@ class SqliteJobStoreImplementation {
     )
   }
   recoverStalledControlled(request: ControlledRecoverStalledRequest) {
-    return this.execute(
-      'recoverStalledControlled',
-      true,
-      () =>
-        this.engine.recoverStalledControlled(request) as SyncOperation<
-          import('better-effect-mq').RecoverStalledResult
-        >
-    )
+    return this.execute('recoverStalledControlled', true, () => {
+      const result = this.engine.recoverStalledControlled(request) as SyncOperation<
+        import('better-effect-mq').RecoverStalledResult
+      >
+      if (Result.isOk(result)) {
+        for (const transition of result.value.transitions) {
+          const parent = this.parentFor(transition.record.id)
+          this.appendTerminalReport(parent, transition.attempt, transition.record.id, request.now)
+        }
+      }
+      return result
+    })
   }
   cancelControlled(request: ControlledCancelRequest) {
-    return this.execute(
-      'cancelControlled',
-      true,
-      () =>
-        this.engine.cancelControlled(request) as SyncOperation<
-          import('better-effect-mq').CancelResult
-        >
-    )
+    return this.execute('cancelControlled', true, () => {
+      const parent = this.parentFor(request.jobId)
+      const result = this.engine.cancelControlled(request) as SyncOperation<
+        import('better-effect-mq').CancelResult
+      >
+      if (Result.isOk(result))
+        this.appendTerminalReport(parent, result.value.attempt, request.jobId, request.now)
+      return result
+    })
   }
   settle(request: JobStoreNamespace.SettleRequest) {
     return this.execute('settle', true, () => {
