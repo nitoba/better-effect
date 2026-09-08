@@ -5,6 +5,27 @@ dashboard. It is Hono Layer-first: `DashboardApp` is a `HonoEffect.app`, the
 host uses `BunEffect.server`, and the Runtime is composed by the host. It does
 not contain a UI, a storage adapter, or a second Runtime bridge.
 
+The dashboard's optional capabilities are Layer-first as well. Compose the
+corresponding public `better-effect-mq` token with its dashboard capability
+Layer to expose schedules, flows, or distributed controls. Compose the
+`*CapabilityDisabled` Layer when an extension is not installed; the base
+dashboard remains available and those route families are not registered.
+
+```ts
+Layer.merge(
+  DashboardScheduleCapabilityDisabled,
+  Layer.merge(
+    DashboardFlowCapabilityDisabled,
+    Layer.merge(DashboardControlCapabilityDisabled, DashboardApp.layer)
+  )
+)
+```
+
+Use `dashboardScheduleCapabilityLayer()`,
+`dashboardFlowCapabilityLayer()`, and `dashboardControlCapabilityLayer()` with
+the public `JobScheduleStore`, `FlowStore`, and `QueueControls` Layers when
+those extensions are installed.
+
 ## Run the Memory example
 
 The host is loopback-only by default and requires an explicit token to answer
@@ -33,22 +54,31 @@ wrapped as `{ "data": ... }`. Error responses contain only a stable code and a
 public message; storage error messages, payloads, results, full failure data,
 lease tokens, and arbitrary metadata are not returned.
 
-| Method | Path                        | Role     | Purpose                                                        |
-| ------ | --------------------------- | -------- | -------------------------------------------------------------- |
-| GET    | `/health`                   | none     | Liveness check.                                                |
-| GET    | `/api/overview`             | viewer   | Store descriptor, counts, paused queues, and event capability. |
-| GET    | `/api/jobs`                 | viewer   | Server-side list filters and keyset cursor pagination.         |
-| GET    | `/api/jobs/:id`             | viewer   | Sanitized job detail.                                          |
-| GET    | `/api/jobs/:id/attempts`    | viewer   | Sanitized attempt ledger.                                      |
-| GET    | `/api/events`               | viewer   | One finite durable event page.                                 |
-| GET    | `/api/events/stream`        | viewer   | Resumable SSE event tail.                                      |
-| POST   | `/api/jobs/:id/cancel`      | operator | Cancel through `JobStore.cancel`.                              |
-| POST   | `/api/jobs/:id/promote`     | operator | Promote through `JobStore.promote`.                            |
-| POST   | `/api/jobs/:id/retry`       | operator | Retry with `{ "delayMs": number }` or `{ "at": number }`.      |
-| POST   | `/api/jobs/:id/redrive`     | operator | Alias of retry for dashboard terminology.                      |
-| POST   | `/api/queues/:queue/pause`  | operator | Pause through `JobAdmin.for(JobStore)`.                        |
-| POST   | `/api/queues/:queue/resume` | operator | Resume through `JobAdmin.for(JobStore)`.                       |
-| DELETE | `/api/jobs/:id`             | admin    | Remove through `JobAdmin.for(JobStore)`.                       |
+| Method | Path                                | Role     | Purpose                                                    |
+| ------ | ----------------------------------- | -------- | ---------------------------------------------------------- |
+| GET    | `/health`                           | none     | Liveness check.                                            |
+| GET    | `/api/overview`                     | viewer   | Store descriptor, counts, paused queues, and capabilities. |
+| GET    | `/api/jobs`                         | viewer   | Server-side list filters and keyset cursor pagination.     |
+| GET    | `/api/jobs/:id`                     | viewer   | Sanitized job detail.                                      |
+| GET    | `/api/jobs/:id/attempts`            | viewer   | Sanitized attempt ledger.                                  |
+| GET    | `/api/events`                       | viewer   | One finite durable event page.                             |
+| GET    | `/api/events/stream`                | viewer   | Resumable SSE event tail.                                  |
+| GET    | `/api/capabilities`                 | viewer   | Installed optional dashboard capabilities.                 |
+| GET    | `/api/schedules`                    | viewer   | List sanitized schedules when installed.                   |
+| GET    | `/api/schedules/:group/:key`        | viewer   | Get one sanitized schedule.                                |
+| POST   | `/api/schedules/:group/:key/pause`  | operator | Pause a schedule.                                          |
+| POST   | `/api/schedules/:group/:key/resume` | operator | Resume a schedule.                                         |
+| DELETE | `/api/schedules/:group/:key`        | admin    | Remove a schedule.                                         |
+| GET    | `/api/flows/:id`                    | viewer   | Get a sanitized flow snapshot when installed.              |
+| POST   | `/api/flows/:id/cancel`             | operator | Cancel a flow through `FlowStore`.                         |
+| GET    | `/api/controls/:queue`              | viewer   | Get sanitized distributed controls for a queue.            |
+| POST   | `/api/jobs/:id/cancel`              | operator | Cancel through `JobStore.cancel`.                          |
+| POST   | `/api/jobs/:id/promote`             | operator | Promote through `JobStore.promote`.                        |
+| POST   | `/api/jobs/:id/retry`               | operator | Retry with `{ "delayMs": number }` or `{ "at": number }`.  |
+| POST   | `/api/jobs/:id/redrive`             | operator | Alias of retry for dashboard terminology.                  |
+| POST   | `/api/queues/:queue/pause`          | operator | Pause through `JobAdmin.for(JobStore)`.                    |
+| POST   | `/api/queues/:queue/resume`         | operator | Resume through `JobAdmin.for(JobStore)`.                   |
+| DELETE | `/api/jobs/:id`                     | admin    | Remove through `JobAdmin.for(JobStore)`.                   |
 
 `/api/jobs` accepts `queue`, `name`, `version`, repeated or comma-separated
 `state`, repeated `metadata=key:value`, `orderBy`, `order`, and `limit` (maximum
@@ -84,3 +114,6 @@ If the EventStore extension is not installed, overview/list/detail/actions keep
 working and `/api/events`/SSE return `events_unavailable`. The disabled feed is
 `DashboardEventFeedDisabled`; Memory composition uses
 `dashboardEventFeedLayer()` with the default public `JobEventStore` token.
+The same rule applies to schedules, flows, and controls: their capability
+booleans appear in `/api/capabilities` and `/api/overview`, and absent
+capabilities leave their endpoint families out of the Hono app.

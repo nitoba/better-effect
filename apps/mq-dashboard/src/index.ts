@@ -14,8 +14,12 @@ import {
   JobEvents,
   JobId,
   JobNotFoundError,
+  JobScheduleStore,
   JobStore,
+  FlowStore,
+  QueueControls,
   QueueName,
+  ScheduleNotFoundError,
   isDurableJobEventType
 } from 'better-effect-mq'
 import type {
@@ -23,7 +27,10 @@ import type {
   AnyJobStoreToken,
   AttemptRecord,
   AwaitEventsOptions,
+  CancelFlowRequest,
   DurableJobEvent,
+  FlowSnapshot,
+  FlowStoreV2Operation,
   JobAdminListOptions,
   JobEventCursor,
   JobEventPage,
@@ -35,7 +42,13 @@ import type {
   JobListCursor,
   JobRecord,
   JobState,
-  JobStoreOperation
+  JobStoreOperation,
+  ListSchedulesOptions,
+  QueueControlsRecord,
+  ScheduleRecord,
+  ScheduleSelector,
+  ScheduleStoreError,
+  ScheduleStoreOperation
 } from 'better-effect-mq'
 import { Result } from 'better-result'
 import type { Result as ResultType } from 'better-result'
@@ -121,6 +134,133 @@ export const dashboardEventFeedLayer = () =>
     })
   })
 
+type DashboardScheduleOperation<Value> = ScheduleStoreOperation<Value, ScheduleStoreError>
+
+export interface DashboardScheduleCapabilityContract {
+  readonly available: boolean
+  readonly list:
+    | ((options?: ListSchedulesOptions) => DashboardScheduleOperation<readonly ScheduleRecord[]>)
+    | undefined
+  readonly get:
+    | ((selector: ScheduleSelector) => DashboardScheduleOperation<ScheduleRecord | undefined>)
+    | undefined
+  readonly pause: ((selector: ScheduleSelector) => DashboardScheduleOperation<void>) | undefined
+  readonly resume: ((selector: ScheduleSelector) => DashboardScheduleOperation<void>) | undefined
+  readonly remove: ((selector: ScheduleSelector) => DashboardScheduleOperation<boolean>) | undefined
+}
+
+/** Optional schedule inspection and administration boundary for the dashboard. */
+export class DashboardScheduleCapability extends Service<DashboardScheduleCapability>()(
+  '@better-effect/mq-dashboard/Schedules'
+) {
+  declare readonly available: boolean
+  declare readonly list: DashboardScheduleCapabilityContract['list']
+  declare readonly get: DashboardScheduleCapabilityContract['get']
+  declare readonly pause: DashboardScheduleCapabilityContract['pause']
+  declare readonly resume: DashboardScheduleCapabilityContract['resume']
+  declare readonly remove: DashboardScheduleCapabilityContract['remove']
+}
+
+export const DashboardScheduleCapabilityDisabled = Layer.succeed(
+  DashboardScheduleCapability,
+  DashboardScheduleCapability.of({
+    available: false,
+    list: undefined,
+    get: undefined,
+    pause: undefined,
+    resume: undefined,
+    remove: undefined
+  })
+)
+
+/** Compose the public JobScheduleStore token into a dashboard capability. */
+export const dashboardScheduleCapabilityLayer = () =>
+  Layer.gen(DashboardScheduleCapability, async function* () {
+    const schedules = yield* JobScheduleStore
+    return DashboardScheduleCapability.of({
+      available: true,
+      list: schedules.listSchedules.bind(schedules),
+      get: schedules.getSchedule.bind(schedules),
+      pause: schedules.pauseSchedule.bind(schedules),
+      resume: schedules.resumeSchedule.bind(schedules),
+      remove: schedules.removeSchedule.bind(schedules)
+    })
+  })
+
+export interface DashboardFlowCapabilityContract {
+  readonly available: boolean
+  readonly get:
+    | ((request: {
+        readonly flowId: import('better-effect-mq').JobId
+      }) => FlowStoreV2Operation<FlowSnapshot | undefined>)
+    | undefined
+  readonly cancel:
+    | ((
+        request: CancelFlowRequest
+      ) => FlowStoreV2Operation<import('better-effect-mq').CancelFlowResult>)
+    | undefined
+}
+
+/** Optional flow inspection and cancellation boundary for the dashboard. */
+export class DashboardFlowCapability extends Service<DashboardFlowCapability>()(
+  '@better-effect/mq-dashboard/Flows'
+) {
+  declare readonly available: boolean
+  declare readonly get: DashboardFlowCapabilityContract['get']
+  declare readonly cancel: DashboardFlowCapabilityContract['cancel']
+}
+
+export const DashboardFlowCapabilityDisabled = Layer.succeed(
+  DashboardFlowCapability,
+  DashboardFlowCapability.of({ available: false, get: undefined, cancel: undefined })
+)
+
+/** Compose the public FlowStore token into a dashboard capability. */
+export const dashboardFlowCapabilityLayer = () =>
+  Layer.gen(DashboardFlowCapability, async function* () {
+    const flows = yield* FlowStore
+    return DashboardFlowCapability.of({
+      available: true,
+      get: flows.getFlow.bind(flows),
+      cancel: flows.cancel.bind(flows)
+    })
+  })
+
+export interface DashboardControlCapabilityContract {
+  readonly available: boolean
+  readonly get:
+    | ((
+        queue: import('better-effect-mq').QueueName
+      ) => PromiseLike<ResultType<QueueControlsRecord | undefined, JobStoreError>>)
+    | undefined
+}
+
+/** Optional distributed-controls inspection boundary for the dashboard. */
+export class DashboardControlCapability extends Service<DashboardControlCapability>()(
+  '@better-effect/mq-dashboard/Controls'
+) {
+  declare readonly available: boolean
+  declare readonly get: DashboardControlCapabilityContract['get']
+}
+
+export const DashboardControlCapabilityDisabled = Layer.succeed(
+  DashboardControlCapability,
+  DashboardControlCapability.of({ available: false, get: undefined })
+)
+
+/** Compose the public QueueControls token into a dashboard capability. */
+export const dashboardControlCapabilityLayer = () =>
+  Layer.gen(DashboardControlCapability, async function* () {
+    const controls = yield* QueueControls
+    const get: NonNullable<DashboardControlCapabilityContract['get']> = (queue) => {
+      const read = Effect.fn(async function* () {
+        return Result.ok(yield* controls.get(queue))
+      })
+      return Promise.resolve(read())
+    }
+    return DashboardControlCapability.of({ available: true, get })
+  })
+
 export class DashboardHttpError extends Error {
   readonly status: number
   readonly code: string
@@ -182,6 +322,10 @@ const storageError = (error: unknown): DashboardHttpError => {
       'The event cursor has expired; refresh from the available cursor',
       error.oldestAvailableCursor
     )
+  }
+
+  if (ScheduleNotFoundError.is(error)) {
+    return new DashboardHttpError(404, 'schedule_not_found', 'Schedule not found')
   }
 
   return new DashboardHttpError(500, 'storage_failure', 'Dashboard storage operation failed')
@@ -279,6 +423,73 @@ const sanitizeEvent = (event: DurableJobEvent) => ({
   failureKind: event.failureKind,
   duplicate: event.duplicate,
   attributes: sanitizeEventAttributes(event.attributes)
+})
+
+const sanitizeSchedule = (schedule: ScheduleRecord) => ({
+  key: schedule.key,
+  group: schedule.group,
+  job: schedule.job,
+  queue: schedule.queue,
+  cron: schedule.cron,
+  everyMs: schedule.everyMs,
+  timeZone: schedule.timeZone,
+  priority: schedule.priority,
+  attemptsMax: schedule.attemptsMax,
+  timeoutMs: schedule.timeoutMs,
+  misfire: schedule.misfire,
+  overlap: schedule.overlap,
+  paused: schedule.paused,
+  revision: schedule.revision,
+  nextRunAtMs: schedule.nextRunAtMs,
+  lastScheduledAtMs: schedule.lastScheduledAtMs,
+  lastJobId: schedule.lastJobId,
+  createdAtMs: schedule.createdAtMs,
+  updatedAtMs: schedule.updatedAtMs
+})
+
+const sanitizeFlowParent = (parent: FlowSnapshot['parent']) => ({
+  flowId: parent.flowId,
+  flowName: parent.flowName,
+  depth: parent.depth,
+  state: parent.state,
+  flow: parent.flow
+})
+
+const sanitizeFlowChild = (child: FlowSnapshot['children'][number]) => ({
+  flowId: child.flowId,
+  childKey: child.childKey,
+  name: child.name,
+  version: child.version,
+  childJobId: child.childJobId,
+  status: child.status,
+  cascaded: child.cascaded,
+  pendingSinceMs: child.pendingSinceMs
+})
+
+const sanitizeFlow = (snapshot: FlowSnapshot) => ({
+  parent: sanitizeFlowParent(snapshot.parent),
+  children: snapshot.children.map(sanitizeFlowChild),
+  outbox: snapshot.outbox.map((entry) => ({
+    id: entry.id,
+    flowName: entry.flowName,
+    report: {
+      flowId: entry.report.flowId,
+      childKey: entry.report.childKey,
+      outcome: entry.report.outcome
+    }
+  }))
+})
+
+const sanitizeControl = (control: QueueControlsRecord) => ({
+  queue: control.queue,
+  group: control.group,
+  enabled: control.enabled,
+  revision: control.revision,
+  globalConcurrency: control.globalConcurrency,
+  perKeyConcurrency: control.perKeyConcurrency,
+  rateLimit: control.rateLimit,
+  createdAtMs: control.createdAtMs,
+  updatedAtMs: control.updatedAtMs
 })
 
 const parsePositiveInteger = (
@@ -505,8 +716,28 @@ const parseQueue = (value: string | undefined): DashboardResult<string> =>
     ? Result.err(new DashboardHttpError(400, 'invalid_path', 'queue is invalid'))
     : Result.ok(value)
 
+const parseQueueName = (value: string | undefined): DashboardResult<QueueName> => {
+  const queue = parseQueue(value)
+  if (Result.isError(queue)) return queue
+  const parsed = QueueName.make(queue.value)
+  return Result.isError(parsed)
+    ? Result.err(new DashboardHttpError(400, 'invalid_path', 'queue is invalid'))
+    : Result.ok(parsed.value)
+}
+
 const runOperation = async <Value, Failure extends JobStoreError>(
   operation: JobStoreOperation<Value, Failure>
+): Promise<DashboardResult<Value>> => {
+  try {
+    const result = await operation
+    return Result.isError(result) ? Result.err(storageError(result.error)) : Result.ok(result.value)
+  } catch (error) {
+    return Result.err(storageError(error))
+  }
+}
+
+const runCapabilityOperation = async <Value>(
+  operation: ResultType<Value, unknown> | PromiseLike<ResultType<Value, unknown>>
 ): Promise<DashboardResult<Value>> => {
   try {
     const result = await operation
@@ -681,12 +912,30 @@ export const DashboardApp = HonoEffect.app(
   async function* (http) {
     const app = new Hono()
     app.use('*', yield* http.middleware())
+    const schedules = yield* DashboardScheduleCapability
+    const flows = yield* DashboardFlowCapability
+    const controls = yield* DashboardControlCapability
 
     app.get(
       '/health',
       yield* http.gen(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
         return Result.ok({ ok: true, service: 'better-effect-mq-dashboard' })
+      })
+    )
+
+    app.get(
+      '/api/capabilities',
+      yield* http.gen(async function* (context) {
+        const authorization = yield* DashboardAuthorization
+        const authorized = await requireRole(authorization, context.req.raw, 'viewer')
+        if (Result.isError(authorized)) return authorized
+        return Result.ok({
+          events: (yield* DashboardEventFeed).available,
+          schedules: schedules.available,
+          flows: flows.available,
+          controls: controls.available
+        })
       })
     )
 
@@ -710,7 +959,13 @@ export const DashboardApp = HonoEffect.app(
           },
           counts,
           pausedQueues,
-          events: { available: feed.available }
+          events: { available: feed.available },
+          capabilities: {
+            events: feed.available,
+            schedules: schedules.available,
+            flows: flows.available,
+            controls: controls.available
+          }
         })
       })
     )
@@ -764,6 +1019,218 @@ export const DashboardApp = HonoEffect.app(
         return Result.ok({ attempts: result.value.map(sanitizeAttempt) })
       })
     )
+
+    if (schedules.available) {
+      const listSchedules = schedules.list
+      const getSchedule = schedules.get
+      const pauseSchedule = schedules.pause
+      const resumeSchedule = schedules.resume
+      const removeSchedule = schedules.remove
+
+      if (listSchedules !== undefined) {
+        app.get(
+          '/api/schedules',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'viewer')
+            if (Result.isError(authorized)) return authorized
+            const query = new URL(context.req.raw.url).searchParams
+            const limit = parsePositiveInteger(query.get('limit') ?? undefined, 'limit', 100)
+            if (Result.isError(limit)) return limit
+            const pausedValue = query.get('paused')
+            if (pausedValue !== null && pausedValue !== 'true' && pausedValue !== 'false') {
+              return Result.err(new DashboardHttpError(400, 'invalid_query', 'paused is invalid'))
+            }
+            const result = await runCapabilityOperation(
+              listSchedules({
+                ...(query.get('group') === null ? {} : { group: query.get('group')! }),
+                ...(pausedValue === null ? {} : { paused: pausedValue === 'true' }),
+                ...(limit.value === undefined ? {} : { limit: limit.value })
+              })
+            )
+            if (Result.isError(result)) return result
+            return Result.ok({ schedules: result.value.map(sanitizeSchedule) })
+          })
+        )
+      }
+
+      if (getSchedule !== undefined) {
+        app.get(
+          '/api/schedules/:group/:key',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'viewer')
+            if (Result.isError(authorized)) return authorized
+            const group = context.req.param('group')
+            const key = context.req.param('key')
+            if (
+              group === undefined ||
+              key === undefined ||
+              group.length === 0 ||
+              key.length === 0
+            ) {
+              return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
+            }
+            const result = await runCapabilityOperation(getSchedule({ group, key }))
+            if (Result.isError(result)) return result
+            if (result.value === undefined) {
+              return Result.err(
+                new DashboardHttpError(404, 'schedule_not_found', 'Schedule not found')
+              )
+            }
+            return Result.ok({ schedule: sanitizeSchedule(result.value) })
+          })
+        )
+      }
+
+      if (pauseSchedule !== undefined) {
+        app.post(
+          '/api/schedules/:group/:key/pause',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'operator')
+            if (Result.isError(authorized)) return authorized
+            const group = context.req.param('group')
+            const key = context.req.param('key')
+            if (
+              group === undefined ||
+              key === undefined ||
+              group.length === 0 ||
+              key.length === 0
+            ) {
+              return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
+            }
+            const selector: ScheduleSelector = { group, key }
+            const result = await runCapabilityOperation(pauseSchedule(selector))
+            if (Result.isError(result)) return result
+            return Result.ok({ paused: true })
+          })
+        )
+      }
+
+      if (resumeSchedule !== undefined) {
+        app.post(
+          '/api/schedules/:group/:key/resume',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'operator')
+            if (Result.isError(authorized)) return authorized
+            const group = context.req.param('group')
+            const key = context.req.param('key')
+            if (
+              group === undefined ||
+              key === undefined ||
+              group.length === 0 ||
+              key.length === 0
+            ) {
+              return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
+            }
+            const selector: ScheduleSelector = { group, key }
+            const result = await runCapabilityOperation(resumeSchedule(selector))
+            if (Result.isError(result)) return result
+            return Result.ok({ paused: false })
+          })
+        )
+      }
+
+      if (removeSchedule !== undefined) {
+        app.delete(
+          '/api/schedules/:group/:key',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'admin')
+            if (Result.isError(authorized)) return authorized
+            const group = context.req.param('group')
+            const key = context.req.param('key')
+            if (
+              group === undefined ||
+              key === undefined ||
+              group.length === 0 ||
+              key.length === 0
+            ) {
+              return Result.err(new DashboardHttpError(400, 'invalid_path', 'schedule is invalid'))
+            }
+            const selector: ScheduleSelector = { group, key }
+            const result = await runCapabilityOperation(removeSchedule(selector))
+            if (Result.isError(result)) return result
+            if (!result.value) {
+              return Result.err(
+                new DashboardHttpError(404, 'schedule_not_found', 'Schedule not found')
+              )
+            }
+            return Result.ok({ removed: true })
+          })
+        )
+      }
+    }
+
+    if (flows.available) {
+      const getFlow = flows.get
+      const cancelFlow = flows.cancel
+      if (getFlow !== undefined) {
+        app.get(
+          '/api/flows/:id',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'viewer')
+            if (Result.isError(authorized)) return authorized
+            const flowId = parseJobId(context.req.param('id'))
+            if (Result.isError(flowId)) return flowId
+            const result = await runCapabilityOperation(getFlow({ flowId: flowId.value }))
+            if (Result.isError(result)) return result
+            if (result.value === undefined) {
+              return Result.err(new DashboardHttpError(404, 'flow_not_found', 'Flow not found'))
+            }
+            return Result.ok({ flow: sanitizeFlow(result.value) })
+          })
+        )
+      }
+
+      if (cancelFlow !== undefined) {
+        app.post(
+          '/api/flows/:id/cancel',
+          yield* http.gen(async function* (context) {
+            const authorization = yield* DashboardAuthorization
+            const authorized = await requireRole(authorization, context.req.raw, 'operator')
+            if (Result.isError(authorized)) return authorized
+            const flowId = parseJobId(context.req.param('id'))
+            if (Result.isError(flowId)) return flowId
+            const now = (yield* Clock).now().getTime()
+            const result = await runCapabilityOperation(cancelFlow({ flowId: flowId.value, now }))
+            if (Result.isError(result)) return result
+            return Result.ok({
+              cancelled: result.value.cancelled,
+              parentSettled: result.value.parentSettled,
+              flow: sanitizeFlow({
+                parent: result.value.parent,
+                children: result.value.children,
+                outbox: []
+              })
+            })
+          })
+        )
+      }
+    }
+
+    if (controls.available && controls.get !== undefined) {
+      const getControl = controls.get
+      app.get(
+        '/api/controls/:queue',
+        yield* http.gen(async function* (context) {
+          const authorization = yield* DashboardAuthorization
+          const authorized = await requireRole(authorization, context.req.raw, 'viewer')
+          if (Result.isError(authorized)) return authorized
+          const queue = parseQueueName(context.req.param('queue'))
+          if (Result.isError(queue)) return queue
+          const result = await runCapabilityOperation(getControl(queue.value))
+          if (Result.isError(result)) return result
+          if (result.value === undefined) {
+            return Result.err(new DashboardHttpError(404, 'control_not_found', 'Control not found'))
+          }
+          return Result.ok({ control: sanitizeControl(result.value) })
+        })
+      )
+    }
 
     app.get(
       '/api/events',
