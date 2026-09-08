@@ -1171,7 +1171,10 @@ test('dashboard health endpoint reports SSE reconnections, closures, and observe
                 Layer.merge(
                   Layer.merge(
                     DashboardMutationPolicyDisabled,
-                    Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+                    Layer.merge(
+                      DashboardAuditSinkDisabled,
+                      Layer.merge(DashboardRateLimiterDisabled, DashboardJobRedactionPolicyDisabled)
+                    )
                   ),
                   DashboardApp.layer
                 )
