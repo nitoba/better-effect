@@ -37,6 +37,10 @@ import type {
   JobEventReadOptions,
   JobEventStoreError,
   JobEventStoreOperation,
+  JobHealthMonitor,
+  JobHealthSnapshot,
+  JobMetricAttributes,
+  JobMetricsSink,
   DurableJobEventType,
   JobStoreError,
   JobListCursor,
@@ -250,6 +254,8 @@ export type DashboardEventFeedPage = (
 
 export interface DashboardEventFeedContract {
   readonly available: boolean
+  /** Optional process-local dashboard health sink for SSE instrumentation. */
+  readonly health?: DashboardHealthContract
   readonly page: DashboardEventFeedPage | undefined
   readonly tailCursor:
     | (() => JobEventStoreOperation<JobEventCursor, JobEventStoreError>)
@@ -264,6 +270,7 @@ export class DashboardEventFeed extends Service<DashboardEventFeed>()(
   '@better-effect/mq-dashboard/EventFeed'
 ) {
   declare readonly available: boolean
+  declare readonly health: DashboardHealthContract | undefined
   declare readonly page: DashboardEventFeedPage | undefined
   declare readonly tailCursor:
     | (() => JobEventStoreOperation<JobEventCursor, JobEventStoreError>)
@@ -277,14 +284,296 @@ export const DashboardEventFeedDisabled = Layer.succeed(
   DashboardEventFeed,
   DashboardEventFeed.of({
     available: false,
+    health: undefined,
     page: undefined,
     tailCursor: undefined,
     awaitEvents: undefined
   })
 )
 
+export type DashboardHealthState = 'idle' | 'active' | 'degraded'
+
+export type DashboardNotificationStatus = 'available' | 'unavailable' | 'degraded'
+
+export interface DashboardNotificationSnapshot {
+  readonly awaitEventsAvailable: boolean
+  readonly status: DashboardNotificationStatus
+  readonly failures: number
+  readonly fallbackPolls: number
+}
+
+export type DashboardHealthSignal =
+  | { readonly type: 'connection-opened'; readonly reconnect: boolean }
+  | {
+      readonly type: 'connection-closed'
+      readonly reason: 'completed' | 'aborted' | 'cursor-expired' | 'failure'
+    }
+  | { readonly type: 'event-observed'; readonly lagMs: number }
+  | { readonly type: 'backpressure'; readonly dropped?: number; readonly coalesced?: number }
+  | { readonly type: 'stream-failed'; readonly kind: 'store' | 'consumer' | 'internal' }
+  | { readonly type: 'notification-failed'; readonly source: 'awaitEvents' }
+  | { readonly type: 'notification-fallback'; readonly reason: 'unavailable' | 'failure' }
+
+export interface DashboardHealthSnapshot {
+  readonly state: DashboardHealthState
+  readonly activeConnections: number
+  readonly connectionsOpened: number
+  readonly connectionsClosed: number
+  readonly reconnects: number
+  readonly cursorExpiries: number
+  readonly latestObservedLagMs: number | undefined
+  readonly maxObservedLagMs: number | undefined
+  readonly backpressureDropped: number
+  readonly eventsCoalesced: number
+  readonly streamFailures: number
+  /** Optional for compatibility with pre-health implementations. */
+  readonly notifications?: DashboardNotificationSnapshot
+  readonly job: JobHealthSnapshot | undefined
+}
+
+export interface DashboardHealthOptions {
+  readonly jobHealth?: JobHealthMonitor
+  readonly metrics?: JobMetricsSink
+  /** Whether this feed exposes the process-local awaitEvents wake capability. */
+  readonly awaitEventsAvailable?: boolean
+}
+
+export interface DashboardHealthMonitor {
+  readonly record: (signal: DashboardHealthSignal) => void
+  readonly snapshot: () => DashboardHealthSnapshot
+  readonly reset: () => void
+}
+
+export interface DashboardHealthContract extends DashboardHealthMonitor {
+  readonly available: boolean
+}
+
+const initialDashboardHealth = (
+  job: JobHealthSnapshot | undefined,
+  awaitEventsAvailable: boolean
+): DashboardHealthSnapshot => ({
+  state: 'idle',
+  activeConnections: 0,
+  connectionsOpened: 0,
+  connectionsClosed: 0,
+  reconnects: 0,
+  cursorExpiries: 0,
+  latestObservedLagMs: undefined,
+  maxObservedLagMs: undefined,
+  backpressureDropped: 0,
+  eventsCoalesced: 0,
+  streamFailures: 0,
+  notifications: {
+    awaitEventsAvailable,
+    status: awaitEventsAvailable ? 'available' : 'unavailable',
+    failures: 0,
+    fallbackPolls: 0
+  },
+  job
+})
+
+export const DashboardHealthMetricNames = Object.freeze({
+  activeConnections: 'better_effect_mq_dashboard_sse_connections_active',
+  connectionsOpened: 'better_effect_mq_dashboard_sse_connections_opened_total',
+  connectionsClosed: 'better_effect_mq_dashboard_sse_connections_closed_total',
+  reconnects: 'better_effect_mq_dashboard_sse_reconnects_total',
+  cursorExpiries: 'better_effect_mq_dashboard_sse_cursor_expired_total',
+  eventLag: 'better_effect_mq_dashboard_sse_event_lag_ms',
+  dropped: 'better_effect_mq_dashboard_sse_events_dropped_total',
+  coalesced: 'better_effect_mq_dashboard_sse_events_coalesced_total',
+  streamFailures: 'better_effect_mq_dashboard_sse_stream_failures_total',
+  notificationFailures: 'better_effect_mq_dashboard_sse_notification_failures_total',
+  notificationFallbackPolls: 'better_effect_mq_dashboard_sse_notification_fallback_polls_total'
+} as const)
+
+const nonNegativeInteger = (value: number | undefined): number =>
+  value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : 0
+
+const defaultDashboardNotifications = (
+  awaitEventsAvailable: boolean
+): DashboardNotificationSnapshot => ({
+  awaitEventsAvailable,
+  status: awaitEventsAvailable ? 'available' : 'unavailable',
+  failures: 0,
+  fallbackPolls: 0
+})
+
+const observeMetric = (
+  metrics: JobMetricsSink | undefined,
+  method: keyof JobMetricsSink,
+  name: string,
+  value: number,
+  attributes: JobMetricAttributes = {}
+): void => {
+  if (metrics === undefined) return
+  try {
+    const result = metrics[method](name, value, attributes)
+    if (result !== undefined) void Promise.resolve(result).catch(() => undefined)
+  } catch {
+    // Dashboard metrics are advisory and must not affect request handling.
+  }
+}
+
+export const makeDashboardHealth = (
+  options: DashboardHealthOptions = {}
+): DashboardHealthMonitor => {
+  const metrics = options.metrics
+  const awaitEventsAvailable = options.awaitEventsAvailable === true
+  let current = initialDashboardHealth(options.jobHealth?.snapshot(), awaitEventsAvailable)
+
+  const record = (signal: DashboardHealthSignal): void => {
+    switch (signal.type) {
+      case 'connection-opened':
+        current = {
+          ...current,
+          state: 'active',
+          activeConnections: current.activeConnections + 1,
+          connectionsOpened: current.connectionsOpened + 1,
+          reconnects: current.reconnects + (signal.reconnect ? 1 : 0)
+        }
+        observeMetric(
+          metrics,
+          'gauge',
+          DashboardHealthMetricNames.activeConnections,
+          current.activeConnections
+        )
+        observeMetric(metrics, 'increment', DashboardHealthMetricNames.connectionsOpened, 1)
+        if (signal.reconnect) {
+          observeMetric(metrics, 'increment', DashboardHealthMetricNames.reconnects, 1)
+        }
+        break
+      case 'connection-closed':
+        current = {
+          ...current,
+          state:
+            current.state === 'degraded' || signal.reason === 'cursor-expired'
+              ? 'degraded'
+              : current.activeConnections <= 1
+                ? 'idle'
+                : 'active',
+          activeConnections: Math.max(0, current.activeConnections - 1),
+          connectionsClosed: current.connectionsClosed + 1,
+          cursorExpiries: current.cursorExpiries + (signal.reason === 'cursor-expired' ? 1 : 0)
+        }
+        observeMetric(
+          metrics,
+          'gauge',
+          DashboardHealthMetricNames.activeConnections,
+          current.activeConnections
+        )
+        observeMetric(metrics, 'increment', DashboardHealthMetricNames.connectionsClosed, 1, {
+          reason: signal.reason
+        })
+        if (signal.reason === 'cursor-expired') {
+          observeMetric(metrics, 'increment', DashboardHealthMetricNames.cursorExpiries, 1)
+        }
+        break
+      case 'event-observed': {
+        const lagMs = nonNegativeInteger(signal.lagMs)
+        current = {
+          ...current,
+          latestObservedLagMs: lagMs,
+          maxObservedLagMs: Math.max(current.maxObservedLagMs ?? 0, lagMs)
+        }
+        observeMetric(metrics, 'observe', DashboardHealthMetricNames.eventLag, lagMs)
+        break
+      }
+      case 'backpressure': {
+        const dropped = nonNegativeInteger(signal.dropped)
+        const coalesced = nonNegativeInteger(signal.coalesced)
+        current = {
+          ...current,
+          state: 'degraded',
+          backpressureDropped: current.backpressureDropped + dropped,
+          eventsCoalesced: current.eventsCoalesced + coalesced
+        }
+        if (dropped > 0) {
+          observeMetric(metrics, 'increment', DashboardHealthMetricNames.dropped, dropped)
+        }
+        if (coalesced > 0) {
+          observeMetric(metrics, 'increment', DashboardHealthMetricNames.coalesced, coalesced)
+        }
+        break
+      }
+      case 'stream-failed':
+        current = { ...current, state: 'degraded', streamFailures: current.streamFailures + 1 }
+        observeMetric(metrics, 'increment', DashboardHealthMetricNames.streamFailures, 1, {
+          kind: signal.kind
+        })
+        break
+      case 'notification-failed': {
+        const notifications =
+          current.notifications ?? defaultDashboardNotifications(awaitEventsAvailable)
+        current = {
+          ...current,
+          state: 'degraded',
+          notifications: {
+            ...notifications,
+            status: 'degraded',
+            failures: notifications.failures + 1,
+            fallbackPolls: notifications.fallbackPolls + 1
+          }
+        }
+        observeMetric(metrics, 'increment', DashboardHealthMetricNames.notificationFailures, 1, {
+          source: signal.source
+        })
+        observeMetric(
+          metrics,
+          'increment',
+          DashboardHealthMetricNames.notificationFallbackPolls,
+          1,
+          { reason: 'failure' }
+        )
+        break
+      }
+      case 'notification-fallback': {
+        const notifications =
+          current.notifications ?? defaultDashboardNotifications(awaitEventsAvailable)
+        current = {
+          ...current,
+          state: signal.reason === 'failure' ? 'degraded' : current.state,
+          notifications: {
+            ...notifications,
+            status: signal.reason === 'failure' ? 'degraded' : 'unavailable',
+            fallbackPolls: notifications.fallbackPolls + 1
+          }
+        }
+        observeMetric(
+          metrics,
+          'increment',
+          DashboardHealthMetricNames.notificationFallbackPolls,
+          1,
+          { reason: signal.reason }
+        )
+        break
+      }
+    }
+  }
+
+  return Object.freeze({
+    record,
+    snapshot: () =>
+      Object.freeze({
+        ...current,
+        job: options.jobHealth?.snapshot()
+      }),
+    reset: () => {
+      current = initialDashboardHealth(options.jobHealth?.snapshot(), awaitEventsAvailable)
+    }
+  })
+}
+
+const unavailableDashboardHealth: DashboardHealthContract = {
+  available: false,
+  ...makeDashboardHealth()
+}
+
 /** Compose the public JobEvents reader into the dashboard's optional feed boundary. */
-export const dashboardEventFeedLayer = () =>
+export const dashboardEventFeedLayer = (
+  options: {
+    readonly health?: DashboardHealthContract
+  } = {}
+) =>
   Layer.gen(DashboardEventFeed, async function* () {
     const eventStore = yield* JobEventStore
 
@@ -298,6 +587,7 @@ export const dashboardEventFeedLayer = () =>
 
     return DashboardEventFeed.of({
       available: true,
+      health: options.health,
       page,
       tailCursor: () => eventStore.tailCursor(),
       awaitEvents: (options) => eventStore.awaitEvents(options)
@@ -1338,43 +1628,82 @@ const linkAbortSignals = (signals: readonly AbortSignal[]): LinkedAbortSignals =
 
 const waitForEventOrHeartbeat = async (
   feed: InstanceType<typeof DashboardEventFeed>,
+  health: DashboardHealthContract,
   cursor: JobEventCursor,
   queues: readonly import('better-effect-mq').QueueName[] | undefined,
   heartbeatMs: number,
   signal: AbortSignal
 ): Promise<'event' | 'heartbeat' | 'aborted'> => {
-  if (feed.awaitEvents === undefined || signal.aborted) return 'aborted'
+  if (signal.aborted) return 'aborted'
+  if (feed.awaitEvents === undefined) {
+    health.record({ type: 'notification-fallback', reason: 'unavailable' })
+    return await new Promise<'heartbeat' | 'aborted'>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const onAbort = (): void => {
+        if (timer !== undefined) clearTimeout(timer)
+        resolve('aborted')
+      }
+      timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(signal.aborted ? 'aborted' : 'heartbeat')
+      }, heartbeatMs)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
   let timer: ReturnType<typeof setTimeout> | undefined
-  const event = Promise.resolve(
+  let abortListener: (() => void) | undefined
+  const event = Promise.resolve().then(() =>
     queues === undefined
-      ? feed.awaitEvents({ after: cursor, signal })
-      : feed.awaitEvents({ after: cursor, queues, signal })
+      ? feed.awaitEvents!({ after: cursor, signal })
+      : feed.awaitEvents!({ after: cursor, queues, signal })
   )
   const heartbeat = new Promise<'heartbeat'>((resolve) => {
     timer = setTimeout(() => resolve('heartbeat'), heartbeatMs)
   })
+  const aborted = new Promise<'aborted'>((resolve) => {
+    if (signal.aborted) {
+      resolve('aborted')
+      return
+    }
+    abortListener = () => resolve('aborted')
+    signal.addEventListener('abort', abortListener, { once: true })
+  })
 
   try {
-    const result = await Promise.race([event, heartbeat])
+    const result = await Promise.race([event, heartbeat, aborted])
+    if (result === 'aborted') return 'aborted'
     if (result === 'heartbeat') return signal.aborted ? 'aborted' : 'heartbeat'
-    if (Result.isError(result)) return signal.aborted ? 'aborted' : 'event'
+    if (Result.isError(result)) {
+      if (signal.aborted) return 'aborted'
+      health.record({ type: 'notification-failed', source: 'awaitEvents' })
+      return 'heartbeat'
+    }
     return signal.aborted ? 'aborted' : 'event'
   } catch {
-    return signal.aborted ? 'aborted' : 'event'
+    if (signal.aborted) return 'aborted'
+    health.record({ type: 'notification-failed', source: 'awaitEvents' })
+    return 'heartbeat'
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (abortListener !== undefined) signal.removeEventListener('abort', abortListener)
   }
 }
 
 const makeEventSource = (
   feed: InstanceType<typeof DashboardEventFeed>,
+  health: DashboardHealthContract,
   options: JobEventReadOptions,
   heartbeatMs: number,
   requestSignal: AbortSignal,
-  stopSignal: AbortSignal
+  stopSignal: AbortSignal,
+  reconnect: boolean
 ): AsyncIterable<Uint8Array> =>
   (async function* () {
     const linked = linkAbortSignals([requestSignal, stopSignal])
+    let closeReason: Extract<DashboardHealthSignal, { type: 'connection-closed' }>['reason'] =
+      'aborted'
+    health.record({ type: 'connection-opened', reconnect })
     try {
       const initialCursor = options.after
       let cursor: JobEventCursor
@@ -1382,6 +1711,8 @@ const makeEventSource = (
         if (feed.tailCursor === undefined) return
         const tail = await feed.tailCursor()
         if (Result.isError(tail)) {
+          closeReason = 'failure'
+          health.record({ type: 'stream-failed', kind: 'store' })
           yield writeSse('error', { error: 'internal_error', message: 'Event feed failed' })
           return
         }
@@ -1395,6 +1726,8 @@ const makeEventSource = (
         const page = await runEventPage(feed, { ...options, after: cursor })
         if (Result.isError(page)) {
           if (page.error.code === 'cursor_expired') {
+            closeReason = 'cursor-expired'
+            health.record({ type: 'connection-closed', reason: 'cursor-expired' })
             yield writeSse('cursor-expired', {
               error: 'cursor_expired',
               ...(page.error.oldestAvailableCursor === undefined
@@ -1403,6 +1736,8 @@ const makeEventSource = (
               refreshRequired: true
             })
           } else {
+            closeReason = 'failure'
+            health.record({ type: 'stream-failed', kind: 'store' })
             yield writeSse('error', { error: 'internal_error', message: 'Event feed failed' })
           }
           return
@@ -1410,6 +1745,10 @@ const makeEventSource = (
 
         for (const event of page.value.events) {
           if (linked.signal.aborted) return
+          health.record({
+            type: 'event-observed',
+            lagMs: Math.max(0, Date.now() - event.recordedAtMs)
+          })
           yield writeSse('job-event', sanitizeEvent(event), event.cursor)
           cursor = event.cursor
         }
@@ -1418,6 +1757,7 @@ const makeEventSource = (
 
         const wait = await waitForEventOrHeartbeat(
           feed,
+          health,
           cursor,
           options.queues,
           heartbeatMs,
@@ -1427,6 +1767,9 @@ const makeEventSource = (
         if (wait === 'heartbeat') yield writeSse('heartbeat', {})
       }
     } finally {
+      if (closeReason !== 'cursor-expired') {
+        health.record({ type: 'connection-closed', reason: closeReason })
+      }
       linked.dispose()
     }
   })()
@@ -1525,6 +1868,23 @@ export const DashboardApp = HonoEffect.app(
             rateLimit: rateLimiter.available
           }
         })
+      })
+    )
+
+    app.get(
+      '/api/health',
+      yield* http.gen(async function* (context) {
+        const authorization = yield* DashboardAuthorization
+        const authorized = await requireRole(authorization, context.req.raw, 'viewer')
+        if (Result.isError(authorized)) return authorized
+        const feed = yield* DashboardEventFeed
+        const health = feed.health
+        if (health === undefined || !health.available) {
+          return Result.err(
+            new DashboardHttpError(503, 'health_unavailable', 'Dashboard health is not installed')
+          )
+        }
+        return Result.ok(health.snapshot())
       })
     )
 
@@ -1941,6 +2301,7 @@ export const DashboardApp = HonoEffect.app(
             undefined
           const options = parseEventOptions(request, after)
           if (Result.isError(options)) return options
+          const health = feed.health ?? unavailableDashboardHealth
           const heartbeat = parsePositiveInteger(
             new URL(request.url).searchParams.get('heartbeatMs') ?? undefined,
             'heartbeatMs',
@@ -1958,7 +2319,15 @@ export const DashboardApp = HonoEffect.app(
               'x-accel-buffering': 'no'
             },
             producer: ({ signal }) =>
-              makeEventSource(feed, options.value, heartbeat.value ?? 15_000, signal, stop.signal)
+              makeEventSource(
+                feed,
+                health,
+                options.value,
+                heartbeat.value ?? 15_000,
+                signal,
+                stop.signal,
+                request.headers.get('Last-Event-ID') !== null
+              )
           })
         })
       )

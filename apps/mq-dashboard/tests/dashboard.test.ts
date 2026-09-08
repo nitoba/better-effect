@@ -8,6 +8,7 @@ import {
   DashboardAuditSink,
   DashboardAuditSinkDisabled,
   DashboardControlCapabilityDisabled,
+  DashboardEventFeed,
   DashboardEventFeedDisabled,
   DashboardFlowCapabilityDisabled,
   DashboardJobRedactionPolicy,
@@ -20,11 +21,14 @@ import {
   dashboardControlCapabilityLayer,
   dashboardEventFeedLayer,
   dashboardFlowCapabilityLayer,
-  dashboardScheduleCapabilityLayer
+  dashboardScheduleCapabilityLayer,
+  makeDashboardHealth
 } from '../src'
 import {
   FlowStore,
   JobEventStore,
+  JobHealth,
+  JobEventStoreFailure,
   JobId,
   JobName,
   JobScheduleStore,
@@ -42,6 +46,7 @@ import type { DashboardAuditEvent } from '../src'
 import type {
   FlowSnapshot,
   JobEventStoreError,
+  JobEventCursor,
   JobEventStoreOperation,
   JobStoreError,
   JobStoreOperation,
@@ -49,7 +54,7 @@ import type {
   ScheduleStoreError,
   ScheduleStoreOperation
 } from 'better-effect-mq'
-import { Result } from 'better-result'
+import { Result, type Result as ResultType } from 'better-result'
 
 const allowAll = Layer.succeed(
   DashboardAuthorization,
@@ -544,6 +549,10 @@ test('dashboard returns a safe authorization failure and keeps EventStore option
     const stream = await app.request('/api/events/stream')
     expect(stream.status).toBe(503)
     expect((await stream.json()).error).toBe('events_unavailable')
+
+    const health = await app.request('/api/health')
+    expect(health.status).toBe(503)
+    expect((await health.json()).error).toBe('health_unavailable')
   } finally {
     await runtime.dispose()
   }
@@ -925,6 +934,9 @@ test('dashboard keeps authentication and role checks at the host boundary', asyn
     const response = await app.request('/api/overview')
     expect(response.status).toBe(401)
     expect((await response.json()).error).toBe('unauthorized')
+    const health = await app.request('/api/health')
+    expect(health.status).toBe(401)
+    expect((await health.json()).error).toBe('unauthorized')
   } finally {
     await runtime.dispose()
   }
@@ -1139,6 +1151,157 @@ test('SSE resumes after Last-Event-ID and emits non-durable heartbeats', async (
     expect(new TextDecoder().decode(heartbeatChunk.value)).toContain('event: heartbeat')
     heartbeatController.abort()
     await heartbeatReader.cancel()
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard health endpoint reports SSE reconnections, closures, and observed lag', async () => {
+  const { events, store } = await seed()
+  const jobHealth = JobHealth.make()
+  jobHealth.record({ type: 'lease-lost', reason: 'expired-lease' })
+  jobHealth.record({ type: 'stalled-recovered', outcome: 'requeued' })
+  const health = makeDashboardHealth({ jobHealth, awaitEventsAvailable: true })
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        Layer.succeed(JobEventStore, JobEventStore.of(events)),
+        Layer.merge(
+          dashboardEventFeedLayer({ health: { available: true, ...health } }),
+          Layer.merge(
+            ClockTestLayer(0),
+            Layer.merge(
+              allowAll,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(
+                  Layer.merge(
+                    DashboardMutationPolicyDisabled,
+                    Layer.merge(
+                      DashboardAuditSinkDisabled,
+                      Layer.merge(DashboardRateLimiterDisabled, DashboardJobRedactionPolicyDisabled)
+                    )
+                  ),
+                  DashboardApp.layer
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const initial = await app.request('/api/health')
+    expect(initial.status).toBe(200)
+    expect((await initial.json()).data.activeConnections).toBe(0)
+
+    const page = await app.request('/api/events?limit=1')
+    const cursor = (await page.json()).data.events[0].cursor
+    await resolve(
+      store.enqueue({
+        id: JobId.make('dashboard-health-job').unwrap(),
+        job: { queue: 'emails', name: 'send', version: 1 },
+        payload: {},
+        runAt: 0,
+        attemptsMax: 1,
+        now: 0
+      })
+    )
+    const stream = await app.request(
+      `/api/events/stream?after=${encodeURIComponent(cursor)}&heartbeatMs=1`,
+      { headers: { 'last-event-id': cursor } }
+    )
+    expect(stream.status).toBe(200)
+    expect(await readStreamChunk(stream)).toContain('event: job-event')
+
+    const health = await app.request('/api/health')
+    expect((await health.json()).data).toMatchObject({
+      activeConnections: 0,
+      connectionsOpened: 1,
+      connectionsClosed: 1,
+      reconnects: 1,
+      latestObservedLagMs: expect.any(Number),
+      maxObservedLagMs: expect.any(Number),
+      notifications: {
+        awaitEventsAvailable: true,
+        status: 'available',
+        failures: 0,
+        fallbackPolls: 0
+      },
+      job: {
+        leaseLosses: 1,
+        stalledRecoveries: 1
+      }
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('SSE records notification failure and falls back to heartbeat polling', async () => {
+  // SAFETY: the literal is only used as an opaque cursor in this isolated fixture.
+  const cursor = 'wake-cursor' as JobEventCursor
+  const asStoreOperation = <Value>(
+    value: ResultType<Value, JobEventStoreError>
+  ): JobEventStoreOperation<Value, JobEventStoreError> => {
+    // SAFETY: this fixture deliberately erases typed Results into the Effect facade expected by the store boundary.
+    return value as JobEventStoreOperation<Value, JobEventStoreError>
+  }
+  const health = makeDashboardHealth({ awaitEventsAvailable: true })
+  const feed = Layer.succeed(
+    DashboardEventFeed,
+    DashboardEventFeed.of({
+      available: true,
+      health: { available: true, ...health },
+      page: async () => Result.ok({ events: [], nextCursor: undefined }),
+      tailCursor: () => asStoreOperation(Result.ok(cursor)),
+      awaitEvents: () =>
+        asStoreOperation(
+          Result.err(
+            new JobEventStoreFailure({
+              operation: 'awaitEvents',
+              message: 'wake unavailable'
+            })
+          )
+        )
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+      Layer.merge(
+        feed,
+        Layer.merge(
+          ClockTestLayer(0),
+          Layer.merge(
+            allowAll,
+            Layer.merge(
+              disabledCapabilities,
+              Layer.merge(disabledMutationCapabilities, DashboardApp.layer)
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const stream = await app.request('/api/events/stream?heartbeatMs=1')
+    expect(stream.status).toBe(200)
+    expect(await readStreamChunk(stream)).toContain('event: heartbeat')
+
+    const snapshot = (await (await app.request('/api/health')).json()).data
+    expect(snapshot.notifications).toEqual({
+      awaitEventsAvailable: true,
+      status: 'degraded',
+      failures: 1,
+      fallbackPolls: 1
+    })
   } finally {
     await runtime.dispose()
   }

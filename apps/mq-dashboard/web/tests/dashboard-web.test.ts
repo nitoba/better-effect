@@ -20,6 +20,15 @@ test('keeps the live tail bounded and reports every dropped event', () => {
   expect(state.dropped).toBe(5)
 })
 
+test('coalesces duplicate durable cursors without growing the bounded buffer', () => {
+  const first = appendEventToBuffer([], event('event-1'))
+  const second = appendEventToBuffer(first.events, event('event-1'), first.dropped)
+
+  expect(second.events).toHaveLength(1)
+  expect(second.events[0]?.cursor).toBe('event-1')
+  expect(second.coalesced).toBe(1)
+})
+
 test('builds a reconnect URL from the durable cursor and filters', () => {
   const url = new URL(
     `http://dashboard.test${eventStreamPath({
@@ -45,6 +54,12 @@ test('keeps status labels accessible and does not expose proxy secrets in the cl
 
   expect(appSource).toContain('aria-label="Filtrar por fila"')
   expect(appSource).toContain('role="status"')
+  expect(appSource).toContain('Last-Event-ID')
+  expect(appSource).toContain('source.onerror')
+  expect(appSource).toContain('Perdas de lease')
+  expect(appSource).toContain('Stalled recoveries')
+  expect(appSource).toContain('Wake / awaitEvents')
+  expect(appSource).toContain('Fallback para polling')
   expect(statusSource).toContain('aria-label=')
   expect(appSource).not.toContain('MQ_DASHBOARD_TOKEN')
   expect(statusSource).not.toContain('MQ_DASHBOARD_TOKEN')

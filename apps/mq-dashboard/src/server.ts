@@ -10,9 +10,16 @@ import {
   DashboardMutationPolicy,
   DashboardRateLimiter,
   DashboardScheduleCapabilityDisabled,
-  dashboardEventFeedLayer
+  dashboardEventFeedLayer,
+  makeDashboardHealth
 } from './index'
-import { JobEventStore, JobStore, MemoryJobEventStore, MemoryJobStore } from 'better-effect-mq'
+import {
+  JobEventStore,
+  JobHealth,
+  JobStore,
+  MemoryJobEventStore,
+  MemoryJobStore
+} from 'better-effect-mq'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 
@@ -50,7 +57,9 @@ export const DashboardServer = BunEffect.server(
 )
 
 export const DashboardLive = (() => {
-  const events = MemoryJobEventStore.make()
+  const jobHealth = JobHealth.make()
+  const events = MemoryJobEventStore.make({ health: jobHealth })
+  const dashboardHealth = makeDashboardHealth({ jobHealth, awaitEventsAvailable: true })
   const store = MemoryJobStore.make({ eventStore: events })
   const authorization = Layer.succeed(
     DashboardAuthorization,
@@ -117,7 +126,9 @@ export const DashboardLive = (() => {
     Layer.merge(
       Layer.succeed(JobEventStore, JobEventStore.of(events)),
       Layer.merge(
-        dashboardEventFeedLayer(),
+        dashboardEventFeedLayer({
+          health: { available: true, ...dashboardHealth }
+        }),
         Layer.merge(
           ClockLive,
           Layer.merge(

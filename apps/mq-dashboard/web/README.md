@@ -20,8 +20,11 @@ authorization, CSRF policy, secure cookies and CSP at the host boundary. No
 credential is embedded in the client bundle.
 
 The client reads only the dashboard's public JSON/SSE endpoints. It keeps a
-bounded 200-event live tail, reconnects from the durable cursor, and requests a
-full refresh when the server reports an expired cursor.
+bounded 200-event live tail, lets `EventSource` reconnect with
+`Last-Event-ID`, reports dropped/coalesced events caused by local backpressure,
+and requests a full refresh when the server reports an expired cursor. The
+Health tab reads the authenticated aggregate `/api/health` endpoint and never
+displays payload, result, failure, job ID, worker ID, or user identifiers.
 
 ## Validation
 
