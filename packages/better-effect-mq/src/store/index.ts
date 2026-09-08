@@ -43,6 +43,11 @@ export type {
   DurableJobEvent,
   DurableJobEventInput,
   DurableJobEventType,
+  DurableJobEventFamily,
+  DurableJobEventOperation,
+  DurableJobEventProtocolVersion,
+  DurableJobEventTypeDescriptor,
+  DurableJobEventTaxonomyDescriptor,
   JobEventCursor,
   JobEventPage,
   JobEventReadOptions,
@@ -61,6 +66,13 @@ export type {
   JobEventStoreReadiness,
   JobEventStoreReadinessReason,
   JobEventStoreWriter
+} from './event-store'
+export {
+  assertDurableJobEventType,
+  durableJobEventTaxonomies,
+  durableJobEventTypeDescriptors,
+  durableJobEventTypes,
+  isDurableJobEventType
 } from './event-store'
 export type { JobEventStoreError } from './event-errors'
 export type {

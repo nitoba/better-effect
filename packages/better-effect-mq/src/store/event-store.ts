@@ -20,21 +20,188 @@ export const jobEventExtensionVersion = 1 as const
 declare const JobEventCursorBrand: unique symbol
 export type JobEventCursor = string & { readonly [JobEventCursorBrand]: 'JobEventCursor' }
 
-export type DurableJobEventType =
-  | 'job-enqueued'
-  | 'job-claimed'
-  | 'job-completed'
-  | 'job-retry-scheduled'
-  | 'job-failed'
-  | 'job-cancelled'
-  | 'job-cancel-requested'
-  | 'job-released'
-  | 'job-stalled-recovered'
-  | 'job-promoted'
-  | 'job-admin-retried'
-  | 'job-removed'
-  | 'queue-paused'
-  | 'queue-resumed'
+/** The versioned protocol family that owns a durable event transition. */
+export type DurableJobEventFamily = 'job' | 'flow' | 'schedule' | 'controls'
+export type DurableJobEventProtocolVersion = 1 | 2 | 3
+export type DurableJobEventOperation =
+  | 'enqueue'
+  | 'claim'
+  | 'settle'
+  | 'requestCancellation'
+  | 'release'
+  | 'recoverStalled'
+  | 'promote'
+  | 'adminRetry'
+  | 'remove'
+  | 'pause'
+  | 'resume'
+  | 'fanOut'
+  | 'recordChildResults'
+  | 'cancel'
+  | 'markCascaded'
+  | 'outbox'
+  | 'upsertSchedule'
+  | 'removeSchedule'
+  | 'tickSchedule'
+  | 'pauseSchedule'
+  | 'resumeSchedule'
+  | 'reconcile'
+  | 'claimControlled'
+  | 'settleControlled'
+  | 'releaseControlled'
+  | 'recoverStalledControlled'
+  | 'cancelControlled'
+
+/** The stable v1 job transitions and the additive extension transitions. */
+const jobEventTypes = Object.freeze([
+  'job-enqueued',
+  'job-claimed',
+  'job-completed',
+  'job-retry-scheduled',
+  'job-failed',
+  'job-cancelled',
+  'job-cancel-requested',
+  'job-released',
+  'job-stalled-recovered',
+  'job-promoted',
+  'job-admin-retried',
+  'job-removed',
+  'queue-paused',
+  'queue-resumed'
+] as const)
+
+const flowEventTypes = Object.freeze([
+  'flow-fan-out',
+  'flow-child-results-recorded',
+  'flow-cancelled',
+  'flow-cascaded',
+  'flow-outbox-appended'
+] as const)
+
+const scheduleEventTypes = Object.freeze([
+  'schedule-upserted',
+  'schedule-removed',
+  'schedule-ticked',
+  'schedule-paused',
+  'schedule-resumed'
+] as const)
+
+const controlsEventTypes = Object.freeze([
+  'controls-reconciled',
+  'controls-claimed',
+  'controls-settled',
+  'controls-released',
+  'controls-stalled-recovered',
+  'controls-cancelled'
+] as const)
+
+export const durableJobEventTypes = Object.freeze([
+  ...jobEventTypes,
+  ...flowEventTypes,
+  ...scheduleEventTypes,
+  ...controlsEventTypes
+] as const)
+
+export type DurableJobEventType = (typeof durableJobEventTypes)[number]
+
+export interface DurableJobEventTypeDescriptor {
+  readonly type: DurableJobEventType
+  readonly family: DurableJobEventFamily
+  readonly protocolVersion: DurableJobEventProtocolVersion
+  /** The storage operation represented by this transition. */
+  readonly operation: DurableJobEventOperation
+}
+
+export interface DurableJobEventTaxonomyDescriptor {
+  readonly family: DurableJobEventFamily
+  readonly protocolVersion: DurableJobEventProtocolVersion
+  readonly types: readonly DurableJobEventType[]
+}
+
+const makeDescriptors = <
+  const Family extends DurableJobEventFamily,
+  const Version extends DurableJobEventProtocolVersion,
+  const Types extends readonly DurableJobEventType[]
+>(
+  family: Family,
+  protocolVersion: Version,
+  entries: Types,
+  operations: readonly DurableJobEventOperation[]
+): readonly DurableJobEventTypeDescriptor[] =>
+  Object.freeze(
+    entries.map((type, index) =>
+      Object.freeze({
+        type,
+        family,
+        protocolVersion,
+        operation: operations[index]!
+      })
+    )
+  )
+
+/** Public descriptors let adapters advertise support without duplicating names. */
+export const durableJobEventTaxonomies = Object.freeze({
+  jobV1: Object.freeze({ family: 'job', protocolVersion: 1, types: jobEventTypes }),
+  flowV2: Object.freeze({ family: 'flow', protocolVersion: 2, types: flowEventTypes }),
+  scheduleV1: Object.freeze({ family: 'schedule', protocolVersion: 1, types: scheduleEventTypes }),
+  controlsV3: Object.freeze({ family: 'controls', protocolVersion: 3, types: controlsEventTypes })
+}) satisfies Readonly<Record<string, DurableJobEventTaxonomyDescriptor>>
+
+export const durableJobEventTypeDescriptors = Object.freeze([
+  ...makeDescriptors('job', 1, jobEventTypes, [
+    'enqueue',
+    'claim',
+    'settle',
+    'settle',
+    'settle',
+    'settle',
+    'requestCancellation',
+    'release',
+    'recoverStalled',
+    'promote',
+    'adminRetry',
+    'remove',
+    'pause',
+    'resume'
+  ]),
+  ...makeDescriptors('flow', 2, flowEventTypes, [
+    'fanOut',
+    'recordChildResults',
+    'cancel',
+    'markCascaded',
+    'outbox'
+  ]),
+  ...makeDescriptors('schedule', 1, scheduleEventTypes, [
+    'upsertSchedule',
+    'removeSchedule',
+    'tickSchedule',
+    'pauseSchedule',
+    'resumeSchedule'
+  ]),
+  ...makeDescriptors('controls', 3, controlsEventTypes, [
+    'reconcile',
+    'claimControlled',
+    'settleControlled',
+    'releaseControlled',
+    'recoverStalledControlled',
+    'cancelControlled'
+  ])
+]) satisfies readonly DurableJobEventTypeDescriptor[]
+
+const durableJobEventTypeSet: ReadonlySet<string> = new Set(durableJobEventTypes)
+
+export const isDurableJobEventType = (value: unknown): value is DurableJobEventType =>
+  typeof value === 'string' && durableJobEventTypeSet.has(value)
+
+export const assertDurableJobEventType = (
+  value: unknown,
+  field = 'event type'
+): DurableJobEventType => {
+  if (!isDurableJobEventType(value)) {
+    throw new TypeError(`${field} is not a supported durable job event type`)
+  }
+  return value
+}
 
 export interface JobEventRetention {
   readonly ageMs?: number
@@ -234,6 +401,11 @@ export declare namespace JobEventStore {
   export type Mode = JobEventStoreMode
   export type Event = DurableJobEvent
   export type EventType = DurableJobEventType
+  export type EventFamily = DurableJobEventFamily
+  export type EventProtocolVersion = DurableJobEventProtocolVersion
+  export type EventOperation = DurableJobEventOperation
+  export type EventTypeDescriptor = DurableJobEventTypeDescriptor
+  export type EventTaxonomyDescriptor = DurableJobEventTaxonomyDescriptor
   export type Page = JobEventPage
   export type ReadOptions = JobEventReadOptions
   export type AwaitOptions = AwaitEventsOptions

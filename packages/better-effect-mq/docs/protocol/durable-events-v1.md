@@ -11,6 +11,28 @@ same synchronous critical sections that commit enqueue, claim, settlement,
 release, recovery, administrative transitions, removal, and queue pause or
 resume.
 
+## Versioned transition taxonomy
+
+The public `DurableJobEventType` union is append-only. The original 14 v1 job
+types remain unchanged; extension types are namespaced by their owning
+contract and are described by `durableJobEventTypeDescriptors` and
+`durableJobEventTaxonomies`.
+
+The first extension slice deliberately has one event type per operation in the
+existing contracts. It does not add aliases or imply that an adapter has wired
+the operation yet:
+
+| Family   | Version | Event types                                                                                                                            | Existing operation                                                                                                      |
+| -------- | ------: | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Flow     |       2 | `flow-fan-out`, `flow-child-results-recorded`, `flow-cancelled`, `flow-cascaded`, `flow-outbox-appended`                               | `fanOut`, `recordChildResults`, `cancel`, `markCascaded`, outbox append/ack boundary                                    |
+| Schedule |       1 | `schedule-upserted`, `schedule-removed`, `schedule-ticked`, `schedule-paused`, `schedule-resumed`                                      | `upsertSchedule`, `removeSchedule`, `tickSchedule`, `pauseSchedule`, `resumeSchedule`                                   |
+| Controls |       3 | `controls-reconciled`, `controls-claimed`, `controls-settled`, `controls-released`, `controls-stalled-recovered`, `controls-cancelled` | `reconcile`, `claimControlled`, `settleControlled`, `releaseControlled`, `recoverStalledControlled`, `cancelControlled` |
+
+The descriptor's protocol version is the version of the owning contract, not
+the event-store extension version. A future protocol can add a new explicitly
+versioned family or event name; readers must retain their unknown-event
+fallback rather than reinterpret an existing name.
+
 ## Cursor and pages
 
 `JobEventCursor` is an opaque, monotonically advancing value scoped to one
@@ -36,3 +58,11 @@ causes. A Job or Attempt lookup remains the source of detailed execution data.
 Duplicate enqueue acknowledgements, heartbeat renewals, and
 `already-applied` settlements do not append a second durable event. The
 process-local observer remains independent and best-effort.
+
+Extension events use the same safe event shape and bounded attributes as v1.
+They are transition markers and wake hints, not serialized Flow child
+payloads, schedule payloads, control metadata, outbox contents, result values,
+or failure causes. Detailed data remains available only through the owning
+public store operation and its authorization/redaction policy. This contract
+slice defines names and validation only; adapter wiring for Flow, Schedule,
+and Controls transitions remains a later step.

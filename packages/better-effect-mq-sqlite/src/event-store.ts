@@ -13,6 +13,7 @@ import { Result, type Result as ResultType } from 'better-result'
 import {
   JobEventCursorExpiredError,
   JobEventStore,
+  durableJobEventTypes,
   JobEventStoreFailure,
   jobEventExtension,
   jobEventExtensionVersion,
@@ -70,22 +71,7 @@ type EventWaiter = {
 const maxLimit = 10_000
 const maxScan = 20_000
 const maxSafeInteger = Number.MAX_SAFE_INTEGER
-const eventTypes = new Set<DurableJobEventType>([
-  'job-enqueued',
-  'job-claimed',
-  'job-completed',
-  'job-retry-scheduled',
-  'job-failed',
-  'job-cancelled',
-  'job-cancel-requested',
-  'job-released',
-  'job-stalled-recovered',
-  'job-promoted',
-  'job-admin-retried',
-  'job-removed',
-  'queue-paused',
-  'queue-resumed'
-])
+const eventTypes = new Set<DurableJobEventType>(durableJobEventTypes)
 const descriptor: JobEventStoreDescriptor = Object.freeze({
   extension: jobEventExtension,
   extensionVersion: jobEventExtensionVersion,

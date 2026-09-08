@@ -8,8 +8,13 @@ import {
   JobEventConsumerAbortedError,
   JobEventStore,
   JobEvents,
+  durableJobEventTaxonomies,
+  durableJobEventTypeDescriptors,
+  durableJobEventTypes,
   JobStore,
-  type DurableJobEvent
+  type DurableJobEvent,
+  type DurableJobEventTypeDescriptor,
+  type DurableJobEventTaxonomyDescriptor
 } from '../../src'
 import type { JobEventStoreError, JobEventsPageOperation } from '../../src'
 
@@ -64,6 +69,28 @@ const namedEvents = JobEventStore.for(namedStore)
 const namedPage = JobEvents.page(namedEvents)
 expectTypeOf(namedPage).toMatchTypeOf<JobEventsPageOperation<typeof namedEvents>>()
 
+expectTypeOf(durableJobEventTypes).toMatchTypeOf<readonly DurableJobEvent['type'][]>()
+expectTypeOf(durableJobEventTypeDescriptors).toMatchTypeOf<
+  readonly DurableJobEventTypeDescriptor[]
+>()
+expectTypeOf(durableJobEventTaxonomies.flowV2).toMatchTypeOf<DurableJobEventTaxonomyDescriptor>()
+expectTypeOf(
+  durableJobEventTaxonomies.scheduleV1
+).toMatchTypeOf<DurableJobEventTaxonomyDescriptor>()
+expectTypeOf(
+  durableJobEventTaxonomies.controlsV3
+).toMatchTypeOf<DurableJobEventTaxonomyDescriptor>()
+
+const flowType: DurableJobEvent['type'] = 'flow-fan-out'
+const scheduleType: DurableJobEvent['type'] = 'schedule-ticked'
+const controlsType: DurableJobEvent['type'] = 'controls-settled'
+// @ts-expect-error Unknown extension event types are not part of the public taxonomy.
+const unknownType: DurableJobEvent['type'] = 'flow-started'
+
 void pageProgram
 void consumeProgram
 void namedPage
+void flowType
+void scheduleType
+void controlsType
+void unknownType

@@ -106,7 +106,12 @@ local function validEvent(event)
     ["job-retry-scheduled"] = true, ["job-failed"] = true, ["job-cancelled"] = true,
     ["job-cancel-requested"] = true, ["job-released"] = true, ["job-stalled-recovered"] = true,
     ["job-promoted"] = true, ["job-admin-retried"] = true, ["job-removed"] = true,
-    ["queue-paused"] = true, ["queue-resumed"] = true
+    ["queue-paused"] = true, ["queue-resumed"] = true, ["flow-fan-out"] = true,
+    ["flow-child-results-recorded"] = true, ["flow-cancelled"] = true, ["flow-cascaded"] = true,
+    ["flow-outbox-appended"] = true, ["schedule-upserted"] = true, ["schedule-removed"] = true,
+    ["schedule-ticked"] = true, ["schedule-paused"] = true, ["schedule-resumed"] = true,
+    ["controls-reconciled"] = true, ["controls-claimed"] = true, ["controls-settled"] = true,
+    ["controls-released"] = true, ["controls-stalled-recovered"] = true, ["controls-cancelled"] = true
   }
   if not types[event.type] then return false end
   local allowed = {
