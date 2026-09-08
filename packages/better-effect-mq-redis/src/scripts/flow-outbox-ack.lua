@@ -1,4 +1,6 @@
 local MAX_BODY = 8388608
+local declared = {}
+for _, key in ipairs(KEYS) do declared[key] = true end
 
 local function errorReply(code)
   return redis.error_reply(code)
@@ -8,6 +10,22 @@ local function keyTypeIs(key, expected)
   local actual = redis.call("TYPE", key)
   if type(actual) == "table" then actual = actual.ok end
   return actual == "none" or actual == expected
+end
+local function appendEvent(p)
+  local event = p.event
+  if event == nil then return true end
+  local keys = p.eventKeys
+  if type(keys) ~= "table" or type(keys.events) ~= "string" or type(keys.eventsMeta) ~= "string" or
+    not declared[keys.events] or not declared[keys.eventsMeta] or not keyTypeIs(keys.events, "stream") or
+    not keyTypeIs(keys.eventsMeta, "hash") or type(event.type) ~= "string" or event.type == "" or
+    type(event.recordedAtMs) ~= "number" or event.recordedAtMs < 0 or math.floor(event.recordedAtMs) ~= event.recordedAtMs or
+    type(event.attributes) ~= "table" then return false end
+  redis.call("XADD", keys.events, "*", "data", cjson.encode(event))
+  redis.call("HSET", keys.eventsMeta, "initialized", "1")
+  local retention = p.eventRetention or {}
+  if retention.count then redis.call("XTRIM", keys.events, "MAXLEN", "=", tostring(retention.count)) end
+  if retention.ageMs then local cutoff = event.recordedAtMs - retention.ageMs; if cutoff < 0 then cutoff = 0 end; redis.call("XTRIM", keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
+  return true
 end
 
 if #KEYS < 2 or type(ARGV[1]) ~= "string" or #ARGV[1] > MAX_BODY then
@@ -31,4 +49,5 @@ end
 
 redis.call("DEL", KEYS[2])
 redis.call("ZREM", KEYS[1], p.id)
+if not appendEvent(p) then return errorReply("MQ_INVALID_ARGUMENT") end
 return {"ok", "flow-outbox-ack", "acknowledged"}

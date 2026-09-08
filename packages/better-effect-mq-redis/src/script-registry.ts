@@ -26,7 +26,8 @@ export const redisScriptNames = [
   'remove',
   'pause',
   'resume',
-  'tick-schedule'
+  'tick-schedule',
+  'schedule-mutate'
 ] as const
 
 export const redisFlowScriptNames = [

@@ -59,6 +59,7 @@ for (const name of [
   'pause',
   'resume',
   'tick-schedule',
+  'schedule-mutate',
   'flow-fanout',
   'flow-record-child-results',
   'flow-cancel',

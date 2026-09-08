@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
+  JobEventStore,
   JobStore,
   Queue,
   QueueControls,
@@ -32,15 +33,20 @@ describe('Redis QueueControls protocol v3', () => {
     async () => {
       const namespace = `controls-${process.pid}-${sequence++}`
       const runtime = await Runtime.make(
-        RedisJobStore.layerFromConfig({
-          url: url!,
-          namespace,
-          prefix,
-          validateLayout: true
-        })
+        RedisJobStore.layerWithEventsFromConfig(
+          {
+            url: url!,
+            namespace,
+            prefix,
+            validateLayout: true
+          },
+          { retention: { count: 128 } }
+        )
       )
       try {
         const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
+        const events = await runtime.run(() => ServiceRuntime.resolve(JobEventStore))
+        const before = unwrap(await events.tailCursor())
         const controlled = store as typeof store & ControlledJobStoreContract
         const queue = Queue.define('redis-controlled')
         const identity = { queue: queue.name, name: 'work', version: 1 } as const
@@ -155,6 +161,14 @@ describe('Redis QueueControls protocol v3', () => {
           controlsRevision: 2
         })
         expect(Result.isError(mismatch)).toBe(true)
+
+        const page = unwrap(await events.read({ after: before, limit: 64 }))
+        const types = page.events.map((event) => event.type)
+        expect(types.filter((type) => type === 'controls-reconciled')).toHaveLength(1)
+        expect(types.filter((type) => type === 'controls-claimed')).toHaveLength(2)
+        expect(types.filter((type) => type === 'controls-released')).toHaveLength(1)
+        expect(types.filter((type) => type === 'job-claimed')).toHaveLength(2)
+        expect(types.filter((type) => type === 'job-released')).toHaveLength(1)
       } finally {
         await runtime.dispose()
       }

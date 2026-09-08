@@ -164,3 +164,15 @@ export const makeQueueEvent = (
     duplicate: undefined,
     attributes: emptyAttributes
   })
+
+export const makeExtensionEvent = (
+  type: DurableJobEventType,
+  fields: Omit<DurableJobEventInput, 'type' | 'attributes'> & {
+    readonly attributes?: Readonly<Record<string, string>>
+  }
+): DurableJobEventInput =>
+  Object.freeze({
+    ...fields,
+    type,
+    attributes: fields.attributes ?? emptyAttributes
+  })

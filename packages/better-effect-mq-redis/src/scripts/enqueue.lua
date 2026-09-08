@@ -97,6 +97,7 @@ local function keyTypeIs(key, expected)
 end
 local function validEvent(event)
   if event == nil then return true end
+  if type(event) == "table" and event[1] ~= nil then for _, value in ipairs(event) do if not validEvent(value) then return false end end return true end
   if type(event) ~= "table" or type(event.type) ~= "string" or type(event.recordedAtMs) ~= "number" or event.recordedAtMs < 0 or math.floor(event.recordedAtMs) ~= event.recordedAtMs or type(event.attributes) ~= "table" then return false end
   local types = { ["job-enqueued"]=true, ["job-claimed"]=true, ["job-completed"]=true, ["job-retry-scheduled"]=true, ["job-failed"]=true, ["job-cancelled"]=true, ["job-cancel-requested"]=true, ["job-released"]=true, ["job-stalled-recovered"]=true, ["job-promoted"]=true, ["job-admin-retried"]=true, ["job-removed"]=true, ["queue-paused"]=true, ["queue-resumed"]=true, ["flow-fan-out"]=true, ["flow-child-results-recorded"]=true, ["flow-cancelled"]=true, ["flow-cascaded"]=true, ["flow-outbox-appended"]=true, ["schedule-upserted"]=true, ["schedule-removed"]=true, ["schedule-ticked"]=true, ["schedule-paused"]=true, ["schedule-resumed"]=true, ["controls-reconciled"]=true, ["controls-claimed"]=true, ["controls-settled"]=true, ["controls-released"]=true, ["controls-stalled-recovered"]=true, ["controls-cancelled"]=true }
   if not types[event.type] then return false end
@@ -115,15 +116,18 @@ local function validEventRetention(retention)
 end
 local function appendEvent(item)
   if item.event == nil then return true end
-  if not validEvent(item.event) or not validEventRetention(item.eventRetention) then return false end
-  local id = redis.call("XADD", item.keys.events, "*", "data", cjson.encode(item.event))
-  if type(id) ~= "string" then return false end
-  redis.call("HSET", item.keys.eventsMeta, "initialized", "1")
-  local removed = 0
-  local retention = item.eventRetention or {}
-  if retention.ageMs then local cutoff = item.event.recordedAtMs - retention.ageMs; if cutoff < 0 then cutoff = 0 end; removed = removed + redis.call("XTRIM", item.keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
-  if retention.count then removed = removed + redis.call("XTRIM", item.keys.events, "MAXLEN", "=", tostring(retention.count)) end
-  if removed > 0 then local first = redis.call("XRANGE", item.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", item.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
+  local events = type(item.event) == "table" and item.event[1] ~= nil and item.event or {item.event}
+  for _, event in ipairs(events) do
+    if not validEvent(event) or not validEventRetention(item.eventRetention) then return false end
+    local id = redis.call("XADD", item.keys.events, "*", "data", cjson.encode(event))
+    if type(id) ~= "string" then return false end
+    redis.call("HSET", item.keys.eventsMeta, "initialized", "1")
+    local removed = 0
+    local retention = item.eventRetention or {}
+    if retention.ageMs then local cutoff = event.recordedAtMs - retention.ageMs; if cutoff < 0 then cutoff = 0 end; removed = removed + redis.call("XTRIM", item.keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
+    if retention.count then removed = removed + redis.call("XTRIM", item.keys.events, "MAXLEN", "=", tostring(retention.count)) end
+    if removed > 0 then local first = redis.call("XRANGE", item.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", item.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
+  end
   return true
 end
 local function validFlowReport(item)

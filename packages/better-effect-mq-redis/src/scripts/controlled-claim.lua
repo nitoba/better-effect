@@ -47,6 +47,7 @@ local function validEventRetention(retention)
 end
 local function appendClaimEvent(p, job)
   if p.keys.events == nil then return true end
+  if p.controlEventType ~= nil and (type(p.controlEventType) ~= "string" or p.controlEventType == "") then return false end
   local event = {
     type = "job-claimed",
     recordedAtMs = p.now,
@@ -61,6 +62,10 @@ local function appendClaimEvent(p, job)
   }
   if not validEventRetention(p.eventRetention) then return false end
   redis.call("XADD", p.keys.events, "*", "data", cjson.encode(event))
+  if p.controlEventType ~= nil then
+    event.type = p.controlEventType
+    redis.call("XADD", p.keys.events, "*", "data", cjson.encode(event))
+  end
   redis.call("HSET", p.keys.eventsMeta, "initialized", "1")
   local removed = 0
   local retention = p.eventRetention or {}

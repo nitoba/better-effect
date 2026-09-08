@@ -79,6 +79,16 @@ import {
   validateKeySegment
 } from './keys'
 import { ensureRedisFlowLayout } from './layout'
+import {
+  assertRedisJobEventWriterReady,
+  ensureRedisOptionalJobEventActivation
+} from './event-store'
+import {
+  makeExtensionEvent,
+  normalizeEventOptions,
+  type RedisEventAppendOptions,
+  type RedisJobEventStoreOptions
+} from './event-codec'
 import { hashReply, numberReply, scriptReply, stringsReply } from './internal/replies'
 import { runScript } from './internal/run-script'
 import {
@@ -88,6 +98,12 @@ import {
 } from './script-registry'
 
 type FlowResult<T> = ResultType<T, FlowStoreV2Error>
+
+type FlowEventPayload = {
+  readonly event?: ReturnType<typeof makeExtensionEvent>
+  readonly eventKeys?: { readonly events: string; readonly eventsMeta: string } | undefined
+  readonly eventRetention?: RedisEventAppendOptions['retention']
+}
 
 type NormalizedFlowObservation = {
   childKey: string
@@ -603,8 +619,19 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
   private ready: Promise<void> | undefined
   private closed = false
   private registry: RedisScriptRegistry | undefined
+  private readonly eventOptions: RedisEventAppendOptions | undefined
+  private readonly eventWriter: import('better-effect-mq').JobEventStoreWriter
 
-  constructor(private readonly redis: RedisClient) {}
+  constructor(
+    private readonly redis: RedisClient,
+    options?: RedisJobEventStoreOptions
+  ) {
+    const normalized = options === undefined ? undefined : normalizeEventOptions(options)
+    this.eventWriter =
+      normalized?.writer ??
+      Object.freeze({ id: 'better-effect-mq-redis', version: 'current', canAppend: false })
+    this.eventOptions = normalized?.writer.canAppend ? normalized : undefined
+  }
 
   get descriptor() {
     return Object.freeze({
@@ -647,8 +674,31 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
   ): Promise<readonly unknown[]> {
     if (this.closed) throw new RedisConnectionError(operation)
     await this.initialize()
+    if (this.eventOptions !== undefined)
+      await ensureRedisOptionalJobEventActivation(this.redis, Date.now())
+    await assertRedisJobEventWriterReady(
+      this.redis,
+      operation,
+      this.eventWriter,
+      this.eventOptions !== undefined
+    )
     if (this.registry === undefined) throw new RedisConnectionError('flow script initialization')
     return decodeScript(this.registry, operation, keys, [canonicalFlowJson(payload)])
+  }
+
+  private eventKeys(): { readonly events: string; readonly eventsMeta: string } | undefined {
+    return this.eventOptions === undefined
+      ? undefined
+      : { events: this.redis.layout.events, eventsMeta: this.redis.layout.eventsMeta }
+  }
+
+  private eventPayload(factory: () => ReturnType<typeof makeExtensionEvent>): FlowEventPayload {
+    if (this.eventOptions === undefined) return {}
+    return {
+      event: factory(),
+      eventKeys: this.eventKeys(),
+      eventRetention: this.eventOptions.retention
+    }
   }
 
   private async command(args: readonly string[]): Promise<unknown> {
@@ -755,14 +805,34 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
             this.redis.layout.flowParent(normalized.flowId),
             this.redis.layout.flowChildren(normalized.flowId),
             this.redis.layout.flowChildIndex(normalized.flowId),
-            this.redis.layout.flowPending
+            this.redis.layout.flowPending,
+            ...(this.eventOptions === undefined
+              ? []
+              : [this.redis.layout.events, this.redis.layout.eventsMeta])
           ],
           {
             mode: 'flow-fanout',
             parent: normalized.parentRecord,
             digest: normalized.digest,
             now: normalized.now,
-            children: normalized.items
+            children: normalized.items,
+            ...this.eventPayload(() =>
+              makeExtensionEvent('flow-fan-out', {
+                recordedAtMs: normalized.now,
+                jobId: normalized.flowId as never,
+                queue: undefined,
+                name: normalized.parentRecord.flowName,
+                version: undefined,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { children: String(normalized.items.length) }
+              })
+            )
           }
         )
         if (
@@ -806,9 +876,33 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
             this.redis.layout.flowParent(normalized.flowId),
             this.redis.layout.flowChildren(normalized.flowId),
             this.redis.layout.flowPending,
-            this.redis.layout.flowCascade
+            this.redis.layout.flowCascade,
+            ...(this.eventOptions === undefined
+              ? []
+              : [this.redis.layout.events, this.redis.layout.eventsMeta])
           ],
-          { mode: 'flow-record-child-results', reports: normalized.reports, now: normalized.now }
+          {
+            mode: 'flow-record-child-results',
+            reports: normalized.reports,
+            now: normalized.now,
+            ...this.eventPayload(() =>
+              makeExtensionEvent('flow-child-results-recorded', {
+                recordedAtMs: normalized.now,
+                jobId: normalized.flowId as never,
+                queue: undefined,
+                name: undefined,
+                version: undefined,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { applied: '0', parentSettled: 'false' }
+              })
+            )
+          }
         )
         if (
           values.length !== 4 ||
@@ -859,9 +953,33 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
           [
             this.redis.layout.flowOutboxSequence,
             this.redis.layout.flowOutbox,
-            this.redis.layout.flowOutboxEntry(entry.id)
+            this.redis.layout.flowOutboxEntry(entry.id),
+            ...(this.eventOptions === undefined
+              ? []
+              : [this.redis.layout.events, this.redis.layout.eventsMeta])
           ],
-          { mode: 'flow-outbox-append', id: entry.id, entry: encoded }
+          {
+            mode: 'flow-outbox-append',
+            id: entry.id,
+            entry: encoded,
+            ...this.eventPayload(() =>
+              makeExtensionEvent('flow-outbox-appended', {
+                recordedAtMs: Date.now(),
+                jobId: entry.report.flowId as never,
+                queue: undefined,
+                name: entry.flowName,
+                version: undefined,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { action: 'append' }
+              })
+            )
+          }
         )
         if (
           (values.length !== 2 && values.length !== 3) ||
@@ -913,8 +1031,35 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
       for (const entry of normalized.entries) {
         const values = await this.script(
           'flow-outbox-ack',
-          [this.redis.layout.flowOutbox, this.redis.layout.flowOutboxEntry(entry.id)],
-          { mode: 'flow-outbox-ack', id: entry.id, entry: encodeFlowOutboxEntry(entry) }
+          [
+            this.redis.layout.flowOutbox,
+            this.redis.layout.flowOutboxEntry(entry.id),
+            ...(this.eventOptions === undefined
+              ? []
+              : [this.redis.layout.events, this.redis.layout.eventsMeta])
+          ],
+          {
+            mode: 'flow-outbox-ack',
+            id: entry.id,
+            entry: encodeFlowOutboxEntry(entry),
+            ...this.eventPayload(() =>
+              makeExtensionEvent('flow-outbox-appended', {
+                recordedAtMs: Date.now(),
+                jobId: entry.report.flowId as never,
+                queue: undefined,
+                name: entry.flowName,
+                version: undefined,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { action: 'ack', acknowledged: '1' }
+              })
+            )
+          }
         )
         if (values.length !== 1 || (values[0] !== 'acknowledged' && values[0] !== 'skipped')) {
           throw new RedisLayoutError(
@@ -946,9 +1091,32 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
             this.redis.layout.flowParent(normalized.flowId),
             this.redis.layout.flowChildren(normalized.flowId),
             this.redis.layout.flowPending,
-            this.redis.layout.flowCascade
+            this.redis.layout.flowCascade,
+            ...(this.eventOptions === undefined
+              ? []
+              : [this.redis.layout.events, this.redis.layout.eventsMeta])
           ],
-          { mode: 'flow-cancel', now: normalized.now }
+          {
+            mode: 'flow-cancel',
+            now: normalized.now,
+            ...this.eventPayload(() =>
+              makeExtensionEvent('flow-cancelled', {
+                recordedAtMs: normalized.now,
+                jobId: normalized.flowId as never,
+                queue: undefined,
+                name: undefined,
+                version: undefined,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { cancelled: '0' }
+              })
+            )
+          }
         )
         if (values.length !== 4 || values.some((value) => typeof value !== 'string'))
           throw new RedisLayoutError(
@@ -1026,8 +1194,34 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
       async () => {
         const values = await this.script(
           'flow-mark-cascaded',
-          [this.redis.layout.flowChildren(normalized.flowId), this.redis.layout.flowCascade],
-          { mode: 'flow-mark-cascaded', childKeys: normalized.childKeys }
+          [
+            this.redis.layout.flowChildren(normalized.flowId),
+            this.redis.layout.flowCascade,
+            ...(this.eventOptions === undefined
+              ? []
+              : [this.redis.layout.events, this.redis.layout.eventsMeta])
+          ],
+          {
+            mode: 'flow-mark-cascaded',
+            childKeys: normalized.childKeys,
+            ...this.eventPayload(() =>
+              makeExtensionEvent('flow-cascaded', {
+                recordedAtMs: Date.now(),
+                jobId: normalized.flowId as never,
+                queue: undefined,
+                name: undefined,
+                version: undefined,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { marked: '0' }
+              })
+            )
+          }
         )
         if (values.length !== 2 || typeof values[0] !== 'string' || typeof values[1] !== 'string')
           throw new RedisLayoutError(
@@ -1093,7 +1287,7 @@ class RedisFlowStoreImplementation implements FlowStoreV2 {
 }
 
 export const RedisFlowStore = Object.freeze({
-  make(redis: RedisClient): FlowStoreV2 {
-    return new RedisFlowStoreImplementation(redis)
+  make(redis: RedisClient, options?: RedisJobEventStoreOptions): FlowStoreV2 {
+    return new RedisFlowStoreImplementation(redis, options)
   }
 })

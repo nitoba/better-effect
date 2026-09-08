@@ -50,6 +50,16 @@ import { RedisLayoutError } from './errors'
 import { hashReply, numberReply, scriptReply, stringsReply } from './internal/replies'
 import { runScript } from './internal/run-script'
 import {
+  assertRedisJobEventWriterReady,
+  ensureRedisOptionalJobEventActivation
+} from './event-store'
+import {
+  makeExtensionEvent,
+  normalizeEventOptions,
+  type RedisEventAppendOptions,
+  type RedisJobEventStoreOptions
+} from './event-codec'
+import {
   decodeKeySegment,
   encodeDelayedMember,
   encodeIdentity,
@@ -602,15 +612,66 @@ interface TickScriptKeys {
   readonly created: string
   readonly runAt: string
   readonly finishedAt: string
+  readonly events?: string
+  readonly eventsMeta?: string
   overlapJob?: string
+}
+
+type ScheduleEventPayload = {
+  readonly event?: ReturnType<typeof makeExtensionEvent>
+  readonly eventKeys?: { readonly events: string; readonly eventsMeta: string } | undefined
+  readonly eventRetention?: RedisEventAppendOptions['retention']
+}
+
+type ScheduleMutationPayload = ScheduleEventPayload & {
+  readonly mode: 'upsert' | 'remove' | 'pause' | 'resume'
+  readonly record: ScheduleHashFields
+  readonly groupMember: string
 }
 
 class RedisJobScheduleStoreImplementation {
   readonly descriptor = descriptor
   private closed = false
   private disposal: Promise<void> | undefined
+  private readonly eventOptions: RedisEventAppendOptions | undefined
+  private readonly eventWriter: import('better-effect-mq').JobEventStoreWriter
 
-  constructor(private readonly redis: RedisClient) {}
+  constructor(
+    private readonly redis: RedisClient,
+    options?: RedisJobEventStoreOptions
+  ) {
+    const normalized = options === undefined ? undefined : normalizeEventOptions(options)
+    this.eventWriter =
+      normalized?.writer ??
+      Object.freeze({ id: 'better-effect-mq-redis', version: 'current', canAppend: false })
+    this.eventOptions = normalized?.writer.canAppend ? normalized : undefined
+  }
+
+  private eventKeys(): { readonly events: string; readonly eventsMeta: string } | undefined {
+    return this.eventOptions === undefined
+      ? undefined
+      : { events: this.redis.layout.events, eventsMeta: this.redis.layout.eventsMeta }
+  }
+
+  private eventPayload(factory: () => ReturnType<typeof makeExtensionEvent>): ScheduleEventPayload {
+    if (this.eventOptions === undefined) return {}
+    return {
+      event: factory(),
+      eventKeys: this.eventKeys(),
+      eventRetention: this.eventOptions.retention
+    }
+  }
+
+  private async prepareMutation(operation: string): Promise<void> {
+    if (this.eventOptions !== undefined)
+      await ensureRedisOptionalJobEventActivation(this.redis, Date.now())
+    await assertRedisJobEventWriterReady(
+      this.redis,
+      operation,
+      this.eventWriter,
+      this.eventOptions !== undefined
+    )
+  }
 
   private get layout(): RedisKeyLayout {
     return this.redis.layout
@@ -661,27 +722,36 @@ class RedisJobScheduleStoreImplementation {
     return matches[0]
   }
 
-  private async writeRecord(record: ScheduleRecord): Promise<void> {
-    const hash = this.layout.schedule(record.group, record.key)
-    const fields = encodeScheduleRecord(record)
-    await this.command([
-      'HDEL',
-      hash,
-      'cron',
-      'everyMs',
-      'timeZone',
-      'backoff',
-      'timeoutMs',
-      'lastScheduledAtMs',
-      'lastJobId'
-    ])
-    const hset = ['HSET', hash]
-    for (const [field, value] of Object.entries(fields)) hset.push(field, value)
-    await this.command(hset)
-    await this.command(['SADD', this.layout.scheduleGroup(record.group), hash])
-    await this.command(['SADD', this.layout.scheduleGroups, encodeKeySegment(record.group)])
-    if (record.paused) await this.command(['ZREM', this.layout.scheduleDue, hash])
-    else await this.command(['ZADD', this.layout.scheduleDue, String(record.nextRunAtMs), hash])
+  private async mutate(
+    mode: 'upsert' | 'remove' | 'pause' | 'resume',
+    record: ScheduleRecord,
+    event?: ReturnType<typeof makeExtensionEvent>
+  ) {
+    await this.prepareMutation(`schedule-${mode}`)
+    const keys = [
+      this.layout.schedule(record.group, record.key),
+      this.layout.scheduleGroup(record.group),
+      this.layout.scheduleGroups,
+      this.layout.scheduleDue,
+      ...(this.eventOptions === undefined ? [] : [this.layout.events, this.layout.eventsMeta])
+    ]
+    const body: ScheduleMutationPayload = {
+      mode,
+      record: encodeScheduleRecord(record),
+      groupMember: encodeKeySegment(record.group)
+    }
+    if (event !== undefined)
+      Object.assign(
+        body,
+        this.eventPayload(() => event)
+      )
+    const result = await runScript(this.redis.scripts, 'schedule-mutate', {
+      keys,
+      args: [JSON.stringify(body)],
+      decode: (reply) => scriptReply(reply, 'schedule-mutate')
+    })
+    if (Result.isError(result)) throw result.error
+    return result.value
   }
 
   async upsertSchedule(input: ScheduleRecord): Promise<Operation<UpsertScheduleResult>> {
@@ -691,7 +761,33 @@ class RedisJobScheduleStoreImplementation {
       const normalized = checked.value
       const existing = await this.readAddress(normalized.group, normalized.key)
       if (existing === undefined) {
-        await this.writeRecord(normalized)
+        const reply = await this.mutate(
+          'upsert',
+          normalized,
+          this.eventOptions === undefined
+            ? undefined
+            : makeExtensionEvent('schedule-upserted', {
+                recordedAtMs: normalized.updatedAtMs,
+                jobId: normalized.lastJobId,
+                queue: normalized.queue,
+                name: normalized.job.name,
+                version: normalized.job.version,
+                state: undefined,
+                attempt: undefined,
+                delivery: undefined,
+                workerId: undefined,
+                outcome: undefined,
+                failureKind: undefined,
+                duplicate: undefined,
+                attributes: { created: 'true' }
+              })
+        )
+        if (reply.status === 'error')
+          throw new ScheduleStoreFailure({
+            operation: 'upsertSchedule',
+            retryable: false,
+            message: `Redis schedule mutation rejected: ${reply.operation}`
+          })
         return ok({ record: freezeRecord(normalized), created: true, changed: true })
       }
       if (logicalDigest(existing) === logicalDigest(normalized))
@@ -704,7 +800,33 @@ class RedisJobScheduleStoreImplementation {
         createdAtMs: existing.createdAtMs,
         updatedAtMs: Math.max(normalized.updatedAtMs, existing.updatedAtMs)
       })
-      await this.writeRecord(updated)
+      const reply = await this.mutate(
+        'upsert',
+        updated,
+        this.eventOptions === undefined
+          ? undefined
+          : makeExtensionEvent('schedule-upserted', {
+              recordedAtMs: updated.updatedAtMs,
+              jobId: updated.lastJobId,
+              queue: updated.queue,
+              name: updated.job.name,
+              version: updated.job.version,
+              state: undefined,
+              attempt: undefined,
+              delivery: undefined,
+              workerId: undefined,
+              outcome: undefined,
+              failureKind: undefined,
+              duplicate: undefined,
+              attributes: { created: 'false' }
+            })
+      )
+      if (reply.status === 'error')
+        throw new ScheduleStoreFailure({
+          operation: 'upsertSchedule',
+          retryable: false,
+          message: `Redis schedule mutation rejected: ${reply.operation}`
+        })
       return ok({ record: freezeRecord(updated), created: false, changed: true })
     } catch (cause) {
       return fail('upsertSchedule', cause)
@@ -717,17 +839,33 @@ class RedisJobScheduleStoreImplementation {
       if (Result.isError(address)) return address
       const record = await this.resolve(selector)
       if (record === undefined) return ok(false)
-      const hash = this.layout.schedule(record.group, record.key)
-      await this.command(['DEL', hash])
-      await this.command(['SREM', this.layout.scheduleGroup(record.group), hash])
-      await this.command(['ZREM', this.layout.scheduleDue, hash])
-      const remaining = Number(
-        await this.command(['SCARD', this.layout.scheduleGroup(record.group)])
+      const reply = await this.mutate(
+        'remove',
+        record,
+        this.eventOptions === undefined
+          ? undefined
+          : makeExtensionEvent('schedule-removed', {
+              recordedAtMs: record.updatedAtMs,
+              jobId: record.lastJobId,
+              queue: record.queue,
+              name: record.job.name,
+              version: record.job.version,
+              state: undefined,
+              attempt: undefined,
+              delivery: undefined,
+              workerId: undefined,
+              outcome: undefined,
+              failureKind: undefined,
+              duplicate: undefined,
+              attributes: {}
+            })
       )
-      if (remaining === 0) {
-        await this.command(['SREM', this.layout.scheduleGroups, encodeKeySegment(record.group)])
-        await this.command(['DEL', this.layout.scheduleGroup(record.group)])
-      }
+      if (reply.status === 'error')
+        throw new ScheduleStoreFailure({
+          operation: 'removeSchedule',
+          retryable: false,
+          message: `Redis schedule mutation rejected: ${reply.operation}`
+        })
       return ok(true)
     } catch (cause) {
       return fail('removeSchedule', cause)
@@ -945,6 +1083,11 @@ class RedisJobScheduleStoreImplementation {
         runAt: this.layout.runAt,
         finishedAt: this.layout.finishedAt
       }
+      if (this.eventOptions !== undefined)
+        Object.assign(scriptKeys, {
+          events: this.layout.events,
+          eventsMeta: this.layout.eventsMeta
+        })
       if (current.lastJobId !== undefined)
         scriptKeys.overlapJob = this.layout.job(current.lastJobId)
       const keyList = [
@@ -966,7 +1109,24 @@ class RedisJobScheduleStoreImplementation {
           now: String(nowMs.value),
           nextRunAtMs: String(nextRunAtMs.value),
           skippedSlots,
-          items
+          items,
+          ...this.eventPayload(() =>
+            makeExtensionEvent('schedule-ticked', {
+              recordedAtMs: nowMs.value,
+              jobId: current.lastJobId,
+              queue: current.queue,
+              name: current.job.name,
+              version: current.job.version,
+              state: undefined,
+              attempt: undefined,
+              delivery: undefined,
+              workerId: undefined,
+              outcome: undefined,
+              failureKind: undefined,
+              duplicate: undefined,
+              attributes: { status: 'tick', jobs: '0', skipped: String(skippedSlots.length) }
+            })
+          )
         })
       )
       return this.decodeTickResult(reply, address.value)
@@ -976,6 +1136,7 @@ class RedisJobScheduleStoreImplementation {
   }
 
   private async runTickScript(keys: readonly string[], body: string) {
+    await this.prepareMutation('tickSchedule')
     const result = await runScript(this.redis.scripts, 'tick-schedule', {
       keys,
       args: [body],
@@ -1067,7 +1228,33 @@ class RedisJobScheduleStoreImplementation {
         revision: current.revision + 1,
         updatedAtMs: current.updatedAtMs
       })
-      await this.writeRecord(updated)
+      const reply = await this.mutate(
+        paused ? 'pause' : 'resume',
+        updated,
+        this.eventOptions === undefined
+          ? undefined
+          : makeExtensionEvent(paused ? 'schedule-paused' : 'schedule-resumed', {
+              recordedAtMs: updated.updatedAtMs,
+              jobId: updated.lastJobId,
+              queue: updated.queue,
+              name: updated.job.name,
+              version: updated.job.version,
+              state: undefined,
+              attempt: undefined,
+              delivery: undefined,
+              workerId: undefined,
+              outcome: undefined,
+              failureKind: undefined,
+              duplicate: undefined,
+              attributes: {}
+            })
+      )
+      if (reply.status === 'error')
+        throw new ScheduleStoreFailure({
+          operation: paused ? 'pauseSchedule' : 'resumeSchedule',
+          retryable: false,
+          message: `Redis schedule mutation rejected: ${reply.operation}`
+        })
       return ok(undefined)
     } catch (cause) {
       return fail(paused ? 'pauseSchedule' : 'resumeSchedule', cause)
@@ -1097,7 +1284,8 @@ type RedisScheduleLayer<Token extends AnyJobScheduleStoreToken> = Layer<
 
 const makeLayer = <Token extends AnyJobScheduleStoreToken>(
   token: Token,
-  acquire: () => Promise<RedisClient>
+  acquire: () => Promise<RedisClient>,
+  eventOptions?: RedisJobEventStoreOptions
 ): RedisScheduleLayer<Token> =>
   Layer.scopedGen(
     token,
@@ -1107,7 +1295,7 @@ const makeLayer = <Token extends AnyJobScheduleStoreToken>(
       let implementation: RedisJobScheduleStoreImplementation | undefined
       try {
         await client.initialize()
-        implementation = new RedisJobScheduleStoreImplementation(client)
+        implementation = new RedisJobScheduleStoreImplementation(client, eventOptions)
         return JobScheduleStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
         >
@@ -1129,42 +1317,59 @@ const makeLayer = <Token extends AnyJobScheduleStoreToken>(
   ) as RedisScheduleLayer<Token>
 
 export const RedisJobScheduleStore: {
-  readonly layer: (config: RedisJobStoreConfig) => RedisScheduleLayer<typeof JobScheduleStore>
+  readonly layer: (
+    config: RedisJobStoreConfig,
+    options?: RedisJobEventStoreOptions
+  ) => RedisScheduleLayer<typeof JobScheduleStore>
   readonly layerFor: <Token extends AnyJobScheduleStoreToken>(
     token: Token,
-    config: RedisJobStoreConfig
+    config: RedisJobStoreConfig,
+    options?: RedisJobEventStoreOptions
   ) => RedisScheduleLayer<Token>
   readonly layerFromConfig: (
-    config: RedisJobStoreConnectionConfig
+    config: RedisJobStoreConnectionConfig,
+    options?: RedisJobEventStoreOptions
   ) => RedisScheduleLayer<typeof JobScheduleStore>
   readonly layerFromConfigFor: <Token extends AnyJobScheduleStoreToken>(
     token: Token,
-    config: RedisJobStoreConnectionConfig
+    config: RedisJobStoreConnectionConfig,
+    options?: RedisJobEventStoreOptions
   ) => RedisScheduleLayer<Token>
 } = Object.freeze({
-  layer(config: RedisJobStoreConfig) {
-    return makeLayer(JobScheduleStore, async () => RedisClient.fromClients(config))
+  layer(config: RedisJobStoreConfig, options?: RedisJobEventStoreOptions) {
+    return makeLayer(JobScheduleStore, async () => RedisClient.fromClients(config), options)
   },
-  layerFor<Token extends AnyJobScheduleStoreToken>(token: Token, config: RedisJobStoreConfig) {
-    return makeLayer(token, async () =>
-      RedisClient.fromClients({
-        ...config,
-        namespace: namespaceFor(token.jobStore, config.namespace ?? 'default')
-      })
+  layerFor<Token extends AnyJobScheduleStoreToken>(
+    token: Token,
+    config: RedisJobStoreConfig,
+    options?: RedisJobEventStoreOptions
+  ) {
+    return makeLayer(
+      token,
+      async () =>
+        RedisClient.fromClients({
+          ...config,
+          namespace: namespaceFor(token.jobStore, config.namespace ?? 'default')
+        }),
+      options
     )
   },
-  layerFromConfig(config: RedisJobStoreConnectionConfig) {
-    return makeLayer(JobScheduleStore, () => RedisClient.fromConfig(config))
+  layerFromConfig(config: RedisJobStoreConnectionConfig, options?: RedisJobEventStoreOptions) {
+    return makeLayer(JobScheduleStore, () => RedisClient.fromConfig(config), options)
   },
   layerFromConfigFor<Token extends AnyJobScheduleStoreToken>(
     token: Token,
-    config: RedisJobStoreConnectionConfig
+    config: RedisJobStoreConnectionConfig,
+    options?: RedisJobEventStoreOptions
   ) {
-    return makeLayer(token, () =>
-      RedisClient.fromConfig({
-        ...config,
-        namespace: namespaceFor(token.jobStore, config.namespace ?? 'default')
-      })
+    return makeLayer(
+      token,
+      () =>
+        RedisClient.fromConfig({
+          ...config,
+          namespace: namespaceFor(token.jobStore, config.namespace ?? 'default')
+        }),
+      options
     )
   }
 })

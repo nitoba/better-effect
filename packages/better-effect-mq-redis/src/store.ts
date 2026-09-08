@@ -877,7 +877,7 @@ class RedisJobStoreImplementation {
         readonly revision: number
       }
       readonly scriptName?: Parameters<typeof runScript>[1]
-      readonly event?: DurableJobEventInput
+      readonly event?: DurableJobEventInput | readonly DurableJobEventInput[]
     } = {}
   ): Promise<MutationResult> {
     const scriptName =
@@ -1149,7 +1149,10 @@ class RedisJobStoreImplementation {
       controlsIndex: this.layout.controlsIndex,
       wake: this.layout.wake,
       queueControls: this.layout.queues,
-      wakeChannel: this.layout.wakeChannel
+      wakeChannel: this.layout.wakeChannel,
+      ...(this.eventOptions === undefined
+        ? {}
+        : { events: this.layout.events, eventsMeta: this.layout.eventsMeta })
     }
   }
   private controlKeys(queue: string) {
@@ -1229,7 +1232,13 @@ class RedisJobStoreImplementation {
           perKeyConcurrency: positiveOptional(optionsValue.perKeyConcurrency, 'perKeyConcurrency'),
           rateMax: positiveOptional(rateMax, 'rateLimit.max'),
           rateDurationMs: positiveOptional(rateDurationMs, 'rateLimit.durationMs'),
-          keys: this.controlMutationKeys(queue.value)
+          keys: this.controlMutationKeys(queue.value),
+          ...(this.eventOptions === undefined
+            ? {}
+            : {
+                eventType: 'controls-reconciled',
+                eventRetention: this.eventOptions.retention
+              })
         }
         const reply = await this.script(
           'controls-reconcile',
@@ -1262,7 +1271,18 @@ class RedisJobStoreImplementation {
         if (removal !== 'disable') continue
         const current = await this.readControls(queue)
         if (current === undefined || !current.enabled) continue
-        const body = { mode: 'disable', queue, now, keys: this.controlMutationKeys(queue) }
+        const body = {
+          mode: 'disable',
+          queue,
+          now,
+          keys: this.controlMutationKeys(queue),
+          ...(this.eventOptions === undefined
+            ? {}
+            : {
+                eventType: 'controls-reconciled',
+                eventRetention: this.eventOptions.retention
+              })
+        }
         const reply = await this.script(
           'controls-reconcile',
           Object.values(body.keys),
@@ -1329,15 +1349,30 @@ class RedisJobStoreImplementation {
         this.eventOptions === undefined
           ? undefined
           : transitionEventType(operation, current, record)
+      const extensionEventType =
+        controlledRevision === undefined
+          ? undefined
+          : operation === 'release'
+            ? 'controls-released'
+            : operation === 'cancel' || operation === 'requestCancellation'
+              ? 'controls-cancelled'
+              : undefined
+      const events =
+        eventType === undefined
+          ? undefined
+          : extensionEventType === undefined
+            ? makeJobEvent(eventType, record, { previous: current })
+            : [
+                makeJobEvent(eventType, record, { previous: current }),
+                makeJobEvent(extensionEventType, record, { previous: current })
+              ]
       const mutation = await this.write(record, current, {
         expectedRevision: currentRevision,
         scriptName:
           operation === 'requestCancellation'
             ? 'cancel'
             : (operation as Parameters<typeof runScript>[1]),
-        ...(eventType === undefined
-          ? {}
-          : { event: makeJobEvent(eventType, record, { previous: current }) }),
+        ...(events === undefined ? {} : { event: events }),
         ...(next.value.attempt === undefined ? {} : { attempt: next.value.attempt }),
         ...(controlledRevision === undefined
           ? {}
@@ -1935,6 +1970,7 @@ class RedisJobStoreImplementation {
         now,
         limit,
         leaseDuration: duration,
+        ...(this.eventOptions === undefined ? {} : { controlEventType: 'controls-claimed' }),
         ...(this.eventOptions === undefined ? {} : { eventRetention: this.eventOptions.retention })
       }
       if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_CLAIM_BODY_BYTES)
@@ -2084,10 +2120,22 @@ class RedisJobStoreImplementation {
         ...(this.eventOptions === undefined
           ? {}
           : {
-              event: makeJobEvent(settlementEventType(next.value.attempt), record, {
-                previous: current,
-                attempt: next.value.attempt
-              })
+              event:
+                controlledRevision === undefined
+                  ? makeJobEvent(settlementEventType(next.value.attempt), record, {
+                      previous: current,
+                      attempt: next.value.attempt
+                    })
+                  : [
+                      makeJobEvent(settlementEventType(next.value.attempt), record, {
+                        previous: current,
+                        attempt: next.value.attempt
+                      }),
+                      makeJobEvent('controls-settled', record, {
+                        previous: current,
+                        attempt: next.value.attempt
+                      })
+                    ]
             }),
         ...(controlledRevision === undefined
           ? {}
@@ -2403,9 +2451,19 @@ class RedisJobStoreImplementation {
                     ...(this.eventOptions === undefined
                       ? {}
                       : {
-                          event: makeJobEvent('job-stalled-recovered', t.value.record, {
-                            previous: record
-                          })
+                          event:
+                            controlledRevision === undefined
+                              ? makeJobEvent('job-stalled-recovered', t.value.record, {
+                                  previous: record
+                                })
+                              : [
+                                  makeJobEvent('job-stalled-recovered', t.value.record, {
+                                    previous: record
+                                  }),
+                                  makeJobEvent('controls-stalled-recovered', t.value.record, {
+                                    previous: record
+                                  })
+                                ]
                         }),
                     ...(controlledRevision === undefined
                       ? {}
@@ -2418,10 +2476,28 @@ class RedisJobStoreImplementation {
                     ...(this.eventOptions === undefined
                       ? {}
                       : {
-                          event: makeJobEvent('job-stalled-recovered', t.value.record, {
-                            previous: record,
-                            ...(t.value.attempt === undefined ? {} : { attempt: t.value.attempt })
-                          })
+                          event:
+                            controlledRevision === undefined
+                              ? makeJobEvent('job-stalled-recovered', t.value.record, {
+                                  previous: record,
+                                  ...(t.value.attempt === undefined
+                                    ? {}
+                                    : { attempt: t.value.attempt })
+                                })
+                              : [
+                                  makeJobEvent('job-stalled-recovered', t.value.record, {
+                                    previous: record,
+                                    ...(t.value.attempt === undefined
+                                      ? {}
+                                      : { attempt: t.value.attempt })
+                                  }),
+                                  makeJobEvent('controls-stalled-recovered', t.value.record, {
+                                    previous: record,
+                                    ...(t.value.attempt === undefined
+                                      ? {}
+                                      : { attempt: t.value.attempt })
+                                  })
+                                ]
                         }),
                     ...(controlledRevision === undefined
                       ? {}

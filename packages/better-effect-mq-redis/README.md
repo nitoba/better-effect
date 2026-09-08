@@ -58,7 +58,7 @@ const Live = RedisJobStore.layerWithEventsFromConfig(
 )
 ```
 
-Each namespace has one Redis Stream for events. Enqueue, claim, settlement, lease release/recovery, administrative transitions, removal, and queue pause/resume append a bounded safe event inside the same Lua atomic unit as the state transition. Payloads, metadata, results, and failure bodies are never copied into events. Retention is applied with `XTRIM` after each append; `count` and `ageMs` are positive safe integers.
+Each namespace has one Redis Stream for events. Enqueue, claim, settlement, lease release/recovery, administrative transitions, removal, and queue pause/resume append a bounded safe event inside the same Lua atomic unit as the state transition. Pass the same event options to `RedisJobScheduleStore.layer(...)` or `layerFromConfig(...)` to append effective schedule mutations and ticks, and pass them to `RedisFlowStore.make(redis, options)` for effective Flow v2 transitions. Queue-controls reconciliation and controlled transitions append their additive `controls-*` event alongside the base `job-*` event. Payloads, metadata, results, and failure bodies are never copied into events. Retention is applied with `XTRIM` after each append; `count` and `ageMs` are positive safe integers.
 
 `JobEventStore.read` uses opaque namespace-bound cursors and exclusive `after` semantics. Filtering is performed while scanning the stream, and `nextCursor` is the last examined event so filtered pages can resume without overlap. `awaitEvents` first checks the stream, then uses the existing wake channel as a wake hint and keeps a bounded polling fallback for lost notifications. The stream and all JobStore keys use the same namespace hash tag, so Redis Cluster script calls remain single-slot.
 
