@@ -350,6 +350,18 @@ export const appendSqliteJobEvent = (
   retention: Readonly<JobEventRetention>
 ): void => appendEvent(database, namespace, input, retention)
 
+/** Whether the durable event tables are installed for a caller-owned connection. */
+export const sqliteJobEventLayoutAvailable = (database: SqliteDatabase): boolean => {
+  try {
+    const row = database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(SQLITE_TABLES.events)
+    return row !== undefined && row !== null
+  } catch {
+    return false
+  }
+}
+
 const ensureActivationTable = (database: SqliteDatabase): void => {
   database.exec(
     `CREATE TABLE IF NOT EXISTS ${SQLITE_TABLES.eventActivation} (

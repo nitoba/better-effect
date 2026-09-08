@@ -116,8 +116,10 @@ and use a bounded rotating scan so one blocked key does not hold the queue head.
 fixed windows anchored at the first accepted claim; settlement, release, and recovery release only
 the permit owned by the matching job/lease token, while rate-window capacity is never refunded.
 All mutations use the adapter's serialized `BEGIN IMMEDIATE` write path, so the job transition,
-permit, cursor, and rate-window updates commit as one SQLite transaction. The adapter advertises
-`globalConcurrency` and `rateLimiting` after migration 5.
+permit, cursor, and rate-window updates commit as one SQLite transaction. When the migration-6
+event layout is present, effective controls transitions append additive `controls-*` events beside
+their canonical `job-*` events; unchanged reconciles and idempotent retries do not append. The
+adapter advertises `globalConcurrency` and `rateLimiting` after migration 5.
 
 ## Durable job events
 
@@ -156,8 +158,9 @@ are never copied into the event log.
 is idempotent for the same manifest and lease, child settlement reports are appended to the flow
 outbox atomically with terminal `JobStore` transitions, and `recordChildResults`, `cancel`,
 `reconcile`, and `markCascaded` are bounded and retry-safe. Flow transitions use short
-`BEGIN IMMEDIATE` transactions; they do not claim to make a job store and a different store key
-transactional.
+`BEGIN IMMEDIATE` transactions; when the migration-6 event layout is present, effective FlowStore
+and flow-report transitions append the canonical `flow-*` events in that same transaction. They
+do not claim to make a job store and a different store key transactional.
 
 The generic entrypoint accepts a caller-owned `database`:
 
@@ -176,8 +179,10 @@ Wake notifications are local to one store instance. Separate processes rely on S
 
 `tickSchedule` uses a short `BEGIN IMMEDIATE` transaction. The compare-and-set revision check,
 deterministic occurrence inserts (`sched/<encoded-key>/<slot>`), schedule advancement, and queue
-wake version update commit together. Retrying a committed tick therefore returns `stale` without
-creating a duplicate occurrence.
+wake version update commit together. With the migration-6 event layout installed, effective
+upserts, ticks, pause/resume, and removals append `schedule-*` events in that same transaction;
+unchanged upserts and no-op retries do not append. Retrying a committed tick therefore returns
+`stale` without creating a duplicate occurrence.
 
 ## Durable outbox
 
