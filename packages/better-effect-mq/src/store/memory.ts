@@ -1414,6 +1414,7 @@ class MemoryJobStoreImplementation {
           const capacity = Math.min(limit.value, rateRemaining, globalRemaining)
           const scanBudget = Math.min(candidates.length, Math.max(limit.value * 4, 32))
           const planned: {
+            readonly previous: JobRecord
             readonly transition: JobTransition
             readonly token: LeaseToken
             readonly dispatchKey: string
@@ -1445,7 +1446,12 @@ class MemoryJobStoreImplementation {
               now: now.value
             })
             if (Result.isError(transition)) return fail(transition.error)
-            planned.push({ transition: transition.value, token: token.value, dispatchKey })
+            planned.push({
+              previous: candidate,
+              transition: transition.value,
+              token: token.value,
+              dispatchKey
+            })
           }
           this.rotations.set(queue.value, (start + Math.max(1, examined)) % candidates.length)
           for (const item of planned) {
@@ -1455,7 +1461,12 @@ class MemoryJobStoreImplementation {
               leaseToken: item.token,
               dispatchKey: item.dispatchKey
             })
-            this.appendEvent('controls-claimed', item.transition.record, now.value)
+            this.appendEvent('job-claimed', item.transition.record, now.value, {
+              previous: item.previous
+            })
+            this.appendEvent('controls-claimed', item.transition.record, now.value, {
+              previous: item.previous
+            })
           }
           if (planned.length > 0) {
             if (control.rateLimit !== undefined)
@@ -1630,7 +1641,8 @@ class MemoryJobStoreImplementation {
       this.commitPrepared(
         [prepared.value],
         true,
-        additionalEventType ?? this.settlementEventType(attempt)
+        this.settlementEventType(attempt),
+        additionalEventType
       )
       this.releaseControlledPermit(jobId.value, leaseToken.value)
       this.settled.set(jobId.value, { leaseToken: leaseToken.value, outcomeDigest })
@@ -1683,7 +1695,7 @@ class MemoryJobStoreImplementation {
       if (Result.isError(transition)) return fail(transition.error)
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
-      this.commitPrepared([prepared.value], true, additionalEventType ?? 'job-released')
+      this.commitPrepared([prepared.value], true, 'job-released', additionalEventType)
       this.releaseControlledPermit(jobId.value, leaseToken.value)
       return ok(snapshotTransition(prepared.value.transition))
     } catch {
@@ -1858,7 +1870,7 @@ class MemoryJobStoreImplementation {
         planned.push(prepared.value)
       }
 
-      this.commitPrepared(planned, true, additionalEventType ?? 'job-stalled-recovered')
+      this.commitPrepared(planned, true, 'job-stalled-recovered', additionalEventType)
       for (const item of planned) {
         if (item.transition.record.state !== 'active') {
           const permit = this.controlledPermits.get(item.transition.record.id)
@@ -2768,7 +2780,8 @@ class MemoryJobStoreImplementation {
   private commitPrepared(
     prepared: readonly PreparedTransition[],
     notify: boolean,
-    eventType?: DurableJobEventType
+    eventType?: DurableJobEventType,
+    additionalEventType?: DurableJobEventType
   ): void {
     if (prepared.length === 0) return
     const queues = new Set<string>()
@@ -2794,6 +2807,18 @@ class MemoryJobStoreImplementation {
           this.appendEvent(eventType, record, record.updatedAt, { previous: item.previous })
         } else {
           this.appendEvent(eventType, record, record.updatedAt, {
+            previous: item.previous,
+            attempt
+          })
+        }
+      }
+      if (additionalEventType !== undefined && additionalEventType !== eventType) {
+        if (attempt === undefined) {
+          this.appendEvent(additionalEventType, record, record.updatedAt, {
+            previous: item.previous
+          })
+        } else {
+          this.appendEvent(additionalEventType, record, record.updatedAt, {
             previous: item.previous,
             attempt
           })
@@ -2945,7 +2970,8 @@ class MemoryJobStoreImplementation {
     this.commitPrepared(
       [prepared.value],
       notify,
-      additionalEventType !== undefined && effectiveCancellation ? additionalEventType : eventType
+      eventType,
+      additionalEventType !== undefined && effectiveCancellation ? additionalEventType : undefined
     )
     if (command.type === 'retry') this.settled.delete(current.id)
     return ok(snapshotTransition(prepared.value.transition))

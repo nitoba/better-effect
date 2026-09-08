@@ -28,7 +28,7 @@ const eventTypes = async (events: JobEventStoreContract): Promise<readonly strin
 
 test('MemoryFlowStore transitions append only effective Flow v2 events', async () => {
   const events = MemoryJobEventStore.make({ clock: () => 0 })
-  const store = MemoryJobStore.make({ eventStore: events, clock: () => 0 })
+  const store = MemoryJobStore.make({ eventStore: events })
   const identity = { queue: 'flow-events', name: 'parent', version: 1 } as const
   const parent = await resolve<{ job: { id: JobId } }>(
     store.enqueue({
@@ -169,7 +169,8 @@ test('MemoryJobScheduleStore emits schedule events for changes, not stale or no-
 
 test('MemoryJobStore controlled transitions append controls events without duplicates', async () => {
   const events = MemoryJobEventStore.make({ clock: () => 0 })
-  const store = MemoryJobStore.make({ eventStore: events, clock: () => 0 })
+  let clockNow = 0
+  const store = MemoryJobStore.make({ eventStore: events, clock: () => clockNow })
   const queue = Queue.define('controls-events')
   const definition = QueueControls.define(queue, {})
   const registry = QueueControls.registry({ group: 'events', controls: [definition] })
@@ -178,6 +179,16 @@ test('MemoryJobStore controlled transitions append controls events without dupli
     store.reconcile(registry)
   )
   expect(report.records[0]!.revision).toBe(1)
+  const reconciliationEvents = await resolve<{
+    events: readonly {
+      readonly type: string
+      readonly attributes: Readonly<Record<string, string>>
+    }[]
+  }>(events.read({}))
+  expect(reconciliationEvents.events[0]).toMatchObject({
+    type: 'controls-reconciled',
+    attributes: { action: 'created' }
+  })
   const created = await resolve<{ job: { id: JobId } }>(
     store.enqueue({ job: identity, payload: {}, runAt: 0, now: 0, attemptsMax: 1 })
   )
@@ -213,7 +224,70 @@ test('MemoryJobStore controlled transitions append controls events without dupli
   const types = await eventTypes(events)
   expect(types).toContain('controls-reconciled')
   expect(types).toContain('controls-claimed')
+  expect(types).toContain('job-claimed')
+  expect(types).toContain('job-released')
+  expect(types).toContain('job-cancelled')
   expect(types).toContain('controls-released')
   expect(types).toContain('controls-cancelled')
   expect(types.filter((type) => type === 'controls-reconciled')).toHaveLength(1)
+
+  const settled = await resolve<{ job: { id: JobId } }>(
+    store.enqueue({ job: identity, payload: {}, runAt: 0, now: 0, attemptsMax: 1 })
+  )
+  const settledClaim = await resolve<{
+    jobs: readonly { id: JobId; leaseToken: LeaseToken }[]
+  }>(
+    store.claimControlled({
+      queue: makeQueueName(queue.queue).unwrap(),
+      accepted: [identity],
+      limit: 1,
+      workerId: makeWorkerId('settle-worker').unwrap(),
+      leaseDurationMs: 100,
+      now: 0,
+      controlsRevision: 1
+    })
+  )
+  expect(settledClaim.jobs[0]!.id).toBe(settled.job.id)
+  await resolve(
+    store.settleControlled({
+      jobId: settled.job.id,
+      leaseToken: settledClaim.jobs[0]!.leaseToken,
+      outcome: { type: 'complete' },
+      now: 0,
+      controlsRevision: 1
+    })
+  )
+
+  const stalled = await resolve<{ job: { id: JobId } }>(
+    store.enqueue({ job: identity, payload: {}, runAt: 0, now: 0, attemptsMax: 2 })
+  )
+  const stalledClaim = await resolve<{
+    jobs: readonly { id: JobId; leaseToken: LeaseToken }[]
+  }>(
+    store.claimControlled({
+      queue: makeQueueName(queue.queue).unwrap(),
+      accepted: [identity],
+      limit: 1,
+      workerId: makeWorkerId('stalled-worker').unwrap(),
+      leaseDurationMs: 1,
+      now: 0,
+      controlsRevision: 1
+    })
+  )
+  expect(stalledClaim.jobs[0]!.id).toBe(stalled.job.id)
+  clockNow = 1
+  await resolve(
+    store.recoverStalledControlled({
+      queue: makeQueueName(queue.queue).unwrap(),
+      maxStalledCount: 1,
+      now: 1,
+      controlsRevision: 1
+    })
+  )
+
+  const finalTypes = await eventTypes(events)
+  expect(finalTypes).toContain('controls-settled')
+  expect(finalTypes).toContain('job-completed')
+  expect(finalTypes).toContain('controls-stalled-recovered')
+  expect(finalTypes).toContain('job-stalled-recovered')
 })

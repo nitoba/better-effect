@@ -622,6 +622,14 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
         Object.freeze({ ...child, status: 'cancelled' as const, cascaded: false })
       )
     }
+    if (cancelled === 0) {
+      return ok({
+        cancelled: 0,
+        parentSettled: false,
+        parent: cloneParent(stored.parent),
+        children: childSnapshots(stored)
+      })
+    }
     const flow = Object.freeze({
       ...stored.parent.flow,
       pending: 0,
