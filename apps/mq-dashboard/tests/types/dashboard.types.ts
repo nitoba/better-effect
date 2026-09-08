@@ -52,13 +52,28 @@ const redactionLayer = Layer.succeed(
   DashboardJobRedactionPolicy,
   DashboardJobRedactionPolicy.of({
     available: true,
-    decide: async ({ job, principal, request, target }) => {
+    decide: async ({ action, job, principal, request, target }) => {
+      expectTypeOf(job.id).toEqualTypeOf<string>()
       expectTypeOf(job.queue).toEqualTypeOf<string>()
       expectTypeOf(job.name).toEqualTypeOf<string>()
       expectTypeOf(job.version).toEqualTypeOf<number>()
       expectTypeOf(principal.role).toEqualTypeOf<'viewer' | 'operator' | 'admin'>()
       expectTypeOf(request).toEqualTypeOf<Request>()
-      expectTypeOf(target).toEqualTypeOf<'list' | 'detail' | 'attempts'>()
+      expectTypeOf(target).toEqualTypeOf<'list' | 'detail' | 'attempts' | 'mutation'>()
+      expectTypeOf(action).toEqualTypeOf<
+        | undefined
+        | 'job.cancel'
+        | 'job.promote'
+        | 'job.retry'
+        | 'job.redrive'
+        | 'job.remove'
+        | 'queue.pause'
+        | 'queue.resume'
+        | 'schedule.pause'
+        | 'schedule.resume'
+        | 'schedule.remove'
+        | 'flow.cancel'
+      >()
       return {
         allowed: true as const,
         payload: false,

@@ -46,8 +46,11 @@ optional `DashboardAuditSink`, and may replace the basic rate limiter with a
 host-owned boundary. `DashboardJobRedactionPolicyDisabled` keeps job payloads,
 results, failures, and metadata redacted; hosts may provide
 `DashboardJobRedactionPolicy` to authorize job identities and explicitly expose
-selected fields or metadata keys for a principal. Audit delivery is best-effort
-and never changes the mutation result.
+selected fields or metadata keys for a principal. Its job identity includes the
+individual `id` alongside `queue`, `name`, and `version`; mutation decisions
+receive `target: "mutation"` plus the action and a denial returns `403` before
+the store operation runs. Audit delivery is best-effort and never changes the
+mutation result.
 
 ## Run the Memory example
 

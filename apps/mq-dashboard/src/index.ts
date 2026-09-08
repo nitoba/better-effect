@@ -74,10 +74,11 @@ export class DashboardAuthorization extends Service<DashboardAuthorization>()(
   ) => DashboardPrincipal | null | PromiseLike<DashboardPrincipal | null>
 }
 
-export type DashboardJobRedactionTarget = 'list' | 'detail' | 'attempts'
+export type DashboardJobRedactionTarget = 'list' | 'detail' | 'attempts' | 'mutation'
 
 /** Stable job-definition identity supplied to host-owned dashboard policies. */
 export interface DashboardJobIdentity {
+  readonly id: string
   readonly queue: string
   readonly name: string
   readonly version: number
@@ -88,6 +89,7 @@ export interface DashboardJobRedactionRequest {
   readonly principal: DashboardPrincipal
   readonly job: DashboardJobIdentity
   readonly target: DashboardJobRedactionTarget
+  readonly action?: DashboardMutationAction
 }
 
 export interface DashboardJobRedactionDecision {
@@ -724,6 +726,7 @@ const defaultJobRedactionDecision: DashboardJobRedactionDecision = {
 }
 
 const jobIdentity = (job: JobRecord): DashboardJobIdentity => ({
+  id: job.id,
   queue: job.queue,
   name: job.name,
   version: job.version
@@ -818,12 +821,19 @@ const decideJobRedaction = async (
   request: Request,
   principal: DashboardPrincipal,
   job: JobRecord,
-  target: DashboardJobRedactionTarget
+  target: DashboardJobRedactionTarget,
+  action?: DashboardMutationAction
 ): Promise<DashboardResult<DashboardJobRedactionDecision>> => {
   if (!policy.available) return Result.ok(defaultJobRedactionDecision)
   try {
     const decision = normalizeJobRedactionDecision(
-      await policy.decide({ request, principal, job: jobIdentity(job), target })
+      await policy.decide({
+        request,
+        principal,
+        job: jobIdentity(job),
+        target,
+        ...(action === undefined ? {} : { action })
+      })
     )
     return decision === undefined ? Result.err(jobRedactionPolicyError()) : Result.ok(decision)
   } catch {
@@ -834,16 +844,89 @@ const decideJobRedaction = async (
 const jobAccessDenied = (): DashboardHttpError =>
   new DashboardHttpError(403, 'job_forbidden', 'Job access is not permitted')
 
-const decideMutationJobRedaction = async (
-  policy: InstanceType<typeof DashboardJobRedactionPolicy>,
-  request: Request,
-  principal: DashboardPrincipal,
-  job: JobRecord
-): Promise<DashboardJobRedactionDecision> => {
-  const decision = await decideJobRedaction(policy, request, principal, job, 'detail')
-  return Result.isError(decision) || !decision.value.allowed
-    ? defaultJobRedactionDecision
-    : decision.value
+interface DashboardJobMutationAuthorization {
+  readonly principal: DashboardPrincipal
+  readonly job: JobRecord
+  readonly decision: DashboardJobRedactionDecision
+}
+
+interface DashboardJobMutationGuardOptions {
+  readonly authorization: InstanceType<typeof DashboardAuthorization>
+  readonly policy: InstanceType<typeof DashboardMutationPolicy>
+  readonly rateLimiter: InstanceType<typeof DashboardRateLimiter>
+  readonly auditSink: InstanceType<typeof DashboardAuditSink>
+  readonly jobRedactionPolicy: InstanceType<typeof DashboardJobRedactionPolicy>
+  readonly store: InstanceType<typeof JobStore>
+  readonly request: Request
+  readonly requiredRole: DashboardRole
+  readonly action: DashboardMutationAction
+  readonly jobId: JobId
+}
+
+const requireJobMutation = async (
+  options: DashboardJobMutationGuardOptions
+): Promise<DashboardResult<DashboardJobMutationAuthorization>> => {
+  const authorized = await requireMutation(options)
+  if (Result.isError(authorized)) return authorized
+
+  const job = await runOperation(options.store.getJob({ jobId: options.jobId }))
+  if (Result.isError(job)) {
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      authorized.value,
+      options.action,
+      'failure',
+      job.error.code
+    )
+    return job
+  }
+  if (job.value === undefined) {
+    const error = new DashboardHttpError(404, 'job_not_found', 'Job not found')
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      authorized.value,
+      options.action,
+      'failure',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  const decision = await decideJobRedaction(
+    options.jobRedactionPolicy,
+    options.request,
+    authorized.value,
+    job.value,
+    'mutation',
+    options.action
+  )
+  if (Result.isError(decision)) {
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      authorized.value,
+      options.action,
+      'denied',
+      decision.error.code
+    )
+    return decision
+  }
+  if (!decision.value.allowed) {
+    const error = jobAccessDenied()
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      authorized.value,
+      options.action,
+      'denied',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  return Result.ok({ principal: authorized.value, job: job.value, decision: decision.value })
 }
 
 const safeEventAttributeKeys = new Set(['action', 'mq.flow.phase', 'mq.flow.name'])
@@ -1387,6 +1470,26 @@ export const DashboardApp = HonoEffect.app(
         action
       })
 
+    const authorizeJobMutation = (
+      request: Request,
+      requiredRole: DashboardRole,
+      action: DashboardMutationAction,
+      jobId: JobId,
+      store: InstanceType<typeof JobStore>
+    ): Promise<DashboardResult<DashboardJobMutationAuthorization>> =>
+      requireJobMutation({
+        authorization,
+        policy: mutationPolicy,
+        rateLimiter,
+        auditSink,
+        jobRedactionPolicy,
+        store,
+        request,
+        requiredRole,
+        action,
+        jobId
+      })
+
     app.get(
       '/health',
       yield* http.gen(async function* () {
@@ -1864,162 +1967,153 @@ export const DashboardApp = HonoEffect.app(
     app.post(
       '/api/jobs/:id/cancel',
       yield* http.gen(async function* (context) {
-        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.cancel')
-        if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
         const store = yield* JobStore
+        const authorized = await authorizeJobMutation(
+          context.req.raw,
+          'operator',
+          'job.cancel',
+          jobId.value,
+          store
+        )
+        if (Result.isError(authorized)) return authorized
         const now = (yield* Clock).now().getTime()
         const result = await runOperation(store.cancel({ jobId: jobId.value, now }))
         const audited = await auditMutationResult(
           auditSink,
           context.req.raw,
-          authorized.value,
+          authorized.value.principal,
           'job.cancel',
           result
         )
         if (Result.isError(audited)) return audited
         return Result.ok({
-          job: sanitizeJob(
-            audited.value.record,
-            await decideMutationJobRedaction(
-              jobRedactionPolicy,
-              context.req.raw,
-              authorized.value,
-              audited.value.record
-            )
-          )
+          job: sanitizeJob(audited.value.record, authorized.value.decision)
         })
       })
     )
     app.post(
       '/api/jobs/:id/promote',
       yield* http.gen(async function* (context) {
-        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.promote')
-        if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
         const store = yield* JobStore
+        const authorized = await authorizeJobMutation(
+          context.req.raw,
+          'operator',
+          'job.promote',
+          jobId.value,
+          store
+        )
+        if (Result.isError(authorized)) return authorized
         const now = (yield* Clock).now().getTime()
         const result = await runOperation(store.promote({ jobId: jobId.value, now }))
         const audited = await auditMutationResult(
           auditSink,
           context.req.raw,
-          authorized.value,
+          authorized.value.principal,
           'job.promote',
           result
         )
         if (Result.isError(audited)) return audited
         return Result.ok({
-          job: sanitizeJob(
-            audited.value.record,
-            await decideMutationJobRedaction(
-              jobRedactionPolicy,
-              context.req.raw,
-              authorized.value,
-              audited.value.record
-            )
-          )
+          job: sanitizeJob(audited.value.record, authorized.value.decision)
         })
       })
     )
     app.post(
       '/api/jobs/:id/retry',
       yield* http.gen(async function* (context) {
-        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.retry')
-        if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
+        const store = yield* JobStore
+        const authorized = await authorizeJobMutation(
+          context.req.raw,
+          'operator',
+          'job.retry',
+          jobId.value,
+          store
+        )
+        if (Result.isError(authorized)) return authorized
         const now = (yield* Clock).now().getTime()
         const body = await parseRetryBody(context.req.raw, now)
         if (Result.isError(body)) return body
-        const store = yield* JobStore
         const result = await runOperation(
           store.retry({ jobId: jobId.value, now, runAt: body.value.runAt })
         )
         const audited = await auditMutationResult(
           auditSink,
           context.req.raw,
-          authorized.value,
+          authorized.value.principal,
           'job.retry',
           result
         )
         if (Result.isError(audited)) return audited
         return Result.ok({
-          job: sanitizeJob(
-            audited.value.record,
-            await decideMutationJobRedaction(
-              jobRedactionPolicy,
-              context.req.raw,
-              authorized.value,
-              audited.value.record
-            )
-          )
+          job: sanitizeJob(audited.value.record, authorized.value.decision)
         })
       })
     )
     app.post(
       '/api/jobs/:id/redrive',
       yield* http.gen(async function* (context) {
-        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.redrive')
-        if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
+        const store = yield* JobStore
+        const authorized = await authorizeJobMutation(
+          context.req.raw,
+          'operator',
+          'job.redrive',
+          jobId.value,
+          store
+        )
+        if (Result.isError(authorized)) return authorized
         const now = (yield* Clock).now().getTime()
         const body = await parseRetryBody(context.req.raw, now)
         if (Result.isError(body)) return body
-        const store = yield* JobStore
         const result = await runOperation(
           store.retry({ jobId: jobId.value, now, runAt: body.value.runAt })
         )
         const audited = await auditMutationResult(
           auditSink,
           context.req.raw,
-          authorized.value,
+          authorized.value.principal,
           'job.redrive',
           result
         )
         if (Result.isError(audited)) return audited
         return Result.ok({
-          job: sanitizeJob(
-            audited.value.record,
-            await decideMutationJobRedaction(
-              jobRedactionPolicy,
-              context.req.raw,
-              authorized.value,
-              audited.value.record
-            )
-          )
+          job: sanitizeJob(audited.value.record, authorized.value.decision)
         })
       })
     )
     app.delete(
       '/api/jobs/:id',
       yield* http.gen(async function* (context) {
-        const authorized = await authorizeMutation(context.req.raw, 'admin', 'job.remove')
-        if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
+        const store = yield* JobStore
+        const authorized = await authorizeJobMutation(
+          context.req.raw,
+          'admin',
+          'job.remove',
+          jobId.value,
+          store
+        )
+        if (Result.isError(authorized)) return authorized
         const result = yield* JobAdmin.for(JobStore).remove(jobId.value)
         await recordMutationAudit(
           auditSink,
           context.req.raw,
-          authorized.value,
+          authorized.value.principal,
           'job.remove',
           'success',
           undefined
         )
         return Result.ok({
           removed: true,
-          job: sanitizeJob(
-            result.job,
-            await decideMutationJobRedaction(
-              jobRedactionPolicy,
-              context.req.raw,
-              authorized.value,
-              result.job
-            )
-          )
+          job: sanitizeJob(result.job, authorized.value.decision)
         })
       })
     )
