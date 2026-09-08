@@ -103,14 +103,33 @@ expected. A relay calls `recordChildResults` in the parent store and calls
 already-removed entry is reported as skipped. These operations are retryable
 and do not imply a cross-store transaction.
 
-PostgreSQL performs terminal report insertion in the child settlement
-transaction and indexes outbox pages by parent store key. Redis performs the
-append and exact-payload acknowledgement in Lua scripts; its bounded peek
-reads the ordered outbox without deleting entries. `MemoryFlowStore` is the
-reference implementation used by the shared flow-store conformance suite.
+SQLite, PostgreSQL, MySQL, and MongoDB perform terminal report insertion in the
+child settlement transaction. Redis performs the append and exact-payload
+acknowledgement in Lua scripts; its bounded peek reads the ordered outbox
+without deleting entries. `MemoryFlowStore` is the reference implementation
+used by the shared flow-store conformance suite, which is also run by each
+shipped durable adapter.
 
-PostgreSQL and Redis adapters provide durable flow storage. The Layer-owned
-Worker executes registered flow phases from the same Runtime root: it prepares
+The current adapter acceptance matrix is:
+
+| Adapter           | FlowStoreV2 persistence                         | Terminal child report boundary |
+| ----------------- | ----------------------------------------------- | ------------------------------ |
+| `MemoryFlowStore` | in-memory reference                             | one in-memory transition       |
+| SQLite            | SQLite tables and indexes                       | child settlement transaction   |
+| PostgreSQL        | flow tables and outbox indexes                  | child settlement transaction   |
+| MySQL             | flow tables and outbox indexes                  | child settlement transaction   |
+| MongoDB           | flow collections and outbox documents           | child settlement transaction   |
+| Redis/Valkey      | namespaced hashes, sorted sets, and outbox keys | one Lua settlement script      |
+
+Every row must pass the runner-agnostic flow-store contract for descriptor
+compatibility, replay/idempotency, terminal-report paging and acknowledgement,
+reconciliation, cancellation/cascade work, and bounded retry behavior. The
+matrix does not imply a cross-store transaction: cross-store enqueue and relay
+remain at-least-once operations recovered by deterministic child IDs and the
+durable outbox.
+
+Every durable adapter listed above provides FlowStore v2 storage. The
+Layer-owned Worker executes registered flow phases from the same Runtime root: it prepares
 and enqueues children through their declared JobStores, including cross-store
 children, waits for terminal child reports, and invokes `collect` with bounded
 `FlowResults` pages. Cross-store enqueue is intentionally at-least-once and
