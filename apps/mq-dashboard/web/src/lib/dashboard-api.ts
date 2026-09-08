@@ -1,8 +1,7 @@
-export type JobState =
-  "waiting" | "delayed" | "active" | "completed" | "failed" | "cancelled"
+// oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- this module parses untrusted JSON at the HTTP boundary before exposing typed dashboard data.
+export type JobState = 'waiting' | 'delayed' | 'active' | 'completed' | 'failed' | 'cancelled'
 
-export type DashboardTab =
-  "overview" | "jobs" | "events" | "extensions" | "health"
+export type DashboardTab = 'overview' | 'jobs' | 'events' | 'extensions' | 'health'
 
 export interface Job {
   id: string
@@ -139,35 +138,49 @@ export class DashboardApiError extends Error {
 
   constructor(payload: ApiErrorPayload, status: number) {
     super(payload.message)
-    this.name = "DashboardApiError"
+    this.name = 'DashboardApiError'
     this.code = payload.error
     this.status = status
     this.retryAfterSeconds = payload.retryAfterSeconds
   }
 }
 
-const apiBase =
-  (import.meta.env.VITE_DASHBOARD_API_BASE as string | undefined) ?? ""
+const apiBase = import.meta.env.VITE_DASHBOARD_API_BASE ?? ''
 
-export async function requestJson<T>(
-  path: string,
-  init: RequestInit = {}
-): Promise<T> {
+function isDataEnvelope<T>(value: unknown): value is { data: T } {
+  return typeof value === 'object' && value !== null && 'data' in value
+}
+
+function isApiErrorPayload(value: unknown): value is ApiErrorPayload {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'error' in value &&
+    typeof value.error === 'string' &&
+    'message' in value &&
+    typeof value.message === 'string'
+  )
+}
+
+export async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
-  headers.set("accept", "application/json")
-  if (init.body !== undefined && !headers.has("content-type")) {
-    headers.set("content-type", "application/json")
+  headers.set('accept', 'application/json')
+  if (init.body !== undefined && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json')
   }
 
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
-    credentials: "same-origin",
-    headers,
+    credentials: 'same-origin',
+    headers
   })
-  const payload = (await response.json()) as { data: T } | ApiErrorPayload
+  const payload: unknown = await response.json()
 
-  if (!response.ok || !("data" in payload)) {
-    throw new DashboardApiError(payload as ApiErrorPayload, response.status)
+  if (!response.ok || !isDataEnvelope<T>(payload)) {
+    const errorPayload: ApiErrorPayload = isApiErrorPayload(payload)
+      ? payload
+      : { error: 'invalid_response', message: 'Resposta inválida do dashboard.' }
+    throw new DashboardApiError(errorPayload, response.status)
   }
 
   return payload.data
@@ -178,15 +191,15 @@ export function apiUrl(path: string): string {
 }
 
 export function formatTimestamp(value: number | undefined): string {
-  if (value === undefined) return "—"
+  if (value === undefined) return '—'
   return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
+    dateStyle: 'medium',
+    timeStyle: 'short'
   }).format(value)
 }
 
 export function formatDuration(value: number | undefined): string {
-  if (value === undefined) return "—"
+  if (value === undefined) return '—'
   if (value < 1_000) return `${value} ms`
   if (value < 60_000) return `${Math.round(value / 1_000)} s`
   return `${Math.round(value / 60_000)} min`

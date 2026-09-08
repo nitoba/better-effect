@@ -29,5 +29,5 @@ full refresh when the server reports an expired cursor.
 bun run --cwd apps/mq-dashboard/web check
 ```
 
-The package check runs TypeScript, the Vite production build, ESLint and the
-repository formatter check.
+The package check runs TypeScript, the Vite production build, Oxlint and Oxfmt,
+the same linter and formatter used by the rest of the repository.

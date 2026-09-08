@@ -1,15 +1,18 @@
-import { fileURLToPath, URL } from "node:url"
-import tailwindcss from "@tailwindcss/vite"
-import react from "@vitejs/plugin-react"
-import { defineConfig } from "vite"
+import { fileURLToPath, URL } from 'node:url'
+import tailwindcss from '@tailwindcss/vite'
+import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
 
 const dashboardToken = process.env.MQ_DASHBOARD_TOKEN
-const dashboardProxyHeaders =
+const dashboardApiProxy =
   dashboardToken === undefined
-    ? undefined
+    ? { target: 'http://127.0.0.1:3000' }
     : {
-        authorization: `Bearer ${dashboardToken}`,
-        "x-dashboard-csrf": dashboardToken,
+        target: 'http://127.0.0.1:3000',
+        headers: {
+          authorization: `Bearer ${dashboardToken}`,
+          'x-dashboard-csrf': dashboardToken
+        }
       }
 
 // https://vite.dev/config/
@@ -17,18 +20,13 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      "/api": {
-        target: "http://127.0.0.1:3000",
-        ...(dashboardProxyHeaders === undefined
-          ? {}
-          : { headers: dashboardProxyHeaders }),
-      },
-      "/health": "http://127.0.0.1:3000",
-    },
+      '/api': dashboardApiProxy,
+      '/health': 'http://127.0.0.1:3000'
+    }
   },
   resolve: {
     alias: {
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
-    },
-  },
+      '@': fileURLToPath(new URL('./src', import.meta.url))
+    }
+  }
 })

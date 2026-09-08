@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/set-state-in-effect -- these effects synchronize with the dashboard HTTP/SSE boundary. */
 import {
   Activity,
   AlertTriangle,
@@ -17,9 +16,9 @@ import {
   ShieldCheck,
   Trash2,
   Workflow,
-  XCircle,
-} from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+  XCircle
+} from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   AlertDialog,
@@ -30,44 +29,33 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
+  AlertDialogTrigger
+} from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Separator } from "@/components/ui/separator"
-import { Skeleton } from "@/components/ui/skeleton"
+  SelectValue
+} from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import { StatusBadge } from "@/components/status-badge"
+  TableRow
+} from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { StatusBadge } from '@/components/status-badge'
 import {
   apiUrl,
   formatDuration,
@@ -81,27 +69,21 @@ import {
   type JobState,
   type Overview,
   type QueueControl,
-  type Schedule,
-} from "@/lib/dashboard-api"
+  type Schedule
+} from '@/lib/dashboard-api'
 
 const MAX_EVENT_BUFFER = 200
 const jobStates: readonly JobState[] = [
-  "waiting",
-  "delayed",
-  "active",
-  "completed",
-  "failed",
-  "cancelled",
+  'waiting',
+  'delayed',
+  'active',
+  'completed',
+  'failed',
+  'cancelled'
 ]
 type IconComponent = typeof Activity
 
-function ErrorNotice({
-  error,
-  onRetry,
-}: {
-  error: string
-  onRetry?: () => void
-}) {
+function ErrorNotice({ error, onRetry }: { error: string; onRetry?: () => void }) {
   return (
     <Card className="border-destructive/40 bg-destructive/5">
       <CardContent className="flex items-center gap-3 p-4 text-sm text-destructive">
@@ -121,26 +103,24 @@ function MetricCard({
   label,
   value,
   icon: Icon,
-  tone = "default",
+  tone = 'default'
 }: {
   label: string
   value: number | string
   icon: IconComponent
-  tone?: "default" | "positive" | "warning" | "danger"
+  tone?: 'default' | 'positive' | 'warning' | 'danger'
 }) {
   const toneClass = {
-    default: "bg-primary/10 text-primary",
-    positive: "bg-emerald-500/10 text-emerald-600",
-    warning: "bg-amber-500/10 text-amber-600",
-    danger: "bg-red-500/10 text-red-600",
+    default: 'bg-primary/10 text-primary',
+    positive: 'bg-emerald-500/10 text-emerald-600',
+    warning: 'bg-amber-500/10 text-amber-600',
+    danger: 'bg-red-500/10 text-red-600'
   }[tone]
 
   return (
     <Card>
       <CardContent className="flex items-center gap-4 p-5">
-        <div
-          className={`flex size-10 items-center justify-center rounded-xl ${toneClass}`}
-        >
+        <div className={`flex size-10 items-center justify-center rounded-xl ${toneClass}`}>
           <Icon className="size-5" />
         </div>
         <div>
@@ -152,15 +132,9 @@ function MetricCard({
   )
 }
 
-function CapabilityBadge({
-  label,
-  enabled,
-}: {
-  label: string
-  enabled: boolean
-}) {
+function CapabilityBadge({ label, enabled }: { label: string; enabled: boolean }) {
   return (
-    <Badge variant={enabled ? "secondary" : "outline"} className="gap-1.5">
+    <Badge variant={enabled ? 'secondary' : 'outline'} className="gap-1.5">
       {enabled ? (
         <CheckCircle2 className="size-3.5 text-emerald-600" />
       ) : (
@@ -186,13 +160,7 @@ function LoadingCards() {
   )
 }
 
-function OverviewPanel({
-  overview,
-  onRefresh,
-}: {
-  overview: Overview
-  onRefresh: () => void
-}) {
+function OverviewPanel({ overview, onRefresh }: { overview: Overview; onRefresh: () => void }) {
   const total = overview.counts.total ?? 0
   const active = overview.counts.active ?? 0
   const failed = overview.counts.failed ?? 0
@@ -203,9 +171,7 @@ function OverviewPanel({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-sm text-muted-foreground">Visão operacional</p>
-          <h2 className="text-2xl font-semibold tracking-tight">
-            Fila em tempo real
-          </h2>
+          <h2 className="text-2xl font-semibold tracking-tight">Fila em tempo real</h2>
         </div>
         <Button variant="outline" size="sm" onClick={onRefresh}>
           <RefreshCw className="size-4" />
@@ -215,24 +181,9 @@ function OverviewPanel({
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Jobs no store" value={total} icon={Database} />
-        <MetricCard
-          label="Em execução"
-          value={active}
-          icon={Activity}
-          tone="positive"
-        />
-        <MetricCard
-          label="Concluídos"
-          value={completed}
-          icon={CheckCircle2}
-          tone="positive"
-        />
-        <MetricCard
-          label="Falhos"
-          value={failed}
-          icon={AlertTriangle}
-          tone="danger"
-        />
+        <MetricCard label="Em execução" value={active} icon={Activity} tone="positive" />
+        <MetricCard label="Concluídos" value={completed} icon={CheckCircle2} tone="positive" />
+        <MetricCard label="Falhos" value={failed} icon={AlertTriangle} tone="danger" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
@@ -240,14 +191,13 @@ function OverviewPanel({
           <CardHeader>
             <CardTitle className="text-base">Estado do store</CardTitle>
             <CardDescription>
-              {overview.store.adapter} · protocolo{" "}
-              {overview.store.protocolVersion} · layout{" "}
+              {overview.store.adapter} · protocolo {overview.store.protocolVersion} · layout{' '}
               {overview.store.layoutVersion}
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
             {Object.entries(overview.counts)
-              .filter(([key]) => key !== "total")
+              .filter(([key]) => key !== 'total')
               .map(([state, count]) => (
                 <div
                   key={state}
@@ -266,30 +216,15 @@ function OverviewPanel({
             <CardDescription>Extensões instaladas neste host.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
-            <CapabilityBadge
-              label="Eventos duráveis"
-              enabled={overview.capabilities.events}
-            />
-            <CapabilityBadge
-              label="Schedules"
-              enabled={overview.capabilities.schedules}
-            />
-            <CapabilityBadge
-              label="Flows"
-              enabled={overview.capabilities.flows}
-            />
-            <CapabilityBadge
-              label="Controls"
-              enabled={overview.capabilities.controls}
-            />
+            <CapabilityBadge label="Eventos duráveis" enabled={overview.capabilities.events} />
+            <CapabilityBadge label="Schedules" enabled={overview.capabilities.schedules} />
+            <CapabilityBadge label="Flows" enabled={overview.capabilities.flows} />
+            <CapabilityBadge label="Controls" enabled={overview.capabilities.controls} />
             <CapabilityBadge
               label="Política de mutação"
               enabled={overview.capabilities.security.mutationPolicy}
             />
-            <CapabilityBadge
-              label="Auditoria"
-              enabled={overview.capabilities.security.audit}
-            />
+            <CapabilityBadge label="Auditoria" enabled={overview.capabilities.security.audit} />
             <CapabilityBadge
               label="Rate limit"
               enabled={overview.capabilities.security.rateLimit}
@@ -301,15 +236,11 @@ function OverviewPanel({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Filas pausadas</CardTitle>
-          <CardDescription>
-            Controles distribuídos ativos no namespace atual.
-          </CardDescription>
+          <CardDescription>Controles distribuídos ativos no namespace atual.</CardDescription>
         </CardHeader>
         <CardContent>
           {overview.pausedQueues.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Nenhuma fila pausada.
-            </p>
+            <p className="text-sm text-muted-foreground">Nenhuma fila pausada.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {overview.pausedQueues.map((queue) => (
@@ -331,14 +262,14 @@ function ConfirmationAction({
   title,
   description,
   onConfirm,
-  variant = "outline",
-  icon: Icon,
+  variant = 'outline',
+  icon: Icon
 }: {
   label: string
   title: string
   description: string
   onConfirm: () => Promise<void>
-  variant?: "outline" | "destructive" | "default" | "secondary"
+  variant?: 'outline' | 'destructive' | 'default' | 'secondary'
   icon: IconComponent
 }) {
   const [open, setOpen] = useState(false)
@@ -352,7 +283,7 @@ function ConfirmationAction({
       await onConfirm()
       setOpen(false)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "A operação falhou.")
+      setError(caught instanceof Error ? caught.message : 'A operação falhou.')
     } finally {
       setBusy(false)
     }
@@ -396,25 +327,17 @@ function ConfirmationAction({
   )
 }
 
-function JobActions({
-  job,
-  onChanged,
-}: {
-  job: Job
-  onChanged: () => Promise<void>
-}) {
-  const mutate = async (path: string, body?: object) => {
-    await requestJson(path, {
-      method: "POST",
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    })
+function JobActions({ job, onChanged }: { job: Job; onChanged: () => Promise<void> }) {
+  const mutate = async (path: string, body?: Readonly<Record<string, number>>) => {
+    const init: RequestInit = { method: 'POST' }
+    if (body !== undefined) init.body = JSON.stringify(body)
+    await requestJson(path, init)
     await onChanged()
   }
-  const canCancel =
-    job.state === "waiting" || job.state === "delayed" || job.state === "active"
-  const canPromote = job.state === "delayed"
-  const canRetry = job.state === "failed" || job.state === "cancelled"
-  const canRemove = job.state !== "active"
+  const canCancel = job.state === 'waiting' || job.state === 'delayed' || job.state === 'active'
+  const canPromote = job.state === 'delayed'
+  const canRetry = job.state === 'failed' || job.state === 'cancelled'
+  const canRemove = job.state !== 'active'
 
   return (
     <div className="flex flex-wrap gap-2">
@@ -451,9 +374,7 @@ function JobActions({
           title="Redrive este job?"
           description="Redrive usa a mesma operação durável de retry para este dashboard."
           icon={Play}
-          onConfirm={() =>
-            mutate(`/api/jobs/${job.id}/redrive`, { delayMs: 0 })
-          }
+          onConfirm={() => mutate(`/api/jobs/${job.id}/redrive`, { delayMs: 0 })}
         />
       ) : null}
       {canRemove ? (
@@ -464,7 +385,7 @@ function JobActions({
           icon={Trash2}
           variant="destructive"
           onConfirm={async () => {
-            await requestJson(`/api/jobs/${job.id}`, { method: "DELETE" })
+            await requestJson(`/api/jobs/${job.id}`, { method: 'DELETE' })
             await onChanged()
           }}
         />
@@ -476,7 +397,7 @@ function JobActions({
 function JobDetail({
   job,
   attempts,
-  onChanged,
+  onChanged
 }: {
   job: Job | undefined
   attempts: readonly Attempt[]
@@ -493,14 +414,14 @@ function JobDetail({
   }
 
   const fields: readonly [string, string | number][] = [
-    ["Fila", job.queue],
-    ["Versão", job.version],
-    ["Prioridade", job.priority],
-    ["Tentativas", `${job.attemptsMade}/${job.attemptsMax}`],
-    ["Deliveries", job.deliveryCount],
-    ["Stalled", job.stalledCount],
-    ["Agendado", formatTimestamp(job.runAt)],
-    ["Atualizado", formatTimestamp(job.updatedAt)],
+    ['Fila', job.queue],
+    ['Versão', job.version],
+    ['Prioridade', job.priority],
+    ['Tentativas', `${job.attemptsMade}/${job.attemptsMax}`],
+    ['Deliveries', job.deliveryCount],
+    ['Stalled', job.stalledCount],
+    ['Agendado', formatTimestamp(job.runAt)],
+    ['Atualizado', formatTimestamp(job.updatedAt)]
   ]
 
   return (
@@ -512,9 +433,7 @@ function JobDetail({
               {job.name}
               <StatusBadge state={job.state} />
             </CardTitle>
-            <CardDescription className="mt-1 font-mono text-xs">
-              {job.id}
-            </CardDescription>
+            <CardDescription className="mt-1 font-mono text-xs">{job.id}</CardDescription>
           </div>
           <JobActions job={job} onChanged={onChanged} />
         </div>
@@ -522,10 +441,7 @@ function JobDetail({
       <CardContent className="space-y-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {fields.map(([label, value]) => (
-            <div
-              key={label}
-              className="rounded-lg border bg-muted/20 px-3 py-2"
-            >
+            <div key={label} className="rounded-lg border bg-muted/20 px-3 py-2">
               <div className="text-[11px] text-muted-foreground">{label}</div>
               <div className="mt-1 truncate text-sm font-medium">{value}</div>
             </div>
@@ -538,9 +454,7 @@ function JobDetail({
             Attempt ledger
           </div>
           {attempts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Nenhuma tentativa registrada.
-            </p>
+            <p className="text-sm text-muted-foreground">Nenhuma tentativa registrada.</p>
           ) : (
             <Table>
               <TableHeader>
@@ -554,12 +468,10 @@ function JobDetail({
               </TableHeader>
               <TableBody>
                 {attempts.map((attempt) => (
-                  <TableRow
-                    key={`${attempt.attemptSequence}-${attempt.delivery}`}
-                  >
+                  <TableRow key={`${attempt.attemptSequence}-${attempt.delivery}`}>
                     <TableCell>{attempt.attempt}</TableCell>
                     <TableCell>{attempt.delivery}</TableCell>
-                    <TableCell>{attempt.outcome ?? "—"}</TableCell>
+                    <TableCell>{attempt.outcome ?? '—'}</TableCell>
                     <TableCell>{formatTimestamp(attempt.startedAt)}</TableCell>
                     <TableCell>{formatTimestamp(attempt.finishedAt)}</TableCell>
                   </TableRow>
@@ -575,16 +487,16 @@ function JobDetail({
 
 function JobsPanel({
   overview,
-  onRefresh,
+  onRefresh
 }: {
   overview: Overview | undefined
   onRefresh: () => Promise<void>
 }) {
-  const [queue, setQueue] = useState("")
-  const [name, setName] = useState("")
-  const [version, setVersion] = useState("")
-  const [metadata, setMetadata] = useState("")
-  const [state, setState] = useState("all")
+  const [queue, setQueue] = useState('')
+  const [name, setName] = useState('')
+  const [version, setVersion] = useState('')
+  const [metadata, setMetadata] = useState('')
+  const [state, setState] = useState('all')
   const [jobs, setJobs] = useState<readonly Job[]>([])
   const [selectedJob, setSelectedJob] = useState<Job | undefined>()
   const [attempts, setAttempts] = useState<readonly Attempt[]>([])
@@ -596,13 +508,13 @@ function JobsPanel({
     async (nextCursor?: string) => {
       setLoading(true)
       setError(undefined)
-      const query = new URLSearchParams({ limit: "50" })
-      if (queue.trim()) query.set("queue", queue.trim())
-      if (name.trim()) query.set("name", name.trim())
-      if (version.trim()) query.set("version", version.trim())
-      if (metadata.trim()) query.set("metadata", metadata.trim())
-      if (state !== "all") query.set("state", state)
-      if (nextCursor) query.set("cursor", nextCursor)
+      const query = new URLSearchParams({ limit: '50' })
+      if (queue.trim()) query.set('queue', queue.trim())
+      if (name.trim()) query.set('name', name.trim())
+      if (version.trim()) query.set('version', version.trim())
+      if (metadata.trim()) query.set('metadata', metadata.trim())
+      if (state !== 'all') query.set('state', state)
+      if (nextCursor) query.set('cursor', nextCursor)
       try {
         const result = await requestJson<{
           jobs: readonly Job[]
@@ -615,11 +527,7 @@ function JobsPanel({
           return result.jobs.find((job) => job.id === current.id) ?? current
         })
       } catch (caught) {
-        setError(
-          caught instanceof Error
-            ? caught.message
-            : "Não foi possível carregar os jobs."
-        )
+        setError(caught instanceof Error ? caught.message : 'Não foi possível carregar os jobs.')
       } finally {
         setLoading(false)
       }
@@ -678,7 +586,7 @@ function JobsPanel({
               value={queue}
               onChange={(event) => setQueue(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void loadJobs()
+                if (event.key === 'Enter') void loadJobs()
               }}
             />
           </div>
@@ -689,7 +597,7 @@ function JobsPanel({
             value={name}
             onChange={(event) => setName(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") void loadJobs()
+              if (event.key === 'Enter') void loadJobs()
             }}
           />
           <Input
@@ -700,7 +608,7 @@ function JobsPanel({
             value={version}
             onChange={(event) => setVersion(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") void loadJobs()
+              if (event.key === 'Enter') void loadJobs()
             }}
           />
           <Input
@@ -710,17 +618,11 @@ function JobsPanel({
             value={metadata}
             onChange={(event) => setMetadata(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") void loadJobs()
+              if (event.key === 'Enter') void loadJobs()
             }}
           />
-          <Select
-            value={state}
-            onValueChange={(value) => setState(value ?? "all")}
-          >
-            <SelectTrigger
-              aria-label="Filtrar por estado"
-              className="w-full lg:w-44"
-            >
+          <Select value={state} onValueChange={(value) => setState(value ?? 'all')}>
+            <SelectTrigger aria-label="Filtrar por estado" className="w-full lg:w-44">
               <SelectValue placeholder="Estado" />
             </SelectTrigger>
             <SelectContent>
@@ -738,15 +640,13 @@ function JobsPanel({
           </Button>
         </CardContent>
       </Card>
-      {error ? (
-        <ErrorNotice error={error} onRetry={() => void loadJobs()} />
-      ) : null}
+      {error ? <ErrorNotice error={error} onRetry={() => void loadJobs()} /> : null}
       <div className="grid gap-4 xl:grid-cols-[1.25fr_1fr]">
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="text-base">Resultados</CardTitle>
             <CardDescription>
-              {loading ? "Carregando..." : `${jobs.length} jobs nesta página`}
+              {loading ? 'Carregando...' : `${jobs.length} jobs nesta página`}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -770,10 +670,7 @@ function JobsPanel({
                   ) : null}
                   {!loading && jobs.length === 0 ? (
                     <TableRow>
-                      <TableCell
-                        colSpan={4}
-                        className="h-24 text-center text-muted-foreground"
-                      >
+                      <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
                         Nenhum job encontrado.
                       </TableCell>
                     </TableRow>
@@ -781,15 +678,13 @@ function JobsPanel({
                   {jobs.map((job) => (
                     <TableRow
                       key={job.id}
-                      data-state={
-                        selectedJob?.id === job.id ? "selected" : undefined
-                      }
+                      data-state={selectedJob?.id === job.id ? 'selected' : undefined}
                       className="cursor-pointer"
                       tabIndex={0}
                       aria-selected={selectedJob?.id === job.id}
                       onClick={() => setSelectedJob(job)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
+                        if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault()
                           setSelectedJob(job)
                         }
@@ -815,27 +710,18 @@ function JobsPanel({
             </div>
             {cursor ? (
               <div className="flex justify-end border-t p-3">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void loadJobs(cursor)}
-                >
+                <Button variant="outline" size="sm" onClick={() => void loadJobs(cursor)}>
                   Próxima página
                 </Button>
               </div>
             ) : null}
           </CardContent>
         </Card>
-        <JobDetail
-          job={selectedJob}
-          attempts={attempts}
-          onChanged={refreshSelectedJob}
-        />
+        <JobDetail job={selectedJob} attempts={attempts} onChanged={refreshSelectedJob} />
       </div>
       {overview?.capabilities.security.mutationPolicy === false ? (
         <p className="text-xs text-muted-foreground">
-          Mutações estão bloqueadas: o host não forneceu uma política de
-          confirmação/CSRF.
+          Mutações estão bloqueadas: o host não forneceu uma política de confirmação/CSRF.
         </p>
       ) : null}
     </div>
@@ -846,20 +732,18 @@ function EventTail() {
   const [events, setEvents] = useState<readonly DurableEvent[]>([])
   const [cursor, setCursor] = useState<string | undefined>()
   const cursorRef = useRef<string | undefined>(undefined)
-  const [queue, setQueue] = useState("")
-  const [type, setType] = useState("all")
-  const [status, setStatus] = useState("Carregando eventos...")
+  const [queue, setQueue] = useState('')
+  const [type, setType] = useState('all')
+  const [status, setStatus] = useState('Carregando eventos...')
   const [error, setError] = useState<string | undefined>()
   const [dropped, setDropped] = useState(0)
   const [streamGeneration, setStreamGeneration] = useState(0)
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
-    undefined
-  )
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const loadPage = useCallback(async () => {
-    const query = new URLSearchParams({ limit: "50" })
-    if (queue.trim()) query.set("queue", queue.trim())
-    if (type !== "all") query.set("type", type)
+    const query = new URLSearchParams({ limit: '50' })
+    if (queue.trim()) query.set('queue', queue.trim())
+    if (type !== 'all') query.set('type', type)
     try {
       const result = await requestJson<{
         events: readonly DurableEvent[]
@@ -870,15 +754,11 @@ function EventTail() {
       setEvents(result.events)
       setCursor(nextCursor)
       setError(undefined)
-      setStatus("Conectando ao live tail…")
+      setStatus('Conectando ao live tail…')
       setStreamGeneration((value) => value + 1)
     } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Feed de eventos indisponível."
-      )
-      setStatus("Feed indisponível")
+      setError(caught instanceof Error ? caught.message : 'Feed de eventos indisponível.')
+      setStatus('Feed indisponível')
     }
   }, [queue, type])
 
@@ -890,20 +770,21 @@ function EventTail() {
     const initialCursor = cursorRef.current
     if (error || initialCursor === undefined) return undefined
     const query = new URLSearchParams({
-      limit: "50",
-      heartbeatMs: "15000",
-      after: initialCursor,
+      limit: '50',
+      heartbeatMs: '15000',
+      after: initialCursor
     })
-    if (queue.trim()) query.set("queue", queue.trim())
-    if (type !== "all") query.set("type", type)
+    if (queue.trim()) query.set('queue', queue.trim())
+    if (type !== 'all') query.set('type', type)
     const source = new EventSource(apiUrl(`/api/events/stream?${query}`), {
-      withCredentials: true,
+      withCredentials: true
     })
-    setStatus("Conectado")
-    source.addEventListener("job-event", (event) => {
-      const next = JSON.parse(
-        (event as MessageEvent<string>).data
-      ) as DurableEvent
+    setStatus('Conectado')
+    source.addEventListener('job-event', (event) => {
+      // SAFETY: EventSource delivers named event payloads as MessageEvent values.
+      const message = event as MessageEvent<string>
+      // SAFETY: the dashboard backend emits this listener only with sanitized DurableEvent JSON.
+      const next = JSON.parse(message.data) as DurableEvent
       cursorRef.current = next.cursor
       setCursor(next.cursor)
       setEvents((current) => {
@@ -913,19 +794,17 @@ function EventTail() {
         return combined.slice(-MAX_EVENT_BUFFER)
       })
     })
-    source.addEventListener("heartbeat", () =>
-      setStatus("Conectado · heartbeat recebido")
-    )
-    source.addEventListener("cursor-expired", () => {
+    source.addEventListener('heartbeat', () => setStatus('Conectado · heartbeat recebido'))
+    source.addEventListener('cursor-expired', () => {
       source.close()
-      setStatus("Cursor expirado")
+      setStatus('Cursor expirado')
       setError(
-        "A retenção removeu o cursor atual. Atualize o feed para recomeçar do cursor disponível."
+        'A retenção removeu o cursor atual. Atualize o feed para recomeçar do cursor disponível.'
       )
     })
     source.onerror = () => {
       source.close()
-      setStatus("Reconectando…")
+      setStatus('Reconectando…')
       retryTimer.current = setTimeout(() => {
         void loadPage()
       }, 2_000)
@@ -951,8 +830,8 @@ function EventTail() {
           <div>
             <CardTitle className="text-base">Live event tail</CardTitle>
             <CardDescription>
-              Reconexão por cursor, heartbeat não durável e buffer limitado a{" "}
-              {MAX_EVENT_BUFFER} eventos.
+              Reconexão por cursor, heartbeat não durável e buffer limitado a {MAX_EVENT_BUFFER}{' '}
+              eventos.
             </CardDescription>
           </div>
           <Badge variant="outline" className="gap-1.5">
@@ -967,14 +846,8 @@ function EventTail() {
             value={queue}
             onChange={(event) => setQueue(event.target.value)}
           />
-          <Select
-            value={type}
-            onValueChange={(value) => setType(value ?? "all")}
-          >
-            <SelectTrigger
-              aria-label="Filtrar eventos por tipo"
-              className="w-full sm:w-56"
-            >
+          <Select value={type} onValueChange={(value) => setType(value ?? 'all')}>
+            <SelectTrigger aria-label="Filtrar eventos por tipo" className="w-full sm:w-56">
               <SelectValue placeholder="Tipo de evento" />
             </SelectTrigger>
             <SelectContent>
@@ -984,12 +857,8 @@ function EventTail() {
               <SelectItem value="job-failed">job-failed</SelectItem>
               <SelectItem value="job-cancelled">job-cancelled</SelectItem>
               <SelectItem value="job-promoted">job-promoted</SelectItem>
-              <SelectItem value="job-retry-scheduled">
-                job-retry-scheduled
-              </SelectItem>
-              <SelectItem value="job-stalled-recovered">
-                job-stalled-recovered
-              </SelectItem>
+              <SelectItem value="job-retry-scheduled">job-retry-scheduled</SelectItem>
+              <SelectItem value="job-stalled-recovered">job-stalled-recovered</SelectItem>
               <SelectItem value="job-removed">job-removed</SelectItem>
               <SelectItem value="queue-paused">queue-paused</SelectItem>
               <SelectItem value="queue-resumed">queue-resumed</SelectItem>
@@ -1015,19 +884,13 @@ function EventTail() {
                 key={`${event.cursor}-${event.type}`}
                 className="grid gap-2 p-3 text-sm md:grid-cols-[auto_1fr_auto] md:items-center"
               >
-                <Badge
-                  variant="secondary"
-                  className="w-fit font-mono text-[11px]"
-                >
+                <Badge variant="secondary" className="w-fit font-mono text-[11px]">
                   {event.type}
                 </Badge>
                 <div className="min-w-0">
-                  <div className="truncate font-medium">
-                    {event.jobId ?? "evento sem job"}
-                  </div>
+                  <div className="truncate font-medium">{event.jobId ?? 'evento sem job'}</div>
                   <div className="text-xs text-muted-foreground">
-                    {event.queue ?? "—"} ·{" "}
-                    {event.outcome ?? event.state ?? "transição"}
+                    {event.queue ?? '—'} · {event.outcome ?? event.state ?? 'transição'}
                   </div>
                 </div>
                 <Tooltip>
@@ -1038,9 +901,7 @@ function EventTail() {
                       </span>
                     }
                   />
-                  <TooltipContent>
-                    {formatTimestamp(event.recordedAtMs)}
-                  </TooltipContent>
+                  <TooltipContent>{formatTimestamp(event.recordedAtMs)}</TooltipContent>
                 </Tooltip>
               </div>
             ))}
@@ -1048,11 +909,9 @@ function EventTail() {
         </ScrollArea>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>
-            Cursor atual: <span className="font-mono">{cursor ?? "—"}</span>
+            Cursor atual: <span className="font-mono">{cursor ?? '—'}</span>
           </span>
-          {dropped > 0 ? (
-            <span>{dropped} eventos antigos removidos do buffer local.</span>
-          ) : null}
+          {dropped > 0 ? <span>{dropped} eventos antigos removidos do buffer local.</span> : null}
         </div>
       </CardContent>
     </Card>
@@ -1063,26 +922,18 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
   const [schedules, setSchedules] = useState<readonly Schedule[]>([])
   const [control, setControl] = useState<QueueControl | undefined>()
   const [flow, setFlow] = useState<FlowSnapshot | undefined>()
-  const [queue, setQueue] = useState(overview?.pausedQueues[0] ?? "")
-  const [pausedQueues, setPausedQueues] = useState<readonly string[]>(
-    overview?.pausedQueues ?? []
-  )
-  const [flowId, setFlowId] = useState("")
+  const [queue, setQueue] = useState(overview?.pausedQueues[0] ?? '')
+  const [pausedQueues, setPausedQueues] = useState<readonly string[]>(overview?.pausedQueues ?? [])
+  const [flowId, setFlowId] = useState('')
   const [message, setMessage] = useState<string | undefined>()
 
   const loadSchedules = useCallback(async () => {
     try {
       setSchedules(
-        (
-          await requestJson<{ schedules: readonly Schedule[] }>(
-            "/api/schedules?limit=50"
-          )
-        ).schedules
+        (await requestJson<{ schedules: readonly Schedule[] }>('/api/schedules?limit=50')).schedules
       )
     } catch (caught) {
-      setMessage(
-        caught instanceof Error ? caught.message : "Schedules indisponíveis."
-      )
+      setMessage(caught instanceof Error ? caught.message : 'Schedules indisponíveis.')
     }
   }, [])
   const loadControl = useCallback(async () => {
@@ -1090,72 +941,52 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
     try {
       setMessage(undefined)
       setControl(
-        await requestJson<QueueControl>(
-          `/api/controls/${encodeURIComponent(queue.trim())}`
-        )
+        await requestJson<QueueControl>(`/api/controls/${encodeURIComponent(queue.trim())}`)
       )
     } catch (caught) {
-      setMessage(
-        caught instanceof Error ? caught.message : "Control indisponível."
-      )
+      setMessage(caught instanceof Error ? caught.message : 'Control indisponível.')
     }
   }, [queue])
   const loadFlow = useCallback(async () => {
     if (!flowId.trim()) return
     try {
       setMessage(undefined)
-      setFlow(
-        await requestJson<FlowSnapshot>(
-          `/api/flows/${encodeURIComponent(flowId.trim())}`
-        )
-      )
+      setFlow(await requestJson<FlowSnapshot>(`/api/flows/${encodeURIComponent(flowId.trim())}`))
     } catch (caught) {
-      setMessage(
-        caught instanceof Error ? caught.message : "Flow indisponível."
-      )
+      setMessage(caught instanceof Error ? caught.message : 'Flow indisponível.')
     }
   }, [flowId])
 
-  const scheduleMutation = async (
-    schedule: Schedule,
-    action: "pause" | "resume" | "remove"
-  ) => {
+  const scheduleMutation = async (schedule: Schedule, action: 'pause' | 'resume' | 'remove') => {
     try {
       setMessage(undefined)
       await requestJson(
-        `/api/schedules/${encodeURIComponent(schedule.group)}/${encodeURIComponent(schedule.key)}${action === "remove" ? "" : `/${action}`}`,
-        { method: action === "remove" ? "DELETE" : "POST" }
+        `/api/schedules/${encodeURIComponent(schedule.group)}/${encodeURIComponent(schedule.key)}${action === 'remove' ? '' : `/${action}`}`,
+        { method: action === 'remove' ? 'DELETE' : 'POST' }
       )
       await loadSchedules()
     } catch (caught) {
-      setMessage(
-        caught instanceof Error
-          ? caught.message
-          : "A operação do schedule falhou."
-      )
+      setMessage(caught instanceof Error ? caught.message : 'A operação do schedule falhou.')
       throw caught
     }
   }
 
-  const queueMutation = async (action: "pause" | "resume") => {
+  const queueMutation = async (action: 'pause' | 'resume') => {
     if (!control) return
     try {
       setMessage(undefined)
-      await requestJson(
-        `/api/queues/${encodeURIComponent(control.queue)}/${action}`,
-        { method: "POST" }
-      )
+      await requestJson(`/api/queues/${encodeURIComponent(control.queue)}/${action}`, {
+        method: 'POST'
+      })
       setPausedQueues((current) => {
         const next = new Set(current)
-        if (action === "pause") next.add(control.queue)
+        if (action === 'pause') next.add(control.queue)
         else next.delete(control.queue)
         return [...next]
       })
       await loadControl()
     } catch (caught) {
-      setMessage(
-        caught instanceof Error ? caught.message : "A operação da fila falhou."
-      )
+      setMessage(caught instanceof Error ? caught.message : 'A operação da fila falhou.')
       throw caught
     }
   }
@@ -1164,19 +995,12 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
     if (!flowId.trim()) return
     try {
       setMessage(undefined)
-      await requestJson(
-        `/api/flows/${encodeURIComponent(flowId.trim())}/cancel`,
-        {
-          method: "POST",
-        }
-      )
+      await requestJson(`/api/flows/${encodeURIComponent(flowId.trim())}/cancel`, {
+        method: 'POST'
+      })
       await loadFlow()
     } catch (caught) {
-      setMessage(
-        caught instanceof Error
-          ? caught.message
-          : "O cancelamento do flow falhou."
-      )
+      setMessage(caught instanceof Error ? caught.message : 'O cancelamento do flow falhou.')
       throw caught
     }
   }
@@ -1192,19 +1016,11 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">Extensões opcionais</p>
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Schedules, flows e controls
-        </h2>
+        <h2 className="text-2xl font-semibold tracking-tight">Schedules, flows e controls</h2>
       </div>
-      {message ? (
-        <ErrorNotice error={message} onRetry={() => setMessage(undefined)} />
-      ) : null}
+      {message ? <ErrorNotice error={message} onRetry={() => setMessage(undefined)} /> : null}
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card
-          className={
-            !overview?.capabilities.schedules ? "opacity-60" : undefined
-          }
-        >
+        <Card className={!overview?.capabilities.schedules ? 'opacity-60' : undefined}>
           <CardHeader>
             <CardTitle className="text-base">Schedules</CardTitle>
             <CardDescription>Definições registradas no store.</CardDescription>
@@ -1212,11 +1028,7 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
           <CardContent className="space-y-3">
             {overview?.capabilities.schedules ? (
               <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void loadSchedules()}
-                >
+                <Button size="sm" variant="outline" onClick={() => void loadSchedules()}>
                   <RefreshCw className="size-4" />
                   Carregar
                 </Button>
@@ -1229,16 +1041,13 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                       <span className="font-medium">
                         {schedule.group}/{schedule.key}
                       </span>
-                      <Badge
-                        variant={schedule.paused ? "outline" : "secondary"}
-                      >
-                        {schedule.paused ? "pausado" : "ativo"}
+                      <Badge variant={schedule.paused ? 'outline' : 'secondary'}>
+                        {schedule.paused ? 'pausado' : 'ativo'}
                       </Badge>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {schedule.cron ??
-                        `a cada ${formatDuration(schedule.everyMs)}`}{" "}
-                      · próximo {formatTimestamp(schedule.nextRunAtMs)}
+                      {schedule.cron ?? `a cada ${formatDuration(schedule.everyMs)}`} · próximo{' '}
+                      {formatTimestamp(schedule.nextRunAtMs)}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {schedule.paused ? (
@@ -1247,7 +1056,7 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                           title="Retomar este schedule?"
                           description="Novas execuções voltarão a ser agendadas para este schedule."
                           icon={Play}
-                          onConfirm={() => scheduleMutation(schedule, "resume")}
+                          onConfirm={() => scheduleMutation(schedule, 'resume')}
                         />
                       ) : (
                         <ConfirmationAction
@@ -1255,7 +1064,7 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                           title="Pausar este schedule?"
                           description="O schedule permanecerá registrado, mas não criará novas execuções enquanto estiver pausado."
                           icon={Pause}
-                          onConfirm={() => scheduleMutation(schedule, "pause")}
+                          onConfirm={() => scheduleMutation(schedule, 'pause')}
                         />
                       )}
                       <ConfirmationAction
@@ -1264,22 +1073,18 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                         description="A remoção é administrativa e não pode ser desfeita pelo dashboard."
                         variant="destructive"
                         icon={Trash2}
-                        onConfirm={() => scheduleMutation(schedule, "remove")}
+                        onConfirm={() => scheduleMutation(schedule, 'remove')}
                       />
                     </div>
                   </div>
                 ))}
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Extensão não instalada.
-              </p>
+              <p className="text-sm text-muted-foreground">Extensão não instalada.</p>
             )}
           </CardContent>
         </Card>
-        <Card
-          className={!overview?.capabilities.flows ? "opacity-60" : undefined}
-        >
+        <Card className={!overview?.capabilities.flows ? 'opacity-60' : undefined}>
           <CardHeader>
             <CardTitle className="text-base">Flow snapshot</CardTitle>
             <CardDescription>Inspecione um flow por ID.</CardDescription>
@@ -1302,18 +1107,13 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                 {flow ? (
                   <div className="space-y-2 rounded-lg border p-3 text-sm">
                     <div className="flex items-center justify-between">
-                      <span className="font-medium">
-                        {flow.parent.flowName}
-                      </span>
+                      <span className="font-medium">{flow.parent.flowName}</span>
                       <Badge variant="outline">{flow.parent.state}</Badge>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {flow.children.length} children · {flow.outbox.length}{" "}
-                      outbox
+                      {flow.children.length} children · {flow.outbox.length} outbox
                     </div>
-                    {!["completed", "failed", "cancelled"].includes(
-                      flow.parent.state
-                    ) ? (
+                    {!['completed', 'failed', 'cancelled'].includes(flow.parent.state) ? (
                       <div className="pt-1">
                         <ConfirmationAction
                           label="Cancelar flow"
@@ -1328,17 +1128,11 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                 ) : null}
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Extensão não instalada.
-              </p>
+              <p className="text-sm text-muted-foreground">Extensão não instalada.</p>
             )}
           </CardContent>
         </Card>
-        <Card
-          className={
-            !overview?.capabilities.controls ? "opacity-60" : undefined
-          }
-        >
+        <Card className={!overview?.capabilities.controls ? 'opacity-60' : undefined}>
           <CardHeader>
             <CardTitle className="text-base">Queue controls</CardTitle>
             <CardDescription>Estado distribuído por fila.</CardDescription>
@@ -1362,27 +1156,19 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                   <div className="space-y-2 rounded-lg border p-3 text-sm">
                     <div className="flex items-center justify-between">
                       <span className="font-medium">{control.queue}</span>
-                      <Badge
-                        variant={control.enabled ? "secondary" : "outline"}
-                      >
-                        {control.enabled ? "enabled" : "disabled"}
+                      <Badge variant={control.enabled ? 'secondary' : 'outline'}>
+                        {control.enabled ? 'enabled' : 'disabled'}
                       </Badge>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      global {control.globalConcurrency ?? "—"} · key{" "}
-                      {control.perKeyConcurrency ?? "—"}
+                      global {control.globalConcurrency ?? '—'} · key{' '}
+                      {control.perKeyConcurrency ?? '—'}
                     </div>
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <Badge
-                        variant={
-                          pausedQueues.includes(control.queue)
-                            ? "outline"
-                            : "secondary"
-                        }
+                        variant={pausedQueues.includes(control.queue) ? 'outline' : 'secondary'}
                       >
-                        {pausedQueues.includes(control.queue)
-                          ? "fila pausada"
-                          : "fila ativa"}
+                        {pausedQueues.includes(control.queue) ? 'fila pausada' : 'fila ativa'}
                       </Badge>
                       {pausedQueues.includes(control.queue) ? (
                         <ConfirmationAction
@@ -1390,7 +1176,7 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                           title="Retomar esta fila?"
                           description="Novos jobs voltarão a ser elegíveis para esta fila."
                           icon={Play}
-                          onConfirm={() => queueMutation("resume")}
+                          onConfirm={() => queueMutation('resume')}
                         />
                       ) : (
                         <ConfirmationAction
@@ -1398,7 +1184,7 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                           title="Pausar esta fila?"
                           description="Jobs existentes permanecem duráveis, mas a fila deixa de admitir novos processamentos até ser retomada."
                           icon={Pause}
-                          onConfirm={() => queueMutation("pause")}
+                          onConfirm={() => queueMutation('pause')}
                         />
                       )}
                     </div>
@@ -1406,9 +1192,7 @@ function ExtensionsPanel({ overview }: { overview: Overview | undefined }) {
                 ) : null}
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Extensão não instalada.
-              </p>
+              <p className="text-sm text-muted-foreground">Extensão não instalada.</p>
             )}
           </CardContent>
         </Card>
@@ -1422,9 +1206,7 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">Diagnóstico</p>
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Health do dashboard
-        </h2>
+        <h2 className="text-2xl font-semibold tracking-tight">Health do dashboard</h2>
       </div>
       <Card>
         <CardHeader>
@@ -1433,19 +1215,12 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
             Host e segurança
           </CardTitle>
           <CardDescription>
-            O frontend não carrega credenciais; autenticação e política são
-            fornecidas pelo host.
+            O frontend não carrega credenciais; autenticação e política são fornecidas pelo host.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <CapabilityBadge
-            label="Dashboard online"
-            enabled={overview !== undefined}
-          />
-          <CapabilityBadge
-            label="Eventos"
-            enabled={overview?.capabilities.events === true}
-          />
+          <CapabilityBadge label="Dashboard online" enabled={overview !== undefined} />
+          <CapabilityBadge label="Eventos" enabled={overview?.capabilities.events === true} />
           <CapabilityBadge
             label="Policy"
             enabled={overview?.capabilities.security.mutationPolicy === true}
@@ -1464,10 +1239,10 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
           {overview ? (
             <>
               {[
-                ["Adapter", overview.store.adapter],
-                ["Versão", overview.store.adapterVersion],
-                ["Protocol", overview.store.protocolVersion],
-                ["Layout", overview.store.layoutVersion],
+                ['Adapter', overview.store.adapter],
+                ['Versão', overview.store.adapterVersion],
+                ['Protocol', overview.store.protocolVersion],
+                ['Layout', overview.store.layoutVersion]
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border bg-muted/20 p-3">
                   <div className="text-xs text-muted-foreground">{label}</div>
@@ -1484,10 +1259,9 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
         <CardContent className="flex items-start gap-3 p-5 text-sm text-muted-foreground">
           <Gauge className="mt-0.5 size-4 shrink-0" />
           <span>
-            Falhas de lease, stalled recovery, lag de consumidores e status de
-            notificações ainda dependem de uma extensão de health no backend.
-            Esta tela expõe o descriptor e as capacidades públicas sem inventar
-            métricas.
+            Falhas de lease, stalled recovery, lag de consumidores e status de notificações ainda
+            dependem de uma extensão de health no backend. Esta tela expõe o descriptor e as
+            capacidades públicas sem inventar métricas.
           </span>
         </CardContent>
       </Card>
@@ -1496,7 +1270,7 @@ function HealthPanel({ overview }: { overview: Overview | undefined }) {
 }
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<DashboardTab>("overview")
+  const [activeTab, setActiveTab] = useState<DashboardTab>('overview')
   const [overview, setOverview] = useState<Overview | undefined>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
@@ -1505,13 +1279,9 @@ export function App() {
     try {
       setLoading(true)
       setError(undefined)
-      setOverview(await requestJson<Overview>("/api/overview"))
+      setOverview(await requestJson<Overview>('/api/overview'))
     } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Não foi possível conectar ao dashboard."
-      )
+      setError(caught instanceof Error ? caught.message : 'Não foi possível conectar ao dashboard.')
     } finally {
       setLoading(false)
     }
@@ -1531,12 +1301,8 @@ export function App() {
                 <Workflow className="size-5" />
               </div>
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">
-                  better-effect-mq
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Reference dashboard
-                </div>
+                <div className="truncate text-sm font-semibold">better-effect-mq</div>
+                <div className="text-xs text-muted-foreground">Reference dashboard</div>
               </div>
             </div>
             <Tooltip>
@@ -1567,7 +1333,17 @@ export function App() {
           ) : (
             <Tabs
               value={activeTab}
-              onValueChange={(value) => setActiveTab(value as DashboardTab)}
+              onValueChange={(value) => {
+                switch (value) {
+                  case 'overview':
+                  case 'jobs':
+                  case 'events':
+                  case 'extensions':
+                  case 'health':
+                    setActiveTab(value)
+                    break
+                }
+              }}
             >
               <TabsList
                 variant="line"
@@ -1596,10 +1372,7 @@ export function App() {
               </TabsList>
               <TabsContent value="overview">
                 {overview ? (
-                  <OverviewPanel
-                    overview={overview}
-                    onRefresh={() => void loadOverview()}
-                  />
+                  <OverviewPanel overview={overview} onRefresh={() => void loadOverview()} />
                 ) : null}
               </TabsContent>
               <TabsContent value="jobs">
