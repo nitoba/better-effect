@@ -59,7 +59,7 @@ export const DashboardServer = BunEffect.server(
 export const DashboardLive = (() => {
   const jobHealth = JobHealth.make()
   const events = MemoryJobEventStore.make({ health: jobHealth })
-  const dashboardHealth = makeDashboardHealth({ jobHealth })
+  const dashboardHealth = makeDashboardHealth({ jobHealth, awaitEventsAvailable: true })
   const store = MemoryJobStore.make({ eventStore: events })
   const authorization = Layer.succeed(
     DashboardAuthorization,

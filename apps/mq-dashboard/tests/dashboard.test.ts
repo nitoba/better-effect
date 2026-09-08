@@ -8,6 +8,7 @@ import {
   DashboardAuditSink,
   DashboardAuditSinkDisabled,
   DashboardControlCapabilityDisabled,
+  DashboardEventFeed,
   DashboardEventFeedDisabled,
   DashboardFlowCapabilityDisabled,
   DashboardJobRedactionPolicy,
@@ -26,6 +27,8 @@ import {
 import {
   FlowStore,
   JobEventStore,
+  JobHealth,
+  JobEventStoreFailure,
   JobId,
   JobName,
   JobScheduleStore,
@@ -43,6 +46,7 @@ import type { DashboardAuditEvent } from '../src'
 import type {
   FlowSnapshot,
   JobEventStoreError,
+  JobEventCursor,
   JobEventStoreOperation,
   JobStoreError,
   JobStoreOperation,
@@ -50,7 +54,7 @@ import type {
   ScheduleStoreError,
   ScheduleStoreOperation
 } from 'better-effect-mq'
-import { Result } from 'better-result'
+import { Result, type Result as ResultType } from 'better-result'
 
 const allowAll = Layer.succeed(
   DashboardAuthorization,
@@ -1154,7 +1158,10 @@ test('SSE resumes after Last-Event-ID and emits non-durable heartbeats', async (
 
 test('dashboard health endpoint reports SSE reconnections, closures, and observed lag', async () => {
   const { events, store } = await seed()
-  const health = makeDashboardHealth()
+  const jobHealth = JobHealth.make()
+  jobHealth.record({ type: 'lease-lost', reason: 'expired-lease' })
+  jobHealth.record({ type: 'stalled-recovered', outcome: 'requeued' })
+  const health = makeDashboardHealth({ jobHealth, awaitEventsAvailable: true })
   const runtime = await Runtime.make(
     Layer.merge(
       Layer.succeed(JobStore, JobStore.of(store)),
@@ -1218,7 +1225,82 @@ test('dashboard health endpoint reports SSE reconnections, closures, and observe
       connectionsClosed: 1,
       reconnects: 1,
       latestObservedLagMs: expect.any(Number),
-      maxObservedLagMs: expect.any(Number)
+      maxObservedLagMs: expect.any(Number),
+      notifications: {
+        awaitEventsAvailable: true,
+        status: 'available',
+        failures: 0,
+        fallbackPolls: 0
+      },
+      job: {
+        leaseLosses: 1,
+        stalledRecoveries: 1
+      }
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('SSE records notification failure and falls back to heartbeat polling', async () => {
+  // SAFETY: the literal is only used as an opaque cursor in this isolated fixture.
+  const cursor = 'wake-cursor' as JobEventCursor
+  const asStoreOperation = <Value>(
+    value: ResultType<Value, JobEventStoreError>
+  ): JobEventStoreOperation<Value, JobEventStoreError> => {
+    // SAFETY: this fixture deliberately erases typed Results into the Effect facade expected by the store boundary.
+    return value as JobEventStoreOperation<Value, JobEventStoreError>
+  }
+  const health = makeDashboardHealth({ awaitEventsAvailable: true })
+  const feed = Layer.succeed(
+    DashboardEventFeed,
+    DashboardEventFeed.of({
+      available: true,
+      health: { available: true, ...health },
+      page: async () => Result.ok({ events: [], nextCursor: undefined }),
+      tailCursor: () => asStoreOperation(Result.ok(cursor)),
+      awaitEvents: () =>
+        asStoreOperation(
+          Result.err(
+            new JobEventStoreFailure({
+              operation: 'awaitEvents',
+              message: 'wake unavailable'
+            })
+          )
+        )
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+      Layer.merge(
+        feed,
+        Layer.merge(
+          ClockTestLayer(0),
+          Layer.merge(
+            allowAll,
+            Layer.merge(
+              disabledCapabilities,
+              Layer.merge(disabledMutationCapabilities, DashboardApp.layer)
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const stream = await app.request('/api/events/stream?heartbeatMs=1')
+    expect(stream.status).toBe(200)
+    expect(await readStreamChunk(stream)).toContain('event: heartbeat')
+
+    const snapshot = (await (await app.request('/api/health')).json()).data
+    expect(snapshot.notifications).toEqual({
+      awaitEventsAvailable: true,
+      status: 'degraded',
+      failures: 1,
+      fallbackPolls: 1
     })
   } finally {
     await runtime.dispose()

@@ -91,8 +91,11 @@ when the host shares a `JobHealth` monitor with its EventStore and
 `JobEventConsumer`, the response also includes store failures, lease loss,
 stalled recovery, consumer handler failures, and retention count/age. These
 values are process-local health telemetry and do not replace the durable event
-log. The snapshot and its optional metrics sink never include job IDs, worker
-IDs, payloads, results, failures, or user identifiers.
+log. It also reports whether the process-local `awaitEvents` wake path is
+available, notification failures, and how often SSE fell back to heartbeat
+polling; a failed wake never terminates the stream. The snapshot and its
+optional metrics sink never include job IDs, worker IDs, payloads, results,
+failures, or user identifiers.
 
 The shipped authorization layer is only a safe local example. Production
 applications should replace `DashboardAuthorization` with their host's
@@ -155,7 +158,11 @@ consumer with a dashboard monitor:
 
 ```ts
 const jobHealth = JobHealth.make({ metrics })
-const dashboardHealth = makeDashboardHealth({ jobHealth, metrics })
+const dashboardHealth = makeDashboardHealth({
+  jobHealth,
+  metrics,
+  awaitEventsAvailable: true
+})
 const events = MemoryJobEventStore.make({ health: jobHealth })
 
 Layer.merge(
@@ -221,7 +228,9 @@ query parameter. It uses `JobEvents.page` for finite reads and the EventStore's
 public wake API as a hint with a bounded heartbeat fallback. Durable job events
 use `event: job-event` and their cursor as the SSE `id`. Heartbeats use
 `event: heartbeat` and no durable cursor. The `heartbeatMs` query parameter is
-bounded to 300 seconds.
+bounded to 300 seconds. When `awaitEvents` returns a store error or rejection,
+the dashboard records an aggregate notification failure and emits the next
+heartbeat through polling; the SSE connection remains open.
 
 When retention removes a cursor, the stream emits:
 

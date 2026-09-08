@@ -118,6 +118,13 @@ export interface JobHealthSnapshot {
   cursorExpiries: number
 }
 
+export interface DashboardNotificationSnapshot {
+  awaitEventsAvailable: boolean
+  status: 'available' | 'unavailable' | 'degraded'
+  failures: number
+  fallbackPolls: number
+}
+
 export interface DashboardHealthSnapshot {
   state: 'idle' | 'active' | 'degraded'
   activeConnections: number
@@ -130,6 +137,7 @@ export interface DashboardHealthSnapshot {
   backpressureDropped: number
   eventsCoalesced: number
   streamFailures: number
+  notifications?: DashboardNotificationSnapshot
   job: JobHealthSnapshot | undefined
 }
 

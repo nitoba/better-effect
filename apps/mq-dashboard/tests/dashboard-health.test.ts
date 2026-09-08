@@ -30,6 +30,8 @@ test('dashboard health tracks connection lifecycle, lag, backpressure, and strea
   health.record({ type: 'event-observed', lagMs: 25 })
   health.record({ type: 'backpressure', dropped: 2, coalesced: 3 })
   health.record({ type: 'stream-failed', kind: 'store' })
+  jobHealth.record({ type: 'lease-lost', reason: 'expired-lease' })
+  jobHealth.record({ type: 'stalled-recovered', outcome: 'requeued' })
   health.record({ type: 'connection-closed', reason: 'failure' })
   health.record({ type: 'connection-opened', reconnect: true })
   health.record({ type: 'connection-closed', reason: 'cursor-expired' })
@@ -46,6 +48,12 @@ test('dashboard health tracks connection lifecycle, lag, backpressure, and strea
     backpressureDropped: 2,
     eventsCoalesced: 3,
     streamFailures: 1,
+    notifications: {
+      awaitEventsAvailable: false,
+      status: 'unavailable',
+      failures: 0,
+      fallbackPolls: 0
+    },
     job: jobHealth.snapshot()
   })
   expect(
@@ -62,4 +70,40 @@ test('dashboard health tracks connection lifecycle, lag, backpressure, and strea
       DashboardHealthMetricNames.streamFailures
     ])
   )
+})
+
+test('dashboard health records safe notification fallback metrics', () => {
+  const metrics: Array<{
+    name: string
+    attributes: Readonly<Record<string, string | number | boolean>>
+  }> = []
+  const health = makeDashboardHealth({
+    awaitEventsAvailable: true,
+    metrics: {
+      increment: (name, _value, attributes) => {
+        metrics.push({ name, attributes })
+      },
+      observe: () => undefined,
+      gauge: () => undefined
+    }
+  })
+
+  health.record({ type: 'notification-failed', source: 'awaitEvents' })
+
+  expect(health.snapshot().notifications).toEqual({
+    awaitEventsAvailable: true,
+    status: 'degraded',
+    failures: 1,
+    fallbackPolls: 1
+  })
+  expect(metrics).toEqual([
+    {
+      name: DashboardHealthMetricNames.notificationFailures,
+      attributes: { source: 'awaitEvents' }
+    },
+    {
+      name: DashboardHealthMetricNames.notificationFallbackPolls,
+      attributes: { reason: 'failure' }
+    }
+  ])
 })

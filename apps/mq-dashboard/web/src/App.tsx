@@ -180,7 +180,7 @@ function OverviewPanel({ overview, onRefresh }: { overview: Overview; onRefresh:
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <MetricCard label="Jobs no store" value={total} icon={Database} />
         <MetricCard label="Em execução" value={active} icon={Activity} tone="positive" />
         <MetricCard label="Concluídos" value={completed} icon={CheckCircle2} tone="positive" />
@@ -1288,6 +1288,12 @@ function HealthPanel({
           }
         />
         <MetricCard
+          label="Lag máximo"
+          value={formatDuration(health?.maxObservedLagMs)}
+          icon={Gauge}
+          tone={health?.maxObservedLagMs && health.maxObservedLagMs > 5_000 ? 'warning' : 'default'}
+        />
+        <MetricCard
           label="Falhas de stream"
           value={health?.streamFailures ?? '—'}
           icon={AlertTriangle}
@@ -1311,10 +1317,19 @@ function HealthPanel({
               'Descartados / coalescidos',
               `${health?.backpressureDropped ?? '—'} / ${health?.eventsCoalesced ?? '—'}`
             ],
+            ['Perdas de lease', health?.job?.leaseLosses ?? '—'],
+            ['Stalled recoveries', health?.job?.stalledRecoveries ?? '—'],
+            ['Lag mais recente do consumer', formatDuration(health?.job?.latestEventLagMs)],
+            ['Lag máximo do consumer', formatDuration(health?.job?.maxEventLagMs)],
             ['Eventos retidos', health?.job?.retainedEventCount ?? '—'],
             ['Idade do evento mais antigo', formatDuration(health?.job?.oldestRetainedAgeMs)],
+            ['Configuração de retenção (count)', health?.job?.retentionCount ?? '—'],
+            ['Configuração de retenção (age)', formatDuration(health?.job?.retentionAgeMs)],
             ['Falhas do store', health?.job?.storeOperationFailures ?? '—'],
-            ['Falhas de handler', health?.job?.consumerHandlerFailures ?? '—']
+            ['Falhas de handler', health?.job?.consumerHandlerFailures ?? '—'],
+            ['Wake / awaitEvents', health?.notifications?.status ?? '—'],
+            ['Falhas de wake', health?.notifications?.failures ?? '—'],
+            ['Fallback para polling', health?.notifications?.fallbackPolls ?? '—']
           ].map(([label, value]) => (
             <div key={label} className="rounded-lg border bg-muted/20 p-3">
               <div className="text-xs text-muted-foreground">{label}</div>
