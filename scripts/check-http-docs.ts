@@ -42,8 +42,12 @@ const assertLinks = async (source: string, label: string): Promise<void> => {
   for (const match of links) {
     const page = match[1]
     if (page === undefined) fail(`${label} contains an invalid documentation link`)
+    const directPath = resolve(docsRoot, 'content/docs', `${page}.mdx`)
+    const indexPath = resolve(docsRoot, 'content/docs', page, 'index.mdx')
+    const directExists = await Bun.file(directPath).exists()
+    const indexExists = await Bun.file(indexPath).exists()
     assertCondition(
-      await Bun.file(resolve(docsRoot, 'content/docs', `${page}.mdx`)).exists(),
+      directExists || indexExists,
       `${label} links to missing page /docs/${page}`
     )
   }
