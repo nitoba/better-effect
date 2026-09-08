@@ -184,6 +184,29 @@ local function bumpWake(keys, queue, amount)
   return true
 end
 
+local function appendEvent(p, scheduleQueue, firedLastId, jobCount, skippedCount)
+  local event = p.event
+  if event == nil then return true end
+  local keys = p.keys
+  if type(keys.events) ~= "string" or type(keys.eventsMeta) ~= "string" or
+    not declaredInputKeys[keys.events] or not declaredInputKeys[keys.eventsMeta] or
+    not rememberKey({}, keys.events, "stream") or not rememberKey({}, keys.eventsMeta, "hash") or
+    type(event.type) ~= "string" or event.type == "" or type(event.recordedAtMs) ~= "number" or
+    event.recordedAtMs < 0 or math.floor(event.recordedAtMs) ~= event.recordedAtMs or
+    type(event.attributes) ~= "table" then return false end
+  event.jobId = firedLastId ~= "" and firedLastId or event.jobId
+  event.queue = scheduleQueue
+  event.attributes.status = jobCount > 0 and "fired" or "skipped"
+  event.attributes.jobs = tostring(jobCount)
+  event.attributes.skipped = tostring(skippedCount)
+  redis.call("XADD", keys.events, "*", "data", cjson.encode(event))
+  redis.call("HSET", keys.eventsMeta, "initialized", "1")
+  local retention = p.eventRetention or {}
+  if retention.count then redis.call("XTRIM", keys.events, "MAXLEN", "=", tostring(retention.count)) end
+  if retention.ageMs then local cutoff = event.recordedAtMs - retention.ageMs; if cutoff < 0 then cutoff = 0 end; redis.call("XTRIM", keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
+  return true
+end
+
 local raw = ARGV[1]
 if type(raw) ~= "string" or #raw > 1048576 then return errorReply("MQ_INVALID_ARGUMENT") end
 local decoded, ok = nil, false
@@ -340,5 +363,7 @@ redis.call("HSET", schedule,
   "lastJobId", lastJobId)
 if lastScheduledField then redis.call("HSET", schedule, "lastScheduledAtMs", lastScheduledField) else redis.call("HDEL", schedule, "lastScheduledAtMs") end
 redis.call("ZADD", p.keys.scheduleDue, nextRunAtMs, schedule)
+
+if not appendEvent(p, scheduleQueue, firedLastId, #jobs, #skipped) then return errorReply("MQ_INVALID_ARGUMENT") end
 
 return okReply(#jobs > 0 and "fired" or "skipped", fieldsToRecord(schedule), jobs, skipped, lastJobId)

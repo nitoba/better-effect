@@ -9,7 +9,7 @@ import {
 
 const manifest = await loadRedisScriptManifest()
 if (
-  manifest.length !== 16 ||
+  manifest.length !== 17 ||
   manifest.some(
     (script) =>
       !script.source.includes('MQ_FOUNDATION_READY') &&

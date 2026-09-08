@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { Layer, Runtime, ServiceRuntime } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 import {
+  JobEventStore,
   JobScheduleStore,
   JobStore,
   JobId,
@@ -81,16 +82,19 @@ describe('RedisJobScheduleStore integration', () => {
     const namespace = `default-${process.pid}-${sequence++}`
     const runtime = await Runtime.make(
       Layer.merge(
-        RedisJobStore.layerFromConfig(config(namespace)),
-        RedisJobScheduleStore.layerFromConfig(config(namespace))
+        RedisJobStore.layerWithEventsFromConfig(config(namespace), { retention: { count: 128 } }),
+        RedisJobScheduleStore.layerFromConfig(config(namespace), { retention: { count: 128 } })
       )
     )
     try {
       const schedules = await runtime.run(() => ServiceRuntime.resolve(JobScheduleStore))
       const jobs = await runtime.run(() => ServiceRuntime.resolve(JobStore))
+      const events = await runtime.run(() => ServiceRuntime.resolve(JobEventStore))
+      const before = unwrap(await events.tailCursor())
 
       const inserted = unwrap(await schedules.upsertSchedule(record()))
       expect(inserted.created).toBe(true)
+      expect(unwrap(await schedules.upsertSchedule(record())).changed).toBe(false)
       expect(unwrap(await schedules.listSchedules({ group: 'billing' }))).toHaveLength(1)
       expect(unwrap(await schedules.dueSchedules({ nowMs: 2_000 }))).toHaveLength(1)
 
@@ -134,6 +138,16 @@ describe('RedisJobScheduleStore integration', () => {
       expect(unwrap(await schedules.getSchedule({ group: 'billing', key: 'every-minute' }))).toBe(
         undefined
       )
+      expect(unwrap(await schedules.listSchedules({ group: 'billing' }))).toHaveLength(0)
+
+      const page = unwrap(await events.read({ after: before, limit: 32 }))
+      expect(page.events.map((event) => event.type)).toEqual([
+        'schedule-upserted',
+        'schedule-ticked',
+        'schedule-paused',
+        'schedule-resumed',
+        'schedule-removed'
+      ])
     } finally {
       await runtime.dispose()
     }

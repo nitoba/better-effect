@@ -5,6 +5,7 @@ import { Result } from 'better-result'
 import { flowStoreContract } from 'better-effect-mq/testing'
 import {
   JobId,
+  JobEventStore,
   LeaseToken,
   makeFlowChildId,
   makePreparedEnqueue,
@@ -12,6 +13,8 @@ import {
   protocolVersion
 } from 'better-effect-mq'
 import { RedisClient, RedisFlowStore, type RedisJobStoreConnectionConfig } from '../src/index'
+import { RedisJobEventStore } from '../src/index'
+import { Runtime, ServiceRuntime } from 'better-effect'
 import type { FlowChildSpec, FlowStoreV2Operation } from 'better-effect-mq'
 
 const url = process.env.REDIS_URL
@@ -57,9 +60,14 @@ const makeSpec = (flowId: JobId, childKey: string): FlowChildSpec => {
 }
 
 integration('executes the v2 atomic flow slice against Redis', async () => {
-  const client = await RedisClient.fromConfig(config())
+  const connection = config()
+  const options = { retention: { count: 128 } }
+  const client = await RedisClient.fromConfig(connection)
+  const eventsRuntime = await Runtime.make(RedisJobEventStore.layerFromConfig(connection, options))
   try {
-    const store = RedisFlowStore.make(client)
+    const store = RedisFlowStore.make(client, options)
+    const events = await eventsRuntime.run(() => ServiceRuntime.resolve(JobEventStore))
+    const before = unwrap(await events.tailCursor())
     const flowId = unwrap(JobId.make('redis-flow'))
     const leaseToken = unwrap(LeaseToken.make('parent-lease'))
     const first = await unwrapOperation(
@@ -115,8 +123,16 @@ integration('executes the v2 atomic flow slice against Redis', async () => {
     const cascaded = await unwrapOperation(store.markCascaded({ flowId, childKeys: ['two'] }))
     expect(cascaded.marked).toBe(1)
     expect((await unwrapOperation(store.getFlow({ flowId })))?.children).toHaveLength(2)
+
+    const page = unwrap(await events.read({ after: before, limit: 32 }))
+    expect(page.events.map((event) => event.type)).toEqual([
+      'flow-fan-out',
+      'flow-child-results-recorded',
+      'flow-cascaded'
+    ])
   } finally {
     await client.dispose()
+    await eventsRuntime.dispose()
   }
 })
 
