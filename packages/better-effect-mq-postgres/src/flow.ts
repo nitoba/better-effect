@@ -59,6 +59,11 @@ import {
   type FlowFanOutRequest,
   type FlowFanOutResult
 } from 'better-effect-mq'
+import type {
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventStoreWriter
+} from 'better-effect-mq'
 
 import {
   normalizePostgresJobStoreConfig,
@@ -68,6 +73,12 @@ import {
   type PostgresJobStoreConnectionConfig
 } from './config'
 import { PostgresClient } from './client'
+import {
+  appendPostgresJobEvent,
+  assertPostgresJobEventWriterReady,
+  defaultPostgresJobEventWriter,
+  postgresJobEventTableAvailable
+} from './event-store'
 import { PostgresFlowProtocolMismatchError } from './errors'
 import { POSTGRES_TABLES, POSTGRES_FLOW_TABLES, quoteIdentifier } from './schema'
 
@@ -80,6 +91,12 @@ const flowDescriptor: FlowStoreV2Descriptor = Object.freeze({
 const flowMigrationVersion = 4
 
 type QueryRow = Readonly<Record<string, unknown>>
+type Tx = PoolClient & {
+  query<Row = unknown>(
+    text: string,
+    values?: readonly unknown[]
+  ): Promise<{ rows: readonly Row[]; rowCount: number | null }>
+}
 type TransactionResult<Value> = ResultType<Value, FlowStoreV2Error>
 
 const ok = <Value>(value: Value): TransactionResult<Value> => Result.ok(value)
@@ -296,12 +313,24 @@ const loadSnapshot = async (
 const withTransaction = async <Value>(
   client: PostgresClient,
   operation: string,
-  callback: (transaction: PoolClient) => Promise<TransactionResult<Value>>
+  callback: (transaction: Tx) => Promise<TransactionResult<Value>>,
+  eventWriter: JobEventStoreWriter,
+  ensureEvents: (transaction: Tx) => Promise<boolean>
 ): Promise<TransactionResult<Value>> => {
-  let transaction: PoolClient | undefined
+  let transaction: Tx | undefined
   try {
-    transaction = await client.pool.connect()
+    transaction = (await client.pool.connect()) as Tx
     await transaction.query('BEGIN')
+    const eventsAvailable = await ensureEvents(transaction)
+    if (flowEventMutationOperations.has(operation)) {
+      await assertPostgresJobEventWriterReady(
+        transaction,
+        client,
+        operation,
+        eventWriter,
+        eventsAvailable
+      )
+    }
     const result = await callback(transaction)
     if (Result.isError(result)) {
       await transaction.query('ROLLBACK')
@@ -322,6 +351,15 @@ const withTransaction = async <Value>(
     transaction?.release()
   }
 }
+
+const flowEventMutationOperations = new Set([
+  'fanOut',
+  'recordChildResults',
+  'cancel',
+  'markCascaded',
+  'appendChildReport',
+  'ackOutbox'
+])
 
 const normalizeFanOut = (
   request: FlowFanOutRequest
@@ -375,17 +413,66 @@ const normalizeFanOut = (
 class PostgresFlowStoreImplementation implements FlowStoreV2 {
   readonly descriptor = flowDescriptor
   private disposal: Promise<void> | undefined
+  private eventsLayoutChecked = false
+  private eventsAvailable = false
+  private readonly eventWriter: JobEventStoreWriter
 
   constructor(
     private readonly client: PostgresClient,
-    private readonly ownsClient: boolean
+    private readonly ownsClient: boolean,
+    eventWriter?: JobEventStoreWriter
   ) {
     this.namespace = client.namespace
     this.schema = client.schema
+    this.eventWriter = eventWriter ?? defaultPostgresJobEventWriter
   }
 
   private readonly namespace: string
   private readonly schema: string
+
+  private async ensureEvents(tx: Tx): Promise<boolean> {
+    if (this.eventsLayoutChecked) return this.eventsAvailable
+    this.eventsAvailable = await postgresJobEventTableAvailable(tx, this.client)
+    this.eventsLayoutChecked = true
+    return this.eventsAvailable
+  }
+
+  private withTransaction<Value>(
+    operation: string,
+    callback: (transaction: Tx) => Promise<TransactionResult<Value>>
+  ): Promise<TransactionResult<Value>> {
+    return withTransaction(this.client, operation, callback, this.eventWriter, (transaction) =>
+      this.ensureEvents(transaction)
+    )
+  }
+
+  private async appendEvent(
+    tx: Tx,
+    type: DurableJobEventType,
+    jobId: string | undefined,
+    name: string | undefined,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): Promise<void> {
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: jobId as never,
+      queue: undefined,
+      name,
+      version: undefined,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes
+    }
+    await appendPostgresJobEvent(tx, this.client, input)
+  }
 
   async fanOut(
     request: FlowFanOutRequest
@@ -394,7 +481,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
     if (Result.isError(checked)) return checked
     const normalized = checked.value
     const digest = flowDigest(normalized)
-    return withTransaction(this.client, 'fanOut', async (transaction) => {
+    return this.withTransaction('fanOut', async (transaction) => {
       const parentResult = await transaction.query<QueryRow>(
         `SELECT id AS flow_id, state, flow, failure, lease_token,
                 flow_name, flow_parent_store_key AS parent_store_key, flow_depth AS depth,
@@ -488,6 +575,14 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
           normalized.now
         ]
       )
+      await this.appendEvent(
+        transaction,
+        'flow-fan-out',
+        normalized.flowId,
+        normalized.flowName,
+        normalized.now,
+        { children: String(normalized.children.length) }
+      )
       const snapshot = await loadSnapshot(
         transaction,
         this.schema,
@@ -534,7 +629,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
         reports.push(checked.value)
       }
     }
-    return withTransaction(this.client, 'recordChildResults', async (transaction) => {
+    return this.withTransaction('recordChildResults', async (transaction) => {
       const childRows = await transaction.query<QueryRow>(
         `SELECT flow_id, child_key, name, version, store_key, child_job_id, request,
                 status, result, failure, cascaded, pending_since_ms
@@ -642,6 +737,16 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
           request.now
         ]
       )
+      if (applied > 0) {
+        await this.appendEvent(
+          transaction,
+          'flow-child-results-recorded',
+          flowId.value,
+          rowString(parentRow, 'flow_name'),
+          request.now,
+          { applied: String(applied), parentSettled: String(parentSettled) }
+        )
+      }
       const snapshot = await loadSnapshot(transaction, this.schema, this.namespace, flowId.value)
       return ok({ applied, parentSettled, parent: snapshot.parent, children: snapshot.children })
     })
@@ -653,7 +758,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
     const flowId = makeJobId(request.flowId)
     if (Result.isError(flowId)) return fail(flowId.error)
     if (!validTimestamp(request.now)) return invalid('now', 'must be a non-negative safe integer')
-    return withTransaction(this.client, 'cancel', async (transaction) => {
+    return this.withTransaction('cancel', async (transaction) => {
       const childRows = await transaction.query<QueryRow>(
         `SELECT flow_id, child_key, name, version, store_key, child_job_id, request,
                 status, result, failure, cascaded, pending_since_ms
@@ -688,6 +793,15 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
         })
       }
       const pending = children.filter((child) => child.status === 'pending')
+      if (pending.length === 0) {
+        const snapshot = await loadSnapshot(transaction, this.schema, this.namespace, flowId.value)
+        return ok({
+          cancelled: 0,
+          parentSettled: false,
+          parent: snapshot.parent,
+          children: snapshot.children
+        })
+      }
       for (const child of pending) {
         await transaction.query(
           `UPDATE ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.children)}
@@ -706,6 +820,14 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
             SET state = 'cancelled', flow = $3, finished_at_ms = $4, updated_at_ms = $4
           WHERE namespace = $1 AND id = $2`,
         [this.namespace, flowId.value, json(flow), request.now]
+      )
+      await this.appendEvent(
+        transaction,
+        'flow-cancelled',
+        flowId.value,
+        rowString(parentRow, 'flow_name'),
+        request.now,
+        { cancelled: String(pending.length) }
       )
       const snapshot = await loadSnapshot(transaction, this.schema, this.namespace, flowId.value)
       return ok({
@@ -730,7 +852,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
     if (request.limit !== undefined && request.limit > hardFlowMaxChildren)
       return invalid('limit', 'must not exceed the hard child limit')
     const observations = request.observations.slice(0, request.limit ?? request.observations.length)
-    return withTransaction(this.client, 'reconcile', async (transaction) => {
+    return this.withTransaction('reconcile', async (transaction) => {
       const childRows = await transaction.query<QueryRow>(
         `SELECT flow_id, child_key, name, version, store_key, child_job_id, request,
                 status, result, failure, cascaded, pending_since_ms
@@ -846,7 +968,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
       if (requestedKeys.has(key)) return invalid('childKeys', 'duplicate childKey')
       requestedKeys.add(key)
     }
-    return withTransaction(this.client, 'markCascaded', async (transaction) => {
+    return this.withTransaction('markCascaded', async (transaction) => {
       const rows = await transaction.query<QueryRow>(
         `SELECT flow_id, child_key, name, version, store_key, child_job_id, request,
                 status, result, failure, cascaded, pending_since_ms
@@ -871,6 +993,16 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
         marked += 1
       }
       const snapshot = await loadSnapshot(transaction, this.schema, this.namespace, flowId.value)
+      if (marked > 0) {
+        await this.appendEvent(
+          transaction,
+          'flow-cascaded',
+          flowId.value,
+          snapshot.parent.flowName,
+          Date.now(),
+          { marked: String(marked) }
+        )
+      }
       return ok({ marked, children: snapshot.children })
     })
   }
@@ -881,7 +1013,7 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
     const checked = validateFlowOutboxEntry(request)
     if (Result.isError(checked)) return fail(checked.error)
     const entry = checked.value
-    return withTransaction(this.client, 'appendChildReport', async (transaction) => {
+    return this.withTransaction('appendChildReport', async (transaction) => {
       const inserted = await transaction.query(
         `INSERT INTO ${quoteIdentifier(this.schema)}.${quoteIdentifier(POSTGRES_FLOW_TABLES.outbox)}
           (namespace, id, flow_name, parent_store_key, report, created_at_ms)
@@ -905,6 +1037,16 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
             jobId: entry.report.flowId,
             leaseToken: makeLeaseToken('outbox-conflict').unwrap()
           })
+        )
+      }
+      if (inserted.rowCount === 1) {
+        await this.appendEvent(
+          transaction,
+          'flow-outbox-appended',
+          entry.report.flowId,
+          entry.flowName,
+          Date.now(),
+          { action: 'append' }
         )
       }
       return ok({
@@ -993,9 +1135,10 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
         entries.push(checked.value)
       }
     }
-    return withTransaction(this.client, 'ackOutbox', async (transaction) => {
+    return this.withTransaction('ackOutbox', async (transaction) => {
       let acknowledged = 0
       let skipped = 0
+      const acknowledgedEntries: FlowOutboxEntry[] = []
       for (const entry of entries) {
         const result = await transaction.query<QueryRow>(
           `SELECT id, flow_name, parent_store_key, report
@@ -1020,6 +1163,18 @@ class PostgresFlowStoreImplementation implements FlowStoreV2 {
           [this.namespace, entry.id]
         )
         acknowledged += 1
+        acknowledgedEntries.push(entry)
+      }
+      if (acknowledged > 0) {
+        const flowIds = new Set(acknowledgedEntries.map((entry) => entry.report.flowId))
+        await this.appendEvent(
+          transaction,
+          'flow-outbox-appended',
+          flowIds.size === 1 ? [...flowIds][0] : undefined,
+          undefined,
+          Date.now(),
+          { action: 'ack', acknowledged: String(acknowledged) }
+        )
       }
       return ok({ acknowledged, skipped })
     })
@@ -1061,7 +1216,8 @@ export type PostgresFlowStoreInstance = FlowStoreV2 & {
 
 const open = async (
   client: PostgresClient,
-  ownsClient: boolean
+  ownsClient: boolean,
+  eventWriter?: JobEventStoreWriter
 ): Promise<PostgresFlowStoreInstance> => {
   if (client.validateSchema) await client.validate()
   const connection = await client.pool.connect()
@@ -1091,13 +1247,13 @@ const open = async (
   } finally {
     connection.release()
   }
-  return new PostgresFlowStoreImplementation(client, ownsClient)
+  return new PostgresFlowStoreImplementation(client, ownsClient, eventWriter)
 }
 
 export const PostgresFlowStore = Object.freeze({
   async make(config: PostgresJobStoreConfig): Promise<PostgresFlowStoreInstance> {
     const normalized = normalizePostgresJobStoreConfig(config)
-    return open(PostgresClient.fromPool(normalized), false)
+    return open(PostgresClient.fromPool(normalized), false, normalized.eventWriter)
   },
   async makeFromConfig(
     config: PostgresJobStoreConnectionConfig
@@ -1105,7 +1261,7 @@ export const PostgresFlowStore = Object.freeze({
     const normalized = normalizePostgresJobStoreConnectionConfig(config)
     const client = await PostgresClient.fromConfig(normalized)
     try {
-      return await open(client, true)
+      return await open(client, true, normalized.eventWriter)
     } catch (cause) {
       await client.dispose().catch(() => undefined)
       throw cause

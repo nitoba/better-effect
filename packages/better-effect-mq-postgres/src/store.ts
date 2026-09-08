@@ -117,7 +117,8 @@ const eventMutationOperations = new Set([
   'promote',
   'remove',
   'pause',
-  'resume'
+  'resume',
+  'reconcile'
 ])
 
 type Row = Record<string, unknown>
@@ -1335,6 +1336,7 @@ class PostgresJobStoreImplementation {
       readonly attempt?: AttemptRecord
       readonly duplicate?: boolean
       readonly queue?: string
+      readonly attributes?: Readonly<Record<string, string>>
     } = {}
   ): Promise<void> {
     if (!this.eventsAvailable || !this.eventWriter.canAppend) return
@@ -1356,7 +1358,7 @@ class PostgresJobStoreImplementation {
       outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
       failureKind: (record?.failure?.kind ?? context.previous?.failure?.kind) as never,
       duplicate: context.duplicate,
-      attributes: Object.freeze({})
+      attributes: context.attributes ?? Object.freeze({})
     }
     await appendPostgresJobEvent(tx, this.client, input)
   }
@@ -1715,7 +1717,8 @@ class PostgresJobStoreImplementation {
     tx: Tx,
     operation: string,
     request: { readonly jobId: string; readonly now: number },
-    command: (record: JobRecord) => ResultType<JobTransition, unknown>
+    command: (record: JobRecord) => ResultType<JobTransition, unknown>,
+    additionalEventType?: DurableJobEventType
   ): Promise<JobTransition> {
     const current = await this.row(tx, request.jobId, true)
     if (current === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
@@ -1765,6 +1768,12 @@ class PostgresJobStoreImplementation {
         ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
       })
     }
+    if (additionalEventType !== undefined && additionalEventType !== eventType) {
+      await this.appendEvent(tx, additionalEventType, transition.record, request.now, {
+        previous: current,
+        ...(transition.attempt === undefined ? {} : { attempt: transition.attempt })
+      })
+    }
     await this.notify(tx, transition.record.queue, request.now)
     return transition
   }
@@ -1777,7 +1786,8 @@ class PostgresJobStoreImplementation {
       readonly outcome: SettlementOutcome
       readonly now: number
       readonly startedAt?: number
-    }
+    },
+    additionalEventType?: DurableJobEventType
   ): Promise<JobStoreNamespace.SettlementResult> {
     const raw = await tx.query<Row>(
       `SELECT ${this.jobColumns().join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
@@ -1894,6 +1904,12 @@ class PostgresJobStoreImplementation {
       previous: current,
       attempt
     })
+    if (additionalEventType !== undefined) {
+      await this.appendEvent(tx, additionalEventType, transition.record, request.now, {
+        previous: current,
+        attempt
+      })
+    }
     await this.notify(tx, current.queue, request.now)
     return { record: transition.record, attempt, status: 'applied' }
   }
@@ -2291,6 +2307,24 @@ class PostgresJobStoreImplementation {
             disabled.push(this.decodeControls(disabledResult.rows[0]!))
           }
         }
+        for (const record of created) {
+          await this.appendEvent(tx, 'controls-reconciled', undefined, now, {
+            queue: record.queue as string,
+            attributes: { action: 'created' }
+          })
+        }
+        for (const record of updated) {
+          await this.appendEvent(tx, 'controls-reconciled', undefined, now, {
+            queue: record.queue as string,
+            attributes: { action: 'updated' }
+          })
+        }
+        for (const record of disabled) {
+          await this.appendEvent(tx, 'controls-reconciled', undefined, now, {
+            queue: record.queue as string,
+            attributes: { action: 'disabled' }
+          })
+        }
         const all = await tx.query<Row>(
           `SELECT queue,control_group,enabled,revision,global_concurrency,per_key_concurrency,rate_limit_max,rate_limit_duration_ms,created_at_ms,updated_at_ms FROM ${this.table(POSTGRES_TABLES.controls)} WHERE namespace=$1 ORDER BY queue COLLATE "C"`,
           [this.client.namespace]
@@ -2449,6 +2483,9 @@ class PostgresJobStoreImplementation {
             })
           await this.clearSettlement(tx, item.record.id)
           await this.appendEvent(tx, 'job-claimed', item.record, now, { previous: item.previous })
+          await this.appendEvent(tx, 'controls-claimed', item.record, now, {
+            previous: item.previous
+          })
           await tx.query(
             `INSERT INTO ${this.table(POSTGRES_TABLES.permits)} (namespace,job_id,queue,dispatch_key,lease_token,acquired_at_ms) VALUES ($1,$2,$3,$4,$5,$6)`,
             [this.client.namespace, item.record.id, queue.value, item.dispatchKey, item.token, now]
@@ -2515,15 +2552,19 @@ class PostgresJobStoreImplementation {
           `SELECT lease_token FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 FOR UPDATE`,
           [this.client.namespace, jobId.value]
         )
-        const result = await this.settleInTx(tx, {
-          jobId: jobId.value,
-          leaseToken: leaseToken.value,
-          outcome: outcome.value as unknown as SettlementOutcome,
-          now,
-          ...(checked.value.startedAt === undefined
-            ? {}
-            : { startedAt: safeNumber(checked.value.startedAt, 'startedAt') })
-        })
+        const result = await this.settleInTx(
+          tx,
+          {
+            jobId: jobId.value,
+            leaseToken: leaseToken.value,
+            outcome: outcome.value as unknown as SettlementOutcome,
+            now,
+            ...(checked.value.startedAt === undefined
+              ? {}
+              : { startedAt: safeNumber(checked.value.startedAt, 'startedAt') })
+          },
+          'controls-settled'
+        )
         if (result.status === 'applied' && permit.rows[0] !== undefined) {
           await tx.query(
             `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
@@ -2596,7 +2637,8 @@ class PostgresJobStoreImplementation {
               leaseToken: leaseToken.value,
               now
             })
-          }
+          },
+          'controls-released'
         )
         await tx.query(
           `DELETE FROM ${this.table(POSTGRES_TABLES.permits)} WHERE namespace=$1 AND job_id=$2 AND lease_token=$3`,
@@ -2644,7 +2686,8 @@ class PostgresJobStoreImplementation {
           (record) =>
             record.state === 'active'
               ? reduceJob(record, { type: 'request-cancellation', jobId: record.id, now })
-              : reduceJob(record, { type: 'cancel', jobId: record.id, now })
+              : reduceJob(record, { type: 'cancel', jobId: record.id, now }),
+          'controls-cancelled'
         )
         if (identity.rows[0]?.state !== 'active' && permit.rows[0] !== undefined)
           await tx.query(
@@ -2715,7 +2758,8 @@ class PostgresJobStoreImplementation {
             tx,
             'recoverStalled',
             { jobId, now },
-            () => next
+            () => next,
+            'controls-stalled-recovered'
           )
           if (transition.attempt !== undefined && transition.attempt.outcome === 'stalled')
             await tx.query(
