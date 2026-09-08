@@ -53,7 +53,8 @@ import {
   type FlowStoreV2Operation,
   type JsonValue,
   type JobId,
-  type SerializedJobFailure
+  type SerializedJobFailure,
+  type DurableJobEventInput
 } from 'better-effect-mq'
 import type {
   AckOutboxRequest,
@@ -72,6 +73,12 @@ import type {
   RecordChildResultsResult
 } from 'better-effect-mq'
 import { normalizeSqliteJobStoreConfig, type SqliteJobStoreConfig } from './config'
+import {
+  appendSqliteJobEvent,
+  assertSqliteJobEventWriterReady,
+  normalizeSqliteJobEventStoreOptions,
+  sqliteJobEventLayoutAvailable
+} from './event-store'
 import { SqliteFlowProtocolMismatchError } from './errors'
 import { SqliteMigrator } from './migrator'
 import { MIGRATION_COMPONENT, SQLITE_TABLES } from './schema'
@@ -587,11 +594,20 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
   readonly descriptor = descriptor
   private closed = false
   private chain: Promise<void> = Promise.resolve()
+  private readonly eventOptions: ReturnType<typeof normalizeSqliteJobEventStoreOptions> | undefined
+  private readonly eventWriter = {
+    id: 'better-effect-mq-sqlite',
+    version: 'current',
+    canAppend: true
+  } as const
 
   constructor(
     private readonly database: SqliteDatabase,
-    private readonly namespace: string
-  ) {}
+    private readonly namespace: string,
+    eventOptions?: ReturnType<typeof normalizeSqliteJobEventStoreOptions>
+  ) {
+    this.eventOptions = eventOptions
+  }
 
   private write<Value>(
     operation: string,
@@ -608,6 +624,14 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
         )
       try {
         this.database.exec('BEGIN IMMEDIATE')
+        if (this.eventOptions !== undefined) {
+          assertSqliteJobEventWriterReady(
+            this.database,
+            this.namespace,
+            `flow.${operation}`,
+            this.eventWriter
+          )
+        }
         const result = callback()
         if (Result.isError(result)) {
           try {
@@ -637,6 +661,37 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
       () => undefined
     )
     return result
+  }
+
+  private appendEvent(
+    type: DurableJobEventInput['type'],
+    jobId: string | undefined,
+    name: string | undefined,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): void {
+    if (this.eventOptions === undefined) return
+    appendSqliteJobEvent(
+      this.database,
+      this.namespace,
+      {
+        type,
+        recordedAtMs,
+        jobId: jobId as never,
+        queue: undefined,
+        name,
+        version: undefined,
+        state: undefined,
+        attempt: undefined,
+        delivery: undefined,
+        workerId: undefined,
+        outcome: undefined,
+        failureKind: undefined,
+        duplicate: undefined,
+        attributes
+      },
+      this.eventOptions.retention
+    )
   }
 
   fanOut(
@@ -733,6 +788,9 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
           normalized.flowId
         )
       this.updateRecordJson(normalized.flowId, state, normalized.now, undefined)
+      this.appendEvent('flow-fan-out', normalized.flowId, normalized.flowName, normalized.now, {
+        children: String(normalized.children.length)
+      })
       const snapshot = loadSnapshot(this.database, this.namespace, normalized.flowId)
       return ok({ status: 'applied', parent: snapshot.parent, children: snapshot.children })
     })
@@ -851,6 +909,15 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
           failure,
           normalized.now
         )
+      if (applied > 0) {
+        this.appendEvent(
+          'flow-child-results-recorded',
+          normalized.flowId,
+          rowString(parentRow, 'flow_name'),
+          normalized.now,
+          { applied: String(applied), parentSettled: String(parentSettled) }
+        )
+      }
       const snapshot = loadSnapshot(this.database, this.namespace, normalized.flowId)
       return ok({ applied, parentSettled, parent: snapshot.parent, children: snapshot.children })
     })
@@ -919,6 +986,13 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
         )
       this.updateRecordJson(normalized.flowId, 'cancelled', normalized.now!, undefined)
       this.appendParentReport(parentRow, normalized.flowId, 'cancelled', undefined, normalized.now!)
+      this.appendEvent(
+        'flow-cancelled',
+        normalized.flowId,
+        rowString(parentRow, 'flow_name'),
+        normalized.now!,
+        { cancelled: String(pending.length) }
+      )
       const snapshot = loadSnapshot(this.database, this.namespace, normalized.flowId)
       return ok({
         cancelled: pending.length,
@@ -1049,6 +1123,12 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
         marked += 1
       }
       const snapshot = loadSnapshot(this.database, this.namespace, flowId.value)
+      if (marked > 0) {
+        const parent = snapshot.parent
+        this.appendEvent('flow-cascaded', flowId.value, parent.flowName, Date.now(), {
+          marked: String(marked)
+        })
+      }
       return ok({ marked, children: snapshot.children })
     })
   }
@@ -1089,6 +1169,9 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
           JSON.stringify(entry.report),
           0
         )
+      this.appendEvent('flow-outbox-appended', entry.report.flowId, entry.flowName, Date.now(), {
+        action: 'append'
+      })
       return ok({ status: 'applied', entry })
     })
   }
@@ -1188,6 +1271,20 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
           .run(this.namespace, entry.id)
         acknowledged += 1
       }
+      if (acknowledged > 0) {
+        const flowIds = new Set(
+          entries
+            .filter((entry) => entry.report.flowId !== undefined)
+            .map((entry) => entry.report.flowId)
+        )
+        this.appendEvent(
+          'flow-outbox-appended',
+          flowIds.size === 1 ? [...flowIds][0] : undefined,
+          undefined,
+          Date.now(),
+          { action: 'ack', acknowledged: String(acknowledged) }
+        )
+      }
       return ok({ acknowledged, skipped })
     })
   }
@@ -1264,7 +1361,7 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
       failure: outcome === 'failed' ? failure : undefined
     })
     if (Result.isError(report)) throw report.error
-    this.database
+    const inserted = this.database
       .prepare(
         `INSERT INTO ${SQLITE_TABLES.flowOutbox}(namespace, id, flow_name, parent_store_key, report_json, created_at_ms)
          VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(namespace, id) DO NOTHING`
@@ -1276,7 +1373,12 @@ class SqliteFlowStoreImplementation implements SqliteFlowStoreInstance {
         parent.value.parentStoreKey,
         JSON.stringify(report.value),
         now
-      )
+      ).changes
+    if (inserted === 1) {
+      this.appendEvent('flow-outbox-appended', parent.value.flowId, parent.value.flowName, now, {
+        action: 'append'
+      })
+    }
   }
 
   async dispose(): Promise<void> {
@@ -1299,7 +1401,10 @@ const open = (
   SqliteMigrator.validate(normalized.database)
   const namespace =
     token === undefined ? normalized.namespace : namespaceFor(token.jobStore, normalized.namespace)
-  return new SqliteFlowStoreImplementation(normalized.database, namespace)
+  const eventOptions = sqliteJobEventLayoutAvailable(normalized.database)
+    ? normalizeSqliteJobEventStoreOptions({})
+    : undefined
+  return new SqliteFlowStoreImplementation(normalized.database, namespace, eventOptions)
 }
 
 const makeLayer = <Token extends AnyFlowStoreToken>(token: Token, config: SqliteFlowStoreConfig) =>

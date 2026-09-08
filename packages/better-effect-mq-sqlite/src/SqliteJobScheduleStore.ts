@@ -28,6 +28,7 @@ import {
   validateDuration,
   validateTimestamp,
   type AnyJobScheduleStoreToken,
+  type DurableJobEventType,
   type EnqueueRequest,
   type JobId,
   type JobRecord,
@@ -48,6 +49,12 @@ import {
 } from 'better-effect-mq'
 import type { DueSchedulesOptions } from 'better-effect-mq'
 import { normalizeSqliteJobStoreConfig, type SqliteJobStoreConfig } from './config'
+import {
+  appendSqliteJobEvent,
+  assertSqliteJobEventWriterReady,
+  normalizeSqliteJobEventStoreOptions,
+  sqliteJobEventLayoutAvailable
+} from './event-store'
 import { SqliteMigrator } from './migrator'
 import { SQLITE_TABLES } from './schema'
 
@@ -656,8 +663,19 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
   readonly descriptor = descriptor
   private chain: Promise<void> = Promise.resolve()
   private closed = false
+  private readonly eventOptions: ReturnType<typeof normalizeSqliteJobEventStoreOptions> | undefined
+  private readonly eventWriter = {
+    id: 'better-effect-mq-sqlite',
+    version: 'current',
+    canAppend: true
+  } as const
 
-  constructor(private readonly config: ReturnType<typeof normalizeSqliteJobStoreConfig>) {}
+  constructor(
+    private readonly config: ReturnType<typeof normalizeSqliteJobStoreConfig>,
+    eventOptions?: ReturnType<typeof normalizeSqliteJobEventStoreOptions>
+  ) {
+    this.eventOptions = eventOptions
+  }
 
   private execute<Value>(
     operation: string,
@@ -668,6 +686,14 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
       if (this.closed) return fail(operation, new Error('store is closed'))
       try {
         if (mutable) this.config.database.exec('BEGIN IMMEDIATE')
+        if (mutable && this.eventOptions !== undefined) {
+          assertSqliteJobEventWriterReady(
+            this.config.database,
+            this.config.namespace,
+            `schedule.${operation}`,
+            this.eventWriter
+          )
+        }
         const result = callback()
         if (mutable) this.config.database.exec(Result.isOk(result) ? 'COMMIT' : 'ROLLBACK')
         return result
@@ -688,6 +714,36 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
       () => undefined
     )
     return result
+  }
+
+  private appendEvent(
+    type: DurableJobEventType,
+    record: ScheduleRecord,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): void {
+    if (this.eventOptions === undefined) return
+    appendSqliteJobEvent(
+      this.config.database,
+      this.config.namespace,
+      {
+        type,
+        recordedAtMs,
+        jobId: record.lastJobId,
+        queue: record.queue,
+        name: record.job.name,
+        version: record.job.version,
+        state: undefined,
+        attempt: undefined,
+        delivery: undefined,
+        workerId: undefined,
+        outcome: undefined,
+        failureKind: undefined,
+        duplicate: undefined,
+        attributes
+      },
+      this.eventOptions.retention
+    )
   }
 
   private resolve(selector: ParsedSelector): ScheduleRecord | undefined {
@@ -915,6 +971,9 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
             `INSERT INTO ${SQLITE_TABLES.schedules}(namespace,${scheduleColumns.join(',')}) VALUES(?,${scheduleColumns.map(() => '?').join(',')})`
           )
           .run(this.config.namespace, ...scheduleValues(checked.value))
+        this.appendEvent('schedule-upserted', checked.value, checked.value.updatedAtMs, {
+          created: 'true'
+        })
         return ok({ record: cloneRecord(checked.value), created: true, changed: true })
       }
       if (logicalDigest(existing) === logicalDigest(checked.value))
@@ -928,6 +987,7 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
         updatedAtMs: Math.max(checked.value.updatedAtMs, existing.updatedAtMs)
       })
       this.updateSchedule(updated)
+      this.appendEvent('schedule-upserted', updated, updated.updatedAtMs, { created: 'false' })
       return ok({ record: cloneRecord(updated), created: false, changed: true })
     }) as unknown as Operation<UpsertScheduleResult>
   }
@@ -943,6 +1003,8 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
           `DELETE FROM ${SQLITE_TABLES.schedules} WHERE namespace=? AND schedule_group=? AND schedule_key=?`
         )
         .run(this.config.namespace, current.group, current.key)
+      if (result.changes === 1)
+        this.appendEvent('schedule-removed', current, current.updatedAtMs, {})
       return ok(result.changes === 1)
     }) as unknown as Operation<boolean>
   }
@@ -1112,6 +1174,10 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
         updatedAtMs: now.value
       })
       this.updateSchedule(updated)
+      this.appendEvent('schedule-ticked', updated, now.value, {
+        fired: String(jobs.length),
+        skipped: String(skippedSlots.length)
+      })
       return ok(tickResult(jobs.length > 0 ? 'fired' : 'skipped', updated, jobs, skippedSlots))
     }) as unknown as Operation<TickScheduleResult>
   }
@@ -1133,13 +1199,18 @@ class SqliteJobScheduleStoreImplementation implements JobScheduleStoreContract {
       if (current.paused === paused) return ok(undefined)
       if (current.revision >= maxSafeInteger)
         return definition('revision', 'cannot exceed the safe integer range')
-      this.updateSchedule(
-        cloneRecord({
-          ...current,
-          paused,
-          revision: current.revision + 1,
-          updatedAtMs: current.updatedAtMs
-        })
+      const updated = cloneRecord({
+        ...current,
+        paused,
+        revision: current.revision + 1,
+        updatedAtMs: current.updatedAtMs
+      })
+      this.updateSchedule(updated)
+      this.appendEvent(
+        paused ? 'schedule-paused' : 'schedule-resumed',
+        updated,
+        updated.updatedAtMs,
+        {}
       )
       return ok(undefined)
     }) as unknown as Operation<void>
@@ -1180,7 +1251,10 @@ const makeLayer = <Token extends AnyJobScheduleStoreToken>(
         )
       }
       if (scoped.validateSchema) SqliteMigrator.validate(scoped.database)
-      const implementation = new SqliteJobScheduleStoreImplementation(scoped)
+      const eventOptions = sqliteJobEventLayoutAvailable(scoped.database)
+        ? normalizeSqliteJobEventStoreOptions({})
+        : undefined
+      const implementation = new SqliteJobScheduleStoreImplementation(scoped, eventOptions)
       try {
         return JobScheduleStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
@@ -1211,6 +1285,11 @@ export const SqliteJobScheduleStore: {
   make(config: SqliteJobStoreConfig): JobScheduleStoreContract {
     const normalized = normalizeSqliteJobStoreConfig(config)
     if (normalized.validateSchema) SqliteMigrator.validate(normalized.database)
-    return JobScheduleStore.of(new SqliteJobScheduleStoreImplementation(normalized) as never)
+    const eventOptions = sqliteJobEventLayoutAvailable(normalized.database)
+      ? normalizeSqliteJobEventStoreOptions({})
+      : undefined
+    return JobScheduleStore.of(
+      new SqliteJobScheduleStoreImplementation(normalized, eventOptions) as never
+    )
   }
 })

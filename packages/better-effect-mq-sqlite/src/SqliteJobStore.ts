@@ -119,6 +119,7 @@ const eventInput = (
     readonly attempt?: Record<string, unknown> | undefined
     readonly duplicate?: boolean | undefined
     readonly queue?: string | undefined
+    readonly attributes?: Readonly<Record<string, string>> | undefined
   } = {}
 ): DurableJobEventInput => ({
   type,
@@ -150,7 +151,7 @@ const eventInput = (
     return (currentKind ?? previousKind) as never
   })(),
   duplicate: context.duplicate,
-  attributes: Object.freeze({})
+  attributes: Object.freeze({ ...context.attributes })
 })
 
 const eventRecordedAt = (record: Record<string, unknown> | undefined, fallback: number): number =>
@@ -343,6 +344,9 @@ class SqliteJobStoreImplementation {
     if (operation === 'claim' || operation === 'claimControlled') {
       for (const job of (result.jobs as readonly Record<string, unknown>[]) ?? []) {
         append(eventInput('job-claimed', job, eventRecordedAt(job, recordedAtMs)))
+        if (operation === 'claimControlled') {
+          append(eventInput('controls-claimed', job, eventRecordedAt(job, recordedAtMs)))
+        }
       }
       return
     }
@@ -356,6 +360,14 @@ class SqliteJobStoreImplementation {
             attempt
           })
         )
+        if (operation === 'settleControlled') {
+          append(
+            eventInput('controls-settled', record, eventRecordedAt(record, recordedAtMs), {
+              previous: previousJobs.get(String(record.id)),
+              attempt
+            })
+          )
+        }
       }
       return
     }
@@ -366,6 +378,41 @@ class SqliteJobStoreImplementation {
           eventInput('job-stalled-recovered', record, eventRecordedAt(record, recordedAtMs), {
             previous: previousJobs.get(String(record.id)),
             attempt: transition.attempt as Record<string, unknown> | undefined
+          })
+        )
+        if (operation === 'recoverStalledControlled') {
+          append(
+            eventInput(
+              'controls-stalled-recovered',
+              record,
+              eventRecordedAt(record, recordedAtMs),
+              {
+                previous: previousJobs.get(String(record.id)),
+                attempt: transition.attempt as Record<string, unknown> | undefined
+              }
+            )
+          )
+        }
+      }
+      return
+    }
+    if (operation === 'reconcile') {
+      for (const record of [
+        ...((result.created as readonly Record<string, unknown>[]) ?? []),
+        ...((result.updated as readonly Record<string, unknown>[]) ?? []),
+        ...((result.disabled as readonly Record<string, unknown>[]) ?? [])
+      ]) {
+        const action = (result.created as readonly Record<string, unknown>[] | undefined)?.includes(
+          record
+        )
+          ? 'created'
+          : (result.updated as readonly Record<string, unknown>[] | undefined)?.includes(record)
+            ? 'updated'
+            : 'disabled'
+        append(
+          eventInput('controls-reconciled', undefined, eventRecordedAt(record, recordedAtMs), {
+            queue: record.queue as string,
+            attributes: { action }
           })
         )
       }
@@ -393,6 +440,20 @@ class SqliteJobStoreImplementation {
       if (type !== undefined) {
         append(
           eventInput(type, record, eventRecordedAt(record, recordedAtMs), {
+            previous: previousJobs.get(String(record.id))
+          })
+        )
+      }
+      if (operation === 'cancelControlled' && type !== undefined) {
+        append(
+          eventInput('controls-cancelled', record, eventRecordedAt(record, recordedAtMs), {
+            previous: previousJobs.get(String(record.id))
+          })
+        )
+      }
+      if (operation === 'releaseControlled') {
+        append(
+          eventInput('controls-released', record, eventRecordedAt(record, recordedAtMs), {
             previous: previousJobs.get(String(record.id))
           })
         )
@@ -588,7 +649,7 @@ class SqliteJobStoreImplementation {
   ): void {
     const normalized = terminalFlowReport(attempt, parent, jobId)
     if (normalized === undefined) return
-    this.config.database
+    const inserted = this.config.database
       .prepare(
         `INSERT INTO ${SQLITE_TABLES.flowOutbox}(namespace, id, flow_name, parent_store_key, report_json, created_at_ms)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -601,7 +662,30 @@ class SqliteJobStoreImplementation {
         normalized.parentStoreKey,
         JSON.stringify(normalized.report),
         now
+      ).changes
+    if (inserted === 1 && this.eventOptions !== undefined && this.eventWriter.canAppend) {
+      appendSqliteJobEvent(
+        this.config.database,
+        this.config.namespace,
+        {
+          type: 'flow-outbox-appended',
+          recordedAtMs: now,
+          jobId: normalized.report.flowId as never,
+          queue: undefined,
+          name: normalized.flowName,
+          version: undefined,
+          state: undefined,
+          attempt: undefined,
+          delivery: undefined,
+          workerId: undefined,
+          outcome: undefined,
+          failureKind: undefined,
+          duplicate: undefined,
+          attributes: Object.freeze({ action: 'append' })
+        },
+        this.eventOptions.retention
       )
+    }
   }
 
   private persist(previous: string): void {
