@@ -45,6 +45,8 @@ import type {
   SerializedJobFailure
 } from '../protocol'
 import type { JobId } from '../protocol'
+import type { MemoryJobEventStoreInternals } from './memory-event-store'
+import type { DurableJobEventType, JobEventStoreWriter } from './event-store'
 import type {
   CancelFlowRequest,
   CancelFlowResult,
@@ -407,6 +409,13 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
   readonly descriptor = flowStoreDescriptor
   private readonly flows = new Map<string, StoredFlow>()
   private readonly outbox = new Map<string, FlowOutboxEntry>()
+  private readonly eventAppender: MemoryJobEventStoreInternals | undefined
+  private readonly eventWriter: JobEventStoreWriter | undefined
+
+  constructor(options: MemoryFlowStoreOptions = {}) {
+    this.eventAppender = options.eventAppender
+    this.eventWriter = options.eventWriter
+  }
 
   fanOut(request: FlowFanOutRequest): FlowStoreV2Operation<FlowFanOutResult> {
     const normalized = normalizeFanOutRequest(request)
@@ -475,6 +484,13 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
       children,
       fanOutDigest: digest
     }
+    this.appendEvent(
+      'flow-fan-out',
+      normalized.value.flowId,
+      normalized.value.flowName,
+      normalized.value.now,
+      { children: String(normalized.value.children.length) }
+    )
     this.flows.set(normalized.value.flowId, stored)
     return ok({ status: 'applied', parent: cloneParent(parent), children: childSnapshots(stored) })
   }
@@ -558,6 +574,15 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
 
     const parent = Object.freeze({ ...stored.parent, state, flow, failure })
     const updated: StoredFlow = { ...stored, parent, children: nextChildren }
+    if (pending.length > 0) {
+      this.appendEvent(
+        'flow-child-results-recorded',
+        normalized.value.flowId,
+        parent.flowName,
+        normalized.value.now,
+        { applied: String(pending.length), parentSettled: String(parentSettled) }
+      )
+    }
     this.flows.set(normalized.value.flowId, updated)
     return ok({
       applied: pending.length,
@@ -597,6 +622,14 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
         Object.freeze({ ...child, status: 'cancelled' as const, cascaded: false })
       )
     }
+    if (cancelled === 0) {
+      return ok({
+        cancelled: 0,
+        parentSettled: false,
+        parent: cloneParent(stored.parent),
+        children: childSnapshots(stored)
+      })
+    }
     const flow = Object.freeze({
       ...stored.parent.flow,
       pending: 0,
@@ -604,6 +637,9 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
     })
     const parent = Object.freeze({ ...stored.parent, state: 'cancelled' as const, flow })
     const updated: StoredFlow = { ...stored, parent, children }
+    this.appendEvent('flow-cancelled', flowId.value, parent.flowName, now.value, {
+      cancelled: String(cancelled)
+    })
     this.flows.set(flowId.value, updated)
     return ok({
       cancelled,
@@ -743,6 +779,11 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
       }
     }
     const updated: StoredFlow = { ...stored, children }
+    if (marked > 0) {
+      this.appendEvent('flow-cascaded', flowId.value, stored.parent.flowName, Date.now(), {
+        marked: String(marked)
+      })
+    }
     this.flows.set(flowId.value, updated)
     return ok({ marked, children: childSnapshots(updated) })
   }
@@ -775,6 +816,13 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
       }
       return ok({ status: 'already-applied', entry: cloneOutboxEntry(existing) })
     }
+    this.appendEvent(
+      'flow-outbox-appended',
+      entry.value.report.flowId,
+      entry.value.flowName,
+      Date.now(),
+      { action: 'append' }
+    )
     this.outbox.set(entry.value.id, entry.value)
     return ok({ status: 'applied', entry: cloneOutboxEntry(entry.value) })
   }
@@ -852,6 +900,7 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
     }
     let acknowledged = 0
     let skipped = 0
+    const acknowledgedEntries: FlowOutboxEntry[] = []
     for (const entry of checkedEntries) {
       const existing = this.outbox.get(entry.id)
       if (existing === undefined || canonicalJson(existing) !== canonicalJson(entry)) {
@@ -860,6 +909,17 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
       }
       this.outbox.delete(entry.id)
       acknowledged += 1
+      acknowledgedEntries.push(entry)
+    }
+    if (acknowledged > 0) {
+      const flowIds = new Set(acknowledgedEntries.map((entry) => entry.report.flowId))
+      this.appendEvent(
+        'flow-outbox-appended',
+        flowIds.size === 1 ? [...flowIds][0] : undefined,
+        undefined,
+        Date.now(),
+        { action: 'ack', acknowledged: String(acknowledged) }
+      )
     }
     return ok({ acknowledged, skipped })
   }
@@ -877,10 +937,42 @@ class MemoryFlowStoreImplementation implements FlowStoreV2 {
           )
     )
   }
+
+  private appendEvent(
+    type: DurableJobEventType,
+    jobId: JobId | undefined,
+    name: string | undefined,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): void {
+    if (this.eventAppender === undefined || this.eventWriter?.canAppend === false) return
+    this.eventAppender.append({
+      type,
+      recordedAtMs,
+      jobId,
+      queue: undefined,
+      name,
+      version: undefined,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes
+    })
+  }
 }
 
+export interface MemoryFlowStoreOptions {
+  eventAppender?: MemoryJobEventStoreInternals
+  eventWriter?: JobEventStoreWriter
+}
+
+const makeMemoryFlowStore = (options?: MemoryFlowStoreOptions): FlowStoreV2 =>
+  new MemoryFlowStoreImplementation(options)
+
 export const MemoryFlowStore = Object.freeze({
-  make(): FlowStoreV2 {
-    return new MemoryFlowStoreImplementation()
-  }
+  make: makeMemoryFlowStore
 })

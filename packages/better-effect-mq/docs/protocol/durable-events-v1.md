@@ -63,6 +63,12 @@ Extension events use the same safe event shape and bounded attributes as v1.
 They are transition markers and wake hints, not serialized Flow child
 payloads, schedule payloads, control metadata, outbox contents, result values,
 or failure causes. Detailed data remains available only through the owning
-public store operation and its authorization/redaction policy. This contract
-slice defines names and validation only; adapter wiring for Flow, Schedule,
-and Controls transitions remains a later step.
+public store operation and its authorization/redaction policy.
+
+The in-memory reference stores wire these extension events through the optional
+`MemoryJobEventStore` supplied to `MemoryJobStore`. Appends happen in the same
+synchronous critical section as the corresponding mutation. Replays, stale
+decisions, unchanged upserts, duplicate reports, empty claims, and
+unconfirmed outbox acknowledgements do not append events. Schedule and control
+events contain only bounded transition counts/actions; Flow events do not carry
+child payloads, results, failures, or outbox contents.

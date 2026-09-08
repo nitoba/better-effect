@@ -92,7 +92,12 @@ import type {
 } from '../protocol'
 import type { JobStoreError } from './errors'
 import type { AnyJobStoreToken, JobStore as JobStoreNamespace } from './store'
-import type { DurableJobEventType, JobEventStoreContract, JobEventStoreWriter } from './event-store'
+import type {
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventStoreContract,
+  JobEventStoreWriter
+} from './event-store'
 import { getMemoryJobEventStoreInternals } from './memory-event-store'
 import type { MemoryJobEventStoreInternals } from './memory-event-store'
 
@@ -155,6 +160,8 @@ type Operation<Value> = JobStoreOperation<Value, JobStoreError>
 /** Internal synchronous bridge used only by the Memory schedule extension. */
 export interface MemoryJobStoreInternals {
   readonly runCriticalSection: <Value>(callback: () => Value) => Value
+  readonly ensureEventWriterReady: (operation: string) => JobStoreError | undefined
+  readonly appendDurableEvent: (event: DurableJobEventInput) => void
   readonly enqueueManyWithinCritical: (
     requests: readonly EnqueueRequest[]
   ) => ResultType<JobStoreNamespace.EnqueueManyResult, JobStoreError>
@@ -569,10 +576,10 @@ class MemoryJobStoreImplementation {
   private readonly idGenerator: MemoryJobStoreIdGenerator | undefined
   private readonly eventAppender: MemoryJobEventStoreInternals | undefined
   private readonly eventWriter: JobEventStoreWriter | undefined
-  private readonly flowStoreV2 = MemoryFlowStore.make()
+  private readonly flowStoreV2: import('./flow-v2').FlowStoreV2
   private readonly flowParentIds = new Set<string>()
   private readonly flowChildParents = new Map<string, ParentEnvelope>()
-  readonly v2: JobStoreV2Contract = this.makeV2Contract()
+  readonly v2: JobStoreV2Contract
   private claimInProgress = false
   private criticalSectionDepth = 0
 
@@ -587,6 +594,11 @@ class MemoryJobStoreImplementation {
     if (options.eventStore !== undefined && this.eventAppender === undefined) {
       throw new TypeError('MemoryJobStore eventStore must be a MemoryJobEventStore instance')
     }
+    const flowOptions: import('./memory-flow').MemoryFlowStoreOptions = {}
+    if (this.eventAppender !== undefined) flowOptions.eventAppender = this.eventAppender
+    if (this.eventWriter !== undefined) flowOptions.eventWriter = this.eventWriter
+    this.flowStoreV2 = MemoryFlowStore.make(flowOptions)
+    this.v2 = this.makeV2Contract()
     this.validateOptions(options)
   }
 
@@ -598,12 +610,17 @@ class MemoryJobStoreImplementation {
       recordChildResults: (request: RecordChildResultsRequest) =>
         this.recordChildResultsV2(request),
       cancelFlow: (request: CancelFlowRequest) => this.cancelFlowV2(request),
-      reconcile: (request: ReconcileFlowRequest) => this.flowStoreV2.reconcile(request),
-      markCascaded: (request: MarkCascadedRequest) => this.flowStoreV2.markCascaded(request),
+      reconcile: (request: ReconcileFlowRequest) =>
+        this.withEventWriter('reconcileFlow', () => this.flowStoreV2.reconcile(request)),
+      markCascaded: (request: MarkCascadedRequest) =>
+        this.withEventWriter('markCascaded', () => this.flowStoreV2.markCascaded(request)),
       appendChildReport: (request: AppendChildReportRequest) =>
-        this.flowStoreV2.appendChildReport(request),
+        this.withEventWriter('appendChildReport', () =>
+          this.flowStoreV2.appendChildReport(request)
+        ),
       peekOutbox: (request: PeekOutboxRequest) => this.flowStoreV2.peekOutbox(request),
-      ackOutbox: (request: AckOutboxRequest) => this.flowStoreV2.ackOutbox(request),
+      ackOutbox: (request: AckOutboxRequest) =>
+        this.withEventWriter('ackOutbox', () => this.flowStoreV2.ackOutbox(request)),
       getFlow: (request: { readonly flowId: JobId }) => this.flowStoreV2.getFlow(request),
       getJob: (request: { readonly jobId: JobId }) => this.getJobV2(request),
       getAttempts: (request: { readonly jobId: JobId }) => this.getAttemptsV2(request),
@@ -613,7 +630,17 @@ class MemoryJobStoreImplementation {
     })
   }
 
+  private withEventWriter<Value>(
+    operation: string,
+    callback: () => JobStoreV2Operation<Value>
+  ): JobStoreV2Operation<Value> {
+    const eventFailure = this.eventWriterFailure(operation)
+    return eventFailure === undefined ? callback() : failV2(eventFailure)
+  }
+
   private fanOutV2(request: FlowFanOutRequest): JobStoreV2Operation<FlowFanOutResult> {
+    const eventFailure = this.eventWriterFailure('fanOut')
+    if (eventFailure !== undefined) return failV2(eventFailure)
     const fields = readDto(
       request,
       [
@@ -672,6 +699,8 @@ class MemoryJobStoreImplementation {
   private recordChildResultsV2(
     request: RecordChildResultsRequest
   ): JobStoreV2Operation<RecordChildResultsResult> {
+    const eventFailure = this.eventWriterFailure('recordChildResults')
+    if (eventFailure !== undefined) return failV2(eventFailure)
     const result = syncV2(this.flowStoreV2.recordChildResults(request))
     if (Result.isError(result)) return failV2(result.error)
     if (result.value.parentSettled) {
@@ -682,6 +711,8 @@ class MemoryJobStoreImplementation {
   }
 
   private cancelFlowV2(request: CancelFlowRequest): JobStoreV2Operation<CancelFlowResult> {
+    const eventFailure = this.eventWriterFailure('cancelFlow')
+    if (eventFailure !== undefined) return failV2(eventFailure)
     const result = syncV2(this.flowStoreV2.cancel(request))
     if (Result.isError(result)) return failV2(result.error)
     if (result.value.parentSettled) {
@@ -945,6 +976,15 @@ class MemoryJobStoreImplementation {
     }
   }
 
+  ensureEventWriterReady(operation: string): JobStoreError | undefined {
+    return this.eventWriterFailure(operation)
+  }
+
+  appendDurableEvent(event: DurableJobEventInput): void {
+    if (this.eventAppender === undefined || this.eventWriter?.canAppend === false) return
+    this.eventAppender.append(event)
+  }
+
   enqueueManyWithinCritical(
     requests: readonly EnqueueRequest[]
   ): ResultType<JobStoreNamespace.EnqueueManyResult, JobStoreError> {
@@ -1182,9 +1222,18 @@ class MemoryJobStoreImplementation {
       const unchanged: QueueControlsRecord[] = []
       const disabled: QueueControlsRecord[] = []
       const warnings: string[] = []
+      let eventWriterChecked = false
+      const ensureEventWriter = (): JobStoreError | undefined => {
+        if (eventWriterChecked) return undefined
+        const failure = this.eventWriterFailure('reconcile')
+        if (failure === undefined) eventWriterChecked = true
+        return failure
+      }
       for (const [queue, proposed] of requested) {
         const current = this.controls.get(queue)
         if (current === undefined) {
+          const eventFailure = ensureEventWriter()
+          if (eventFailure !== undefined) return fail(eventFailure)
           this.controls.set(queue, proposed)
           created.push(proposed)
         } else if (
@@ -1194,6 +1243,8 @@ class MemoryJobStoreImplementation {
         ) {
           unchanged.push(current)
         } else {
+          const eventFailure = ensureEventWriter()
+          if (eventFailure !== undefined) return fail(eventFailure)
           const next = Object.freeze({
             ...proposed,
             revision: current.revision + 1,
@@ -1209,6 +1260,8 @@ class MemoryJobStoreImplementation {
         if (removal === 'warn')
           warnings.push(`controls for queue "${queue}" are not present in the registry`)
         if (removal === 'disable' && current.enabled) {
+          const eventFailure = ensureEventWriter()
+          if (eventFailure !== undefined) return fail(eventFailure)
           const next = Object.freeze({
             ...current,
             enabled: false,
@@ -1218,6 +1271,24 @@ class MemoryJobStoreImplementation {
           this.controls.set(queue, next)
           disabled.push(next)
         }
+      }
+      for (const record of created) {
+        this.appendEvent('controls-reconciled', undefined, now, {
+          queue: record.queue,
+          attributes: { action: 'created' }
+        })
+      }
+      for (const record of updated) {
+        this.appendEvent('controls-reconciled', undefined, now, {
+          queue: record.queue,
+          attributes: { action: 'updated' }
+        })
+      }
+      for (const record of disabled) {
+        this.appendEvent('controls-reconciled', undefined, now, {
+          queue: record.queue,
+          attributes: { action: 'disabled' }
+        })
       }
       return ok({
         created: Object.freeze(created),
@@ -1343,6 +1414,7 @@ class MemoryJobStoreImplementation {
           const capacity = Math.min(limit.value, rateRemaining, globalRemaining)
           const scanBudget = Math.min(candidates.length, Math.max(limit.value * 4, 32))
           const planned: {
+            readonly previous: JobRecord
             readonly transition: JobTransition
             readonly token: LeaseToken
             readonly dispatchKey: string
@@ -1374,7 +1446,12 @@ class MemoryJobStoreImplementation {
               now: now.value
             })
             if (Result.isError(transition)) return fail(transition.error)
-            planned.push({ transition: transition.value, token: token.value, dispatchKey })
+            planned.push({
+              previous: candidate,
+              transition: transition.value,
+              token: token.value,
+              dispatchKey
+            })
           }
           this.rotations.set(queue.value, (start + Math.max(1, examined)) % candidates.length)
           for (const item of planned) {
@@ -1383,6 +1460,12 @@ class MemoryJobStoreImplementation {
             this.controlledPermits.set(item.transition.record.id, {
               leaseToken: item.token,
               dispatchKey: item.dispatchKey
+            })
+            this.appendEvent('job-claimed', item.transition.record, now.value, {
+              previous: item.previous
+            })
+            this.appendEvent('controls-claimed', item.transition.record, now.value, {
+              previous: item.previous
             })
           }
           if (planned.length > 0) {
@@ -1433,14 +1516,17 @@ class MemoryJobStoreImplementation {
     const checked = this.assertControlledJobRevision(request.jobId, request.controlsRevision)
     if (Result.isError(checked)) return fail(checked.error)
     const { controlsRevision: _controlsRevision, ...settlement } = request
-    return this.settle(settlement) as Operation<JobStoreNamespace.SettlementResult>
+    return this.settle(
+      settlement,
+      'controls-settled'
+    ) as Operation<JobStoreNamespace.SettlementResult>
   }
 
   releaseControlled(request: ControlledReleaseRequest): Operation<JobStoreNamespace.ReleaseResult> {
     const checked = this.assertControlledJobRevision(request.jobId, request.controlsRevision)
     if (Result.isError(checked)) return fail(checked.error)
     const { controlsRevision: _controlsRevision, ...release } = request
-    return this.release(release)
+    return this.release(release, 'controls-released')
   }
 
   recoverStalledControlled(
@@ -1458,7 +1544,7 @@ class MemoryJobStoreImplementation {
         })
       )
     const { controlsRevision: _controlsRevision, ...recovery } = request
-    return this.recoverStalled(recovery)
+    return this.recoverStalled(recovery, 'controls-stalled-recovered')
   }
 
   cancelControlled(request: ControlledCancelRequest): Operation<JobStoreNamespace.CancelResult> {
@@ -1466,10 +1552,15 @@ class MemoryJobStoreImplementation {
     if (Result.isError(checked)) return fail(checked.error)
     const current = this.jobs.get(request.jobId)
     const { controlsRevision: _controlsRevision, ...cancel } = request
-    return current?.state === 'active' ? this.requestCancellation(cancel) : this.cancel(cancel)
+    return current?.state === 'active'
+      ? this.requestCancellation(cancel, 'controls-cancelled')
+      : this.cancel(cancel, 'controls-cancelled')
   }
 
-  settle(request: SettleRequest): Operation<JobStoreNamespace.SettlementResult> {
+  settle(
+    request: SettleRequest,
+    additionalEventType?: DurableJobEventType
+  ): Operation<JobStoreNamespace.SettlementResult> {
     try {
       const eventFailure = this.eventWriterFailure('settle')
       if (eventFailure !== undefined) return fail(eventFailure)
@@ -1547,7 +1638,12 @@ class MemoryJobStoreImplementation {
       }
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
-      this.commitPrepared([prepared.value], true, this.settlementEventType(attempt))
+      this.commitPrepared(
+        [prepared.value],
+        true,
+        this.settlementEventType(attempt),
+        additionalEventType
+      )
       this.releaseControlledPermit(jobId.value, leaseToken.value)
       this.settled.set(jobId.value, { leaseToken: leaseToken.value, outcomeDigest })
       return ok({
@@ -1562,7 +1658,10 @@ class MemoryJobStoreImplementation {
     }
   }
 
-  release(request: JobStoreNamespace.ReleaseRequest): Operation<JobStoreNamespace.ReleaseResult> {
+  release(
+    request: JobStoreNamespace.ReleaseRequest,
+    additionalEventType?: DurableJobEventType
+  ): Operation<JobStoreNamespace.ReleaseResult> {
     try {
       const eventFailure = this.eventWriterFailure('release')
       if (eventFailure !== undefined) return fail(eventFailure)
@@ -1596,7 +1695,7 @@ class MemoryJobStoreImplementation {
       if (Result.isError(transition)) return fail(transition.error)
       const prepared = this.prepareTransition(transition.value, current)
       if (Result.isError(prepared)) return fail(prepared.error)
-      this.commitPrepared([prepared.value], true, 'job-released')
+      this.commitPrepared([prepared.value], true, 'job-released', additionalEventType)
       this.releaseControlledPermit(jobId.value, leaseToken.value)
       return ok(snapshotTransition(prepared.value.transition))
     } catch {
@@ -1717,7 +1816,8 @@ class MemoryJobStoreImplementation {
   }
 
   recoverStalled(
-    request: RecoverStalledRequest
+    request: RecoverStalledRequest,
+    additionalEventType?: DurableJobEventType
   ): Operation<JobStoreNamespace.RecoverStalledResult> {
     try {
       const eventFailure = this.eventWriterFailure('recoverStalled')
@@ -1770,7 +1870,7 @@ class MemoryJobStoreImplementation {
         planned.push(prepared.value)
       }
 
-      this.commitPrepared(planned, true, 'job-stalled-recovered')
+      this.commitPrepared(planned, true, 'job-stalled-recovered', additionalEventType)
       for (const item of planned) {
         if (item.transition.record.state !== 'active') {
           const permit = this.controlledPermits.get(item.transition.record.id)
@@ -2043,16 +2143,25 @@ class MemoryJobStoreImplementation {
     }
   }
 
-  cancel(request: JobStoreNamespace.CancelRequest): Operation<JobStoreNamespace.CancelResult> {
-    return this.simpleTransition(request, 'cancel') as Operation<JobStoreNamespace.CancelResult>
+  cancel(
+    request: JobStoreNamespace.CancelRequest,
+    additionalEventType?: DurableJobEventType
+  ): Operation<JobStoreNamespace.CancelResult> {
+    return this.simpleTransition(
+      request,
+      'cancel',
+      additionalEventType
+    ) as Operation<JobStoreNamespace.CancelResult>
   }
 
   requestCancellation(
-    request: JobStoreNamespace.RequestCancellationRequest
+    request: JobStoreNamespace.RequestCancellationRequest,
+    additionalEventType?: DurableJobEventType
   ): Operation<JobStoreNamespace.RequestCancellationResult> {
     return this.simpleTransition(
       request,
-      'request-cancellation'
+      'request-cancellation',
+      additionalEventType
     ) as Operation<JobStoreNamespace.RequestCancellationResult>
   }
 
@@ -2671,7 +2780,8 @@ class MemoryJobStoreImplementation {
   private commitPrepared(
     prepared: readonly PreparedTransition[],
     notify: boolean,
-    eventType?: DurableJobEventType
+    eventType?: DurableJobEventType,
+    additionalEventType?: DurableJobEventType
   ): void {
     if (prepared.length === 0) return
     const queues = new Set<string>()
@@ -2697,6 +2807,18 @@ class MemoryJobStoreImplementation {
           this.appendEvent(eventType, record, record.updatedAt, { previous: item.previous })
         } else {
           this.appendEvent(eventType, record, record.updatedAt, {
+            previous: item.previous,
+            attempt
+          })
+        }
+      }
+      if (additionalEventType !== undefined && additionalEventType !== eventType) {
+        if (attempt === undefined) {
+          this.appendEvent(additionalEventType, record, record.updatedAt, {
+            previous: item.previous
+          })
+        } else {
+          this.appendEvent(additionalEventType, record, record.updatedAt, {
             previous: item.previous,
             attempt
           })
@@ -2790,6 +2912,7 @@ class MemoryJobStoreImplementation {
       readonly attempt?: AttemptRecord
       readonly duplicate?: boolean
       readonly queue?: QueueName
+      readonly attributes?: Readonly<Record<string, string>>
     } = {}
   ): void {
     if (this.eventAppender === undefined || this.eventWriter?.canAppend === false) return
@@ -2808,7 +2931,7 @@ class MemoryJobStoreImplementation {
       outcome: context.attempt?.outcome ?? (type === 'job-released' ? 'released' : undefined),
       failureKind: record?.failure?.kind ?? context.previous?.failure?.kind,
       duplicate: context.duplicate,
-      attributes: Object.freeze({})
+      attributes: Object.freeze({ ...context.attributes })
     })
   }
 
@@ -2832,17 +2955,23 @@ class MemoryJobStoreImplementation {
 
   private transitionById(
     current: JobRecord,
-    command: Exclude<Parameters<typeof reduceJob>[1], { type: 'claim' }>
+    command: Exclude<Parameters<typeof reduceJob>[1], { type: 'claim' }>,
+    additionalEventType?: DurableJobEventType
   ): Operation<JobTransition> {
     const transition = reduceJob(current, command)
     if (Result.isError(transition)) return fail(transition.error)
     const prepared = this.prepareTransition(transition.value, current)
     if (Result.isError(prepared)) return fail(prepared.error)
     const notify = command.type === 'promote' || command.type === 'retry'
+    const eventType = this.transitionEventType(command, current, prepared.value.transition.record)
+    const effectiveCancellation =
+      command.type !== 'request-cancellation' ||
+      current.cancellationRequestedAt !== prepared.value.transition.record.cancellationRequestedAt
     this.commitPrepared(
       [prepared.value],
       notify,
-      this.transitionEventType(command, current, prepared.value.transition.record)
+      eventType,
+      additionalEventType !== undefined && effectiveCancellation ? additionalEventType : undefined
     )
     if (command.type === 'retry') this.settled.delete(current.id)
     return ok(snapshotTransition(prepared.value.transition))
@@ -2850,7 +2979,8 @@ class MemoryJobStoreImplementation {
 
   private simpleTransition(
     request: JobIdRequest,
-    type: 'cancel' | 'request-cancellation' | 'promote'
+    type: 'cancel' | 'request-cancellation' | 'promote',
+    additionalEventType?: DurableJobEventType
   ): Operation<JobTransition> {
     try {
       const eventFailure = this.eventWriterFailure(type)
@@ -2865,7 +2995,11 @@ class MemoryJobStoreImplementation {
       if (Result.isError(jobId)) return fail(jobId.error)
       const current = this.jobs.get(jobId.value)
       if (current === undefined) return fail(new JobNotFoundError({ jobId: jobId.value }))
-      return this.transitionById(current, { type, jobId: jobId.value, now: now.value })
+      return this.transitionById(
+        current,
+        { type, jobId: jobId.value, now: now.value },
+        additionalEventType
+      )
     } catch {
       return fail(
         new JobDefinitionError({ field: 'request', message: 'could not read transition request' })
