@@ -30,6 +30,7 @@ The application also has explicit Layer-first operational security boundaries:
 
 ```ts
 Layer.merge(
+  DashboardJobRedactionPolicyDisabled,
   DashboardMutationPolicyDisabled,
   Layer.merge(
     DashboardAuditSinkDisabled,
@@ -42,7 +43,13 @@ Layer.merge(
 while leaving viewer/read-only routes available. Hosts should provide their
 own `DashboardMutationPolicy` for confirmation/CSRF checks, may provide an
 optional `DashboardAuditSink`, and may replace the basic rate limiter with a
-host-owned boundary. Audit delivery is best-effort and never changes the
+host-owned boundary. `DashboardJobRedactionPolicyDisabled` keeps job payloads,
+results, failures, and metadata redacted; hosts may provide
+`DashboardJobRedactionPolicy` to authorize job identities and explicitly expose
+selected fields or metadata keys for a principal. Its job identity includes the
+individual `id` alongside `queue`, `name`, and `version`; mutation decisions
+receive `target: "mutation"` plus the action and a denial returns `403` before
+the store operation runs. Audit delivery is best-effort and never changes the
 mutation result.
 
 ## Run the Memory example
@@ -75,7 +82,7 @@ curl -X POST \
 The reference limiter uses one process-local mutation bucket (30 mutations per
 minute) and does not use job or user identifiers as labels. `/health`,
 `/api/capabilities`, and `/api/overview` expose only boolean availability flags
-for the mutation policy, audit sink, and rate limiter.
+for the job redaction policy, mutation policy, audit sink, and rate limiter.
 
 The shipped authorization layer is only a safe local example. Production
 applications should replace `DashboardAuthorization` with their host's
@@ -136,8 +143,10 @@ optional-capability pattern with their `*CapabilityDisabled` Layers.
 
 Successful responses use the existing `better-effect/hono` JSON policy and are
 wrapped as `{ "data": ... }`. Error responses contain only a stable code and a
-public message; storage error messages, payloads, results, full failure data,
-lease tokens, and arbitrary metadata are not returned.
+public message; storage error messages, lease tokens, and arbitrary metadata
+are not returned. The default job redaction policy omits payloads, results, and
+full failure data; a host policy may explicitly expose those fields for an
+authorized identity.
 
 | Method | Path                                | Role     | Purpose                                                    |
 | ------ | ----------------------------------- | -------- | ---------------------------------------------------------- |

@@ -10,6 +10,8 @@ import {
   DashboardControlCapabilityDisabled,
   DashboardEventFeedDisabled,
   DashboardFlowCapabilityDisabled,
+  DashboardJobRedactionPolicy,
+  DashboardJobRedactionPolicyDisabled,
   DashboardMutationPolicy,
   DashboardMutationPolicyDisabled,
   DashboardRateLimiter,
@@ -63,8 +65,11 @@ const allowMutationPolicy = Layer.succeed(
 )
 
 const allowMutations = Layer.merge(
-  allowMutationPolicy,
-  Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+  DashboardJobRedactionPolicyDisabled,
+  Layer.merge(
+    allowMutationPolicy,
+    Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+  )
 )
 
 const denyAll = Layer.succeed(
@@ -78,8 +83,11 @@ const disabledCapabilities = Layer.merge(
 )
 
 const disabledMutationCapabilities = Layer.merge(
-  DashboardMutationPolicyDisabled,
-  Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+  DashboardJobRedactionPolicyDisabled,
+  Layer.merge(
+    DashboardMutationPolicyDisabled,
+    Layer.merge(DashboardAuditSinkDisabled, DashboardRateLimiterDisabled)
+  )
 )
 
 const disabledDashboard = Layer.merge(
@@ -185,6 +193,7 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
       ok: true,
       service: 'better-effect-mq-dashboard',
       capabilities: {
+        jobRedactionPolicy: false,
         mutationPolicy: true,
         audit: false,
         rateLimit: false
@@ -201,6 +210,7 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
     expect(listed.jobs[0].payload).toBeUndefined()
     expect(listed.jobs[0].result).toBeUndefined()
     expect(listed.jobs[0].failure).toBeUndefined()
+    expect(listed.jobs[0].metadata).toBeUndefined()
 
     const detail = await app.request(`/api/jobs/${jobId}`)
     expect((await detail.json()).data.job.payload).toBeUndefined()
@@ -232,6 +242,282 @@ test('Memory dashboard exposes sanitized overview, list, detail, attempts, and a
     const removed = await app.request(`/api/jobs/${jobId}`, { method: 'DELETE' })
     expect(removed.status).toBe(200)
     expect((await removed.json()).data.removed).toBe(true)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard applies job redaction policy by identity and principal context', async () => {
+  const events = MemoryJobEventStore.make({ clock: () => 0 })
+  const store = MemoryJobStore.make({ eventStore: events, clock: () => 0 })
+  const publicJob = await resolve(
+    store.enqueue({
+      id: JobId.make('public-job').unwrap(),
+      job: { queue: 'emails', name: 'send', version: 1 },
+      payload: { safe: 'visible-payload' },
+      metadata: { visible: 'yes', secret: 'do-not-return' },
+      runAt: 0,
+      attemptsMax: 3,
+      now: 0
+    })
+  )
+  await resolve(
+    store.enqueue({
+      id: JobId.make('private-job').unwrap(),
+      job: { queue: 'emails', name: 'send', version: 1 },
+      payload: { secret: 'do-not-return' },
+      metadata: { visible: 'do-not-return' },
+      runAt: 0,
+      attemptsMax: 3,
+      now: 0
+    })
+  )
+  const policy = Layer.succeed(
+    DashboardJobRedactionPolicy,
+    DashboardJobRedactionPolicy.of({
+      available: true,
+      decide: ({ request, principal, job, target }) => {
+        expect(request).toBeInstanceOf(Request)
+        expect(principal.role).toBe('admin')
+        if (job.id !== 'public-job') {
+          return {
+            allowed: false as const,
+            payload: false,
+            result: false,
+            failure: false,
+            metadataKeys: []
+          }
+        }
+        expect(['list', 'detail', 'attempts']).toContain(target)
+        return {
+          allowed: true as const,
+          payload: true,
+          result: true,
+          failure: true,
+          metadataKeys: ['visible']
+        }
+      }
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(
+          allowAll,
+          Layer.merge(
+            policy,
+            Layer.merge(
+              DashboardEventFeedDisabled,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(
+                  DashboardMutationPolicyDisabled,
+                  Layer.merge(
+                    DashboardAuditSinkDisabled,
+                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const health = await app.request('/health')
+    expect((await health.json()).data.capabilities.jobRedactionPolicy).toBe(true)
+
+    const list = await app.request('/api/jobs')
+    expect(list.status).toBe(200)
+    const listed = (await list.json()).data.jobs
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({
+      id: publicJob.job.id,
+      payload: { safe: 'visible-payload' },
+      metadata: { visible: 'yes' }
+    })
+    expect(listed[0].metadata.secret).toBeUndefined()
+
+    const detail = await app.request('/api/jobs/public-job')
+    expect(detail.status).toBe(200)
+    expect((await detail.json()).data.job.payload).toEqual({ safe: 'visible-payload' })
+
+    const deniedDetail = await app.request('/api/jobs/private-job')
+    expect(deniedDetail.status).toBe(403)
+    expect((await deniedDetail.json()).error).toBe('job_forbidden')
+
+    const deniedAttempts = await app.request('/api/jobs/private-job/attempts')
+    expect(deniedAttempts.status).toBe(403)
+    expect((await deniedAttempts.json()).error).toBe('job_forbidden')
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard blocks job mutations when redaction policy denies the mutation target', async () => {
+  const { store, jobId } = await seed()
+  const initialJob = await resolve(store.getJob({ jobId }))
+  if (initialJob === undefined) throw new Error('seeded job missing')
+  const initialState = initialJob.state
+  const actions: string[] = []
+  const policy = Layer.succeed(
+    DashboardJobRedactionPolicy,
+    DashboardJobRedactionPolicy.of({
+      available: true,
+      decide: ({ action, job, target }) => {
+        if (target === 'mutation') {
+          actions.push(`${action}:${job.id}`)
+          return {
+            allowed: false as const,
+            payload: false,
+            result: false,
+            failure: false,
+            metadataKeys: []
+          }
+        }
+        return {
+          allowed: true as const,
+          payload: false,
+          result: false,
+          failure: false,
+          metadataKeys: []
+        }
+      }
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(
+          allowAll,
+          Layer.merge(
+            policy,
+            Layer.merge(
+              DashboardEventFeedDisabled,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(
+                  allowMutationPolicy,
+                  Layer.merge(
+                    DashboardAuditSinkDisabled,
+                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const requests = [
+      () => app.request(`/api/jobs/${jobId}/cancel`, { method: 'POST' }),
+      () => app.request(`/api/jobs/${jobId}/promote`, { method: 'POST' }),
+      () =>
+        app.request(`/api/jobs/${jobId}/retry`, {
+          method: 'POST',
+          body: JSON.stringify({ delayMs: 0 }),
+          headers: { 'content-type': 'application/json' }
+        }),
+      () =>
+        app.request(`/api/jobs/${jobId}/redrive`, {
+          method: 'POST',
+          body: JSON.stringify({ delayMs: 0 }),
+          headers: { 'content-type': 'application/json' }
+        }),
+      () => app.request(`/api/jobs/${jobId}`, { method: 'DELETE' })
+    ]
+    for (const request of requests) {
+      const response = await request()
+      expect(response.status).toBe(403)
+      expect((await response.json()).error).toBe('job_forbidden')
+    }
+    expect(actions).toEqual([
+      `job.cancel:${jobId}`,
+      `job.promote:${jobId}`,
+      `job.retry:${jobId}`,
+      `job.redrive:${jobId}`,
+      `job.remove:${jobId}`
+    ])
+    const finalJob = await resolve(store.getJob({ jobId }))
+    if (finalJob === undefined) throw new Error('job was removed despite denied mutations')
+    expect(finalJob.state).toBe(initialState)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard fails closed when job redaction policy returns an invalid decision', async () => {
+  const { store, jobId } = await seed()
+  const invalidDecision = {
+    allowed: true,
+    payload: true,
+    result: true,
+    failure: true,
+    metadataKeys: 'not-an-array'
+  }
+  const policy = Layer.succeed(
+    DashboardJobRedactionPolicy,
+    DashboardJobRedactionPolicy.of({
+      available: true,
+      decide: () => {
+        // SAFETY: this fixture intentionally violates the public contract to exercise fail-closed handling.
+        return invalidDecision as never
+      }
+    })
+  )
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        ClockTestLayer(0),
+        Layer.merge(
+          allowAll,
+          Layer.merge(
+            policy,
+            Layer.merge(
+              DashboardEventFeedDisabled,
+              Layer.merge(
+                disabledCapabilities,
+                Layer.merge(
+                  allowMutationPolicy,
+                  Layer.merge(
+                    DashboardAuditSinkDisabled,
+                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  try {
+    const app = await resolveApp(runtime)
+    const detail = await app.request(`/api/jobs/${jobId}`)
+    expect(detail.status).toBe(503)
+    const detailBody = await detail.json()
+    expect(detailBody.error).toBe('job_redaction_policy_unavailable')
+    expect(JSON.stringify(detailBody)).not.toContain('do-not-return')
+
+    const mutation = await app.request(`/api/jobs/${jobId}/cancel`, { method: 'POST' })
+    expect(mutation.status).toBe(503)
+    expect((await mutation.json()).error).toBe('job_redaction_policy_unavailable')
+    const job = await resolve(store.getJob({ jobId }))
+    if (job === undefined) throw new Error('job disappeared after invalid policy decision')
+    expect(job.state).toBe('delayed')
   } finally {
     await runtime.dispose()
   }
@@ -424,6 +710,7 @@ test('dashboard keeps optional capability routes absent when their Layers are no
       flows: false,
       controls: false,
       security: {
+        jobRedactionPolicy: false,
         mutationPolicy: false,
         audit: false,
         rateLimit: false
@@ -437,6 +724,7 @@ test('dashboard keeps optional capability routes absent when their Layers are no
       flows: false,
       controls: false,
       security: {
+        jobRedactionPolicy: false,
         mutationPolicy: false,
         audit: false,
         rateLimit: false
@@ -687,8 +975,11 @@ test('dashboard returns stable confirmation and CSRF failures for mutations', as
               Layer.merge(
                 policy,
                 Layer.merge(
-                  DashboardAuditSinkDisabled,
-                  Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                  DashboardJobRedactionPolicyDisabled,
+                  Layer.merge(
+                    DashboardAuditSinkDisabled,
+                    Layer.merge(DashboardRateLimiterDisabled, DashboardApp.layer)
+                  )
                 )
               )
             )
@@ -750,7 +1041,10 @@ test('dashboard rate-limits mutations and records safe audit outcomes', async ()
               disabledCapabilities,
               Layer.merge(
                 allowMutationPolicy,
-                Layer.merge(audit, Layer.merge(rateLimiter, DashboardApp.layer))
+                Layer.merge(
+                  DashboardJobRedactionPolicyDisabled,
+                  Layer.merge(audit, Layer.merge(rateLimiter, DashboardApp.layer))
+                )
               )
             )
           )
