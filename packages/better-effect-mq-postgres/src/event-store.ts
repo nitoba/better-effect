@@ -85,6 +85,9 @@ const defaultWriter: JobEventStoreWriter = Object.freeze({
   canAppend: true
 })
 
+/** Internal default used by Postgres adapters that share the event table. */
+export const defaultPostgresJobEventWriter = defaultWriter
+
 const eventTable = (schema: string): string =>
   `${quoteIdentifier(schema)}.${quoteIdentifier(POSTGRES_TABLES.events)}`
 const cursorTable = (schema: string): string =>
@@ -351,6 +354,18 @@ export const appendPostgresJobEvent = async (
     `INSERT INTO ${events} (namespace,cursor,recorded_at_ms,event_type,job_id,queue,name,version,state,attempt,delivery,worker_id,outcome,failure_kind,duplicate,attributes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)`,
     [client.namespace, nextCursor, ...eventInputValues(input)]
   )
+}
+
+/** Check the optional event extension without making it a requirement for readers/writers. */
+export const postgresJobEventTableAvailable = async (
+  tx: Tx,
+  client: Pick<PostgresClient, 'schema'>
+): Promise<boolean> => {
+  const result = await tx.query<Row>(
+    `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2) AS available`,
+    [client.schema, POSTGRES_TABLES.events]
+  )
+  return result.rows[0]?.available === true
 }
 
 const ensureActivationTable = async (tx: Tx, schema: string): Promise<void> => {

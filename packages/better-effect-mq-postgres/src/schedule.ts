@@ -44,7 +44,10 @@ import type {
   ScheduleTickDecision,
   TickScheduleCommand,
   TickScheduleResult,
-  UpsertScheduleResult
+  UpsertScheduleResult,
+  DurableJobEventInput,
+  DurableJobEventType,
+  JobEventStoreWriter
 } from 'better-effect-mq'
 import {
   normalizePostgresJobStoreConfig,
@@ -54,6 +57,12 @@ import {
   type PoolClient
 } from './config'
 import { PostgresClient } from './client'
+import {
+  appendPostgresJobEvent,
+  assertPostgresJobEventWriterReady,
+  defaultPostgresJobEventWriter,
+  postgresJobEventTableAvailable
+} from './event-store'
 import { POSTGRES_TABLES, quoteIdentifier } from './schema'
 
 export type PostgresJobScheduleStoreOptions = PostgresJobStoreConfig
@@ -75,6 +84,13 @@ const scheduleDescriptor = Object.freeze({
   extensionVersion: 1 as const,
   jobStoreProtocolVersion: 1 as const
 })
+const scheduleEventMutationOperations = new Set([
+  'upsertSchedule',
+  'removeSchedule',
+  'tickSchedule',
+  'pauseSchedule',
+  'resumeSchedule'
+])
 
 const scheduleColumns = [
   'schedule_key',
@@ -698,9 +714,16 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
   private closed = false
   private disposal: Promise<void> | undefined
   private readonly channel: string
+  private eventsLayoutChecked = false
+  private eventsAvailable = false
+  private readonly eventWriter: JobEventStoreWriter
 
-  constructor(private readonly client: PostgresClient) {
+  constructor(
+    private readonly client: PostgresClient,
+    eventWriter?: JobEventStoreWriter
+  ) {
     this.channel = `mq_${hash(`${client.schema}:${client.namespace}`)}_wake`
+    this.eventWriter = eventWriter ?? defaultPostgresJobEventWriter
   }
 
   private table(name: string): string {
@@ -720,6 +743,19 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
       try {
         tx = await this.client.pool.connect()
         await tx.query('BEGIN')
+        if (!this.eventsLayoutChecked) {
+          this.eventsAvailable = await postgresJobEventTableAvailable(tx as Tx, this.client)
+          this.eventsLayoutChecked = true
+        }
+        if (scheduleEventMutationOperations.has(operation)) {
+          await assertPostgresJobEventWriterReady(
+            tx as Tx,
+            this.client,
+            operation,
+            this.eventWriter,
+            this.eventsAvailable
+          )
+        }
         value = await body(tx as Tx)
         await tx.query('COMMIT')
         committed = true
@@ -745,6 +781,54 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
       return fail(operation, cause)
     }
     return fail(operation, new Error('retry budget exhausted'))
+  }
+
+  private async appendEvent(
+    tx: Tx,
+    type: DurableJobEventType,
+    record: ScheduleRecord,
+    recordedAtMs: number,
+    attributes: Readonly<Record<string, string>>
+  ): Promise<void> {
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
+    const input: DurableJobEventInput = {
+      type,
+      recordedAtMs,
+      jobId: record.lastJobId,
+      queue: record.queue,
+      name: record.job.name,
+      version: record.job.version,
+      state: undefined,
+      attempt: undefined,
+      delivery: undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: undefined,
+      attributes
+    }
+    await appendPostgresJobEvent(tx, this.client, input)
+  }
+
+  private async appendJobEnqueued(tx: Tx, job: JobRecord, recordedAtMs: number): Promise<void> {
+    if (!this.eventsAvailable || !this.eventWriter.canAppend) return
+    const input: DurableJobEventInput = {
+      type: 'job-enqueued',
+      recordedAtMs,
+      jobId: job.id,
+      queue: job.queue,
+      name: job.name,
+      version: job.version,
+      state: job.state,
+      attempt: undefined,
+      delivery: job.deliveryCount > 0 ? job.deliveryCount : undefined,
+      workerId: undefined,
+      outcome: undefined,
+      failureKind: undefined,
+      duplicate: false,
+      attributes: Object.freeze({})
+    }
+    await appendPostgresJobEvent(tx, this.client, input)
   }
 
   private async notify(tx: Tx, queue: string, now: number): Promise<void> {
@@ -854,7 +938,11 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
       ]
     )
     const inserted = created.rows[0]
-    if (inserted !== undefined) return { job: decodeJob(inserted), duplicate: false }
+    if (inserted !== undefined) {
+      const job = decodeJob(inserted)
+      await this.appendJobEnqueued(tx, job, nowMs)
+      return { job, duplicate: false }
+    }
     const duplicate = await tx.query<Row>(
       `SELECT ${jobColumns.join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
       [this.client.namespace, id]
@@ -879,7 +967,11 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
           )
           const row = result.rows[0]
           if (row === undefined) throw new Error('created schedule row is missing')
-          return { record: cloneRecord(decodeSchedule(row)), created: true, changed: true }
+          const created = decodeSchedule(row)
+          await this.appendEvent(tx, 'schedule-upserted', created, created.updatedAtMs, {
+            created: 'true'
+          })
+          return { record: cloneRecord(created), created: true, changed: true }
         }
         if (logicalDigest(existing) === logicalDigest(normalized))
           return { record: cloneRecord(existing), created: false, changed: false }
@@ -895,6 +987,9 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
           updatedAtMs: Math.max(normalized.updatedAtMs, existing.updatedAtMs)
         }
         await this.updateSchedule(tx, updated)
+        await this.appendEvent(tx, 'schedule-upserted', updated, updated.updatedAtMs, {
+          created: 'false'
+        })
         return { record: cloneRecord(updated), created: false, changed: true }
       })
     )
@@ -920,6 +1015,8 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
           `DELETE FROM ${this.table(POSTGRES_TABLES.schedules)} WHERE namespace=$1 AND schedule_group=$2 AND schedule_key=$3`,
           [this.client.namespace, current.group, current.key]
         )
+        if (result.rowCount === 1)
+          await this.appendEvent(tx, 'schedule-removed', current, current.updatedAtMs, {})
         return result.rowCount === 1
       })
     )
@@ -1065,6 +1162,11 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
         })
         await this.updateSchedule(tx, updated)
         if (createdJob) await this.notify(tx, current.queue, now.value)
+        await this.appendEvent(tx, 'schedule-ticked', updated, now.value, {
+          status: jobs.length > 0 ? 'fired' : 'skipped',
+          jobs: String(jobs.length),
+          skipped: String(skippedSlots.length)
+        })
         return this.tickResult(jobs.length > 0 ? 'fired' : 'skipped', updated, jobs, skippedSlots)
       })
     )
@@ -1113,6 +1215,13 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
             current.updatedAtMs
           ]
         )
+        await this.appendEvent(
+          tx,
+          paused ? 'schedule-paused' : 'schedule-resumed',
+          { ...current, paused, revision: current.revision + 1 },
+          current.updatedAtMs,
+          {}
+        )
         return undefined
       })
     )
@@ -1133,7 +1242,8 @@ type ScheduleLayer<Token extends AnyJobScheduleStoreToken> = Layer<
 
 const makeScheduleLayer = <Token extends AnyJobScheduleStoreToken>(
   token: Token,
-  acquire: () => Promise<PostgresClient>
+  acquire: () => Promise<PostgresClient>,
+  eventWriter?: JobEventStoreWriter
 ): ScheduleLayer<Token> =>
   Layer.scopedGen(
     token,
@@ -1143,7 +1253,7 @@ const makeScheduleLayer = <Token extends AnyJobScheduleStoreToken>(
       let implementation: PostgresJobScheduleStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
-        implementation = new PostgresJobScheduleStoreImplementation(client)
+        implementation = new PostgresJobScheduleStoreImplementation(client, eventWriter)
         return JobScheduleStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
         >
@@ -1203,18 +1313,30 @@ type PostgresJobScheduleStoreApi = {
 
 export const PostgresJobScheduleStore: PostgresJobScheduleStoreApi = Object.freeze({
   layer(config: PostgresJobStoreConfig) {
-    return makeScheduleLayer(JobScheduleStore, borrowedClient(JobScheduleStore, config))
+    const normalized = normalizePostgresJobStoreConfig(config)
+    return makeScheduleLayer(
+      JobScheduleStore,
+      borrowedClient(JobScheduleStore, normalized),
+      normalized.eventWriter
+    )
   },
   layerFor<Token extends AnyJobScheduleStoreToken>(token: Token, config: PostgresJobStoreConfig) {
-    return makeScheduleLayer(token, borrowedClient(token, config))
+    const normalized = normalizePostgresJobStoreConfig(config)
+    return makeScheduleLayer(token, borrowedClient(token, normalized), normalized.eventWriter)
   },
   layerFromConfig(config: PostgresJobStoreConnectionConfig) {
-    return makeScheduleLayer(JobScheduleStore, ownedClient(JobScheduleStore, config))
+    const normalized = normalizePostgresJobStoreConnectionConfig(config)
+    return makeScheduleLayer(
+      JobScheduleStore,
+      ownedClient(JobScheduleStore, normalized),
+      normalized.eventWriter
+    )
   },
   layerFromConfigFor<Token extends AnyJobScheduleStoreToken>(
     token: Token,
     config: PostgresJobStoreConnectionConfig
   ) {
-    return makeScheduleLayer(token, ownedClient(token, config))
+    const normalized = normalizePostgresJobStoreConnectionConfig(config)
+    return makeScheduleLayer(token, ownedClient(token, normalized), normalized.eventWriter)
   }
 })
