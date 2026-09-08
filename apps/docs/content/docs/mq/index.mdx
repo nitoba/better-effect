@@ -1,17 +1,19 @@
 ---
 title: better-effect-mq
-description: Storage-neutral durable jobs, workers and testing for better-effect.
+description: Storage-neutral durable jobs, flows, workers and testing for better-effect.
 icon: ListChecks
 ---
 
 `better-effect-mq` is an experimental, storage-neutral protocol for durable
-jobs. A **queue** is a namespace, a **Job** is an immutable versioned
-producer/handler identity, and a **JobStore** is the atomic persistence seam.
-A Worker runs handlers over an existing `better-effect` Runtime; it does not
-create a second runtime or choose a database.
+jobs, Flow v2 parent/child composition, and Layer-first Workers. A **queue** is
+a namespace, a **Job** is an immutable versioned producer/handler identity,
+and a **JobStore** is the atomic persistence seam. A Worker runs handlers over
+one existing `better-effect` Runtime; it does not create a second Runtime or
+choose a database.
 
-The package version and wire protocol are intentionally separate:
-`protocolVersion` is `1`, while the package is still `0.x`. Read the guide
+The base package version and persisted protocol are intentionally separate:
+`protocolVersion` is `1`, while Flow v2 and QueueControls v3 are explicit
+extension contracts with independent layout/migration checks. Read the guide
 that matches the operation you are implementing:
 
 - [Introduction](./introduction) — protocol boundaries and the complete overview.
@@ -25,6 +27,15 @@ that matches the operation you are implementing:
 - [Testing](./testing) — `TestJobStore`, real Workers and deterministic clocks.
 - [Writing a driver](./writing-a-driver) — the public JobStore contract.
 - [Operations and observability](./operations-and-observability) — polling, events and production checks.
+- [Flow protocol v2](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md) — parent/child jobs, manifests, relay and reconciliation.
+- [Compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md) — protocol and adapter migration boundaries.
+
+Storage adapters are separate packages. The current adapter family includes
+PostgreSQL, Redis/Valkey, MongoDB, SQLite and MySQL; each preserves the base
+protocol and documents its extension migrations, client ownership and
+transaction boundaries in its package README. The storage-neutral
+[`better-effect-mq-outbox`](https://github.com/nitoba/better-effect/tree/main/packages/better-effect-mq-outbox)
+package provides prepared outbox records, routing and a Layer-owned publisher.
 
 The public package surface is exported from `better-effect-mq`; runner-neutral
 helpers are under `better-effect-mq/testing`. The package uses only

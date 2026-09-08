@@ -7,14 +7,27 @@ and the current Node.js LTS for interoperability smoke tests.
 
 ## Workspaces
 
-- [`packages/better-effect`](./packages/better-effect) — the published TypeScript library
+- [`packages/better-effect`](./packages/better-effect) — the core `Effect`, `Layer`, `Runtime`, `Scope`, and Web/framework entry points
+- [`packages/better-effect-http`](./packages/better-effect-http) — the typed Fetch client, endpoints, retries, NDJSON, SSE, and streaming
+- [`packages/better-effect-schema`](./packages/better-effect-schema) — provider-neutral Standard Schema classes and optional provider adapters
 - [`packages/better-effect-better-auth`](./packages/better-effect-better-auth) — the independent server-side Better Auth integration
-- [`packages/better-effect-mq`](./packages/better-effect-mq) — the experimental message-queue foundation
-- [`packages/better-effect-kysely`](./packages/better-effect-kysely) — the server-side Kysely integration (initial `0.1.0` release preparation)
-- [`packages/better-effect-mq-postgres`](./packages/better-effect-mq-postgres) — the optional PostgreSQL JobStore adapter, schema, and migrations for MQ
-- [`packages/better-effect-mq-redis`](./packages/better-effect-mq-redis) — the optional Redis/Valkey client, key layout, codecs, and Lua foundation for MQ
+- [`packages/better-effect-kysely`](./packages/better-effect-kysely) — the server-side Kysely integration with explicit ownership
+- [`packages/better-effect-mq`](./packages/better-effect-mq) — the storage-neutral durable queue, Flow v2, and Worker foundation
+- [`packages/better-effect-mq-outbox`](./packages/better-effect-mq-outbox) — storage-neutral durable outbox contracts and publisher
+- [`packages/better-effect-mq-postgres`](./packages/better-effect-mq-postgres) — the PostgreSQL JobStore, Flow, events, schedules, and outbox adapter
+- [`packages/better-effect-mq-redis`](./packages/better-effect-mq-redis) — the Redis/Valkey client, JobStore, Flow, events, schedules, and Lua adapter
+- [`packages/better-effect-mq-mongodb`](./packages/better-effect-mq-mongodb) — the MongoDB JobStore, Flow, events, schedules, and outbox adapter
+- [`packages/better-effect-mq-sqlite`](./packages/better-effect-mq-sqlite) — the embedded SQLite JobStore, Flow, events, schedules, and outbox adapter
+- [`packages/better-effect-mq-mysql`](./packages/better-effect-mq-mysql) — the MySQL/InnoDB JobStore, Flow, events, schedules, and outbox adapter
 - [`apps/docs`](./apps/docs) — the Next.js documentation application powered by Fumadocs
 - [`skills/better-effect`](./skills/better-effect) — the official Agent Skill for implementing, reviewing, debugging, and refactoring `better-effect` applications
+
+All integrations use the Layer-first composition model. Applications build one
+composition root and let `NodeRuntime`, `Runtime`, or a host-owned manager own
+the lifecycle; integrations capture only the non-owning capabilities they need.
+See the [package guide](https://better-effect.nitodev.com.br/docs/packages)
+for the complete catalog and the [Layer-first migration guide](https://better-effect.nitodev.com.br/docs/migration)
+for replacements for removed Runtime-first APIs.
 
 ## Agent Skill
 
@@ -42,9 +55,9 @@ Run the documentation site in development mode:
 bun run docs:dev
 ```
 
-The site is available at <http://localhost:3000>. The Kysely integration guide is
-available at <http://localhost:3000/docs/kysely>, and the HTTP client guide is
-available at <http://localhost:3000/docs/http>.
+The site is available at <http://localhost:3000>. The package catalog, migration
+guide, HTTP client, schema, Kysely, Better Auth, and MQ guides are available
+under `/docs`.
 
 ## Monorepo commands
 
@@ -85,7 +98,9 @@ normal cleanup fails, including a startup/interrupt race.
 
 GitHub Actions enforces this gate in the `MQ MySQL and MongoDB storage
 conformance` job using the hosted runner's Docker socket; local development
-uses Docker or the discovered Podman socket.
+uses Docker or the discovered Podman socket. The durable adapters also expose
+the additive Flow v2, events, schedules, controls, and outbox extensions
+documented in their package READMEs.
 
 Package releases use qualified tags and publish only the selected package. See
 [`docs/release-process.md`](./docs/release-process.md) for the release planner,

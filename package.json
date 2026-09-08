@@ -19,9 +19,10 @@
     "format": "turbo run format",
     "format:check": "turbo run format:check",
     "publint": "turbo run publint --filter=better-effect --filter=better-effect-http --filter=better-effect-mq --filter=better-effect-better-auth --filter=better-effect-kysely --filter=better-effect-schema --filter=better-effect-mq-outbox --filter=better-effect-mq-postgres --filter=better-effect-mq-redis --filter=better-effect-mq-mongodb --filter=better-effect-mq-sqlite --filter=better-effect-mq-mysql",
-    "lint:release": "packages/better-effect/node_modules/.bin/oxlint --type-aware scripts/check-http-docs.ts scripts/check-kysely-docs.ts scripts/release-artifact.ts scripts/release-plan.ts scripts/release-route.ts scripts/release-route.test.ts",
-    "check": "turbo run check --concurrency=1 && bun run test:kysely-docs && bun run test:release && bun run lint:release",
+    "lint:release": "packages/better-effect/node_modules/.bin/oxlint --type-aware scripts/check-http-docs.ts scripts/check-kysely-docs.ts scripts/check-layer-first-docs.ts scripts/release-artifact.ts scripts/release-plan.ts scripts/release-route.ts scripts/release-route.test.ts",
+    "check": "turbo run check --concurrency=1 && bun run test:kysely-docs && bun run test:layer-first-docs && bun run test:release && bun run lint:release",
     "test:kysely-docs": "bun scripts/check-kysely-docs.ts",
+    "test:layer-first-docs": "bun scripts/check-layer-first-docs.ts",
     "release:plan": "bun scripts/release-plan.ts",
     "test:release": "bun test scripts/release-route.test.ts",
     "perf:type-system": "bun scripts/type-system-performance.ts"

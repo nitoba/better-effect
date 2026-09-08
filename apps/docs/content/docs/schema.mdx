@@ -1,0 +1,101 @@
+---
+title: Schema and validation
+description: Decode, encode and derive typed values without coupling the core to a provider.
+icon: Braces
+---
+
+`better-effect-schema` is the provider-neutral schema package for applications
+that need runtime decoding alongside `better-result` and `better-effect`. Its
+root entry point uses Standard Schema and does not import Zod, Valibot or
+ArkType. Provider adapters are explicit subpaths.
+
+## Install and choose a provider
+
+```bash
+bun add better-effect-schema better-effect better-result
+# Optional provider-specific capabilities:
+bun add zod
+```
+
+| Import                         | Purpose                                          | Dependency                                              |
+| ------------------------------ | ------------------------------------------------ | ------------------------------------------------------- |
+| `better-effect-schema`         | Standard Schema classes, operations and failures | Standard Schema, `better-result`, `better-effect` types |
+| `better-effect-schema/zod`     | Zod 4 class factories and derivations            | Zod                                                     |
+| `better-effect-schema/valibot` | Valibot-backed capabilities                      | Valibot                                                 |
+| `better-effect-schema/arktype` | ArkType-backed capabilities                      | ArkType                                                 |
+
+The provider packages are optional peers. Importing the root does not select a
+provider or add framework lifecycle.
+
+## Decode and encode
+
+`Schema.Class` describes a decoded class with an explicit Standard Schema
+boundary. Decode and encode operations return `better-result` values; expected
+validation failures are not thrown.
+
+```ts
+import type { StandardSchemaV1 } from '@standard-schema/spec'
+import { Result } from 'better-result'
+import { Schema } from 'better-effect-schema'
+
+const userFields: StandardSchemaV1<{ readonly id: string }, { readonly id: string }> = {
+  '~standard': {
+    version: 1,
+    vendor: 'example',
+    validate(value) {
+      return typeof value === 'object' &&
+        value !== null &&
+        typeof (value as { id?: unknown }).id === 'string'
+        ? { value: value as { readonly id: string } }
+        : { issues: [{ message: 'Expected a user' }] }
+    }
+  }
+}
+
+class User extends Schema.Class<User>('example/User')({
+  schema: userFields,
+  propsSchema: userFields,
+  encodedSchema: userFields,
+  encode: (value) => value
+}) {}
+
+const decoded = Schema.decodeUnknown(User, { id: 'user-1' })
+if (Result.isError(decoded)) throw decoded.error
+const encoded = Schema.encode(User, decoded.value)
+```
+
+Use `Schema.decode` when the encoded input type is known, `Schema.make` for
+decoded constructor props, and the corresponding `Async` operation for an
+asynchronous validator or encoder. Transformed values must provide an explicit
+encoder; the package never invents a JSON representation.
+
+## Provider adapters
+
+Provider-specific class factories are isolated to their adapter subpath:
+
+```ts
+import * as z from 'zod'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const Local = Schema.with(ZodAdapter)
+
+class Person extends Local.Class<Person>('example/Person')({
+  id: z.int().positive(),
+  name: z.string()
+}) {}
+```
+
+HTTP, MQ codecs and other integrations accept Standard Schema values directly.
+Use the adapter only at the boundary where provider-specific derivation is
+useful; do not add the provider to unrelated packages.
+
+## Tagged classes and errors
+
+`Schema.TaggedClass` and `Schema.TaggedError` preserve literal tags and use the
+`better-result` failure protocol. They can be yielded from `Result.gen` and
+composed in an `Effect.gen` Program without introducing another error model.
+
+The package is intentionally pure: it has no Runtime, Scope, framework or
+database lifecycle. See the [package catalog](/docs/packages) for how it fits
+with HTTP and the other integrations.

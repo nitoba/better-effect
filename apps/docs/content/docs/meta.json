@@ -2,6 +2,8 @@
   "title": "Guides",
   "pages": [
     "index",
+    "packages",
+    "migration",
     "getting-started",
     "mental-model",
     "services",
@@ -12,6 +14,7 @@
     "next",
     "hono",
     "http",
+    "schema",
     "better-auth",
     "kysely",
     "scope",
@@ -21,6 +24,7 @@
     "backends",
     "testing",
     "mq",
+    "outbox",
     "todo-api",
     "patterns",
     "troubleshooting"

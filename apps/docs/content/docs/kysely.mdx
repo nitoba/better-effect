@@ -128,8 +128,8 @@ await existingDatabase.destroy() // caller cleanup
 
 `scoped` registers one root-Scope finalizer and reports `destroy()` failures as
 cleanup failures. `borrowed` and `succeed` never destroy their values. The
-package intentionally has no `Database.layer` compatibility alias; ownership
-must be selected explicitly with `scoped`, `borrowed` or `succeed`.
+There is no legacy ownership alias. Select ownership explicitly with `scoped`,
+`borrowed` or `succeed`.
 
 ### Contextual factories and shared pools
 

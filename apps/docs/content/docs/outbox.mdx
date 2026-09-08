@@ -1,0 +1,83 @@
+---
+title: Durable outbox
+description: Publish prepared queue requests with explicit routes and at-least-once recovery.
+icon: Send
+---
+
+`better-effect-mq-outbox` is the storage-neutral outbox package for
+`better-effect-mq`. It defines immutable `OutboxRecord` values, an
+`OutboxStore` contract, explicit target routes and a Layer-owned publisher.
+Database adapters remain separate packages and own their transaction handles.
+
+## Prepare before the transaction
+
+An outbox record stores a validated `PreparedEnqueue`, not a codec, callback,
+Service, Runtime, connection or transaction object. The application prepares
+the request before inserting it into its domain transaction; the concrete
+adapter provides the transaction-specific `appendIn` boundary.
+
+```ts
+import { Effect, Layer, Runtime, Service } from 'better-effect'
+import { JobStore } from 'better-effect-mq'
+import { OutboxId, OutboxRoutes, OutboxStore, makeOutboxRecord } from 'better-effect-mq-outbox'
+
+const BillingOutbox = OutboxStore.named('billing')
+const BillingJobs = JobStore.named('billing-jobs')
+const Routes = OutboxRoutes.make({
+  'billing-jobs': BillingJobs
+})
+
+const record = makeOutboxRecord({
+  id: OutboxId.make('invoice-created:123').unwrap(),
+  target: 'billing-jobs',
+  request: preparedEnqueue
+})
+```
+
+The record and the domain write commit or roll back together when the selected
+database adapter appends them through its real transaction. After commit, the
+publisher resolves the named route and enqueues the prepared request.
+
+## Layer-owned publisher
+
+Publishers participate in the same Runtime root as Workers and application
+resources:
+
+```ts
+import { OutboxPublisher } from 'better-effect-mq-outbox'
+
+const Publisher = OutboxPublisher.service('@app/OutboxPublisher')
+const PublisherLive = Publisher.layer(async function* () {
+  const config = yield* OutboxConfig
+  return {
+    outboxes: [BillingOutbox] as const,
+    routes: Routes,
+    concurrency: config.concurrency,
+    leaseDurationMs: 30_000,
+    heartbeatIntervalMs: 10_000,
+    pollIntervalMs: 1_000
+  }
+})
+
+const ApplicationLive = Layer.complete(
+  Layer.merge(BillingOutboxLive, BillingJobsLive, PublisherLive)
+)
+```
+
+The publisher stops claiming during Runtime quiesce. Work already admitted can
+finish its heartbeat, enqueue and settlement before the publisher is released.
+There is no detached loop and no second Runtime.
+
+## Delivery and adapters
+
+Outbox delivery is at-least-once. A crash after enqueue and before publication
+settlement can redeliver the same record. Deterministic Job IDs or idempotency
+keys make that replay converge; the pipeline does not promise exactly-once
+execution.
+
+`better-effect-mq-postgres`, `better-effect-mq-redis`,
+`better-effect-mq-mongodb`, `better-effect-mq-sqlite`, and
+`better-effect-mq-mysql` provide concrete storage adapters. Their READMEs
+document migration versions, transaction boundaries, client ownership and
+host-specific setup. The `better-effect-mq-outbox/testing` contract suite is
+runner-neutral and does not need a database or Runtime.

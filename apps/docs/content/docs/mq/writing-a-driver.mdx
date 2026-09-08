@@ -15,6 +15,8 @@ this page is only a navigation summary:
 - [time and leases](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/time-and-leases-v1.md)
 - [capabilities](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/capabilities-v1.md)
 - [compatibility](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md)
+- [Flow protocol v2](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md)
+- [QueueControls protocol v3](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/controls-v3.md)
 
 Keep transactions, indexes, wake delivery, migrations, and connection lifecycle
 inside the adapter. A caller-supplied pool/client is borrowed; a resource
@@ -28,6 +30,13 @@ of one. Validate untrusted DTOs and decoded records, use the request's single
 The required atomic boundaries are enqueue identity/idempotency, ordered claim
 and lease acquisition, settlement plus attempt ledger, fenced release and
 heartbeat, stalled recovery, and administrative transitions.
+
+Flow-capable drivers implement the additive `FlowStoreV2` contract separately
+from the base JobStore methods. They must persist the parent-owned manifest,
+dependency rows, terminal child reports and reconciliation work, while keeping
+cross-store enqueue and relay explicitly at-least-once. QueueControls, events,
+schedules and outbox are likewise opt-in extensions with independent migration
+and capability checks.
 
 `awaitWake` is an optimization over the persisted wake token/version. Polling
 must remain correct, and wake messages must not contain payloads, metadata,
