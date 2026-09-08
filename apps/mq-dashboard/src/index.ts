@@ -74,6 +74,119 @@ export class DashboardAuthorization extends Service<DashboardAuthorization>()(
   ) => DashboardPrincipal | null | PromiseLike<DashboardPrincipal | null>
 }
 
+export type DashboardMutationAction =
+  | 'job.cancel'
+  | 'job.promote'
+  | 'job.retry'
+  | 'job.redrive'
+  | 'job.remove'
+  | 'queue.pause'
+  | 'queue.resume'
+  | 'schedule.pause'
+  | 'schedule.resume'
+  | 'schedule.remove'
+  | 'flow.cancel'
+
+export type DashboardMutationPolicyRejection =
+  | 'confirmation_required'
+  | 'csrf_invalid'
+  | 'policy_unavailable'
+
+export interface DashboardMutationPolicyRequest {
+  readonly request: Request
+  readonly principal: DashboardPrincipal
+  readonly action: DashboardMutationAction
+}
+
+export type DashboardMutationPolicyDecision =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly reason: DashboardMutationPolicyRejection }
+
+export interface DashboardMutationPolicyContract {
+  readonly available: boolean
+  readonly check: (
+    request: DashboardMutationPolicyRequest
+  ) => DashboardMutationPolicyDecision | PromiseLike<DashboardMutationPolicyDecision>
+}
+
+/** Host-owned confirmation/CSRF boundary for administrative mutations. */
+export class DashboardMutationPolicy extends Service<DashboardMutationPolicy>()(
+  '@better-effect/mq-dashboard/MutationPolicy'
+) {
+  declare readonly available: boolean
+  declare readonly check: DashboardMutationPolicyContract['check']
+}
+
+export const DashboardMutationPolicyDisabled = Layer.succeed(
+  DashboardMutationPolicy,
+  DashboardMutationPolicy.of({
+    available: false,
+    check: () => ({ allowed: false, reason: 'policy_unavailable' as const })
+  })
+)
+
+export interface DashboardAuditEvent {
+  readonly action: DashboardMutationAction
+  readonly method: string
+  readonly path: string
+  readonly role: DashboardRole
+  readonly subject: string | undefined
+  readonly outcome: 'success' | 'failure' | 'denied'
+  readonly errorCode: string | undefined
+}
+
+export interface DashboardAuditSinkContract {
+  readonly available: boolean
+  readonly record: ((event: DashboardAuditEvent) => void | PromiseLike<void>) | undefined
+}
+
+/** Optional host-owned audit sink for operator/admin actions. */
+export class DashboardAuditSink extends Service<DashboardAuditSink>()(
+  '@better-effect/mq-dashboard/AuditSink'
+) {
+  declare readonly available: boolean
+  declare readonly record: DashboardAuditSinkContract['record']
+}
+
+export const DashboardAuditSinkDisabled = Layer.succeed(
+  DashboardAuditSink,
+  DashboardAuditSink.of({ available: false, record: undefined })
+)
+
+export interface DashboardRateLimitRequest {
+  readonly request: Request
+  readonly principal: DashboardPrincipal
+  readonly action: DashboardMutationAction
+}
+
+export interface DashboardRateLimitDecision {
+  readonly allowed: boolean
+  readonly retryAfterSeconds: number | undefined
+}
+
+export interface DashboardRateLimiterContract {
+  readonly available: boolean
+  readonly check: (
+    request: DashboardRateLimitRequest
+  ) => DashboardRateLimitDecision | PromiseLike<DashboardRateLimitDecision>
+}
+
+/** Optional process/host-owned limiter for administrative mutations. */
+export class DashboardRateLimiter extends Service<DashboardRateLimiter>()(
+  '@better-effect/mq-dashboard/RateLimiter'
+) {
+  declare readonly available: boolean
+  declare readonly check: DashboardRateLimiterContract['check']
+}
+
+export const DashboardRateLimiterDisabled = Layer.succeed(
+  DashboardRateLimiter,
+  DashboardRateLimiter.of({
+    available: false,
+    check: () => ({ allowed: true, retryAfterSeconds: undefined })
+  })
+)
+
 export type DashboardEventFeedPage = (
   options: JobEventReadOptions
 ) => PromiseLike<ResultType<JobEventPage, JobEventStoreError>>
@@ -265,13 +378,21 @@ export class DashboardHttpError extends Error {
   readonly status: number
   readonly code: string
   readonly oldestAvailableCursor: string | undefined
+  readonly retryAfterSeconds: number | undefined
 
-  constructor(status: number, code: string, message: string, oldestAvailableCursor?: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    oldestAvailableCursor?: string,
+    retryAfterSeconds?: number
+  ) {
     super(message)
     this.name = 'DashboardHttpError'
     this.status = status
     this.code = code
     this.oldestAvailableCursor = oldestAvailableCursor
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
@@ -308,6 +429,180 @@ const requireRole = async (
   }
 
   return Result.ok(principal)
+}
+
+const recordMutationAudit = async (
+  sink: InstanceType<typeof DashboardAuditSink>,
+  request: Request,
+  principal: DashboardPrincipal,
+  action: DashboardMutationAction,
+  outcome: DashboardAuditEvent['outcome'],
+  errorCode: string | undefined
+): Promise<void> => {
+  if (sink.record === undefined) return
+  try {
+    await sink.record({
+      action,
+      method: request.method,
+      path: new URL(request.url).pathname,
+      role: principal.role,
+      subject: principal.subject,
+      outcome,
+      errorCode
+    })
+  } catch {
+    // Audit is best-effort and must never change the storage result.
+  }
+}
+
+const mutationPolicyError = (reason: DashboardMutationPolicyRejection): DashboardHttpError => {
+  switch (reason) {
+    case 'confirmation_required':
+      return new DashboardHttpError(
+        428,
+        'confirmation_required',
+        'Mutation confirmation is required'
+      )
+    case 'csrf_invalid':
+      return new DashboardHttpError(403, 'csrf_invalid', 'Mutation confirmation is invalid')
+    case 'policy_unavailable':
+      return new DashboardHttpError(
+        503,
+        'mutation_policy_unavailable',
+        'Dashboard mutations are disabled'
+      )
+  }
+}
+
+interface DashboardMutationGuardOptions {
+  readonly authorization: InstanceType<typeof DashboardAuthorization>
+  readonly policy: InstanceType<typeof DashboardMutationPolicy>
+  readonly rateLimiter: InstanceType<typeof DashboardRateLimiter>
+  readonly auditSink: InstanceType<typeof DashboardAuditSink>
+  readonly request: Request
+  readonly requiredRole: DashboardRole
+  readonly action: DashboardMutationAction
+}
+
+const requireMutation = async (
+  options: DashboardMutationGuardOptions
+): Promise<DashboardResult<DashboardPrincipal>> => {
+  const authorized = await requireRole(options.authorization, options.request, options.requiredRole)
+  if (Result.isError(authorized)) return authorized
+
+  const principal = authorized.value
+  let rateLimit: DashboardRateLimitDecision
+  try {
+    rateLimit = await options.rateLimiter.check({
+      request: options.request,
+      principal,
+      action: options.action
+    })
+  } catch {
+    const error = new DashboardHttpError(
+      503,
+      'rate_limiter_unavailable',
+      'Dashboard rate limiter unavailable'
+    )
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      principal,
+      options.action,
+      'denied',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  if (!rateLimit.allowed) {
+    const error = new DashboardHttpError(
+      429,
+      'rate_limited',
+      'Too many dashboard mutations',
+      undefined,
+      rateLimit.retryAfterSeconds
+    )
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      principal,
+      options.action,
+      'denied',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  if (!options.policy.available) {
+    const error = mutationPolicyError('policy_unavailable')
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      principal,
+      options.action,
+      'denied',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  let policy: DashboardMutationPolicyDecision
+  try {
+    policy = await options.policy.check({
+      request: options.request,
+      principal,
+      action: options.action
+    })
+  } catch {
+    const error = new DashboardHttpError(
+      503,
+      'mutation_policy_unavailable',
+      'Dashboard mutation policy unavailable'
+    )
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      principal,
+      options.action,
+      'denied',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  if (!policy.allowed) {
+    const error = mutationPolicyError(policy.reason)
+    await recordMutationAudit(
+      options.auditSink,
+      options.request,
+      principal,
+      options.action,
+      'denied',
+      error.code
+    )
+    return Result.err(error)
+  }
+
+  return Result.ok(principal)
+}
+
+const auditMutationResult = async <Value>(
+  sink: InstanceType<typeof DashboardAuditSink>,
+  request: Request,
+  principal: DashboardPrincipal,
+  action: DashboardMutationAction,
+  result: DashboardResult<Value>
+): Promise<DashboardResult<Value>> => {
+  await recordMutationAudit(
+    sink,
+    request,
+    principal,
+    action,
+    Result.isError(result) ? 'failure' : 'success',
+    Result.isError(result) ? result.error.code : undefined
+  )
+  return result
 }
 
 const storageError = (error: unknown): DashboardHttpError => {
@@ -353,7 +648,10 @@ const jsonError = (
         : {
             oldestAvailableCursor: dashboardError.oldestAvailableCursor,
             refreshRequired: true
-          })
+          }),
+      ...(dashboardError.retryAfterSeconds === undefined
+        ? {}
+        : { retryAfterSeconds: dashboardError.retryAfterSeconds })
     }
 
     return context.json(body, dashboardError.status)
@@ -912,15 +1210,42 @@ export const DashboardApp = HonoEffect.app(
   async function* (http) {
     const app = new Hono()
     app.use('*', yield* http.middleware())
+    const authorization = yield* DashboardAuthorization
+    const mutationPolicy = yield* DashboardMutationPolicy
+    const auditSink = yield* DashboardAuditSink
+    const rateLimiter = yield* DashboardRateLimiter
     const schedules = yield* DashboardScheduleCapability
     const flows = yield* DashboardFlowCapability
     const controls = yield* DashboardControlCapability
+
+    const authorizeMutation = (
+      request: Request,
+      requiredRole: DashboardRole,
+      action: DashboardMutationAction
+    ): Promise<DashboardResult<DashboardPrincipal>> =>
+      requireMutation({
+        authorization,
+        policy: mutationPolicy,
+        rateLimiter,
+        auditSink,
+        request,
+        requiredRole,
+        action
+      })
 
     app.get(
       '/health',
       yield* http.gen(async function* () {
         yield* Result.await(Promise.resolve(Result.ok(undefined)))
-        return Result.ok({ ok: true, service: 'better-effect-mq-dashboard' })
+        return Result.ok({
+          ok: true,
+          service: 'better-effect-mq-dashboard',
+          capabilities: {
+            mutationPolicy: mutationPolicy.available,
+            audit: auditSink.available,
+            rateLimit: rateLimiter.available
+          }
+        })
       })
     )
 
@@ -934,7 +1259,12 @@ export const DashboardApp = HonoEffect.app(
           events: (yield* DashboardEventFeed).available,
           schedules: schedules.available,
           flows: flows.available,
-          controls: controls.available
+          controls: controls.available,
+          security: {
+            mutationPolicy: mutationPolicy.available,
+            audit: auditSink.available,
+            rateLimit: rateLimiter.available
+          }
         })
       })
     )
@@ -964,7 +1294,12 @@ export const DashboardApp = HonoEffect.app(
             events: feed.available,
             schedules: schedules.available,
             flows: flows.available,
-            controls: controls.available
+            controls: controls.available,
+            security: {
+              mutationPolicy: mutationPolicy.available,
+              audit: auditSink.available,
+              rateLimit: rateLimiter.available
+            }
           }
         })
       })
@@ -1087,8 +1422,12 @@ export const DashboardApp = HonoEffect.app(
         app.post(
           '/api/schedules/:group/:key/pause',
           yield* http.gen(async function* (context) {
-            const authorization = yield* DashboardAuthorization
-            const authorized = await requireRole(authorization, context.req.raw, 'operator')
+            yield* Result.await(Promise.resolve(Result.ok(undefined)))
+            const authorized = await authorizeMutation(
+              context.req.raw,
+              'operator',
+              'schedule.pause'
+            )
             if (Result.isError(authorized)) return authorized
             const group = context.req.param('group')
             const key = context.req.param('key')
@@ -1102,7 +1441,14 @@ export const DashboardApp = HonoEffect.app(
             }
             const selector: ScheduleSelector = { group, key }
             const result = await runCapabilityOperation(pauseSchedule(selector))
-            if (Result.isError(result)) return result
+            const audited = await auditMutationResult(
+              auditSink,
+              context.req.raw,
+              authorized.value,
+              'schedule.pause',
+              result
+            )
+            if (Result.isError(audited)) return audited
             return Result.ok({ paused: true })
           })
         )
@@ -1112,8 +1458,12 @@ export const DashboardApp = HonoEffect.app(
         app.post(
           '/api/schedules/:group/:key/resume',
           yield* http.gen(async function* (context) {
-            const authorization = yield* DashboardAuthorization
-            const authorized = await requireRole(authorization, context.req.raw, 'operator')
+            yield* Result.await(Promise.resolve(Result.ok(undefined)))
+            const authorized = await authorizeMutation(
+              context.req.raw,
+              'operator',
+              'schedule.resume'
+            )
             if (Result.isError(authorized)) return authorized
             const group = context.req.param('group')
             const key = context.req.param('key')
@@ -1127,7 +1477,14 @@ export const DashboardApp = HonoEffect.app(
             }
             const selector: ScheduleSelector = { group, key }
             const result = await runCapabilityOperation(resumeSchedule(selector))
-            if (Result.isError(result)) return result
+            const audited = await auditMutationResult(
+              auditSink,
+              context.req.raw,
+              authorized.value,
+              'schedule.resume',
+              result
+            )
+            if (Result.isError(audited)) return audited
             return Result.ok({ paused: false })
           })
         )
@@ -1137,8 +1494,8 @@ export const DashboardApp = HonoEffect.app(
         app.delete(
           '/api/schedules/:group/:key',
           yield* http.gen(async function* (context) {
-            const authorization = yield* DashboardAuthorization
-            const authorized = await requireRole(authorization, context.req.raw, 'admin')
+            yield* Result.await(Promise.resolve(Result.ok(undefined)))
+            const authorized = await authorizeMutation(context.req.raw, 'admin', 'schedule.remove')
             if (Result.isError(authorized)) return authorized
             const group = context.req.param('group')
             const key = context.req.param('key')
@@ -1152,12 +1509,20 @@ export const DashboardApp = HonoEffect.app(
             }
             const selector: ScheduleSelector = { group, key }
             const result = await runCapabilityOperation(removeSchedule(selector))
-            if (Result.isError(result)) return result
-            if (!result.value) {
-              return Result.err(
-                new DashboardHttpError(404, 'schedule_not_found', 'Schedule not found')
-              )
-            }
+            const normalized =
+              Result.isError(result) || result.value
+                ? result
+                : Result.err(
+                    new DashboardHttpError(404, 'schedule_not_found', 'Schedule not found')
+                  )
+            const audited = await auditMutationResult(
+              auditSink,
+              context.req.raw,
+              authorized.value,
+              'schedule.remove',
+              normalized
+            )
+            if (Result.isError(audited)) return audited
             return Result.ok({ removed: true })
           })
         )
@@ -1190,20 +1555,26 @@ export const DashboardApp = HonoEffect.app(
         app.post(
           '/api/flows/:id/cancel',
           yield* http.gen(async function* (context) {
-            const authorization = yield* DashboardAuthorization
-            const authorized = await requireRole(authorization, context.req.raw, 'operator')
+            const authorized = await authorizeMutation(context.req.raw, 'operator', 'flow.cancel')
             if (Result.isError(authorized)) return authorized
             const flowId = parseJobId(context.req.param('id'))
             if (Result.isError(flowId)) return flowId
             const now = (yield* Clock).now().getTime()
             const result = await runCapabilityOperation(cancelFlow({ flowId: flowId.value, now }))
-            if (Result.isError(result)) return result
+            const audited = await auditMutationResult(
+              auditSink,
+              context.req.raw,
+              authorized.value,
+              'flow.cancel',
+              result
+            )
+            if (Result.isError(audited)) return audited
             return Result.ok({
-              cancelled: result.value.cancelled,
-              parentSettled: result.value.parentSettled,
+              cancelled: audited.value.cancelled,
+              parentSettled: audited.value.parentSettled,
               flow: sanitizeFlow({
-                parent: result.value.parent,
-                children: result.value.children,
+                parent: audited.value.parent,
+                children: audited.value.children,
                 outbox: []
               })
             })
@@ -1298,38 +1669,49 @@ export const DashboardApp = HonoEffect.app(
     app.post(
       '/api/jobs/:id/cancel',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'operator')
+        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.cancel')
         if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
         const store = yield* JobStore
         const now = (yield* Clock).now().getTime()
         const result = await runOperation(store.cancel({ jobId: jobId.value, now }))
-        if (Result.isError(result)) return result
-        return Result.ok({ job: sanitizeJob(result.value.record) })
+        const audited = await auditMutationResult(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'job.cancel',
+          result
+        )
+        if (Result.isError(audited)) return audited
+        return Result.ok({ job: sanitizeJob(audited.value.record) })
       })
     )
     app.post(
       '/api/jobs/:id/promote',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'operator')
+        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.promote')
         if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
         const store = yield* JobStore
         const now = (yield* Clock).now().getTime()
         const result = await runOperation(store.promote({ jobId: jobId.value, now }))
-        if (Result.isError(result)) return result
-        return Result.ok({ job: sanitizeJob(result.value.record) })
+        const audited = await auditMutationResult(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'job.promote',
+          result
+        )
+        if (Result.isError(audited)) return audited
+        return Result.ok({ job: sanitizeJob(audited.value.record) })
       })
     )
     app.post(
       '/api/jobs/:id/retry',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'operator')
+        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.retry')
         if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
@@ -1340,15 +1722,21 @@ export const DashboardApp = HonoEffect.app(
         const result = await runOperation(
           store.retry({ jobId: jobId.value, now, runAt: body.value.runAt })
         )
-        if (Result.isError(result)) return result
-        return Result.ok({ job: sanitizeJob(result.value.record) })
+        const audited = await auditMutationResult(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'job.retry',
+          result
+        )
+        if (Result.isError(audited)) return audited
+        return Result.ok({ job: sanitizeJob(audited.value.record) })
       })
     )
     app.post(
       '/api/jobs/:id/redrive',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'operator')
+        const authorized = await authorizeMutation(context.req.raw, 'operator', 'job.redrive')
         if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
@@ -1359,43 +1747,71 @@ export const DashboardApp = HonoEffect.app(
         const result = await runOperation(
           store.retry({ jobId: jobId.value, now, runAt: body.value.runAt })
         )
-        if (Result.isError(result)) return result
-        return Result.ok({ job: sanitizeJob(result.value.record) })
+        const audited = await auditMutationResult(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'job.redrive',
+          result
+        )
+        if (Result.isError(audited)) return audited
+        return Result.ok({ job: sanitizeJob(audited.value.record) })
       })
     )
     app.delete(
       '/api/jobs/:id',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'admin')
+        const authorized = await authorizeMutation(context.req.raw, 'admin', 'job.remove')
         if (Result.isError(authorized)) return authorized
         const jobId = parseJobId(context.req.param('id'))
         if (Result.isError(jobId)) return jobId
         const result = yield* JobAdmin.for(JobStore).remove(jobId.value)
+        await recordMutationAudit(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'job.remove',
+          'success',
+          undefined
+        )
         return Result.ok({ removed: true, job: sanitizeJob(result.job) })
       })
     )
     app.post(
       '/api/queues/:queue/pause',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'operator')
+        const authorized = await authorizeMutation(context.req.raw, 'operator', 'queue.pause')
         if (Result.isError(authorized)) return authorized
         const queue = parseQueue(context.req.param('queue'))
         if (Result.isError(queue)) return queue
         const result = yield* JobAdmin.for(JobStore).pause(queue.value)
+        await recordMutationAudit(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'queue.pause',
+          'success',
+          undefined
+        )
         return Result.ok(result)
       })
     )
     app.post(
       '/api/queues/:queue/resume',
       yield* http.gen(async function* (context) {
-        const authorization = yield* DashboardAuthorization
-        const authorized = await requireRole(authorization, context.req.raw, 'operator')
+        const authorized = await authorizeMutation(context.req.raw, 'operator', 'queue.resume')
         if (Result.isError(authorized)) return authorized
         const queue = parseQueue(context.req.param('queue'))
         if (Result.isError(queue)) return queue
         const result = yield* JobAdmin.for(JobStore).resume(queue.value)
+        await recordMutationAudit(
+          auditSink,
+          context.req.raw,
+          authorized.value,
+          'queue.resume',
+          'success',
+          undefined
+        )
         return Result.ok(result)
       })
     )
