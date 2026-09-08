@@ -190,9 +190,16 @@ afterEach(async () => {
 test('MongoDB controls persist dispatch keys and enforce v3 lifecycle semantics', async () => {
   const db = makeDatabase()
   const namespace = `controlled-${Math.random().toString(36).slice(2)}`
+  const writer = { id: 'mongodb-test', version: '1', canAppend: true } as const
   await MongoJobStore.migrate({ db })
   runtime = await Runtime.make(
-    MongoJobStore.layer({ db, namespace, validateLayout: false, notifications: 'poll' })
+    MongoJobStore.layer({
+      db,
+      namespace,
+      validateLayout: false,
+      notifications: 'poll',
+      eventWriter: writer
+    })
   )
   const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
   const controlled = store as typeof store & ControlledJobStoreContract
@@ -207,6 +214,8 @@ test('MongoDB controls persist dispatch keys and enforce v3 lifecycle semantics'
   const registry = QueueControls.registry({ group: 'mongodb-tests', controls: [controls] })
   const report = await resolve(controlled.reconcile(registry))
   expect(report.created[0]?.revision).toBe(1)
+  const unchanged = await resolve(controlled.reconcile(registry))
+  expect(unchanged.unchanged).toHaveLength(1)
 
   const identity = { queue: 'controlled-mongodb', name: 'work', version: 1 } as const
   const first = await resolve(
@@ -374,4 +383,12 @@ test('MongoDB controls persist dispatch keys and enforce v3 lifecycle semantics'
   const revision = await resolve(controlled.getControls({ queue: 'controlled-mongodb' as never }))
   expect(revision?.revision).toBe(2)
   expect(second.job.dispatchKey).toBe('b')
+
+  const events = await db.collection('better_effect_mq_events').find({ namespace }).toArray()
+  const eventTypes = events.map((event) => event.eventType)
+  expect(eventTypes.filter((type) => type === 'controls-reconciled')).toHaveLength(2)
+  expect(eventTypes.filter((type) => type === 'controls-claimed')).toHaveLength(3)
+  expect(eventTypes.filter((type) => type === 'job-claimed')).toHaveLength(3)
+  expect(eventTypes.filter((type) => type === 'controls-settled')).toHaveLength(2)
+  expect(eventTypes.filter((type) => type === 'controls-stalled-recovered')).toHaveLength(1)
 })

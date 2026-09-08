@@ -68,6 +68,20 @@ MongoDB change stream only as a best-effort wake hint and always retains a
 polling fallback. With `layerWithEvents`, a transition and its event append
 commit or rollback together.
 
+Flow and schedule layers use the same optional `eventWriter` configuration to
+append their extension events in their own MongoDB transactions. Controls are
+appended by the JobStore layer. Pass the writer capability to each installed
+extension layer when composing it with a separately provided `JobEventStore`:
+
+```ts
+const eventWriter = { id: 'better-effect-mq-mongodb', version: 'current', canAppend: true }
+const FlowLive = MongoFlowStore.layer({ db, namespace: 'notifications', eventWriter })
+const ScheduleLive = MongoJobScheduleStore.layer({ db, namespace: 'notifications', eventWriter })
+```
+
+Effective Flow, schedule, and controls transitions append only their canonical
+extension event; idempotent retries and no-op transitions append nothing.
+
 Event rollout is coordinated per namespace in the counters collection. The
 first append records `optional`; promote explicitly with
 `JobEventStore.activate({ mode: 'required' })`. A writer that cannot append is

@@ -11,7 +11,14 @@ import { expect, test } from 'bun:test'
 import { Runtime, ServiceRuntime } from 'better-effect'
 import { Result } from 'better-result'
 import { flowStoreContract } from 'better-effect-mq/testing'
-import { JobStore, makeJobId, makeLeaseToken } from 'better-effect-mq'
+import {
+  JobStore,
+  makeFlowChildId,
+  makeJobId,
+  makeLeaseToken,
+  makePreparedEnqueue,
+  protocolVersion
+} from 'better-effect-mq'
 import type { MongoCollection, MongoDb, MongoSession } from '../src/config'
 import * as MongoAdapter from '../src/index'
 
@@ -289,6 +296,67 @@ test('MongoDB flow migration rejects an incompatible persisted marker', async ()
   await expect(MongoAdapter.MongoFlowStore.migrate({ db })).rejects.toBeInstanceOf(
     MongoAdapter.MongoFlowProtocolMismatchError
   )
+})
+
+test('MongoDB FlowStore appends an atomic fan-out event once across an idempotent retry', async () => {
+  const db = makeDatabase()
+  const namespace = 'flow-events'
+  const flowId = 'flow-events-parent'
+  const leaseToken = 'flow-events-lease'
+  seedParent(db, namespace, flowId, leaseToken)
+  const writer = { id: 'mongodb-test', version: '1', canAppend: true } as const
+  const store = await MongoAdapter.MongoFlowStore.make({
+    db,
+    namespace,
+    validateLayout: false,
+    eventWriter: writer
+  })
+  try {
+    const childJobId = makeFlowChildId({
+      parentStoreKey: 'flow-events-store',
+      flowId: makeJobId(flowId).unwrap(),
+      childKey: 'one'
+    }).unwrap()
+    const child = makePreparedEnqueue({
+      protocolVersion,
+      identity: { queue: 'flow-events', name: 'child', version: 1 },
+      id: childJobId,
+      payload: { child: 'one' },
+      metadata: {},
+      priority: 0,
+      runAt: 0,
+      attemptsMax: 1,
+      now: 0
+    }).unwrap()
+    const request = {
+      flowId: makeJobId(flowId).unwrap(),
+      flowName: 'flow-events',
+      parentStoreKey: 'flow-events-store',
+      depth: 1,
+      leaseToken: makeLeaseToken(leaseToken).unwrap(),
+      failFast: false,
+      children: [
+        {
+          childKey: 'one',
+          name: 'child',
+          version: 1,
+          storeKey: 'flow-events-child-store',
+          childJobId,
+          request: child
+        }
+      ],
+      now: 1
+    }
+    const applied = await store.fanOut(request)
+    if (Result.isError(applied)) throw applied.error
+    const retried = await store.fanOut(request)
+    if (Result.isError(retried)) throw retried.error
+    expect(retried.value.status).toBe('already-applied')
+    const events = await db.collection('better_effect_mq_events').find({ namespace }).toArray()
+    expect(events.map((event) => event.eventType)).toEqual(['flow-fan-out'])
+  } finally {
+    await store.dispose()
+  }
 })
 
 test('MongoDB flow decoders reject malformed persisted child BSON', async () => {
