@@ -3,9 +3,22 @@
 import { describe, expect, test } from 'bun:test'
 import { sendRedisCommand, type RedisCommandClient } from '../../src/config'
 import { Layer, Runtime, ServiceRuntime } from 'better-effect'
-import { Codec, JobStore, Queue, makeJobId, makeQueueName, makeWorkerId } from 'better-effect-mq'
+import {
+  Codec,
+  JobStore,
+  Queue,
+  makeJobId,
+  makeQueueName,
+  makeSerializedJobFailure,
+  makeWorkerId
+} from 'better-effect-mq'
 import type { Result as ResultType } from 'better-result'
-import { createRedisClientFromConfig, RedisJobStore } from '../../src/index'
+import {
+  createRedisClientFromConfig,
+  RedisFlowStore,
+  RedisJobStore,
+  RedisClient
+} from '../../src/index'
 import { stringsReply } from '../../src/internal/replies'
 
 const url = process.env.REDIS_URL
@@ -35,7 +48,349 @@ const otherJob = queue.job('redis-other', {
 const queueName = makeQueueName(queue.name).unwrap()
 const settlementWorkerId = makeWorkerId('settlement-race-worker').unwrap()
 
+const flowParentMetadata = (flowId: string, childKey: string) =>
+  ({
+    '__better_effect_flow_v2.flowName': 'redis-terminal-reports',
+    '__better_effect_flow_v2.flowId': flowId,
+    '__better_effect_flow_v2.childKey': childKey,
+    '__better_effect_flow_v2.parentStoreKey': 'redis-parent-store',
+    '__better_effect_flow_v2.depth': '1',
+    '__better_effect_flow_v2.chain': '["redis-terminal-reports"]'
+  }) satisfies Readonly<Record<string, string>>
+
 describe('RedisJobStore public integration', () => {
+  integration('appends a completed child report in the terminal settlement unit', async () => {
+    const namespace = `flow-report-complete-${process.pid}-${sequence++}`
+    const runtime = await Runtime.make(RedisJobStore.layerFromConfig(config(namespace)))
+    const flowClient = await RedisClient.fromConfig(config(namespace))
+    try {
+      const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
+      const flowStore = RedisFlowStore.make(flowClient)
+      const childId = makeJobId('flow-child-complete').unwrap()
+      const now = Date.now()
+      const enqueued = unwrap(
+        await store.enqueue({
+          job: job.identity,
+          id: childId,
+          payload: { value: 'flow-complete' },
+          metadata: flowParentMetadata('flow-parent-complete', 'child-complete'),
+          runAt: now,
+          attemptsMax: 1,
+          now
+        })
+      )
+      const claimed = unwrap(
+        await store.claim({
+          queue: queueName,
+          accepted: [job.identity],
+          workerId: settlementWorkerId,
+          limit: 1,
+          leaseDurationMs: 10_000,
+          now: now + 1
+        })
+      ).jobs[0]
+      expect(claimed?.id).toBe(enqueued.job.id)
+      unwrap(
+        await store.settle({
+          jobId: childId,
+          leaseToken: claimed!.leaseToken,
+          outcome: { type: 'complete', result: { delivered: true } },
+          now: now + 2
+        })
+      )
+
+      const outbox = unwrap(await flowStore.peekOutbox({ limit: 10 }))
+      expect(outbox.entries).toHaveLength(1)
+      expect(outbox.entries[0]).toMatchObject({
+        id: `flow-report/${childId}/1`,
+        flowName: 'redis-terminal-reports',
+        parentStoreKey: 'redis-parent-store',
+        report: {
+          flowId: 'flow-parent-complete',
+          childKey: 'child-complete',
+          outcome: 'completed',
+          result: { delivered: true }
+        }
+      })
+    } finally {
+      await flowClient.dispose()
+      await runtime.dispose()
+    }
+  })
+
+  integration(
+    'reports failed, cancelled, and stalled-exhausted children exactly once',
+    async () => {
+      const namespace = `flow-report-terminal-${process.pid}-${sequence++}`
+      const runtime = await Runtime.make(RedisJobStore.layerFromConfig(config(namespace)))
+      const flowClient = await RedisClient.fromConfig(config(namespace))
+      try {
+        const store = await runtime.run(() => ServiceRuntime.resolve(JobStore))
+        const flowStore = RedisFlowStore.make(flowClient)
+        const now = Date.now()
+        const failure = unwrap(
+          makeSerializedJobFailure({
+            kind: 'typed',
+            message: 'terminal child failure',
+            retryable: false,
+            recordedAt: now + 3
+          })
+        )
+        const failedId = makeJobId('flow-child-failed').unwrap()
+        const failed = unwrap(
+          await store.enqueue({
+            job: job.identity,
+            id: failedId,
+            payload: { value: 'flow-failed' },
+            metadata: flowParentMetadata('flow-parent-terminal', 'child-failed'),
+            runAt: now,
+            attemptsMax: 1,
+            now
+          })
+        )
+        const failedClaim = unwrap(
+          await store.claim({
+            queue: queueName,
+            accepted: [job.identity],
+            workerId: settlementWorkerId,
+            limit: 1,
+            leaseDurationMs: 10_000,
+            now: now + 1
+          })
+        ).jobs[0]
+        expect(failedClaim?.id).toBe(failed.job.id)
+        const failedOutcome = { type: 'fail' as const, failure }
+        expect(
+          unwrap(
+            await store.settle({
+              jobId: failedId,
+              leaseToken: failedClaim!.leaseToken,
+              outcome: failedOutcome,
+              now: now + 2
+            })
+          ).status
+        ).toBe('applied')
+        expect(
+          unwrap(
+            await store.settle({
+              jobId: failedId,
+              leaseToken: failedClaim!.leaseToken,
+              outcome: failedOutcome,
+              now: now + 2
+            })
+          ).status
+        ).toBe('already-applied')
+
+        const cancelledId = makeJobId('flow-child-cancelled').unwrap()
+        unwrap(
+          await store.enqueue({
+            job: job.identity,
+            id: cancelledId,
+            payload: { value: 'flow-cancelled' },
+            metadata: flowParentMetadata('flow-parent-terminal', 'child-cancelled'),
+            runAt: now,
+            attemptsMax: 1,
+            now
+          })
+        )
+        unwrap(await store.cancel({ jobId: cancelledId, now: now + 3 }))
+
+        const stalledId = makeJobId('flow-child-stalled').unwrap()
+        unwrap(
+          await store.enqueue({
+            job: job.identity,
+            id: stalledId,
+            payload: { value: 'flow-stalled' },
+            metadata: flowParentMetadata('flow-parent-terminal', 'child-stalled'),
+            runAt: now,
+            attemptsMax: 1,
+            now
+          })
+        )
+        const stalledClaim = unwrap(
+          await store.claim({
+            queue: queueName,
+            accepted: [job.identity],
+            workerId: settlementWorkerId,
+            limit: 1,
+            leaseDurationMs: 1,
+            now: now + 4
+          })
+        ).jobs[0]
+        expect(stalledClaim?.id).toBe(stalledId)
+        const recovered = unwrap(
+          await store.recoverStalled({
+            maxStalledCount: 0,
+            limit: 1,
+            now: now + 5
+          })
+        )
+        expect(recovered.transitions[0]?.record.state).toBe('failed')
+
+        const releaseCancelledId = makeJobId('flow-child-release-cancelled').unwrap()
+        unwrap(
+          await store.enqueue({
+            job: job.identity,
+            id: releaseCancelledId,
+            payload: { value: 'flow-release-cancelled' },
+            metadata: flowParentMetadata('flow-parent-terminal', 'child-release-cancelled'),
+            runAt: now,
+            attemptsMax: 1,
+            now
+          })
+        )
+        const releaseClaim = unwrap(
+          await store.claim({
+            queue: queueName,
+            accepted: [job.identity],
+            workerId: settlementWorkerId,
+            limit: 1,
+            leaseDurationMs: 10_000,
+            now: now + 6
+          })
+        ).jobs[0]
+        expect(releaseClaim?.id).toBe(releaseCancelledId)
+        unwrap(await store.requestCancellation({ jobId: releaseCancelledId, now: now + 7 }))
+        const released = unwrap(
+          await store.release({
+            jobId: releaseCancelledId,
+            leaseToken: releaseClaim!.leaseToken,
+            now: now + 8
+          })
+        )
+        expect(released.attempt?.outcome).toBe('cancelled')
+
+        const retryExhaustedId = makeJobId('flow-child-retry-exhausted').unwrap()
+        unwrap(
+          await store.enqueue({
+            job: job.identity,
+            id: retryExhaustedId,
+            payload: { value: 'flow-retry-exhausted' },
+            metadata: flowParentMetadata('flow-parent-terminal', 'child-retry-exhausted'),
+            runAt: now,
+            attemptsMax: 2,
+            now
+          })
+        )
+        const retryClaim = unwrap(
+          await store.claim({
+            queue: queueName,
+            accepted: [job.identity],
+            workerId: settlementWorkerId,
+            limit: 1,
+            leaseDurationMs: 10_000,
+            now: now + 9
+          })
+        ).jobs[0]
+        expect(retryClaim?.id).toBe(retryExhaustedId)
+        unwrap(
+          await store.settle({
+            jobId: retryExhaustedId,
+            leaseToken: retryClaim!.leaseToken,
+            outcome: { type: 'retry', runAt: now + 10, failure },
+            now: now + 9
+          })
+        )
+        const exhaustedClaim = unwrap(
+          await store.claim({
+            queue: queueName,
+            accepted: [job.identity],
+            workerId: settlementWorkerId,
+            limit: 1,
+            leaseDurationMs: 10_000,
+            now: now + 11
+          })
+        ).jobs[0]
+        expect(exhaustedClaim?.id).toBe(retryExhaustedId)
+        unwrap(
+          await store.settle({
+            jobId: retryExhaustedId,
+            leaseToken: exhaustedClaim!.leaseToken,
+            outcome: { type: 'fail', failure },
+            now: now + 12
+          })
+        )
+
+        const recoveryCancelledId = makeJobId('flow-child-recovery-cancelled').unwrap()
+        unwrap(
+          await store.enqueue({
+            job: job.identity,
+            id: recoveryCancelledId,
+            payload: { value: 'flow-recovery-cancelled' },
+            metadata: flowParentMetadata('flow-parent-terminal', 'child-recovery-cancelled'),
+            runAt: now,
+            attemptsMax: 1,
+            now
+          })
+        )
+        const recoveryClaim = unwrap(
+          await store.claim({
+            queue: queueName,
+            accepted: [job.identity],
+            workerId: settlementWorkerId,
+            limit: 1,
+            leaseDurationMs: 1,
+            now: now + 13
+          })
+        ).jobs[0]
+        expect(recoveryClaim?.id).toBe(recoveryCancelledId)
+        unwrap(await store.requestCancellation({ jobId: recoveryCancelledId, now: now + 14 }))
+        const recoveredCancelled = unwrap(
+          await store.recoverStalled({
+            maxStalledCount: 0,
+            limit: 1,
+            now: now + 15
+          })
+        )
+        expect(recoveredCancelled.transitions[0]?.record.state).toBe('cancelled')
+
+        const outbox = unwrap(await flowStore.peekOutbox({ limit: 10 }))
+        expect(outbox.entries).toHaveLength(6)
+        expect(outbox.entries.map((entry) => entry.report.childKey).sort()).toEqual([
+          'child-cancelled',
+          'child-failed',
+          'child-recovery-cancelled',
+          'child-release-cancelled',
+          'child-retry-exhausted',
+          'child-stalled'
+        ])
+        expect(
+          outbox.entries.find((entry) => entry.report.childKey === 'child-failed')
+        ).toMatchObject({
+          id: `flow-report/${failedId}/1`,
+          report: { outcome: 'failed', failure }
+        })
+        expect(
+          outbox.entries.find((entry) => entry.report.childKey === 'child-stalled')
+        ).toMatchObject({
+          id: `flow-report/${stalledId}/1`,
+          report: { outcome: 'failed', failure: { kind: 'stalled', retryable: false } }
+        })
+        expect(
+          outbox.entries.find((entry) => entry.report.childKey === 'child-release-cancelled')
+        ).toMatchObject({
+          id: `flow-report/${releaseCancelledId}/1`,
+          report: { outcome: 'cancelled' }
+        })
+        expect(
+          outbox.entries.find((entry) => entry.report.childKey === 'child-retry-exhausted')
+        ).toMatchObject({
+          id: `flow-report/${retryExhaustedId}/2`,
+          report: { outcome: 'failed', failure }
+        })
+        expect(
+          outbox.entries.find((entry) => entry.report.childKey === 'child-recovery-cancelled')
+        ).toMatchObject({
+          id: `flow-report/${recoveryCancelledId}/1`,
+          report: { outcome: 'cancelled' }
+        })
+      } finally {
+        await flowClient.dispose()
+        await runtime.dispose()
+      }
+    }
+  )
+
   integration('provides the default JobStore layer and persists a job', async () => {
     const namespace = `store-${process.pid}-${sequence++}`
     const runtime = await Runtime.make(RedisJobStore.layerFromConfig(config(namespace)))

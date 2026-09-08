@@ -131,6 +131,46 @@ local function appendEvent(item)
   if removed > 0 then local first = redis.call("XRANGE", item.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", item.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
   return true
 end
+local function validFlowReport(item)
+  local value = item.flowReport
+  if value == nil then return true end
+  if type(value) ~= "table" or type(value.id) ~= "string" or value.id == "" or
+    type(value.flowName) ~= "string" or value.flowName == "" or
+    type(value.parentStoreKey) ~= "string" or value.parentStoreKey == "" or
+    type(value.report) ~= "table" then return false end
+  local report = value.report
+  local allowed = {flowId=true, childKey=true, outcome=true, result=true, failure=true}
+  for key in pairs(report) do if type(key) ~= "string" or not allowed[key] then return false end end
+  if type(report.flowId) ~= "string" or report.flowId == "" or
+    type(report.childKey) ~= "string" or report.childKey == "" or
+    (report.outcome ~= "completed" and report.outcome ~= "failed" and report.outcome ~= "cancelled") then return false end
+  if report.outcome == "completed" and report.failure ~= nil then return false end
+  if report.outcome ~= "completed" and report.result ~= nil then return false end
+  if report.failure ~= nil and type(report.failure) ~= "table" then return false end
+  local keys = item.keys
+  return type(keys) == "table" and type(keys.flowOutbox) == "string" and
+    type(keys.flowOutboxSequence) == "string" and type(keys.flowOutboxEntry) == "string" and
+    declaredInputKeys[keys.flowOutbox] and declaredInputKeys[keys.flowOutboxSequence] and
+    declaredInputKeys[keys.flowOutboxEntry]
+end
+local function appendFlowReport(item)
+  if item.flowReport == nil then return true end
+  if not validFlowReport(item) then return "invalid" end
+  local value = item.flowReport
+  local encoded = cjson.encode({id=value.id, flowName=value.flowName, parentStoreKey=value.parentStoreKey, report=value.report})
+  local existing = redis.call("GET", item.keys.flowOutboxEntry)
+  if existing then
+    if existing == encoded then return true end
+    return "conflict"
+  end
+  local current = safeNumber(redis.call("GET", item.keys.flowOutboxSequence) or "0")
+  if current == nil or current >= MAX then return "unsafe" end
+  local sequence = current + 1
+  redis.call("SET", item.keys.flowOutboxSequence, tostring(sequence))
+  redis.call("SET", item.keys.flowOutboxEntry, encoded)
+  redis.call("ZADD", item.keys.flowOutbox, sequence, value.id)
+  return true
+end
 local function keyTypesValid(item)
   local keys = item.keys
   if type(keys) ~= "table" then return false end
@@ -160,6 +200,8 @@ local function keyTypesValid(item)
   for _, name in ipairs({"sequenceJobs", "revision"}) do
     if not check(name, "string") then return false end
   end
+  if not check("flowOutbox", "zset") or not check("flowOutboxSequence", "string") or
+    not check("flowOutboxEntry", "string") then return false end
   return true
 end
 
@@ -281,7 +323,7 @@ local function setRecord(item, mode)
     return "invalid"
   end
   local job = keys.job
-  if not validRecord(record) or not keyTypesValid(item) or not validEvent(item.event) or not validEventRetention(item.eventRetention) then return "invalid" end
+  if not validRecord(record) or not keyTypesValid(item) or not validEvent(item.event) or not validEventRetention(item.eventRetention) or not validFlowReport(item) then return "invalid" end
   if item.controlled then
     local expected = safeNumber(item.controlledRevision, true)
     local actual = safeNumber(redis.call("HGET", keys.control or "", "revision") or "0")
@@ -373,6 +415,8 @@ local function setRecord(item, mode)
   local version = bump(item)
   if version == nil then return "unsafe" end
   if not appendEvent(item) then return "invalid" end
+  local flowResult = appendFlowReport(item)
+  if flowResult ~= true then return flowResult end
   if allocatedSequence ~= nil then
     return "applied:" .. record.id .. ":" .. tostring(version) .. ":" .. tostring(allocatedSequence)
   end
