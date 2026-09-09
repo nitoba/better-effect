@@ -2,7 +2,7 @@ import { Effect, Layer } from 'better-effect'
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { TestRuntime } from 'better-effect/testing'
 import { Result } from 'better-result'
-import { JobContext, Worker } from 'better-effect-mq'
+import { Worker } from 'better-effect-mq'
 import { TestJobStore } from 'better-effect-mq/testing'
 
 import { SendEmail } from '../shared/jobs'
@@ -11,10 +11,12 @@ const clock = new ClockTest(Date.UTC(2026, 0, 1))
 const ids = IdGeneratorTest.from((index) => `test-${index + 1}`)
 const testStore = TestJobStore.make({ clock, ids })
 const AppWorker = Worker.service('@examples/TestWorker')
+let handlerAttempts = 0
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    const context = yield* JobContext
-    if (context.attempt === 1) {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    handlerAttempts += 1
+    if (handlerAttempts === 1) {
       return Result.err({ code: 'temporary-failure' })
     }
 

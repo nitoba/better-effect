@@ -4,20 +4,18 @@ Typed, storage-neutral building blocks for durable background work with
 [`better-effect`](https://github.com/nitoba/better-effect) and
 [`better-result`](https://github.com/nitoba/better-result).
 
-`better-effect-mq` gives an application a small, composable vocabulary for
-declaring jobs, enqueueing them, processing them with workers, and observing
-their progress. The core package does not choose a database, queue server, or
-dependency-injection container. A storage adapter implements the `JobStore`
-contract and is provided through a `better-effect` `Layer`.
-
-The result is a clean boundary:
+The core package gives applications one vocabulary for defining jobs,
+enqueueing work, running workers, coordinating parent/child executions, and
+reading results. It does not choose a database, queue server, or dependency
+injection container. A storage adapter implements the `JobStore` contract and
+is provided through a `better-effect` `Layer`.
 
 ```text
-application code  →  Job / Worker / awaitResult
+Queue.define → Job → enqueue / awaitResult
                          ↓
-                 JobStore + optional JobEventStore
+                    JobStore
                          ↓
-                 Memory or a durable adapter
+                Worker.service → Worker.handle
 ```
 
 ## Install
@@ -32,61 +30,55 @@ application manages dependencies.
 
 ## Quick start: a complete in-memory queue
 
-The following program defines a typed job, starts a Layer-owned worker, submits
-one item, waits for its result, and disposes the Runtime. It is the same public
-API shape exercised by the package's runnable examples; save it as an ESM
-TypeScript file in a project with the dependencies above to run it.
+This complete program defines a typed job, composes a Layer-owned worker,
+submits one item, waits for its result, and disposes the Runtime. The same
+application code works with a durable adapter after replacing the store Layer.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
-import { Codec, JobContext, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
 
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly recipient: string
-  }>(),
+  payload: Codec.json<{ readonly recipient: string }>(),
   result: Codec.string
 })
 
 const store = MemoryJobStore.make()
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    const context = yield* JobContext
-    console.log(`attempt ${context.attempt}: sending to ${payload.recipient}`)
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    console.log(`sending to ${payload.recipient}`)
     return Result.ok(`sent:${payload.recipient}`)
   })
 )
 
-const AppWorker = Worker.service('@app/EmailWorker')
-const AppWorkerLive = AppWorker.layer(() => ({
+const EmailWorker = Worker.service('@app/EmailWorker')
+const EmailWorkerLive = EmailWorker.layer(() => ({
   handlers: [handler] as const,
   concurrency: 1,
   pollIntervalMs: 10
 }))
 
 const AppLive = Layer.complete(
-  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), Layer.merge(ClockLive, AppWorkerLive))
+  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), Layer.merge(ClockLive, EmailWorkerLive))
 )
-
 const runtime = await Runtime.make(AppLive)
 
 try {
-  const started = await runtime.run(() =>
+  const worker = await runtime.run(() =>
     Effect.gen(async function* () {
-      return Result.ok(yield* AppWorker)
+      return Result.ok(yield* EmailWorker)
     })
   )
-  if (Result.isError(started)) throw started.error
+  if (Result.isError(worker)) throw worker.error
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue({
-        recipient: 'ada@example.test'
-      })
+      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
       const result = yield* SendEmail.awaitResult(jobId)
       return Result.ok({ jobId, result })
     })
@@ -94,39 +86,25 @@ try {
   if (Result.isError(completed)) throw completed.error
 
   console.log(completed.value)
-  await started.value.awaitIdle()
+  await worker.value.awaitIdle()
 } finally {
   await runtime.dispose()
 }
 ```
 
-What happened:
+`MemoryJobStore` is process-local and intentionally disposable. It is useful
+for examples, tests, and local development; use a durable adapter when work
+must survive a restart or be shared by multiple processes.
 
-1. `Queue.define` created a queue namespace. Its `Job` descriptor is immutable
-   and does not open a connection or register a handler.
-2. `MemoryJobStore` supplied the storage implementation. `JobStore.of(store)`
-   adapts that implementation to the `JobStore` Service token.
-3. `Worker.handle` connected the typed payload to a `better-effect` program.
-   `Worker.service(...).layer(...)` owns the worker's start and stop lifecycle.
-4. `runtime.run` provided the Services and Scope needed by each operation.
-   `awaitResult` used bounded polling because no event log was installed.
+## Define jobs with `Queue` and `Job`
 
-`MemoryJobStore` is deliberately isolated and process-local. It is ideal for a
-quick start, unit tests, demos, and disposable processes; it is not a durable
-queue and its state disappears on process restart.
-
-## The pieces and how they fit
-
-### `Queue` and `Job`: the application contract
-
-A queue groups related jobs. A job gives one work type a stable queue/name/
-version identity and declares the codecs used at the storage boundary:
+`Queue.define` creates a namespace. A Job descriptor gives one work type a
+stable identity and declares the codecs used at the storage boundary:
 
 ```ts
 import { Codec, Queue, Retry } from 'better-effect-mq'
 
 const Billing = Queue.define('billing')
-
 const ChargeCard = Billing.job('charge-card', {
   version: 1,
   payload: Codec.json<{
@@ -149,58 +127,42 @@ const ChargeCard = Billing.job('charge-card', {
 })
 ```
 
-The payload is the decoded value seen by the handler. The result and failure
-codecs describe values that can be read back by producers and administrators.
-`defaults` supplies retry and timeout policy; enqueue options can override the
-per-item schedule. An idempotency key makes a replay of the same request
-observable as a duplicate instead of creating another job.
+The payload is the decoded value passed to the handler. Result and failure
+codecs control what producers and operators can read back. Defaults provide
+retry and timeout policy; enqueue options can override the per-item schedule.
+The descriptor is inert: defining a Job does not resolve a Service, create a
+worker, or register anything globally.
 
-The descriptor is inert: defining a job does not resolve a Service, create a
-worker, or register anything globally. The same descriptor is used by
-producers, workers, and inspection code, so a producer and a worker cannot
-silently disagree about payload or result types.
+## `JobStore`: the persistence seam
 
-### `JobStore`: the storage seam
+`JobStore` is a yieldable Service, not a database client. The adapter contract
+covers enqueueing, claiming and leasing, settlement, heartbeats, stalled-job
+recovery, inspection, administration, and optional queue wake-ups. Provide the
+adapter through a Layer:
 
-`JobStore` is a yieldable Service, not a CRUD repository or a database client.
-An adapter implements its storage-neutral contract and provides it through a
-Layer. The contract covers the queue operations an adapter needs to make
-atomic in its own storage system:
+```ts
+const jobs = MemoryJobStore.make()
+const AppStorage = Layer.succeed(JobStore, JobStore.of(jobs))
+```
 
-- enqueue one or many jobs, including duplicate/idempotency handling;
-- claim due jobs and lease them to a worker;
-- settle a lease as completed, retried, failed, or cancelled;
-- heartbeat, release, and recover stalled leases;
-- inspect jobs, attempt history, and queue counts;
-- perform explicit administration such as retry, cancel, pause, resume, and
-  remove; and
-- wait for a queue wake-up when the backend can provide one.
+A durable adapter provides the same `JobStore` token through its own Layer.
+The `Job`, `Worker`, `enqueue`, and `awaitResult` calls do not change when the
+storage provider changes. Use `JobStore.named('billing')` when one Runtime
+contains independent stores; bind each Job to the store it belongs to.
 
-The core only sees `JobStore.Contract`. It does not inspect a backend kind or
-import a driver. Applications can use more than one store in one Runtime with
-`JobStore.named('name')`; each Job can be bound to the store it belongs to.
+## Workers and producer operations
 
-### `Worker`: supervised execution
+`Worker.handle(job, handler)` connects a Job to a typed `better-effect`
+program. A handler receives the decoded payload and can yield application
+Services. `JobContext` provides the job ID, attempt number, delivery count,
+metadata, and worker identity for the current attempt.
 
-`Worker.handle(job, handler)` connects one Job to a typed handler program. A
-handler receives the decoded payload and may yield application Services. During
-an attempt it can also yield `JobContext` for the job ID, attempt number,
-delivery count, metadata, and worker identity.
+`Worker.service(tag)` returns a Layer-first Service. Acquiring its Layer starts
+the supervisor; Runtime shutdown stops it. Workers support bounded concurrency,
+queue and handler limits, retries, timeouts, lease heartbeats, stalled
+recovery, and graceful stop.
 
-`Worker.service(tag)` returns a Layer-first Service. Its factory is acquired
-lazily, and its Layer owns the worker lifecycle. A worker claims jobs,
-executes handlers with an attempt-local cancellation signal and Scope, records
-the outcome, and keeps processing other jobs when one handler fails.
-
-Workers support bounded concurrency, queue and handler limits, retry policies,
-timeouts, lease heartbeats, stalled recovery, and graceful stop. Use the
-Runtime that owns the worker for the full application lifetime; on shutdown,
-stop the worker before disposing that Runtime when you manage both explicitly.
-
-### Producer operations
-
-Every Job exposes typed operations that are yieldable inside an `Effect`
-program:
+Every Job exposes yieldable producer operations:
 
 | Operation                    | Use it for                                          |
 | ---------------------------- | --------------------------------------------------- |
@@ -208,201 +170,331 @@ program:
 | `enqueueMany`                | Submit a batch while retaining input order.         |
 | `poll`                       | Read one job snapshot without waiting.              |
 | `awaitResult`                | Wait for a terminal result or typed failure.        |
-| `execute`                    | Enqueue and wait using one operation.               |
-| `attempts`                   | Read the durable delivery ledger for one job.       |
+| `execute`                    | Enqueue and wait in one operation.                  |
+| `attempts`                   | Read the delivery ledger for one job.               |
 | `cancel`, `retry`, `promote` | Apply explicit job administration.                  |
 
-For heterogeneous queries, bind the store token explicitly with
-`JobAdmin.for(JobStore).list(...)`, `.counts(...)`, `.pause(...)`, `.resume(...)`,
-or `.remove(...)`.
+## Flow: coordinate a parent execution
 
-## Choosing Memory or a durable adapter
+Flow solves the fan-out/fan-in problem: one parent Job can create multiple
+typed child Jobs, wait until they settle, and collect their outcomes as one
+parent result. Use it when a request naturally consists of parallel or
+dependent steps that need durable progress and a single result; use ordinary
+Jobs when each unit can be submitted and observed independently.
 
-`MemoryJobStore` and a durable adapter expose the same application-facing
-`Job`, `JobStore`, and `Worker` shape. The choice is about operational
-guarantees, not a different programming model.
-
-|          | `MemoryJobStore`                                      | Durable adapter                                                                     |
-| -------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| State    | One isolated in-process instance.                     | Stored in the adapter's persistent backend.                                         |
-| Restart  | Jobs, leases, and attempts are lost.                  | State can be recovered after a process restart.                                     |
-| Sharing  | Not a coordination mechanism between processes.       | Multiple producers/workers can share the configured backend.                        |
-| Best for | Tests, examples, local development, short-lived work. | Production work that must survive crashes and be shared or resumed.                 |
-| Setup    | `MemoryJobStore.make()` or `MemoryJobStore.layer`.    | The adapter package's Layer factory and its host-owned or adapter-owned connection. |
-
-Start with Memory when you are validating application behavior or writing
-tests. Move to a durable adapter when losing queued work on restart is not
-acceptable, when workers run in more than one process, or when operations need
-durable inspection and recovery. The application Job definitions and Worker
-handlers stay the same; only the providers in the Runtime composition change.
-
-The core package intentionally does not duplicate the setup instructions for
-each backend. See the [composition guide](./docs/composition.md) for the
-current Layer shape and adapter recipes, and the [driver author guide](./docs/writing-a-driver.md)
-if you are implementing a new adapter.
-
-## Adding a durable EventLog
-
-`JobEventStore` is an optional event-log Service associated with a `JobStore`.
-A durable implementation appends compact, safe transition facts such as
-enqueue, claim, completion, retry, failure, cancellation, and queue changes.
-Each event has an opaque cursor, so a consumer can resume from a checkpoint.
-Retention is bounded by the adapter's configured policy; an expired cursor is
-an explicit condition, not an infinite archive.
-
-The EventLog is useful for feeds, dashboards, audit-shaped transition history,
-and waking a caller that is waiting for a result. It is deliberately not a
-copy of the Job record: payloads, results, complete failure data, metadata, and
-lease tokens do not belong in event attributes by default.
-
-### Memory EventLog composition
-
-The in-process event store uses the same composition shape as a durable event
-adapter. Pass the same instance to `MemoryJobStore.make({ eventStore })` so
-committed Memory transitions append to the log, then provide both Services in
-one Runtime:
+The example below is complete and compilable. It defines a parent and two
+child Jobs, registers child handlers and a Flow handler on one Worker, provides
+the Job and Flow persistence services, enqueues the parent, and awaits the
+collected result. See [`examples/flow/main.ts`](./examples/flow/main.ts) for
+the runnable copy.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import {
+  Codec,
+  Flow,
+  FlowStore,
+  JobStore,
+  MemoryFlowStore,
+  MemoryJobStore,
+  Queue,
+  Worker
+} from 'better-effect-mq'
+
+const Reports = Queue.define('examples.reports')
+const RunReport = Reports.job('run-report', {
+  version: 1,
+  payload: Codec.json<{ readonly reportId: string }>(),
+  result: Codec.json<{ readonly completed: number; readonly failed: number }>(),
+  failure: Codec.json<{ readonly code: string }>()
+})
+const BuildReport = Reports.job('build-report', {
+  version: 1,
+  payload: Codec.json<{ readonly reportId: string }>(),
+  result: Codec.json<{ readonly reportId: string; readonly rows: number }>(),
+  failure: Codec.json<{ readonly code: string }>()
+})
+const NotifyReport = Reports.job('notify-report', {
+  version: 1,
+  payload: Codec.json<{ readonly reportId: string }>(),
+  result: Codec.string,
+  failure: Codec.json<{ readonly code: string }>()
+})
+
+const ReportFlow = Flow.define('report-flow', {
+  parent: RunReport,
+  children: [BuildReport, NotifyReport] as const,
+  onChildFailure: 'continue'
+})
+
+const ReportFlowHandler = Flow.handle(ReportFlow, {
+  fanOut: (payload) =>
+    Effect.fn(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok([
+        Flow.children(BuildReport, [{ key: 'build', payload: { reportId: payload.reportId } }]),
+        Flow.children(NotifyReport, [{ key: 'notify', payload: { reportId: payload.reportId } }])
+      ] as const)
+    }),
+  collect: (_payload, results) =>
+    Effect.fn(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok({
+        completed: results.counts.completed,
+        failed: results.counts.failed
+      })
+    })
+})
+
+const handlers = [
+  Worker.handle(BuildReport, (payload) =>
+    Effect.fn(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok({ reportId: payload.reportId, rows: 42 })
+    })
+  ),
+  Worker.handle(NotifyReport, (payload) =>
+    Effect.fn(async function* () {
+      yield* Result.await(Promise.resolve(Result.ok(undefined)))
+      return Result.ok(`notified:${payload.reportId}`)
+    })
+  )
+] as const
+
+const ReportsWorker = Worker.service('@examples/ReportsWorker')
+const ReportsWorkerLive = ReportsWorker.layer(() => ({
+  handlers,
+  flows: [ReportFlowHandler] as const,
+  concurrency: 2,
+  pollIntervalMs: 1,
+  flowSweepIntervalMs: 2,
+  flowBatchSize: 16
+}))
+
+// A durable adapter provides these same two Service tokens with its own Layer.
+const jobs = MemoryJobStore.make()
+const flows = MemoryFlowStore.make()
+const AppLive = Layer.complete(
+  Layer.merge(
+    Layer.succeed(JobStore, JobStore.of(jobs)),
+    Layer.merge(
+      Layer.succeed(FlowStore, FlowStore.of(flows)),
+      Layer.merge(ClockLive, ReportsWorkerLive)
+    )
+  )
+)
+const runtime = await Runtime.make(AppLive)
+
+try {
+  const worker = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* ReportsWorker)
+    })
+  )
+  if (Result.isError(worker)) throw worker.error
+
+  const execution = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* RunReport.enqueue({ reportId: 'daily-2026-01-01' })
+      const result = yield* RunReport.awaitResult(jobId)
+      return Result.ok({ jobId, result })
+    })
+  )
+  if (Result.isError(execution)) throw execution.error
+
+  console.log(execution.value)
+  await worker.value.awaitIdle({ timeoutMs: 2_000 })
+} finally {
+  await runtime.dispose()
+}
+```
+
+`Flow.define` is an immutable descriptor. `Flow.handle` supplies `fanOut` and
+`collect` programs; `Flow.children` keeps each child payload typed. Register
+the Flow handler in the options returned by
+`Worker.service(...).layer(() => ({ flows }))` and register ordinary child
+handlers in `handlers`. The Flow store records the parent, child manifest,
+terminal reports, and relay work. For production, replace both memory
+providers with the durable adapter's matching `JobStore` and `FlowStore`
+Layers. The Flow API remains the same.
+
+`onChildFailure: 'continue'` collects successful and failed children. Use
+`'fail'` when the first failed child should fail the parent and cascade the
+remaining work.
+
+## Events and observing results
+
+Polling is the default and needs only a `JobStore`. To use a durable event log
+as a wake-up hint, provide the matching `JobEventStore` in the same Runtime:
+
+```ts
+import { Effect, Layer } from 'better-effect'
 import { Result } from 'better-result'
 import { JobEventStore, JobStore, MemoryJobEventStore, MemoryJobStore } from 'better-effect-mq'
 
 const events = MemoryJobEventStore.make({
   retention: { count: 1_000, ageMs: 24 * 60 * 60 * 1_000 }
 })
-const store = MemoryJobStore.make({ eventStore: events })
-
-const AppLive = Layer.complete(
-  Layer.merge(
-    Layer.succeed(JobStore, JobStore.of(store)),
-    Layer.merge(Layer.succeed(JobEventStore, JobEventStore.of(events)), ClockLive)
-  )
+const jobs = MemoryJobStore.make({ eventStore: events })
+const AppStorage = Layer.merge(
+  Layer.succeed(JobStore, JobStore.of(jobs)),
+  Layer.succeed(JobEventStore, JobEventStore.of(events))
 )
 
-const runtime = await Runtime.make(AppLive)
-const tail = await events.tailCursor()
-if (Result.isError(tail)) throw tail.error
-await runtime.dispose()
-```
-
-`MemoryJobEventStore` is a reference implementation for tests and local
-experiments; it is not durable across restarts. A durable adapter provides the
-same `JobEventStore` token through its own Layer. Keep the JobStore and its
-matching event store in the same Runtime rather than creating a second Runtime
-just to read events.
-
-### Waiting for a result with events
-
-Polling is the default and does not require an EventLog. If the matching event
-store is installed, opt into event-driven waiting and retain a bounded polling
-fallback:
-
-```ts
-const result = await runtime.run(() =>
-  Effect.gen(async function* () {
-    const jobId = yield* SendEmail.enqueue({
-      recipient: 'ada@example.test'
-    })
-    const value = yield* SendEmail.awaitResult(jobId, {
+const result = Effect.gen(async function* () {
+  return Result.ok(
+    yield* SendEmail.awaitResult(jobId, {
       strategy: 'events',
       eventStore: JobEventStore,
       pollFallbackMs: 5_000
     })
-    return Result.ok({ jobId, value })
-  })
-)
+  )
+})
 ```
 
-`awaitResult` still rereads the Job record before decoding its result or
-failure. An event is a wake hint, not the source of truth; if reading or
-notifying events fails, bounded polling can continue. Aborting the wait stops
-the caller's wait but does not cancel a Job already persisted in the store.
+An event is a wake-up hint, not the source of truth: `awaitResult` rereads the
+Job record before decoding the terminal result or failure. Event retention is
+bounded, and a failed event read can fall back to polling. The
+`JobEventStore`, detailed `job.attempts(jobId)` ledger, and process-local
+`JobObserver` are complementary surfaces; none replaces the others.
 
-For a finite read, use `JobEvents.page(JobEventStore, options)`. For a
-continuous sequential consumer, use `JobEvents.forEach(...)`; the caller owns
-the cursor and should persist it only after the handler succeeds. Restarting
-from the last persisted cursor gives at-least-once event delivery. The
-consumer uses the active Runtime and Scope and does not create a subscriber or
-a second Runtime.
+## Outbox: make a transaction handoff durable
 
-For an independently managed long-lived event consumer, the Layer-first
-`JobEventConsumer.service(...).layer(...)` API owns only the polling and
-callback lifecycle. Cursor checkpoints remain application-owned. See the
-[composition guide](./docs/composition.md) for the complete consumer example.
+The optional [`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md)
+extension solves the database dual-write problem. It is not a second queue API:
+you still define a Job with `Queue.define`, route a prepared request to the
+core `JobStore`, and process it with the same `Worker.handle` handler. The
+extension adds a transaction-bound outbox record and a Runtime-owned publisher:
 
-## EventLog, AttemptRecord, and local observers
+```text
+database transaction
+  ├─ write the order
+  └─ append a prepared Job request
+        │ commit
+        ▼
+OutboxPublisher → core JobStore → Worker.handle(SendConfirmation)
+```
 
-These three surfaces answer different operational questions. They are
-complementary, not interchangeable:
-
-| Surface                                   | Answers                                                    | Lifetime and delivery                                                                                      | Data boundary                                                                                                     |
-| ----------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `JobEventStore` (EventLog)                | “What committed transitions can a resumable feed consume?” | Durable when backed by a durable adapter; bounded retention; cursor-based and at-least-once for consumers. | Compact event facts and bounded attributes; no payload, result, complete failure body, or lease token by default. |
-| `AttemptRecord` via `job.attempts(jobId)` | “What happened on each delivery of this Job?”              | Durable with the JobStore record; queryable history, not an append-only feed or cursor source.             | Detailed outcome, timing, retry schedule, and codec-decoded result/failure views; treat as potentially sensitive. |
-| `JobObserver`                             | “What should this process log or measure right now?”       | Process-local and best-effort; callbacks are not awaited and may be lost on crash or shutdown.             | Storage-neutral event snapshots for logs and low-cardinality metrics; observers must not affect queue behavior.   |
-
-Use the EventLog for replayable transition feeds and wake-ups, AttemptRecord
-for per-delivery diagnosis, and `JobObserver` for local logs/metrics. Do not
-promote an observer to a durability mechanism or copy sensitive Job data into
-event attributes.
-
-Attach an observer to a worker or Job without adding a logging dependency:
+The transaction-to-publisher shape is:
 
 ```ts
-import { Job, JobObserver } from 'better-effect-mq'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { PostgresJobStore, PostgresOutbox, type Pool } from 'better-effect-mq-postgres'
 
-const observer = JobObserver.logger((event) => {
-  console.info(event.message, event.data)
+declare const pool: Pool
+const Orders = Queue.define('orders')
+const SendConfirmation = Orders.job('send-confirmation', {
+  version: 1,
+  payload: Codec.json<{ readonly orderId: string; readonly email: string }>(),
+  result: Codec.string,
+  store: JobStore,
+  defaults: { attempts: 5 },
+  idempotencyKey: ({ orderId }) => `order-confirmation:${orderId}`
 })
 
-const ObservedSendEmail = Job.observe(SendEmail, observer)
-// Use ObservedSendEmail for producer/admin operations, or pass `observer`
-// in a Worker service Layer for worker lifecycle and attempt events.
+const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
+  Effect.fn(async function* () {
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
+    return Result.ok(`sent:${payload.email}`)
+  })
+)
+const QueueWorker = Worker.service('@app/OrderWorker')
+const QueueWorkerLive = QueueWorker.layer(() => ({
+  handlers: [confirmationHandler] as const,
+  concurrency: 2,
+  pollIntervalMs: 100
+}))
+
+const Routes = OutboxRoutes.make({ jobs: JobStore })
+const Publisher = OutboxPublisher.service('OrderOutboxPublisher')
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [PostgresOutbox] as const,
+  routes: Routes,
+  concurrency: 4,
+  pollIntervalMs: 1_000
+}))
+const AppLive = Layer.complete(
+  Layer.merge(
+    ClockLive,
+    PostgresJobStore.layer({ pool, namespace: 'orders' }),
+    PostgresOutbox.layer({ pool, namespace: 'orders' }),
+    PublisherLive,
+    QueueWorkerLive
+  )
+)
+const runtime = await Runtime.make(AppLive)
+
+const prepared = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(
+      yield* SendConfirmation.prepare({ orderId: 'order-123', email: 'ada@example.test' })
+    )
+  })
+)
+if (Result.isError(prepared)) throw prepared.error
+const record = makeOutboxRecord({
+  id: OutboxId.make('order-confirmation:order-123').unwrap(),
+  target: 'jobs',
+  request: prepared.value,
+  attemptsMax: 5
+})
+if (Result.isError(record)) throw record.error
+
+const transaction = await pool.connect()
+try {
+  await transaction.query('BEGIN')
+  await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
+    'order-123',
+    'ada@example.test'
+  ])
+  await PostgresOutbox.appendIn(transaction, record.value, { namespace: 'orders' })
+  await transaction.query('COMMIT')
+} catch (cause) {
+  await transaction.query('ROLLBACK')
+  throw cause
+} finally {
+  transaction.release()
+}
 ```
 
-`JobObserver.compose(...)` combines observers in declaration order, and
-`JobObserver.metrics(...)` adapts a metrics sink. Observer failures are
-contained and never change claims, settlement, leases, or shutdown.
+After commit, the publisher enqueues the prepared request into the routed
+`JobStore`; the normal worker then runs `SendConfirmation`. The complete
+PostgreSQL setup, connection ownership rules, and adapter equivalents are in
+the outbox extension's [transaction-to-publisher example](../better-effect-mq-outbox/README.md#end-to-end-example-with-postgresql).
 
-## Reliability guarantees and limits
+## Reliability
 
-- Delivery is **at least once**. A handler can perform an external side effect
-  and crash before its settlement is stored, so external effects must be
-  idempotent (usually with the Job ID or an application idempotency key).
-- Leases and fencing prevent an old worker from settling a newer delivery.
-  They cannot undo an external side effect that already happened.
-- Typed handler failures can be retried according to `Retry` and the Job's
-  `retryable` policy. Defects, codec failures, timeouts, and cancellations are
-  represented separately so operators can distinguish them.
-- A successful settlement records the Job outcome and an attempt ledger entry.
-  If a settlement response is lost after the backend applied it, a retry can
-  acknowledge the already-applied outcome without creating a second attempt.
-- Worker shutdown is cooperative. The Runtime stops admitting new work,
-  allows active attempts to settle according to its configured policy, and
-  closes owned resources. A Promise that ignores its cancellation signal
-  cannot be forcibly killed.
-- Event retention is bounded. A cursor can expire, and an EventLog is not an
-  infinite archive or a replacement for payload/result storage.
-- The package does not promise exactly-once execution or a transaction spanning
-  a JobStore and an external API. Use an idempotency key, an outbox, or a
-  backend-specific transaction integration when your workflow needs one.
+- Delivery is at least once, not exactly once. Make handler side effects
+  idempotent with the Job ID or an application key.
+- Leases and fencing prevent an old worker from settling a newer delivery, but
+  they cannot undo an external side effect that already happened.
+- Typed failures can be retried according to `Retry` and the Job's `retryable`
+  policy. Timeouts, cancellations, codec failures, and defects remain
+  distinguishable for operators.
+- Worker shutdown is cooperative. Runtime disposal stops admitting new work,
+  lets active attempts settle according to its policy, and closes owned
+  resources.
+- Event retention is bounded. An EventLog is not an infinite archive or a
+  replacement for payload/result storage.
 
-## Testing and adapter references
+## Testing and further reading
 
-The `better-effect-mq/testing` entrypoint provides `TestJobStore`,
-`RecordedJobObserver`, and runner-neutral conformance suites for JobStore,
-EventLog, flow, and schedule adapters. The package's examples can be checked
-with:
+The package's runnable examples can be checked with:
 
 ```bash
 bun run typecheck:examples
 bun run test:examples
+bunx tsc -p examples/flow/tsconfig.json --pretty false
+bun examples/flow/main.ts
 ```
 
 The [examples README](./examples/README.md) describes each runnable example.
-For advanced implementation details, use the [composition guide](./docs/composition.md),
-the [driver author guide](./docs/writing-a-driver.md), and the
-[protocol reference](./docs/protocol/). Those documents are primarily for
-adapter authors and maintainers; application code should normally stay on the
-public `Job`, `Worker`, `JobStore`, and `JobEventStore` APIs described here.
+For application-facing adapter composition, see the [composition guide](./docs/composition.md).
+For adapter authors and maintainers, see the [driver author guide](./docs/writing-a-driver.md)
+and the [technical protocol notes](./docs/protocol/).

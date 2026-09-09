@@ -2,7 +2,6 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import {
-  JobContext,
   JobEventStore,
   JobStore,
   MemoryJobEventStore,
@@ -20,8 +19,7 @@ const store = MemoryJobStore.make({ eventStore: events })
 const AppWorker = Worker.service('@examples/CompositionWorker')
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    const context = yield* JobContext
-    void context
+    yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok(`sent:${payload.recipient}`)
   })
 )
