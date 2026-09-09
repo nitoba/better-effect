@@ -28,6 +28,7 @@ import {
   DEFAULT_NAMESPACE,
   validateCollectionPrefix,
   validateNamespace,
+  type MongoClient,
   type MongoCollection,
   type MongoDb,
   type MongoSession
@@ -39,6 +40,15 @@ export type MongoOutboxRow = Record<string, unknown>
 
 export interface MongoOutboxAppendOptions {
   readonly db: MongoDb
+  readonly namespace?: string
+  readonly collectionPrefix?: string
+  readonly token?: AnyOutboxStoreToken
+}
+
+/** Options for the adapter-owned transaction helper. */
+export interface MongoOutboxTransactionOptions {
+  /** Required only when the first argument is a MongoClient rather than a MongoDb. */
+  readonly db?: MongoDb
   readonly namespace?: string
   readonly collectionPrefix?: string
   readonly token?: AnyOutboxStoreToken
@@ -187,6 +197,25 @@ const normalize = (options: MongoOutboxAppendOptions): NormalizedAppendOptions =
   }
 }
 
+const isMongoDb = (value: MongoClient | MongoDb): value is MongoDb =>
+  typeof (value as MongoDb).collection === 'function'
+
+const normalizeTransaction = (
+  clientOrDb: MongoClient | MongoDb,
+  options: MongoOutboxTransactionOptions | undefined
+): { readonly client: MongoClient; readonly append: NormalizedAppendOptions } => {
+  const db = isMongoDb(clientOrDb) ? clientOrDb : options?.db
+  if (db === undefined)
+    throw new Error('MongoOutbox.transaction requires options.db when given a MongoClient')
+  const client = isMongoDb(clientOrDb) ? clientOrDb.client : clientOrDb
+  if (client === undefined || typeof client.startSession !== 'function')
+    throw new Error('MongoOutbox.transaction requires a MongoClient to open a MongoDB session')
+  return {
+    client,
+    append: normalize({ ...options, db })
+  }
+}
+
 interface NormalizedAppendOptions {
   readonly db: MongoDb
   readonly namespace: string
@@ -247,15 +276,14 @@ export const MongoOutbox = Object.freeze({
    * transient transaction errors, so domain writes must be retry-safe.
    */
   async transaction<Value>(
+    clientOrDb: MongoClient | MongoDb,
+    record: OutboxRecord,
     body: MongoOutboxTransactionBody<Value>,
-    options: MongoOutboxAppendOptions
+    options?: MongoOutboxTransactionOptions
   ): Promise<Value> {
-    const normalized = normalize(options)
-    const client = normalized.db.client
-    if (client === undefined || typeof client.startSession !== 'function')
-      throw new Error('MongoOutbox.transaction requires db.client to open a MongoDB session')
-
-    const session = client.startSession()
+    const normalized = normalizeTransaction(clientOrDb, options)
+    const checked = initial(record)
+    const session = normalized.client.startSession()
     const rollback: RollbackResult = { result: undefined }
     try {
       try {
@@ -263,6 +291,11 @@ export const MongoOutbox = Object.freeze({
           const value = await body(session)
           if (isResultError(value)) {
             rollback.result = value
+            throw rollback
+          }
+          const appended = await MongoOutbox.appendIn(session, checked, normalized.append)
+          if (Result.isError(appended)) {
+            rollback.result = appended
             throw rollback
           }
           return value

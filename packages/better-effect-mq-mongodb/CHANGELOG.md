@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Add `MongoOutbox.transaction` for adapter-owned MongoDB session and
-  transaction lifecycle around domain writes and outbox appends; preserve
-  `appendIn` as the advanced caller-owned escape hatch.
+- Add `MongoOutbox.transaction(clientOrDb, preparedRecord, callback, options?)`
+  for adapter-owned MongoDB session and transaction lifecycle around domain
+  writes and automatic outbox appends; preserve `appendIn` as the advanced
+  caller-owned escape hatch.
 - Add MongoDB QueueControls protocol v3 support with durable revisioned
   controls, persisted dispatch keys, transactional global/per-key permits,
   anchored fixed-window rate limits, bounded fairness cursors, fail-closed

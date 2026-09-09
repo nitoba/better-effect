@@ -13,9 +13,11 @@ import {
   MongoOutbox,
   MongoOutboxStore,
   OutboxStore,
+  type MongoClient,
   type MongoDb,
   type MongoOutboxAppendOptions,
   type MongoOutboxTransactionBody,
+  type MongoOutboxTransactionOptions,
   type MongoOutboxTransaction,
   type MongoJobStoreConfig
 } from '../../src'
@@ -38,8 +40,10 @@ expectTypeOf(MongoOutbox.appendIn).toMatchTypeOf<
 >()
 expectTypeOf(MongoOutbox.transaction).toMatchTypeOf<
   <Value>(
+    clientOrDb: MongoClient | MongoDb,
+    record: OutboxRecord,
     body: MongoOutboxTransactionBody<Value>,
-    options: MongoOutboxAppendOptions
+    options?: MongoOutboxTransactionOptions
   ) => Promise<Value>
 >()
 

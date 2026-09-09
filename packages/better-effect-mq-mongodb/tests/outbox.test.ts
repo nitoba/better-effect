@@ -156,6 +156,7 @@ const makeTransactionBoundary = (reply: Record<string, unknown>) => {
   }
   return {
     db,
+    client,
     events,
     session,
     get transactionOptions() {
@@ -463,16 +464,13 @@ test('MongoOutbox.transaction commits domain writes and append results together'
   })
 
   const result = await MongoOutbox.transaction(
+    fake.db,
+    value,
     async (session) => {
       await fake.db.collection('orders').insertOne({ _id: 'order-1' }, { session })
-      const appended = await MongoOutbox.appendIn(session, value, {
-        db: fake.db,
-        namespace: 'billing'
-      })
-      if (Result.isError(appended)) return Result.err(appended.error)
-      return Result.ok(appended.value.record.id)
+      return Result.ok('order-1')
     },
-    { db: fake.db, namespace: 'billing' }
+    { namespace: 'billing' }
   )
 
   expect(Result.isOk(result)).toBe(true)
@@ -483,14 +481,34 @@ test('MongoOutbox.transaction commits domain writes and append results together'
   })
 })
 
+test('MongoOutbox.transaction accepts a MongoClient with options.db', async () => {
+  const value = record('managed-client')
+  const fake = makeTransactionBoundary({
+    value: storedDocument(value),
+    lastErrorObject: { updatedExisting: false }
+  })
+
+  const result = await MongoOutbox.transaction(
+    fake.client,
+    value,
+    async () => Result.ok('client'),
+    { db: fake.db, namespace: 'billing' }
+  )
+
+  expect(Result.isOk(result)).toBe(true)
+  expect(fake.events).toEqual(['start', 'transaction', 'append', 'commit', 'end'])
+})
+
 test('MongoOutbox.transaction aborts a nominal Result.err from the domain callback', async () => {
   const fake = makeTransactionBoundary({})
   const failure = new Error('domain rejected')
 
-  const result = await MongoOutbox.transaction(async () => Result.err(failure), {
-    db: fake.db,
-    namespace: 'billing'
-  })
+  const result = await MongoOutbox.transaction(
+    fake.db,
+    record('managed-domain-failure'),
+    async () => Result.err(failure),
+    { namespace: 'billing' }
+  )
 
   expect(Result.isError(result)).toBe(true)
   if (Result.isOk(result)) return
@@ -498,17 +516,22 @@ test('MongoOutbox.transaction aborts a nominal Result.err from the domain callba
   expect(fake.events).toEqual(['start', 'transaction', 'abort', 'end'])
 })
 
-test('MongoOutbox.transaction aborts when appendIn returns a failure Result', async () => {
+test('MongoOutbox.transaction aborts when its automatic append fails', async () => {
   const value = record('managed-append-failure')
   const fake = makeTransactionBoundary({ value: null })
 
   const result = await MongoOutbox.transaction(
-    async (session) => MongoOutbox.appendIn(session, value, { db: fake.db, namespace: 'billing' }),
-    { db: fake.db, namespace: 'billing' }
+    fake.db,
+    value,
+    async (session) => {
+      await fake.db.collection('orders').insertOne({ _id: 'order-2' }, { session })
+      return Result.ok('order-2')
+    },
+    { namespace: 'billing' }
   )
 
   expect(Result.isError(result)).toBe(true)
-  expect(fake.events).toEqual(['start', 'transaction', 'append', 'abort', 'end'])
+  expect(fake.events).toEqual(['start', 'transaction', 'domain', 'append', 'abort', 'end'])
 })
 
 test('MongoOutbox.transaction aborts thrown failures and always ends its session', async () => {
@@ -517,10 +540,12 @@ test('MongoOutbox.transaction aborts thrown failures and always ends its session
 
   await expect(
     MongoOutbox.transaction(
+      fake.db,
+      record('managed-thrown-failure'),
       async () => {
         throw failure
       },
-      { db: fake.db, namespace: 'billing' }
+      { namespace: 'billing' }
     )
   ).rejects.toBe(failure)
 

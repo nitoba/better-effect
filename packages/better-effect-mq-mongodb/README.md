@@ -464,18 +464,15 @@ const record = makeOutboxRecord({
 if (Result.isError(record)) throw record.error
 
 const transactionResult = await MongoOutbox.transaction(
+  db,
+  record.value,
   async (session) => {
     await db
       .collection('orders')
       .insertOne({ _id: 'order-123', email: 'ada@example.test' }, { session })
-    const appended = await MongoOutbox.appendIn(session, record.value, {
-      db,
-      namespace: 'application'
-    })
-    if (Result.isError(appended)) return Result.err(appended.error)
-    return Result.ok({ orderId: 'order-123', outboxId: appended.value.record.id })
+    return Result.ok({ orderId: 'order-123', outboxId: record.value.id })
   },
-  { db, namespace: 'application' }
+  { namespace: 'application' }
 )
 if (Result.isError(transactionResult)) throw transactionResult.error
 
@@ -496,12 +493,19 @@ await runtime.dispose()
 ```
 
 Prepare the job before calling the application transaction helper. The request
-is fully encoded and can be stored safely. The domain write and
-`MongoOutbox.appendIn` call share the adapter-owned session, so either both
-commit or both roll back. `MongoOutbox.transaction` commits only after the
-callback succeeds, aborts thrown/rejected or nominal `Result.err` outcomes,
-and always ends the session. MongoDB may retry a transaction callback after a
-transient error, so domain writes in the callback must be safe to retry.
+is fully encoded and can be stored safely. `MongoOutbox.transaction` receives
+the database, prepared record, and domain callback; it appends that record
+after the callback succeeds, then commits both writes together. It owns the
+session, transaction, and cleanup, aborts thrown/rejected or nominal
+`Result.err` outcomes, and always ends the session. MongoDB may retry a
+transaction callback after a transient error, so domain writes in the callback
+must be safe to retry.
+
+Pass a `MongoClient` as the first argument when the database is not available
+there; in that form provide the database as `options.db` so the adapter can
+append to the selected database. `MongoOutbox.appendIn` remains available only
+as an advanced escape hatch for code that intentionally owns the session and
+transaction lifecycle.
 
 After commit, the running `OutboxPublisher` claims the record and calls the
 `jobs` route. The `JobStore` receives the prepared request, and the outbox
