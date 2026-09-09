@@ -146,18 +146,24 @@ local function appendEvent(item)
     local id = redis.call("XADD", keys.events, "*", "data", cjson.encode(event))
     if type(id) ~= "string" then return false end
     redis.call("HSET", keys.eventsMeta, "initialized", "1")
-    local removed = 0
+    local trimmedThrough = nil
     local retention = item.eventRetention or {}
     if retention.ageMs then
       local cutoff = event.recordedAtMs - retention.ageMs
       if cutoff < 0 then cutoff = 0 end
-      removed = removed + redis.call("XTRIM", keys.events, "MINID", "=", tostring(cutoff) .. "-0")
+      if cutoff > 0 then
+        local previous = redis.call("XREVRANGE", keys.events, "(" .. tostring(cutoff) .. "-0", "-", "COUNT", "1")
+        if previous[1] and previous[1][1] then trimmedThrough = previous[1][1] end
+      end
+      redis.call("XTRIM", keys.events, "MINID", "=", tostring(cutoff) .. "-0")
     end
-    if retention.count then removed = removed + redis.call("XTRIM", keys.events, "MAXLEN", "=", tostring(retention.count)) end
-    if removed > 0 then
-      local first = redis.call("XRANGE", keys.events, "-", "+", "COUNT", "1")
-      if first[1] and first[1][1] then redis.call("HSET", keys.eventsMeta, "trimmedThrough", first[1][1]) end
+    if retention.count then
+      local previous = redis.call("XREVRANGE", keys.events, "+", "-", "COUNT", retention.count + 1)
+      local boundary = previous[retention.count + 1]
+      if boundary and boundary[1] then trimmedThrough = boundary[1] end
+      redis.call("XTRIM", keys.events, "MAXLEN", "=", tostring(retention.count))
     end
+    if trimmedThrough then redis.call("HSET", keys.eventsMeta, "trimmedThrough", trimmedThrough) end
   end
   return true
 end
