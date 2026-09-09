@@ -67,11 +67,24 @@ local function appendClaimEvent(p, job)
     redis.call("XADD", p.keys.events, "*", "data", cjson.encode(event))
   end
   redis.call("HSET", p.keys.eventsMeta, "initialized", "1")
-  local removed = 0
   local retention = p.eventRetention or {}
-  if retention.ageMs then local cutoff = p.now - retention.ageMs; if cutoff < 0 then cutoff = 0 end; removed = removed + redis.call("XTRIM", p.keys.events, "MINID", "=", tostring(cutoff) .. "-0") end
-  if retention.count then removed = removed + redis.call("XTRIM", p.keys.events, "MAXLEN", "=", tostring(retention.count)) end
-  if removed > 0 then local first = redis.call("XRANGE", p.keys.events, "-", "+", "COUNT", "1"); if first[1] and first[1][1] then redis.call("HSET", p.keys.eventsMeta, "trimmedThrough", first[1][1]) end end
+  local trimmedThrough = nil
+  if retention.ageMs then
+    local cutoff = p.now - retention.ageMs
+    if cutoff < 0 then cutoff = 0 end
+    if cutoff > 0 then
+      local previous = redis.call("XREVRANGE", p.keys.events, "(" .. tostring(cutoff) .. "-0", "-", "COUNT", "1")
+      if previous[1] and previous[1][1] then trimmedThrough = previous[1][1] end
+    end
+    redis.call("XTRIM", p.keys.events, "MINID", "=", tostring(cutoff) .. "-0")
+  end
+  if retention.count then
+    local previous = redis.call("XREVRANGE", p.keys.events, "+", "-", "COUNT", retention.count + 1)
+    local boundary = previous[retention.count + 1]
+    if boundary and boundary[1] then trimmedThrough = boundary[1] end
+    redis.call("XTRIM", p.keys.events, "MAXLEN", "=", tostring(retention.count))
+  end
+  if trimmedThrough then redis.call("HSET", p.keys.eventsMeta, "trimmedThrough", trimmedThrough) end
   return true
 end
 
