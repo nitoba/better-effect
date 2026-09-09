@@ -30,8 +30,8 @@ const EventFailure = z.object({
   retryable: z.boolean()
 })
 
-// Codec.standardSchema validates decoded values with the Standard Schema
-// facade. The explicit encoder delegates wire conversion to the schema class.
+// The MQ schema codec validates persisted values and the explicit encoder
+// delegates wire conversion to the better-effect-schema class.
 const userEventCodec = Codec.standardSchema({
   schema: UserEvent,
   encode: (value) =>

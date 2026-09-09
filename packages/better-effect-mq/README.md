@@ -145,17 +145,24 @@ try {
 for examples, tests, and local development; use a durable adapter when work
 must survive a restart or be shared by multiple processes.
 
-`Codec.standardSchema` is the bridge between a Standard Schema implementation
-and a Job codec. With a schema class, the codec decodes persisted JSON into the
-class used by the handler; the explicit `encode` callback delegates the wire
-projection to `Schema.encode`. If the schema output is already JSON-safe, omit
-`encode` and the standard schema codec uses that value for both sides.
+The schema-backed codec decodes persisted JSON into the class used by the
+handler; the explicit `encode` callback delegates the wire projection to
+`Schema.encode`. If a provider schema's output is already JSON-safe, omit
+`encode` and the codec uses that value for both sides.
 
 Use `Codec.json<T>()` when a value is already plain JSON and a separate runtime
 validator would add no value—for example, a small internal-only payload or a
 primitive result. Prefer a schema-backed codec for HTTP, database, queue, or
 other untrusted boundaries where runtime validation, normalized failures, or a
 decoded domain class matters.
+
+## Advanced: raw Standard Schema interoperability
+
+`Codec.standardSchema` can bridge a schema that implements the Standard Schema
+contract when no provider adapter is available. Prefer a native provider such
+as Zod 4 through `better-effect-schema`; hand-writing a `StandardSchemaV1`
+object is an adapter/interoperability escape hatch, not the recommended Job
+definition path.
 
 ## Define jobs with `Queue` and `Job`
 
@@ -200,6 +207,9 @@ The descriptor is inert: defining a Job does not resolve a Service, create a
 worker, or register anything globally. For a payload whose in-memory value is
 different from its wire value—such as a `Date` or a schema class—provide the
 explicit encoder shown in the quick start.
+
+The `version` identifies the persisted Job contract. Increment it when a
+payload, result, or typed failure changes incompatibly.
 
 ## `JobStore`: the persistence seam
 
@@ -564,5 +574,4 @@ bun examples/flow/main.ts
 
 The [examples README](./examples/README.md) describes each runnable example.
 For application-facing adapter composition, see the [composition guide](./docs/composition.md).
-For adapter authors and maintainers, see the [driver author guide](./docs/writing-a-driver.md)
-and the [technical protocol notes](./docs/protocol/).
+For adapter authors and maintainers, see the [driver author guide](./docs/writing-a-driver.md).

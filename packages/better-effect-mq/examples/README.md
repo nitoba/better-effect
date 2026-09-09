@@ -13,6 +13,9 @@ bun run test:examples
 
 The examples are intentionally small and build on the same core model:
 
+- The examples that use `Codec.json` keep their payloads plain JSON so the
+  queue and worker composition stays visible. For untrusted inputs, start with
+  the schema-backed Zod 4 example below.
 - [`producer-only`](./producer-only/main.ts) defines and enqueues an idempotent
   Job without starting a Worker.
 - [`worker`](./worker/main.ts) reuses the Job definition and owns a Worker
@@ -27,7 +30,7 @@ The examples are intentionally small and build on the same core model:
   awaits the collected parent result.
 
 For application-facing runtime validation, see the package README's
-[schema-backed Zod example](../README.md#quick-start-a-schema-backed-in-memory-queue)
+[schema-backed Zod 4 example](../README.md#quick-start-a-schema-backed-in-memory-queue)
 and the runnable [`better-effect-schema` MQ example](../../better-effect-schema/examples/mq-codec.ts).
 
 The complete Flow walkthrough is in the [package README](../README.md#flow-coordinate-a-parent-execution).

@@ -182,10 +182,22 @@ The following example uses the PostgreSQL adapter as a concrete durable
 its migrations and use its durable layers. The adapter's transaction helper is
 the application boundary for a domain write and its outbox append.
 
+This example uses a native Zod 4 schema so the payload is validated before it
+becomes a prepared request. When a job also needs provider-backed classes or
+transport conversions, use `better-effect-schema` as shown in the [MQ codec
+example](../better-effect-schema/examples/mq-codec.ts). Install the optional
+schema integration alongside the queue and adapter packages when your job
+crosses an untrusted boundary:
+
+```sh
+bun add better-effect-mq-outbox better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-schema zod
+```
+
 The database pool below is caller-owned. It could be a `pg.Pool` created by
 your application:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
@@ -200,16 +212,18 @@ import {
 
 declare const pool: Pool
 
+const ConfirmationPayload = z.object({
+  orderId: z.string().min(1),
+  email: z.email()
+})
+
 // Run this during deployment or an explicit startup step, before the layers
 // validate the schema.
 await PostgresMigrator.run(pool)
 
 const SendConfirmation = Queue.define('orders').job('send-confirmation', {
   version: 1,
-  payload: Codec.json<{
-    readonly orderId: string
-    readonly email: string
-  }>(),
+  payload: Codec.standardSchema({ schema: ConfirmationPayload }),
   result: Codec.string,
   defaults: { attempts: 5 },
   idempotencyKey: (payload) => `order-confirmation:${payload.orderId}`
