@@ -38,8 +38,8 @@ operations; `execute` means enqueue then await, not exactly-once RPC.
 
 The imported `SendEmail` descriptor should normally use a provider-backed
 `Codec.standardSchema` codec, such as a Zod 4 schema connected through
-`better-effect-schema`. `Codec.json` remains available for already-trusted
-JSON values, but is an intentional escape hatch rather than the boundary
+`better-effect-schema`. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+remains available for already-trusted JSON values, but is not the boundary
 default.
 
 Publishing idempotency and handler idempotency are different. An

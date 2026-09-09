@@ -42,6 +42,8 @@ normalized failures and schema-backed classes when those are useful. Primitive
 codecs remain convenient for primitive values. `Job.PayloadInput` describes the
 codec input; `Job.Payload` is the decoded value received by a handler.
 
+## Trusted JSON escape hatch
+
 `Codec.json<T>()` is an intentional simple JSON escape hatch, not the default
 for boundary examples. Use it only when the value is already trusted and
 JSON-safe and there is no meaningful runtime validation to perform.

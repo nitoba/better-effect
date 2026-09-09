@@ -33,6 +33,6 @@ notes should call out affected stores and migrations. Do not publish a driver
 placeholder with the MVP.
 
 Validate external payloads with a provider-backed codec—Zod 4 through
-`better-effect-schema` and `Codec.standardSchema` is the recommended path.
-`Codec.json` remains a deliberate escape hatch for trusted JSON, not a general
-boundary validator.
+`better-effect-schema` and `Codec.standardSchema` is the recommended path. The
+[trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch) is for
+trusted JSON, not a general boundary validator.

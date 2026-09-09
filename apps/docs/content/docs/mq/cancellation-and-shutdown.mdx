@@ -26,7 +26,7 @@ A graceful long-lived process owns Layer-first Worker resources in this order:
 ```ts
 const AppWorker = Worker.service('@app/Worker')
 const AppWorkerLive = AppWorker.layer(() => ({ handlers }))
-const application = Layer.merge(AppLive, AppWorkerLive)
+const application = Layer.complete(Layer.merge(AppLive, AppWorkerLive))
 const runtime = await Runtime.make(application)
 
 try {
@@ -50,5 +50,5 @@ for either outcome.
 
 Keep payload validation independent from shutdown ownership: define boundary
 schemas with Zod 4 and `better-effect-schema`, then pass them to
-`Codec.standardSchema`. `Codec.json` is only the intentional escape hatch for
-trusted JSON values and does not replace validation.
+`Codec.standardSchema`. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+is only for trusted JSON values and does not replace validation.

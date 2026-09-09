@@ -11,9 +11,9 @@ Database adapters remain separate packages and own their transaction boundaries.
 and `OutboxRecord` first, then let the selected adapter append it after the domain callback succeeds.
 Use a provider-backed Zod 4 schema through `Codec.standardSchema` for the Job
 payload; the [`better-effect-schema`](../integrations/schema) guide covers
-schema-backed classes and normalized failures. `Codec.json` remains an
-intentional escape hatch for trusted, already-JSON-safe values and is not the
-default boundary example.
+schema-backed classes and normalized failures. The [trusted JSON escape hatch](../mq/defining-jobs#trusted-json-escape-hatch)
+is for trusted, already-JSON-safe values and is not the default boundary
+example.
 
 ## Quick start: the canonical MQ shape
 
@@ -74,9 +74,8 @@ const PublisherLive = Publisher.layer(() => ({
   heartbeatIntervalMs: 10_000,
   pollIntervalMs: 1_000
 }))
-const AppLive = Layer.merge(
-  StorageLive,
-  Layer.merge(ClockLive, Layer.merge(WorkerLive, PublisherLive))
+const AppLive = Layer.complete(
+  Layer.merge(StorageLive, Layer.merge(ClockLive, Layer.merge(WorkerLive, PublisherLive)))
 )
 
 const runtime = await Runtime.make(AppLive)
@@ -206,9 +205,8 @@ const PublisherLive = Publisher.layer(() => ({
   pollIntervalMs: 1_000
 }))
 
-const ApplicationLive = Layer.merge(
-  StorageLive,
-  Layer.merge(ClockLive, Layer.merge(WorkerLive, PublisherLive))
+const ApplicationLive = Layer.complete(
+  Layer.merge(StorageLive, Layer.merge(ClockLive, Layer.merge(WorkerLive, PublisherLive)))
 )
 ```
 

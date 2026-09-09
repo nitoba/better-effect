@@ -49,8 +49,8 @@ The harness assertions are oldest-first and readonly:
 Named stores use `TestJobStore.makeFor(namedToken, options)`.
 
 The test Job uses a Zod 4 schema through `Codec.standardSchema`, matching the
-recommended production boundary. Keep `Codec.json<T>()` for intentionally
-trusted JSON fixtures that do not need runtime validation.
+recommended production boundary. Keep the [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+for intentionally trusted JSON fixtures that do not need runtime validation.
 
 For Worker scenarios, start the real `Worker` through the test Runtime's public
 Layer composition and use `ClockTest`, a deterministic random source and a zero-delay persisted

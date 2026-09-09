@@ -38,5 +38,6 @@ the settlement response, retrying with the same Job ID and lease token may
 return `already-applied`; it must not add a second attempt ledger entry.
 
 Keep the schema at the Job boundary so malformed identifiers cannot reach the
-handler. `Codec.json<T>()` is available for already-validated, trusted JSON but
-is an intentional escape hatch rather than the default boundary codec.
+handler. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+is available for already-validated, trusted JSON but is not the default boundary
+codec.

@@ -26,9 +26,9 @@ preparation, routes, and the PostgreSQL example; each [adapter guide](../integra
 documents its own transaction helper and client-ownership options.
 
 Use a Zod 4 schema through `better-effect-schema` and `Codec.standardSchema`
-for the Job payload before creating the outbox record. `Codec.json` is an
-intentional escape hatch for values that are already trusted JSON, not the
-default boundary codec.
+for the Job payload before creating the outbox record. The [trusted JSON escape
+hatch](../mq/defining-jobs#trusted-json-escape-hatch) is for values that are
+already trusted JSON, not the default boundary codec.
 
 ### Advanced: caller-owned transactions
 

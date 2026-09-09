@@ -101,7 +101,9 @@ const StorageLive = Layer.merge(
   Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
   Layer.succeed(FlowStore, FlowStore.of(MemoryFlowStore.make()))
 )
-const AppLive = Layer.merge(StorageLive, Layer.merge(ClockLive, FulfillmentWorkerLive))
+const AppLive = Layer.complete(
+  Layer.merge(StorageLive, Layer.merge(ClockLive, FulfillmentWorkerLive))
+)
 const runtime = await Runtime.make(AppLive)
 
 try {
@@ -129,9 +131,10 @@ the Flow records those outcomes and invokes `collect` when all children are term
 failed child should fail the parent and cancel the remaining work.
 
 The Flow descriptors use Zod 4 schemas through `Codec.standardSchema`, the
-same provider-backed boundary recommended for ordinary Jobs. A `Codec.json`
-descriptor is still useful for a trusted, already-JSON-safe internal value,
-but it is intentionally not the default for persisted boundary data.
+same provider-backed boundary recommended for ordinary Jobs. The [trusted JSON
+escape hatch](./defining-jobs#trusted-json-escape-hatch) remains useful for a
+trusted, already-JSON-safe internal value, but it is intentionally not the
+default for persisted boundary data.
 
 ## When to use a Flow
 

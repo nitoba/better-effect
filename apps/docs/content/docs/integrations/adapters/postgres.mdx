@@ -36,18 +36,31 @@ replace another adapter.
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { PostgresJobStore } from 'better-effect-mq-postgres'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
-const SendEmailPayload = z.object({
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.standardSchema({ schema: SendEmailPayload }),
+  payload: SendEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -69,7 +82,7 @@ const WorkerLive = EmailWorker.layer(() => ({
   concurrency: 4,
   pollIntervalMs: 500
 }))
-const AppLive = Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive))
+const AppLive = Layer.complete(Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive)))
 
 const runtime = await Runtime.make(AppLive)
 try {
@@ -92,9 +105,9 @@ try {
 
 The pool is borrowed by `PostgresJobStore.layer`; the application closes it after the Runtime. Use
 `PostgresJobStore.layerFromConfig` when the adapter should create and release the pool itself.
-The payload codec is a Zod 4 schema passed through the Standard Schema bridge;
-use [`better-effect-schema`](../schema) when the application also needs
-schema-backed classes or normalized validation failures.
+The payload codec uses a Zod 4 schema-backed class from
+[`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
+`Schema.encode` callback maps the class value to JSON for persistence.
 
 ## Optional capabilities
 

@@ -35,18 +35,31 @@ await MongoJobStore.migrate({ db })
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { MongoJobStore } from 'better-effect-mq-mongodb'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
-const SendEmailPayload = z.object({
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.standardSchema({ schema: SendEmailPayload }),
+  payload: SendEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -64,7 +77,7 @@ const WorkerLive = EmailWorker.layer(() => ({
   concurrency: 4,
   pollIntervalMs: 500
 }))
-const AppLive = Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive))
+const AppLive = Layer.complete(Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive)))
 
 const runtime = await Runtime.make(AppLive)
 try {
@@ -92,9 +105,9 @@ or outbox Layer only when needed, keeping the same database and namespace.
 MongoDB change streams can reduce wake latency but are not the source of truth. Keep polling,
 backups, transaction limits, and document size limits in your operational plan. Delivery remains
 at least once, so external effects must tolerate retries.
-The quick-start payload uses a Zod 4 schema through `Codec.standardSchema`;
-see [`better-effect-schema`](../schema) for schema-backed classes and
-normalized validation failures.
+The quick-start payload uses a Zod 4 schema-backed class from
+[`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
+`Schema.encode` callback maps the class value to JSON for persistence.
 
 ## Transactional outbox
 

@@ -47,6 +47,6 @@ must use their own timeout and idempotency controls.
 Retry and failure data are bounded JSON-safe DTOs. Causes, stacks, arbitrary
 exceptions and sensitive payloads do not become persisted failure fields.
 Use Zod 4 through `better-effect-schema` with `Codec.standardSchema` for
-boundary validation. `Codec.json<T>()` is reserved for trusted values that are
-already JSON-safe and need no runtime schema; it is not the default boundary
-codec.
+boundary validation. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+is reserved for values that are already JSON-safe and need no runtime schema;
+it is not the default boundary codec.

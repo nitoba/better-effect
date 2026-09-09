@@ -30,18 +30,31 @@ SqliteMigrator.migrate({ database })
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { SqliteJobStore } from 'better-effect-mq-sqlite'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
-const SendEmailPayload = z.object({
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.standardSchema({ schema: SendEmailPayload }),
+  payload: SendEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -59,7 +72,7 @@ const WorkerLive = EmailWorker.layer(() => ({
   concurrency: 1,
   pollIntervalMs: 500
 }))
-const AppLive = Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive))
+const AppLive = Layer.complete(Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive)))
 
 const runtime = await Runtime.make(AppLive)
 try {
@@ -84,9 +97,9 @@ The database is caller-owned in this form. Use `layerFromFile` when the adapter 
 close the file with the Runtime. SQLite serializes writes, so use it for local or single-node
 workloads; choose a distributed adapter when several hosts must share one queue. Schedules, events,
 flows, and outbox providers are optional Layers over the same database.
-The payload codec uses a Zod 4 schema through `Codec.standardSchema`; see
-[`better-effect-schema`](../schema) when a schema-backed class or normalized
-validation failure is useful.
+The payload codec uses a Zod 4 schema-backed class from
+[`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
+`Schema.encode` callback maps the class value to JSON for persistence.
 
 ## Transactional outbox
 
@@ -150,7 +163,7 @@ const PublisherLive = Publisher.layer(() => ({
 const database = new Database('./data/orders.sqlite')
 SqliteMigrator.migrate({ database })
 database.exec('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, email TEXT NOT NULL)')
-const AppLive = Layer.merge(
+const AppLive = Layer.complete(
   Layer.merge(
     SqliteJobStore.layer({ database, namespace: 'orders' }),
     SqliteOutboxStore.layer({ database, namespace: 'orders' })

@@ -112,9 +112,9 @@ const Jobs = JobRegistry.make([SendEmail, SendEmailV2] as const)
 
 The queue/name/version identity is what storage and claims use. Function names
 are not identity, and the package does not provide a global handler registry.
-Use `Codec.json<T>()` only as an intentional simple JSON escape hatch when the
-value is already trusted and JSON-safe; keep provider-backed schemas as the
-default for boundary payloads and results.
+Use the [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+only when the value is already trusted and JSON-safe; keep provider-backed
+schemas as the default for boundary payloads and results.
 
 ## Produce jobs
 
@@ -239,7 +239,7 @@ const AppWorkerLive = AppWorker.layer(() => ({
   handlers: [SendEmailHandler],
   concurrency: 8
 }))
-const application = Layer.merge(AppLive, AppWorkerLive)
+const application = Layer.complete(Layer.merge(AppLive, AppWorkerLive))
 const runtime = await Runtime.make(application)
 await runtime.warmup()
 
