@@ -9,6 +9,11 @@ icon: Send
 `OutboxStore` contract, explicit target routes and a Layer-owned publisher.
 Database adapters remain separate packages and own their transaction boundaries. Prepare a request
 and `OutboxRecord` first, then let the selected adapter append it after the domain callback succeeds.
+Use a provider-backed Zod 4 schema through `Codec.standardSchema` for the Job
+payload; the [`better-effect-schema`](../integrations/schema) guide covers
+schema-backed classes and normalized failures. The [trusted JSON escape hatch](../mq/defining-jobs#trusted-json-escape-hatch)
+is for trusted, already-JSON-safe values and is not the default boundary
+example.
 
 ## Quick start: the canonical MQ shape
 
@@ -18,25 +23,48 @@ and Runtime boundary identical to the [MQ quick start](../mq). Only the
 transactional append and publisher are new:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
+import {
+  Codec,
+  JobContext,
+  JobEncodeFailure,
+  JobStore,
+  MemoryJobStore,
+  Queue,
+  Worker
+} from 'better-effect-mq'
 import {
   MemoryOutboxStore,
   OutboxPublisher,
   OutboxRoutes,
   OutboxStore
 } from 'better-effect-mq-outbox'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
+  messageId: z.string().min(1),
+  recipient: z.email()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: SendEmailPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
@@ -214,9 +242,10 @@ settlement can redeliver the same record. Deterministic Job IDs or idempotency
 keys make that replay converge; the pipeline does not promise exactly-once
 execution.
 
-`better-effect-mq-postgres`, `better-effect-mq-redis`,
-`better-effect-mq-mongodb`, `better-effect-mq-sqlite`, and
-`better-effect-mq-mysql` provide concrete storage adapters. Their READMEs
-document migration versions, transaction boundaries, client ownership and
-host-specific setup. The `better-effect-mq-outbox/testing` contract suite is
-runner-neutral and does not need a database or Runtime.
+[`PostgreSQL`](../integrations/adapters/postgres),
+[`Redis/Valkey`](../integrations/adapters/redis),
+[`MongoDB`](../integrations/adapters/mongodb), [`SQLite`](../integrations/adapters/sqlite),
+and [`MySQL`](../integrations/adapters/mysql) provide concrete storage adapters.
+Each guide documents the adapter's migrations, transaction boundary and client
+ownership. The `better-effect-mq-outbox/testing` contract suite is runner-neutral
+and does not need a database or Runtime.

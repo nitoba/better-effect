@@ -22,8 +22,13 @@ OutboxPublisher → JobStore → Worker.handle
 
 The publisher is at-least-once. Give downstream effects a stable idempotency key and monitor
 records that remain active, retrying, or failed. The [Outbox guide](./index) covers record
-preparation, routes, and the PostgreSQL example; each adapter README documents its own
-`transaction(resource, record, callback, options?)` helper.
+preparation, routes, and the PostgreSQL example; each [adapter guide](../integrations/adapters)
+documents its own transaction helper and client-ownership options.
+
+Use a Zod 4 schema through `better-effect-schema` and `Codec.standardSchema`
+for the Job payload before creating the outbox record. The [trusted JSON escape
+hatch](../mq/defining-jobs#trusted-json-escape-hatch) is for values that are
+already trusted JSON, not the default boundary codec.
 
 ### Advanced: caller-owned transactions
 

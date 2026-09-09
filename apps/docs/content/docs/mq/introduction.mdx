@@ -1,14 +1,14 @@
 ---
 title: Durable jobs with better-effect-mq
-description: Define durable jobs, run workers and compose explicit MQ protocol extensions.
+description: Define durable jobs, run workers and compose optional MQ capabilities.
 icon: ListChecks
 ---
 
-[`better-effect-mq`](https://www.npmjs.com/package/better-effect-mq) is an
-experimental, storage-neutral durable queue protocol for `better-effect`. It
-provides immutable Job definitions, producer operations, a Worker supervisor,
-and a `JobStore` Service contract. It does not open a database connection or
-choose a persistence technology.
+[`better-effect-mq`](https://www.npmjs.com/package/better-effect-mq) adds
+storage-neutral durable queue capabilities to `better-effect`. It provides
+immutable Job definitions, producer operations, a Worker supervisor, and a
+`JobStore` Service contract. It does not open a database connection or choose
+a persistence technology.
 
 ## At-least-once delivery and optional capabilities
 
@@ -30,27 +30,46 @@ leases, encoded payloads and bounded failure envelopes—not live `Error`,
 `Result`, Service or connection objects.
 
 For parent/child stores or a new adapter, use the advanced [storage adapter
-guide](../reference/writing-a-driver) and the package's implementation notes.
+guide](../reference/writing-a-driver).
 
 ## Define a queue and jobs
 
 A queue definition is an inert namespace. A Job definition is immutable and
 versioned by the literal queue, name and positive integer version. Defining a
-Job does not register a handler, resolve a Service or open storage.
+Job does not register a handler, resolve a Service or open storage. For a
+boundary payload, use a Zod 4 schema through `better-effect-schema` and the MQ
+`Codec.standardSchema` bridge:
 
 ```ts
-import { Codec, Queue, Retry } from 'better-effect-mq'
+import * as z from 'zod'
+import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
+  messageId: z.string().min(1),
+  recipient: z.email()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Emails = Queue.define('emails')
 
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.json<{ readonly accepted: boolean }>(),
-  failure: Codec.json<{ readonly code: string }>(),
+  payload: SendEmailPayloadCodec,
+  result: Codec.standardSchema({ schema: z.object({ accepted: z.boolean() }) }),
+  failure: Codec.standardSchema({ schema: z.object({ code: z.string().min(1) }) }),
   defaults: {
     attempts: 5,
     backoff: Retry.exponential({
@@ -70,27 +89,32 @@ const SendEmail = Emails.job('send-email', {
 `failure` codecs are optional; without them, the corresponding persisted result
 or typed failure is not available. `defaults.attempts` includes the first
 execution. If a retry policy supplies `maxAttempts`, it must agree with the
-attempt default.
+attempt default. `Codec.standardSchema` accepts native Zod 4 schemas and the
+schemas exposed by `better-effect-schema`; it decodes persisted JSON before the
+handler runs.
 
-Use `Job.define` when the direct form is more convenient. Multiple versions can
-be kept in a local immutable registry:
+Use `Job.define` when the direct form is more convenient. This continuation
+reuses the schema-backed payload codec from the canonical `SendEmail` descriptor
+in [Defining Jobs](./defining-jobs), rather than redeclaring the schema here.
+When the persisted contract changes, create a new local class and codec as
+shown on that page.
 
 ```ts
-import { Codec, Job, JobRegistry } from 'better-effect-mq'
+import { Job, JobRegistry } from 'better-effect-mq'
 
 const SendEmailV2 = Job.define('send-email', {
   queue: Emails,
   version: 2,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>()
+  payload: SendEmailPayloadCodec
 })
 const Jobs = JobRegistry.make([SendEmail, SendEmailV2] as const)
 ```
 
 The queue/name/version identity is what storage and claims use. Function names
 are not identity, and the package does not provide a global handler registry.
+Use the [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+only when the value is already trusted and JSON-safe; keep provider-backed
+schemas as the default for boundary payloads and results.
 
 ## Produce jobs
 
@@ -98,6 +122,9 @@ A Job is also a typed producer. Its methods are better-effect programs: run
 them inside a Runtime that provides the Job's bound `JobStore` token.
 `enqueue` encodes the payload, runs the metadata/idempotency callbacks and
 returns a branded `JobId`.
+
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs).
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
@@ -170,17 +197,15 @@ recorded observer. Its `enqueued`, `enqueuedPayloads`, `job`, `attempts`, and
 `counts` helpers use public store operations and the definition's exact codec;
 `claim`, `settle`, and `release` accept explicit lease tokens. Named stores use
 `TestJobStore.makeFor(namedStore, options)`. This is a harness around the real
-protocol, not a second worker or a private state mutator.
+store contract, not a second worker or a private state mutator.
+
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and observes it with `TestJobStore`.
 
 ```ts
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
-import { Codec, Queue } from 'better-effect-mq'
 import { TestJobStore } from 'better-effect-mq/testing'
 
-const SendEmail = Queue.define('emails').job('send-email', {
-  version: 1,
-  payload: Codec.json<{ readonly to: string }>()
-})
 const testStore = TestJobStore.make({
   clock: new ClockTest(0),
   ids: IdGeneratorTest.from((index) => `test-${index}`)
@@ -195,6 +220,10 @@ void observedSendEmail
 Workers run handlers over a named `Worker.service(tag).layer(factory)` in the
 same Layer graph as the application, so the Runtime owns startup, quiesce and
 release.
+
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and wires a handler through a Layer-owned
+Worker.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
@@ -273,18 +302,10 @@ after an applied terminal or retry settlement; `onError` reports supervisor
 errors without stopping other claim loops.
 
 The store applies settlement as one fenced state transition and attempt-ledger
-write. `applied` means this request made the transition. If a response is lost
-after the store applied it, retrying the same Job ID and lease token may return
-`already-applied` without adding another ledger entry. A mismatched, missing or
-expired token returns `LeaseLostError`; the old worker cannot settle a newer
-claim.
-
-The protocol states are `waiting`, `delayed`, `active`, `completed`, `failed`
-and `cancelled`. `release` returns an active job to waiting without consuming
-an attempt. `retry` is an explicit administrative transition for a terminal
-failed or cancelled job and preserves its attempt history. Stalled recovery
-records a stalled ledger outcome and can terminally fail a job when the stalled
-limit is reached.
+write. A lost response can be retried with the same Job ID and lease token
+without duplicating the attempt ledger; a stale or expired token cannot settle
+a newer claim. Release, retry and stalled recovery are explicit transitions
+that preserve the delivery history needed for operations.
 
 ## The storage adapter boundary
 
@@ -309,13 +330,12 @@ const DurableStoreLayer = Layer.succeed(DurableStore, DurableStore.of(adapter))
 
 Bind a Job to that named store with `store: DurableStore` in its definition or
 with `bindJob(job, DurableStore)`. The core only sees the Service contract and
-protocol DTOs. The adapter owns transactions, persistence, indexes, wake
-notifications and backend-specific translation. It must reproduce the
-protocol's claim ordering, fencing, time validation and atomic settlement
-semantics; capability flags are performance hints, not permission to weaken
-correctness.
+stable JSON-safe records. The adapter owns transactions, persistence, indexes,
+wake notifications and backend-specific translation while preserving claim
+ordering, lease fencing, time validation and atomic settlement semantics.
+Capability flags are performance hints, not permission to weaken correctness.
 
 Do not put driver types, SQL/Redis keys or connection objects in Job records,
 codecs or core APIs. The same boundary lets `MemoryJobStore`, a database
-adapter and a test double implement one protocol without changing producer or
-worker code.
+adapter and a test double implement the same store contract without changing
+producer or worker code.

@@ -8,14 +8,29 @@ validated callback-free policy data. The policy is persisted with the Job;
 `Retry.custom` remains process-local and is evaluated only by the Worker.
 
 ```ts
-import { Codec, Queue, Retry } from 'better-effect-mq'
+import * as z from 'zod'
+import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 
+const local = Schema.with(ZodAdapter)
 const Jobs = Queue.define('billing')
+const ChargeCardPayloadSchema = z.object({ paymentId: z.string().min(1) })
+class ChargeCardPayload extends local.Class<ChargeCardPayload>('app/ChargeCardPayload')(
+  ChargeCardPayloadSchema
+) {}
+const ChargeCardPayloadCodec = Codec.standardSchema({
+  schema: ChargeCardPayload,
+  encode: (value) =>
+    Schema.encode(ChargeCardPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const ChargeCard = Jobs.job('charge-card', {
   version: 1,
-  payload: Codec.json<{ readonly paymentId: string }>(),
+  payload: ChargeCardPayloadCodec,
   result: Codec.void,
-  failure: Codec.json<{ readonly code: string }>(),
+  failure: Codec.standardSchema({ schema: z.object({ code: z.string().min(1) }) }),
   defaults: {
     attempts: 4,
     backoff: Retry.exponential({
@@ -43,3 +58,7 @@ must use their own timeout and idempotency controls.
 
 Retry and failure data are bounded JSON-safe DTOs. Causes, stacks, arbitrary
 exceptions and sensitive payloads do not become persisted failure fields.
+Use Zod 4 through `better-effect-schema` with `Codec.standardSchema` for
+boundary validation. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+is reserved for values that are already JSON-safe and need no runtime schema;
+it is not the default boundary codec.

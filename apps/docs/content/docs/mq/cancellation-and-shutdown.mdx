@@ -8,6 +8,10 @@ the persisted Job, and a handler observes the attempt's `CurrentAbortSignal`.
 Use an application `AbortController` when a request or process boundary owns
 that cancellation.
 
+The following continuation assumes the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and a `jobId` supplied by the caller; it shows
+how to stop waiting without cancelling the persisted Job.
+
 ```ts
 const controller = new AbortController()
 const waiting = SendEmail.awaitResult(jobId, { signal: controller.signal })
@@ -47,3 +51,8 @@ forced process exit: in-flight settlement can otherwise be delivered again.
 A lease expiry or shutdown can race with a handler result. The store's current
 lease token and atomic settlement determine the winner. Make side effects safe
 for either outcome.
+
+Keep payload validation independent from shutdown ownership: define boundary
+schemas with Zod 4 and `better-effect-schema`, then pass them to
+`Codec.standardSchema`. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+is only for trusted JSON values and does not replace validation.

@@ -12,7 +12,7 @@ Worker APIs used with the in-memory store.
 ## Install and migrate
 
 ```bash
-bun add better-effect-mq-postgres better-effect-mq better-effect better-result pg
+bun add better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-schema zod pg
 ```
 
 Run migrations as an explicit deployment step. Store acquisition validates the schema but does not
@@ -33,20 +33,35 @@ The descriptor and handler are storage-neutral. Only `PostgresJobStore.layer` ch
 replace another adapter.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { PostgresJobStore } from 'better-effect-mq-postgres'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
+  messageId: z.string().min(1),
+  recipient: z.email()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: SendEmailPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
@@ -90,6 +105,9 @@ try {
 
 The pool is borrowed by `PostgresJobStore.layer`; the application closes it after the Runtime. Use
 `PostgresJobStore.layerFromConfig` when the adapter should create and release the pool itself.
+The payload codec uses a Zod 4 schema-backed class from
+[`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
+`Schema.encode` callback maps the class value to JSON for persistence.
 
 ## Optional capabilities
 

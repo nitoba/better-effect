@@ -14,6 +14,7 @@ This example creates two child jobs for every order, runs them through one Layer
 completes the parent with the number of successful reservations.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
@@ -21,23 +22,57 @@ import {
   Codec,
   Flow,
   FlowStore,
+  JobEncodeFailure,
   JobStore,
   MemoryFlowStore,
   MemoryJobStore,
   Queue,
   Worker
 } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 
 const Orders = Queue.define('orders')
+const local = Schema.with(ZodAdapter)
+const FulfillOrderPayloadSchema = z.object({ orderId: z.string().min(1) })
+class FulfillOrderPayload extends local.Class<FulfillOrderPayload>('app/FulfillOrderPayload')(
+  FulfillOrderPayloadSchema
+) {}
+const FulfillOrderPayloadCodec = Codec.standardSchema({
+  schema: FulfillOrderPayload,
+  encode: (value) =>
+    Schema.encode(FulfillOrderPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const FulfillOrderResult = z.object({
+  orderId: z.string().min(1),
+  fulfilled: z.int().nonnegative()
+})
+const FulfillItemPayloadSchema = z.object({
+  orderId: z.string().min(1),
+  itemId: z.string().min(1)
+})
+class FulfillItemPayload extends local.Class<FulfillItemPayload>('app/FulfillItemPayload')(
+  FulfillItemPayloadSchema
+) {}
+const FulfillItemPayloadCodec = Codec.standardSchema({
+  schema: FulfillItemPayload,
+  encode: (value) =>
+    Schema.encode(FulfillItemPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const FulfillItemResult = z.object({ itemId: z.string().min(1), accepted: z.boolean() })
 const FulfillOrder = Orders.job('fulfill-order', {
   version: 1,
-  payload: Codec.json<{ readonly orderId: string }>(),
-  result: Codec.json<{ readonly orderId: string; readonly fulfilled: number }>()
+  payload: FulfillOrderPayloadCodec,
+  result: Codec.standardSchema({ schema: FulfillOrderResult })
 })
 const FulfillItem = Orders.job('fulfill-item', {
   version: 1,
-  payload: Codec.json<{ readonly orderId: string; readonly itemId: string }>(),
-  result: Codec.json<{ readonly itemId: string; readonly accepted: boolean }>()
+  payload: FulfillItemPayloadCodec,
+  result: Codec.standardSchema({ schema: FulfillItemResult })
 })
 
 const Fulfillment = Flow.define('order-fulfillment', {
@@ -119,6 +154,12 @@ the Flow records those outcomes and invokes `collect` when all children are term
 `onChildFailure: 'continue'`, the parent can finish with a partial count; use `'fail'` when any
 failed child should fail the parent and cancel the remaining work.
 
+The Flow descriptors use Zod 4 schema-backed classes from
+`better-effect-schema` through `Codec.standardSchema`, the same provider-backed
+boundary recommended for ordinary Jobs. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+remains useful for a trusted, already-JSON-safe internal value, but it is
+intentionally not the default for persisted boundary data.
+
 ## When to use a Flow
 
 Use a Flow for durable fan-out/fan-in, bounded child progress, and parent cancellation or retry. Use
@@ -126,6 +167,6 @@ ordinary independent Jobs when work does not share a parent lifecycle. A Flow is
 handlers and the parent side effect should be safe to replay, and the adapter must provide the
 `JobStore` and `FlowStore` Layers with the same persistence and recovery guarantees.
 
-The in-memory Layers above are for a local example. Replace them with one adapter's durable Layers;
+The in-memory Layers in this example are for a local example. Replace them with one adapter's durable Layers;
 the Queue, Job descriptors, handlers, Worker service, Layer composition, and Runtime boundary stay
 the same.

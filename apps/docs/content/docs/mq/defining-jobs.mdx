@@ -9,14 +9,34 @@ persistence or routing. Defining a Job does not resolve a Service, open a
 connection or register a Worker.
 
 ```ts
-import { Codec, Queue, Retry } from 'better-effect-mq'
+import * as z from 'zod'
+import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
+  to: z.email(),
+  messageId: z.string().min(1)
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const SendEmailFailure = z.object({ code: z.string().min(1) })
 
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{ readonly to: string; readonly messageId: string }>(),
+  payload: SendEmailPayloadCodec,
   result: Codec.void,
-  failure: Codec.json<{ readonly code: string }>(),
+  failure: Codec.standardSchema({ schema: SendEmailFailure }),
   defaults: {
     attempts: 5,
     backoff: Retry.exponential({
@@ -24,21 +44,47 @@ const SendEmail = Emails.job('send-email', {
       maxDelayMs: 60_000,
       maxAttempts: 5
     })
-  }
+  },
+  idempotencyKey: ({ messageId }) => messageId
 })
 ```
 
-`Codec.json`, primitive codecs and Standard Schema codecs validate at the
-persistence boundary. Payloads, results and failure values must cross that
-boundary as JSON-safe values. `Job.PayloadInput` describes the codec input;
-`Job.Payload` is the decoded value received by a handler.
+`Codec.standardSchema` is the recommended persistence-boundary codec for a
+provider-backed schema. The Zod 4 schema in this example is adapted through
+`better-effect-schema`; its class value is encoded back to JSON before
+persistence. Primitive codecs remain convenient for primitive values.
+`Job.PayloadInput` describes the codec input; `Job.Payload` is the decoded value
+received by a handler.
+
+## Trusted JSON escape hatch
+
+`Codec.json<T>()` is an intentional simple JSON escape hatch, not the default
+for boundary examples. Use it only when the value is already trusted and
+JSON-safe and there is no meaningful runtime validation to perform.
 
 Keep a new Job version when a persisted payload or result contract changes:
 
+The following continuation uses the provider-backed setup from [Defining Jobs](./defining-jobs)
+to encode a changed payload contract.
+
 ```ts
+const SendEmailV2PayloadSchema = z.object({
+  recipient: z.email(),
+  body: z.string().min(1)
+})
+class SendEmailV2Payload extends local.Class<SendEmailV2Payload>('app/SendEmailV2Payload')(
+  SendEmailV2PayloadSchema
+) {}
+const SendEmailV2PayloadCodec = Codec.standardSchema({
+  schema: SendEmailV2Payload,
+  encode: (value) =>
+    Schema.encode(SendEmailV2Payload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmailV2 = Emails.job('send-email', {
   version: 2,
-  payload: Codec.json<{ readonly recipient: string; readonly body: string }>()
+  payload: SendEmailV2PayloadCodec
 })
 ```
 

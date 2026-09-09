@@ -8,12 +8,14 @@ provides `JobContext` and `CurrentAbortSignal` to the handler, and settles the
 result through the same JobStore contract used by producers. The recommended
 Layer-first API makes the Worker a named Service owned by the Runtime.
 
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and adds a Layer-owned Worker around it.
+
 ```ts
 import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
-import { JobContext, JobStore, MemoryJobStore, Worker } from 'better-effect-mq'
-import { SendEmail } from './jobs'
+import { JobContext, MemoryJobStore, Worker } from 'better-effect-mq'
 
 class WorkerConfig extends Service<WorkerConfig>()('WorkerConfig') {
   readonly concurrency!: number
@@ -65,10 +67,10 @@ try {
 
 `Worker.service(tag)` returns a non-constructible, yieldable control token.
 Its factory is lazy and runs once per Layer provider/runtime. Factory Services,
-handler requirements and bound JobStore tokens are retained in the Layer type;
-`JobContext` and `Runtime.Executor` stay internal. The Worker starts only after
-its options and stores have been validated. `AppWorker.succeed(testDouble)` is
-available for caller-owned tests and registers no lifecycle.
+handler requirements and bound JobStore tokens are retained in the Layer type.
+The Worker starts only after its options and stores have been validated.
+`AppWorker.succeed(testDouble)` is available for caller-owned tests and
+registers no lifecycle.
 
 `Runtime.warmup()` is an explicit startup barrier. Without warmup, resolving
 `AppWorker` from a program starts the Worker on first use. Runtime shutdown
@@ -82,3 +84,7 @@ after the application stops accepting work.
 
 A cooperative `AbortSignal` is available for cancellation and timeout. A
 handler that ignores the signal cannot be forcibly killed by JavaScript.
+The canonical `SendEmail` descriptor from [Defining Jobs](./defining-jobs)
+should use a provider-backed Zod 4 codec through `better-effect-schema` and
+`Codec.standardSchema`; keep the [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+for trusted JSON-only cases rather than normal boundary payloads.

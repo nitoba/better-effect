@@ -14,15 +14,9 @@ There are two separate idempotency boundaries:
 - **Handler idempotency**: the external operation uses the Job ID or a business
   key so a redelivered attempt is a no-op or safely replaces the prior write.
 
-```ts
-const SendEmail = Emails.job('send-email', {
-  version: 1,
-  payload: Codec.json<{ readonly messageId: string; readonly to: string }>(),
-  idempotencyKey: ({ messageId }) => messageId
-})
-
-// The email provider should also receive messageId as its idempotency key.
-```
+The following continuation assumes the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and its schema-backed payload codec. The email
+provider should also receive `messageId` as its idempotency key.
 
 A lease token is a fencing token: an old Worker cannot settle a newer claim.
 It protects the JobStore state, not an already-started request to a downstream
@@ -32,3 +26,8 @@ fencing where the side effect requires stronger coordination.
 At-least-once also applies after uncertain store responses. If the client loses
 the settlement response, retrying with the same Job ID and lease token may
 return `already-applied`; it must not add a second attempt ledger entry.
+
+Keep the schema at the Job boundary so malformed identifiers cannot reach the
+handler. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+is available for already-validated, trusted JSON but is not the default boundary
+codec.

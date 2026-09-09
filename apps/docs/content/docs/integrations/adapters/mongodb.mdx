@@ -11,7 +11,7 @@ the persistent `JobStore` and optional extension stores; `Queue.define`, Job des
 ## Install and prepare MongoDB
 
 ```bash
-bun add better-effect-mq-mongodb better-effect-mq better-effect better-result mongodb
+bun add better-effect-mq-mongodb better-effect-mq better-effect better-result better-effect-schema zod mongodb
 ```
 
 Use a replica set or a compatible `mongos` deployment because queue state uses transactions. Apply
@@ -32,20 +32,35 @@ await MongoJobStore.migrate({ db })
 ## Quick start: the canonical MQ shape
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { MongoJobStore } from 'better-effect-mq-mongodb'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
+  messageId: z.string().min(1),
+  recipient: z.email()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: SendEmailPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
@@ -90,6 +105,9 @@ or outbox Layer only when needed, keeping the same database and namespace.
 MongoDB change streams can reduce wake latency but are not the source of truth. Keep polling,
 backups, transaction limits, and document size limits in your operational plan. Delivery remains
 at least once, so external effects must tolerate retries.
+The quick-start payload uses a Zod 4 schema-backed class from
+[`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
+`Schema.encode` callback maps the class value to JSON for persistence.
 
 ## Transactional outbox
 

@@ -25,10 +25,14 @@ Operational checklist before replacing `MemoryJobStore` with a real adapter:
 - bound payload, metadata and failure sizes at the application boundary;
 - test retry, timeout, lease-expiry, stalled-recovery and shutdown races;
 - stop Workers before disposing their Runtime and close adapter clients last;
-- run the full conformance suite and the external tarball consumer under Node.js
-  24 and the supported Bun release.
+- run the adapter conformance suite and an external consumer smoke test in the
+  runtimes you support.
 
-The package is experimental `0.x`: minor releases may change an extension
-contract before it is stable. Adapters must validate the layout and capabilities
-they implement, and release notes must call out affected stores and migrations.
-Do not publish a driver placeholder with the MVP.
+Adapters must validate the layout and capabilities they implement, and release
+notes should call out affected stores and migrations. Do not publish a driver
+placeholder with the MVP.
+
+Validate external payloads with a provider-backed codec—Zod 4 through
+`better-effect-schema` and `Codec.standardSchema` is the recommended path. The
+[trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch) is for
+trusted JSON, not a general boundary validator.

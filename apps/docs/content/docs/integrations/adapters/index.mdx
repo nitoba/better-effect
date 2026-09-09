@@ -9,6 +9,11 @@ it supplies a persistent `JobStore` (and optional event, schedule, flow, or outb
 through a Layer. Your `Queue.define`, `Job` descriptor, `Worker.handle`, `Worker.service`, and
 Runtime composition stay the same.
 
+Keep validation in the application boundary: define Zod 4 schemas and use
+`Codec.standardSchema`, optionally with [`better-effect-schema`](../schema) for
+schema-backed classes and normalized failures. The [trusted JSON escape hatch](../../mq/defining-jobs#trusted-json-escape-hatch)
+is for trusted JSON values, not the default adapter example.
+
 <DocCards>
   <DocCard href="/docs/integrations/adapters/postgres" title="PostgreSQL" icon="Database">
     A relational durable store for multi-process workers and transactional workflows.
@@ -34,6 +39,6 @@ transactions, and storage-specific wake or recovery details. Read the [MQ introd
 for the core model, then use one adapter's quick start to provide the same `JobStore` Service.
 
 For an outbox handoff, prepare the request and record before the domain write, then call the
-adapter's `transaction(resource, record, callback, options?)` helper. The callback performs the
-domain write; the adapter appends the record automatically and owns commit, rollback, and cleanup.
-See the [outbox guide](../../outbox) and the adapter page for the exact resource and options shape.
+selected adapter's transaction helper. The callback performs the domain write; the adapter appends
+the record automatically and owns commit, rollback, and cleanup. See the [outbox guide](../../outbox)
+and the adapter page for the exact resource and options shape.

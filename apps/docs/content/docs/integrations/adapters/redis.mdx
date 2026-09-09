@@ -11,7 +11,7 @@ ownership of Jobs, handlers, retries, and Workers.
 ## Install
 
 ```bash
-bun add better-effect-mq-redis better-effect-mq better-effect better-result redis
+bun add better-effect-mq-redis better-effect-mq better-effect better-result better-effect-schema zod redis
 ```
 
 The `redis` peer is needed for config-based factories. If your application already owns compatible
@@ -23,20 +23,35 @@ This example uses the adapter-created connections. The queue descriptor, handler
 Layer composition, and Runtime are the same as the core MQ guide.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { RedisJobStore } from 'better-effect-mq-redis'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
+  messageId: z.string().min(1),
+  recipient: z.email()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: SendEmailPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
@@ -80,6 +95,9 @@ try {
 `layerFromConfig` owns the command and subscriber connections. For caller-owned clients, use
 `RedisJobStore.layer` or `RedisJobStore.layerWithEvents` and close those clients outside the
 Runtime. Redis notifications are wake hints; bounded polling remains the recovery path.
+This quick start uses a Zod 4 schema-backed class from
+[`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
+`Schema.encode` callback maps the class value to JSON for persistence.
 
 ## Optional capabilities
 
