@@ -247,6 +247,146 @@ The same event options can be passed to `RedisJobScheduleStore.layer*` and to
 `layerWithEventsFromConfigFor` factories so each store has an explicit token and
 namespace.
 
+## Durable Redis flows
+
+A Flow is a parent Job that creates typed child Jobs and collects their terminal
+results. Register the Flow handler alongside ordinary Worker handlers; the
+parent and child Jobs use the same `Queue`/`Job` contract as the queue example
+above. `RedisFlowStore.make` supplies the durable parent/child state, while the
+associated `FlowStore` Layer makes it available to the Worker.
+
+This complete example starts a Redis-backed Worker, enqueues a parent report,
+waits for its child delivery, and prints the collected result:
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, Flow, FlowStore, Queue, Worker } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { RedisClient, RedisFlowStore, RedisJobStore } from 'better-effect-mq-redis'
+
+const Reports = Queue.define('reports')
+const BuildReport = Reports.job('build-report', {
+  version: 1,
+  payload: Codec.json<{ readonly reportId: string }>(),
+  result: Codec.json<{
+    readonly reportId: string
+    readonly delivered: number
+  }>()
+})
+const DeliverReport = Reports.job('deliver-report', {
+  version: 1,
+  payload: Codec.json<{
+    readonly reportId: string
+    readonly recipient: string
+  }>(),
+  result: Codec.string
+})
+
+const ReportFlow = Flow.define('build-and-deliver-report', {
+  parent: BuildReport,
+  children: [DeliverReport] as const,
+  onChildFailure: 'fail'
+})
+
+const reportFlow = Flow.handle(ReportFlow, {
+  fanOut: (payload) =>
+    Effect.fn(async function* () {
+      return Result.ok([
+        Flow.children(DeliverReport, [
+          {
+            key: `email:${payload.reportId}`,
+            payload: {
+              reportId: payload.reportId,
+              recipient: 'ada@example.test'
+            }
+          }
+        ])
+      ] as const)
+    }),
+  collect: (payload, results) =>
+    Effect.fn(async function* () {
+      const children = yield* Result.await(results.all()())
+      return Result.ok({
+        reportId: payload.reportId,
+        delivered: children.filter((child) => child.outcome === 'completed').length
+      })
+    })
+})
+
+const deliverReport = Worker.handle(DeliverReport, (payload) =>
+  Effect.fn(async function* () {
+    console.log(`delivered ${payload.reportId} to ${payload.recipient}`)
+    return Result.ok(`delivered:${payload.reportId}`)
+  })
+)
+
+const ReportWorker = Worker.service('@app/ReportWorker')
+const ReportWorkerLive = ReportWorker.layer(() => ({
+  handlers: [deliverReport] as const,
+  flows: [reportFlow] as const,
+  concurrency: 2,
+  pollIntervalMs: 100,
+  flowSweepIntervalMs: 100,
+  flowBatchSize: 32
+}))
+
+const redisUrl = process.env.REDIS_URL
+if (redisUrl === undefined) throw new Error('REDIS_URL is required')
+
+const redis = await RedisClient.fromConfig({
+  url: redisUrl,
+  namespace: 'reports'
+})
+await redis.initialize()
+const flowStore = RedisFlowStore.make(redis)
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    RedisJobStore.layer({
+      client: redis.client,
+      subscriber: redis.subscriber,
+      namespace: 'reports'
+    }),
+    Layer.merge(
+      Layer.succeed(FlowStore, FlowStore.of(flowStore)),
+      Layer.merge(ClockLive, ReportWorkerLive)
+    )
+  )
+)
+const runtime = await Runtime.make(AppLive)
+
+try {
+  const started = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* ReportWorker)
+    })
+  )
+  if (Result.isError(started)) throw started.error
+
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* BuildReport.enqueue({ reportId: 'weekly-2025-01' })
+      const completed = yield* BuildReport.awaitResult(jobId)
+      return Result.ok({ jobId, completed })
+    })
+  )
+  if (Result.isError(result)) throw result.error
+
+  console.log(result.value)
+  await started.value.awaitIdle({ timeoutMs: 10_000 })
+} finally {
+  await runtime.dispose()
+  await redis.dispose()
+}
+```
+
+The JobStore Layer borrows the already initialized command and subscriber
+clients. The surrounding application owns that `RedisClient`, so it disposes
+the Runtime first and the client second. For a named JobStore, provide
+`FlowStore.for(namedStore)` and the matching `RedisFlowStore` instance under
+that associated token.
+
 ## Configuration and connection ownership
 
 Both configuration shapes are intentionally small:
