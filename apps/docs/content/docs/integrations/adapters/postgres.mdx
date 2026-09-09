@@ -94,8 +94,34 @@ The pool is borrowed by `PostgresJobStore.layer`; the application closes it afte
 ## Optional capabilities
 
 Add event, schedule, flow, or outbox Layers only when the application needs them. Use the same
-PostgreSQL pool, schema, and namespace for providers that share a queue. Outbox transaction helpers
-participate in a transaction that the application already owns; they never turn a remote publish
+PostgreSQL pool, schema, and namespace for providers that share a queue. For a transactional handoff
+from a domain write to a Job, prepare the record before entering the transaction and let
+`PostgresOutbox.transaction` own the client and lifecycle:
+
+```ts
+import { PostgresOutbox } from 'better-effect-mq-postgres'
+import { Result } from 'better-result'
+
+const persisted = await PostgresOutbox.transaction(
+  pool,
+  record,
+  async (transaction) => {
+    await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
+      'order-123',
+      'ada@example.test'
+    ])
+    return Result.ok(undefined)
+  },
+  { namespace: 'orders' }
+)
+if (Result.isError(persisted)) throw persisted.error
+```
+
+The adapter appends the prepared outbox record after the callback succeeds,
+commits only after that append succeeds, rolls back on thrown, rejected, or
+nominal `Result.err` failures, and always releases the client. The advanced
+`PostgresOutbox.appendIn` escape hatch remains available when an application
+already owns a compatible transaction. Neither helper turns a remote publish
 into a distributed transaction.
 
 PostgreSQL delivery is at least once. Make handlers and external side effects idempotent, monitor

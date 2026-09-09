@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { Layer, Service } from 'better-effect'
 import type { ServiceClass, ServiceContract, ServiceRequirement } from 'better-effect'
 import { Result } from 'better-result'
+import type { Result as ResultType } from 'better-result'
 import {
   makeOutboxLeaseToken,
   makeOutboxRecord,
@@ -46,6 +47,7 @@ import {
   normalizePostgresJobStoreConnectionConfig,
   validateNamespace,
   validateSchema,
+  type Pool,
   type PoolClient,
   type PostgresJobStoreConfig,
   type PostgresJobStoreConnectionConfig
@@ -148,6 +150,15 @@ const combineFailures = (primary: unknown, cleanup: unknown): unknown =>
     : cleanup === undefined
       ? primary
       : new AggregateError([primary, cleanup], 'PostgreSQL outbox cleanup failed')
+
+const isResultError = (value: unknown): value is ResultType<unknown, unknown> => {
+  try {
+    // SAFETY: Result.isError is used only as a nominal runtime predicate for callback values.
+    return Result.isError(value as ResultType<unknown, unknown>)
+  } catch {
+    return false
+  }
+}
 
 const table = (schema: string): string =>
   `${quoteIdentifier(schema)}.${quoteIdentifier(POSTGRES_TABLES.outbox)}`
@@ -873,6 +884,7 @@ const ownedClient = (token: AnyPostgresOutboxToken, config: PostgresJobStoreConn
 
 const defaultToken = makeToken(undefined) as unknown as DefaultPostgresOutboxToken
 
+/** Append through a caller-owned transaction; the advanced escape hatch. */
 const staticAppendIn = async (
   transaction: PoolClient,
   record: import('better-effect-mq-outbox').OutboxRecord,
@@ -882,9 +894,67 @@ const staticAppendIn = async (
   return appendRecordIn(transaction, normalized.schema, normalized.namespace, record)
 }
 
+/** Run a domain callback and append its outbox record in one adapter-owned transaction. */
+const staticTransaction = async <Value>(
+  pool: Pool,
+  record: import('better-effect-mq-outbox').OutboxRecord,
+  callback: (transaction: PoolClient) => Value | PromiseLike<Value>,
+  options: PostgresOutboxAppendOptions = {}
+): Promise<Value> => {
+  const normalized = normalizeAppendOptions(options)
+  let transaction: PoolClient | undefined
+  let value: Value | undefined
+  let primary: unknown
+  let cleanup: unknown
+  let failed = false
+  let nominalResultFailure = false
+  let committed = false
+
+  try {
+    transaction = await pool.connect()
+    await transaction.query('BEGIN')
+    value = await callback(transaction)
+    if (isResultError(value)) {
+      failed = true
+      nominalResultFailure = true
+    } else {
+      await appendRecordIn(transaction, normalized.schema, normalized.namespace, record)
+      await transaction.query('COMMIT')
+      committed = true
+    }
+  } catch (cause) {
+    failed = true
+    primary = cause
+  }
+
+  if (!committed && transaction !== undefined) {
+    try {
+      await transaction.query('ROLLBACK')
+    } catch (cause) {
+      cleanup = cause
+    }
+  }
+
+  if (transaction !== undefined) {
+    try {
+      transaction.release()
+    } catch (cause) {
+      cleanup = combineFailures(cleanup, cause)
+    }
+  }
+
+  if (failed) {
+    if (nominalResultFailure && cleanup === undefined) return value as Value
+    throw combineFailures(primary, cleanup) ?? primary
+  }
+  if (cleanup !== undefined) throw cleanup
+  return value as Value
+}
+
 const api = {
   named: namedOutbox,
   appendIn: staticAppendIn,
+  transaction: staticTransaction,
   make: makeStore,
   layer: (config: PostgresJobStoreConfig) => {
     return makeLayer(defaultToken, borrowedClient(defaultToken, config), false)
@@ -909,6 +979,7 @@ const api = {
 Object.defineProperties(defaultToken, {
   named: { configurable: false, enumerable: true, value: api.named, writable: false },
   appendIn: { configurable: false, enumerable: true, value: api.appendIn, writable: false },
+  transaction: { configurable: false, enumerable: true, value: api.transaction, writable: false },
   make: { configurable: false, enumerable: true, value: api.make, writable: false },
   layer: { configurable: false, enumerable: true, value: api.layer, writable: false },
   layerFor: { configurable: false, enumerable: true, value: api.layerFor, writable: false },

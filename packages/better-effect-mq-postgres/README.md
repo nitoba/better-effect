@@ -384,12 +384,12 @@ Flow storage requires the flow schema extension; migrations run by
 
 ## Outbox: transaction, record, publisher
 
-Use the outbox when a domain transaction must reliably hand work to a Job. A
-direct `domain INSERT` followed by `Job.enqueue` has a dual-write gap: the
-domain row can commit while enqueue fails, or the Job can be accepted while
-the domain transaction rolls back. `PostgresOutbox.appendIn` puts a prepared
-request in the caller's transaction, so both writes commit or roll back
-together.
+Use the outbox when a domain write must reliably hand work to a Job. A direct
+`domain INSERT` followed by `Job.enqueue` has a dual-write gap: the domain row
+can commit while enqueue fails, or the Job can be accepted while the domain
+write rolls back. `PostgresOutbox.transaction` owns the PostgreSQL transaction,
+appends the prepared request after the domain callback succeeds, and commits
+both writes together.
 
 After commit, `OutboxPublisher` claims the record, resolves its target route,
 enqueues the prepared Job, and marks the record published. The publisher is
@@ -493,21 +493,19 @@ try {
   })
   if (Result.isError(record)) throw record.error
 
-  const transaction = await pool.connect()
-  try {
-    await transaction.query('BEGIN')
-    await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
-      'order-123',
-      'ada@example.test'
-    ])
-    await PostgresOutbox.appendIn(transaction, record.value, { namespace: 'orders' })
-    await transaction.query('COMMIT')
-  } catch (cause) {
-    await transaction.query('ROLLBACK')
-    throw cause
-  } finally {
-    transaction.release()
-  }
+  const persisted = await PostgresOutbox.transaction(
+    pool,
+    record.value,
+    async (transaction) => {
+      await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
+        'order-123',
+        'ada@example.test'
+      ])
+      return Result.ok(undefined)
+    },
+    { namespace: 'orders' }
+  )
+  if (Result.isError(persisted)) throw persisted.error
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
@@ -523,13 +521,20 @@ try {
 }
 ```
 
-`prepare` encodes the request before the transaction begins. `appendIn` does
-not begin, commit, roll back, or release the transaction; the application owns
-all of those decisions. Reusing the same outbox ID and request is
-digest-idempotent, while reusing an ID for a different request is a conflict.
-Publishing is still at-least-once, so the Job handler and any remote effect
-must tolerate retries. For an adapter-owned pool, replace both Layers with
-their `layerFromConfig` forms and let `runtime.dispose()` own pool shutdown.
+`prepare` encodes the request before `transaction` acquires a client. The
+adapter appends the record only after the callback succeeds, commits only
+after that append succeeds, rolls back on thrown, rejected, or nominal
+`Result.err` failures, and always releases the client. Reusing the same outbox
+ID and request is digest-idempotent, while reusing an ID for a different
+request is a conflict. Publishing is still at-least-once, so the Job handler
+and any remote effect must tolerate retries. For an adapter-owned pool,
+replace both Layers with their `layerFromConfig` forms and let
+`runtime.dispose()` own pool shutdown.
+
+`PostgresOutbox.appendIn(transaction, record, options)` remains available as
+an advanced escape hatch when an application already owns a compatible
+transaction. It never begins, commits, rolls back, or releases that client;
+the normal path should use `PostgresOutbox.transaction`.
 
 ## Named stores
 
@@ -572,9 +577,9 @@ matching `outboxes` entry in the publisher options.
   of truth. Keep bounded polling fallbacks enabled for waits.
 - **Retention:** EventLog retention is finite and cursors can expire; it is
   not an infinite audit archive or a replacement for attempt records.
-- **Transactions:** `appendIn` participates in the transaction supplied by the
-  caller. The adapter does not coordinate transactions across databases,
-  pools, namespaces, or remote services.
+- **Transactions:** `transaction` atomically commits the domain callback and
+  outbox append on one PostgreSQL client. It does not coordinate transactions
+  across databases, pools, namespaces, or remote services.
 - **Capacity:** PostgreSQL connection pools, locks, indexes, I/O, and queue
   depth still limit throughput. Increase worker concurrency only after
   measuring database and pool latency.
@@ -611,7 +616,8 @@ the durable Job record. A retained-away cursor must be rebased.
 Confirm the publisher is in the same Runtime, its `outboxes` list contains the
 token used by the adapter Layer, and its route target matches the record's
 `target`. Recover stalled leases and inspect the publisher's retry or failure
-state. `appendIn` only records the intent; it does not publish it.
+state. `transaction` and `appendIn` only record the intent; neither publishes
+it.
 
 ### The pool closes too early or never closes
 

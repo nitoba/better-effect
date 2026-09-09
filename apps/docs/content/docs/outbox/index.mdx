@@ -88,15 +88,16 @@ try {
 ```
 
 The example uses in-memory stores only to show the composition shape. In production, replace the
-two storage providers with a database adapter and append a prepared record inside the transaction
-that writes the domain change.
+two storage providers with a database adapter and use that adapter's transaction helper to append
+the prepared record with the domain change.
 
 ## Prepare before the transaction
 
 An outbox record stores a validated `PreparedEnqueue`, not a codec, callback,
 Service, Runtime, connection or transaction object. The application prepares
-the request before inserting it into its domain transaction; the concrete
-adapter provides the transaction-specific `appendIn` boundary.
+the request before entering its domain transaction; the concrete adapter owns
+the transaction boundary and appends the record after the domain callback
+succeeds.
 
 ```ts
 import { Effect, Runtime } from 'better-effect'
@@ -137,36 +138,34 @@ publisher resolves the named route and enqueues the prepared request.
 
 ## Transaction to publisher
 
-When PostgreSQL is the source of truth, the adapter provides the concrete
-transaction boundary while the application keeps ownership of begin, commit,
-rollback, and connection cleanup:
+When PostgreSQL is the source of truth, let the adapter own the concrete
+transaction boundary. The callback performs the domain write; the adapter
+appends the prepared record after the callback succeeds, commits both writes,
+and always cleans up the client:
 
 ```ts
 import type { Pool } from 'pg'
 import { PostgresOutbox } from 'better-effect-mq-postgres'
+import { Result } from 'better-result'
 
 declare const pool: Pool
 
-const transaction = await pool.connect()
-try {
-  await transaction.query('BEGIN')
-  await transaction.query('INSERT INTO invoices (id, status) VALUES ($1, $2)', [
-    'invoice-123',
-    'paid'
-  ])
-  await PostgresOutbox.appendIn(transaction, record.value, {
-    namespace: 'billing'
-  })
-  await transaction.query('COMMIT')
-} catch (cause) {
-  await transaction.query('ROLLBACK')
-  throw cause
-} finally {
-  transaction.release()
-}
+const persisted = await PostgresOutbox.transaction(
+  pool,
+  record.value,
+  async (transaction) => {
+    await transaction.query('INSERT INTO invoices (id, status) VALUES ($1, $2)', [
+      'invoice-123',
+      'paid'
+    ])
+    return Result.ok(undefined)
+  },
+  { namespace: 'billing' }
+)
+if (Result.isError(persisted)) throw persisted.error
 ```
 
-After `COMMIT`, `PublisherLive` claims the durable record, resolves the
+After the adapter commits, `PublisherLive` claims the durable record, resolves the
 `billing-jobs` route, and enqueues the prepared `SendEmail` request in the core
 `JobStore`. The same Runtime-owned Worker then claims that Job and runs the
 `Worker.handle` callback; the outbox record is marked published only after the
