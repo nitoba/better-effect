@@ -1,0 +1,47 @@
+---
+title: Writing a storage adapter
+description: Implement an advanced JobStore provider without leaking backend details.
+icon: CodeXml
+---
+
+This is an advanced implementation page. Application authors should start with the [MQ guide](../mq)
+and an [adapter quick start](../integrations/adapters). A storage adapter implements
+`JobStore.Contract` and provides it through a default or named `JobStore` token; its database,
+transactions, connection lifecycle, and layout stay behind that boundary.
+
+Keep transactions, indexes, wake delivery, migrations, and connection lifecycle
+inside the adapter. A caller-supplied pool/client is borrowed; a resource
+created by the adapter is owned and must be closed exactly once. Backend types,
+identifiers, credentials, and layout details must not leak into
+`better-effect-mq`.
+
+Every operation returns a completed `better-result` `Result` or a `PromiseLike`
+of one. Validate untrusted DTOs and decoded records, use the request's single
+`now` value, and persist only JSON-safe records and bounded failure envelopes.
+The required atomic boundaries are enqueue identity/idempotency, ordered claim
+and lease acquisition, settlement plus attempt ledger, fenced release and
+heartbeat, stalled recovery, and administrative transitions.
+
+Optional parent/child composition, queue controls, events, schedules, and outbox
+are separate capabilities. Implement each only when the adapter can provide its
+atomicity, migration, and recovery guarantees, and keep cross-store enqueue and
+relay explicitly at-least-once.
+
+`awaitWake` is an optimization over persisted wake state. Polling must remain
+correct, and wake messages must not contain payloads, metadata, idempotency
+keys, lease tokens, or arbitrary causes. Publish one frozen descriptor with the
+adapter and layout capabilities it supports; Worker startup rejects an
+incomplete or incompatible
+handshake before supervision begins.
+
+Run the runner-neutral `jobStoreContract` suite against every supported
+capability configuration, passing every capability explicitly (including
+`false`) so the descriptor manifest is checked. A declared-true
+`durableChangeFeed`, `globalConcurrency`, or `rateLimiting` flag requires a
+separate extension Service/interface and an executable `extensions` scenario;
+these flags never add optional methods to `JobStore` v1. The report marks a
+true declaration without such a scenario as `capabilitiesNotTested`. Then add
+backend tests for rollback, concurrent writers, reconnects, lost responses,
+migration boundaries, and borrowed-versus-owned cleanup. Before release, run
+the current TypeScript 7.x declaration fixture, full Bun checks, package boundaries,
+publint, and the external tarball consumer.

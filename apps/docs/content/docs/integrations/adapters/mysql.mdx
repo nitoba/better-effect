@@ -1,0 +1,85 @@
+---
+title: better-effect-mq-mysql
+description: Persist the core queue and worker model in MySQL and InnoDB.
+icon: Database
+---
+
+`better-effect-mq-mysql` is the MySQL extension for [`better-effect-mq`](../../mq). It adds durable
+storage while leaving the application-facing queue, Job, Worker, Layer, and Runtime model intact.
+
+## Install and migrate
+
+```bash
+bun add better-effect-mq-mysql better-effect-mq better-effect better-result mysql2
+```
+
+Use MySQL 8.0.16 or newer with InnoDB and strict SQL mode. Run the migrator before workers start;
+the storage Layer validates the existing layout but does not run migrations for you.
+
+```ts
+import { createPool } from 'mysql2/promise'
+import { MySqlMigrator } from 'better-effect-mq-mysql'
+
+const pool = createPool(process.env.MYSQL_URL ?? '')
+await MySqlMigrator.run(pool)
+await MySqlMigrator.validate(pool)
+```
+
+## Quick start: the canonical MQ shape
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { MySqlJobStore } from 'better-effect-mq-mysql'
+import { Result } from 'better-result'
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly messageId: string
+    readonly recipient: string
+  }>(),
+  result: Codec.string
+})
+
+const EmailWorker = Worker.service('@app/EmailWorker')
+const emailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    return Result.ok(`sent:${payload.recipient}:${context.attempt}`)
+  })
+)
+
+const StorageLive = MySqlJobStore.layer({ pool, namespace: 'emails' })
+const WorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 500
+}))
+const AppLive = Layer.complete(Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive)))
+
+const runtime = await Runtime.make(AppLive)
+try {
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({
+        messageId: 'message-123',
+        recipient: 'ada@example.test'
+      })
+      return Result.ok(jobId)
+    })
+  )
+  if (Result.isError(result)) throw result.error
+  console.log(`enqueued ${result.value}`)
+} finally {
+  await runtime.dispose()
+  await pool.end()
+}
+```
+
+The example borrows the pool and closes it after Runtime disposal. Use `layerFromConfig` when the
+adapter should own a `mysql2/promise` pool. Schedules, events, flows, and outbox storage use the
+same namespace and Layer-first composition. MySQL delivery is at least once; design handlers and
+downstream effects for safe repetition.

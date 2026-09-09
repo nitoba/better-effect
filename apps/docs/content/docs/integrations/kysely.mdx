@@ -5,7 +5,7 @@ icon: Database
 ---
 
 `better-effect-kysely` is the optional, server-side integration between
-[better-effect](/docs/getting-started) and [Kysely](https://kysely.dev/). Kysely
+[better-effect](/docs/start-here/getting-started) and [Kysely](https://kysely.dev/). Kysely
 remains the SQL query builder, compiler, executor and dialect boundary. The
 integration adds a small bridge for Service provisioning, lazy Effect
 terminals and transaction outcomes; it is not an ORM or repository framework.
@@ -103,7 +103,7 @@ const listUsers = Effect.fn(async function* () {
 })
 ```
 
-See [Services](/docs/services) for the general Service model and [Layers](/docs/layers)
+See [Services](/docs/core/services) for the general Service model and [Layers](/docs/core/layers)
 for composition and completeness checks.
 
 ## Owned and borrowed databases
@@ -378,7 +378,7 @@ server-side guarantee, and a write may already have been applied. The public
 Kysely callback API also leaves a small unavoidable race between the final
 transaction cancellation check and native commit.
 
-For the core Runtime lifecycle and signal ownership, see [Runtime](/docs/runtime).
+For the core Runtime lifecycle and signal ownership, see [Runtime](/docs/core/runtime).
 
 ## Errors and failure precedence
 
@@ -397,7 +397,7 @@ Messages and serialized fields do not contain SQL, parameters, credentials or
 driver-specific details. Inspect `.cause` only at an intentional trusted
 diagnostic boundary; do not put it directly in an HTTP response or structured
 log by default. Map application domain errors explicitly with the patterns in
-[Errors and Results](/docs/errors).
+[Errors and Results](/docs/core/errors).
 
 A domain `Result.err` is not silently converted into a generic query error.
 When cleanup succeeds, the body failure remains the primary application error.
@@ -475,7 +475,7 @@ SQLite and PGlite. It also checks PostgreSQL, MySQL and SQLite Kysely types
 without opening external servers. PGlite evidence should not be read as a
 claim that every `pg` version or deployment behaves identically.
 
-See [Testing](/docs/testing) for general Layer overrides and Runtime test
+See [Testing](/docs/core/testing) for general Layer overrides and Runtime test
 helpers.
 
 ## Compatibility and limitations
@@ -530,10 +530,10 @@ Promise normalizers, private error helpers, source paths or dialect drivers.
 ## Further reading
 
 - [Kysely API documentation](https://kysely.dev/docs/intro)
-- [Services](/docs/services)
-- [Layers](/docs/layers)
-- [Effects and Programs](/docs/effects)
-- [Runtime and cancellation](/docs/runtime)
-- [Errors and Results](/docs/errors)
-- [Testing](/docs/testing)
+- [Services](/docs/core/services)
+- [Layers](/docs/core/layers)
+- [Effects and Programs](/docs/core/effects)
+- [Runtime and cancellation](/docs/core/runtime)
+- [Errors and Results](/docs/core/errors)
+- [Testing](/docs/core/testing)
 - [Package README](https://github.com/nitoba/better-effect/tree/main/packages/better-effect-kysely)

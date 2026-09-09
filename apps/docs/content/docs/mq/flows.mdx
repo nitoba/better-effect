@@ -1,0 +1,131 @@
+---
+title: Flows
+description: Fan out one parent Job into typed child Jobs and collect their results.
+icon: GitBranch
+---
+
+Use a Flow when one durable parent Job owns several child Jobs: for example, an order that must
+reserve multiple items before it can be confirmed. The parent remains visible in the same queue,
+while the Flow store records child progress and lets a Worker collect a typed result.
+
+## A complete parent-and-child flow
+
+This example creates two child jobs for every order, runs them through one Layer-owned Worker, and
+completes the parent with the number of successful reservations.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import {
+  Codec,
+  Flow,
+  FlowStore,
+  JobStore,
+  MemoryFlowStore,
+  MemoryJobStore,
+  Queue,
+  Worker
+} from 'better-effect-mq'
+
+const Orders = Queue.define('orders')
+const FulfillOrder = Orders.job('fulfill-order', {
+  version: 1,
+  payload: Codec.json<{ readonly orderId: string }>(),
+  result: Codec.json<{ readonly orderId: string; readonly fulfilled: number }>()
+})
+const FulfillItem = Orders.job('fulfill-item', {
+  version: 1,
+  payload: Codec.json<{ readonly orderId: string; readonly itemId: string }>(),
+  result: Codec.json<{ readonly itemId: string; readonly accepted: boolean }>()
+})
+
+const Fulfillment = Flow.define('order-fulfillment', {
+  parent: FulfillOrder,
+  children: [FulfillItem] as const,
+  onChildFailure: 'continue'
+})
+
+const FulfillmentRoute = Flow.handle(Fulfillment, {
+  fanOut: (payload) =>
+    Effect.fn(async function* () {
+      return Result.ok([
+        Flow.children(FulfillItem, [
+          {
+            key: 'item:sku-1',
+            payload: { orderId: payload.orderId, itemId: 'sku-1' }
+          },
+          {
+            key: 'item:sku-2',
+            payload: { orderId: payload.orderId, itemId: 'sku-2' }
+          }
+        ])
+      ] as const)
+    }),
+  collect: (payload, results) =>
+    Effect.fn(async function* () {
+      const settled = yield* Result.await(results.all()())
+      const fulfilled = settled.filter((child) => child.outcome === 'completed').length
+      return Result.ok({ orderId: payload.orderId, fulfilled })
+    })
+})
+
+const itemHandler = Worker.handle(FulfillItem, (payload) =>
+  Effect.fn(async function* () {
+    // Replace this with the inventory reservation for payload.itemId.
+    return Result.ok({ itemId: payload.itemId, accepted: true })
+  })
+)
+const FulfillmentWorker = Worker.service('@app/FulfillmentWorker')
+const FulfillmentWorkerLive = FulfillmentWorker.layer(() => ({
+  handlers: [itemHandler] as const,
+  flows: [FulfillmentRoute] as const,
+  concurrency: 4,
+  pollIntervalMs: 250,
+  flowSweepIntervalMs: 1_000,
+  flowBatchSize: 50
+}))
+
+const StorageLive = Layer.merge(
+  Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
+  Layer.succeed(FlowStore, FlowStore.of(MemoryFlowStore.make()))
+)
+const AppLive = Layer.complete(
+  Layer.merge(StorageLive, Layer.merge(ClockLive, FulfillmentWorkerLive))
+)
+const runtime = await Runtime.make(AppLive)
+
+try {
+  await runtime.warmup()
+  const started = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const parentId = yield* FulfillOrder.enqueue({ orderId: 'order-123' })
+      return Result.ok(parentId)
+    })
+  )
+  if (Result.isError(started)) throw started.error
+
+  const completed = await runtime.run(() => FulfillOrder.awaitResult(started.value))
+  if (Result.isError(completed)) throw completed.error
+  console.log(completed.value)
+} finally {
+  await runtime.dispose()
+}
+```
+
+The parent enqueue is the only producer operation. The Worker claims it, runs `fanOut` once, and
+persists the child requests with stable keys. Child Workers settle each reservation independently;
+the Flow records those outcomes and invokes `collect` when all children are terminal. With
+`onChildFailure: 'continue'`, the parent can finish with a partial count; use `'fail'` when any
+failed child should fail the parent and cancel the remaining work.
+
+## When to use a Flow
+
+Use a Flow for durable fan-out/fan-in, bounded child progress, and parent cancellation or retry. Use
+ordinary independent Jobs when work does not share a parent lifecycle. A Flow is at-least-once: child
+handlers and the parent side effect should be safe to replay, and the adapter must provide the
+`JobStore` and `FlowStore` Layers with the same persistence and recovery guarantees.
+
+The in-memory Layers above are for a local example. Replace them with one adapter's durable Layers;
+the Queue, Job descriptors, handlers, Worker service, Layer composition, and Runtime boundary stay
+the same.

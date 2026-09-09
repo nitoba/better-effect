@@ -100,7 +100,12 @@ const ApiServer = BunEffect.server('@docs/ApiServer', async function* () {
 })
 
 const runtime = await Runtime.make(Layer.merge(Layer.make(AppService), ApiServer.layer))
-const server = await runtime.run(() => ServiceRuntime.resolve(ApiServer))
+const server = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const apiServer = yield* ApiServer
+    return Result.ok(apiServer)
+  })
+)
 ```
 
 The handler supplies `CurrentRequest`, forwards `request.signal` to

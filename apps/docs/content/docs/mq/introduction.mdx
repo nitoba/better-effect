@@ -10,19 +10,14 @@ provides immutable Job definitions, producer operations, a Worker supervisor,
 and a `JobStore` Service contract. It does not open a database connection or
 choose a persistence technology.
 
-## Protocol versions and at-least-once delivery
-
-The exported base `protocolVersion` is `1`. Flow parent/child composition is the
-explicit `FlowStoreV2` extension, and QueueControls is protocol v3; neither
-silently changes the v1 JobStore contract. Adapters validate the protocol and
-layout/migration version they support before a Worker starts.
+## At-least-once delivery and optional capabilities
 
 A successful settlement under the current lease is not normally delivered
 again. If a worker performs a side effect and crashes before settlement is
 persisted, the job can be delivered again. This is **at-least-once**, not
-exactly-once processing. Cross-store Flow enqueue and relay use durable
-manifests, deterministic child IDs and idempotent reports; they do not provide a
-distributed transaction.
+exactly-once processing. Optional parent/child composition, controls, events,
+schedules, and outbox publishing are additive capabilities supplied by the
+core package or an adapter; they do not provide a distributed transaction.
 
 Design handlers so repeating the external operation is safe. Use the Job ID or
 a business idempotency key with the downstream API, and make the downstream
@@ -30,19 +25,12 @@ write conditional or deduplicated where possible. A lease token fences an old
 worker from settling a newer delivery; it cannot undo a side effect that
 already happened before a crash.
 
-```ts
-import { protocolVersion } from 'better-effect-mq'
-
-protocolVersion // 1 (base JobStore protocol)
-```
-
 Persisted records are JSON-safe DTOs. They contain identities, state, counters,
 leases, encoded payloads and bounded failure envelopes—not live `Error`,
 `Result`, Service or connection objects.
 
-For Flow v2, read the [Flow protocol](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md)
-before implementing parent/child stores. For driver compatibility and migration
-policy, read the [compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md).
+For parent/child stores or a new adapter, use the advanced [storage adapter
+guide](../reference/writing-a-driver) and the package's implementation notes.
 
 ## Define a queue and jobs
 

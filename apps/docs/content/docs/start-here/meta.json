@@ -1,0 +1,6 @@
+{
+  "title": "Start Here",
+  "icon": "Rocket",
+  "pages": ["index", "getting-started"],
+  "defaultOpen": true
+}

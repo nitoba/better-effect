@@ -1,0 +1,18 @@
+{
+  "title": "Core concepts",
+  "icon": "Layers",
+  "pages": [
+    "index",
+    "mental-model",
+    "services",
+    "effects",
+    "layers",
+    "runtime",
+    "scope",
+    "resource",
+    "pipelines",
+    "errors",
+    "testing"
+  ],
+  "defaultOpen": true
+}

@@ -1,0 +1,24 @@
+---
+title: Outbox patterns
+description: Choose transaction boundaries, routes, and recovery policies for reliable publishing.
+icon: GitBranch
+---
+
+Use an outbox when a domain write and the job that follows it must become visible together. Prepare
+the request before the transaction, append it with the domain change, and let the publisher enqueue
+it after commit.
+
+## The safe handoff
+
+```text
+domain transaction
+  ├─ write application data
+  └─ append prepared OutboxRecord
+        │ commit
+        ▼
+OutboxPublisher → JobStore → Worker.handle
+```
+
+The publisher is at-least-once. Give downstream effects a stable idempotency key and monitor
+records that remain active, retrying, or failed. The [Outbox guide](./index) covers the API and
+the transaction-specific append helpers supplied by database adapters.

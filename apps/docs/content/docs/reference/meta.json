@@ -1,0 +1,14 @@
+{
+  "title": "Reference",
+  "icon": "BookMarked",
+  "pages": [
+    "index",
+    "packages",
+    "migration",
+    "patterns",
+    "troubleshooting",
+    "todo-api",
+    "writing-a-driver"
+  ],
+  "defaultOpen": false
+}

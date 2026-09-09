@@ -15,8 +15,8 @@ icon: CircleQuestionMark
     replacement is intentional, and ensure same-tag contracts are compatible.
   </Accordion>
   <Accordion title="A Service resolves outside Runtime" id="service-outside-runtime">
-    `yield* Service` and `ServiceRuntime.resolve` need an active resolver. Run the program through
-    `Runtime.run`, or wrap integration code with `ServiceRuntime.run(resolver, callback)`.
+    `yield* Service` needs an active Runtime execution. Run the program through `Runtime.run` and
+    keep Service access inside the Effect callback.
   </Accordion>
   <Accordion title="Scope says it is not configured" id="scope-outside-runtime">
     `Scope.current`, `yield* Scope`, `Effect.add` and `Effect.acquireRelease` require an active

@@ -4,36 +4,33 @@ description: Storage-neutral durable jobs, flows, workers and testing for better
 icon: ListChecks
 ---
 
-`better-effect-mq` is an experimental, storage-neutral protocol for durable
-jobs, Flow v2 parent/child composition, and Layer-first Workers. A **queue** is
-a namespace, a **Job** is an immutable versioned producer/handler identity,
-and a **JobStore** is the atomic persistence seam. A Worker runs handlers over
-one existing `better-effect` Runtime; it does not create a second Runtime or
-choose a database.
+`better-effect-mq` is the storage-neutral core for durable jobs, optional
+parent/child composition, and Layer-first Workers. A **queue** is a namespace,
+a **Job** is an immutable versioned producer/handler identity, and a **JobStore**
+is the atomic persistence seam. A Worker runs handlers over one existing
+`better-effect` Runtime; it does not create a second Runtime or choose a
+database.
 
-The base package version and persisted protocol are intentionally separate:
-`protocolVersion` is `1`, while Flow v2 and QueueControls v3 are explicit
-extension contracts with independent layout/migration checks. Read the guide
-that matches the operation you are implementing:
+Read the guide that matches the operation you are implementing:
 
-- [Introduction](./introduction) — protocol boundaries and the complete overview.
+- [Introduction](./introduction) — the queue and delivery model.
 - [Defining Jobs](./defining-jobs) — queue, identity, codecs and versions.
 - [Enqueueing](./enqueueing) — producer programs, admin operations and idempotency.
 - [Workers](./workers) — handler inference and the Worker lifecycle.
+- [Flows](./flows) — durable parent/child fan-out and result collection.
 - [Retries and timeouts](./retries-and-timeouts) — durable backoff and cooperative limits.
 - [Cancellation and shutdown](./cancellation-and-shutdown) — AbortSignal and graceful ownership.
 - [Idempotency and delivery](./idempotency-and-delivery) — at-least-once processing.
 - [Stores and named stores](./stores-and-named-stores) — adapters and bindings.
 - [Testing](./testing) — `TestJobStore`, real Workers and deterministic clocks.
-- [Writing a driver](./writing-a-driver) — the public JobStore contract.
+- [Writing a storage adapter](../reference/writing-a-driver) — the advanced provider boundary.
 - [Operations and observability](./operations-and-observability) — polling, events and production checks.
-- [Flow protocol v2](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md) — parent/child jobs, manifests, relay and reconciliation.
-- [Compatibility policy](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md) — protocol and adapter migration boundaries.
 
 Storage adapters are separate packages. The current adapter family includes
-PostgreSQL, Redis/Valkey, MongoDB, SQLite and MySQL; each preserves the base
-protocol and documents its extension migrations, client ownership and
-transaction boundaries in its package README. The storage-neutral
+PostgreSQL, Redis/Valkey, MongoDB, SQLite and MySQL; each provides the same
+JobStore contract and documents its migrations, client ownership and
+transaction boundaries in the [adapter guides](../integrations/adapters).
+The storage-neutral
 [`better-effect-mq-outbox`](https://github.com/nitoba/better-effect/tree/main/packages/better-effect-mq-outbox)
 package provides prepared outbox records, routing and a Layer-owned publisher.
 

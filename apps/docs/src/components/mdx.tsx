@@ -11,6 +11,7 @@ import {
 } from './codeblock'
 import { File, Files, Folder } from './files'
 import { InlineTOC } from './inline-toc'
+import { DocCard, DocCards } from './doc-cards'
 import { Tab, Tabs, TabsContent, TabsList, TabsTrigger } from './tabs'
 
 export function getMDXComponents(components?: MDXComponents) {
@@ -23,6 +24,8 @@ export function getMDXComponents(components?: MDXComponents) {
     CodeBlockTabs,
     CodeBlockTabsList,
     CodeBlockTabsTrigger,
+    DocCard,
+    DocCards,
     File,
     Files,
     Folder,

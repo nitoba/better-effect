@@ -12,6 +12,7 @@ import { getMDXComponents } from '@/components/mdx'
 import type { Metadata } from 'next'
 import { createRelativeLink } from 'fumadocs-ui/mdx'
 import { appName, gitConfig } from '@/lib/shared'
+import { InlineTOC } from '@/components/inline-toc'
 
 export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   const params = await props.params
@@ -33,6 +34,11 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
         />
       </div>
       <DocsBody>
+        {page.data.toc.length > 0 ? (
+          <div className="be-mobile-toc">
+            <InlineTOC items={page.data.toc} />
+          </div>
+        ) : null}
         <MDX
           components={getMDXComponents({
             // this allows you to link to other pages with relative file paths

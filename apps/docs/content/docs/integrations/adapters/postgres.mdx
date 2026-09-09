@@ -1,0 +1,102 @@
+---
+title: better-effect-mq-postgres
+description: Persist the core queue and worker model in PostgreSQL.
+icon: Database
+---
+
+`better-effect-mq-postgres` is an extension of [`better-effect-mq`](../../mq). The core package
+owns queues, Jobs, handlers, retries, and worker supervision; this adapter supplies a durable
+PostgreSQL `JobStore` through a Layer. Your application code keeps the same queue descriptor and
+Worker APIs used with the in-memory store.
+
+## Install and migrate
+
+```bash
+bun add better-effect-mq-postgres better-effect-mq better-effect better-result pg
+```
+
+Run migrations as an explicit deployment step. Store acquisition validates the schema but does not
+silently change it.
+
+```ts
+import { Pool } from 'pg'
+import { PostgresMigrator } from 'better-effect-mq-postgres'
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+await PostgresMigrator.run(pool, { schema: 'public' })
+await PostgresMigrator.validate(pool, { schema: 'public' })
+```
+
+## Quick start: the canonical MQ shape
+
+The descriptor and handler are storage-neutral. Only `PostgresJobStore.layer` changes when you
+replace another adapter.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { PostgresJobStore } from 'better-effect-mq-postgres'
+import { Result } from 'better-result'
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly messageId: string
+    readonly recipient: string
+  }>(),
+  result: Codec.string
+})
+
+const EmailWorker = Worker.service('@app/EmailWorker')
+const emailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    // Use the message ID as the downstream provider's idempotency key.
+    return Result.ok(`sent:${payload.recipient}:${context.attempt}`)
+  })
+)
+
+const StorageLive = PostgresJobStore.layer({
+  pool,
+  namespace: 'emails'
+})
+const WorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 500
+}))
+const AppLive = Layer.complete(Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive)))
+
+const runtime = await Runtime.make(AppLive)
+try {
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({
+        messageId: 'message-123',
+        recipient: 'ada@example.test'
+      })
+      return Result.ok(jobId)
+    })
+  )
+  if (Result.isError(result)) throw result.error
+  console.log(`enqueued ${result.value}`)
+} finally {
+  await runtime.dispose()
+  await pool.end()
+}
+```
+
+The pool is borrowed by `PostgresJobStore.layer`; the application closes it after the Runtime. Use
+`PostgresJobStore.layerFromConfig` when the adapter should create and release the pool itself.
+
+## Optional capabilities
+
+Add event, schedule, flow, or outbox Layers only when the application needs them. Use the same
+PostgreSQL pool, schema, and namespace for providers that share a queue. Outbox transaction helpers
+participate in a transaction that the application already owns; they never turn a remote publish
+into a distributed transaction.
+
+PostgreSQL delivery is at least once. Make handlers and external side effects idempotent, monitor
+leases and retry age, and keep polling enabled even when database notifications provide a wake hint.
