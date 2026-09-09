@@ -217,8 +217,14 @@ const assertDependencies = async (consumer, currentCase) => {
 const assertPackedManifest = async (consumer) => {
   const packageRoot = join(consumer, 'node_modules/better-effect-schema')
   const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
-  if (packageJson.name !== 'better-effect-schema' || packageJson.version !== '0.1.0') {
-    throw new Error('Packed package identity is invalid')
+  const sourcePackageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+  if (
+    packageJson.name !== sourcePackageJson.name ||
+    packageJson.version !== sourcePackageJson.version
+  ) {
+    throw new Error(
+      `Packed package identity is invalid: expected ${sourcePackageJson.name}@${sourcePackageJson.version}, got ${packageJson.name}@${packageJson.version}`
+    )
   }
   if (typeof packageJson.dependencies?.['@standard-schema/spec'] !== 'string') {
     throw new Error('Packed package must expose @standard-schema/spec as a production dependency')
