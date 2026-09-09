@@ -5,11 +5,16 @@ on:
     tags:
       - 'v*'
       - 'better-effect-better-auth-v*'
+      - 'better-effect-http-v*'
       - 'better-effect-mq-v*'
+      - 'better-effect-mq-mongodb-v*'
+      - 'better-effect-mq-mysql-v*'
+      - 'better-effect-mq-outbox-v*'
       - 'better-effect-kysely-v*'
       - 'better-effect-schema-v*'
       - 'better-effect-mq-postgres-v*'
       - 'better-effect-mq-redis-v*'
+      - 'better-effect-mq-sqlite-v*'
   workflow_dispatch:
     inputs:
       tag_name:

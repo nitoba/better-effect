@@ -103,6 +103,6 @@ the additive Flow v2, events, schedules, controls, and outbox extensions
 documented in their package READMEs.
 
 Package releases use qualified tags and publish only the selected package. See
-[`docs/release-process.md`](./docs/release-process.md) for the release planner,
-initial Better Auth/MQ/Kysely/PostgreSQL release commands, and npm Trusted
-Publishing setup.
+[`docs/release-process.md`](./docs/release-process.md) for the complete
+allowlisted package matrix, release planner, package bootstrap commands, and
+npm Trusted Publishing setup.

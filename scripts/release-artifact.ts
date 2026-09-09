@@ -17,18 +17,21 @@ type ReleaseRoutes = {
 
 type ReleaseConfig = {
   readonly directory: string
-  readonly expectedEntries: readonly string[]
   readonly extraFiles: readonly string[]
-  readonly includeAllDistFiles: boolean
 }
 
-type ExportValue = string | Readonly<Record<string, ExportValue>>
+type ExportValue = string | null | Readonly<Record<string, ExportValue>>
 type PackageManifest = {
   readonly name?: string
   readonly version?: string
   readonly type?: string
   readonly sideEffects?: boolean
+  readonly files?: readonly string[]
   readonly exports?: Readonly<Record<string, ExportValue>>
+  readonly publishConfig?: {
+    readonly access?: string
+    readonly registry?: string
+  }
 }
 type SourceMap = {
   readonly sources?: readonly string[]
@@ -44,15 +47,7 @@ const configs: Record<string, ReleaseConfig> = Object.fromEntries(
     route.name,
     {
       directory: route.directory,
-      expectedEntries: [
-        'package/LICENSE',
-        'package/README.md',
-        'package/package.json',
-        ...(route.changelog === 'CHANGELOG.md' ? [] : ['package/CHANGELOG.md']),
-        ...(route.additionalFiles ?? []).map((file) => `package/${file}`)
-      ],
-      extraFiles: route.extraFiles ?? [],
-      includeAllDistFiles: true
+      extraFiles: [...(route.additionalFiles ?? []), ...(route.extraFiles ?? [])]
     }
   ])
 )
@@ -99,35 +94,26 @@ const pack = async (
   return join(destination, archives[0]!)
 }
 
-const distEntries = async (packageRoot: string): Promise<string[]> => {
-  const files: string[] = []
-  const pending = [join(packageRoot, 'dist')]
-
-  while (pending.length > 0) {
-    const directory = pending.pop()
-    if (directory === undefined) continue
-
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name)
-      if (entry.isDirectory()) pending.push(path)
-      else if (entry.isFile())
-        files.push(`package/dist/${relative(join(packageRoot, 'dist'), path).split(sep).join('/')}`)
-    }
-  }
-
-  return files.sort()
-}
-
-const extraEntries = async (
+const pathEntries = async (
   packageRoot: string,
-  paths: readonly string[]
+  paths: readonly string[],
+  label: string
 ): Promise<string[]> => {
   const files: string[] = []
 
   for (const relativePath of paths) {
+    assertCondition(
+      isStringValue(relativePath) &&
+        relativePath.length > 0 &&
+        !relativePath.startsWith('/') &&
+        !relativePath.includes('\\') &&
+        !relativePath.split('/').includes('..') &&
+        !/[?[\]*]/u.test(relativePath),
+      `${label} contains an unsafe or unsupported path: ${String(relativePath)}`
+    )
     const root = join(packageRoot, relativePath)
     const metadata = await stat(root).catch(() => undefined)
-    assertCondition(metadata !== undefined, `Required package path is missing: ${relativePath}`)
+    assertCondition(metadata !== undefined, `${label} path is missing: ${relativePath}`)
     const before = files.length
     const pending = [root]
 
@@ -145,10 +131,7 @@ const extraEntries = async (
       }
     }
 
-    assertCondition(
-      files.length > before,
-      `Required package path is empty: ${relativePath}`
-    )
+    assertCondition(files.length > before, `${label} path is empty: ${relativePath}`)
   }
 
   return files.sort()
@@ -156,6 +139,13 @@ const extraEntries = async (
 
 const isStringValue = (value: ExportValue): value is string =>
   Object.prototype.toString.call(value) === '[object String]'
+
+const declarationFor = (target: string): string | undefined => {
+  if (target.endsWith('.mjs')) return target.replace(/\.mjs$/u, '.d.mts')
+  if (target.endsWith('.js')) return target.replace(/\.js$/u, '.d.ts')
+  if (target.endsWith('.cjs')) return target.replace(/\.cjs$/u, '.d.cts')
+  return undefined
+}
 
 const requiredDistEntries = (manifest: PackageManifest): string[] => {
   const exportsValue = manifest.exports
@@ -167,11 +157,14 @@ const requiredDistEntries = (manifest: PackageManifest): string[] => {
   }
   const entries = new Set<string>()
   const visit = (value: ExportValue): void => {
+    if (value === null) return
     if (isStringValue(value)) {
-      if (value.startsWith('./dist/') && value.endsWith('.mjs')) {
-        const packageTarget = `package/${value.slice(2)}`
-        entries.add(packageTarget)
-        entries.add(packageTarget.replace(/\.mjs$/, '.d.mts'))
+      if (!value.startsWith('./dist/')) return
+      const packageTarget = `package/${value.slice(2)}`
+      entries.add(packageTarget)
+      const declaration = declarationFor(value)
+      if (declaration !== undefined) {
+        entries.add(`package/${declaration.slice(2)}`)
       }
       return
     }
@@ -214,12 +207,22 @@ const assertArchive = async (
     `Unexpected ${packer} archive name: ${archiveName}`
   )
   const actualEntries = archiveEntries(archive)
+  const manifestFiles = packageManifest.files
+  assertCondition(Array.isArray(manifestFiles), `${packer} manifest must define a files allowlist`)
+  assertCondition(
+    manifestFiles.every((entry): entry is string => isStringValue(entry)),
+    `${packer} manifest files allowlist must contain only strings`
+  )
+  assertCondition(
+    new Set(manifestFiles).size === manifestFiles.length,
+    `${packer} manifest files allowlist contains duplicates`
+  )
   const expectedEntries = [
     ...new Set([
-      ...config.expectedEntries,
+      'package/package.json',
+      ...(await pathEntries(packageRoot, manifestFiles, `${packer} manifest files`)),
       ...requiredDistEntries(packageManifest),
-      ...(config.includeAllDistFiles ? await distEntries(packageRoot) : []),
-      ...(await extraEntries(packageRoot, config.extraFiles))
+      ...(await pathEntries(packageRoot, config.extraFiles, `${packer} route extras`))
     ])
   ].sort()
 
@@ -281,6 +284,15 @@ const main = async (): Promise<void> => {
   assertCondition(
     packageManifest.sideEffects === false,
     'Published package must be side-effect free'
+  )
+  assertCondition(
+    packageManifest.publishConfig?.access === 'public' &&
+      packageManifest.publishConfig.registry === 'https://registry.npmjs.org/',
+    'Published package must target the public npm registry'
+  )
+  assertCondition(
+    Array.isArray(packageManifest.files) && packageManifest.files.length > 0,
+    'Published package must define a non-empty files allowlist'
   )
   const temporaryRoot = await mkdtemp(join(tmpdir(), `${packageName}-release-`))
   try {

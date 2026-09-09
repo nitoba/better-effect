@@ -20,9 +20,7 @@
       "changelog": "packages/better-effect-mq/CHANGELOG.md",
       "tagPrefix": "better-effect-mq-v",
       "initialRelease": true,
-      "extraFiles": [
-        "docs"
-      ]
+      "extraFiles": ["docs"]
     },
     {
       "name": "better-effect-mq-outbox",
@@ -61,9 +59,7 @@
       "changelog": "packages/better-effect-mq-postgres/CHANGELOG.md",
       "tagPrefix": "better-effect-mq-postgres-v",
       "initialRelease": true,
-      "extraFiles": [
-        "migrations"
-      ]
+      "extraFiles": ["migrations"]
     },
     {
       "name": "better-effect-mq-redis",
@@ -85,9 +81,7 @@
       "changelog": "packages/better-effect-mq-sqlite/CHANGELOG.md",
       "tagPrefix": "better-effect-mq-sqlite-v",
       "initialRelease": true,
-      "extraFiles": [
-        "migrations"
-      ]
+      "extraFiles": ["migrations"]
     },
     {
       "name": "better-effect-mq-mysql",
