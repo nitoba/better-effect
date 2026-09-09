@@ -343,8 +343,7 @@ const SendConfirmation = Orders.job('send-confirmation', {
     readonly orderId: string
     readonly email: string
   }>(),
-  result: Codec.string,
-  store: JobStore
+  result: Codec.string
 })
 
 const ConfirmationWorker = Worker.service('@app/ConfirmationWorker')

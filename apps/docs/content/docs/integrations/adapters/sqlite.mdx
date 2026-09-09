@@ -113,8 +113,7 @@ const Orders = Queue.define('orders')
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
   payload: Codec.json<{ readonly orderId: string; readonly email: string }>(),
-  result: Codec.string,
-  store: JobStore
+  result: Codec.string
 })
 const ConfirmationWorker = Worker.service('@app/ConfirmationWorker')
 const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
