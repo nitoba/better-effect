@@ -5,10 +5,9 @@
     "outDir": "./.examples-dist",
     "declaration": false,
     "declarationMap": false,
+    "skipLibCheck": true,
     "sourceMap": false,
     "noEmit": false
   },
-  "include": [
-    "examples/**/*.ts"
-  ]
+  "include": ["examples/**/*.ts"]
 }

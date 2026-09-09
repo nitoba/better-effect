@@ -26,6 +26,10 @@ The examples are intentionally small and build on the same core model:
   the `JobStore` and `FlowStore` persistence providers, runs the handlers, and
   awaits the collected parent result.
 
+For application-facing runtime validation, see the package README's
+[schema-backed Zod example](../README.md#quick-start-a-schema-backed-in-memory-queue)
+and the runnable [`better-effect-schema` MQ example](../../better-effect-schema/examples/mq-codec.ts).
+
 The complete Flow walkthrough is in the [package README](../README.md#flow-coordinate-a-parent-execution).
 For a database transaction that atomically writes a domain row and an outbox
 record before publishing into the same core Job/Worker model, see the

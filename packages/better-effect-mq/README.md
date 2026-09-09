@@ -21,71 +21,121 @@ Queue.define → Job → enqueue / awaitResult
 ## Install
 
 ```bash
-bun add better-effect-mq better-effect better-result
+bun add better-effect-mq better-effect better-result better-effect-schema zod
 ```
 
 The package expects `better-effect >=0.13`, `better-result ^3`, and TypeScript
-6 or newer. Use the package's `npm` or `pnpm` equivalent if that is how your
+6 or newer. `better-effect-schema` and `zod` are optional integration packages;
+install them when a job crosses an untrusted boundary and needs runtime
+validation. Use the package's `npm` or `pnpm` equivalent if that is how your
 application manages dependencies.
 
-## Quick start: a complete in-memory queue
+## Quick start: a schema-backed in-memory queue
 
-This complete program defines a typed job, composes a Layer-owned worker,
+This complete program uses Zod through `better-effect-schema` to validate the
+wire payload, construct a schema-backed class for the handler, and encode that
+class back to JSON for the Job boundary. It composes a Layer-owned worker,
 submits one item, waits for its result, and disposes the Runtime. The same
 application code works with a durable adapter after replacing the store Layer.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
-import { Codec, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 
-const Emails = Queue.define('emails')
-const SendEmail = Emails.job('send-email', {
+const local = Schema.with(ZodAdapter)
+
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+
+class UserEvent extends local.Class<UserEvent>('app/UserEvent')({
+  eventId: z.uuid(),
+  occurredAt: DateFromISOString,
+  kind: z.string().min(1),
+  payload: z.record(z.string(), z.string())
+}) {}
+
+const DeliveryReceipt = z.object({
+  accepted: z.literal(true),
+  eventId: z.uuid()
+})
+
+const DeliveryFailure = z.object({
+  code: z.string().min(1),
+  retryable: z.boolean()
+})
+
+const UserEventCodec = Codec.standardSchema({
+  schema: UserEvent,
+  encode: (value) =>
+    Schema.encode(UserEvent, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
+const ReceiptCodec = Codec.standardSchema({ schema: DeliveryReceipt })
+const FailureCodec = Codec.standardSchema({ schema: DeliveryFailure })
+
+const Events = Queue.define('events')
+const IngestEvent = Events.job('ingest-event', {
   version: 1,
-  payload: Codec.json<{ readonly recipient: string }>(),
-  result: Codec.string
+  payload: UserEventCodec,
+  result: ReceiptCodec,
+  failure: FailureCodec,
+  idempotencyKey: ({ eventId }) => eventId,
+  retryable: ({ retryable }) => retryable
 })
 
 const store = MemoryJobStore.make()
-const handler = Worker.handle(SendEmail, (payload) =>
+const handler = Worker.handle(IngestEvent, (event) =>
   Effect.fn(async function* () {
-    console.log(`sending to ${payload.recipient}`)
-    return Result.ok(`sent:${payload.recipient}`)
+    console.log(`handling ${event.kind} at ${event.occurredAt.toISOString()}`)
+    return Result.ok({ accepted: true as const, eventId: event.eventId })
   })
 )
 
-const EmailWorker = Worker.service('@app/EmailWorker')
-const EmailWorkerLive = EmailWorker.layer(() => ({
+const EventsWorker = Worker.service('@app/EventsWorker')
+const EventsWorkerLive = EventsWorker.layer(() => ({
   handlers: [handler] as const,
   concurrency: 1,
   pollIntervalMs: 10
 }))
 
 const AppLive = Layer.complete(
-  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), Layer.merge(ClockLive, EmailWorkerLive))
+  Layer.merge(Layer.succeed(JobStore, JobStore.of(store)), Layer.merge(ClockLive, EventsWorkerLive))
 )
 const runtime = await Runtime.make(AppLive)
 
 try {
-  const worker = await runtime.run(() =>
+  const started = await runtime.run(() =>
     Effect.gen(async function* () {
-      return Result.ok(yield* EmailWorker)
+      return Result.ok(yield* EventsWorker)
     })
   )
-  if (Result.isError(worker)) throw worker.error
+  if (Result.isError(started)) throw started.error
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
-      const result = yield* SendEmail.awaitResult(jobId)
-      return Result.ok({ jobId, result })
+      const jobId = yield* IngestEvent.enqueue({
+        eventId: '550e8400-e29b-41d4-a716-446655440000',
+        occurredAt: '2026-09-02T10:00:00.000Z',
+        kind: 'user.created',
+        payload: { source: 'example' }
+      })
+      const receipt = yield* IngestEvent.awaitResult(jobId)
+      return Result.ok({ jobId, receipt })
     })
   )
   if (Result.isError(completed)) throw completed.error
 
   console.log(completed.value)
-  await worker.value.awaitIdle()
+  await started.value.awaitIdle()
 } finally {
   await runtime.dispose()
 }
@@ -95,23 +145,40 @@ try {
 for examples, tests, and local development; use a durable adapter when work
 must survive a restart or be shared by multiple processes.
 
+`Codec.standardSchema` is the bridge between a Standard Schema implementation
+and a Job codec. With a schema class, the codec decodes persisted JSON into the
+class used by the handler; the explicit `encode` callback delegates the wire
+projection to `Schema.encode`. If the schema output is already JSON-safe, omit
+`encode` and the standard schema codec uses that value for both sides.
+
+Use `Codec.json<T>()` when a value is already plain JSON and a separate runtime
+validator would add no value—for example, a small internal-only payload or a
+primitive result. Prefer a schema-backed codec for HTTP, database, queue, or
+other untrusted boundaries where runtime validation, normalized failures, or a
+decoded domain class matters.
+
 ## Define jobs with `Queue` and `Job`
 
 `Queue.define` creates a namespace. A Job descriptor gives one work type a
 stable identity and declares the codecs used at the storage boundary:
 
 ```ts
+import * as z from 'zod'
 import { Codec, Queue, Retry } from 'better-effect-mq'
 
 const Billing = Queue.define('billing')
+const ChargeCardPayload = z.object({
+  paymentId: z.string().min(1),
+  amountCents: z.int().positive()
+})
+const ChargeCardResult = z.object({ receiptId: z.string().min(1) })
+const ChargeCardFailure = z.object({ code: z.string().min(1) })
+
 const ChargeCard = Billing.job('charge-card', {
   version: 1,
-  payload: Codec.json<{
-    readonly paymentId: string
-    readonly amountCents: number
-  }>(),
-  result: Codec.json<{ readonly receiptId: string }>(),
-  failure: Codec.json<{ readonly code: string }>(),
+  payload: Codec.standardSchema({ schema: ChargeCardPayload }),
+  result: Codec.standardSchema({ schema: ChargeCardResult }),
+  failure: Codec.standardSchema({ schema: ChargeCardFailure }),
   defaults: {
     attempts: 3,
     backoff: Retry.exponential({
@@ -130,7 +197,9 @@ The payload is the decoded value passed to the handler. Result and failure
 codecs control what producers and operators can read back. Defaults provide
 retry and timeout policy; enqueue options can override the per-item schedule.
 The descriptor is inert: defining a Job does not resolve a Service, create a
-worker, or register anything globally.
+worker, or register anything globally. For a payload whose in-memory value is
+different from its wire value—such as a `Date` or a schema class—provide the
+explicit encoder shown in the quick start.
 
 ## `JobStore`: the persistence seam
 
@@ -163,15 +232,15 @@ recovery, and graceful stop.
 
 Every Job exposes yieldable producer operations:
 
-| Operation                    | Use it for                                          |
-| ---------------------------- | --------------------------------------------------- |
-| `enqueue`                    | Submit one decoded payload and receive its `JobId`. |
-| `enqueueMany`                | Submit a batch while retaining input order.         |
-| `poll`                       | Read one job snapshot without waiting.              |
-| `awaitResult`                | Wait for a terminal result or typed failure.        |
-| `execute`                    | Enqueue and wait in one operation.                  |
-| `attempts`                   | Read the delivery ledger for one job.               |
-| `cancel`, `retry`, `promote` | Apply explicit job administration.                  |
+| Operation                    | Use it for                                      |
+| ---------------------------- | ----------------------------------------------- |
+| `enqueue`                    | Submit one codec input and receive its `JobId`. |
+| `enqueueMany`                | Submit a batch while retaining input order.     |
+| `poll`                       | Read one job snapshot without waiting.          |
+| `awaitResult`                | Wait for a terminal result or typed failure.    |
+| `execute`                    | Enqueue and wait in one operation.              |
+| `attempts`                   | Read the delivery ledger for one job.           |
+| `cancel`, `retry`, `promote` | Apply explicit job administration.              |
 
 ## Flow: coordinate a parent execution
 
