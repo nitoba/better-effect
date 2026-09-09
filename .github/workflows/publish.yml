@@ -119,6 +119,15 @@ jobs:
             exit 1
           fi
 
+      - name: Build workspace dependencies for package checks
+        if: steps.release.outputs.package_name != 'better-effect'
+        env:
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bunx turbo run build --filter="$PACKAGE_NAME..." --concurrency=1
+
       - name: Run selected package quality gates
         env:
           PACKAGE_DIR: ${{ steps.release.outputs.package_dir }}
