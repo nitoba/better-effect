@@ -15,7 +15,7 @@ external effects idempotent with a job ID or an application idempotency key.
 ## Install
 
 ```bash
-bun add better-effect-mq-postgres better-effect-mq better-effect better-result pg
+bun add better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-schema zod pg
 ```
 
 If you use the optional outbox publisher, also install:
@@ -38,29 +38,53 @@ Layer. The following is the complete application shape: one typed Job, one
 Worker handler, one Runtime, and one durable store.
 
 ```ts
+import * as z from 'zod'
 import { Pool } from 'pg'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { PostgresJobStore, PostgresMigrator } from 'better-effect-mq-postgres'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 await PostgresMigrator.run(pool, { schema: 'public' })
 
+const local = Schema.with(ZodAdapter)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+  recipient: z.email(),
+  requestedAt: DateFromISOString
+}) {}
+const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
+const sendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
+
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{ readonly recipient: string }>(),
-  result: Codec.string,
+  payload: sendEmailPayloadCodec,
+  result: sendEmailResultCodec,
   idempotencyKey: (payload) => `send-email:${payload.recipient}`
 })
 
 const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
     const context = yield* JobContext
-    console.log(`attempt ${context.attempt}: sending to ${payload.recipient}`)
-    return Result.ok(`sent:${payload.recipient}`)
+    console.log(
+      `attempt ${context.attempt}: sending to ${payload.recipient} at ${payload.requestedAt.toISOString()}`
+    )
+    return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
 
@@ -81,7 +105,12 @@ await runtime.warmup()
 try {
   const submitted = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      const payload = local.decodeUnknown(SendEmailPayload, {
+        recipient: 'ada@example.test',
+        requestedAt: '2026-09-09T10:00:00.000Z'
+      })
+      if (Result.isError(payload)) throw payload.error
+      const jobId = yield* SendEmail.enqueue(payload.value)
       return Result.ok(jobId)
     })
   )
@@ -102,11 +131,16 @@ try {
 ```
 
 `Queue.define` and `Queue.job` only create immutable descriptors. They do not
-open a connection or register a handler. `Worker.handle` associates a typed
-payload with a `better-effect` program, while `Worker.service(...).layer(...)`
-owns polling, leases, attempts, and graceful worker shutdown. `runtime.run`
-provides the declared Services and execution Scope; `awaitResult` reads the
-durable Job until it reaches a terminal state.
+open a connection or register a handler. The Zod 4 schema is validated through
+the `better-effect-schema/zod` adapter, and `Schema.encode` projects the
+decoded class back to JSON for the durable job boundary. `Codec.standardSchema`
+keeps that contract in one codec. `Worker.handle` associates a typed payload
+with a `better-effect` program, while `Worker.service(...).layer(...)` owns
+polling, leases, attempts, and graceful worker shutdown. `runtime.run` provides
+the declared Services and execution Scope; `awaitResult` reads the durable Job
+until it reaches a terminal state. The later Flow and Outbox snippets use
+smaller `z.object` Standard Schema codecs deliberately; they keep the same
+provider-backed validation boundary when a decoded class is unnecessary.
 
 The example uses `PostgresJobStore.layer`, so the application owns `pool` and
 must call `pool.end()`. If the adapter should create and close the pool, use:
@@ -276,25 +310,38 @@ explicit store, so provide it under the associated core `FlowStore` token in
 the same Runtime as the JobStore and Worker.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, FlowStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { PostgresFlowStore, PostgresJobStore } from 'better-effect-mq-postgres'
+
+const local = Schema.with(ZodAdapter)
+class ImportOrderPayload extends local.Class<ImportOrderPayload>('app/ImportOrderPayload')({
+  orderId: z.string(),
+  lineIds: z.array(z.string())
+}) {}
+const importOrderPayloadCodec = Codec.standardSchema({
+  schema: ImportOrderPayload,
+  encode: (value) =>
+    Schema.encode(ImportOrderPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Orders = Queue.define('orders')
 const ImportOrder = Orders.job('import-order', {
   version: 1,
-  payload: Codec.json<{
-    readonly orderId: string
-    readonly lineIds: readonly string[]
-  }>(),
-  result: Codec.json<{ readonly completed: number }>()
+  payload: importOrderPayloadCodec,
+  result: Codec.standardSchema({ schema: z.object({ completed: z.number().int() }) })
 })
 const ImportLine = Orders.job('import-line', {
   version: 1,
-  payload: Codec.json<{ readonly lineId: string }>(),
-  result: Codec.string
+  payload: Codec.standardSchema({ schema: z.object({ lineId: z.string() }) }),
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const ImportFlow = Flow.define('import-order', {
@@ -357,10 +404,12 @@ await runtime.warmup()
 try {
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const flowId = yield* ImportOrder.enqueue({
+      const payload = local.decodeUnknown(ImportOrderPayload, {
         orderId: 'order-42',
         lineIds: ['line-a', 'line-b', 'line-c']
       })
+      if (Result.isError(payload)) throw payload.error
+      const flowId = yield* ImportOrder.enqueue(payload.value)
       const result = yield* ImportOrder.awaitResult(flowId)
       return Result.ok({ flowId, result })
     })
@@ -381,6 +430,9 @@ replays safe. Use `FlowStore.for(MyJobs)` and a matching
 `PostgresFlowStore.make` instance when parent and child Jobs use named stores.
 Flow storage requires the flow schema extension; migrations run by
 `PostgresMigrator` install it with the rest of the package schema.
+The parent payload uses the schema-backed `ImportOrderPayload` class and an
+explicit encoder; the child and aggregate result schemas stay concise because
+their decoded values are already plain JSON.
 
 ## Outbox: transaction, record, publisher
 
@@ -414,23 +466,37 @@ publisher, and Worker. It then prepares a request, appends it beside a domain
 write, and waits for the Worker to process the post-commit Job.
 
 ```ts
+import * as z from 'zod'
 import { Pool } from 'pg'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { PostgresJobStore, PostgresMigrator, PostgresOutbox } from 'better-effect-mq-postgres'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+const local = Schema.with(ZodAdapter)
+class SendConfirmationPayload extends local.Class<SendConfirmationPayload>(
+  'app/SendConfirmationPayload'
+)({
+  orderId: z.string(),
+  email: z.email()
+}) {}
+const sendConfirmationPayloadCodec = Codec.standardSchema({
+  schema: SendConfirmationPayload,
+  encode: (value) =>
+    Schema.encode(SendConfirmationPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const Orders = Queue.define('orders')
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: Codec.json<{
-    readonly orderId: string
-    readonly email: string
-  }>(),
-  result: Codec.string,
+  payload: sendConfirmationPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() }),
   idempotencyKey: (payload) => `confirmation:${payload.orderId}`
 })
 
@@ -471,14 +537,13 @@ await runtime.warmup()
 try {
   const prepared = await runtime.run(() =>
     Effect.gen(async function* () {
+      const payload = local.decodeUnknown(SendConfirmationPayload, {
+        orderId: 'order-123',
+        email: 'ada@example.test'
+      })
+      if (Result.isError(payload)) throw payload.error
       return Result.ok(
-        yield* SendConfirmation.prepare(
-          {
-            orderId: 'order-123',
-            email: 'ada@example.test'
-          },
-          { jobId: 'send-confirmation:order-123' }
-        )
+        yield* SendConfirmation.prepare(payload.value, { jobId: 'send-confirmation:order-123' })
       )
     })
   )
@@ -526,9 +591,10 @@ after that append succeeds, rolls back on thrown, rejected, or nominal
 `Result.err` failures, and always releases the client. Reusing the same outbox
 ID and request is digest-idempotent, while reusing an ID for a different
 request is a conflict. Publishing is still at-least-once, so the Job handler
-and any remote effect must tolerate retries. For an adapter-owned pool,
-replace both Layers with their `layerFromConfig` forms and let
-`runtime.dispose()` own pool shutdown.
+and any remote effect must tolerate retries. `PostgresOutbox.transaction`
+receives a pool supplied by the application and owns the transaction client
+lifecycle. `layerFromConfig` owns only the pool used by its provider Layer, so
+use a caller-owned pool when domain code calls the static transaction helper.
 
 ### Advanced: caller-owned transactions
 
@@ -636,3 +702,18 @@ it during `runtime.dispose()`; do not call `pool.end()` for that pool.
   Layer and Runtime patterns for adapters.
 - [MQ examples](../better-effect-mq/examples/README.md) — runnable in-memory
   producer and Worker examples.
+
+## Plain JSON escape hatch
+
+When a payload is already a JSON-safe shape and validation happens elsewhere,
+the core still provides `Codec.json<T>()`:
+
+```ts
+const AuditJob = Queue.define('audit').job('record', {
+  version: 1,
+  payload: Codec.json<{ readonly event: string }>()
+})
+```
+
+Use a `better-effect-schema` provider at untrusted boundaries when the queue
+should validate and decode data as part of the Job contract.

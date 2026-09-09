@@ -19,7 +19,7 @@ The package does not start workers or define jobs. Those behaviors belong to `be
 ## Installation
 
 ```bash
-bun add better-effect-mq-mongodb better-effect better-effect-mq better-effect-mq-outbox better-result mongodb
+bun add better-effect-mq-mongodb better-effect better-effect-mq better-effect-mq-outbox better-result better-effect-schema zod mongodb
 ```
 
 The public peers are:
@@ -40,10 +40,13 @@ The public peers are:
 `better-effect-mq-mongodb` is a storage adapter, not a second job framework. Define queues and jobs with `better-effect-mq`, register handlers with `Worker.handle`, start them with `Worker.service`, and provide `MongoJobStore.layer` as the durable `JobStore` implementation:
 
 ```ts
+import * as z from 'zod'
 import { MongoClient } from 'mongodb'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { MongoJobStore } from 'better-effect-mq-mongodb'
 
@@ -54,18 +57,39 @@ const db = client.db('application')
 
 await MongoJobStore.migrate({ db })
 
+const local = Schema.with(ZodAdapter)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+  recipient: z.email(),
+  requestedAt: DateFromISOString
+}) {}
+const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
+const sendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
+
 const Emails = Queue.define('application.emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{ readonly recipient: string }>(),
-  result: Codec.string
+  payload: sendEmailPayloadCodec,
+  result: sendEmailResultCodec
 })
 
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
     const context = yield* JobContext
-    console.log(`attempt ${context.attempt}: sending to ${payload.recipient}`)
-    return Result.ok(`sent:${payload.recipient}`)
+    console.log(
+      `attempt ${context.attempt}: sending to ${payload.recipient} at ${payload.requestedAt.toISOString()}`
+    )
+    return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
 
@@ -96,10 +120,12 @@ try {
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue(
-        { recipient: 'ada@example.test' },
-        { idempotencyKey: 'welcome-ada' }
-      )
+      const payload = local.decodeUnknown(SendEmailPayload, {
+        recipient: 'ada@example.test',
+        requestedAt: '2026-09-09T10:00:00.000Z'
+      })
+      if (Result.isError(payload)) throw payload.error
+      const jobId = yield* SendEmail.enqueue(payload.value, { idempotencyKey: 'welcome-ada' })
       const result = yield* SendEmail.awaitResult(jobId)
       return Result.ok({ jobId, result })
     })
@@ -113,6 +139,14 @@ try {
   await client.close()
 }
 ```
+
+The local facade uses the Zod 4 provider through `better-effect-schema/zod`;
+`Schema.encode` projects the decoded `SendEmailPayload` class to JSON, and
+`Codec.standardSchema` reuses that contract for persisted Job payloads and
+results. The Worker receives the inferred decoded class type, while
+`MongoJobStore` remains responsible only for durable storage. The later Flow
+and Outbox snippets use smaller `z.object` Standard Schema codecs deliberately
+when a decoded class is unnecessary.
 
 This is the complete application flow: `Queue.define` and `Emails.job` create immutable, storage-neutral descriptors; `Worker.handle` connects the typed payload to application code; `Worker.service(...).layer(...)` owns the worker lifecycle; and `MongoJobStore.layer` supplies the `JobStore` used by `enqueue` and `awaitResult`. The worker does not query MongoDB, and application operations use the Services supplied by the Layer.
 
@@ -265,22 +299,39 @@ const NamedSchedulesLive = MongoJobScheduleStore.layerFor(DurableSchedules, {
 Flows are also defined by `better-effect-mq`. The MongoDB adapter supplies the `FlowStore` persistence that lets a Worker fan out child jobs and collect their results. Define the parent and child jobs, register a `Flow.handle` route with the Worker, and provide `MongoFlowStore.layer` alongside the job store:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, Queue, Worker } from 'better-effect-mq'
+import { Codec, Flow, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
+
+const local = Schema.with(ZodAdapter)
+class BuildReportPayload extends local.Class<BuildReportPayload>('app/BuildReportPayload')({
+  accountId: z.string()
+}) {}
+const buildReportPayloadCodec = Codec.standardSchema({
+  schema: BuildReportPayload,
+  encode: (value) =>
+    Schema.encode(BuildReportPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Reports = Queue.define('application.reports')
 const BuildReport = Reports.job('build-report', {
   version: 1,
-  payload: Codec.json<{ readonly accountId: string }>(),
-  result: Codec.json<{ readonly reportId: string }>()
+  payload: buildReportPayloadCodec,
+  result: Codec.standardSchema({ schema: z.object({ reportId: z.string() }) })
 })
 const GenerateSection = Reports.job('generate-section', {
   version: 1,
-  payload: Codec.json<{ readonly accountId: string; readonly section: string }>(),
-  result: Codec.json<{ readonly section: string }>()
+  payload: Codec.standardSchema({
+    schema: z.object({ accountId: z.string(), section: z.string() })
+  }),
+  result: Codec.standardSchema({ schema: z.object({ section: z.string() }) })
 })
 
 const ReportFlow = Flow.define('build-report', {
@@ -343,7 +394,9 @@ await runtime.warmup()
 try {
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const flowId = yield* BuildReport.enqueue({ accountId: 'account-123' })
+      const payload = local.decodeUnknown(BuildReportPayload, { accountId: 'account-123' })
+      if (Result.isError(payload)) throw payload.error
+      const flowId = yield* BuildReport.enqueue(payload.value)
       const result = yield* BuildReport.awaitResult(flowId)
       return Result.ok({ flowId, result })
     })
@@ -356,6 +409,8 @@ try {
 ```
 
 The parent enqueue starts the registered flow route. The worker creates the `GenerateSection` children, settles them through the MongoDB `JobStore`, and the route's `collect` phase reads the completed children from the MongoDB `FlowStore`. The application still uses only `better-effect-mq` operations; MongoDB is the durable implementation behind those Services.
+The parent uses the schema-backed `BuildReportPayload` class and explicit
+encoder; the child and result schemas remain concise plain-JSON variants.
 
 For an independent job store in the same Runtime, use a named job token and
 the adapter's matching flow Layer:
@@ -384,13 +439,18 @@ For transactional handoff from domain writes to jobs, use
 [`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md) with the
 adapter-owned MongoDB transaction helper. `MongoOutboxStore.layer` persists
 records, `OutboxPublisher` delivers them to a `JobStore` after commit, and
-`MongoOutbox.transaction` owns the session lifecycle around the domain write
-and append.
+`MongoOutbox.transaction` receives an application-owned `Db` or `MongoClient`,
+then owns the session lifecycle around the domain write and append. A
+`layerFromConfig` provider owns only the client used by its provider Layer; it
+does not supply the static transaction helper.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import {
   OutboxId,
@@ -401,11 +461,24 @@ import {
 } from 'better-effect-mq-outbox'
 import { MongoJobStore, MongoOutbox, MongoOutboxStore } from 'better-effect-mq-mongodb'
 
+const local = Schema.with(ZodAdapter)
+class InvoiceEmailPayload extends local.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
+  orderId: z.string(),
+  recipient: z.email()
+}) {}
+const invoiceEmailPayloadCodec = Codec.standardSchema({
+  schema: InvoiceEmailPayload,
+  encode: (value) =>
+    Schema.encode(InvoiceEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 const InvoiceEmails = Queue.define('application.invoice-emails')
 const SendInvoiceEmail = InvoiceEmails.job('send-invoice-email', {
   version: 1,
-  payload: Codec.json<{ readonly orderId: string; readonly recipient: string }>(),
-  result: Codec.string
+  payload: invoiceEmailPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() })
 })
 const invoiceHandler = Worker.handle(SendInvoiceEmail, (payload) =>
   Effect.fn(async function* () {
@@ -446,10 +519,14 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const prepared = yield* SendInvoiceEmail.prepare(
-      { orderId: 'order-123', recipient: 'ada@example.test' },
-      { jobId: 'invoice-email:order-123' }
-    )
+    const payload = local.decodeUnknown(InvoiceEmailPayload, {
+      orderId: 'order-123',
+      recipient: 'ada@example.test'
+    })
+    if (Result.isError(payload)) throw payload.error
+    const prepared = yield* SendInvoiceEmail.prepare(payload.value, {
+      jobId: 'invoice-email:order-123'
+    })
     return Result.ok(prepared)
   })
 )
@@ -539,3 +616,17 @@ const BillingOutboxLive = MongoOutboxStore.layerFor(BillingOutbox, {
 - Maximum document size, index capacity, retention, and backup recovery remain limits and responsibilities of the MongoDB environment.
 
 For the jobs, workers, schedules, and flows API, see the [public `better-effect-mq` documentation](../better-effect-mq/README.md). For MongoDB-specific operational details, consult the documentation for the deployment used by your application.
+
+## Plain JSON escape hatch
+
+For a trusted JSON-safe payload, use the small core codec directly:
+
+```ts
+const AuditJob = Queue.define('audit').job('record', {
+  version: 1,
+  payload: Codec.json<{ readonly event: string }>()
+})
+```
+
+Use Zod 4 through `better-effect-schema/zod` when the Job should validate and
+decode untrusted input at its boundary.
