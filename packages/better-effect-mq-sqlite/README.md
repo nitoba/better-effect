@@ -340,7 +340,10 @@ const runtime = await Runtime.make(AppLive)
 The flow layer persists parent/child state and durable child reports. The
 Worker still owns enqueueing child jobs and relaying reports between the
 associated store Services; SQLite does not make separate store keys or
-separate databases one atomic boundary.
+separate databases one atomic boundary. Flow routes reuse the schema-backed
+Job descriptors from the Quick Start, including its `SendEmailPayload` class
+and codec; this provider-only snippet does not introduce a second payload
+contract.
 
 ### Durable outbox
 
@@ -354,7 +357,9 @@ import * as z from 'zod'
 import { Database } from 'bun:sqlite'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import {
   OutboxId,
   OutboxPublisher,
@@ -370,12 +375,23 @@ import {
 } from 'better-effect-mq-sqlite'
 import { Result } from 'better-result'
 
+const local = Schema.with(ZodAdapter)
+class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+  orderId: z.string(),
+  email: z.email()
+}) {}
+const confirmationPayloadCodec = Codec.standardSchema({
+  schema: ConfirmationPayload,
+  encode: (value) =>
+    Schema.encode(ConfirmationPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 const Orders = Queue.define('orders')
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ orderId: z.string(), email: z.email() })
-  }),
+  payload: confirmationPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -420,10 +436,14 @@ const runtime = await Runtime.make(AppLive)
 
 const prepared = await runtime.run(() =>
   Effect.gen(async function* () {
-    const request = yield* SendConfirmation.prepare(
-      { orderId: 'order-1', email: 'ada@example.test' },
-      { jobId: 'order-confirmation:order-1' }
-    )
+    const payload = local.decodeUnknown(ConfirmationPayload, {
+      orderId: 'order-1',
+      email: 'ada@example.test'
+    })
+    if (Result.isError(payload)) throw payload.error
+    const request = yield* SendConfirmation.prepare(payload.value, {
+      jobId: 'order-confirmation:order-1'
+    })
     return Result.ok(request)
   })
 )

@@ -313,16 +313,29 @@ the same Runtime as the JobStore and Worker.
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, FlowStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { PostgresFlowStore, PostgresJobStore } from 'better-effect-mq-postgres'
+
+const local = Schema.with(ZodAdapter)
+class ImportOrderPayload extends local.Class<ImportOrderPayload>('app/ImportOrderPayload')({
+  orderId: z.string(),
+  lineIds: z.array(z.string())
+}) {}
+const importOrderPayloadCodec = Codec.standardSchema({
+  schema: ImportOrderPayload,
+  encode: (value) =>
+    Schema.encode(ImportOrderPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Orders = Queue.define('orders')
 const ImportOrder = Orders.job('import-order', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ orderId: z.string(), lineIds: z.array(z.string()) })
-  }),
+  payload: importOrderPayloadCodec,
   result: Codec.standardSchema({ schema: z.object({ completed: z.number().int() }) })
 })
 const ImportLine = Orders.job('import-line', {
@@ -391,10 +404,12 @@ await runtime.warmup()
 try {
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const flowId = yield* ImportOrder.enqueue({
+      const payload = local.decodeUnknown(ImportOrderPayload, {
         orderId: 'order-42',
         lineIds: ['line-a', 'line-b', 'line-c']
       })
+      if (Result.isError(payload)) throw payload.error
+      const flowId = yield* ImportOrder.enqueue(payload.value)
       const result = yield* ImportOrder.awaitResult(flowId)
       return Result.ok({ flowId, result })
     })
@@ -415,6 +430,9 @@ replays safe. Use `FlowStore.for(MyJobs)` and a matching
 `PostgresFlowStore.make` instance when parent and child Jobs use named stores.
 Flow storage requires the flow schema extension; migrations run by
 `PostgresMigrator` install it with the rest of the package schema.
+The parent payload uses the schema-backed `ImportOrderPayload` class and an
+explicit encoder; the child and aggregate result schemas stay concise because
+their decoded values are already plain JSON.
 
 ## Outbox: transaction, record, publisher
 
@@ -452,18 +470,32 @@ import * as z from 'zod'
 import { Pool } from 'pg'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { PostgresJobStore, PostgresMigrator, PostgresOutbox } from 'better-effect-mq-postgres'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+const local = Schema.with(ZodAdapter)
+class SendConfirmationPayload extends local.Class<SendConfirmationPayload>(
+  'app/SendConfirmationPayload'
+)({
+  orderId: z.string(),
+  email: z.email()
+}) {}
+const sendConfirmationPayloadCodec = Codec.standardSchema({
+  schema: SendConfirmationPayload,
+  encode: (value) =>
+    Schema.encode(SendConfirmationPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const Orders = Queue.define('orders')
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ orderId: z.string(), email: z.email() })
-  }),
+  payload: sendConfirmationPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() }),
   idempotencyKey: (payload) => `confirmation:${payload.orderId}`
 })
@@ -505,14 +537,13 @@ await runtime.warmup()
 try {
   const prepared = await runtime.run(() =>
     Effect.gen(async function* () {
+      const payload = local.decodeUnknown(SendConfirmationPayload, {
+        orderId: 'order-123',
+        email: 'ada@example.test'
+      })
+      if (Result.isError(payload)) throw payload.error
       return Result.ok(
-        yield* SendConfirmation.prepare(
-          {
-            orderId: 'order-123',
-            email: 'ada@example.test'
-          },
-          { jobId: 'send-confirmation:order-123' }
-        )
+        yield* SendConfirmation.prepare(payload.value, { jobId: 'send-confirmation:order-123' })
       )
     })
   )

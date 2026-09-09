@@ -183,15 +183,29 @@ the prepared outbox record, and executes or discards the transaction for you:
 ```ts
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
-import { Codec, Queue } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, Queue } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { RedisClient, RedisJobStore, RedisOutbox, RedisOutboxStore } from 'better-effect-mq-redis'
 
+const local = Schema.with(ZodAdapter)
+class OrderEmailPayload extends local.Class<OrderEmailPayload>('app/OrderEmailPayload')({
+  orderId: z.string()
+}) {}
+const orderEmailPayloadCodec = Codec.standardSchema({
+  schema: OrderEmailPayload,
+  encode: (value) =>
+    Schema.encode(OrderEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ orderId: z.string() }) }),
+  payload: orderEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -212,9 +226,9 @@ const runtime = await Runtime.make(AppLive)
 try {
   const prepared = await runtime.run(() =>
     Effect.gen(async function* () {
-      return Result.ok(
-        yield* SendEmail.prepare({ orderId: 'order-123' }, { jobId: 'send-email:order-123' })
-      )
+      const payload = local.decodeUnknown(OrderEmailPayload, { orderId: 'order-123' })
+      if (Result.isError(payload)) throw payload.error
+      return Result.ok(yield* SendEmail.prepare(payload.value, { jobId: 'send-email:order-123' }))
     })
   )
   if (Result.isError(prepared)) throw prepared.error
@@ -397,14 +411,28 @@ waits for its child delivery, and prints the collected result:
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, FlowStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { RedisClient, RedisFlowStore, RedisJobStore } from 'better-effect-mq-redis'
+
+const local = Schema.with(ZodAdapter)
+class BuildReportPayload extends local.Class<BuildReportPayload>('app/BuildReportPayload')({
+  reportId: z.string()
+}) {}
+const buildReportPayloadCodec = Codec.standardSchema({
+  schema: BuildReportPayload,
+  encode: (value) =>
+    Schema.encode(BuildReportPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Reports = Queue.define('reports')
 const BuildReport = Reports.job('build-report', {
   version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ reportId: z.string() }) }),
+  payload: buildReportPayloadCodec,
   result: Codec.standardSchema({
     schema: z.object({ reportId: z.string(), delivered: z.number().int() })
   })
@@ -500,7 +528,9 @@ try {
 
   const result = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* BuildReport.enqueue({ reportId: 'weekly-2025-01' })
+      const payload = local.decodeUnknown(BuildReportPayload, { reportId: 'weekly-2025-01' })
+      if (Result.isError(payload)) throw payload.error
+      const jobId = yield* BuildReport.enqueue(payload.value)
       const completed = yield* BuildReport.awaitResult(jobId)
       return Result.ok({ jobId, completed })
     })

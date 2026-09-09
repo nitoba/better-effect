@@ -379,7 +379,10 @@ import { ClockLive } from 'better-effect/standard-services'
 import { FlowStore } from 'better-effect-mq'
 import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
 
-// Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start.
+// Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start. In
+// particular, the flow parent uses the Quick Start's schema-backed
+// SendEmailPayload class and codec; this composition does not introduce a
+// second payload contract.
 
 const flow = await MySqlFlowStore.make({
   pool,
@@ -426,16 +429,29 @@ supplied prepared record automatically after the callback succeeds.
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { MySqlJobStore, MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
+const local = Schema.with(ZodAdapter)
+class InvoiceEmailPayload extends local.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
+  messageId: z.string().min(1),
+  recipient: z.email()
+}) {}
+const invoiceEmailPayloadCodec = Codec.standardSchema({
+  schema: InvoiceEmailPayload,
+  encode: (value) =>
+    Schema.encode(InvoiceEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 const SendEmail = Queue.define('billing').job('send-email', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ messageId: z.string().min(1), recipient: z.email() })
-  }),
+  payload: invoiceEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() }),
   idempotencyKey: ({ messageId }) => messageId
 })
@@ -477,15 +493,12 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    return Result.ok(
-      yield* SendEmail.prepare(
-        {
-          messageId: 'message-789',
-          recipient: 'lin@example.test'
-        },
-        { jobId: 'invoice-created:123' }
-      )
-    )
+    const payload = local.decodeUnknown(InvoiceEmailPayload, {
+      messageId: 'message-789',
+      recipient: 'lin@example.test'
+    })
+    if (Result.isError(payload)) throw payload.error
+    return Result.ok(yield* SendEmail.prepare(payload.value, { jobId: 'invoice-created:123' }))
   })
 )
 if (Result.isError(preparedResult)) throw preparedResult.error

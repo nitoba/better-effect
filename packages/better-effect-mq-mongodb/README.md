@@ -302,14 +302,28 @@ Flows are also defined by `better-effect-mq`. The MongoDB adapter supplies the `
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, Queue, Worker } from 'better-effect-mq'
+import { Codec, Flow, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
+
+const local = Schema.with(ZodAdapter)
+class BuildReportPayload extends local.Class<BuildReportPayload>('app/BuildReportPayload')({
+  accountId: z.string()
+}) {}
+const buildReportPayloadCodec = Codec.standardSchema({
+  schema: BuildReportPayload,
+  encode: (value) =>
+    Schema.encode(BuildReportPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Reports = Queue.define('application.reports')
 const BuildReport = Reports.job('build-report', {
   version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ accountId: z.string() }) }),
+  payload: buildReportPayloadCodec,
   result: Codec.standardSchema({ schema: z.object({ reportId: z.string() }) })
 })
 const GenerateSection = Reports.job('generate-section', {
@@ -380,7 +394,9 @@ await runtime.warmup()
 try {
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const flowId = yield* BuildReport.enqueue({ accountId: 'account-123' })
+      const payload = local.decodeUnknown(BuildReportPayload, { accountId: 'account-123' })
+      if (Result.isError(payload)) throw payload.error
+      const flowId = yield* BuildReport.enqueue(payload.value)
       const result = yield* BuildReport.awaitResult(flowId)
       return Result.ok({ flowId, result })
     })
@@ -393,6 +409,8 @@ try {
 ```
 
 The parent enqueue starts the registered flow route. The worker creates the `GenerateSection` children, settles them through the MongoDB `JobStore`, and the route's `collect` phase reads the completed children from the MongoDB `FlowStore`. The application still uses only `better-effect-mq` operations; MongoDB is the durable implementation behind those Services.
+The parent uses the schema-backed `BuildReportPayload` class and explicit
+encoder; the child and result schemas remain concise plain-JSON variants.
 
 For an independent job store in the same Runtime, use a named job token and
 the adapter's matching flow Layer:
@@ -430,7 +448,9 @@ does not supply the static transaction helper.
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import {
   OutboxId,
@@ -441,12 +461,23 @@ import {
 } from 'better-effect-mq-outbox'
 import { MongoJobStore, MongoOutbox, MongoOutboxStore } from 'better-effect-mq-mongodb'
 
+const local = Schema.with(ZodAdapter)
+class InvoiceEmailPayload extends local.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
+  orderId: z.string(),
+  recipient: z.email()
+}) {}
+const invoiceEmailPayloadCodec = Codec.standardSchema({
+  schema: InvoiceEmailPayload,
+  encode: (value) =>
+    Schema.encode(InvoiceEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 const InvoiceEmails = Queue.define('application.invoice-emails')
 const SendInvoiceEmail = InvoiceEmails.job('send-invoice-email', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ orderId: z.string(), recipient: z.email() })
-  }),
+  payload: invoiceEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 const invoiceHandler = Worker.handle(SendInvoiceEmail, (payload) =>
@@ -488,10 +519,14 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const prepared = yield* SendInvoiceEmail.prepare(
-      { orderId: 'order-123', recipient: 'ada@example.test' },
-      { jobId: 'invoice-email:order-123' }
-    )
+    const payload = local.decodeUnknown(InvoiceEmailPayload, {
+      orderId: 'order-123',
+      recipient: 'ada@example.test'
+    })
+    if (Result.isError(payload)) throw payload.error
+    const prepared = yield* SendInvoiceEmail.prepare(payload.value, {
+      jobId: 'invoice-email:order-123'
+    })
     return Result.ok(prepared)
   })
 )
