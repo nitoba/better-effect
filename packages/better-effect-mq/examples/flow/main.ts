@@ -43,16 +43,16 @@ const ReportFlow = Flow.define('report-flow', {
 
 const ReportFlowHandler = Flow.handle(ReportFlow, {
   fanOut: (payload) =>
+    // oxlint-disable-next-line require-yield -- this phase has no contextual requirements.
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok([
         Flow.children(BuildReport, [{ key: 'build', payload: { reportId: payload.reportId } }]),
         Flow.children(NotifyReport, [{ key: 'notify', payload: { reportId: payload.reportId } }])
       ] as const)
     }),
   collect: (_payload, results) =>
+    // oxlint-disable-next-line require-yield -- this phase has no contextual requirements.
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok({
         completed: results.counts.completed,
         failed: results.counts.failed
@@ -62,14 +62,14 @@ const ReportFlowHandler = Flow.handle(ReportFlow, {
 
 const handlers = [
   Worker.handle(BuildReport, (payload) =>
+    // oxlint-disable-next-line require-yield -- this handler has no contextual requirements.
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok({ reportId: payload.reportId, rows: 42 })
     })
   ),
   Worker.handle(NotifyReport, (payload) =>
+    // oxlint-disable-next-line require-yield -- this handler has no contextual requirements.
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok(`notified:${payload.reportId}`)
     })
   )

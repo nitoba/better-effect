@@ -18,8 +18,8 @@ const store = MemoryJobStore.make({ eventStore: events })
 
 const AppWorker = Worker.service('@examples/CompositionWorker')
 const handler = Worker.handle(SendEmail, (payload) =>
+  // oxlint-disable-next-line require-yield -- this handler has no contextual requirements.
   Effect.fn(async function* () {
-    yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok(`sent:${payload.recipient}`)
   })
 )

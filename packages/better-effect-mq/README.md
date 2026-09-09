@@ -50,7 +50,6 @@ const SendEmail = Emails.job('send-email', {
 const store = MemoryJobStore.make()
 const handler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    yield* Result.await(Promise.resolve(Result.ok(undefined)))
     console.log(`sending to ${payload.recipient}`)
     return Result.ok(`sent:${payload.recipient}`)
   })
@@ -232,7 +231,6 @@ const ReportFlow = Flow.define('report-flow', {
 const ReportFlowHandler = Flow.handle(ReportFlow, {
   fanOut: (payload) =>
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok([
         Flow.children(BuildReport, [{ key: 'build', payload: { reportId: payload.reportId } }]),
         Flow.children(NotifyReport, [{ key: 'notify', payload: { reportId: payload.reportId } }])
@@ -240,7 +238,6 @@ const ReportFlowHandler = Flow.handle(ReportFlow, {
     }),
   collect: (_payload, results) =>
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok({
         completed: results.counts.completed,
         failed: results.counts.failed
@@ -251,13 +248,11 @@ const ReportFlowHandler = Flow.handle(ReportFlow, {
 const handlers = [
   Worker.handle(BuildReport, (payload) =>
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok({ reportId: payload.reportId, rows: 42 })
     })
   ),
   Worker.handle(NotifyReport, (payload) =>
     Effect.fn(async function* () {
-      yield* Result.await(Promise.resolve(Result.ok(undefined)))
       return Result.ok(`notified:${payload.reportId}`)
     })
   )
@@ -400,7 +395,6 @@ const SendConfirmation = Orders.job('send-confirmation', {
 
 const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
   Effect.fn(async function* () {
-    yield* Result.await(Promise.resolve(Result.ok(undefined)))
     return Result.ok(`sent:${payload.email}`)
   })
 )
