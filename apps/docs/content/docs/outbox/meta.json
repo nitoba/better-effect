@@ -1,0 +1,6 @@
+{
+  "title": "Outbox",
+  "description": "Publish prepared queue requests after a transaction without coupling application code to a driver.",
+  "pages": ["index"],
+  "defaultOpen": true
+}

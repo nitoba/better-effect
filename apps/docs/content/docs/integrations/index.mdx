@@ -1,0 +1,47 @@
+---
+title: Integrations
+description: Connect better-effect to the surfaces your application already has instead of moving your business logic into a container.
+icon: Plug
+---
+
+Integrations are adapters around the core boundaries. Choose the surface where
+your application starts, then keep Services and Layers in your application code
+so the framework remains replaceable.
+
+## Choose a surface
+
+<Cards>
+  <Card
+    title="HTTP and web requests"
+    description="Build lazy typed HTTP calls or run a program at a Request → Response boundary."
+    href="/docs/integrations/http"
+  />
+  <Card
+    title="Hono and Next.js"
+    description="Connect request handlers to an existing Runtime without hiding ownership."
+    href="/docs/integrations/hono"
+  />
+  <Card
+    title="Kysely"
+    description="Keep native SQL and transaction ownership at the database edge."
+    href="/docs/integrations/kysely"
+  />
+  <Card
+    title="Schema"
+    description="Decode and encode values through a provider-neutral validation boundary."
+    href="/docs/integrations/schema"
+  />
+  <Card
+    title="Better Auth"
+    description="Adapt an auth server to typed better-effect programs."
+    href="/docs/integrations/better-auth"
+  />
+</Cards>
+
+## A useful composition
+
+Use a web or framework adapter at the request boundary, call a Service from the
+handler, and provide the database or auth implementation through the same Layer
+that serves the application. Add [MQ](/docs/mq) when work needs durable retry,
+and add the [Outbox](/docs/outbox) when a successful transaction must publish
+after commit.

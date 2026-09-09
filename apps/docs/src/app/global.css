@@ -11,6 +11,56 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0px !important;
 }
 
+/* Documentation surface: keep hierarchy visible without competing with the prose. */
+.be-docs-header {
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--fd-border) 70%, transparent);
+}
+
+.be-docs-content article > .prose {
+  width: 100%;
+  max-width: 78ch;
+}
+
+.be-docs-content .prose :where(h2) {
+  scroll-margin-top: 5rem;
+  margin-top: 3.25rem;
+  border-top: 1px solid var(--fd-border);
+  padding-top: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.be-docs-content .prose :where(h3) {
+  scroll-margin-top: 5rem;
+  letter-spacing: -0.01em;
+}
+
+.be-docs-content .prose :where(p, li) {
+  line-height: 1.78;
+}
+
+.be-docs-content .prose :where(a) {
+  text-underline-offset: 3px;
+}
+
+.be-docs-content .prose :where(code):not(:where(pre *)) {
+  border: 1px solid var(--fd-border);
+  background: var(--fd-muted);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.35rem;
+  font-size: 0.9em;
+}
+
+@media (max-width: 767px) {
+  .be-docs-content article {
+    padding-top: 1.5rem;
+  }
+
+  .be-docs-content .prose :where(h2) {
+    margin-top: 2.5rem;
+    padding-top: 1.15rem;
+  }
+}
+
 /* Home page: a quiet, monochrome surface inspired by studio tooling. */
 .be-home {
   --be-black: #050505;

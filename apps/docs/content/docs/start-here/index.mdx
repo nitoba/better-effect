@@ -1,0 +1,48 @@
+---
+title: Start here
+description: Find the shortest path from your first Service to a complete better-effect application.
+icon: Compass
+---
+
+better-effect is a small set of typed boundaries around `better-result`: Services
+describe what a workflow needs, Layers describe implementations, Runtime owns
+execution, and Scope closes what the application opens.
+
+Use this section when you are evaluating the library, starting a new project or
+bringing an existing Result-based codebase across incrementally.
+
+## Pick a path
+
+<Cards>
+  <Card
+    title="Build your first program"
+    description="Install the core packages, define one Service and execute it through a Layer-owned Runtime."
+    href="/docs/start-here/getting-started"
+  />
+  <Card
+    title="Choose packages"
+    description="See which package owns HTTP, queues, databases, schemas and authentication in your application."
+    href="/docs/start-here/packages"
+  />
+  <Card
+    title="Follow a complete example"
+    description="Trace Services, Layers, Runtime and request lifetimes through an executable Todo API."
+    href="/docs/start-here/todo-api"
+  />
+</Cards>
+
+## How the sections fit together
+
+- **[Better Effect core](/docs/core)** gives you the dependency, composition,
+  execution and lifecycle primitives.
+- **[Integrations](/docs/integrations)** connects those primitives to web
+  requests, frameworks, databases, validation and auth.
+- **[Message queues (MQ)](/docs/mq)** adds durable jobs and workers when work
+  must outlive a request.
+- **[Outbox](/docs/outbox)** connects a transaction to a queue without making
+  publishing part of the transaction itself.
+- **[Reference & patterns](/docs/reference)** helps you test, diagnose and
+  combine the pieces once the first workflow works.
+
+Start with the first guide, then keep the package catalog open as a map. You do
+not need to adopt every boundary to get value from the library.

@@ -1,0 +1,29 @@
+---
+title: Technical adapter reference
+description: Persistence invariants, compatibility details and extension contracts for MQ adapter authors.
+---
+
+This page is intentionally outside the main learning path. Read it when you
+are implementing or reviewing a storage adapter, not when you are defining a
+job or adding a Worker to an application.
+
+The package keeps its base JobStore contract separate from optional extensions
+such as flows, queue controls, events, schedules and outbox delivery. Each
+adapter must validate the capabilities and persisted layout it supports before
+starting a Worker. The package's normative documents remain the source of
+truth for these advanced contracts:
+
+- [JobStore contract](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/job-store-v1.md)
+- [State machine](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/state-machine-v1.md)
+- [Operation atomicity](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/operation-atomicity-v1.md)
+- [Errors](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/errors-v1.md)
+- [Cursors and ordering](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/cursors-and-ordering-v1.md)
+- [Time and leases](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/time-and-leases-v1.md)
+- [Capabilities](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/capabilities-v1.md)
+- [Compatibility](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md)
+- [Flow extensions](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md)
+- [Queue controls](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/controls-v3.md)
+
+Keep transactions, indexes, wake delivery, migrations and connection lifecycle
+inside the adapter. A caller-supplied client is borrowed; a resource created by
+the adapter is owned and must be closed exactly once.

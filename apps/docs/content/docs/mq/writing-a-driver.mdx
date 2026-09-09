@@ -4,19 +4,8 @@ description: Implement a storage adapter without leaking backend details.
 ---
 
 A driver implements `JobStore.Contract` and provides it through a default or
-named `JobStore` token. The npm package ships the normative protocol documents;
-this page is only a navigation summary:
-
-- [JobStore contract](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/job-store-v1.md)
-- [state machine](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/state-machine-v1.md)
-- [operation atomicity](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/operation-atomicity-v1.md)
-- [errors](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/errors-v1.md)
-- [cursors and ordering](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/cursors-and-ordering-v1.md)
-- [time and leases](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/time-and-leases-v1.md)
-- [capabilities](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/capabilities-v1.md)
-- [compatibility](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/compatibility-v1.md)
-- [Flow protocol v2](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/flows-v2.md)
-- [QueueControls protocol v3](https://github.com/nitoba/better-effect/blob/main/packages/better-effect-mq/docs/protocol/controls-v3.md)
+named `JobStore` token. The [technical adapter reference](./reference) collects
+the normative persistence and extension documents for this work.
 
 Keep transactions, indexes, wake delivery, migrations, and connection lifecycle
 inside the adapter. A caller-supplied pool/client is borrowed; a resource
@@ -31,26 +20,26 @@ The required atomic boundaries are enqueue identity/idempotency, ordered claim
 and lease acquisition, settlement plus attempt ledger, fenced release and
 heartbeat, stalled recovery, and administrative transitions.
 
-Flow-capable drivers implement the additive `FlowStoreV2` contract separately
+Flow-capable drivers implement the additive flow contract separately
 from the base JobStore methods. They must persist the parent-owned manifest,
 dependency rows, terminal child reports and reconciliation work, while keeping
-cross-store enqueue and relay explicitly at-least-once. QueueControls, events,
+cross-store enqueue and relay explicitly at-least-once. Queue controls, events,
 schedules and outbox are likewise opt-in extensions with independent migration
 and capability checks.
 
 `awaitWake` is an optimization over the persisted wake token/version. Polling
 must remain correct, and wake messages must not contain payloads, metadata,
 idempotency keys, lease tokens, or arbitrary causes. Publish one frozen
-`descriptor` containing `protocolVersion`, adapter/layout versions, and the
-v1 capabilities; Worker startup rejects an incomplete or incompatible
-handshake before supervision begins.
+`descriptor` containing adapter/layout information and supported operations;
+Worker startup rejects an incomplete or incompatible handshake before
+supervision begins.
 
 Run the runner-neutral `jobStoreContract` suite against every supported
 capability configuration, passing every capability explicitly (including
 `false`) so the descriptor manifest is checked. A declared-true
 `durableChangeFeed`, `globalConcurrency`, or `rateLimiting` flag requires a
 separate extension Service/interface and an executable `extensions` scenario;
-these flags never add optional methods to `JobStore` v1. The report marks a
+these flags never add optional methods to the base `JobStore`. The report marks a
 true declaration without such a scenario as `capabilitiesNotTested`. Then add
 backend tests for rollback, concurrent writers, reconnects, lost responses,
 migration boundaries, and borrowed-versus-owned cleanup. Before release, run

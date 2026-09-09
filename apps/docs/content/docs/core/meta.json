@@ -1,0 +1,19 @@
+{
+  "title": "Better Effect core",
+  "description": "The small set of primitives for dependencies, composition, execution and ownership.",
+  "pages": [
+    "index",
+    "mental-model",
+    "services",
+    "effects",
+    "layers",
+    "runtime",
+    "scope",
+    "resource",
+    "pipelines",
+    "errors",
+    "backends",
+    "migration"
+  ],
+  "defaultOpen": true
+}

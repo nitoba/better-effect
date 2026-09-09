@@ -1,0 +1,6 @@
+{
+  "title": "Reference & patterns",
+  "description": "Recipes, testing strategies and troubleshooting for production applications.",
+  "pages": ["index", "patterns", "testing", "troubleshooting"],
+  "defaultOpen": true
+}

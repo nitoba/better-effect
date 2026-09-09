@@ -1,0 +1,52 @@
+---
+title: Better Effect core
+description: Make dependencies, composition, execution and lifetimes explicit without taking over your application.
+icon: Boxes
+---
+
+The core package is the small path: keep `better-result` as the source of truth
+for success and failure, and add only the boundaries that make application
+architecture easier to see.
+
+## Learn the core in order
+
+<Cards>
+  <Card
+    title="Mental model"
+    description="Understand how a Service, Effect, Layer, Runtime and Scope work together."
+    href="/docs/core/mental-model"
+  />
+  <Card
+    title="Services"
+    description="Declare contextual dependencies with exact TypeScript inference."
+    href="/docs/core/services"
+  />
+  <Card
+    title="Effects and pipelines"
+    description="Compose Result workflows while carrying the Services they need."
+    href="/docs/core/effects"
+  />
+  <Card
+    title="Layers and Runtime"
+    description="Provide implementations, execute programs and own shutdown."
+    href="/docs/core/layers"
+  />
+  <Card
+    title="Scope and Resource"
+    description="Give connections, files and other disposables an explicit owner."
+    href="/docs/core/scope"
+  />
+  <Card
+    title="Errors and backends"
+    description="Keep failures typed and dependency resolution replaceable."
+    href="/docs/core/errors"
+  />
+</Cards>
+
+## When to combine them
+
+Start with `Service` and `Effect` for application behavior. Add a `Layer` when
+the behavior needs a concrete implementation, a `Runtime` when the application
+needs a long-lived owner, and `Scope` when resources must close at a boundary.
+The [integration guides](/docs/integrations) show how those same boundaries fit
+inside requests and external libraries.

@@ -73,21 +73,21 @@ for (const path of checked) {
   }
 }
 
-const migration = await Bun.file(resolve(repositoryRoot, 'apps/docs/content/docs/migration.mdx')).text()
+const migration = await Bun.file(resolve(repositoryRoot, 'apps/docs/content/docs/core/migration.mdx')).text()
 for (const name of forbidden.slice(0, 10)) {
   if (!migration.includes(name)) fail(`migration guide is missing removed API ${name}`)
 }
 
-const packages = await Bun.file(resolve(repositoryRoot, 'apps/docs/content/docs/packages.mdx')).text()
+const packages = await Bun.file(resolve(repositoryRoot, 'apps/docs/content/docs/start-here/packages.mdx')).text()
 for (const name of requiredPackages) {
   if (!packages.includes(name)) fail(`package catalog is missing ${name}`)
 }
 
 for (const path of [
-  'apps/docs/content/docs/migration.mdx',
-  'apps/docs/content/docs/packages.mdx',
-  'apps/docs/content/docs/schema.mdx',
-  'apps/docs/content/docs/outbox.mdx'
+  'apps/docs/content/docs/core/migration.mdx',
+  'apps/docs/content/docs/start-here/packages.mdx',
+  'apps/docs/content/docs/integrations/schema.mdx',
+  'apps/docs/content/docs/outbox/index.mdx'
 ]) {
   if (!(await Bun.file(resolve(repositoryRoot, path)).exists())) fail(`missing documentation page ${path}`)
 }

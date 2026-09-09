@@ -1,5 +1,5 @@
 {
-  "title": "better-effect-mq",
+  "title": "Message queues (MQ)",
   "pages": [
     "index",
     "introduction",
@@ -10,9 +10,9 @@
     "cancellation-and-shutdown",
     "idempotency-and-delivery",
     "stores-and-named-stores",
+    "operations-and-observability",
     "testing",
-    "writing-a-driver",
-    "operations-and-observability"
+    "writing-a-driver"
   ],
   "defaultOpen": true
 }

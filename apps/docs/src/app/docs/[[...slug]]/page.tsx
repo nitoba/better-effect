@@ -4,14 +4,15 @@ import {
   DocsDescription,
   DocsPage,
   DocsTitle,
-  MarkdownCopyButton,
-  ViewOptionsPopover
-} from 'fumadocs-ui/layouts/docs/page'
+  type BreadcrumbItem
+} from '@/layouts/docs/page'
+import { MarkdownCopyButton, ViewOptionsPopover } from 'fumadocs-ui/layouts/docs/page'
 import { notFound } from 'next/navigation'
 import { getMDXComponents } from '@/components/mdx'
 import type { Metadata } from 'next'
 import { createRelativeLink } from 'fumadocs-ui/mdx'
 import { appName, gitConfig } from '@/lib/shared'
+import { findPath } from 'fumadocs-core/page-tree'
 
 export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   const params = await props.params
@@ -20,9 +21,26 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
 
   const MDX = page.data.body
   const markdownUrl = getPageMarkdownUrl(page).url
+  const tree = source.getPageTree()
+  const pagePath = findPath(tree.children, (node) => node.type === 'page' && node.url === page.url)
+  const breadcrumb: BreadcrumbItem[] = [{ name: 'Docs', url: '/docs' }]
+  for (const [index, node] of (pagePath ?? []).entries()) {
+    if (node.type === 'folder') {
+      breadcrumb.push({
+        name: String(node.name ?? ''),
+        url: node.index?.url
+      })
+      continue
+    }
+
+    if (node.type !== 'page') continue
+    const parent = pagePath?.[index - 1]
+    if (parent?.type === 'folder' && parent.index?.url === node.url) continue
+    breadcrumb.push({ name: String(node.name ?? '') })
+  }
 
   return (
-    <DocsPage toc={page.data.toc}>
+    <DocsPage toc={page.data.toc} breadcrumb={breadcrumb}>
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
       <div className="flex flex-row gap-2 items-center border-b pb-6">

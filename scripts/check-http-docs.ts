@@ -63,10 +63,10 @@ const run = (command: string[], cwd: string): CommandResult => {
 
 const assertDocs = async (): Promise<void> => {
   const readme = await read(resolve(packageRoot, 'README.md'))
-  const page = await read(resolve(docsRoot, 'content/docs/http.mdx'))
+  const page = await read(resolve(docsRoot, 'content/docs/integrations/http.mdx'))
   const index = await read(resolve(docsRoot, 'content/docs/index.mdx'))
-  const gettingStarted = await read(resolve(docsRoot, 'content/docs/getting-started.mdx'))
-  const hono = await read(resolve(docsRoot, 'content/docs/hono.mdx'))
+  const gettingStarted = await read(resolve(docsRoot, 'content/docs/start-here/getting-started.mdx'))
+  const hono = await read(resolve(docsRoot, 'content/docs/integrations/hono.mdx'))
   const skill = await read(resolve(repositoryRoot, 'skills/better-effect/SKILL.md'))
   const skillDocumentation = await read(
     resolve(repositoryRoot, 'skills/better-effect/references/official-documentation.md')
@@ -91,10 +91,15 @@ const assertDocs = async (): Promise<void> => {
     'hono-streaming.ts'
   ] as const
 
-  assertCondition(meta.pages?.includes('http') === true, 'Documentation navigation misses http')
-  assertRequiredText(index, ['/docs/http'], 'Documentation index')
-  assertRequiredText(gettingStarted, ['/docs/http'], 'Getting Started documentation')
-  assertRequiredText(hono, ['/docs/http'], 'Hono documentation')
+  // SAFETY: the navigation fixture is parsed as JSON and only its optional pages array is inspected.
+  const integrationsMeta = JSON.parse(
+    await read(resolve(docsRoot, 'content/docs/integrations/meta.json'))
+  ) as { readonly pages?: readonly unknown[] }
+  assertCondition(meta.pages?.includes('integrations') === true, 'Documentation navigation misses integrations')
+  assertCondition(integrationsMeta.pages?.includes('http') === true, 'Integrations navigation misses http')
+  assertRequiredText(index, ['/docs/integrations/http'], 'Documentation index')
+  assertRequiredText(gettingStarted, ['/docs/integrations/http'], 'Getting Started documentation')
+  assertRequiredText(hono, ['/docs/integrations/http'], 'Hono documentation')
   assertRequiredText(
     skill,
     ['### better-effect-http integration', '`HttpClient` is a Service', '`routes.stream`'],

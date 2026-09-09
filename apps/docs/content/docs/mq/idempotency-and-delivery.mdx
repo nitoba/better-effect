@@ -3,7 +3,7 @@ title: Idempotency and delivery
 description: Design for at-least-once delivery and the side-effect window.
 ---
 
-Protocol v1 is **at-least-once**. A Worker can perform an external side effect,
+Delivery is **at-least-once**. A Worker can perform an external side effect,
 then crash before its settlement/ACK is durably recorded. The same Job may
 therefore be delivered again. No lease can undo the external side effect.
 

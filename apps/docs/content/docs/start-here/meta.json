@@ -1,0 +1,6 @@
+{
+  "title": "Start here",
+  "description": "A guided path from your first Service to a production-shaped application.",
+  "pages": ["index", "getting-started", "packages", "todo-api"],
+  "defaultOpen": true
+}

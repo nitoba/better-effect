@@ -57,7 +57,7 @@ export default function HomePage() {
               what you open.
             </p>
             <div className="be-hero-actions">
-              <Link href="/docs/getting-started" className="be-button be-button-primary">
+              <Link href="/docs/start-here/getting-started" className="be-button be-button-primary">
                 Start building <ArrowUpRight aria-hidden="true" />
               </Link>
               <Link href="/docs" className="be-button be-button-quiet">
@@ -182,7 +182,7 @@ export default function HomePage() {
               better-effect stays close to TypeScript, Promises and better-result. There is no
               hidden scheduler to learn and no container vocabulary in your domain code.
             </p>
-            <Link href="/docs/mental-model" className="be-text-link">
+            <Link href="/docs/core/mental-model" className="be-text-link">
               Learn the mental model <ArrowUpRight aria-hidden="true" />
             </Link>
           </div>
@@ -228,7 +228,7 @@ export default function HomePage() {
             Read the guide, wire your first Layer and let the compiler show you what your
             application needs.
           </p>
-          <Link href="/docs/getting-started" className="be-button be-button-primary">
+          <Link href="/docs/start-here/getting-started" className="be-button be-button-primary">
             Open the guide <ArrowUpRight aria-hidden="true" />
           </Link>
         </div>

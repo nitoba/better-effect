@@ -1,0 +1,6 @@
+{
+  "title": "Integrations",
+  "description": "Connect better-effect to the HTTP, web, framework, database and auth surfaces you already use.",
+  "pages": ["index", "http", "web", "hono", "next", "kysely", "schema", "better-auth"],
+  "defaultOpen": true
+}

@@ -1,6 +1,6 @@
 ---
-title: Introduction
-description: A small, typed architecture for Result-based TypeScript applications.
+title: Overview
+description: A small, typed architecture for Result-based TypeScript applications, organized around explicit dependencies and lifetimes.
 icon: BookOpen
 ---
 
@@ -40,16 +40,17 @@ release resources through Scope
 
 The library is intentionally small. It gives you a composition root and
 lifetime boundaries while leaving HTTP, queues, scheduling, persistence and
-dependency injection to ordinary TypeScript libraries or adapters. Browse the
-[package catalog](/docs/packages) for the complete set of published packages.
+dependency injection to ordinary TypeScript libraries or adapters. Start with
+the [guided path](/docs/start-here), then use the [package catalog](/docs/start-here/packages)
+to choose only the surfaces your application needs.
 For the Layer-first HTTP client with buffered responses, NDJSON, SSE, and opt-in
-Hono streaming, see [HTTP client](/docs/http). For provider-neutral validation,
-see [Schema](/docs/schema). For Better Auth, Kysely and MQ integrations, see
-[Better Auth](/docs/better-auth), [Kysely integration](/docs/kysely), and the
-[MQ guide](/docs/mq).
+Hono streaming, see [HTTP client](/docs/integrations/http). For provider-neutral validation,
+see [Schema](/docs/integrations/schema). For Better Auth, Kysely and MQ integrations, see
+[Better Auth](/docs/integrations/better-auth), [Kysely integration](/docs/integrations/kysely),
+and the [MQ guide](/docs/mq).
 
 All integration APIs in the current release are Layer-first. If you are
-upgrading an older application, start with the [migration guide](/docs/migration)
+upgrading an older application, start with the [migration guide](/docs/core/migration)
 before copying an example from an older version.
 
 Layers expose a simple `Layer<Provided, Required>` contract. `Provided` and
@@ -57,6 +58,29 @@ Layers expose a simple `Layer<Provided, Required>` contract. `Provided` and
 contains only dependencies that remain external.
 
 ## Choose your starting point
+
+<Cards>
+  <Card
+    title="New to better-effect"
+    description="Build one Service, provide it through a Layer and run it with a Runtime."
+    href="/docs/start-here/getting-started"
+  />
+  <Card
+    title="Already use better-result"
+    description="Keep your Result workflows and add explicit dependencies only where they help."
+    href="/docs/core/effects"
+  />
+  <Card
+    title="Adding a web surface"
+    description="Choose HTTP, Web, Hono or Next.js without moving business logic into the framework."
+    href="/docs/integrations"
+  />
+  <Card
+    title="Adding durable work"
+    description="Define jobs and workers, then connect transactions to them with Outbox."
+    href="/docs/mq"
+  />
+</Cards>
 
 <Tabs
   items={[
@@ -69,30 +93,31 @@ contains only dependencies that remain external.
   ]}
 >
   <Tab>
-    Start with [Getting Started](/docs/getting-started), then read the [Mental
-    Model](/docs/mental-model). You will build one Service, provide it through a Layer, and run it
-    with a Runtime.
+    Start with [Getting Started](/docs/start-here/getting-started), then read the [Mental
+    Model](/docs/core/mental-model). You will build one Service, provide it through a Layer, and run
+    it with a Runtime.
   </Tab>
   <Tab>
-    Read [Effects](/docs/effects) and [Pipelines](/docs/pipelines). They show how `Effect.gen`,
-    `Result.await`, `Effect.map` and `Effect.andThen` compose without replacing your existing Result
-    code.
+    Read [Effects](/docs/core/effects) and [Pipelines](/docs/core/pipelines). They show how
+    `Effect.gen`, `Result.await`, `Effect.map` and `Effect.andThen` compose without replacing your
+    existing Result code.
   </Tab>
   <Tab>
-    Read [Backends](/docs/backends). The core contracts are deliberately container-agnostic; ITI is
-    the built-in `MapLayerBackend` by default; ITI remains an optional adapter.
+    Read [Backends](/docs/core/backends). The core contracts are deliberately container-agnostic;
+    ITI is the built-in `MapLayerBackend` by default; ITI remains an optional adapter.
   </Tab>
   <Tab>
-    Read the [HTTP client](/docs/http) guide for lazy requests, status-discriminated schemas,
-    retry/auth policies, NDJSON, SSE, and opt-in managed Hono streaming.
+    Read the [HTTP client](/docs/integrations/http) guide for lazy requests, status-discriminated
+    schemas, retry/auth policies, NDJSON, SSE, and opt-in managed Hono streaming.
   </Tab>
   <Tab>
-    Read [Kysely integration](/docs/kysely). It explains the `$call` Promise boundary, owned and
-    borrowed database Layers, raw/compiled queries, transactions and cancellation limits.
+    Read [Kysely integration](/docs/integrations/kysely). It explains the `$call` Promise boundary,
+    owned and borrowed database Layers, raw/compiled queries, transactions and cancellation limits.
   </Tab>
   <Tab>
-    Read [Packages and integrations](/docs/packages) to choose the right package, then follow its
-    focused guide. Use [Migration](/docs/migration) when replacing a Runtime-first integration.
+    Read [Packages and integrations](/docs/start-here/packages) to choose the right package, then
+    follow its focused guide. Use [Migration](/docs/core/migration) when replacing a Runtime-first
+    integration.
   </Tab>
 </Tabs>
 
