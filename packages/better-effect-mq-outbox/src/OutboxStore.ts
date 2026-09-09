@@ -133,7 +133,9 @@ export type OutboxStoreProtocolError = OutboxProtocolMismatchError | OutboxDefin
  *
  * The core contract intentionally has no transaction method or native
  * transaction handle. Durable adapters own their transaction lifecycle and
- * expose their own typed callback helper for a domain write plus append.
+ * expose `transaction(resource, preparedRecord, callback, options?)`; the
+ * helper runs the domain callback, appends the supplied record automatically,
+ * and owns commit, rollback, and cleanup.
  */
 export interface OutboxStore {
   readonly descriptor: OutboxStoreDescriptor
@@ -263,7 +265,9 @@ export const isOutboxStoreToken = (value: unknown): value is AnyOutboxStoreToken
  *
  * Durable adapters may expose a low-level `appendIn` compatibility helper for
  * advanced integrations, but normal application code should use the adapter's
- * transaction callback so the adapter owns commit, rollback, and cleanup.
+ * `transaction(resource, preparedRecord, callback, options?)` helper. Its
+ * callback performs the domain write; the helper appends the supplied record
+ * and owns commit, rollback, and cleanup.
  */
 export interface OutboxAppendStore {
   append(input: OutboxRecordInput): OutboxOperation<OutboxAppendResult, OutboxAppendError>

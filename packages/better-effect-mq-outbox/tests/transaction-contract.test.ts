@@ -15,7 +15,12 @@ test('the public outbox guide does not teach manual transaction lifecycle', asyn
 test('the public outbox guide assigns transaction ownership to adapters', async () => {
   const readme = await readFile(readmePath, 'utf8')
 
-  expect(readme).toContain('adapter-owned transaction callback')
+  expect(readme).toContain('adapter.transaction(resource, preparedRecord, callback, options?)')
+  expect(readme).toMatch(/automatically\s+appends the supplied `preparedRecord`/u)
+  expect(readme).not.toContain('append capability')
+  expect(readme).not.toMatch(
+    /callback receives the\s+adapter's typed transaction context and append capability/u
+  )
   expect(readme).toContain('appendIn')
   expect(readme).toContain('advanced')
 })

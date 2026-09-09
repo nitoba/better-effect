@@ -4,8 +4,10 @@
 
 ### Changed
 
-- Document adapter-owned transaction callbacks as the application boundary for
-  atomic domain writes and outbox appends; low-level `appendIn` helpers remain
+- Document `adapter.transaction(resource, preparedRecord, callback, options?)`
+  as the normal application boundary: the callback performs the domain write,
+  the adapter appends the supplied record automatically, and the adapter owns
+  commit, rollback, and cleanup. Low-level `appendIn` helpers remain explicitly
   advanced adapter integrations.
 
 ## [0.1.0] - 2026-09-08

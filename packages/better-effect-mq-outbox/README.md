@@ -6,10 +6,13 @@ follow it as one database transaction. A Runtime-owned publisher then moves
 the committed work to a `JobStore` in the background.
 
 The package is storage-neutral. Database adapters provide the durable
-`OutboxStore` implementation and an adapter-owned transaction callback for
-their own database type. Jobs and Workers remain the application-facing API
-from `better-effect-mq`; the publisher is a bridge from a durable outbox to a
-typed Job descriptor.
+`OutboxStore` implementation and own the transaction boundary for their own
+database type. The normal application-facing boundary is
+`adapter.transaction(resource, preparedRecord, callback, options?)`: the
+adapter runs the domain callback, appends the supplied record, and owns commit,
+rollback, and cleanup. Jobs and Workers remain the application-facing API from
+`better-effect-mq`; the publisher is a bridge from a durable outbox to a typed
+Job descriptor.
 
 ## Why use an outbox?
 
@@ -41,14 +44,17 @@ transaction; it makes the handoff durable and recoverable.
 
 ## The post-commit flow
 
-An adapter-owned transaction callback runs the domain write and outbox append
-as one unit. The publisher only handles work after the callback commits:
+`adapter.transaction(resource, preparedRecord, callback, options?)` runs the
+domain write and outbox append as one unit. The adapter appends the supplied
+record after the domain callback succeeds, then commits; the publisher only
+handles work after that transaction commits:
 
 ```text
-adapter transaction callback
+adapter.transaction(resource, preparedRecord, callback, options?)
   ├─ domain write
-  └─ outbox append
-        │ COMMIT
+  ├─ automatic outbox append
+  └─ commit
+        │
         ▼
 OutboxPublisher
   ├─ claim a record with a lease
@@ -90,13 +96,14 @@ uses a deterministic outbox ID.
 for claiming, lease heartbeats, settlement, stalled-lease recovery, and
 inspection (`get`, `list`, and `counts`). A claim returns a lease token; only
 the holder of that token can settle the record. The core contract intentionally
-does not define a transaction handle: each durable adapter owns its transaction
-lifecycle and supplies a typed callback for the domain write and append.
+does not define a transaction handle. Each durable adapter owns its transaction
+lifecycle and exposes `transaction(resource, preparedRecord, callback, options?)`;
+the helper supplies the adapter-specific resource to the domain callback and
+automatically appends the supplied record after that callback succeeds.
 
 The core package exports `MemoryOutboxStore` for tests and examples. It is not
 durable and must not be used as a cross-process queue. PostgreSQL, SQLite, and
-other integrations provide durable stores and their own transaction-bound
-append helper.
+other integrations provide durable stores and their own transaction helper.
 
 Use a named token when one Runtime contains more than one independent outbox:
 
@@ -163,8 +170,8 @@ finish, and then closes the publisher and its stores.
 
 The following example uses the PostgreSQL adapter as a concrete durable
 `JobStore` and `OutboxStore`. The same shape applies to another adapter: run
-its migrations and use its durable layers. The adapter's transaction callback
-is the application boundary for a domain write and its outbox append.
+its migrations and use its durable layers. The adapter's transaction helper is
+the application boundary for a domain write and its outbox append.
 
 The database pool below is caller-owned. It could be a `pg.Pool` created by
 your application:
@@ -270,14 +277,18 @@ const record = makeOutboxRecord({
 if (Result.isError(record)) throw record.error
 ```
 
-Pass a callback to the adapter's transaction helper. The callback receives the
-adapter's typed transaction context and append capability; the adapter acquires
-the context, starts the transaction, and always commits only after both writes
-succeed. A thrown or rejected callback, a failed append, or a domain
-`Result.err` rolls the transaction back before the adapter releases its
-resources. The core package deliberately does not name this helper or expose
-a cross-database transaction context, so application code should follow the
-adapter package's callback signature.
+Call the adapter's normal transaction boundary with the resource, prepared
+record, domain callback, and optional adapter settings:
+
+`adapter.transaction(resource, preparedRecord, callback, options?)`
+
+The callback performs the domain write. After it succeeds, the adapter
+automatically appends the supplied `preparedRecord`, and commits only after
+both operations succeed. A thrown or rejected callback, a failed append, or a
+domain `Result.err` rolls the transaction back before the adapter cleans up or
+releases its resource. The core package deliberately does not expose a
+cross-database transaction context; the adapter owns that context and its
+lifecycle.
 
 After the callback commits, the running publisher claims the record and calls
 the `jobs` route. The `JobStore` receives the prepared request and the outbox
@@ -334,42 +345,46 @@ redriving; increasing retries does not make an invalid request valid.
 ## Transaction ownership
 
 The core package has no database connection or transaction API. Each durable
-adapter must expose an adapter-owned transaction callback whose typed context
-lets the domain write and outbox append use the same native transaction. The
-application supplies that callback; it does not acquire a connection or call
-transaction lifecycle methods.
+adapter must expose the normal boundary
+`adapter.transaction(resource, preparedRecord, callback, options?)`. The
+application supplies the resource, prepared record, and callback for its
+domain write; the adapter uses its transaction context to append that record
+automatically after the callback succeeds, then owns commit, rollback, and
+cleanup.
 
-Every adapter callback must provide the same guarantees:
+Every adapter transaction helper must provide the same guarantees:
 
-1. acquire a transaction context before invoking the callback;
-2. run the domain write and outbox append in that context;
+1. invoke the domain callback within the adapter's transaction context;
+2. append the supplied `preparedRecord` in that same transaction after the
+   callback succeeds;
 3. treat a thrown or rejected callback, an append failure, or a domain
    `Result.err` as failure and roll back;
 4. commit only after both operations succeed; and
 5. release or end every adapter resource on both success and failure, while
    preserving the original domain or append failure if cleanup also fails.
 
-The callback helper should be the primary application-facing transaction API.
-An adapter may retain `appendIn` for advanced integrations that already own a
-native transaction, but that low-level helper must not be the normal guide or
-require application code to manage lifecycle. The publisher's post-commit
-operations use the adapter's regular store lifecycle and never hold an
-application transaction while delivering a job.
+This transaction helper is the primary application-facing API. An adapter may
+retain `appendIn` as an explicitly advanced escape hatch for integrations that
+already own a transaction, but that low-level helper must not be the normal
+guide or require application code to manage lifecycle. The publisher's
+post-commit operations use the adapter's regular store lifecycle and never
+hold an application transaction while delivering a job.
 
 The follow-up implementation contract is intentionally adapter-specific:
 
-| Adapter    | Required callback context                                                                                       |
-| ---------- | --------------------------------------------------------------------------------------------------------------- |
-| PostgreSQL | The adapter's typed query context and append capability, using the configured namespace/schema.                 |
-| MySQL      | The adapter's typed query context and append capability, using the configured namespace.                        |
-| MongoDB    | The adapter's typed session context and append capability, using the configured database/collections.           |
-| SQLite     | The adapter's typed database context and append capability, serialized with the adapter's existing write queue. |
+| Adapter    | Required `transaction` behavior                                                                                                           |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL | Run the domain callback in the adapter's typed query context, append the supplied record automatically, and own the resource lifecycle.   |
+| MySQL      | Run the domain callback in the adapter's typed query context, append the supplied record automatically, and own the resource lifecycle.   |
+| MongoDB    | Run the domain callback in the adapter's typed session context, append the supplied record automatically, and own the resource lifecycle. |
+| SQLite     | Run the domain callback through the adapter's serialized transaction resource, append the supplied record automatically, and own cleanup. |
 
-Each adapter worker should add type-safe runtime coverage for callback success,
-domain failure, append failure, rollback, commit, cleanup/release, and the
-absence of leaked connections or sessions. Reuse the core outbox conformance
-suite for post-commit behavior; transaction tests belong beside the adapter
-because only it knows the native context and resource lifecycle.
+Each adapter worker should add type-safe runtime and type-level coverage for
+transaction success, domain failure, append failure, rollback, commit,
+cleanup/release, and the absence of leaked connections or sessions. Reuse the
+core outbox conformance suite for post-commit behavior; transaction tests
+belong beside the adapter because only it knows the adapter resource and
+lifecycle.
 
 ## Testing and implementing an adapter
 
@@ -399,7 +414,8 @@ for (const scenario of scenarios) await scenario.run()
 
 The suite covers idempotent append and conflicts, ordering, leases and
 fencing, heartbeat and recovery, settlement, retries, inspection, and named
-outbox isolation. Adapter implementers should additionally test that their
-transaction helper commits and rolls back the domain write and outbox append
-together, and that their connection ownership matches the Layer form they
-expose.
+outbox isolation. Adapter implementers should additionally test their
+`transaction(resource, preparedRecord, callback, options?)` boundary: the
+callback performs only the domain write, the helper appends the supplied
+record automatically, and both operations commit or roll back together. Also
+verify that resource ownership matches the Layer form they expose.
