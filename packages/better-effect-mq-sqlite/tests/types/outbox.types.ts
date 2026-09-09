@@ -1,6 +1,7 @@
 import { expectTypeOf } from 'bun:test'
 import { Layer } from 'better-effect'
-import { OutboxStore } from 'better-effect-mq-outbox'
+import { OutboxStore, type OutboxAppendError } from 'better-effect-mq-outbox'
+import { Result, type Result as ResultType } from 'better-result'
 import {
   SqliteOutboxStore,
   SqliteOutboxTransactions,
@@ -21,3 +22,13 @@ expectTypeOf(namedLayer).toMatchTypeOf<Layer<OutboxStore.Instance<'billing'>, ne
 const transaction: SqliteTransaction = database
 const append = SqliteOutboxTransactions.appendIn(transaction, input)
 expectTypeOf(append).toHaveProperty('isOk')
+
+const transactionOperation = SqliteOutboxTransactions.transaction(
+  database,
+  input,
+  (callbackDatabase) => {
+    expectTypeOf(callbackDatabase).toEqualTypeOf<SqliteTransaction>()
+    return Result.ok(1)
+  }
+)
+expectTypeOf(transactionOperation).toEqualTypeOf<Promise<ResultType<number, OutboxAppendError>>>()
