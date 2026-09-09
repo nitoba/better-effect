@@ -1,9 +1,6 @@
 import * as z from "zod"
 import { Result } from "better-result"
-import { Schema } from "better-effect-schema"
-import { ZodAdapter } from "better-effect-schema/zod"
-
-const local = Schema.with(ZodAdapter)
+import { Schema } from "better-effect-schema/zod"
 
 const UserRowCodec = z.codec(
   z.object({
@@ -30,7 +27,7 @@ const UserRowCodec = z.codec(
   }
 )
 
-class User extends local.Class<User>("examples/KyselyUser")(UserRowCodec) {}
+class User extends Schema.Class<User>("examples/KyselyUser")(UserRowCodec) {}
 
 // A real application obtains this unknown row after the Kysely terminal runs.
 const queryRow: unknown = {

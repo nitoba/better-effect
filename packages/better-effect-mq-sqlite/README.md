@@ -80,8 +80,8 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { SqliteMigrator } from 'better-effect-mq-sqlite'
 import { layerFromFile, openSqlite } from 'better-effect-mq-sqlite/bun'
 import { Result } from 'better-result'
@@ -96,12 +96,11 @@ try {
   migrationDatabase.close?.()
 }
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')({
   recipient: z.email(),
   requestedAt: DateFromISOString
 }) {}
@@ -109,7 +108,7 @@ const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email
 const sendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -151,7 +150,7 @@ try {
 
   const result = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, {
+      const payload = Schema.decodeUnknown(SendEmailPayload, {
         recipient: 'ada@example.test',
         requestedAt: '2026-09-09T10:00:00.000Z'
       })
@@ -174,10 +173,10 @@ try {
 not run migrations. Calling `migrate` again is safe and returns no newly
 applied entries when the file is already current.
 
-The local `better-effect-schema` facade uses the Zod 4 provider for boundary
-validation, `Schema.encode` projects the decoded `SendEmailPayload` class to
-JSON, and `Codec.standardSchema` adapts that contract to Job payloads and
-results. The storage Layer remains responsible only for SQLite persistence.
+The preconfigured Zod `Schema` facade provides the Zod 4 boundary validation,
+`CoreSchema.encode` projects the decoded `SendEmailPayload` class to JSON, and
+`Codec.standardSchema` adapts that contract to Job payloads and results. The
+storage Layer remains responsible only for SQLite persistence.
 The Flow and Outbox journeys below use the same schema-first payload boundary.
 Result or failure values that are already plain JSON may use a concise
 `Codec.standardSchema` shape; the payload boundaries in both journeys remain
@@ -344,8 +343,8 @@ Worker still owns enqueueing child jobs and relaying reports between the
 associated store Services; SQLite does not make separate store keys or
 separate databases one atomic boundary. Flow routes reuse the schema-first Job
 descriptors from the Quick Start, including its `SendEmailPayload` class and
-codec: `Schema.with(ZodAdapter)` provides the local provider, `local.Class`
-gives the handler a decoded class, and `Schema.encode` projects it at the
+codec: the preconfigured Zod `Schema` facade gives the handler a decoded class,
+and `CoreSchema.encode` projects it at the
 boundary. This provider-only snippet does not introduce a second payload
 contract; concise result/failure codecs remain appropriate for plain JSON
 values.
@@ -363,8 +362,8 @@ import { Database } from 'bun:sqlite'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import {
   OutboxId,
   OutboxPublisher,
@@ -380,15 +379,14 @@ import {
 } from 'better-effect-mq-sqlite'
 import { Result } from 'better-result'
 
-const local = Schema.with(ZodAdapter)
-class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+class ConfirmationPayload extends Schema.Class<ConfirmationPayload>('app/ConfirmationPayload')({
   orderId: z.string(),
   email: z.email()
 }) {}
 const confirmationPayloadCodec = Codec.standardSchema({
   schema: ConfirmationPayload,
   encode: (value) =>
-    Schema.encode(ConfirmationPayload, value).mapError(
+    CoreSchema.encode(ConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -441,7 +439,7 @@ const runtime = await Runtime.make(AppLive)
 
 const prepared = await runtime.run(() =>
   Effect.gen(async function* () {
-    const payload = local.decodeUnknown(ConfirmationPayload, {
+    const payload = Schema.decodeUnknown(ConfirmationPayload, {
       orderId: 'order-1',
       email: 'ada@example.test'
     })
@@ -480,8 +478,8 @@ database.close()
 
 The outbox is at-least-once. Publishing and marking a row published are
 separate steps, so the downstream operation must tolerate redelivery. The
-payload uses the same schema-first boundary (`Schema.with(ZodAdapter)`,
-`local.Class`, and `Schema.encode`); concise result/failure codecs are suitable
+payload uses the same schema-first boundary (the preconfigured Zod `Schema`,
+`Schema.Class`, and `CoreSchema.encode`); concise result/failure codecs are suitable
 for plain-JSON outcomes. For a named outbox, use `OutboxStore.named('billing')`
 with `SqliteOutboxStore.layerFor(...)`. If the domain callback returns
 `Result.err(error)`, throws, or rejects, both the domain write and outbox

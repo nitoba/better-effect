@@ -9,8 +9,8 @@ application boundary
         ▼
 better-effect-schema core ── Standard Schema ──► Result / Effect
         ▲
-        │ local facade
-Zod / Valibot / ArkType adapter
+        │ preconfigured provider subpath
+Zod / Valibot / ArkType Schema facade
 ```
 
 ## Core
@@ -29,15 +29,21 @@ provide a native parser surface.
 ## Adapters
 
 An adapter owns native schema identity, object policies, field maps, bridge
-operations, provider class factories, and provider-specific derivations. The
-adapter is selected explicitly:
+operations, provider class factories, and provider-specific derivations. Built-in
+adapters are selected by importing the matching preconfigured subpath:
 
 ```ts
-const Local = Schema.with(ZodAdapter)
+import { Schema } from 'better-effect-schema/zod'
+
+class User extends Schema.Class<User>('app/User')({
+  id: z.string()
+}) {}
 ```
 
-`Schema.with` creates an immutable local facade. There is no global provider
-registry and no provider state in `Schema`.
+`better-effect-schema/valibot` and `better-effect-schema/arktype` provide the
+same shape for their native schemas. `Schema.with` remains an advanced escape
+hatch for custom adapters; there is no global provider registry or provider
+state in the root `Schema`.
 
 ## Data flow
 

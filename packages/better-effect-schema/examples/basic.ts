@@ -1,9 +1,7 @@
 import * as z from "zod"
 import { Result } from "better-result"
-import { Schema } from "better-effect-schema"
-import { ZodAdapter } from "better-effect-schema/zod"
-
-const local = Schema.with(ZodAdapter)
+import { Schema as CoreSchema } from "better-effect-schema"
+import { Schema } from "better-effect-schema/zod"
 
 const assert: (condition: unknown, message: string) => asserts condition = (
   condition,
@@ -21,7 +19,7 @@ const DateFromISOString = z.codec(
   }
 )
 
-class Person extends local.Class<Person>("examples/Person")({
+class Person extends Schema.Class<Person>("examples/Person")({
   id: z.int().positive(),
   name: z.string().min(1),
   bornAt: DateFromISOString
@@ -48,7 +46,7 @@ const constructed = new Person({
   bornAt: new Date("1906-12-09T00:00:00.000Z")
 })
 
-const encoded = Schema.encode(Person, constructed)
+const encoded = CoreSchema.encode(Person, constructed)
 if (Result.isError(encoded)) throw encoded.error
 assert(typeof encoded.value.bornAt === "string", "encode must restore ISO string")
 

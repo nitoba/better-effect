@@ -1,8 +1,9 @@
 # API reference
 
 This package puts one provider-neutral boundary around native schema
-libraries. Define schemas with Zod, Valibot, or ArkType, then use the matching
-adapter when you need the package's `Result`-backed operations.
+libraries. Define schemas with Zod, Valibot, or ArkType, then import the
+preconfigured `Schema` facade from the matching provider subpath when you need
+the package's `Result`-backed operations.
 
 ## Imports and provider boundaries
 
@@ -10,38 +11,42 @@ The root entrypoint contains the portable operations and failure types:
 
 ~~~ts
 import * as z from 'zod'
-import { Schema, SchemaDecodeFailure } from 'better-effect-schema'
+import { Schema as CoreSchema, SchemaDecodeFailure } from 'better-effect-schema'
 import { Result } from 'better-result'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema } from 'better-effect-schema/zod'
 ~~~
 
-Provider integrations are optional peers and use package subpaths:
+Provider integrations are optional peers and use package subpaths. Choose Zod
+for its broad ecosystem and class/codec support, Valibot for modular schemas
+and small bundles, or ArkType for concise definitions with inferred runtime
+types and structural errors:
 
 ~~~ts
-import { ZodAdapter } from 'better-effect-schema/zod'
-import { ValibotAdapter } from 'better-effect-schema/valibot'
-import { ArkTypeAdapter } from 'better-effect-schema/arktype'
+import { Schema as ZodSchema } from 'better-effect-schema/zod'
+import { Schema as ValibotSchema } from 'better-effect-schema/valibot'
+import { Schema as ArkTypeSchema } from 'better-effect-schema/arktype'
 ~~~
 
-Zod exposes provider-owned class factories through a local facade:
+Each provider subpath exports a ready-to-use `Schema` facade:
 
 ~~~ts
-const local = Schema.with(ZodAdapter)
-class User extends local.Class<User>('app/User')({
+class User extends Schema.Class<User>('app/User')({
   id: z.string()
 }) {}
 ~~~
 
-Valibot and ArkType keep their native schemas and use the same facade for
-provider-aware operations:
+Use the matching alias when more than one provider is present in one module:
 
 ~~~ts
-const valibotLocal = Schema.with(ValibotAdapter)
-const arktypeLocal = Schema.with(ArkTypeAdapter)
+const valibotResult = ValibotSchema.decodeUnknown(valibotSchema, value)
+const arktypeResult = ArkTypeSchema.decodeUnknown(arktypeSchema, value)
 ~~~
 
-The facade is local to the code that creates it. There is no global provider
-setting, so different providers can coexist in one application.
+The root entrypoint remains provider-neutral for Standard Schema definitions,
+portable operations, and failure types. There is no global provider setting, so
+different provider subpaths can coexist in one application. `Schema.with` is
+reserved for authoring a custom adapter or intentionally configuring a custom
+capability set.
 
 ## Decode untrusted input
 
@@ -88,7 +93,7 @@ Use it when your application already has decoded data but still wants the
 class's construction contract:
 
 ~~~ts
-const made = Schema.make(User, { id: 'user-1' })
+const made = CoreSchema.make(User, { id: 'user-1' })
 if (Result.isError(made)) throw made.error
 ~~~
 
@@ -96,10 +101,10 @@ Encoding is explicit. A class or codec needs an encoding function; the package
 does not treat a read-only schema as its own inverse:
 
 ~~~ts
-const encoded = Schema.encode(Event, event)
+const encoded = CoreSchema.encode(Event, event)
 if (Result.isError(encoded)) throw encoded.error
 
-const encodedAsync = await Schema.encodeAsync(Event, event)
+const encodedAsync = await CoreSchema.encodeAsync(Event, event)
 ~~~
 
 When a provider schema has no encoding capability, the result is

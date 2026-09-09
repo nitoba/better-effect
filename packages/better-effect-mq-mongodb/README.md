@@ -45,8 +45,8 @@ import { MongoClient } from 'mongodb'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { MongoJobStore } from 'better-effect-mq-mongodb'
 
@@ -57,12 +57,11 @@ const db = client.db('application')
 
 await MongoJobStore.migrate({ db })
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')({
   recipient: z.email(),
   requestedAt: DateFromISOString
 }) {}
@@ -70,7 +69,7 @@ const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email
 const sendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -120,7 +119,7 @@ try {
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, {
+      const payload = Schema.decodeUnknown(SendEmailPayload, {
         recipient: 'ada@example.test',
         requestedAt: '2026-09-09T10:00:00.000Z'
       })
@@ -140,8 +139,8 @@ try {
 }
 ```
 
-The local facade uses the Zod 4 provider through `better-effect-schema/zod`;
-`Schema.encode` projects the decoded `SendEmailPayload` class to JSON, and
+The preconfigured Zod `Schema` facade uses the Zod 4 provider;
+`CoreSchema.encode` projects the decoded `SendEmailPayload` class to JSON, and
 `Codec.standardSchema` reuses that contract for persisted Job payloads and
 results. The Worker receives the inferred decoded class type, while
 `MongoJobStore` remains responsible only for durable storage. The Flow and
@@ -305,23 +304,22 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, Flow, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
 
-const local = Schema.with(ZodAdapter)
-class BuildReportPayload extends local.Class<BuildReportPayload>('app/BuildReportPayload')({
+class BuildReportPayload extends Schema.Class<BuildReportPayload>('app/BuildReportPayload')({
   accountId: z.string()
 }) {}
 const buildReportPayloadCodec = Codec.standardSchema({
   schema: BuildReportPayload,
   encode: (value) =>
-    Schema.encode(BuildReportPayload, value).mapError(
+    CoreSchema.encode(BuildReportPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
-class GenerateSectionPayload extends local.Class<GenerateSectionPayload>(
+class GenerateSectionPayload extends Schema.Class<GenerateSectionPayload>(
   'app/GenerateSectionPayload'
 )({
   accountId: z.string(),
@@ -330,7 +328,7 @@ class GenerateSectionPayload extends local.Class<GenerateSectionPayload>(
 const generateSectionPayloadCodec = Codec.standardSchema({
   schema: GenerateSectionPayload,
   encode: (value) =>
-    Schema.encode(GenerateSectionPayload, value).mapError(
+    CoreSchema.encode(GenerateSectionPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -407,7 +405,7 @@ await runtime.warmup()
 try {
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(BuildReportPayload, { accountId: 'account-123' })
+      const payload = Schema.decodeUnknown(BuildReportPayload, { accountId: 'account-123' })
       if (Result.isError(payload)) throw payload.error
       const flowId = yield* BuildReport.enqueue(payload.value)
       const result = yield* BuildReport.awaitResult(flowId)
@@ -423,8 +421,8 @@ try {
 
 The parent enqueue starts the registered flow route. The worker creates the `GenerateSection` children, settles them through the MongoDB `JobStore`, and the route's `collect` phase reads the completed children from the MongoDB `FlowStore`. The application still uses only `better-effect-mq` operations; MongoDB is the durable implementation behind those Services.
 The parent follows the schema-first boundary from the Quick Start:
-`Schema.with(ZodAdapter)` provides the local provider, `local.Class` gives the
-handler a decoded class, and `Schema.encode` projects it back to JSON through
+The preconfigured Zod `Schema` facade gives the handler a decoded class, and
+`CoreSchema.encode` projects it back to JSON through
 the codec. Result/failure schemas remain concise Standard Schema shapes because
 those values are already plain JSON.
 
@@ -465,8 +463,8 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import {
   OutboxId,
@@ -477,15 +475,14 @@ import {
 } from 'better-effect-mq-outbox'
 import { MongoJobStore, MongoOutbox, MongoOutboxStore } from 'better-effect-mq-mongodb'
 
-const local = Schema.with(ZodAdapter)
-class InvoiceEmailPayload extends local.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
+class InvoiceEmailPayload extends Schema.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
   orderId: z.string(),
   recipient: z.email()
 }) {}
 const invoiceEmailPayloadCodec = Codec.standardSchema({
   schema: InvoiceEmailPayload,
   encode: (value) =>
-    Schema.encode(InvoiceEmailPayload, value).mapError(
+    CoreSchema.encode(InvoiceEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -535,7 +532,7 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const payload = local.decodeUnknown(InvoiceEmailPayload, {
+    const payload = Schema.decodeUnknown(InvoiceEmailPayload, {
       orderId: 'order-123',
       recipient: 'ada@example.test'
     })
@@ -597,7 +594,7 @@ must be safe to retry.
 Pass a `MongoClient` as the first argument when the database is not available
 there; in that form provide the database as `options.db` so the adapter can
 append to the selected database. The payload uses the same schema-first
-boundary (`Schema.with(ZodAdapter)`, `local.Class`, and `Schema.encode`), while
+boundary (the preconfigured Zod `Schema`, `Schema.Class`, and `CoreSchema.encode`), while
 concise result/failure codecs are suitable for plain-JSON outcomes.
 
 `Routes` maps the record target `'jobs'` to the `JobStore` Service token; it

@@ -32,23 +32,22 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { SqliteJobStore } from 'better-effect-mq-sqlite'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
-const local = Schema.with(ZodAdapter)
 const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')(
   SendEmailPayloadSchema
 ) {}
 const SendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -99,7 +98,7 @@ workloads; choose a distributed adapter when several hosts must share one queue.
 flows, and outbox providers are optional Layers over the same database.
 The payload codec uses a Zod 4 schema-backed class from
 [`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
-`Schema.encode` callback maps the class value to JSON for persistence.
+`CoreSchema.encode` callback maps the class value to JSON for persistence.
 
 ## Transactional outbox
 
@@ -126,23 +125,22 @@ import {
   SqliteOutboxStore,
   SqliteOutboxTransactions
 } from 'better-effect-mq-sqlite'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Orders = Queue.define('orders')
-const local = Schema.with(ZodAdapter)
 const SendConfirmationPayloadSchema = z.object({
   orderId: z.string().min(1),
   email: z.email()
 })
-class SendConfirmationPayload extends local.Class<SendConfirmationPayload>(
+class SendConfirmationPayload extends Schema.Class<SendConfirmationPayload>(
   'app/SendConfirmationPayload'
 )(SendConfirmationPayloadSchema) {}
 const SendConfirmationPayloadCodec = Codec.standardSchema({
   schema: SendConfirmationPayload,
   encode: (value) =>
-    Schema.encode(SendConfirmationPayload, value).mapError(
+    CoreSchema.encode(SendConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })

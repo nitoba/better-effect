@@ -3,17 +3,15 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { Codec, JobEncodeFailure, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
-
-const local = Schema.with(ZodAdapter)
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class UserEvent extends local.Class<UserEvent>('examples/MqUserEvent')({
+class UserEvent extends Schema.Class<UserEvent>('examples/MqUserEvent')({
   eventId: z.uuid(),
   occurredAt: DateFromISOString,
   kind: z.string().min(1),
@@ -35,7 +33,7 @@ const EventFailure = z.object({
 const userEventCodec = Codec.standardSchema({
   schema: UserEvent,
   encode: (value) =>
-    Schema.encode(UserEvent, value).mapError(
+    CoreSchema.encode(UserEvent, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })

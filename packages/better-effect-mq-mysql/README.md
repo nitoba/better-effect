@@ -97,8 +97,8 @@ import { createPool } from 'mysql2/promise'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, Queue, Retry, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { MySqlJobStore, MySqlMigrator } from 'better-effect-mq-mysql'
 import { Result } from 'better-result'
 
@@ -108,12 +108,11 @@ if (uri === undefined) throw new Error('MYSQL_URL is required')
 const pool = createPool(uri)
 await MySqlMigrator.run(pool)
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')({
   messageId: z.string().min(1),
   recipient: z.email(),
   requestedAt: DateFromISOString
@@ -122,7 +121,7 @@ const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email
 const sendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -170,7 +169,7 @@ await runtime.warmup()
 try {
   const enqueued = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, {
+      const payload = Schema.decodeUnknown(SendEmailPayload, {
         messageId: 'message-123',
         recipient: 'ada@example.test',
         requestedAt: '2026-09-09T10:00:00.000Z'
@@ -187,8 +186,8 @@ try {
 }
 ```
 
-`Schema.with(ZodAdapter)` provides the provider-backed validation boundary;
-`Schema.encode` projects the decoded `SendEmailPayload` class back to JSON, and
+The preconfigured Zod `Schema` facade provides the provider-backed validation boundary;
+`CoreSchema.encode` projects the decoded `SendEmailPayload` class back to JSON, and
 `Codec.standardSchema` adapts that contract to durable Job payloads and
 results. `Worker.handle` receives the inferred decoded class type. The Flow
 and Outbox journeys below use the same schema-first payload boundary. Result or
@@ -383,8 +382,8 @@ import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
 
 // Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start. In
 // particular, the flow parent uses the Quick Start's schema-first
-// SendEmailPayload class and codec: Schema.with(ZodAdapter) provides the local
-// provider and the codec projects the class with Schema.encode. This
+// SendEmailPayload class and codec: the preconfigured Zod Schema facade provides
+// the provider and the codec projects the class with CoreSchema.encode. This
 // composition does not introduce a second payload contract.
 
 const flow = await MySqlFlowStore.make({
@@ -422,7 +421,7 @@ with `MySqlFlowStore.makeFromConfig`, it owns its pool and must be disposed by
 the application (`await flow.dispose()`) when the surrounding Runtime stops.
 
 The reused parent payload follows the schema-first boundary from the Quick
-Start (`Schema.with(ZodAdapter)`, `local.Class`, and `Schema.encode`). Result
+Start (the preconfigured Zod `Schema`, `Schema.Class`, and `CoreSchema.encode`). Result
 and failure values that remain plain JSON can use concise Standard Schema
 codecs.
 
@@ -438,21 +437,20 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { MySqlJobStore, MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
-const local = Schema.with(ZodAdapter)
-class InvoiceEmailPayload extends local.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
+class InvoiceEmailPayload extends Schema.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
   messageId: z.string().min(1),
   recipient: z.email()
 }) {}
 const invoiceEmailPayloadCodec = Codec.standardSchema({
   schema: InvoiceEmailPayload,
   encode: (value) =>
-    Schema.encode(InvoiceEmailPayload, value).mapError(
+    CoreSchema.encode(InvoiceEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -501,7 +499,7 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const payload = local.decodeUnknown(InvoiceEmailPayload, {
+    const payload = Schema.decodeUnknown(InvoiceEmailPayload, {
       messageId: 'message-789',
       recipient: 'lin@example.test'
     })
@@ -545,8 +543,8 @@ await runtime.dispose()
 Keep `target` equal to a route configured for the publisher, such as
 `'billingJobs'`. `OutboxRoutes` maps that string to the `JobStore` Service
 token; it does not store a JobStore instance. The payload uses the same
-schema-first boundary (`Schema.with(ZodAdapter)`, `local.Class`, and
-`Schema.encode`), while concise result/failure codecs are suitable for
+schema-first boundary (the preconfigured Zod `Schema`, `Schema.Class`, and
+`CoreSchema.encode`), while concise result/failure codecs are suitable for
 plain-JSON outcomes. The adapter appends the record after the domain callback
 succeeds, commits only after both writes succeed, and cleans up the connection
 on success or failure. Configure the publisher so that route points to the

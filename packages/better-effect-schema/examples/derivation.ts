@@ -1,9 +1,6 @@
 import * as z from "zod"
 import { Result } from "better-result"
-import { Schema } from "better-effect-schema"
-import { ZodAdapter } from "better-effect-schema/zod"
-
-const local = Schema.with(ZodAdapter)
+import { Schema } from "better-effect-schema/zod"
 
 const assert: (condition: unknown, message: string) => asserts condition = (
   condition,
@@ -12,7 +9,7 @@ const assert: (condition: unknown, message: string) => asserts condition = (
   if (!condition) throw new Error(message)
 }
 
-class Person extends local.Class<Person>("examples/DerivationPerson")({
+class Person extends Schema.Class<Person>("examples/DerivationPerson")({
   id: z.int().positive(),
   name: z.string().min(1)
 }) {

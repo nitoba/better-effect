@@ -43,22 +43,21 @@ boundary payload, use a Zod 4 schema through `better-effect-schema` and the MQ
 ```ts
 import * as z from 'zod'
 import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
 const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')(
   SendEmailPayloadSchema
 ) {}
 
 const SendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })

@@ -1,9 +1,6 @@
 import * as z from "zod"
 import { Result } from "better-result"
-import { Schema } from "better-effect-schema"
-import { ZodAdapter } from "better-effect-schema/zod"
-
-const local = Schema.with(ZodAdapter)
+import { Schema } from "better-effect-schema/zod"
 
 type CategoryNode = {
   readonly name: string
@@ -15,7 +12,7 @@ const categoryNode: z.ZodType<CategoryNode> = z.lazy(() => z.object({
   children: z.array(categoryNode)
 }))
 
-class Category extends local.Class<Category>("examples/Category")({
+class Category extends Schema.Class<Category>("examples/Category")({
   name: z.string(),
   children: z.array(categoryNode)
 }) {

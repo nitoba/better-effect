@@ -44,17 +44,15 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { Codec, JobEncodeFailure, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
-
-const local = Schema.with(ZodAdapter)
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class UserEvent extends local.Class<UserEvent>('app/UserEvent')({
+class UserEvent extends Schema.Class<UserEvent>('app/UserEvent')({
   eventId: z.uuid(),
   occurredAt: DateFromISOString,
   kind: z.string().min(1),
@@ -74,7 +72,7 @@ const DeliveryFailure = z.object({
 const UserEventCodec = Codec.standardSchema({
   schema: UserEvent,
   encode: (value) =>
-    Schema.encode(UserEvent, value).mapError(
+    CoreSchema.encode(UserEvent, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -147,7 +145,7 @@ must survive a restart or be shared by multiple processes.
 
 The schema-backed codec decodes persisted JSON into the class used by the
 handler; the explicit `encode` callback delegates the wire projection to
-`Schema.encode`. If a provider schema's output is already JSON-safe, omit
+`CoreSchema.encode`. If a provider schema's output is already JSON-safe, omit
 `encode` and the codec uses that value for both sides.
 
 ### Plain JSON escape hatch
@@ -183,17 +181,16 @@ stable identity and declares the codecs used at the storage boundary:
 ```ts
 import * as z from 'zod'
 import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
 const Billing = Queue.define('billing')
-class ChargeCardPayload extends local.Class<ChargeCardPayload>('app/ChargeCardPayload')({
+class ChargeCardPayload extends Schema.Class<ChargeCardPayload>('app/ChargeCardPayload')({
   paymentId: z.string().min(1),
   amountCents: z.int().positive(),
   requestedAt: DateFromISOString
@@ -203,7 +200,7 @@ const ChargeCardFailure = z.object({ code: z.string().min(1) })
 const ChargeCardPayloadCodec = Codec.standardSchema({
   schema: ChargeCardPayload,
   encode: (value) =>
-    Schema.encode(ChargeCardPayload, value).mapError(
+    CoreSchema.encode(ChargeCardPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -309,16 +306,15 @@ import {
   Queue,
   Worker
 } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class ReportPayload extends local.Class<ReportPayload>('app/ReportPayload')({
+class ReportPayload extends Schema.Class<ReportPayload>('app/ReportPayload')({
   reportId: z.string().min(1),
   requestedAt: DateFromISOString
 }) {}
@@ -326,7 +322,7 @@ class ReportPayload extends local.Class<ReportPayload>('app/ReportPayload')({
 const ReportPayloadCodec = Codec.standardSchema({
   schema: ReportPayload,
   encode: (value) =>
-    Schema.encode(ReportPayload, value).mapError(
+    CoreSchema.encode(ReportPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -528,19 +524,18 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { PostgresJobStore, PostgresOutbox, type Pool } from 'better-effect-mq-postgres'
 
 declare const pool: Pool
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+class ConfirmationPayload extends Schema.Class<ConfirmationPayload>('app/ConfirmationPayload')({
   orderId: z.string().min(1),
   email: z.email(),
   queuedAt: DateFromISOString
@@ -549,7 +544,7 @@ class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/Confirma
 const ConfirmationPayloadCodec = Codec.standardSchema({
   schema: ConfirmationPayload,
   encode: (value) =>
-    Schema.encode(ConfirmationPayload, value).mapError(
+    CoreSchema.encode(ConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })

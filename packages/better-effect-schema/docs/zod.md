@@ -16,8 +16,8 @@ does not load Zod:
 ~~~ts
 import * as z from 'zod'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 ~~~
 
 ## Define and validate a Zod schema
@@ -51,14 +51,12 @@ if (!checked.success) {
 }
 ~~~
 
-For the package boundary, create a local facade and a class backed by the same
-native schema. `Schema.decodeUnknown` validates `unknown` and returns a real
+For the package boundary, use the preconfigured `Schema` facade and a class backed
+by the same native schema. `Schema.decodeUnknown` validates `unknown` and returns a real
 class instance or a `better-result` error:
 
 ~~~ts
-const local = Schema.with(ZodAdapter)
-
-class User extends local.Class<User>('app/User')(UserSchema) {}
+class User extends Schema.Class<User>('app/User')(UserSchema) {}
 
 const decoded = Schema.decodeUnknown(User, input)
 if (Result.isError(decoded)) {
@@ -85,7 +83,7 @@ the returned value to short-circuit on failure.
 ## Codecs for transport values
 
 Use a Zod codec when the wire value and application value differ. The adapter
-recognizes the codec and `Schema.encode` uses its explicit reverse operation:
+recognizes the codec and `CoreSchema.encode` uses its explicit reverse operation:
 
 ~~~ts
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
@@ -93,7 +91,7 @@ const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   encode: (value) => value.toISOString()
 })
 
-class Event extends local.Class<Event>('app/Event')({
+class Event extends Schema.Class<Event>('app/Event')({
   id: z.string(),
   occurredAt: DateFromISOString
 }) {}
@@ -104,18 +102,18 @@ const event = Schema.decode(Event, {
 })
 if (Result.isError(event)) throw event.error
 
-const wire = Schema.encode(Event, event.value)
+const wire = CoreSchema.encode(Event, event.value)
 if (Result.isError(wire)) throw wire.error
 // wire.value.occurredAt is an ISO string
 ~~~
 
-Read-only schemas do not receive an invented encoder. Use `Schema.encodeAsync`
+Read-only schemas do not receive an invented encoder. Use `CoreSchema.encodeAsync`
 for an async codec; the synchronous call returns `SchemaAsyncRequired` instead
 of invoking an async operation twice.
 
 ## Provider-owned capabilities
 
-The local facade exposes Zod-specific class factories and structural
+The preconfigured `Schema` facade exposes Zod-specific class factories and structural
 derivations while preserving native Zod behavior:
 
 ~~~ts
@@ -132,7 +130,7 @@ class PublicUser extends User.pick<PublicUser>('app/PublicUser')({
 ~~~
 
 Use the provider-native schema directly when you only need Zod. Use
-`Schema.decodeUnknown` or the local facade when you want normalized package
+`Schema.decodeUnknown` or the preconfigured `Schema` facade when you want normalized package
 failures, class construction, or shared code that can work with another
 provider.
 
