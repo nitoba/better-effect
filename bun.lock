@@ -300,7 +300,7 @@
     },
     "packages/better-effect-mq-outbox": {
       "name": "better-effect-mq-outbox",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "devDependencies": {
         "@types/bun": "1.4.1",
         "better-effect": "0.13.0",

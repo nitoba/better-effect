@@ -1,6 +1,6 @@
 {
   "name": "better-effect-mq-outbox",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Storage-neutral durable outbox foundations for better-effect-mq.",
   "keywords": [
     "at-least-once",
