@@ -35,15 +35,15 @@ The public peers are:
 
 `mongodb` is optional because the adapter accepts a `Db` already created by the application. With this approach, importing the package does not load the driver. Use the `mongodb` peer when you want `layerFromConfig` to open the connection for you.
 
-## Quick start: an application-owned `Db` and a Layer
+## Quick start: a complete durable worker
 
-The recommended flow is to connect the client, run the migration explicitly, and provide the `Db` to the adapter:
+`better-effect-mq-mongodb` is a storage adapter, not a second job framework. Define queues and jobs with `better-effect-mq`, register handlers with `Worker.handle`, start them with `Worker.service`, and provide `MongoJobStore.layer` as the durable `JobStore` implementation:
 
 ```ts
 import { MongoClient } from 'mongodb'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Queue } from 'better-effect-mq'
+import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
 import { MongoJobStore } from 'better-effect-mq-mongodb'
 
@@ -54,39 +54,69 @@ const db = client.db('application')
 
 await MongoJobStore.migrate({ db })
 
-const Emails = Queue.define('emails')
-const SendEmail = Emails.job('send', {
+const Emails = Queue.define('application.emails')
+const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{ readonly to: string }>()
+  payload: Codec.json<{ readonly recipient: string }>(),
+  result: Codec.string
 })
 
-const ApplicationLive = Layer.complete(
-  Layer.merge(MongoJobStore.layer({ db, namespace: 'application' }), ClockLive)
+const handler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    console.log(`attempt ${context.attempt}: sending to ${payload.recipient}`)
+    return Result.ok(`sent:${payload.recipient}`)
+  })
 )
+
+const ApplicationWorker = Worker.service('ApplicationEmailWorker')
+const ApplicationWorkerLive = ApplicationWorker.layer(() => ({
+  handlers: [handler] as const,
+  concurrency: 4,
+  pollIntervalMs: 100
+}))
+
+const ApplicationLive = Layer.complete(
+  Layer.merge(
+    MongoJobStore.layer({ db, namespace: 'application' }),
+    Layer.merge(ClockLive, ApplicationWorkerLive)
+  )
+)
+
 const runtime = await Runtime.make(ApplicationLive)
+await runtime.warmup()
 
 try {
-  const result = await runtime.run(() =>
+  const started = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue(
-        { to: 'ada@example.test' },
-        { idempotencyKey: 'welcome-ada' }
-      )
-      return Result.ok(jobId)
+      return Result.ok(yield* ApplicationWorker)
     })
   )
+  if (Result.isError(started)) throw started.error
 
-  if (Result.isError(result)) throw result.error
-  console.log(result.value)
+  const completed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue(
+        { recipient: 'ada@example.test' },
+        { idempotencyKey: 'welcome-ada' }
+      )
+      const result = yield* SendEmail.awaitResult(jobId)
+      return Result.ok({ jobId, result })
+    })
+  )
+  if (Result.isError(completed)) throw completed.error
+
+  console.log(completed.value)
+  await started.value.awaitIdle()
 } finally {
   await runtime.dispose()
   await client.close()
 }
 ```
 
-The `Db` must come from the official driver and retain access to its `MongoClient` (`db.client`), which is required to open transactional sessions.
+This is the complete application flow: `Queue.define` and `Emails.job` create immutable, storage-neutral descriptors; `Worker.handle` connects the typed payload to application code; `Worker.service(...).layer(...)` owns the worker lifecycle; and `MongoJobStore.layer` supplies the `JobStore` used by `enqueue` and `awaitResult`. The worker does not query MongoDB, and application code does not call `ServiceRuntime.resolve`.
 
-The worker, handlers, and result reading use only `better-effect-mq`. For example, a worker can be added to the same `ApplicationLive` with `Worker.service` and `Worker.handle`, without querying collections or knowing about MongoDB. See the [`better-effect-mq` composition guide](../better-effect-mq/docs/composition.md) for that side of the application.
+The `Db` must come from the official driver and retain access to its `MongoClient` (`db.client`), which is required to open transactional sessions. See the [`better-effect-mq` composition guide](../better-effect-mq/docs/composition.md) for more worker and handler patterns.
 
 ### Adapter-managed client
 
@@ -202,38 +232,244 @@ const NamedSchedulesLive = MongoJobScheduleStore.layerFor(DurableSchedules, {
 
 ### Flows
 
-Flows use an explicit Layer and their own migration:
+Flows are also defined by `better-effect-mq`. The MongoDB adapter supplies the `FlowStore` persistence that lets a Worker fan out child jobs and collect their results. Define the parent and child jobs, register a `Flow.handle` route with the Worker, and provide `MongoFlowStore.layer` alongside the job store:
 
 ```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, Flow, Queue, Worker } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
+
+const Reports = Queue.define('application.reports')
+const BuildReport = Reports.job('build-report', {
+  version: 1,
+  payload: Codec.json<{ readonly accountId: string }>(),
+  result: Codec.json<{ readonly reportId: string }>()
+})
+const GenerateSection = Reports.job('generate-section', {
+  version: 1,
+  payload: Codec.json<{ readonly accountId: string; readonly section: string }>(),
+  result: Codec.json<{ readonly section: string }>()
+})
+
+const ReportFlow = Flow.define('build-report', {
+  parent: BuildReport,
+  children: [GenerateSection] as const,
+  onChildFailure: 'continue'
+})
+
+const ReportRoute = Flow.handle(ReportFlow, {
+  fanOut: (payload) =>
+    Effect.fn(async function* () {
+      return Result.ok([
+        Flow.children(GenerateSection, [
+          { key: 'summary', payload: { accountId: payload.accountId, section: 'summary' } },
+          { key: 'activity', payload: { accountId: payload.accountId, section: 'activity' } }
+        ])
+      ] as const)
+    }),
+  collect: (_payload, results) =>
+    Effect.fn(async function* () {
+      const children = yield* Result.await(
+        // FlowResults is invoked in the Runtime that provides MongoFlowStore.
+        Promise.resolve(results.all()()) as Promise<
+          Result<readonly import('better-effect-mq').FlowSettledChild<typeof ReportFlow>[], never>
+        >
+      )
+      return Result.ok({ reportId: `report:${children.length}` })
+    })
+})
+
+const sectionHandler = Worker.handle(GenerateSection, (payload) =>
+  Effect.fn(async function* () {
+    console.log(`rendering ${payload.section} for ${payload.accountId}`)
+    return Result.ok({ section: payload.section })
+  })
+)
+
+const ReportsWorker = Worker.service('ApplicationReportsWorker')
+const ReportsWorkerLive = ReportsWorker.layer(() => ({
+  handlers: [sectionHandler] as const,
+  flows: [ReportRoute] as const,
+  concurrency: 4,
+  pollIntervalMs: 100,
+  flowSweepIntervalMs: 1_000
+}))
+
+const ApplicationLive = Layer.complete(
+  Layer.merge(
+    MongoJobStore.layer({ db, namespace: 'application' }),
+    Layer.merge(
+      MongoFlowStore.layer({ db, namespace: 'application' }),
+      Layer.merge(ClockLive, ReportsWorkerLive)
+    )
+  )
+)
+
+const runtime = await Runtime.make(ApplicationLive)
+await runtime.warmup()
+
+try {
+  const completed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const flowId = yield* BuildReport.enqueue({ accountId: 'account-123' })
+      const result = yield* BuildReport.awaitResult(flowId)
+      return Result.ok({ flowId, result })
+    })
+  )
+  if (Result.isError(completed)) throw completed.error
+  console.log(completed.value)
+} finally {
+  await runtime.dispose()
+}
+```
+
+The parent enqueue starts the registered flow route. The worker creates the `GenerateSection` children, settles them through the MongoDB `JobStore`, and the route's `collect` phase reads the completed children from the MongoDB `FlowStore`. The application still uses only `better-effect-mq` operations; MongoDB is the durable implementation behind those Services.
+
+For an independent job store in the same Runtime, use a named job token and
+the adapter's matching flow Layer:
+
+```ts
+import { JobStore } from 'better-effect-mq'
 import { MongoFlowStore } from 'better-effect-mq-mongodb'
 
-const FlowLive = MongoFlowStore.layer({
+const BillingJobs = JobStore.named('billing')
+const BillingFlowLive = MongoFlowStore.layerFor(BillingJobs, {
   db,
   namespace: 'application'
 })
 ```
 
-The adapter persists child fan-out, child results, cancellation, reconciliation, and pending reports for delivery to the parent. Delivery is at least once and can be repeated safely. Different stores do not participate in a single transaction; there is no guarantee of an atomic commit across databases or namespaces.
+The adapter persists child fan-out, child results, cancellation, reconciliation, and pending reports for delivery to the parent. Delivery is at least once and can be repeated safely. Different stores do not participate in a single transaction; there is no guarantee of an atomic commit across databases or namespaces. A flow migration is required in addition to the main job migration:
+
+```ts
+await MongoJobStore.migrate({ db })
+await MongoFlowStore.migrate({ db })
+```
 
 ### Outbox
 
-For the `OutboxStore` from [`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md), use:
+For transactional handoff from domain writes to jobs, use
+[`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md) with MongoDB's
+transaction-bound append helper. `MongoOutboxStore.layer` persists records,
+`OutboxPublisher` delivers them to a `JobStore` after commit, and
+`MongoOutbox.appendIn` writes the outbox record inside the application's
+transaction.
 
 ```ts
-import { MongoOutboxStore, OutboxStore } from 'better-effect-mq-mongodb'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { JobStore } from 'better-effect-mq'
+import { Result } from 'better-result'
+import {
+  OutboxId,
+  OutboxPublisher,
+  OutboxRoutes,
+  OutboxStore,
+  makeOutboxRecord
+} from 'better-effect-mq-outbox'
+import { MongoJobStore, MongoOutbox, MongoOutboxStore } from 'better-effect-mq-mongodb'
 
-const OutboxLive = MongoOutboxStore.layer({
-  db,
-  namespace: 'billing'
+// `SendEmail` is the Job descriptor from the quick-start example above.
+const Routes = OutboxRoutes.make({ jobs: JobStore })
+const Publisher = OutboxPublisher.service('ApplicationOutboxPublisher')
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [OutboxStore] as const,
+  routes: Routes,
+  concurrency: 2,
+  leaseDurationMs: 30_000,
+  heartbeatIntervalMs: 10_000,
+  pollIntervalMs: 1_000
+}))
+
+const ApplicationLive = Layer.complete(
+  Layer.merge(
+    MongoJobStore.layer({ db, namespace: 'application' }),
+    Layer.merge(
+      MongoOutboxStore.layer({ db, namespace: 'application' }),
+      Layer.merge(ClockLive, PublisherLive)
+    )
+  )
+)
+
+const runtime = await Runtime.make(ApplicationLive)
+await runtime.warmup()
+
+const preparedResult = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const prepared = yield* SendEmail.prepare(
+      { recipient: 'ada@example.test' },
+      { jobId: 'welcome-email:ada' }
+    )
+    return Result.ok(prepared)
+  })
+)
+if (Result.isError(preparedResult)) throw preparedResult.error
+
+const record = makeOutboxRecord({
+  id: OutboxId.make('welcome-email:ada').unwrap(),
+  target: 'jobs',
+  request: preparedResult.value,
+  attemptsMax: 5
 })
+if (Result.isError(record)) throw record.error
 
-const NamedOutboxLive = MongoOutboxStore.layerFor(OutboxStore.named('billing'), {
+const session = client.startSession()
+try {
+  await session.withTransaction(async () => {
+    await db
+      .collection('orders')
+      .insertOne({ _id: 'order-123', email: 'ada@example.test' }, { session })
+    const appended = await MongoOutbox.appendIn(session, record.value, {
+      db,
+      namespace: 'application'
+    })
+    if (Result.isError(appended)) throw appended.error
+  })
+} finally {
+  await session.endSession()
+}
+
+// The publisher observes the committed record and enqueues the prepared request.
+const jobResult = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const jobId = record.value.request.id
+    if (jobId === undefined) throw new Error('the prepared request has no job ID')
+    const result = yield* SendEmail.awaitResult(jobId)
+    return Result.ok({ jobId, result })
+  })
+)
+if (Result.isError(jobResult)) throw jobResult.error
+console.log(jobResult.value)
+
+// Keep the Runtime alive while the application is serving requests.
+await runtime.dispose()
+```
+
+Prepare the job before opening the application transaction. The request is
+fully encoded and can be stored safely. The domain write and
+`MongoOutbox.appendIn` call share the same session, so either both commit or
+both roll back. The application owns the session, transaction, and
+`endSession()`; `appendIn` does not begin, commit, roll back, or release them.
+
+After commit, the running `OutboxPublisher` claims the record and calls the
+`jobs` route. The `JobStore` receives the prepared request, and the outbox
+record is marked published only after enqueue succeeds. Delivery is at least
+once, so use deterministic IDs and make handlers safe to retry.
+
+For a named outbox store, bind the token explicitly:
+
+```ts
+import { OutboxStore } from 'better-effect-mq-outbox'
+import { MongoOutboxStore } from 'better-effect-mq-mongodb'
+
+const BillingOutbox = OutboxStore.named('billing')
+const BillingOutboxLive = MongoOutboxStore.layerFor(BillingOutbox, {
   db,
   namespace: 'billing'
 })
 ```
-
-`MongoOutbox.appendIn(session, record, options)` integrates a record into a MongoDB transaction that the application has already opened. The application owns the session, commit/abort, and `endSession()`. After the commit, `OutboxStore` provides claims with expiration, heartbeat, settlement, and recovery; external publication is at least once and must be explicitly confirmed with `markPublished`.
 
 ## Durability guarantees and limits
 
