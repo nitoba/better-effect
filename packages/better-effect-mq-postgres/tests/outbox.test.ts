@@ -124,6 +124,149 @@ test('PostgresOutbox.appendIn uses the caller transaction and is digest-idempote
   }
 })
 
+test('PostgresOutbox.transaction commits the domain write and outbox record together', async () => {
+  const { database, pool } = await makePool()
+  const schema = 'outbox_transaction_success'
+  const options = { namespace: 'billing', schema }
+  const client = PostgresClient.fromPool({ pool, schema })
+  await client.migrate({ appliedAtMs: 1 })
+  await database.exec('CREATE TABLE domain_rows (id text PRIMARY KEY)')
+
+  try {
+    const result = await PostgresOutbox.transaction(
+      pool,
+      makeRecord('transaction-success'),
+      async (tx) => {
+        await tx.query('INSERT INTO domain_rows (id) VALUES ($1)', ['order-1'])
+        return Result.ok('committed')
+      },
+      options
+    )
+
+    expect(Result.isError(result)).toBe(false)
+    if (!Result.isError(result)) expect(result.value).toBe('committed')
+    const domainRows = await database.query('SELECT count(*)::int AS count FROM domain_rows')
+    const outboxRows = await database.query(
+      'SELECT count(*)::int AS count FROM "outbox_transaction_success".better_effect_mq_outbox WHERE namespace = $1',
+      ['billing']
+    )
+    expect(domainRows.rows[0]?.count).toBe(1)
+    expect(outboxRows.rows[0]?.count).toBe(1)
+  } finally {
+    await client.dispose()
+    await database.close()
+  }
+})
+
+test('PostgresOutbox.transaction rolls back the domain write for a nominal Result.err', async () => {
+  const { database, pool } = await makePool()
+  const schema = 'outbox_transaction_domain_failure'
+  const options = { namespace: 'billing', schema }
+  const client = PostgresClient.fromPool({ pool, schema })
+  await client.migrate({ appliedAtMs: 1 })
+  await database.exec('CREATE TABLE domain_rows (id text PRIMARY KEY)')
+  const domainFailure = new Error('domain rejected')
+
+  try {
+    const result = await PostgresOutbox.transaction(
+      pool,
+      makeRecord('transaction-domain-failure'),
+      async (tx) => {
+        await tx.query('INSERT INTO domain_rows (id) VALUES ($1)', ['order-2'])
+        return Result.err(domainFailure)
+      },
+      options
+    )
+
+    expect(Result.isError(result)).toBe(true)
+    if (Result.isError(result)) expect(result.error).toBe(domainFailure)
+    const domainRows = await database.query('SELECT count(*)::int AS count FROM domain_rows')
+    const outboxRows = await database.query(
+      'SELECT count(*)::int AS count FROM "outbox_transaction_domain_failure".better_effect_mq_outbox WHERE namespace = $1',
+      ['billing']
+    )
+    expect(domainRows.rows[0]?.count).toBe(0)
+    expect(outboxRows.rows[0]?.count).toBe(0)
+  } finally {
+    await client.dispose()
+    await database.close()
+  }
+})
+
+test('PostgresOutbox.transaction rolls back when appending the outbox record fails', async () => {
+  const { database, pool } = await makePool()
+  const schema = 'outbox_transaction_append_failure'
+  const options = { namespace: 'billing', schema }
+  const client = PostgresClient.fromPool({ pool, schema })
+  await client.migrate({ appliedAtMs: 1 })
+  await database.exec('CREATE TABLE domain_rows (id text PRIMARY KEY)')
+
+  try {
+    await PostgresOutbox.transaction(
+      pool,
+      makeRecord('transaction-conflict'),
+      async () => undefined,
+      options
+    )
+    await expect(
+      PostgresOutbox.transaction(
+        pool,
+        makeRecord('transaction-conflict', { value: 'changed' }),
+        async (tx) => {
+          await tx.query('INSERT INTO domain_rows (id) VALUES ($1)', ['order-3'])
+          return Result.ok(undefined)
+        },
+        options
+      )
+    ).rejects.toBeInstanceOf(OutboxConflictError)
+
+    const domainRows = await database.query('SELECT count(*)::int AS count FROM domain_rows')
+    expect(domainRows.rows[0]?.count).toBe(0)
+  } finally {
+    await client.dispose()
+    await database.close()
+  }
+})
+
+test('PostgresOutbox.transaction always releases its client after callback failure', async () => {
+  const { database, pool } = await makePool()
+  const schema = 'outbox_transaction_cleanup'
+  const client = PostgresClient.fromPool({ pool, schema })
+  await client.migrate({ appliedAtMs: 1 })
+  let releases = 0
+  const trackedPool: Pool = {
+    connect: async () => {
+      const connection = await pool.connect()
+      return {
+        query: <Row>(text: string, values?: readonly unknown[]) =>
+          connection.query<Row>(text, values),
+        release: (error?: Error) => {
+          releases += 1
+          connection.release(error)
+        }
+      }
+    }
+  }
+  const failure = new Error('callback failed')
+
+  try {
+    await expect(
+      PostgresOutbox.transaction(
+        trackedPool,
+        makeRecord('transaction-cleanup'),
+        async () => {
+          throw failure
+        },
+        { namespace: 'billing', schema }
+      )
+    ).rejects.toBe(failure)
+    expect(releases).toBe(1)
+  } finally {
+    await client.dispose()
+    await database.close()
+  }
+})
+
 test('PostgresOutbox redelivers expired leases during claim', async () => {
   const { database, pool } = await makePool()
   const client = PostgresClient.fromPool({ pool, schema: 'outbox_redelivery' })

@@ -28,6 +28,14 @@ const namedLayer: Layer<InstanceType<typeof named>, never> = PostgresOutbox.laye
   validateSchema: false
 })
 const appended: Promise<OutboxAppendResult> = PostgresOutbox.appendIn(transaction, record)
+const transactionResult: Promise<Result<undefined, never>> = PostgresOutbox.transaction(
+  pool,
+  record,
+  async (connection) => {
+    await connection.query('SELECT 1')
+    return Result.ok(undefined)
+  }
+)
 const defaultProgram = Effect.gen(async function* () {
   const resolved = yield* PostgresOutbox
   const exact: PostgresOutboxStore = resolved
@@ -44,6 +52,7 @@ void namedTag
 void defaultLayer
 void namedLayer
 void appended
+void transactionResult
 void defaultProgram
 void namedProgram
 void store

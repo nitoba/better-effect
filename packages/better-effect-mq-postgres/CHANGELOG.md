@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `PostgresOutbox.transaction` for adapter-owned domain writes and
+  prepared outbox appends with automatic commit, rollback, and client cleanup.
 - Add PostgreSQL controlled claim protocol v3 support with durable queue
   controls, dispatch keys, fixed-window rate limits, global/per-key permits,
   bounded fairness scanning, revision fencing, and atomic settlement/recovery.
