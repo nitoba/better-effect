@@ -221,7 +221,7 @@
     },
     "packages/better-effect-mq": {
       "name": "better-effect-mq",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/bun": "1.4.1",
         "better-effect": "0.13.0",
@@ -361,6 +361,7 @@
         "@types/node": "^22.0.0",
         "better-effect": "0.13.0",
         "better-effect-mq": "0.1.0",
+        "better-effect-mq-outbox": "0.1.0",
         "better-result": "^3.0.0",
         "oxfmt": "^0.63.0",
         "oxlint": "^1.78.0",
@@ -372,6 +373,7 @@
       "peerDependencies": {
         "better-effect": ">=0.13.0 <0.14.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
+        "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
         "redis": ">=4.6.0 <6.0.0",
         "typescript": ">=6.0.0",
@@ -2763,13 +2765,27 @@
 
     "better-effect-mq-mongodb/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
+    "better-effect-mq-mongodb/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
+
     "better-effect-mq-mysql/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
+
+    "better-effect-mq-mysql/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
+
+    "better-effect-mq-outbox/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
 
     "better-effect-mq-postgres/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
+    "better-effect-mq-postgres/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
+
     "better-effect-mq-redis/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
+    "better-effect-mq-redis/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
+
     "better-effect-mq-sqlite/@types/node": ["@types/node@24.13.3", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q=="],
+
+    "better-effect-mq-sqlite/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
+
+    "better-effect-schema/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
 
     "better-effect-schema/zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
