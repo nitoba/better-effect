@@ -21,6 +21,13 @@
   collections. Event-enabled JobStore layers append transition events in the
   same MongoDB transaction as the state change.
 
+## [0.1.3] - 2026-09-09
+
+### Fixed
+
+- Add repository metadata required for npm Trusted Publishing provenance on the
+  next MongoDB adapter release.
+
 ## [0.1.2] - 2026-09-09
 
 ### Fixed
