@@ -120,7 +120,6 @@ jobs:
           fi
 
       - name: Build workspace dependencies for package checks
-        if: steps.release.outputs.package_name != 'better-effect'
         env:
           PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
         shell: bash
