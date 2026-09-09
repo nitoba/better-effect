@@ -495,14 +495,10 @@ The important operational guarantees are:
 
 ## Further reading
 
-For the shared contracts and advanced behavior, see:
+For the shared APIs and composition patterns, see:
 
+- [The `better-effect-mq` user guide](../better-effect-mq/README.md)
 - [The `better-effect-mq` composition guide](../better-effect-mq/docs/composition.md)
-- [JobStore and operation semantics](../better-effect-mq/docs/protocol/job-store-v1.md)
-- [Time, retries, and leases](../better-effect-mq/docs/protocol/time-and-leases-v1.md)
-- [Durable job events](../better-effect-mq/docs/protocol/durable-events-v1.md)
-- [Flow composition](../better-effect-mq/docs/protocol/flows-v2.md)
-- [Controlled queues](../better-effect-mq/docs/protocol/controls-v3.md)
 - [Storage-neutral outbox foundations](../better-effect-mq-outbox/README.md)
 
 The adapter's MySQL conformance suites run against a dedicated MySQL instance
