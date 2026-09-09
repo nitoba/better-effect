@@ -114,7 +114,7 @@ try {
 }
 ```
 
-This is the complete application flow: `Queue.define` and `Emails.job` create immutable, storage-neutral descriptors; `Worker.handle` connects the typed payload to application code; `Worker.service(...).layer(...)` owns the worker lifecycle; and `MongoJobStore.layer` supplies the `JobStore` used by `enqueue` and `awaitResult`. The worker does not query MongoDB, and application code does not call `ServiceRuntime.resolve`.
+This is the complete application flow: `Queue.define` and `Emails.job` create immutable, storage-neutral descriptors; `Worker.handle` connects the typed payload to application code; `Worker.service(...).layer(...)` owns the worker lifecycle; and `MongoJobStore.layer` supplies the `JobStore` used by `enqueue` and `awaitResult`. The worker does not query MongoDB, and application operations use the Services supplied by the Layer.
 
 The `Db` must come from the official driver and retain access to its `MongoClient` (`db.client`), which is required to open transactional sessions. See the [`better-effect-mq` composition guide](../better-effect-mq/docs/composition.md) for more worker and handler patterns.
 
@@ -179,7 +179,37 @@ const DurableStoreLive = MongoJobStore.layerFor(Durable, {
 })
 ```
 
-Use `layerFor` when multiple stores need to coexist in the same Runtime. Jobs associated with the `Durable` token must be provided by this Layer; the application does not need to resolve services manually.
+Use `layerFor` when multiple stores need to coexist in the same Runtime. Jobs associated with the `Durable` token must be provided by this Layer. When direct store access is useful, yield the token inside an Effect running on that Runtime:
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { JobStore } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { MongoJobStore } from 'better-effect-mq-mongodb'
+
+const Durable = JobStore.named('durable')
+const DurableLive = Layer.complete(
+  MongoJobStore.layerFor(Durable, {
+    db,
+    namespace: 'application'
+  })
+)
+
+const runtime = await Runtime.make(DurableLive)
+try {
+  const countsResult = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const store = yield* Durable
+      const counts = yield* Result.await(Promise.resolve(store.counts()))
+      return Result.ok(counts)
+    })
+  )
+  if (Result.isError(countsResult)) throw countsResult.error
+  console.log(countsResult.value)
+} finally {
+  await runtime.dispose()
+}
+```
 
 ### Durable events
 
