@@ -126,7 +126,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bunx turbo run build --filter="$PACKAGE_NAME..." --concurrency=1
+          bunx turbo run build \
+            --filter=better-effect \
+            --filter=better-effect-mq \
+            --filter=better-effect-mq-outbox \
+            --filter="$PACKAGE_NAME" \
+            --concurrency=1
 
       - name: Run selected package quality gates
         env:
@@ -153,7 +158,12 @@ jobs:
           set -euo pipefail
 
           if [[ "$PACKAGE_NAME" != "better-effect" ]]; then
-            (cd "$PACKAGE_DIR" && bun run test:package-consumer)
+            consumer_script="$(bun -e 'const pkg = await Bun.file(`${process.env.PACKAGE_DIR}/package.json`).json(); process.stdout.write(pkg.scripts?.["test:package-consumer"] ?? "")')"
+            if [[ -n "$consumer_script" ]]; then
+              (cd "$PACKAGE_DIR" && bun run test:package-consumer)
+            else
+              echo "::notice::$PACKAGE_NAME has no test:package-consumer script; skipping consumer validation"
+            fi
             exit 0
           fi
 

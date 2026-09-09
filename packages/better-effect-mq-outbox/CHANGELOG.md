@@ -10,6 +10,14 @@
   commit, rollback, and cleanup. Low-level `appendIn` helpers remain explicitly
   advanced adapter integrations.
 
+## [0.1.2] - 2026-09-09
+
+### Fixed
+
+- Follow up the documentation release with a release-workflow fix that builds
+  shared MQ workspace artifacts before consumer validation and skips the
+  optional consumer check when this package has no consumer script.
+
 ## [0.1.1] - 2026-09-09
 
 ### Changed
