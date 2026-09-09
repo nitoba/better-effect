@@ -21,6 +21,14 @@
   collections. Event-enabled JobStore layers append transition events in the
   same MongoDB transaction as the state change.
 
+## [0.1.2] - 2026-09-09
+
+### Fixed
+
+- Follow up the documentation release with a release-workflow fix that builds
+  shared MQ workspace artifacts before consumer validation and runs this
+  package's external consumer smoke test against the materialized builds.
+
 ## [0.1.1] - 2026-09-09
 
 - Refresh the public README with current MongoDB adapter journeys, transaction,
