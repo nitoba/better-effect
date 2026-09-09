@@ -69,43 +69,76 @@ interface described in [Advanced reference](#advanced-reference).
 
 The host-specific `layerFromFile` opens and closes the database with the
 Runtime. Migrations remain explicit, so deployment can run them at a deliberate
-point before serving or publishing work.
+point before serving or publishing work. Jobs and workers still come from
+`better-effect-mq`; SQLite only supplies the durable `JobStore`.
 
 This complete Bun example creates a file, applies the current migrations,
-starts a Runtime, and enqueues one job:
+starts a Runtime-owned Worker, and waits for one typed job:
 
 ```ts
-import { Runtime, ServiceRuntime } from 'better-effect'
-import { JobStore, makeQueueName } from 'better-effect-mq'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, Queue, Worker } from 'better-effect-mq'
 import { SqliteMigrator } from 'better-effect-mq-sqlite'
 import { layerFromFile, openSqlite } from 'better-effect-mq-sqlite/bun'
+import { Result } from 'better-result'
 
 const path = './data/jobs.sqlite'
 
 // Run this once during application setup or deployment.
-const database = openSqlite(path)
-SqliteMigrator.migrate({ database })
-database.close?.()
+const migrationDatabase = openSqlite(path)
+try {
+  SqliteMigrator.migrate({ database: migrationDatabase })
+} finally {
+  migrationDatabase.close?.()
+}
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly recipient: string
+  }>(),
+  result: Codec.string
+})
+
+const EmailWorker = Worker.service('@app/EmailWorker')
+const emailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    return Result.ok(`sent:${payload.recipient}`)
+  })
+)
+const EmailWorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 1,
+  pollIntervalMs: 100
+}))
 
 // The Layer owns this connection and closes it when the Runtime is disposed.
-const runtime = await Runtime.make(layerFromFile({ path, namespace: 'my-app' }))
+const AppLive = Layer.complete(
+  Layer.merge(layerFromFile({ path, namespace: 'my-app' }), Layer.merge(ClockLive, EmailWorkerLive))
+)
+const runtime = await Runtime.make(AppLive)
 
 try {
-  const result = await runtime.run(async () => {
-    const jobs = await ServiceRuntime.resolve(JobStore)
-    const now = Date.now()
-
-    return jobs.enqueue({
-      job: { queue: makeQueueName('emails').unwrap(), name: 'send-email', version: 1 },
-      payload: { to: 'ada@example.test' },
-      runAt: now,
-      attemptsMax: 3,
-      now
+  const started = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* EmailWorker)
     })
-  })
+  )
+  if (Result.isError(started)) throw started.error
 
-  if (result.isErr()) throw result.error
-  console.log(`enqueued ${result.value.job.id}`)
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      const completed = yield* SendEmail.awaitResult(jobId)
+      return Result.ok({ jobId, completed })
+    })
+  )
+  if (Result.isError(result)) throw result.error
+
+  console.log(result.value)
+  await started.value.awaitIdle()
 } finally {
   await runtime.dispose()
 }
@@ -118,23 +151,41 @@ applied entries when the file is already current.
 ## Owning the database connection
 
 Use the generic entrypoint when your application already opens SQLite, needs a
-custom driver binding, or wants several Services to share one connection. The
-caller owns the connection and closes it after the Runtime has been disposed:
+custom driver binding, or wants several Services to share one connection. Keep
+the `SendEmail` descriptor and `EmailWorkerLive` from the Quick Start; only the
+storage provider changes. The caller owns the connection and closes it after
+the Runtime has been disposed:
 
 ```ts
 import { Database } from 'bun:sqlite'
-import { Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
 import { SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
 
 const database = new Database('./data/jobs.sqlite')
 SqliteMigrator.migrate({ database })
 
-const AppLive = Layer.complete(SqliteJobStore.layer({ database, namespace: 'my-app' }))
+const AppLive = Layer.complete(
+  Layer.merge(
+    SqliteJobStore.layer({ database, namespace: 'my-app' }),
+    Layer.merge(ClockLive, EmailWorkerLive)
+  )
+)
 const runtime = await Runtime.make(AppLive)
 
-// Use JobStore through runtime.run(...).
-await runtime.dispose()
-database.close()
+try {
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      return Result.ok(jobId)
+    })
+  )
+  if (Result.isError(result)) throw result.error
+} finally {
+  await runtime.dispose()
+  database.close()
+}
 ```
 
 Use `:memory:` for isolated tests. It is scoped to one connection and is not
@@ -142,9 +193,11 @@ shared by opening the same name again.
 
 ## Compose the storage features
 
-Each feature is an independent provider. Compose the providers into one
-Runtime so producers, workers, schedulers, event readers, flow workers, and
-outbox publishers resolve the same Services.
+Each feature is an independent provider. Compose the providers into the same
+Runtime as the `SendEmail` descriptor and `EmailWorkerLive` from the Quick
+Start so producers, workers, schedulers, event readers, flow workers, and
+outbox publishers use the same Services. The snippets below intentionally reuse
+those declarations; they show the provider change, not a second job API.
 
 ### Jobs and schedules
 
@@ -153,6 +206,7 @@ Schedules use the associated `JobStore` and should be provided beside it:
 ```ts
 import { Database } from 'bun:sqlite'
 import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { SqliteJobScheduleStore, SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
 
 const database = new Database(':memory:')
@@ -160,8 +214,11 @@ SqliteMigrator.migrate({ database })
 
 const AppLive = Layer.complete(
   Layer.merge(
-    SqliteJobStore.layer({ database, namespace: 'my-app' }),
-    SqliteJobScheduleStore.layer({ database, namespace: 'my-app' })
+    Layer.merge(
+      SqliteJobStore.layer({ database, namespace: 'my-app' }),
+      SqliteJobScheduleStore.layer({ database, namespace: 'my-app' })
+    ),
+    Layer.merge(ClockLive, EmailWorkerLive)
   )
 )
 
@@ -180,18 +237,39 @@ Events are opt-in. `layerWithEvents` provides the `JobStore` and its matching
 
 ```ts
 import { Database } from 'bun:sqlite'
-import { Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { JobEventStore } from 'better-effect-mq'
 import { SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
+import { Result } from 'better-result'
 
 const database = new Database(':memory:')
 SqliteMigrator.migrate({ database })
 
-const runtime = await Runtime.make(
-  SqliteJobStore.layerWithEvents(
-    { database, namespace: 'my-app', pollIntervalMs: 1_000 },
-    { retention: { count: 100_000 } }
+const AppLive = Layer.complete(
+  Layer.merge(
+    SqliteJobStore.layerWithEvents(
+      { database, namespace: 'my-app', pollIntervalMs: 1_000 },
+      { retention: { count: 100_000 } }
+    ),
+    Layer.merge(ClockLive, EmailWorkerLive)
   )
 )
+const runtime = await Runtime.make(AppLive)
+
+const result = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+    const completed = yield* SendEmail.awaitResult(jobId, {
+      strategy: 'events',
+      eventStore: JobEventStore,
+      pollFallbackMs: 5_000
+    })
+    return Result.ok({ jobId, completed })
+  })
+)
+if (Result.isError(result)) throw result.error
+await runtime.dispose()
 ```
 
 Use the event token from `better-effect-mq` with `Job.awaitResult` or
@@ -207,6 +285,7 @@ Add the flow provider when the application registers flow routes with the
 ```ts
 import { Database } from 'bun:sqlite'
 import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { SqliteFlowStore, SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
 
 const database = new Database(':memory:')
@@ -214,8 +293,11 @@ SqliteMigrator.migrate({ database })
 
 const AppLive = Layer.complete(
   Layer.merge(
-    SqliteJobStore.layer({ database, namespace: 'my-app' }),
-    SqliteFlowStore.layer({ database, namespace: 'my-app' })
+    Layer.merge(
+      SqliteJobStore.layer({ database, namespace: 'my-app' }),
+      SqliteFlowStore.layer({ database, namespace: 'my-app' })
+    ),
+    Layer.merge(ClockLive, EmailWorkerLive)
   )
 )
 
@@ -235,6 +317,7 @@ process restarts:
 ```ts
 import { Database } from 'bun:sqlite'
 import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { SqliteJobStore, SqliteMigrator, SqliteOutboxStore } from 'better-effect-mq-sqlite'
 
 const database = new Database(':memory:')
@@ -242,8 +325,11 @@ SqliteMigrator.migrate({ database })
 
 const AppLive = Layer.complete(
   Layer.merge(
-    SqliteJobStore.layer({ database, namespace: 'my-app' }),
-    SqliteOutboxStore.layer({ database, namespace: 'my-app' })
+    Layer.merge(
+      SqliteJobStore.layer({ database, namespace: 'my-app' }),
+      SqliteOutboxStore.layer({ database, namespace: 'my-app' })
+    ),
+    Layer.merge(ClockLive, EmailWorkerLive)
   )
 )
 
@@ -263,6 +349,7 @@ can stay small:
 ```ts
 import { Database } from 'bun:sqlite'
 import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import {
   SqliteFlowStore,
   SqliteJobScheduleStore,
@@ -276,13 +363,20 @@ SqliteMigrator.migrate({ database })
 
 const AppLive = Layer.complete(
   Layer.merge(
-    SqliteJobStore.layerWithEvents(
-      { database, namespace: 'my-app', pollIntervalMs: 1_000 },
-      { retention: { count: 100_000 } }
+    Layer.merge(
+      SqliteJobStore.layerWithEvents(
+        { database, namespace: 'my-app', pollIntervalMs: 1_000 },
+        { retention: { count: 100_000 } }
+      ),
+      Layer.merge(
+        SqliteJobScheduleStore.layer({ database, namespace: 'my-app' }),
+        Layer.merge(
+          SqliteFlowStore.layer({ database, namespace: 'my-app' }),
+          SqliteOutboxStore.layer({ database, namespace: 'my-app' })
+        )
+      )
     ),
-    SqliteJobScheduleStore.layer({ database, namespace: 'my-app' }),
-    SqliteFlowStore.layer({ database, namespace: 'my-app' }),
-    SqliteOutboxStore.layer({ database, namespace: 'my-app' })
+    Layer.merge(ClockLive, EmailWorkerLive)
   )
 )
 

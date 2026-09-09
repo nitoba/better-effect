@@ -48,21 +48,48 @@ which create connections through the official `redis` package. If the
 application already owns a compatible client, use the client-based factories
 and pass that client directly; the adapter does not need to load `redis`.
 
-## Quick start: a Layer that owns its connections
+## Quick start: a durable queue and worker
 
 For a normal application, let the Layer create and close the command and
-subscriber connections:
+subscriber connections. The adapter only supplies storage; jobs and workers
+remain the `better-effect-mq` application contract:
 
 ```ts
-import { Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
+import { Result } from 'better-result'
+import { Codec, JobEventStore, Queue, Worker } from 'better-effect-mq'
 import { RedisJobStore } from 'better-effect-mq-redis'
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly recipient: string
+  }>(),
+  result: Codec.string
+})
+
+const EmailWorker = Worker.service('@app/EmailWorker')
+const emailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    return Result.ok(`sent:${payload.recipient}`)
+  })
+)
+const EmailWorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 2,
+  pollIntervalMs: 100
+}))
+
+const redisUrl = process.env.REDIS_URL
+if (redisUrl === undefined) throw new Error('REDIS_URL is required')
 
 const DurableLive = Layer.complete(
   Layer.merge(
     RedisJobStore.layerWithEventsFromConfig(
       {
-        url: process.env.REDIS_URL,
+        url: redisUrl,
         namespace: 'orders'
       },
       {
@@ -72,14 +99,35 @@ const DurableLive = Layer.complete(
         }
       }
     ),
-    ClockLive
+    Layer.merge(ClockLive, EmailWorkerLive)
   )
 )
 
 const runtime = await Runtime.make(DurableLive)
 
 try {
-  // Use JobStore, JobEventStore, Jobs, and Workers in this runtime.
+  const started = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(yield* EmailWorker)
+    })
+  )
+  if (Result.isError(started)) throw started.error
+
+  const completed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      const result = yield* SendEmail.awaitResult(jobId, {
+        strategy: 'events',
+        eventStore: JobEventStore,
+        pollFallbackMs: 5_000
+      })
+      return Result.ok({ jobId, result })
+    })
+  )
+  if (Result.isError(completed)) throw completed.error
+
+  console.log(completed.value)
+  await started.value.awaitIdle()
 } finally {
   await runtime.dispose()
 }
@@ -93,9 +141,13 @@ services and releases its resources when the runtime is disposed.
 ## Using an existing client
 
 When connection pools, authentication, or lifecycle are managed by the host,
-pass a command client instead:
+pass a command client instead. Keep the same `Queue`/`Job` and Worker
+definitions from the Quick Start; only the storage Layer changes:
 
 ```ts
+import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+
 const DurableLive = RedisJobStore.layerWithEvents(
   {
     client,
@@ -104,6 +156,15 @@ const DurableLive = RedisJobStore.layerWithEvents(
   },
   { retention: { count: 100_000 } }
 )
+
+const runtime = await Runtime.make(
+  Layer.complete(Layer.merge(DurableLive, Layer.merge(ClockLive, EmailWorkerLive)))
+)
+try {
+  // Enqueue and await SendEmail jobs with runtime.run(...), as in the Quick Start.
+} finally {
+  await runtime.dispose()
+}
 ```
 
 The client-based forms are `RedisClient.layer`,
@@ -114,10 +175,14 @@ the supplied command client. If no subscriber is supplied, the adapter calls
 is borrowed too. Borrowed clients remain the caller's responsibility during
 runtime shutdown.
 
-For direct client use, initialize before constructing lower-level stores:
+For direct client ownership, initialize the client before constructing the
+application's storage Layer. The Layer borrows these clients, while the
+application-owned `RedisClient` is disposed after the Runtime:
 
 ```ts
-import { RedisClient, RedisFlowStore } from 'better-effect-mq-redis'
+import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { RedisClient, RedisJobStore } from 'better-effect-mq-redis'
 
 const redis = await RedisClient.fromConfig({
   url: process.env.REDIS_URL,
@@ -125,10 +190,21 @@ const redis = await RedisClient.fromConfig({
 })
 
 await redis.initialize()
+const DurableLive = Layer.complete(
+  Layer.merge(
+    RedisJobStore.layerWithEvents({
+      client: redis.client,
+      subscriber: redis.subscriber,
+      namespace: 'orders'
+    }),
+    Layer.merge(ClockLive, EmailWorkerLive)
+  )
+)
+const runtime = await Runtime.make(DurableLive)
 try {
-  const flows = RedisFlowStore.make(redis)
-  // Use `flows` with the flow APIs from better-effect-mq.
+  // Enqueue and await SendEmail jobs with runtime.run(...).
 } finally {
+  await runtime.dispose()
   await redis.dispose()
 }
 ```
@@ -141,22 +217,26 @@ same lifecycle through a Layer.
 ## Composing jobs, events, schedules, and flows
 
 Use one runtime for the job store and its event reader. The combined factory is
-the safest way to ensure that job transitions append to the same event store:
+the safest way to ensure that job transitions append to the same event store.
+Inside an Effect program, yield the core Services rather than resolving them
+through a separate resolver:
 
 ```ts
+import { Effect } from 'better-effect'
 import { JobEventStore, JobStore } from 'better-effect-mq'
-import { ServiceRuntime } from 'better-effect'
+import { Result } from 'better-result'
 
-// The two tokens are available from `DurableLive` above.
-const useStores = async () => {
-  const jobs = await runtime.run(() => ServiceRuntime.resolve(JobStore))
-  const events = await runtime.run(() => ServiceRuntime.resolve(JobEventStore))
-  return { jobs, events }
-}
+const useStores = Effect.gen(async function* () {
+  const jobs = yield* JobStore
+  const events = yield* JobEventStore
+  return Result.ok({ jobs, events })
+})
+
+const stores = await runtime.run(() => useStores)
+if (Result.isError(stores)) throw stores.error
 ```
 
-In an Effect program, prefer `yield* JobStore` and `yield* JobEventStore`
-instead of resolving services manually. `RedisJobEventStore.layerFromConfig`
+`RedisJobEventStore.layerFromConfig`
 is useful when an event reader is installed separately; it does not make an
 unrelated `RedisJobStore.layerFromConfig` append events. Use the combined
 factory when the job transitions themselves must be recorded.
