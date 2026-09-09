@@ -149,17 +149,15 @@ const emailHandler = Worker.handle(SendEmail, (payload) =>
   })
 )
 
+const AppWorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 500
+}))
 const AppLive = Layer.complete(
   Layer.merge(
     MySqlJobStore.layer({ pool, namespace: 'billing' }),
-    Layer.merge(
-      ClockLive,
-      EmailWorker.layer(() => ({
-        handlers: [emailHandler] as const,
-        concurrency: 4,
-        pollIntervalMs: 500
-      }))
-    )
+    Layer.merge(ClockLive, AppWorkerLive)
   )
 )
 
@@ -371,21 +369,23 @@ For a named JobStore, use `JobEventStore.for(Durable)` and
 ### Flows
 
 `MySqlFlowStore` provides the durable parent/child state needed by `Flow`
-definitions and Worker flow handlers. It is created explicitly, then provided
-under the associated `FlowStore` token:
+definitions and Worker flow handlers. The complete
+[order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+defines `FulfillOrder`, its typed inventory and payment children, the two child
+handlers, `FulfillmentHandler`, and `FulfillmentWorkerLive`. The concrete
+MySQL continuation below provides those descriptors with durable storage and
+enqueues the same meaningful parent payload:
 
 ```ts
-import { Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { FlowStore } from 'better-effect-mq'
 import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
+import { Result } from 'better-result'
 
-// Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start. In
-// particular, the flow parent uses the Quick Start's schema-first
-// SendEmailPayload class and codec: the preconfigured Zod Schema facade provides
-// the provider and the codec projects the class with CoreSchema.encode. This
-// composition does not introduce a second payload contract.
-
+// Continue with FulfillOrder and FulfillmentWorkerLive from the canonical
+// order-fulfillment Flow example linked above. `pool` is the application-owned
+// MySQL pool from the setup section.
 const flow = await MySqlFlowStore.make({
   pool,
   namespace: 'billing'
@@ -395,13 +395,29 @@ const FlowLive = Layer.succeed(FlowStore, FlowStore.of(flow))
 const AppWithFlows = Layer.complete(
   Layer.merge(
     Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), FlowLive),
-    Layer.merge(ClockLive, AppWorkerLive)
+    Layer.merge(ClockLive, FulfillmentWorkerLive)
   )
 )
 
 const runtime = await Runtime.make(AppWithFlows)
 try {
-  // Register flow handlers and run the application while this Runtime is live.
+  const execution = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
+      })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
+    })
+  )
+  if (Result.isError(execution)) throw execution.error
+  console.log(execution.value)
 } finally {
   await runtime.dispose()
   await flow.dispose()
@@ -427,10 +443,11 @@ codecs.
 
 ### Outbox
 
-Use `MySqlOutboxStore` when a domain write and a prepared job request must become
-durable together. `MySqlOutbox.transaction` owns the connection and transaction
-lifecycle while your callback performs the domain write; the adapter appends the
-supplied prepared record automatically after the callback succeeds.
+Use `MySqlOutboxStore` when an order write and its confirmation request must
+become durable together. `MySqlOutbox.transaction` owns the connection and
+transaction lifecycle while your callback performs the domain write; the
+adapter appends the supplied prepared record automatically after the callback
+succeeds.
 
 ```ts
 import * as z from 'zod'
@@ -443,33 +460,33 @@ import { MySqlJobStore, MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'bette
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
-class InvoiceEmailPayload extends Schema.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
-  messageId: z.string().min(1),
+class ConfirmationPayload extends Schema.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+  orderId: z.string().min(1),
   recipient: z.email()
 }) {}
-const invoiceEmailPayloadCodec = Codec.standardSchema({
-  schema: InvoiceEmailPayload,
+const confirmationPayloadCodec = Codec.standardSchema({
+  schema: ConfirmationPayload,
   encode: (value) =>
-    CoreSchema.encode(InvoiceEmailPayload, value).mapError(
+    CoreSchema.encode(ConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
 
-const SendEmail = Queue.define('billing').job('send-email', {
+const SendConfirmation = Queue.define('orders').job('send-confirmation', {
   version: 1,
-  payload: invoiceEmailPayloadCodec,
+  payload: confirmationPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() }),
-  idempotencyKey: ({ messageId }) => messageId
+  idempotencyKey: ({ orderId }) => `confirmation:${orderId}`
 })
 
-const EmailWorker = Worker.service('@billing/EmailWorker')
-const emailHandler = Worker.handle(SendEmail, (payload) =>
+const OrderWorker = Worker.service('@orders/OrderWorker')
+const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
   Effect.fn(async function* () {
-    return Result.ok(`sent:${payload.recipient}`)
+    return Result.ok(`sent:${payload.orderId}:${payload.recipient}`)
   })
 )
-const EmailWorkerLive = EmailWorker.layer(() => ({
-  handlers: [emailHandler] as const,
+const OrderWorkerLive = OrderWorker.layer(() => ({
+  handlers: [confirmationHandler] as const,
   concurrency: 2,
   pollIntervalMs: 100
 }))
@@ -491,7 +508,7 @@ const PublisherLive = Publisher.layer(() => ({
 const AppLive = Layer.complete(
   Layer.merge(
     Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), OutboxLive),
-    Layer.merge(ClockLive, Layer.merge(EmailWorkerLive, PublisherLive))
+    Layer.merge(ClockLive, Layer.merge(OrderWorkerLive, PublisherLive))
   )
 )
 const runtime = await Runtime.make(AppLive)
@@ -499,18 +516,20 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const payload = Schema.decodeUnknown(InvoiceEmailPayload, {
-      messageId: 'message-789',
+    const payload = Schema.decodeUnknown(ConfirmationPayload, {
+      orderId: 'order-123',
       recipient: 'lin@example.test'
     })
     if (Result.isError(payload)) throw payload.error
-    return Result.ok(yield* SendEmail.prepare(payload.value, { jobId: 'invoice-created:123' }))
+    return Result.ok(
+      yield* SendConfirmation.prepare(payload.value, { jobId: 'order-confirmation:order-123' })
+    )
   })
 )
 if (Result.isError(preparedResult)) throw preparedResult.error
 
 const record = makeOutboxRecord({
-  id: OutboxId.make('invoice-created:123').unwrap(),
+  id: OutboxId.make('order-confirmation:order-123').unwrap(),
   target: 'billingJobs',
   request: preparedResult.value,
   nowMs: Date.now()
@@ -520,9 +539,10 @@ const committed = await MySqlOutbox.transaction(
   pool,
   record,
   async (connection) => {
-    // Save the invoice in the same adapter-owned transaction.
-    await connection.query('INSERT INTO invoices (id, status) VALUES (?, ?)', [
-      'invoice-created:123',
+    // Save the order in the same adapter-owned transaction.
+    await connection.query('INSERT INTO orders (id, email, status) VALUES (?, ?, ?)', [
+      'order-123',
+      'lin@example.test',
       'created'
     ])
     return Result.ok(undefined)
@@ -533,7 +553,7 @@ if (Result.isError(committed)) throw committed.error
 
 const completed = await runtime.run(() =>
   Effect.gen(async function* () {
-    return Result.ok(yield* SendEmail.awaitResult('invoice-created:123'))
+    return Result.ok(yield* SendConfirmation.awaitResult('order-confirmation:order-123'))
   })
 )
 if (Result.isError(completed)) throw completed.error

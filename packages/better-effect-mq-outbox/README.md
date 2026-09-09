@@ -198,7 +198,7 @@ your application:
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
 import { Schema as CoreSchema } from 'better-effect-schema'
 import { Schema } from 'better-effect-schema/zod'
@@ -246,6 +246,9 @@ const SendConfirmation = Queue.define('orders').job('send-confirmation', {
 const ConfirmationWorker = Worker.service('@orders/ConfirmationWorker')
 const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
   Effect.fn(async function* () {
+    const context = yield* JobContext
+    // Use the stable Job ID as the email provider's idempotency key.
+    console.log(`sending confirmation ${context.jobId} to ${payload.email}`)
     return Result.ok(`sent:${payload.email}`)
   })
 )

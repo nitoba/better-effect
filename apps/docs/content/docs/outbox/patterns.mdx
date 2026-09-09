@@ -4,10 +4,12 @@ description: Choose transaction boundaries, routes, and recovery policies for re
 icon: GitBranch
 ---
 
-Use an outbox when a domain write and the job that follows it must become visible together. Prepare
-the request and `OutboxRecord` first, then call the database adapter's transaction helper. The
-adapter runs the domain callback, appends the record automatically, owns the transaction lifecycle,
-and lets the publisher enqueue it after commit.
+Use an outbox when a domain write and the job that follows it must become visible together. For an
+order confirmation, a direct `saveOrder(); SendConfirmation.enqueue()` can lose the confirmation if
+the process crashes between writes, while enqueueing before saving can leave a confirmation for an
+order that rolled back. Prepare the typed request and `OutboxRecord` first, then call the database
+adapter's transaction helper. The adapter runs only your domain callback, appends the record
+automatically, owns the transaction lifecycle, and lets the publisher enqueue it after commit.
 
 ## The safe handoff
 
@@ -20,13 +22,16 @@ domain transaction
 OutboxPublisher → JobStore → Worker.handle
 ```
 
-The publisher is at-least-once. Give downstream effects a stable idempotency key and monitor
-records that remain active, retrying, or failed. The [Outbox guide](./index) covers record
-preparation, routes, and the PostgreSQL example; each [adapter guide](../integrations/adapters)
-documents its own transaction helper and client-ownership options.
+The publisher is at-least-once. Give the confirmation request a deterministic Job ID or
+idempotency key, and use that same key when calling the email provider or writing a sent-message
+record. If a crash happens after the JobStore accepts the request but before outbox settlement, the
+publisher can enqueue it again; the stable key makes that retry converge. The remote email is still
+outside the database transaction. The [Outbox guide](./index) covers record preparation, routes,
+and the PostgreSQL example; each [adapter guide](../integrations/adapters) documents its own
+transaction helper and client-ownership options.
 
 Use a Zod 4 schema through `better-effect-schema` and `Codec.standardSchema`
-for the Job payload before creating the outbox record. The [trusted JSON escape
+for the `SendConfirmation` payload before creating the outbox record. The [trusted JSON escape
 hatch](../mq/defining-jobs#trusted-json-escape-hatch) is for values that are
 already trusted JSON, not the default boundary codec.
 

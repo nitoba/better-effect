@@ -301,151 +301,63 @@ schedule; use a Worker to process the resulting Jobs. For named stores, pair
 ## Flows: durable parent/child work
 
 Use a Flow when one Job coordinates related work that should fan out to
-children and then fan in to a parent result—for example, importing all lines
-of an order, generating one report per customer, or reconciling a batch. The
-parent and child Jobs remain normal Queue descriptors; the Flow adds durable
-child state, reports, and recovery for the coordination step.
-
-This example runs a parent import, creates one child Job per line, waits for
-the children, and returns a typed aggregate result. `PostgresFlowStore` is an
-explicit store, so provide it under the associated core `FlowStore` token in
-the same Runtime as the JobStore and Worker.
+children and then fan in to a parent result. The canonical
+[order-fulfillment Flow example](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+defines `FulfillOrder`, its typed inventory and payment children, the two child
+handlers, `FulfillmentHandler`, and `FulfillmentWorkerLive`. The concrete
+PostgreSQL continuation below provides those descriptors with durable storage
+and enqueues the same meaningful parent payload:
 
 ```ts
-import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema as CoreSchema } from 'better-effect-schema'
-import { Schema } from 'better-effect-schema/zod'
-import { Result } from 'better-result'
+import { FlowStore } from 'better-effect-mq'
 import { PostgresFlowStore, PostgresJobStore } from 'better-effect-mq-postgres'
+import { Result } from 'better-result'
 
-class ImportOrderPayload extends Schema.Class<ImportOrderPayload>('app/ImportOrderPayload')({
-  orderId: z.string(),
-  lineIds: z.array(z.string())
-}) {}
-const importOrderPayloadCodec = Codec.standardSchema({
-  schema: ImportOrderPayload,
-  encode: (value) =>
-    CoreSchema.encode(ImportOrderPayload, value).mapError(
-      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
-    )
-})
-class ImportLinePayload extends Schema.Class<ImportLinePayload>('app/ImportLinePayload')({
-  lineId: z.string()
-}) {}
-const importLinePayloadCodec = Codec.standardSchema({
-  schema: ImportLinePayload,
-  encode: (value) =>
-    CoreSchema.encode(ImportLinePayload, value).mapError(
-      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
-    )
-})
-
-const Orders = Queue.define('orders')
-const ImportOrder = Orders.job('import-order', {
-  version: 1,
-  payload: importOrderPayloadCodec,
-  result: Codec.standardSchema({ schema: z.object({ completed: z.number().int() }) })
-})
-const ImportLine = Orders.job('import-line', {
-  version: 1,
-  payload: importLinePayloadCodec,
-  result: Codec.standardSchema({ schema: z.string() })
-})
-
-const ImportFlow = Flow.define('import-order', {
-  parent: ImportOrder,
-  children: [ImportLine] as const,
-  onChildFailure: 'fail'
-})
-
-const ImportFlowHandler = Flow.handle(ImportFlow, {
-  fanOut: (payload) =>
-    Effect.fn(async function* () {
-      return Result.ok([
-        Flow.children(
-          ImportLine,
-          payload.lineIds.map((lineId) => ({
-            key: `line:${lineId}`,
-            payload: { lineId }
-          }))
-        )
-      ])
-    }),
-  collect: (_payload, results) =>
-    Effect.fn(async function* () {
-      return Result.ok({ completed: results.counts.completed } as const)
-    })
-})
-
-const ImportLineHandler = Worker.handle(ImportLine, (payload) =>
-  Effect.fn(async function* () {
-    return Result.ok(`imported:${payload.lineId}`)
-  })
+// Continue with FulfillOrder and FulfillmentWorkerLive from the canonical
+// order-fulfillment Flow example linked above. `pool` is the application-owned
+// PostgreSQL pool from the setup section.
+const flowStore = await PostgresFlowStore.make({ pool, namespace: 'orders' })
+const FlowStorageLive = Layer.merge(
+  PostgresJobStore.layer({ pool, namespace: 'orders' }),
+  Layer.succeed(FlowStore, FlowStore.of(flowStore))
 )
-
-const OrdersWorker = Worker.service('OrdersWorker')
-const OrdersWorkerLive = OrdersWorker.layer(() => ({
-  handlers: [ImportLineHandler] as const,
-  flows: [ImportFlowHandler] as const,
-  concurrency: 8,
-  pollIntervalMs: 1_000,
-  flowSweepIntervalMs: 5_000
-}))
-
-const flowStore = await PostgresFlowStore.make({
-  pool,
-  namespace: 'orders'
-})
-
 const AppLive = Layer.complete(
-  Layer.merge(
-    PostgresJobStore.layer({ pool, namespace: 'orders' }),
-    Layer.succeed(FlowStore, FlowStore.of(flowStore)),
-    ClockLive,
-    OrdersWorkerLive
-  )
+  Layer.merge(FlowStorageLive, Layer.merge(ClockLive, FulfillmentWorkerLive))
 )
-
 const runtime = await Runtime.make(AppLive)
-await runtime.warmup()
 
 try {
-  const completed = await runtime.run(() =>
+  const execution = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = Schema.decodeUnknown(ImportOrderPayload, {
-        orderId: 'order-42',
-        lineIds: ['line-a', 'line-b', 'line-c']
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
       })
-      if (Result.isError(payload)) throw payload.error
-      const flowId = yield* ImportOrder.enqueue(payload.value)
-      const result = yield* ImportOrder.awaitResult(flowId)
-      return Result.ok({ flowId, result })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
     })
   )
-  if (Result.isError(completed)) throw completed.error
-  console.log(completed.value)
+  if (Result.isError(execution)) throw execution.error
+  console.log(execution.value)
 } finally {
   await runtime.dispose()
   await flowStore.dispose()
-  await pool.end()
 }
 ```
 
 The Worker executes the Flow phases and relays child outcomes through the
-durable flow store. Child enqueue and relay across different JobStore tokens
-remain at-least-once; deterministic child IDs, leases, and reconciliation make
-replays safe. Use `FlowStore.for(MyJobs)` and a matching
-`PostgresFlowStore.make` instance when parent and child Jobs use named stores.
-Flow storage requires the flow schema extension; migrations run by
-`PostgresMigrator` install it with the rest of the package schema.
-The parent payload follows the same schema-first boundary as the Quick Start:
-The preconfigured Zod `Schema` facade gives the handler a decoded class, and
-`CoreSchema.encode` projects it back to JSON through
-the codec. Result/failure schemas stay concise Standard Schema shapes because
-those values are already plain JSON.
+durable flow store. Child enqueue and relay remain at least once; deterministic
+child keys, leases, and reconciliation make replays safe. Use
+`FlowStore.for(MyJobs)` and a matching `PostgresFlowStore.make` instance when
+parent and child Jobs use named stores. Flow storage requires the flow schema
+extension; `PostgresMigrator` installs it with the rest of the package schema.
 
 ## Outbox: transaction, record, publisher
 
@@ -619,8 +531,9 @@ Runtime before enqueueing the prepared request.
 
 `PostgresOutbox.appendIn(transaction, record, options)` remains available as
 an advanced escape hatch when an application already owns a compatible
-transaction. It never begins, commits, rolls back, or releases that client;
-the normal path should use `PostgresOutbox.transaction`.
+transaction context. The normal application path should use
+`PostgresOutbox.transaction`, which keeps that context and its client lifecycle
+inside the adapter.
 
 ## Named stores
 

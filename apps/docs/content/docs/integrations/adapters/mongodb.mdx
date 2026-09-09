@@ -156,6 +156,33 @@ if (Result.isError(committed)) throw committed.error
 
 The adapter appends the supplied record after the callback succeeds and commits both writes in the
 same MongoDB transaction. A thrown, rejected, or nominal `Result.err` callback aborts the work;
-MongoDB may retry a transaction callback, so domain writes must be safe to retry. If the first
-argument is a `MongoClient` instead of `db`, pass the database as `options.db`. See the
-[outbox transaction guide](../../outbox) for publisher routing and delivery semantics.
+MongoDB may retry a transaction callback, so domain writes must be safe to retry. After commit,
+continue with the `SendEmail`, `runtime`, and `WorkerLive` values from the quick start and compose
+the Runtime-owned publisher beside that Worker. It routes to the `JobStore` Service token and the
+Worker delivers the Job:
+
+```ts
+import { JobStore } from 'better-effect-mq'
+import { OutboxPublisher, OutboxRoutes, OutboxStore } from 'better-effect-mq-outbox'
+import { MongoOutboxStore } from 'better-effect-mq-mongodb'
+
+const Routes = OutboxRoutes.make({ emails: JobStore })
+const Publisher = OutboxPublisher.service('@app/EmailOutboxPublisher')
+const MongoOutboxLive = MongoOutboxStore.layer({ db, namespace: 'emails' })
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [OutboxStore] as const,
+  routes: Routes,
+  concurrency: 2,
+  pollIntervalMs: 500
+}))
+// Continue with `WorkerLive` and `runtime` from the quick start. Add this
+// PublisherLive and MongoOutboxLive to
+// the same Runtime as the existing JobStore and Worker layers.
+const delivered = await runtime.run(() => SendEmail.awaitResult('email:message-123'))
+```
+
+`OutboxRoutes` stores the `JobStore` token, never a store instance. Delivery is post-commit and at
+least once: a crash after enqueue and before settlement can replay the same request, so keep the
+deterministic Job ID as the downstream idempotency key. If the first argument is a `MongoClient`
+instead of `db`, pass the database as `options.db`. See the [outbox transaction guide](../../outbox)
+for the complete order-to-confirmation workflow.
