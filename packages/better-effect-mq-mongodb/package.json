@@ -1,6 +1,6 @@
 {
   "name": "better-effect-mq-mongodb",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MongoDB JobStore adapter and migrations for better-effect-mq.",
   "license": "MIT",
   "files": [
