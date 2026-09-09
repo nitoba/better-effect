@@ -21,6 +21,11 @@
   collections. Event-enabled JobStore layers append transition events in the
   same MongoDB transaction as the state change.
 
+## [0.1.1] - 2026-09-09
+
+- Refresh the public README with current MongoDB adapter journeys, transaction,
+  Flow, outbox, and QueueControls documentation.
+
 ## [0.1.0] - 2026-09-04
 
 Initial MongoDB JobStore adapter for protocol v1.

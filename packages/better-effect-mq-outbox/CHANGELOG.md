@@ -10,6 +10,13 @@
   commit, rollback, and cleanup. Low-level `appendIn` helpers remain explicitly
   advanced adapter integrations.
 
+## [0.1.1] - 2026-09-09
+
+### Changed
+
+- Refreshed the public README with the current transaction, publishing, and
+  durable outbox documentation.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added

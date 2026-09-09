@@ -15,6 +15,11 @@
 - Add migration `003_outbox.sql` and schema validation for the durable outbox
   layout.
 
+## [0.1.1] - 2026-09-09
+
+- Refresh the public README with current PostgreSQL adapter journeys,
+  transaction, Flow, outbox, and QueueControls documentation.
+
 ## [0.1.0] - 2026-09-02
 
 Initial release of `better-effect-mq-postgres`.

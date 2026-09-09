@@ -10,6 +10,11 @@
 - Add the adapter-owned `SqliteOutboxTransactions.transaction` helper for serialized domain-write
   and outbox transactions with automatic commit, rollback, and cleanup.
 
+## [0.1.1] - 2026-09-09
+
+- Refresh the public README with current SQLite adapter journeys, transaction,
+  Flow, outbox, and QueueControls documentation.
+
 ## [0.1.0]
 
 - Initial embedded SQLite JobStore and JobScheduleStore adapters.
