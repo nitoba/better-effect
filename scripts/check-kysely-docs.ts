@@ -35,12 +35,12 @@ const assertLinks = async (source: string, label: string): Promise<void> => {
 }
 
 const assertDocs = async (): Promise<void> => {
-  const page = await read(resolve(docsRoot, 'content/docs/kysely.mdx'))
+  const page = await read(resolve(docsRoot, 'content/docs/integrations/kysely.mdx'))
   const readme = await read(resolve(packageRoot, 'README.md'))
   const changelog = await read(resolve(packageRoot, 'CHANGELOG.md'))
   const index = await read(resolve(docsRoot, 'content/docs/index.mdx'))
   // SAFETY: the navigation fixture is parsed as JSON and only its optional pages array is inspected.
-  const meta = JSON.parse(await read(resolve(docsRoot, 'content/docs/meta.json'))) as {
+  const meta = JSON.parse(await read(resolve(docsRoot, 'content/docs/integrations/meta.json'))) as {
     readonly pages?: readonly unknown[]
   }
   const llmsIndex = await read(resolve(docsRoot, 'src/app/llms.txt/route.ts'))
@@ -49,12 +49,12 @@ const assertDocs = async (): Promise<void> => {
   const relatedDocs = await Promise.all(
     ['services', 'layers', 'effects', 'runtime', 'errors'].map(async (name) => ({
       name,
-      contents: await read(resolve(docsRoot, 'content/docs', `${name}.mdx`))
+      contents: await read(resolve(docsRoot, 'content/docs/core', `${name}.mdx`))
     }))
   )
 
   assertCondition(meta.pages?.includes('kysely') === true, 'Documentation navigation misses kysely')
-  assertRequiredText(index, ['/docs/kysely'], 'Documentation index')
+  assertRequiredText(index, ['/docs/integrations/kysely'], 'Documentation index')
   assertRequiredText(
     page,
     [
@@ -110,7 +110,11 @@ const assertDocs = async (): Promise<void> => {
   await assertLinks(page, 'Kysely documentation')
   await assertLinks(index, 'Documentation index')
   for (const related of relatedDocs) {
-    assertRequiredText(related.contents, ['/docs/kysely'], `${related.name} documentation`)
+    assertRequiredText(
+      related.contents,
+      ['/docs/integrations/kysely'],
+      `${related.name} documentation`
+    )
     await assertLinks(related.contents, `${related.name} documentation`)
   }
   for (const forbidden of [

@@ -7,7 +7,7 @@ const docsRoot = resolve(packageRoot, '../../apps/docs/content/docs')
 
 test('HTTP documentation keeps the executable recipe index in sync', async () => {
   const readme = await readFile(resolve(packageRoot, 'README.md'), 'utf8')
-  const page = await readFile(resolve(docsRoot, 'http.mdx'), 'utf8')
+  const page = await readFile(resolve(docsRoot, 'integrations/http.mdx'), 'utf8')
   const examples = [
     'typed-client.ts',
     'auth-retry.ts',

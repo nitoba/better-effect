@@ -1,0 +1,36 @@
+---
+title: Core concepts
+description: Learn the small set of primitives used to compose typed applications.
+icon: Layers
+---
+
+The core is intentionally compact. `Effect` describes a `better-result` workflow and its Service
+requirements, `Layer` describes implementations, `Runtime` executes work, and `Scope` closes what
+the application owns.
+
+<DocCards>
+  <DocCard href="/docs/core/services" title="Services" icon="Cable">
+    Declare dependency tokens that are also yieldable handles.
+  </DocCard>
+  <DocCard href="/docs/core/effects" title="Effects" icon="WandSparkles">
+    Compose Result workflows while carrying typed requirements.
+  </DocCard>
+  <DocCard href="/docs/core/layers" title="Layers" icon="Layers">
+    Describe providers and compose the application environment.
+  </DocCard>
+  <DocCard href="/docs/core/runtime" title="Runtime" icon="Play">
+    Execute programs and own graceful shutdown.
+  </DocCard>
+  <DocCard href="/docs/core/scope" title="Scope and resources" icon="Orbit">
+    Give resources a clear owner and a deterministic cleanup boundary.
+  </DocCard>
+  <DocCard href="/docs/core/errors" title="Errors and Results" icon="TriangleAlert">
+    Keep typed failures and unexpected exceptions at explicit boundaries.
+  </DocCard>
+</DocCards>
+
+## A useful order
+
+Read [Mental Model](./mental-model) first, then [Services](./services), [Layers](./layers), and
+[Runtime](./runtime). Return to [Scope](./scope) and [Resource](./resource) when you add clients,
+files, or other owned resources.

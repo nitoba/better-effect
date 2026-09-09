@@ -1,0 +1,6 @@
+{
+  "title": "MQ storage adapters",
+  "icon": "Database",
+  "pages": ["index", "postgres", "redis", "mongodb", "mysql", "sqlite"],
+  "defaultOpen": true
+}

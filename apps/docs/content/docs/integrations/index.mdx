@@ -1,0 +1,30 @@
+---
+title: Integrations and adapters
+description: Connect better-effect to HTTP, web frameworks, databases, and durable MQ storage.
+icon: Plug
+---
+
+Integrations keep their host library's boundary intact. They provide Services or Layers that your
+composition root owns; they do not create a second application runtime or move business logic into
+a container.
+
+<DocCards>
+  <DocCard href="/docs/integrations/http" title="HTTP client" icon="Globe">
+    Typed Fetch requests, retries, schemas, NDJSON and streaming.
+  </DocCard>
+  <DocCard href="/docs/integrations/kysely" title="Kysely" icon="Database">
+    Keep SQL builders and transaction ownership explicit.
+  </DocCard>
+  <DocCard href="/docs/integrations/better-auth" title="Better Auth" icon="ShieldCheck">
+    Adapt Better Auth sessions and hooks to typed programs.
+  </DocCard>
+  <DocCard href="/docs/integrations/adapters" title="MQ storage adapters" icon="Database">
+    Choose PostgreSQL, Redis, MongoDB, MySQL, or SQLite for the same queue API.
+  </DocCard>
+</DocCards>
+
+## Pick the boundary you own
+
+Use [Web and framework adapters](./web) for request lifetimes, [Schema](./schema) for explicit
+decoding, and [Backends](./backends) when you need to understand resolver ownership. For queues,
+start with [MQ](../mq) before selecting a database adapter.

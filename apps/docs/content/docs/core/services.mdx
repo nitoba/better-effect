@@ -155,31 +155,20 @@ const UserRepositoryLive = Layer.make(UserRepository)
 `Service.Requirements<UserRepository>` extracts those method-level instance
 requirements for Layer completeness checks.
 
-## Direct resolver access
+## Service access at runtime
 
-Most application code should use `yield* Service`. Adapter and integration
-code can use the container-agnostic `ServiceRuntime` bridge:
+Application code should use `yield* Service` inside an Effect program. The
+Runtime supplies the active resolver and restores its context after execution;
+there is no global lookup to configure in normal application code:
 
 ```ts
-import { ServiceRuntime, type AnyServiceToken } from 'better-effect'
+const readDatabase = Effect.fn(async function* () {
+  const database = yield* Database
+  return Result.ok(await database.query('select 1'))
+})
 
-const instances = new Map<AnyServiceToken, unknown>([[Database, new Database('test')]])
-
-const resolver = {
-  resolve<T extends AnyServiceToken>(token: T): InstanceType<T> {
-    // a real backend preserves this token → instance relationship
-    return instances.get(token) as InstanceType<T>
-  }
-}
-
-const result = ServiceRuntime.run(resolver, () => ServiceRuntime.resolve(Database))
+const result = await runtime.run(readDatabase)
 ```
-
-The resolver is scoped through the shared `RuntimeContext`. The default
-Node/Bun storage uses `AsyncLocalStorage`; it is restored after the callback
-and isolated across concurrent Runtime executions. Calling
-`ServiceRuntime.current()` or `resolve()` outside a configured context throws
-`ServiceRuntimeNotConfiguredError`.
 
 ## Optional standard services
 
@@ -189,13 +178,18 @@ applications must compose a Layer and can replace each implementation in a
 test:
 
 ```ts
-import { Runtime, ServiceRuntime } from 'better-effect'
+import { Effect, Runtime } from 'better-effect'
 import { Clock, ClockTest } from 'better-effect/standard-services'
 
 const clockLayer = ClockTest.layer(new Date('2025-01-01T00:00:00.000Z'))
 const runtime = await Runtime.make(clockLayer)
 
-const now = await runtime.run(() => ServiceRuntime.resolve(Clock))
+const now = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const clock = yield* Clock
+    return Result.ok(clock.now())
+  })
+)
 await runtime.dispose()
 ```
 
@@ -343,4 +337,4 @@ all sleeps due at the new time. `ClockTest` does not replace `Date`, global
 - Let method return types expose dependencies through `Effect.gen`.
 
 For a native Kysely database exposed as a yieldable Service, see the optional
-[Kysely integration](/docs/kysely).
+[Kysely integration](/docs/integrations/kysely).

@@ -11,6 +11,93 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0px !important;
 }
 
+/* Content navigation: category landing pages use the same quiet card language as the home page. */
+.be-doc-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 1.5rem 0 2rem;
+}
+
+.be-doc-card {
+  position: relative;
+  display: flex;
+  min-height: 132px;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-fd-card) 78%, transparent);
+  color: var(--color-fd-card-foreground);
+  text-decoration: none !important;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.be-doc-card:hover {
+  border-color: var(--color-fd-primary);
+  background: var(--color-fd-card);
+  transform: translateY(-2px);
+}
+
+.be-doc-card-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 9px;
+  color: var(--color-fd-primary);
+}
+
+.be-doc-card-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.be-doc-card-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.be-doc-card-title {
+  font-weight: 600;
+}
+
+.be-doc-card-description {
+  color: var(--color-fd-muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.be-doc-card-arrow {
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0 auto;
+  flex: 0 0 auto;
+  color: var(--color-fd-muted-foreground);
+}
+
+.be-mobile-toc {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .be-doc-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .be-mobile-toc {
+    display: block;
+    margin: 0 0 1.5rem;
+  }
+}
+
 /* Home page: a quiet, monochrome surface inspired by studio tooling. */
 .be-home {
   --be-black: #050505;

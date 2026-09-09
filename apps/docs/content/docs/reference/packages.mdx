@@ -26,22 +26,18 @@ needs provider-specific class derivations or helpers.
 
 ## Durable queues and storage
 
-| Package                     | Use it for                                                                          | Ownership and compatibility                               |
-| --------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `better-effect-mq`          | Queues, immutable Jobs, producer Programs, Layer-first Workers, Flow v2 and testing | Storage-neutral; no database connection or driver         |
-| `better-effect-mq-outbox`   | Prepared enqueue records, routes, post-commit stores and publishers                 | Storage-neutral; delivery is at-least-once                |
-| `better-effect-mq-postgres` | PostgreSQL JobStore, Flow v2, events, schedules and outbox                          | Caller-owned or config-created PostgreSQL pool            |
-| `better-effect-mq-redis`    | Redis/Valkey JobStore, Flow v2, events, schedules and QueueControls                 | Caller-owned clients or adapter-created connections       |
-| `better-effect-mq-mongodb`  | MongoDB JobStore, Flow v2, events, schedules and outbox                             | Requires transaction-capable MongoDB deployment           |
-| `better-effect-mq-sqlite`   | Embedded SQLite JobStore, Flow v2, events, schedules and outbox                     | One writer; migration and database ownership are explicit |
-| `better-effect-mq-mysql`    | MySQL/InnoDB JobStore, Flow v2, events, schedules and outbox                        | MySQL 8/InnoDB; migration and pool ownership are explicit |
+| Package                     | Use it for                                                                                      | Ownership and compatibility                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `better-effect-mq`          | Queues, immutable Jobs, producer Programs, Layer-first Workers, optional extensions and testing | Storage-neutral; no database connection or driver         |
+| `better-effect-mq-outbox`   | Prepared enqueue records, routes, post-commit stores and publishers                             | Storage-neutral; delivery is at-least-once                |
+| `better-effect-mq-postgres` | PostgreSQL JobStore, optional events, schedules, flows and outbox                               | Caller-owned or config-created PostgreSQL pool            |
+| `better-effect-mq-redis`    | Redis/Valkey JobStore, optional events, schedules and flows                                     | Caller-owned clients or adapter-created connections       |
+| `better-effect-mq-mongodb`  | MongoDB JobStore, optional events, schedules, flows and outbox                                  | Requires transaction-capable MongoDB deployment           |
+| `better-effect-mq-sqlite`   | Embedded SQLite JobStore, optional events, schedules, flows and outbox                          | One writer; migration and database ownership are explicit |
+| `better-effect-mq-mysql`    | MySQL/InnoDB JobStore, optional events, schedules, flows and outbox                             | MySQL 8/InnoDB; migration and pool ownership are explicit |
 
-The base MQ JobStore protocol remains v1. Flow v2, QueueControls v3, events,
-schedules and outbox are explicit extension contracts with their own layout and
-migration boundaries. A driver must validate the protocol and layout it
-supports; no adapter silently interprets a newer persisted layout as v1.
-
-Read the [MQ guide](/docs/mq) for the storage-neutral contracts and the
+Read the [MQ guide](/docs/mq) for the storage-neutral contracts, the
+[adapter guides](/docs/integrations/adapters) for durable providers, and the
 [outbox guide](/docs/outbox) for post-commit publishing. Driver-specific
 migrations, connection options and deployment requirements live in each
 adapter's [package README](https://github.com/nitoba/better-effect/tree/main/packages).
@@ -67,4 +63,4 @@ the subpath or package that uses them. This keeps a generic consumer small and
 lets package tarball tests prove that unused integrations are not loaded.
 
 For removed Runtime-first APIs and the exact replacement for each integration,
-see [Layer-first migration](/docs/migration).
+see [Layer-first migration](/docs/reference/migration).

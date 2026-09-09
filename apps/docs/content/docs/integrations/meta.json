@@ -1,0 +1,17 @@
+{
+  "title": "Integrations and adapters",
+  "icon": "Plug",
+  "pages": [
+    "index",
+    "http",
+    "web",
+    "next",
+    "hono",
+    "schema",
+    "better-auth",
+    "kysely",
+    "backends",
+    "adapters"
+  ],
+  "defaultOpen": false
+}

@@ -1,0 +1,34 @@
+---
+title: MQ storage adapters
+description: Keep one Queue, Job, Worker and Runtime model while choosing durable storage.
+icon: Database
+---
+
+`better-effect-mq` is the core queue and worker package. Each adapter on this page is an extension:
+it supplies a persistent `JobStore` (and optional event, schedule, flow, or outbox capabilities)
+through a Layer. Your `Queue.define`, `Job` descriptor, `Worker.handle`, `Worker.service`, and
+Runtime composition stay the same.
+
+<DocCards>
+  <DocCard href="/docs/integrations/adapters/postgres" title="PostgreSQL" icon="Database">
+    A relational durable store for multi-process workers and transactional workflows.
+  </DocCard>
+  <DocCard href="/docs/integrations/adapters/redis" title="Redis / Valkey" icon="Zap">
+    Low-latency queue state, optional events, schedules, and flow persistence.
+  </DocCard>
+  <DocCard href="/docs/integrations/adapters/mongodb" title="MongoDB" icon="Database">
+    Durable document storage with transaction-backed queue state.
+  </DocCard>
+  <DocCard href="/docs/integrations/adapters/mysql" title="MySQL" icon="Database">
+    InnoDB-backed durable jobs and optional extensions.
+  </DocCard>
+  <DocCard href="/docs/integrations/adapters/sqlite" title="SQLite" icon="HardDrive">
+    Embedded durable queues for one application or machine.
+  </DocCard>
+</DocCards>
+
+## The adapter boundary
+
+The application owns job identity and handler behavior. The adapter owns its connection, schema,
+transactions, and storage-specific wake or recovery details. Read the [MQ introduction](../../mq)
+for the core model, then use one adapter's quick start to provide the same `JobStore` Service.

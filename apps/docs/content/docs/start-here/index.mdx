@@ -1,0 +1,31 @@
+---
+title: Start Here
+description: Install better-effect, learn the shape of a program, and choose your next guide.
+icon: Rocket
+---
+
+better-effect is a small TypeScript architecture for `better-result` workflows. Start with the
+short path below: define a Service, compose a Layer, run the program, and let Scope own anything
+that needs cleanup.
+
+<DocCards>
+  <DocCard href="/docs/start-here/getting-started" title="Getting Started" icon="Rocket">
+    Build and run a complete typed application with one Service and one Runtime.
+  </DocCard>
+  <DocCard href="/docs/core/mental-model" title="Mental Model" icon="Brain">
+    See how Effects, Layers, Runtime and Scope fit together before you go deeper.
+  </DocCard>
+  <DocCard href="/docs/mq" title="Durable jobs" icon="ListChecks">
+    Add queues and workers when background work needs a durable home.
+  </DocCard>
+</DocCards>
+
+## Choose a path
+
+- **I am new to better-effect:** read [Getting Started](./getting-started), then [Services](../core/services).
+- **I need a durable queue:** begin with [MQ](../mq), then pick a storage adapter in [Integrations and adapters](../integrations).
+- **I am integrating an existing system:** open [Integrations and adapters](../integrations) and choose the boundary you already operate.
+- **I need reliable post-commit publishing:** read the [Outbox guide](../outbox).
+
+The docs use one vocabulary throughout. Application code defines jobs and handlers with
+`better-effect-mq`; adapters only provide persistence through Layers.
