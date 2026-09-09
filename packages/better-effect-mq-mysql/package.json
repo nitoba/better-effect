@@ -1,6 +1,6 @@
 {
   "name": "better-effect-mq-mysql",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MySQL JobStore and durable outbox adapters, schema, and migrations for better-effect-mq.",
   "keywords": [
     "better-effect",
