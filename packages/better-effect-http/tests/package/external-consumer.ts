@@ -27,7 +27,6 @@ const versions = {
   '@types/node': '26.1.2',
   arktype: '2.2.3',
   'better-effect-http': '0.1.0',
-  'better-effect-schema': '0.1.0',
   'better-result': '3.0.1',
   hono: '4.13.3',
   typescript: process.env['BETTER_EFFECT_HTTP_TYPESCRIPT_VERSION'] ?? '7.0.2',
@@ -37,7 +36,7 @@ const versions = {
 
 const optionalPackages = ['@opentelemetry/api', 'arktype', 'hono', 'valibot', 'zod'] as const
 
-type PackageName = keyof typeof versions | 'better-effect'
+type PackageName = keyof typeof versions | 'better-effect' | 'better-effect-schema'
 type ExpectedVersions = Readonly<Record<PackageName, string>>
 type ConsumerCase = Readonly<{
   readonly name: string
@@ -270,7 +269,8 @@ const installCase = async (
   root: string,
   currentCase: ConsumerCase,
   archives: Readonly<Record<string, string>>,
-  coreVersion: string
+  coreVersion: string,
+  schemaVersion: string
 ): Promise<string> => {
   const fixture = join(root, currentCase.name)
   await cp(join(fixtureRoot, currentCase.fixture), fixture, { recursive: true })
@@ -285,12 +285,13 @@ const installCase = async (
         ? 'better-effect-http.tgz'
         : archiveName === 'core'
           ? `better-effect-${coreVersion}.tgz`
-          : 'better-effect-schema-0.1.0.tgz'
+          : `better-effect-schema-${schemaVersion}.tgz`
     await cp(archive, join(artifacts, fileName))
   }
 
   const manifest = await readManifest(join(fixture, 'package.json'))
   const coreReference = `file:./artifacts/better-effect-${coreVersion}.tgz`
+  const schemaReference = `file:./artifacts/better-effect-schema-${schemaVersion}.tgz`
   const dependencies = { ...manifest.dependencies }
   const overrides = { ...manifest.overrides }
   assertCondition(
@@ -303,6 +304,16 @@ const installCase = async (
   )
   dependencies['better-effect'] = coreReference
   overrides['better-effect'] = coreReference
+  assertCondition(
+    dependencies['better-effect-schema'] !== undefined,
+    `${currentCase.name} fixture must declare better-effect-schema`
+  )
+  assertCondition(
+    overrides['better-effect-schema'] !== undefined,
+    `${currentCase.name} fixture must override better-effect-schema`
+  )
+  dependencies['better-effect-schema'] = schemaReference
+  overrides['better-effect-schema'] = schemaReference
   const devDependencies = { ...manifest.devDependencies, typescript: versions.typescript }
   await writeFile(
     join(fixture, 'package.json'),
@@ -379,6 +390,7 @@ const main = async (): Promise<void> => {
 
   try {
     const coreVersion = await readPackageVersion(corePackageRoot, 'better-effect')
+    const schemaVersion = await readPackageVersion(schemaPackageRoot, 'better-effect-schema')
     const archiveRoot = join(root, 'archives')
     await mkdir(archiveRoot)
     const archives = {
@@ -389,10 +401,11 @@ const main = async (): Promise<void> => {
     await assertPackedArtifact(archives.http)
 
     for (const currentCase of cases) {
-      const fixture = await installCase(root, currentCase, archives, coreVersion)
+      const fixture = await installCase(root, currentCase, archives, coreVersion, schemaVersion)
       await assertCaseDependencies(fixture, currentCase, {
         ...versions,
-        'better-effect': coreVersion
+        'better-effect': coreVersion,
+        'better-effect-schema': schemaVersion
       })
       await assertManifestExports(fixture)
       typecheck(fixture, currentCase)
