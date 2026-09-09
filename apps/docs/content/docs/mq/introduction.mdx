@@ -94,9 +94,10 @@ schemas exposed by `better-effect-schema`; it decodes persisted JSON before the
 handler runs.
 
 Use `Job.define` when the direct form is more convenient. This continuation
-reuses the schema-backed payload codec from the canonical definition above;
-when the persisted contract changes, create a new local class and codec as
-shown in [Defining Jobs](./defining-jobs):
+reuses the schema-backed payload codec from the canonical `SendEmail` descriptor
+in [Defining Jobs](./defining-jobs), rather than redeclaring the schema here.
+When the persisted contract changes, create a new local class and codec as
+shown on that page.
 
 ```ts
 import { Job, JobRegistry } from 'better-effect-mq'
@@ -121,6 +122,9 @@ A Job is also a typed producer. Its methods are better-effect programs: run
 them inside a Runtime that provides the Job's bound `JobStore` token.
 `enqueue` encodes the payload, runs the metadata/idempotency callbacks and
 returns a branded `JobId`.
+
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs).
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
@@ -195,12 +199,12 @@ recorded observer. Its `enqueued`, `enqueuedPayloads`, `job`, `attempts`, and
 `TestJobStore.makeFor(namedStore, options)`. This is a harness around the real
 store contract, not a second worker or a private state mutator.
 
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and observes it with `TestJobStore`.
+
 ```ts
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { TestJobStore } from 'better-effect-mq/testing'
-
-// SendEmail is the canonical descriptor from the Define a queue and jobs
-// section above.
 
 const testStore = TestJobStore.make({
   clock: new ClockTest(0),
@@ -216,6 +220,10 @@ void observedSendEmail
 Workers run handlers over a named `Worker.service(tag).layer(factory)` in the
 same Layer graph as the application, so the Runtime owns startup, quiesce and
 release.
+
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and wires a handler through a Layer-owned
+Worker.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'

@@ -8,6 +8,10 @@ the persisted Job, and a handler observes the attempt's `CurrentAbortSignal`.
 Use an application `AbortController` when a request or process boundary owns
 that cancellation.
 
+The following continuation assumes the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and a `jobId` supplied by the caller; it shows
+how to stop waiting without cancelling the persisted Job.
+
 ```ts
 const controller = new AbortController()
 const waiting = SendEmail.awaitResult(jobId, { signal: controller.signal })

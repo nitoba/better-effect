@@ -50,7 +50,7 @@ const SendEmail = Emails.job('send-email', {
 ```
 
 `Codec.standardSchema` is the recommended persistence-boundary codec for a
-provider-backed schema. The Zod 4 schema above is adapted through
+provider-backed schema. The Zod 4 schema in this example is adapted through
 `better-effect-schema`; its class value is encoded back to JSON before
 persistence. Primitive codecs remain convenient for primitive values.
 `Job.PayloadInput` describes the codec input; `Job.Payload` is the decoded value
@@ -64,8 +64,10 @@ JSON-safe and there is no meaningful runtime validation to perform.
 
 Keep a new Job version when a persisted payload or result contract changes:
 
+The following continuation uses the provider-backed setup from [Defining Jobs](./defining-jobs)
+to encode a changed payload contract.
+
 ```ts
-// Continue from the provider-backed setup above.
 const SendEmailV2PayloadSchema = z.object({
   recipient: z.email(),
   body: z.string().min(1)

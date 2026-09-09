@@ -6,13 +6,15 @@ description: Run typed producer programs against a configured JobStore.
 A Job is a typed producer program. It needs a Runtime that provides its bound
 `JobStore` token. The producer owns the Runtime and decides when it is disposed.
 
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs), where its schema-first
+`better-effect-schema` payload codec is declared.
+
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { MemoryJobStore } from 'better-effect-mq'
-
-// SendEmail is the canonical descriptor from Defining Jobs above.
 
 const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
 try {
@@ -37,8 +39,9 @@ intentional partial batch if a later store operation fails. `poll`,
 `awaitResult`, `attempts`, `cancel`, `promote` and `retry` are separate typed
 operations; `execute` means enqueue then await, not exactly-once RPC.
 
-The imported `SendEmail` descriptor should normally use a provider-backed
-`Codec.standardSchema` codec, such as a Zod 4 schema connected through
+The canonical `SendEmail` descriptor from [Defining Jobs](./defining-jobs)
+should normally use a provider-backed `Codec.standardSchema` codec, such as a
+Zod 4 schema connected through
 `better-effect-schema`. The [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
 remains available for already-trusted JSON values, but is not the boundary
 default.

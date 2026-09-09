@@ -8,14 +8,16 @@ wraps the real `MemoryJobStore` contract and keeps a `ClockTest`, an
 `IdGeneratorTest`, a store Layer and a recorded observer together. It does not
 mutate private state or implement a second Worker.
 
+The following continuation uses the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and observes it with `TestJobStore`; it does
+not declare a second test-only Job.
+
 ```ts
 import { Effect } from 'better-effect'
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { TestRuntime } from 'better-effect/testing'
 import { Result } from 'better-result'
 import { TestJobStore } from 'better-effect-mq/testing'
-
-// SendEmail is the canonical descriptor from Defining Jobs above.
 
 const clock = new ClockTest(Date.UTC(2026, 0, 1))
 const ids = IdGeneratorTest.from((index) => `job-${index + 1}`)

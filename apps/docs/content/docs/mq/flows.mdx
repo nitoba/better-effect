@@ -167,6 +167,6 @@ ordinary independent Jobs when work does not share a parent lifecycle. A Flow is
 handlers and the parent side effect should be safe to replay, and the adapter must provide the
 `JobStore` and `FlowStore` Layers with the same persistence and recovery guarantees.
 
-The in-memory Layers above are for a local example. Replace them with one adapter's durable Layers;
+The in-memory Layers in this example are for a local example. Replace them with one adapter's durable Layers;
 the Queue, Job descriptors, handlers, Worker service, Layer composition, and Runtime boundary stay
 the same.

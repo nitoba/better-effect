@@ -14,12 +14,9 @@ There are two separate idempotency boundaries:
 - **Handler idempotency**: the external operation uses the Job ID or a business
   key so a redelivered attempt is a no-op or safely replaces the prior write.
 
-```ts
-// SendEmail is the canonical descriptor from Defining Jobs above and uses its
-// schema-backed payload codec.
-
-// The email provider should also receive messageId as its idempotency key.
-```
+The following continuation assumes the canonical `SendEmail` descriptor from
+[Defining Jobs](./defining-jobs) and its schema-backed payload codec. The email
+provider should also receive `messageId` as its idempotency key.
 
 A lease token is a fencing token: an old Worker cannot settle a newer claim.
 It protects the JobStore state, not an already-started request to a downstream
