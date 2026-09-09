@@ -118,8 +118,8 @@ tokens keep unrelated outbox tables or namespaces separate.
 
 ### `OutboxRoutes`
 
-`OutboxRoutes` is the routing table from the record's `target` to a concrete
-`JobStore` Service token:
+`OutboxRoutes` is the routing table from the record's string `target` to a
+concrete `JobStore` Service token, not to a store instance:
 
 ```ts
 import { JobStore } from 'better-effect-mq'
@@ -132,12 +132,12 @@ const Routes = OutboxRoutes.make({
 
 #### Advanced routing: named `JobStore` tokens
 
-This is a token map, not a map of store instances: `JobStore` selects the
-default store, while `JobStore.named('billing')` selects a named store. The
-record stores only the string target (`'jobs'` here); the publisher resolves
-that target to the token through `OutboxRoutes` inside the Runtime. Use
-`OutboxRoutes.make` only when a publisher needs to route records to a specific
-JobStore, especially when one Runtime contains multiple named stores.
+This is a token map: `JobStore` selects the default store, while
+`JobStore.named('billing')` selects a named store. The record stores only the
+string target (`'jobs'` here); the publisher resolves that target to the token
+through `OutboxRoutes` inside the Runtime. Use `OutboxRoutes.make` when a
+publisher needs to route records to a specific JobStore, especially when one
+Runtime contains multiple named stores.
 
 The target stored in a record must exactly match a route. Route targets must be
 unique; duplicate entries are rejected. An absent route is reported as an
@@ -344,6 +344,13 @@ domain `Result.err` rolls the transaction back before the adapter cleans up or
 releases its resource. The core package deliberately does not expose a
 cross-database transaction context; the adapter owns that context and its
 lifecycle.
+
+`ConfirmationPayload` uses the schema-first boundary shown in the example:
+`Schema.with(ZodAdapter)` provides the local provider, `local.Class` gives the
+handler a decoded payload, and `Schema.encode` projects it to the JSON request.
+The result uses the concise `Codec.string` codec because it is already plain
+JSON; use a concise `Codec.standardSchema` for a structured result or failure
+shape that is also plain JSON.
 
 After the callback commits, the running publisher claims the record and calls
 the `jobs` route. The `JobStore` receives the prepared request and the outbox

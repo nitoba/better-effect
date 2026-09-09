@@ -144,9 +144,11 @@ The local facade uses the Zod 4 provider through `better-effect-schema/zod`;
 `Schema.encode` projects the decoded `SendEmailPayload` class to JSON, and
 `Codec.standardSchema` reuses that contract for persisted Job payloads and
 results. The Worker receives the inferred decoded class type, while
-`MongoJobStore` remains responsible only for durable storage. The later Flow
-and Outbox snippets use smaller `z.object` Standard Schema codecs deliberately
-when a decoded class is unnecessary.
+`MongoJobStore` remains responsible only for durable storage. The Flow and
+Outbox journeys below use the same schema-first payload boundary. Result or
+failure values that are already plain JSON may use a concise
+`Codec.standardSchema` shape; the payload boundaries in both journeys remain
+schema-first.
 
 This is the complete application flow: `Queue.define` and `Emails.job` create immutable, storage-neutral descriptors; `Worker.handle` connects the typed payload to application code; `Worker.service(...).layer(...)` owns the worker lifecycle; and `MongoJobStore.layer` supplies the `JobStore` used by `enqueue` and `awaitResult`. The worker does not query MongoDB, and application operations use the Services supplied by the Layer.
 
@@ -319,6 +321,19 @@ const buildReportPayloadCodec = Codec.standardSchema({
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
+class GenerateSectionPayload extends local.Class<GenerateSectionPayload>(
+  'app/GenerateSectionPayload'
+)({
+  accountId: z.string(),
+  section: z.string()
+}) {}
+const generateSectionPayloadCodec = Codec.standardSchema({
+  schema: GenerateSectionPayload,
+  encode: (value) =>
+    Schema.encode(GenerateSectionPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Reports = Queue.define('application.reports')
 const BuildReport = Reports.job('build-report', {
@@ -328,9 +343,7 @@ const BuildReport = Reports.job('build-report', {
 })
 const GenerateSection = Reports.job('generate-section', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ accountId: z.string(), section: z.string() })
-  }),
+  payload: generateSectionPayloadCodec,
   result: Codec.standardSchema({ schema: z.object({ section: z.string() }) })
 })
 
@@ -409,8 +422,11 @@ try {
 ```
 
 The parent enqueue starts the registered flow route. The worker creates the `GenerateSection` children, settles them through the MongoDB `JobStore`, and the route's `collect` phase reads the completed children from the MongoDB `FlowStore`. The application still uses only `better-effect-mq` operations; MongoDB is the durable implementation behind those Services.
-The parent uses the schema-backed `BuildReportPayload` class and explicit
-encoder; the child and result schemas remain concise plain-JSON variants.
+The parent follows the schema-first boundary from the Quick Start:
+`Schema.with(ZodAdapter)` provides the local provider, `local.Class` gives the
+handler a decoded class, and `Schema.encode` projects it back to JSON through
+the codec. Result/failure schemas remain concise Standard Schema shapes because
+those values are already plain JSON.
 
 For an independent job store in the same Runtime, use a named job token and
 the adapter's matching flow Layer:
@@ -580,7 +596,13 @@ must be safe to retry.
 
 Pass a `MongoClient` as the first argument when the database is not available
 there; in that form provide the database as `options.db` so the adapter can
-append to the selected database.
+append to the selected database. The payload uses the same schema-first
+boundary (`Schema.with(ZodAdapter)`, `local.Class`, and `Schema.encode`), while
+concise result/failure codecs are suitable for plain-JSON outcomes.
+
+`Routes` maps the record target `'jobs'` to the `JobStore` Service token; it
+does not capture a store instance. The publisher resolves that token in the
+Runtime before enqueueing the prepared request.
 
 ### Advanced: caller-owned transactions
 

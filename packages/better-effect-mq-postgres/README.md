@@ -138,9 +138,12 @@ keeps that contract in one codec. `Worker.handle` associates a typed payload
 with a `better-effect` program, while `Worker.service(...).layer(...)` owns
 polling, leases, attempts, and graceful worker shutdown. `runtime.run` provides
 the declared Services and execution Scope; `awaitResult` reads the durable Job
-until it reaches a terminal state. The later Flow and Outbox snippets use
-smaller `z.object` Standard Schema codecs deliberately; they keep the same
-provider-backed validation boundary when a decoded class is unnecessary.
+until it reaches a terminal state. The Flow and Outbox journeys below use the
+same schema-first payload boundary: `Schema.with(ZodAdapter)` provides the
+local provider, `local.Class` gives handlers a decoded class, and `Schema.encode`
+projects it back to JSON. Result/failure values that are already plain JSON may
+use a concise `Codec.standardSchema` shape; the payload boundaries in both
+journeys remain schema-first.
 
 The example uses `PostgresJobStore.layer`, so the application owns `pool` and
 must call `pool.end()`. If the adapter should create and close the pool, use:
@@ -331,6 +334,16 @@ const importOrderPayloadCodec = Codec.standardSchema({
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
+class ImportLinePayload extends local.Class<ImportLinePayload>('app/ImportLinePayload')({
+  lineId: z.string()
+}) {}
+const importLinePayloadCodec = Codec.standardSchema({
+  schema: ImportLinePayload,
+  encode: (value) =>
+    Schema.encode(ImportLinePayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Orders = Queue.define('orders')
 const ImportOrder = Orders.job('import-order', {
@@ -340,7 +353,7 @@ const ImportOrder = Orders.job('import-order', {
 })
 const ImportLine = Orders.job('import-line', {
   version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ lineId: z.string() }) }),
+  payload: importLinePayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -430,9 +443,11 @@ replays safe. Use `FlowStore.for(MyJobs)` and a matching
 `PostgresFlowStore.make` instance when parent and child Jobs use named stores.
 Flow storage requires the flow schema extension; migrations run by
 `PostgresMigrator` install it with the rest of the package schema.
-The parent payload uses the schema-backed `ImportOrderPayload` class and an
-explicit encoder; the child and aggregate result schemas stay concise because
-their decoded values are already plain JSON.
+The parent payload follows the same schema-first boundary as the Quick Start:
+`Schema.with(ZodAdapter)` provides the local provider, `local.Class` gives the
+handler a decoded class, and `Schema.encode` projects it back to JSON through
+the codec. Result/failure schemas stay concise Standard Schema shapes because
+those values are already plain JSON.
 
 ## Outbox: transaction, record, publisher
 
@@ -586,15 +601,22 @@ try {
 ```
 
 `prepare` encodes the request before `transaction` acquires a client. The
-adapter appends the record only after the callback succeeds, commits only
-after that append succeeds, rolls back on thrown, rejected, or nominal
-`Result.err` failures, and always releases the client. Reusing the same outbox
-ID and request is digest-idempotent, while reusing an ID for a different
-request is a conflict. Publishing is still at-least-once, so the Job handler
-and any remote effect must tolerate retries. `PostgresOutbox.transaction`
-receives a pool supplied by the application and owns the transaction client
-lifecycle. `layerFromConfig` owns only the pool used by its provider Layer, so
-use a caller-owned pool when domain code calls the static transaction helper.
+payload uses the same `Schema.with(ZodAdapter)`/`local.Class` boundary as the
+Quick Start, with `Schema.encode` projecting it to the JSON request; concise
+result/failure codecs remain appropriate for plain-JSON outcomes. The adapter
+appends the record only after the callback succeeds, commits only after that
+append succeeds, rolls back on thrown, rejected, or nominal `Result.err`
+failures, and always releases the client. Reusing the same outbox ID and
+request is digest-idempotent, while reusing an ID for a different request is a
+conflict. Publishing is still at-least-once, so the Job handler and any remote
+effect must tolerate retries. `PostgresOutbox.transaction` receives a pool
+supplied by the application and owns the transaction client lifecycle.
+`layerFromConfig` owns only the pool used by its provider Layer, so use a
+caller-owned pool when domain code calls the static transaction helper.
+
+`Routes` maps the record target `'orders'` to the `JobStore` Service token; it
+does not capture a store instance. The publisher resolves that token in the
+Runtime before enqueueing the prepared request.
 
 ### Advanced: caller-owned transactions
 
