@@ -1,234 +1,421 @@
 # better-effect-mq-sqlite
 
-Optional embedded SQLite implementation of the `better-effect-mq` protocol-v1 `JobStore`,
-protocol-v2 `FlowStore`, `JobScheduleStore`, and `better-effect-mq-outbox` contracts.
+Embedded SQLite storage for [`better-effect-mq`](../better-effect-mq). It keeps
+jobs, schedules, durable job events, flows, and outbox records in a local
+SQLite database while exposing the same Layer-first Services as the other
+`better-effect-mq` adapters.
 
-SQLite is a good fit for CLIs, desktop applications, persistent tests, single-node services, and low-to-moderate volume queues. It is **not** a multi-host broker and is not recommended for high writer contention or network filesystems/NFS. SQLite allows concurrent readers but has one writer; this adapter deliberately uses short `BEGIN IMMEDIATE` write transactions and never holds a transaction while a worker handler executes.
+## Is SQLite the right choice?
 
-## Setup
+SQLite is a strong default when the queue belongs with one application or one
+machine:
 
-The generic entrypoint does not import a SQLite driver. Supply a structural database from a supported host binding or your own adapter:
+- command-line tools and desktop applications;
+- single-node services and local background workers;
+- development, integration tests, and durable test fixtures;
+- low-to-moderate queue volume where simple file operations are valuable.
+
+Choose PostgreSQL, Redis, or another distributed adapter when you need several
+hosts to write the same queue, high write concurrency, a managed service,
+horizontal broker capacity, or operation over a network filesystem. SQLite
+supports concurrent readers, but writes are serialized by the database file.
+That makes it durable and predictable, not a replacement for a multi-host
+broker.
+
+The adapter provides durable state and at-least-once delivery semantics. A
+worker crash can leave work to be retried, so handlers and publishers should
+be safe to run again. Queue coordination is local to the SQLite file; the
+application still owns process supervision, file permissions, disk capacity,
+and backups.
+
+## Installation
+
+Install the adapter together with the core packages:
+
+```sh
+bun add better-effect-mq-sqlite better-effect-mq better-effect better-result
+```
+
+The package deliberately does not choose a SQLite driver for the generic
+entrypoint. Pick the host binding that matches your runtime:
+
+### Bun
+
+Bun includes `bun:sqlite`, so no additional SQLite driver is needed:
+
+```ts
+import { openSqlite } from 'better-effect-mq-sqlite/bun'
+
+const database = openSqlite('./data/jobs.sqlite')
+```
+
+### Node.js
+
+The Node subpath uses Node's built-in `node:sqlite` binding. Use a current
+Node.js release that provides it; when the binding is still marked experimental
+in your release, run Node with `--experimental-sqlite`.
+
+```ts
+import { openSqlite } from 'better-effect-mq-sqlite/node'
+
+const database = openSqlite('./data/jobs.sqlite')
+```
+
+The generic `better-effect-mq-sqlite` entrypoint never imports either host
+binding. It accepts any database object implementing the small structural
+interface described in [Advanced reference](#advanced-reference).
+
+## Quick start: one local file
+
+The host-specific `layerFromFile` opens and closes the database with the
+Runtime. Migrations remain explicit, so deployment can run them at a deliberate
+point before serving or publishing work.
+
+This complete Bun example creates a file, applies the current migrations,
+starts a Runtime, and enqueues one job:
+
+```ts
+import { Runtime, ServiceRuntime } from 'better-effect'
+import { JobStore, makeQueueName } from 'better-effect-mq'
+import { SqliteMigrator } from 'better-effect-mq-sqlite'
+import { layerFromFile, openSqlite } from 'better-effect-mq-sqlite/bun'
+
+const path = './data/jobs.sqlite'
+
+// Run this once during application setup or deployment.
+const database = openSqlite(path)
+SqliteMigrator.migrate({ database })
+database.close?.()
+
+// The Layer owns this connection and closes it when the Runtime is disposed.
+const runtime = await Runtime.make(layerFromFile({ path, namespace: 'my-app' }))
+
+try {
+  const result = await runtime.run(async () => {
+    const jobs = await ServiceRuntime.resolve(JobStore)
+    const now = Date.now()
+
+    return jobs.enqueue({
+      job: { queue: makeQueueName('emails').unwrap(), name: 'send-email', version: 1 },
+      payload: { to: 'ada@example.test' },
+      runAt: now,
+      attemptsMax: 3,
+      now
+    })
+  })
+
+  if (result.isErr()) throw result.error
+  console.log(`enqueued ${result.value.job.id}`)
+} finally {
+  await runtime.dispose()
+}
+```
+
+`layerFromFile` validates the existing layout when the Layer starts; it does
+not run migrations. Calling `migrate` again is safe and returns no newly
+applied entries when the file is already current.
+
+## Owning the database connection
+
+Use the generic entrypoint when your application already opens SQLite, needs a
+custom driver binding, or wants several Services to share one connection. The
+caller owns the connection and closes it after the Runtime has been disposed:
 
 ```ts
 import { Database } from 'bun:sqlite'
+import { Layer, Runtime } from 'better-effect'
+import { SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
+
+const database = new Database('./data/jobs.sqlite')
+SqliteMigrator.migrate({ database })
+
+const AppLive = Layer.complete(SqliteJobStore.layer({ database, namespace: 'my-app' }))
+const runtime = await Runtime.make(AppLive)
+
+// Use JobStore through runtime.run(...).
+await runtime.dispose()
+database.close()
+```
+
+Use `:memory:` for isolated tests. It is scoped to one connection and is not
+shared by opening the same name again.
+
+## Compose the storage features
+
+Each feature is an independent provider. Compose the providers into one
+Runtime so producers, workers, schedulers, event readers, flow workers, and
+outbox publishers resolve the same Services.
+
+### Jobs and schedules
+
+Schedules use the associated `JobStore` and should be provided beside it:
+
+```ts
+import { Database } from 'bun:sqlite'
+import { Layer, Runtime } from 'better-effect'
+import { SqliteJobScheduleStore, SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
+
+const database = new Database(':memory:')
+SqliteMigrator.migrate({ database })
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    SqliteJobStore.layer({ database, namespace: 'my-app' }),
+    SqliteJobScheduleStore.layer({ database, namespace: 'my-app' })
+  )
+)
+
+const runtime = await Runtime.make(AppLive)
+```
+
+For multiple independent queues in the same process, create a named
+`JobStore` with `JobStore.named('billing')`, then derive its schedule token
+with `JobScheduleStore.for(billingStore)`. Use `layerFor` for both providers;
+the [advanced reference](#advanced-reference) lists the exact forms.
+
+### Durable job events
+
+Events are opt-in. `layerWithEvents` provides the `JobStore` and its matching
+`JobEventStore` together:
+
+```ts
+import { Database } from 'bun:sqlite'
+import { Runtime } from 'better-effect'
+import { SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
+
+const database = new Database(':memory:')
+SqliteMigrator.migrate({ database })
+
+const runtime = await Runtime.make(
+  SqliteJobStore.layerWithEvents(
+    { database, namespace: 'my-app', pollIntervalMs: 1_000 },
+    { retention: { count: 100_000 } }
+  )
+)
+```
+
+Use the event token from `better-effect-mq` with `Job.awaitResult` or
+`JobEvents.page`/`JobEvents.forEach`. Events are a bounded operational feed,
+not an archive: retention can expire old cursors, and event records intentionally
+avoid copying payloads, results, complete failures, or arbitrary metadata.
+
+### Flows
+
+Add the flow provider when the application registers flow routes with the
+`better-effect-mq` Worker:
+
+```ts
+import { Database } from 'bun:sqlite'
+import { Layer, Runtime } from 'better-effect'
+import { SqliteFlowStore, SqliteJobStore, SqliteMigrator } from 'better-effect-mq-sqlite'
+
+const database = new Database(':memory:')
+SqliteMigrator.migrate({ database })
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    SqliteJobStore.layer({ database, namespace: 'my-app' }),
+    SqliteFlowStore.layer({ database, namespace: 'my-app' })
+  )
+)
+
+const runtime = await Runtime.make(AppLive)
+```
+
+The flow layer persists parent/child state and durable child reports. The
+Worker still owns enqueueing child jobs and relaying reports between the
+associated store Services; SQLite does not make separate store keys or
+separate databases one atomic boundary.
+
+### Durable outbox
+
+Provide an outbox layer beside the JobStore when a publisher should survive
+process restarts:
+
+```ts
+import { Database } from 'bun:sqlite'
+import { Layer, Runtime } from 'better-effect'
+import { SqliteJobStore, SqliteMigrator, SqliteOutboxStore } from 'better-effect-mq-sqlite'
+
+const database = new Database(':memory:')
+SqliteMigrator.migrate({ database })
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    SqliteJobStore.layer({ database, namespace: 'my-app' }),
+    SqliteOutboxStore.layer({ database, namespace: 'my-app' })
+  )
+)
+
+const runtime = await Runtime.make(AppLive)
+```
+
+The outbox is at-least-once. Publishing and marking a row published are
+separate steps, so the downstream operation must tolerate redelivery. For a
+named outbox, use `OutboxStore.named('billing')` with
+`SqliteOutboxStore.layerFor(...)`.
+
+### One Runtime with every extension
+
+For an application using all available SQLite features, the composition root
+can stay small:
+
+```ts
+import { Database } from 'bun:sqlite'
+import { Layer, Runtime } from 'better-effect'
 import {
   SqliteFlowStore,
   SqliteJobScheduleStore,
   SqliteJobStore,
+  SqliteMigrator,
   SqliteOutboxStore
 } from 'better-effect-mq-sqlite'
 
-const database = new Database('./jobs.sqlite')
-SqliteJobStore.migrate({ database }) // explicit; never run automatically
+const database = new Database(':memory:')
+SqliteMigrator.migrate({ database })
 
-const StoreLive = SqliteJobStore.layer({
-  database,
-  namespace: 'desktop-app',
-  configurePragmas: true
-})
-
-const ScheduleLive = SqliteJobScheduleStore.layer({
-  database,
-  namespace: 'desktop-app',
-  configurePragmas: true
-})
-
-const OutboxLive = SqliteOutboxStore.layer({
-  database,
-  namespace: 'desktop-app',
-  configurePragmas: true
-})
-
-const FlowLive = SqliteFlowStore.layer({
-  database,
-  namespace: 'desktop-app',
-  configurePragmas: true
-})
-
-const EventsLive = SqliteJobStore.layerWithEvents(
-  { database, namespace: 'desktop-app', configurePragmas: true },
-  { retention: { count: 100_000 } }
+const AppLive = Layer.complete(
+  Layer.merge(
+    SqliteJobStore.layerWithEvents(
+      { database, namespace: 'my-app', pollIntervalMs: 1_000 },
+      { retention: { count: 100_000 } }
+    ),
+    SqliteJobScheduleStore.layer({ database, namespace: 'my-app' }),
+    SqliteFlowStore.layer({ database, namespace: 'my-app' }),
+    SqliteOutboxStore.layer({ database, namespace: 'my-app' })
+  )
 )
+
+const runtime = await Runtime.make(AppLive)
 ```
 
-`SqliteJobScheduleStore.layer` provides the canonical default `JobScheduleStore` token and shares
-the same SQLite tables and namespace as `SqliteJobStore`. For a named store, use the associated
-token and layer:
+Migrate the database before creating this Runtime. All providers should use
+the same file and namespace when they are meant to participate in one local
+application; use different namespaces for intentional isolation.
 
-```ts
-import { JobScheduleStore, JobStore } from 'better-effect-mq'
-import { SqliteJobScheduleStore, SqliteJobStore } from 'better-effect-mq-sqlite'
+## Concurrency and operational limits
 
-const Durable = JobStore.named('durable')
-const DurableSchedules = JobScheduleStore.for(Durable)
+SQLite is a single-file database with one writer at a time. In practice:
 
-const DurableLive = SqliteJobStore.layerFor(Durable, { database })
-const DurableSchedulesLive = SqliteJobScheduleStore.layerFor(DurableSchedules, { database })
-```
+- readers can proceed concurrently;
+- short queue operations coordinate correctly across processes on the same
+  machine;
+- a busy writer waits for a bounded period and then reports the failure;
+- wakeups from another local process are discovered through polling, so a
+  worker should retain a sensible poll interval;
+- the worker handler is not part of the database operation, so slow handlers
+  do not hold the queue's write slot.
 
-`better-effect-mq-sqlite/bun` exports `openSqlite` for Bun and `better-effect-mq-sqlite/node` exports it for the current Node.js LTS's built-in `node:sqlite`. These are isolated subpaths: importing the generic package never loads Node- or Bun-specific modules.
+For a caller-owned connection, keep the queue on local durable storage and
+choose a namespace per logical store. If write contention is expected, size a
+finite busy timeout and a sensible polling interval rather than relying on
+unbounded retries.
+The defaults are a `default` namespace, a 5-second busy timeout, polling every
+1 second, and schema validation enabled. The host-specific file Layers choose
+connection configuration suitable for a local file and own the connection
+lifecycle.
 
-The host-specific subpaths also expose `layerFromFile` and `outboxLayerFromFile`. They open and
-close the database as part of the Layer scope. Run the matching explicit migration before opening
-the layer:
+Do not place a live queue on NFS or another network filesystem. If several
+machines need to claim from one queue, or if write contention becomes a
+recurring operational problem, move to PostgreSQL or Redis rather than
+increasing timeouts indefinitely.
+
+## Migrations and backups
+
+Migrations are explicit and idempotent:
 
 ```ts
 import { SqliteMigrator } from 'better-effect-mq-sqlite'
-import { openSqlite, outboxLayerFromFile } from 'better-effect-mq-sqlite/node'
 
-const database = openSqlite('./jobs.sqlite')
-SqliteMigrator.migrate({ database })
-database.close?.()
-const OutboxLive = outboxLayerFromFile({ path: './jobs.sqlite' })
+const result = SqliteMigrator.migrate({ database })
+console.log(result.applied)
 ```
 
-The caller owns a supplied database and must close it. `:memory:` databases are per connection, are not persistent, and are generally not shared between connections.
+Run migrations before starting producers, workers, schedulers, or publishers.
+The Layers validate the existing layout at startup and do not silently change
+it. Back up a file before a migration that changes its layout, and retain a
+copy of the previous application version when you need a quick rollback plan.
 
-## Operations
+For a cold backup, stop new work, await `runtime.dispose()`, close any
+caller-owned connection, and copy the database file. For a hot backup, use the
+backup API supplied by the host SQLite binding; do not assume that copying a
+live file is a consistent snapshot. Restore into a separate path, run
+`SqliteMigrator.validate(restoredDatabase)`, and exercise a read-only startup
+before promoting it.
 
-Run migrations deliberately, preferably after a backup for file databases. Migration 2 adds the
-durable schedules table and due/group/key indexes; migration 3 adds the durable outbox table and
-claim, lease, target/state, and recent indexes; migration 4 adds the FlowStore v2 parent columns,
-child manifest table, and durable flow-report outbox; migration 5 adds QueueControls v3 state and
-the persisted dispatch-key column; migration 6 adds the durable JobEventStore tables and cursor
-indexes. Startup only validates the schema by default.
-`SqliteFlowStore.make` and its layers require the explicit flow layout marker and fail with
-`SqliteFlowProtocolMismatchError` on a v1-v3 schema; they never upgrade the database implicitly.
-For caller-owned connections, PRAGMAs are changed only with `configurePragmas: true`; enable
-`foreign_keys`, use a finite `busyTimeoutMs`, and use WAL for file databases where appropriate:
+Keep the database on local durable storage with restricted file permissions,
+monitor free disk space, and include the database in the application's restore
+and retention policy. `:memory:` databases are test fixtures, not backups.
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-PRAGMA synchronous = NORMAL;
-```
+## Advanced reference
 
-## QueueControls protocol v3
+### Generic entrypoint
 
-`SqliteJobStore` implements the durable `QueueControls` extension. Migration 5 adds the persisted
-`dispatch_key` column plus queue controls, rotation cursors, controlled permits, and fixed-window
-rate-limit tables. `QueueControls.reconcile` is idempotent and revisioned; changing a record
-increments its revision, and controlled claims fail closed when the caller presents a stale
-revision. Legacy `claim` calls are rejected while controls are enabled.
+`better-effect-mq-sqlite` exports:
 
-Controlled claims acquire global and per-key permits, skip candidates whose dispatch key is full,
-and use a bounded rotating scan so one blocked key does not hold the queue head. Rate limits use
-fixed windows anchored at the first accepted claim; settlement, release, and recovery release only
-the permit owned by the matching job/lease token, while rate-window capacity is never refunded.
-All mutations use the adapter's serialized `BEGIN IMMEDIATE` write path, so the job transition,
-permit, cursor, and rate-window updates commit as one SQLite transaction. When the migration-6
-event layout is present, effective controls transitions append additive `controls-*` events beside
-their canonical `job-*` events; unchanged reconciles and idempotent retries do not append. The
-adapter advertises `globalConcurrency` and `rateLimiting` after migration 5.
+- `SqliteMigrator.migrate` and `SqliteMigrator.validate` (plus the `migrate`
+  alias);
+- `SqliteJobStore.make`, `.layer`, `.layerFor`, `.layerWithEvents`, and
+  `.layerWithEventsFor`;
+- `SqliteJobScheduleStore.make`, `.layer`, and `.layerFor`;
+- `SqliteJobEventStore.make`, `.layer`, and `.layerFor`;
+- `SqliteFlowStore.make`, `.layer`, and `.layerFor`;
+- `SqliteOutboxStore` (also available as `SqliteOutbox`) with `.make`,
+  `.appendIn`, `.layer`, and `.layerFor`;
+- `SqliteOutboxTransactions.appendIn` for an existing caller-owned SQLite
+  write context;
+- `SqliteClient`, the structural `SqliteDatabase`/`SqliteStatement` types,
+  configuration types, migration result types, and adapter errors. The
+  caller-owned configuration also exposes `busyTimeoutMs`, `pollIntervalMs`,
+  `configurePragmas`, and `validateSchema`.
 
-## Durable job events
+`SqliteJobStore.layerWithEvents` is the convenient combined provider. If the
+event Service needs to be configured separately, use `SqliteJobEventStore.layer`
+or `.layerFor` with the matching `JobEventStore` token.
 
-`SqliteJobStore.layerWithEvents` composes the JobStore and its matching `JobEventStore` token. The
-event layout is installed by migration 6, but ordinary `SqliteJobStore` layers remain unchanged and
-do not add an event Service to the Runtime. Activation is per namespace: the first append records
-`optional`, `activate({ mode: 'required' })` is an explicit promotion, and a writer without append
-capability is rejected before a JobStore mutation after promotion. The activation metadata table is
-created lazily so migration 6 checksums remain stable; event and state changes still share the
-adapter's `BEGIN IMMEDIATE` transaction. Named stores use the matching event token:
+### Host subpaths
 
-```ts
-import { JobEventStore, JobStore } from 'better-effect-mq'
+Both `better-effect-mq-sqlite/bun` and `better-effect-mq-sqlite/node` export:
 
-const Durable = JobStore.named('durable')
-const DurableEvents = JobEventStore.for(Durable)
-const Live = SqliteJobStore.layerWithEventsFor(
-  Durable,
-  { database, namespace: 'desktop-app' },
-  { retention: { ageMs: 7 * 24 * 60 * 60 * 1000 } }
-)
-```
+- `openSqlite(path)`;
+- `layerFromFile` and `layerFromFileFor` for a JobStore;
+- `flowLayerFromFile` and `flowLayerFromFileFor` for a FlowStore;
+- `outboxLayerFromFile` and `outboxLayerFromFileFor` for an OutboxStore.
 
-Enqueue, claim, settlement, release/recovery, administrative transitions, removal, and queue
-pause/resume append bounded safe fields in the same SQLite transaction as the JobStore mutation.
-Duplicate enqueue and already-applied settlement do not append duplicate events. Cursors are opaque
-and exclusive; filtered pages advance over examined events. Retention uses the configured age/count
-limits, and reads report `JobEventCursorExpiredError` when the requested position was removed.
-`awaitEvents` checks the authoritative table, wakes local waiters after an append, and polls so a
-commit in another process cannot be lost. Payloads, metadata, results, failure bodies, and stacks
-are never copied into the event log.
+These file Layers own only the connection they open. A supplied `database`
+passed to a generic Layer remains owned by the caller. There is intentionally
+no host-specific schedule file Layer: use one caller-owned connection with
+`SqliteJobScheduleStore.layer`/`.layerFor` when schedules are part of a shared
+composition.
 
-## FlowStore v2
+### Existing write contexts
 
-`SqliteFlowStore` stores a parent flow marker and deterministic child manifest in SQLite. `fanOut`
-is idempotent for the same manifest and lease, child settlement reports are appended to the flow
-outbox atomically with terminal `JobStore` transitions, and `recordChildResults`, `cancel`,
-`reconcile`, and `markCascaded` are bounded and retry-safe. Flow transitions use short
-`BEGIN IMMEDIATE` transactions; when the migration-6 event layout is present, effective FlowStore
-and flow-report transitions append the canonical `flow-*` events in that same transaction. They
-do not claim to make a job store and a different store key transactional.
+`SqliteOutboxTransactions.appendIn(database, input, options)` inserts an
+outbox record using the supplied SQLite connection and does not own that
+connection. The caller decides when the surrounding write context commits or
+rolls back. `options.namespace` defaults to `default`; use the same namespace
+as the corresponding outbox Layer.
 
-The generic entrypoint accepts a caller-owned `database`:
+This is the low-level integration point for an application that must persist a
+domain change and its outbox record together. It accepts the outbox input
+shape from `better-effect-mq-outbox`; it does not serialize callbacks,
+Services, Runtime values, or database handles into the record.
 
-```ts
-import { SqliteFlowStore } from 'better-effect-mq-sqlite'
+### Schema files and validation
 
-const FlowLive = SqliteFlowStore.layer({ database, namespace: 'desktop-app' })
-```
+The published package includes the numbered files under `migrations/` for
+inspection and deployment tooling. The supported application-facing path is
+`SqliteMigrator.migrate({ database })`, followed by Layer startup validation.
+`SqliteMigrator.validate(database)` is useful in health checks and restore
+verification; it never changes the database.
 
-For a file-backed database, `better-effect-mq-sqlite/bun` and
-`better-effect-mq-sqlite/node` additionally export `flowLayerFromFile`, which opens and closes the
-host database as part of the Layer scope. Run `SqliteMigrator.migrate` first, then construct the
-file layer just like the existing JobStore layer.
+## Related packages
 
-Wake notifications are local to one store instance. Separate processes rely on SQLite file locking for correctness and polling for discovery. File permissions and local-disk backups remain application operational responsibilities.
-
-`tickSchedule` uses a short `BEGIN IMMEDIATE` transaction. The compare-and-set revision check,
-deterministic occurrence inserts (`sched/<encoded-key>/<slot>`), schedule advancement, and queue
-wake version update commit together. With the migration-6 event layout installed, effective
-upserts, ticks, pause/resume, and removals append `schedule-*` events in that same transaction;
-unchanged upserts and no-op retries do not append. Retrying a committed tick therefore returns
-`stale` without creating a duplicate occurrence.
-
-## Durable outbox
-
-`SqliteOutboxStore.layer` provides the canonical `OutboxStore` token. Named outboxes use a stable
-tag and an explicit layer:
-
-```ts
-import { OutboxStore } from 'better-effect-mq-outbox'
-import { SqliteOutboxStore } from 'better-effect-mq-sqlite'
-
-const BillingOutbox = OutboxStore.named('billing')
-const BillingOutboxLive = SqliteOutboxStore.layerFor(BillingOutbox, {
-  database,
-  namespace: 'desktop-app'
-})
-```
-
-`append` runs in a short `BEGIN IMMEDIATE` transaction and is idempotent for the same
-`namespace`/`id` and request digest. A conflicting digest returns an error. `claim` leases rows
-in FIFO order for the target namespace, increments the persisted attempt count, and recovers
-expired leases before claiming. `heartbeat`, `markPublished`, `markRetry`, `markFailed`, and
-`release` require the current lease token; `recoverStalled`, `list`, and `counts` support recovery
-and administration. This is at-least-once storage: publishing and marking a row published are
-separate operations, so consumers must be idempotent.
-
-For an atomic application transaction, `SqliteOutboxTransactions.appendIn` accepts the real
-adapter transaction type (`SqliteTransaction`, which is the caller's SQLite database connection)
-and performs only the insert. The caller owns `BEGIN`/`COMMIT`/`ROLLBACK`:
-
-```ts
-import { Result } from 'better-result'
-import { OutboxId } from 'better-effect-mq-outbox'
-import { SqliteOutboxTransactions } from 'better-effect-mq-sqlite'
-
-database.exec('BEGIN IMMEDIATE')
-const appended = SqliteOutboxTransactions.appendIn(database, {
-  id: OutboxId.make('invoice-created:123').unwrap(),
-  target: 'jobs-postgres',
-  request: preparedEnqueue
-})
-if (Result.isError(appended)) database.exec('ROLLBACK')
-else database.exec('COMMIT')
-```
-
-Use `makePreparedEnqueue` from `better-effect-mq` (or the outbox normalization helpers) to build
-the request accepted by `appendIn`. The adapter never hides busy, lock, commit, rollback, or
-cleanup failures inside a successful result.
-
-The adapter declares no global concurrency or rate limiting. Move to the PostgreSQL or Redis adapters when multiple hosts, high write contention, or distributed broker semantics are required.
+- [`better-effect-mq`](../better-effect-mq) — queue contracts, Jobs, Workers,
+  schedules, events, and flows;
+- [`better-effect-mq-outbox`](../better-effect-mq-outbox) — storage-neutral
+  outbox records, routes, and publisher;
+- [`better-effect-mq-postgres`](../better-effect-mq-postgres) — choose this for
+  multi-host relational deployments;
+- [`better-effect-mq-redis`](../better-effect-mq-redis) — choose this for a
+  distributed Redis/Valkey deployment.
