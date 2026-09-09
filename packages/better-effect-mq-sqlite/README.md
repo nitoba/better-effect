@@ -33,7 +33,7 @@ and backups.
 Install the adapter together with the core packages:
 
 ```sh
-bun add better-effect-mq-sqlite better-effect-mq better-effect better-result
+bun add better-effect-mq-sqlite better-effect-mq better-effect better-result better-effect-schema zod
 ```
 
 The package deliberately does not choose a SQLite driver for the generic
@@ -76,9 +76,12 @@ This complete Bun example creates a file, applies the current migrations,
 starts a Runtime-owned Worker, and waits for one typed job:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { SqliteMigrator } from 'better-effect-mq-sqlite'
 import { layerFromFile, openSqlite } from 'better-effect-mq-sqlite/bun'
 import { Result } from 'better-result'
@@ -93,19 +96,23 @@ try {
   migrationDatabase.close?.()
 }
 
+const local = Schema.with(ZodAdapter)
+const SendEmailPayload = z.object({ recipient: z.email() })
+const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
+const sendEmailPayloadCodec = Codec.standardSchema({ schema: SendEmailPayload })
+const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
+
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: sendEmailPayloadCodec,
+  result: sendEmailResultCodec
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
 const emailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    return Result.ok(`sent:${payload.recipient}`)
+    return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
 const EmailWorkerLive = EmailWorker.layer(() => ({
@@ -130,7 +137,9 @@ try {
 
   const result = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      const payload = local.decodeUnknown(SendEmailPayload, { recipient: 'ada@example.test' })
+      if (Result.isError(payload)) throw payload.error
+      const jobId = yield* SendEmail.enqueue(payload.value)
       const completed = yield* SendEmail.awaitResult(jobId)
       return Result.ok({ jobId, completed })
     })
@@ -147,6 +156,10 @@ try {
 `layerFromFile` validates the existing layout when the Layer starts; it does
 not run migrations. Calling `migrate` again is safe and returns no newly
 applied entries when the file is already current.
+
+The local `better-effect-schema` facade uses the Zod 4 provider for boundary
+validation, and `Codec.standardSchema` adapts those schemas to Job payloads and
+results. The storage Layer remains responsible only for SQLite persistence.
 
 ## Owning the database connection
 
@@ -317,6 +330,7 @@ transaction lifecycle. Its callback only performs the domain write; the
 adapter appends the prepared outbox record after the callback succeeds:
 
 ```ts
+import * as z from 'zod'
 import { Database } from 'bun:sqlite'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
@@ -339,11 +353,10 @@ import { Result } from 'better-result'
 const Orders = Queue.define('orders')
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: Codec.json<{
-    readonly orderId: string
-    readonly email: string
-  }>(),
-  result: Codec.string
+  payload: Codec.standardSchema({
+    schema: z.object({ orderId: z.string(), email: z.email() })
+  }),
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const ConfirmationWorker = Worker.service('@app/ConfirmationWorker')
@@ -610,3 +623,18 @@ verification; it never changes the database.
   multi-host relational deployments;
 - [`better-effect-mq-redis`](../better-effect-mq-redis) — choose this for a
   distributed Redis/Valkey deployment.
+
+## Plain JSON escape hatch
+
+For a trusted JSON-safe payload, the core `Codec.json<T>()` codec remains
+available:
+
+```ts
+const AuditJob = Queue.define('audit').job('record', {
+  version: 1,
+  payload: Codec.json<{ readonly event: string }>()
+})
+```
+
+Use a Zod 4 schema through `better-effect-schema/zod` when the Job should
+validate and decode untrusted input at its boundary.

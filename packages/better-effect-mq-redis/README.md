@@ -42,7 +42,7 @@ replication, and failover combination that will run in production.
 ## Installation
 
 ```sh
-bun add better-effect-mq-redis better-effect-mq better-effect better-result redis
+bun add better-effect-mq-redis better-effect-mq better-effect better-result better-effect-schema zod redis
 ```
 
 The `redis` peer is optional. It is loaded only by the `*FromConfig` factories,
@@ -57,25 +57,32 @@ subscriber connections. The adapter only supplies storage; jobs and workers
 remain the `better-effect-mq` application contract:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { Codec, JobEventStore, Queue, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { RedisJobStore } from 'better-effect-mq-redis'
+
+const local = Schema.with(ZodAdapter)
+const SendEmailPayload = z.object({ recipient: z.email() })
+const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
+const sendEmailPayloadCodec = Codec.standardSchema({ schema: SendEmailPayload })
+const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
 
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: sendEmailPayloadCodec,
+  result: sendEmailResultCodec
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
 const emailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
-    return Result.ok(`sent:${payload.recipient}`)
+    return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
 const EmailWorkerLive = EmailWorker.layer(() => ({
@@ -117,7 +124,9 @@ try {
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      const payload = local.decodeUnknown(SendEmailPayload, { recipient: 'ada@example.test' })
+      if (Result.isError(payload)) throw payload.error
+      const jobId = yield* SendEmail.enqueue(payload.value)
       const result = yield* SendEmail.awaitResult(jobId, {
         strategy: 'events',
         eventStore: JobEventStore,
@@ -140,6 +149,11 @@ try {
 persistence is not needed. The Layer initializes the client before exposing the
 services and releases its resources when the runtime is disposed.
 
+The local `better-effect-schema` facade uses the Zod 4 provider for boundary
+validation, and `Codec.standardSchema` adapts those schemas to durable Job
+payloads and results. Redis supplies persistence and wake-ups; it does not
+replace the core Job or Worker APIs.
+
 ## Redis-native outbox transactions
 
 When the domain write is also a Redis write, use `RedisOutbox.transaction`.
@@ -147,6 +161,7 @@ The adapter creates the native `MULTI` context, invokes the callback, appends
 the prepared outbox record, and executes or discards the transaction for you:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { Codec, Queue } from 'better-effect-mq'
 import { Result } from 'better-result'
@@ -156,8 +171,8 @@ import { RedisClient, RedisJobStore, RedisOutbox, RedisOutboxStore } from 'bette
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{ readonly orderId: string }>(),
-  result: Codec.string
+  payload: Codec.standardSchema({ schema: z.object({ orderId: z.string() }) }),
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const redisUrl = process.env.REDIS_URL
@@ -359,6 +374,7 @@ This complete example starts a Redis-backed Worker, enqueues a parent report,
 waits for its child delivery, and prints the collected result:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, Flow, FlowStore, Queue, Worker } from 'better-effect-mq'
@@ -368,19 +384,17 @@ import { RedisClient, RedisFlowStore, RedisJobStore } from 'better-effect-mq-red
 const Reports = Queue.define('reports')
 const BuildReport = Reports.job('build-report', {
   version: 1,
-  payload: Codec.json<{ readonly reportId: string }>(),
-  result: Codec.json<{
-    readonly reportId: string
-    readonly delivered: number
-  }>()
+  payload: Codec.standardSchema({ schema: z.object({ reportId: z.string() }) }),
+  result: Codec.standardSchema({
+    schema: z.object({ reportId: z.string(), delivered: z.number().int() })
+  })
 })
 const DeliverReport = Reports.job('deliver-report', {
   version: 1,
-  payload: Codec.json<{
-    readonly reportId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: Codec.standardSchema({
+    schema: z.object({ reportId: z.string(), recipient: z.email() })
+  }),
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const ReportFlow = Flow.define('build-and-deliver-report', {
@@ -623,3 +637,18 @@ bun run check
 
 Redis integration tests run only when `REDIS_URL` is explicitly configured;
 unit, type, packaging, and consumer checks do not require a live Redis server.
+
+## Plain JSON escape hatch
+
+For a trusted JSON-safe payload, the core `Codec.json<T>()` codec remains
+available:
+
+```ts
+const AuditJob = Queue.define('audit').job('record', {
+  version: 1,
+  payload: Codec.json<{ readonly event: string }>()
+})
+```
+
+Use a Zod 4 schema through `better-effect-schema/zod` when the Job should
+validate and decode untrusted input at its boundary.

@@ -25,7 +25,7 @@ are at least once, so handlers and external side effects must be safe to repeat.
 For a caller-owned `mysql2` pool:
 
 ```sh
-bun add better-effect-mq-mysql better-effect-mq better-effect better-result mysql2
+bun add better-effect-mq-mysql better-effect-mq better-effect better-result better-effect-schema zod mysql2
 ```
 
 Add the outbox foundations when you use the outbox integration; the publisher
@@ -92,10 +92,13 @@ by the application, migrated before the Runtime starts, and borrowed by the
 MySQL layer.
 
 ```ts
+import * as z from 'zod'
 import { createPool } from 'mysql2/promise'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, Queue, Retry, Worker } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { MySqlJobStore, MySqlMigrator } from 'better-effect-mq-mysql'
 import { Result } from 'better-result'
 
@@ -105,14 +108,17 @@ if (uri === undefined) throw new Error('MYSQL_URL is required')
 const pool = createPool(uri)
 await MySqlMigrator.run(pool)
 
+const local = Schema.with(ZodAdapter)
+const SendEmailPayload = z.object({ messageId: z.string().min(1), recipient: z.email() })
+const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
+const sendEmailPayloadCodec = Codec.standardSchema({ schema: SendEmailPayload })
+const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
+
 const Emails = Queue.define('app.emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string,
+  payload: sendEmailPayloadCodec,
+  result: sendEmailResultCodec,
   defaults: {
     attempts: 3,
     backoff: Retry.fixed({ delayMs: 1_000, maxAttempts: 3 }),
@@ -125,7 +131,7 @@ const EmailWorker = Worker.service('@app/EmailWorker')
 const emailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
     // Call the email provider here. Make that call idempotent by messageId.
-    return Result.ok(`sent:${payload.recipient}`)
+    return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
 
@@ -149,10 +155,12 @@ await runtime.warmup()
 try {
   const enqueued = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* SendEmail.enqueue({
+      const payload = local.decodeUnknown(SendEmailPayload, {
         messageId: 'message-123',
         recipient: 'ada@example.test'
       })
+      if (Result.isError(payload)) throw payload.error
+      const jobId = yield* SendEmail.enqueue(payload.value)
       return Result.ok(jobId)
     })
   )
@@ -162,6 +170,10 @@ try {
   await pool.end()
 }
 ```
+
+`Schema.with(ZodAdapter)` provides the provider-backed validation boundary;
+`Codec.standardSchema` adapts the same Zod 4 schemas to durable Job payloads
+and results. `Worker.handle` receives the inferred decoded payload type.
 
 `namespace` is the logical boundary for one application or tenant. Use the
 same namespace when composing the JobStore and its extensions. If you run
@@ -392,6 +404,7 @@ lifecycle while your callback performs the domain write; the adapter appends the
 supplied prepared record automatically after the callback succeeds.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
@@ -401,11 +414,10 @@ import { Result } from 'better-result'
 
 const SendEmail = Queue.define('billing').job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string,
+  payload: Codec.standardSchema({
+    schema: z.object({ messageId: z.string().min(1), recipient: z.email() })
+  }),
+  result: Codec.standardSchema({ schema: z.string() }),
   idempotencyKey: ({ messageId }) => messageId
 })
 
@@ -566,3 +578,18 @@ For the shared APIs and composition patterns, see:
 The adapter's MySQL conformance suites run against a dedicated MySQL instance
 when `MYSQL_URL` is set. Without it, unit, type, package, and artifact checks
 still run; database-engine scenarios are skipped.
+
+## Plain JSON escape hatch
+
+When input is already a trusted JSON-safe value, the core `Codec.json<T>()`
+codec remains available:
+
+```ts
+const AuditJob = Queue.define('audit').job('record', {
+  version: 1,
+  payload: Codec.json<{ readonly event: string }>()
+})
+```
+
+Use a Zod 4 schema through `better-effect-schema/zod` when the Job should
+validate and decode untrusted input at its boundary.
