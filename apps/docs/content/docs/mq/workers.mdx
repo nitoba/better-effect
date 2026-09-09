@@ -36,13 +36,11 @@ const AppWorkerLive = AppWorker.layer(async function* () {
   }
 })
 const runtime = await Runtime.make(
-  Layer.complete(
-    Layer.merge(
-      MemoryJobStore.layer,
-      ClockLive,
-      Layer.succeed(WorkerConfig, WorkerConfig.of({ concurrency: 8 })),
-      AppWorkerLive
-    )
+  Layer.merge(
+    MemoryJobStore.layer,
+    ClockLive,
+    Layer.succeed(WorkerConfig, WorkerConfig.of({ concurrency: 8 })),
+    AppWorkerLive
   )
 )
 
@@ -65,10 +63,10 @@ try {
 
 `Worker.service(tag)` returns a non-constructible, yieldable control token.
 Its factory is lazy and runs once per Layer provider/runtime. Factory Services,
-handler requirements and bound JobStore tokens are retained in the Layer type;
-`JobContext` and `Runtime.Executor` stay internal. The Worker starts only after
-its options and stores have been validated. `AppWorker.succeed(testDouble)` is
-available for caller-owned tests and registers no lifecycle.
+handler requirements and bound JobStore tokens are retained in the Layer type.
+The Worker starts only after its options and stores have been validated.
+`AppWorker.succeed(testDouble)` is available for caller-owned tests and
+registers no lifecycle.
 
 `Runtime.warmup()` is an explicit startup barrier. Without warmup, resolving
 `AppWorker` from a program starts the Worker on first use. Runtime shutdown
@@ -82,3 +80,6 @@ after the application stops accepting work.
 
 A cooperative `AbortSignal` is available for cancellation and timeout. A
 handler that ignores the signal cannot be forcibly killed by JavaScript.
+The imported `SendEmail` descriptor should use a provider-backed Zod 4 codec
+through `better-effect-schema` and `Codec.standardSchema`; keep `Codec.json`
+for trusted JSON-only cases rather than normal boundary payloads.

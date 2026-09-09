@@ -12,7 +12,7 @@ Worker APIs used with the in-memory store.
 ## Install and migrate
 
 ```bash
-bun add better-effect-mq-postgres better-effect-mq better-effect better-result pg
+bun add better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-schema zod pg
 ```
 
 Run migrations as an explicit deployment step. Store acquisition validates the schema but does not
@@ -33,6 +33,7 @@ The descriptor and handler are storage-neutral. Only `PostgresJobStore.layer` ch
 replace another adapter.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobContext, Queue, Worker } from 'better-effect-mq'
@@ -40,13 +41,14 @@ import { PostgresJobStore } from 'better-effect-mq-postgres'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
+const SendEmailPayload = z.object({
+  messageId: z.string().min(1),
+  recipient: z.email()
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{
-    readonly messageId: string
-    readonly recipient: string
-  }>(),
-  result: Codec.string
+  payload: Codec.standardSchema({ schema: SendEmailPayload }),
+  result: Codec.standardSchema({ schema: z.string() })
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
@@ -67,7 +69,7 @@ const WorkerLive = EmailWorker.layer(() => ({
   concurrency: 4,
   pollIntervalMs: 500
 }))
-const AppLive = Layer.complete(Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive)))
+const AppLive = Layer.merge(StorageLive, Layer.merge(ClockLive, WorkerLive))
 
 const runtime = await Runtime.make(AppLive)
 try {
@@ -90,6 +92,9 @@ try {
 
 The pool is borrowed by `PostgresJobStore.layer`; the application closes it after the Runtime. Use
 `PostgresJobStore.layerFromConfig` when the adapter should create and release the pool itself.
+The payload codec is a Zod 4 schema passed through the Standard Schema bridge;
+use [`better-effect-schema`](../schema) when the application also needs
+schema-backed classes or normalized validation failures.
 
 ## Optional capabilities
 

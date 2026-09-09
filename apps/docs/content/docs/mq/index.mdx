@@ -11,6 +11,14 @@ is the atomic persistence seam. A Worker runs handlers over one existing
 `better-effect` Runtime; it does not create a second Runtime or choose a
 database.
 
+For application boundaries, start with a provider-backed schema: the recommended
+path is Zod 4 through [`better-effect-schema`](../integrations/schema), connected
+to a Job with `Codec.standardSchema`. This validates persisted payloads and
+results at the edge while keeping the core provider-neutral. `Codec.json<T>()`
+is an intentional escape hatch for values that are already plain, trusted
+JSON—such as a small internal payload—not the default for HTTP, queue or
+database-boundary examples.
+
 Read the guide that matches the operation you are implementing:
 
 - [Introduction](./introduction) — the queue and delivery model.

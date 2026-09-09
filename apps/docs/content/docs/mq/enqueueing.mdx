@@ -36,6 +36,12 @@ intentional partial batch if a later store operation fails. `poll`,
 `awaitResult`, `attempts`, `cancel`, `promote` and `retry` are separate typed
 operations; `execute` means enqueue then await, not exactly-once RPC.
 
+The imported `SendEmail` descriptor should normally use a provider-backed
+`Codec.standardSchema` codec, such as a Zod 4 schema connected through
+`better-effect-schema`. `Codec.json` remains available for already-trusted
+JSON values, but is an intentional escape hatch rather than the boundary
+default.
+
 Publishing idempotency and handler idempotency are different. An
 `idempotencyKey` prevents duplicate publication for the same store scope. It
 does not make an external side effect safe when a Worker crashes before its

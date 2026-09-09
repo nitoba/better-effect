@@ -9,14 +9,21 @@ persistence or routing. Defining a Job does not resolve a Service, open a
 connection or register a Worker.
 
 ```ts
+import * as z from 'zod'
 import { Codec, Queue, Retry } from 'better-effect-mq'
+
+const SendEmailPayload = z.object({
+  to: z.email(),
+  messageId: z.string().min(1)
+})
+const SendEmailFailure = z.object({ code: z.string().min(1) })
 
 const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.json<{ readonly to: string; readonly messageId: string }>(),
+  payload: Codec.standardSchema({ schema: SendEmailPayload }),
   result: Codec.void,
-  failure: Codec.json<{ readonly code: string }>(),
+  failure: Codec.standardSchema({ schema: SendEmailFailure }),
   defaults: {
     attempts: 5,
     backoff: Retry.exponential({
@@ -28,17 +35,25 @@ const SendEmail = Emails.job('send-email', {
 })
 ```
 
-`Codec.json`, primitive codecs and Standard Schema codecs validate at the
-persistence boundary. Payloads, results and failure values must cross that
-boundary as JSON-safe values. `Job.PayloadInput` describes the codec input;
-`Job.Payload` is the decoded value received by a handler.
+`Codec.standardSchema` is the recommended persistence-boundary codec for a
+provider-backed schema. The Zod 4 schemas above are Standard Schema-compatible
+and can be shared with the rest of an application; `better-effect-schema` adds
+normalized failures and schema-backed classes when those are useful. Primitive
+codecs remain convenient for primitive values. `Job.PayloadInput` describes the
+codec input; `Job.Payload` is the decoded value received by a handler.
+
+`Codec.json<T>()` is an intentional simple JSON escape hatch, not the default
+for boundary examples. Use it only when the value is already trusted and
+JSON-safe and there is no meaningful runtime validation to perform.
 
 Keep a new Job version when a persisted payload or result contract changes:
 
 ```ts
 const SendEmailV2 = Emails.job('send-email', {
   version: 2,
-  payload: Codec.json<{ readonly recipient: string; readonly body: string }>()
+  payload: Codec.standardSchema({
+    schema: z.object({ recipient: z.email(), body: z.string().min(1) })
+  })
 })
 ```
 

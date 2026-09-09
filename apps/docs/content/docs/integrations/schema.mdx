@@ -5,9 +5,11 @@ icon: Braces
 ---
 
 `better-effect-schema` is the provider-neutral schema package for applications
-that need runtime decoding alongside `better-result` and `better-effect`. Its
-root entry point uses Standard Schema and does not import Zod, Valibot or
-ArkType. Provider adapters are explicit subpaths.
+that need runtime decoding alongside `better-result` and `better-effect`. The
+recommended application path is a real provider schema—usually Zod 4—connected
+through the explicit adapter. The root entry point uses Standard Schema and
+does not import Zod, Valibot or ArkType; provider adapters are explicit
+subpaths.
 
 ## Install and choose a provider
 
@@ -29,43 +31,40 @@ provider or add framework lifecycle.
 
 ## Decode and encode
 
-`Schema.Class` describes a decoded class with an explicit Standard Schema
-boundary. Decode and encode operations return `better-result` values; expected
-validation failures are not thrown.
+`Schema.Class` describes a decoded class backed by the provider schema. Decode
+and encode operations return `better-result` values; expected validation
+failures are not thrown. This is the shape to use for HTTP, MQ and other
+untrusted boundaries where runtime validation and a stable application type
+matter.
 
 ```ts
-import type { StandardSchemaV1 } from '@standard-schema/spec'
+import * as z from 'zod'
 import { Result } from 'better-result'
 import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 
-const userFields: StandardSchemaV1<{ readonly id: string }, { readonly id: string }> = {
-  '~standard': {
-    version: 1,
-    vendor: 'example',
-    validate(value) {
-      return typeof value === 'object' &&
-        value !== null &&
-        typeof (value as { id?: unknown }).id === 'string'
-        ? { value: value as { readonly id: string } }
-        : { issues: [{ message: 'Expected a user' }] }
-    }
-  }
-}
+const local = Schema.with(ZodAdapter)
+const UserSchema = z.object({
+  id: z.string().min(1),
+  email: z.email(),
+  displayName: z.string().min(1)
+})
 
-class User extends Schema.Class<User>('example/User')({
-  schema: userFields,
-  propsSchema: userFields,
-  encodedSchema: userFields,
-  encode: (value) => value
-}) {}
+class User extends local.Class<User>('example/User')(UserSchema) {}
 
-const decoded = Schema.decodeUnknown(User, { id: 'user-1' })
+const decoded = Schema.decodeUnknown(User, {
+  id: 'user-1',
+  email: 'ada@example.com',
+  displayName: 'Ada Lovelace'
+})
 if (Result.isError(decoded)) throw decoded.error
 const encoded = Schema.encode(User, decoded.value)
+if (Result.isError(encoded)) throw encoded.error
 ```
 
-Use `Schema.decode` when the encoded input type is known, `Schema.make` for
-decoded constructor props, and the corresponding `Async` operation for an
+Use `Schema.decode` when the encoded input type is known, `Schema.decodeUnknown`
+for data from JSON, HTTP, queues or other untrusted sources, and `Schema.make`
+for decoded constructor props. Use the corresponding `Async` operation for an
 asynchronous validator or encoder. Transformed values must provide an explicit
 encoder; the package never invents a JSON representation.
 
@@ -86,9 +85,20 @@ class Person extends Local.Class<Person>('example/Person')({
 }) {}
 ```
 
-HTTP, MQ codecs and other integrations accept Standard Schema values directly.
-Use the adapter only at the boundary where provider-specific derivation is
-useful; do not add the provider to unrelated packages.
+HTTP, MQ codecs and other integrations accept Standard Schema values directly,
+so a native Zod 4 schema can be passed to `Codec.standardSchema` without
+teaching the core package about Zod. Use `better-effect-schema/zod` when you
+also want schema classes, normalized `Result` failures or provider-backed
+derivations; do not add the provider to unrelated packages.
+
+## Raw Standard Schema: an adapter escape hatch
+
+Most applications should not hand-write a `StandardSchemaV1` object. Prefer a
+provider-backed schema and adapter so validation, issues and inferred types stay
+consistent. Implement raw Standard Schema only when you are authoring a schema
+provider/adapter or integrating a library that already exposes Standard Schema
+and cannot be represented by a supported provider. It is an interoperability
+escape hatch, not the default application example.
 
 ## Tagged classes and errors
 

@@ -9,6 +9,7 @@ heartbeat, stalled recovery, wake, inspection and administration. The core
 never sees SQL, Redis keys, connection objects or driver-specific DTOs.
 
 ```ts
+import * as z from 'zod'
 import { Layer, Runtime } from 'better-effect'
 import { Codec, JobStore, MemoryJobStore, Queue } from 'better-effect-mq'
 
@@ -22,7 +23,7 @@ Bind a Job explicitly when several stores share one Runtime:
 ```ts
 const AuditJob = Queue.define('audit').job('write', {
   version: 1,
-  payload: Codec.json<{ readonly event: string }>(),
+  payload: Codec.standardSchema({ schema: z.object({ event: z.string().min(1) }) }),
   store: Durable
 })
 ```
