@@ -138,7 +138,9 @@ The adapter appends the prepared outbox record after the callback succeeds,
 commits only after that append succeeds, rolls back on thrown, rejected, or
 nominal `Result.err` failures, and always releases the client. Neither helper
 turns a remote publish into a distributed transaction. After commit, compose
-the Runtime-owned publisher beside the existing Worker:
+the Runtime-owned publisher beside the existing `WorkerLive` and the
+`record`/`SendConfirmation` values prepared in the [outbox transaction
+guide](../../outbox):
 
 ```ts
 import { JobStore } from 'better-effect-mq'
@@ -147,13 +149,16 @@ import { PostgresOutbox } from 'better-effect-mq-postgres'
 
 const Routes = OutboxRoutes.make({ orders: JobStore })
 const Publisher = OutboxPublisher.service('@app/OrderOutboxPublisher')
+const PostgresOutboxLive = PostgresOutbox.layer({ pool, namespace: 'orders' })
 const PublisherLive = Publisher.layer(() => ({
   outboxes: [PostgresOutbox] as const,
   routes: Routes,
   concurrency: 2,
   pollIntervalMs: 500
 }))
-// Add PublisherLive and the existing Worker Layer to the same Runtime.
+// Continue with the `runtime` and `WorkerLive` from the quick start. Add
+// PublisherLive and PostgresOutboxLive to
+// the same Runtime as the existing JobStore and Worker layers.
 const delivered = await runtime.run(() =>
   SendConfirmation.awaitResult('order-confirmation:order-123')
 )

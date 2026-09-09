@@ -149,17 +149,15 @@ const emailHandler = Worker.handle(SendEmail, (payload) =>
   })
 )
 
+const AppWorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 500
+}))
 const AppLive = Layer.complete(
   Layer.merge(
     MySqlJobStore.layer({ pool, namespace: 'billing' }),
-    Layer.merge(
-      ClockLive,
-      EmailWorker.layer(() => ({
-        handlers: [emailHandler] as const,
-        concurrency: 4,
-        pollIntervalMs: 500
-      }))
-    )
+    Layer.merge(ClockLive, AppWorkerLive)
   )
 )
 
@@ -371,25 +369,23 @@ For a named JobStore, use `JobEventStore.for(Durable)` and
 ### Flows
 
 `MySqlFlowStore` provides the durable parent/child state needed by `Flow`
-definitions and Worker flow handlers. Start with the complete
-[order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution):
-its parent owns inventory and payment children, each child handler is typed,
-and `collect` returns a useful order summary. MySQL changes only the provider
-behind the same `JobStore` and `FlowStore` tokens. Create the flow store
-explicitly, then provide it under the associated token:
+definitions and Worker flow handlers. The complete
+[order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+defines `FulfillOrder`, its typed inventory and payment children, the two child
+handlers, `FulfillmentHandler`, and `FulfillmentWorkerLive`. The concrete
+MySQL continuation below provides those descriptors with durable storage and
+enqueues the same meaningful parent payload:
 
 ```ts
-import { Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { FlowStore } from 'better-effect-mq'
 import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
+import { Result } from 'better-result'
 
-// Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start. In
-// particular, the flow parent uses the Quick Start's schema-first
-// SendEmailPayload class and codec: the preconfigured Zod Schema facade provides
-// the provider and the codec projects the class with CoreSchema.encode. This
-// composition does not introduce a second payload contract.
-
+// Continue with FulfillOrder and FulfillmentWorkerLive from the canonical
+// order-fulfillment Flow example linked above. `pool` is the application-owned
+// MySQL pool from the setup section.
 const flow = await MySqlFlowStore.make({
   pool,
   namespace: 'billing'
@@ -399,13 +395,29 @@ const FlowLive = Layer.succeed(FlowStore, FlowStore.of(flow))
 const AppWithFlows = Layer.complete(
   Layer.merge(
     Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), FlowLive),
-    Layer.merge(ClockLive, AppWorkerLive)
+    Layer.merge(ClockLive, FulfillmentWorkerLive)
   )
 )
 
 const runtime = await Runtime.make(AppWithFlows)
 try {
-  // Register flow handlers and run the application while this Runtime is live.
+  const execution = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
+      })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
+    })
+  )
+  if (Result.isError(execution)) throw execution.error
+  console.log(execution.value)
 } finally {
   await runtime.dispose()
   await flow.dispose()

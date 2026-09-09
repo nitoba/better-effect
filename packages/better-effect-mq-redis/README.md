@@ -283,8 +283,10 @@ run when a later command reports an error, so use deterministic IDs and
 idempotent Redis writes when retrying an uncertain result.
 
 After the Redis transaction commits, the Runtime-owned publisher and Worker
-deliver the same prepared request. Route to the `JobStore` Service token (not
-the store instance), and keep the Worker handler from the normal queue example:
+deliver the same prepared request. Continue with the `SendEmail` descriptor and
+`EmailWorkerLive` from the Quick Start and the `redisUrl` from the transaction
+example. Route to the `JobStore` Service token (not the store instance), and
+keep the Worker handler from the normal queue example:
 
 ```ts
 import { Layer, Runtime } from 'better-effect'
@@ -437,20 +439,21 @@ namespace.
 ## Durable Redis flows
 
 A Flow is a parent Job that creates typed child Jobs and collects their terminal
-results. Start with the complete [order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution):
-its parent fans out to one inventory child per line and a payment child, then
-`collect` returns reservation, payment, and failure information. The
-provider-backed Zod 4 classes and `CoreSchema.encode` in that example are the
-recommended schema-first boundary; Redis changes only durable storage.
-
-Create the Redis flow provider and compose it with the same Worker that
-registers the canonical flow route and child handlers:
+results. The complete [order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+defines `FulfillOrder`, its typed inventory and payment children, the two child
+handlers, `FulfillmentHandler`, and `FulfillmentWorkerLive`. The concrete Redis
+continuation below provides those descriptors with durable storage and enqueues
+the same meaningful parent payload:
 
 ```ts
-import { Layer } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { FlowStore } from 'better-effect-mq'
 import { RedisClient, RedisFlowStore, RedisJobStore } from 'better-effect-mq-redis'
+import { Result } from 'better-result'
 
+// Continue with FulfillOrder and FulfillmentWorkerLive from the canonical
+// order-fulfillment Flow example linked above.
 const redisUrl = process.env.REDIS_URL
 if (redisUrl === undefined) throw new Error('REDIS_URL is required')
 const redis = await RedisClient.fromConfig({ url: redisUrl, namespace: 'orders' })
@@ -463,9 +466,36 @@ const ApplicationLive = Layer.complete(
       subscriber: redis.subscriber,
       namespace: 'orders'
     }),
-    Layer.succeed(FlowStore, FlowStore.of(flowStore))
+    Layer.merge(
+      Layer.succeed(FlowStore, FlowStore.of(flowStore)),
+      Layer.merge(ClockLive, FulfillmentWorkerLive)
+    )
   )
 )
+const runtime = await Runtime.make(ApplicationLive)
+
+try {
+  const execution = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
+      })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
+    })
+  )
+  if (Result.isError(execution)) throw execution.error
+  console.log(execution.value)
+} finally {
+  await runtime.dispose()
+  await redis.dispose()
+}
 ```
 
 The JobStore Layer borrows the initialized clients. The surrounding application

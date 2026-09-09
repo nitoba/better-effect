@@ -301,26 +301,55 @@ schedule; use a Worker to process the resulting Jobs. For named stores, pair
 ## Flows: durable parent/child work
 
 Use a Flow when one Job coordinates related work that should fan out to
-children and then fan in to a parent result—for example, the
-[order-fulfillment workflow](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
-that reserves each line and charges the order. That canonical example defines
-meaningful parent and child payload/result schemas, registers both child
-handlers, and explains the difference between `onChildFailure: 'continue'`
-and `'fail'`. The PostgreSQL adapter supplies only the durable persistence
-behind the same `JobStore` and `FlowStore` APIs.
+children and then fan in to a parent result. The canonical
+[order-fulfillment Flow example](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+defines `FulfillOrder`, its typed inventory and payment children, the two child
+handlers, `FulfillmentHandler`, and `FulfillmentWorkerLive`. The concrete
+PostgreSQL continuation below provides those descriptors with durable storage
+and enqueues the same meaningful parent payload:
 
 ```ts
-import { Layer } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { FlowStore } from 'better-effect-mq'
 import { PostgresFlowStore, PostgresJobStore } from 'better-effect-mq-postgres'
+import { Result } from 'better-result'
 
+// Continue with FulfillOrder and FulfillmentWorkerLive from the canonical
+// order-fulfillment Flow example linked above. `pool` is the application-owned
+// PostgreSQL pool from the setup section.
 const flowStore = await PostgresFlowStore.make({ pool, namespace: 'orders' })
 const FlowStorageLive = Layer.merge(
   PostgresJobStore.layer({ pool, namespace: 'orders' }),
   Layer.succeed(FlowStore, FlowStore.of(flowStore))
 )
+const AppLive = Layer.complete(
+  Layer.merge(FlowStorageLive, Layer.merge(ClockLive, FulfillmentWorkerLive))
+)
+const runtime = await Runtime.make(AppLive)
 
-// Add FlowStorageLive to the Runtime with the Worker Layer from the canonical example.
+try {
+  const execution = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
+      })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
+    })
+  )
+  if (Result.isError(execution)) throw execution.error
+  console.log(execution.value)
+} finally {
+  await runtime.dispose()
+  await flowStore.dispose()
+}
 ```
 
 The Worker executes the Flow phases and relays child outcomes through the

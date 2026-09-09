@@ -297,32 +297,61 @@ const NamedSchedulesLive = MongoJobScheduleStore.layerFor(DurableSchedules, {
 
 ### Flows
 
-Flows are defined by `better-effect-mq`; MongoDB only supplies the durable
-`FlowStore`. Use the complete [order-fulfillment Flow example](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
-to define the parent and its typed inventory/payment children, register both
-child handlers and the `Flow.handle` route, enqueue the parent, and await its
-aggregate result. Its provider-backed Zod 4 classes and `CoreSchema.encode`
-are the recommended schema-first boundary for persisted payloads.
-
-The MongoDB-specific composition is the provider swap:
+Flows are defined by `better-effect-mq`; MongoDB supplies the durable
+`FlowStore` and `JobStore` behind the same APIs. The canonical
+[order-fulfillment Flow example](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+defines `FulfillOrder`, its typed inventory and payment children, the two child
+handlers, `FulfillmentHandler`, and `FulfillmentWorkerLive`. The concrete
+MongoDB continuation below provides those descriptors with durable storage and
+enqueues the same meaningful parent payload:
 
 ```ts
-import { Layer } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
+import { Result } from 'better-result'
 
+// Continue with FulfillOrder and FulfillmentWorkerLive from the canonical
+// order-fulfillment Flow example linked above. `db` is the application-owned
+// database from the MongoDB setup section.
 const FlowStorageLive = Layer.merge(
   MongoJobStore.layer({ db, namespace: 'application' }),
   MongoFlowStore.layer({ db, namespace: 'application' })
 )
-// Add FlowStorageLive to the Runtime with the Worker Layer from the canonical example.
+const AppLive = Layer.complete(
+  Layer.merge(FlowStorageLive, Layer.merge(ClockLive, FulfillmentWorkerLive))
+)
+const runtime = await Runtime.make(AppLive)
+
+try {
+  const execution = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
+      })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
+    })
+  )
+  if (Result.isError(execution)) throw execution.error
+  console.log(execution.value)
+} finally {
+  await runtime.dispose()
+}
 ```
 
 The parent enqueue starts `fanOut` once. MongoDB durably stores the parent
-manifest, child progress, terminal reports, and relay work; the worker uses
-the ordinary `JobStore` to deliver children and `collect` reads their outcomes
-from `FlowStore`. Delivery is at least once, so child handlers and external
-effects must be safe to replay. For a named JobStore, provide the associated
-flow token with `MongoFlowStore.layerFor` as shown below.
+manifest, child progress, terminal reports, and relay work; the Worker uses the
+ordinary `JobStore` to deliver children and `collect` reads their outcomes from
+`FlowStore`. Delivery is at least once, so child handlers and external effects
+must be safe to replay. For a named JobStore, provide the associated flow token
+with `MongoFlowStore.layerFor` as shown below.
 
 For an independent job store in the same Runtime, use a named job token and
 the adapter's matching flow Layer:
