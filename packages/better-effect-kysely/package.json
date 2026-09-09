@@ -59,7 +59,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
     "@types/bun": "1.4.1",
-    "better-effect": "0.13.0",
+    "better-effect": "0.14.0",
     "better-result": "^3.0.0",
     "kysely": "0.29.5",
     "lefthook": "^2.1.10",

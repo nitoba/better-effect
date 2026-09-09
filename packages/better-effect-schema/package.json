@@ -97,7 +97,7 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "arktype": "2.2.3",
-    "better-effect": "0.13.0",
+    "better-effect": "0.14.0",
     "better-effect-mq": "0.1.0",
     "better-result": "3.0.1",
     "publint": "^0.3.23",

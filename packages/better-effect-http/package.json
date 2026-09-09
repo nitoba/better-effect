@@ -67,7 +67,7 @@
     "@types/bun": "1.4.1",
     "@types/node": "26.1.2",
     "arktype": "2.2.3",
-    "better-effect": "0.13.0",
+    "better-effect": "0.14.0",
     "better-effect-schema": "0.1.0",
     "better-result": "^3.0.0",
     "hono": "4.13.3",
