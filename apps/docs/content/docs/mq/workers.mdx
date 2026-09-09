@@ -13,7 +13,8 @@ import { Effect, Layer, Runtime, Service } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { JobContext, JobStore, MemoryJobStore, Worker } from 'better-effect-mq'
-import { SendEmail } from './jobs'
+
+// SendEmail is the canonical descriptor from Defining Jobs above.
 
 class WorkerConfig extends Service<WorkerConfig>()('WorkerConfig') {
   readonly concurrency!: number

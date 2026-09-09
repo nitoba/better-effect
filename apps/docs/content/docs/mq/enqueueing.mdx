@@ -10,8 +10,9 @@ A Job is a typed producer program. It needs a Runtime that provides its bound
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
-import { MemoryJobStore, JobStore } from 'better-effect-mq'
-import { SendEmail } from './jobs'
+import { MemoryJobStore } from 'better-effect-mq'
+
+// SendEmail is the canonical descriptor from Defining Jobs above.
 
 const runtime = await Runtime.make(Layer.merge(MemoryJobStore.layer, ClockLive))
 try {

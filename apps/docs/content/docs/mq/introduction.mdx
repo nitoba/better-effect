@@ -198,7 +198,9 @@ store contract, not a second worker or a private state mutator.
 ```ts
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { TestJobStore } from 'better-effect-mq/testing'
-import { SendEmail } from './jobs'
+
+// SendEmail is the canonical descriptor from the Define a queue and jobs
+// section above.
 
 const testStore = TestJobStore.make({
   clock: new ClockTest(0),

@@ -15,9 +15,8 @@ There are two separate idempotency boundaries:
   key so a redelivered attempt is a no-op or safely replaces the prior write.
 
 ```ts
-import { SendEmail } from './jobs'
-
-// SendEmail uses the schema-backed payload codec from the canonical Job definition.
+// SendEmail is the canonical descriptor from Defining Jobs above and uses its
+// schema-backed payload codec.
 
 // The email provider should also receive messageId as its idempotency key.
 ```
