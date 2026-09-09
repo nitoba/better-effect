@@ -112,14 +112,30 @@ record first; the adapter creates the `MULTI` context, appends the record automa
 the commands, and discards the context when the callback fails:
 
 ```ts
+import { Effect } from 'better-effect'
 import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
-import { RedisOutbox } from 'better-effect-mq-redis'
+import { RedisClient, RedisOutbox } from 'better-effect-mq-redis'
 import { Result } from 'better-result'
 
+const redisUrl = process.env.REDIS_URL
+if (redisUrl === undefined) throw new Error('REDIS_URL is required')
+const redis = await RedisClient.fromConfig({ url: redisUrl, namespace: 'orders' })
+await redis.initialize()
+const prepared = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(
+      yield* SendEmail.prepare(
+        { messageId: 'message-123', recipient: 'ada@example.test' },
+        { jobId: 'email:message-123' }
+      )
+    )
+  })
+)
+if (Result.isError(prepared)) throw prepared.error
 const record = makeOutboxRecord({
   id: OutboxId.make('outbox:message-123').unwrap(),
   target: 'emails',
-  request: preparedRequest,
+  request: prepared.value,
   attemptsMax: 5
 })
 if (Result.isError(record)) throw record.error
@@ -133,6 +149,27 @@ if (Result.isError(committed)) throw committed.error
 
 This boundary is atomic only for Redis-native writes in the same namespace. It cannot include a
 PostgreSQL, MySQL, SQLite, MongoDB, or remote-service write in `MULTI/EXEC`; use that database's
-transaction helper for a database-owned domain write. Compose `RedisOutboxStore.layer*` with the
-publisher when a committed record should feed a Job, and see the [outbox transaction guide](../../outbox)
-for route and publisher setup.
+transaction helper for a database-owned domain write. After commit, compose
+`RedisOutboxStore.layer*` with a Runtime-owned publisher and the existing Worker:
+
+```ts
+import { JobStore } from 'better-effect-mq'
+import { OutboxPublisher, OutboxRoutes, OutboxStore } from 'better-effect-mq-outbox'
+
+const Routes = OutboxRoutes.make({ emails: JobStore })
+const Publisher = OutboxPublisher.service('@app/EmailOutboxPublisher')
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [OutboxStore] as const,
+  routes: Routes,
+  concurrency: 2,
+  pollIntervalMs: 500
+}))
+// Add PublisherLive and the existing EmailWorkerLive to the same Runtime.
+const delivered = await runtime.run(() => SendEmail.awaitResult('email:message-123'))
+```
+
+`OutboxRoutes` stores the `JobStore` Service token, never a store instance. A
+crash after enqueue and before settlement can replay the request; use the
+deterministic Job ID as the downstream idempotency key. See the [outbox
+transaction guide](../../outbox) for the complete order-to-confirmation
+workflow and route setup.

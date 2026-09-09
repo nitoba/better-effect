@@ -297,134 +297,32 @@ const NamedSchedulesLive = MongoJobScheduleStore.layerFor(DurableSchedules, {
 
 ### Flows
 
-Flows are also defined by `better-effect-mq`. The MongoDB adapter supplies the `FlowStore` persistence that lets a Worker fan out child jobs and collect their results. Define the parent and child jobs, register a `Flow.handle` route with the Worker, and provide `MongoFlowStore.layer` alongside the job store:
+Flows are defined by `better-effect-mq`; MongoDB only supplies the durable
+`FlowStore`. Use the complete [order-fulfillment Flow example](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+to define the parent and its typed inventory/payment children, register both
+child handlers and the `Flow.handle` route, enqueue the parent, and await its
+aggregate result. Its provider-backed Zod 4 classes and `CoreSchema.encode`
+are the recommended schema-first boundary for persisted payloads.
+
+The MongoDB-specific composition is the provider swap:
 
 ```ts
-import * as z from 'zod'
-import { Effect, Layer, Runtime } from 'better-effect'
-import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema as CoreSchema } from 'better-effect-schema'
-import { Schema } from 'better-effect-schema/zod'
-import { Result } from 'better-result'
+import { Layer } from 'better-effect'
 import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
 
-class BuildReportPayload extends Schema.Class<BuildReportPayload>('app/BuildReportPayload')({
-  accountId: z.string()
-}) {}
-const buildReportPayloadCodec = Codec.standardSchema({
-  schema: BuildReportPayload,
-  encode: (value) =>
-    CoreSchema.encode(BuildReportPayload, value).mapError(
-      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
-    )
-})
-class GenerateSectionPayload extends Schema.Class<GenerateSectionPayload>(
-  'app/GenerateSectionPayload'
-)({
-  accountId: z.string(),
-  section: z.string()
-}) {}
-const generateSectionPayloadCodec = Codec.standardSchema({
-  schema: GenerateSectionPayload,
-  encode: (value) =>
-    CoreSchema.encode(GenerateSectionPayload, value).mapError(
-      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
-    )
-})
-
-const Reports = Queue.define('application.reports')
-const BuildReport = Reports.job('build-report', {
-  version: 1,
-  payload: buildReportPayloadCodec,
-  result: Codec.standardSchema({ schema: z.object({ reportId: z.string() }) })
-})
-const GenerateSection = Reports.job('generate-section', {
-  version: 1,
-  payload: generateSectionPayloadCodec,
-  result: Codec.standardSchema({ schema: z.object({ section: z.string() }) })
-})
-
-const ReportFlow = Flow.define('build-report', {
-  parent: BuildReport,
-  children: [GenerateSection] as const,
-  onChildFailure: 'continue'
-})
-
-const ReportRoute = Flow.handle(ReportFlow, {
-  fanOut: (payload) =>
-    Effect.fn(async function* () {
-      return Result.ok([
-        Flow.children(GenerateSection, [
-          { key: 'summary', payload: { accountId: payload.accountId, section: 'summary' } },
-          { key: 'activity', payload: { accountId: payload.accountId, section: 'activity' } }
-        ])
-      ] as const)
-    }),
-  collect: (_payload, results) =>
-    Effect.fn(async function* () {
-      const children = yield* Result.await(
-        // FlowResults is invoked in the Runtime that provides MongoFlowStore.
-        Promise.resolve(results.all()()) as Promise<
-          Result<readonly import('better-effect-mq').FlowSettledChild<typeof ReportFlow>[], never>
-        >
-      )
-      return Result.ok({ reportId: `report:${children.length}` })
-    })
-})
-
-const sectionHandler = Worker.handle(GenerateSection, (payload) =>
-  Effect.fn(async function* () {
-    console.log(`rendering ${payload.section} for ${payload.accountId}`)
-    return Result.ok({ section: payload.section })
-  })
+const FlowStorageLive = Layer.merge(
+  MongoJobStore.layer({ db, namespace: 'application' }),
+  MongoFlowStore.layer({ db, namespace: 'application' })
 )
-
-const ReportsWorker = Worker.service('ApplicationReportsWorker')
-const ReportsWorkerLive = ReportsWorker.layer(() => ({
-  handlers: [sectionHandler] as const,
-  flows: [ReportRoute] as const,
-  concurrency: 4,
-  pollIntervalMs: 100,
-  flowSweepIntervalMs: 1_000
-}))
-
-const ApplicationLive = Layer.complete(
-  Layer.merge(
-    MongoJobStore.layer({ db, namespace: 'application' }),
-    Layer.merge(
-      MongoFlowStore.layer({ db, namespace: 'application' }),
-      Layer.merge(ClockLive, ReportsWorkerLive)
-    )
-  )
-)
-
-const runtime = await Runtime.make(ApplicationLive)
-await runtime.warmup()
-
-try {
-  const completed = await runtime.run(() =>
-    Effect.gen(async function* () {
-      const payload = Schema.decodeUnknown(BuildReportPayload, { accountId: 'account-123' })
-      if (Result.isError(payload)) throw payload.error
-      const flowId = yield* BuildReport.enqueue(payload.value)
-      const result = yield* BuildReport.awaitResult(flowId)
-      return Result.ok({ flowId, result })
-    })
-  )
-  if (Result.isError(completed)) throw completed.error
-  console.log(completed.value)
-} finally {
-  await runtime.dispose()
-}
+// Add FlowStorageLive to the Runtime with the Worker Layer from the canonical example.
 ```
 
-The parent enqueue starts the registered flow route. The worker creates the `GenerateSection` children, settles them through the MongoDB `JobStore`, and the route's `collect` phase reads the completed children from the MongoDB `FlowStore`. The application still uses only `better-effect-mq` operations; MongoDB is the durable implementation behind those Services.
-The parent follows the schema-first boundary from the Quick Start:
-The preconfigured Zod `Schema` facade gives the handler a decoded class, and
-`CoreSchema.encode` projects it back to JSON through
-the codec. Result/failure schemas remain concise Standard Schema shapes because
-those values are already plain JSON.
+The parent enqueue starts `fanOut` once. MongoDB durably stores the parent
+manifest, child progress, terminal reports, and relay work; the worker uses
+the ordinary `JobStore` to deliver children and `collect` reads their outcomes
+from `FlowStore`. Delivery is at least once, so child handlers and external
+effects must be safe to replay. For a named JobStore, provide the associated
+flow token with `MongoFlowStore.layerFor` as shown below.
 
 For an independent job store in the same Runtime, use a named job token and
 the adapter's matching flow Layer:
@@ -475,33 +373,34 @@ import {
 } from 'better-effect-mq-outbox'
 import { MongoJobStore, MongoOutbox, MongoOutboxStore } from 'better-effect-mq-mongodb'
 
-class InvoiceEmailPayload extends Schema.Class<InvoiceEmailPayload>('app/InvoiceEmailPayload')({
+class ConfirmationPayload extends Schema.Class<ConfirmationPayload>('app/ConfirmationPayload')({
   orderId: z.string(),
   recipient: z.email()
 }) {}
-const invoiceEmailPayloadCodec = Codec.standardSchema({
-  schema: InvoiceEmailPayload,
+const confirmationPayloadCodec = Codec.standardSchema({
+  schema: ConfirmationPayload,
   encode: (value) =>
-    CoreSchema.encode(InvoiceEmailPayload, value).mapError(
+    CoreSchema.encode(ConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
 
-const InvoiceEmails = Queue.define('application.invoice-emails')
-const SendInvoiceEmail = InvoiceEmails.job('send-invoice-email', {
+const Orders = Queue.define('application.orders')
+const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: invoiceEmailPayloadCodec,
-  result: Codec.standardSchema({ schema: z.string() })
+  payload: confirmationPayloadCodec,
+  result: Codec.standardSchema({ schema: z.string() }),
+  idempotencyKey: ({ orderId }) => `confirmation:${orderId}`
 })
-const invoiceHandler = Worker.handle(SendInvoiceEmail, (payload) =>
+const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
   Effect.fn(async function* () {
-    console.log(`sending invoice for ${payload.orderId} to ${payload.recipient}`)
+    console.log(`sending order confirmation for ${payload.orderId} to ${payload.recipient}`)
     return Result.ok(`sent:${payload.orderId}`)
   })
 )
-const ApplicationWorker = Worker.service('ApplicationInvoiceWorker')
+const ApplicationWorker = Worker.service('ApplicationOrderWorker')
 const ApplicationWorkerLive = ApplicationWorker.layer(() => ({
-  handlers: [invoiceHandler] as const,
+  handlers: [confirmationHandler] as const,
   concurrency: 4,
   pollIntervalMs: 100
 }))
@@ -532,13 +431,13 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const payload = Schema.decodeUnknown(InvoiceEmailPayload, {
+    const payload = Schema.decodeUnknown(ConfirmationPayload, {
       orderId: 'order-123',
       recipient: 'ada@example.test'
     })
     if (Result.isError(payload)) throw payload.error
-    const prepared = yield* SendInvoiceEmail.prepare(payload.value, {
-      jobId: 'invoice-email:order-123'
+    const prepared = yield* SendConfirmation.prepare(payload.value, {
+      jobId: 'order-confirmation:order-123'
     })
     return Result.ok(prepared)
   })
@@ -546,7 +445,7 @@ const preparedResult = await runtime.run(() =>
 if (Result.isError(preparedResult)) throw preparedResult.error
 
 const record = makeOutboxRecord({
-  id: OutboxId.make('invoice-email:order-123').unwrap(),
+  id: OutboxId.make('order-confirmation:order-123').unwrap(),
   target: 'jobs',
   request: preparedResult.value,
   attemptsMax: 5
@@ -571,7 +470,7 @@ const jobResult = await runtime.run(() =>
   Effect.gen(async function* () {
     const jobId = record.value.request.id
     if (jobId === undefined) throw new Error('the prepared request has no job ID')
-    const result = yield* SendInvoiceEmail.awaitResult(jobId)
+    const result = yield* SendConfirmation.awaitResult(jobId)
     return Result.ok({ jobId, result })
   })
 )

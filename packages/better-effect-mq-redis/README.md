@@ -282,6 +282,42 @@ eventual. Redis transactions also do not roll back commands that have already
 run when a later command reports an error, so use deterministic IDs and
 idempotent Redis writes when retrying an uncertain result.
 
+After the Redis transaction commits, the Runtime-owned publisher and Worker
+deliver the same prepared request. Route to the `JobStore` Service token (not
+the store instance), and keep the Worker handler from the normal queue example:
+
+```ts
+import { Layer, Runtime } from 'better-effect'
+import { JobStore } from 'better-effect-mq'
+import { OutboxPublisher, OutboxRoutes } from 'better-effect-mq-outbox'
+import { RedisJobStore, RedisOutboxStore } from 'better-effect-mq-redis'
+
+const Routes = OutboxRoutes.make({ emails: JobStore })
+const Publisher = OutboxPublisher.service('@app/EmailOutboxPublisher')
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [OutboxStore] as const,
+  routes: Routes,
+  concurrency: 2,
+  pollIntervalMs: 500
+}))
+const ApplicationLive = Layer.complete(
+  Layer.merge(
+    RedisJobStore.layerFromConfig({ url: redisUrl, namespace: 'orders' }),
+    Layer.merge(
+      RedisOutboxStore.layerFromConfig({ url: redisUrl, namespace: 'orders' }),
+      Layer.merge(EmailWorkerLive, PublisherLive)
+    )
+  )
+)
+const applicationRuntime = await Runtime.make(ApplicationLive)
+const completed = await applicationRuntime.run(() => SendEmail.awaitResult('send-email:order-123'))
+```
+
+The publisher claims the committed record, enqueues it in `JobStore`, and only
+then settles the outbox row. A crash between enqueue and settlement can repeat
+the enqueue; the deterministic Job ID and the handler's downstream idempotency
+key make that replay converge. It is still at-least-once, not exactly-once.
+
 ### Advanced: native client integrations
 
 `RedisTransaction` and `RedisCommandClient.multi()` remain available for
@@ -401,166 +437,41 @@ namespace.
 ## Durable Redis flows
 
 A Flow is a parent Job that creates typed child Jobs and collects their terminal
-results. Register the Flow handler alongside ordinary Worker handlers; the
-parent and child Jobs use the same `Queue`/`Job` contract as the queue example
-above. `RedisFlowStore.make` supplies the durable parent/child state, while the
-associated `FlowStore` Layer makes it available to the Worker.
+results. Start with the complete [order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution):
+its parent fans out to one inventory child per line and a payment child, then
+`collect` returns reservation, payment, and failure information. The
+provider-backed Zod 4 classes and `CoreSchema.encode` in that example are the
+recommended schema-first boundary; Redis changes only durable storage.
 
-This complete example starts a Redis-backed Worker, enqueues a parent report,
-waits for its child delivery, and prints the collected result:
+Create the Redis flow provider and compose it with the same Worker that
+registers the canonical flow route and child handlers:
 
 ```ts
-import * as z from 'zod'
-import { Effect, Layer, Runtime } from 'better-effect'
-import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema as CoreSchema } from 'better-effect-schema'
-import { Schema } from 'better-effect-schema/zod'
-import { Result } from 'better-result'
+import { Layer } from 'better-effect'
+import { FlowStore } from 'better-effect-mq'
 import { RedisClient, RedisFlowStore, RedisJobStore } from 'better-effect-mq-redis'
-
-class BuildReportPayload extends Schema.Class<BuildReportPayload>('app/BuildReportPayload')({
-  reportId: z.string()
-}) {}
-const buildReportPayloadCodec = Codec.standardSchema({
-  schema: BuildReportPayload,
-  encode: (value) =>
-    CoreSchema.encode(BuildReportPayload, value).mapError(
-      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
-    )
-})
-class DeliverReportPayload extends Schema.Class<DeliverReportPayload>('app/DeliverReportPayload')({
-  reportId: z.string(),
-  recipient: z.email()
-}) {}
-const deliverReportPayloadCodec = Codec.standardSchema({
-  schema: DeliverReportPayload,
-  encode: (value) =>
-    CoreSchema.encode(DeliverReportPayload, value).mapError(
-      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
-    )
-})
-
-const Reports = Queue.define('reports')
-const BuildReport = Reports.job('build-report', {
-  version: 1,
-  payload: buildReportPayloadCodec,
-  result: Codec.standardSchema({
-    schema: z.object({ reportId: z.string(), delivered: z.number().int() })
-  })
-})
-const DeliverReport = Reports.job('deliver-report', {
-  version: 1,
-  payload: deliverReportPayloadCodec,
-  result: Codec.standardSchema({ schema: z.string() })
-})
-
-const ReportFlow = Flow.define('build-and-deliver-report', {
-  parent: BuildReport,
-  children: [DeliverReport] as const,
-  onChildFailure: 'fail'
-})
-
-const reportFlow = Flow.handle(ReportFlow, {
-  fanOut: (payload) =>
-    Effect.fn(async function* () {
-      return Result.ok([
-        Flow.children(DeliverReport, [
-          {
-            key: `email:${payload.reportId}`,
-            payload: {
-              reportId: payload.reportId,
-              recipient: 'ada@example.test'
-            }
-          }
-        ])
-      ] as const)
-    }),
-  collect: (payload, results) =>
-    Effect.fn(async function* () {
-      const children = yield* Result.await(results.all()())
-      return Result.ok({
-        reportId: payload.reportId,
-        delivered: children.filter((child) => child.outcome === 'completed').length
-      })
-    })
-})
-
-const deliverReport = Worker.handle(DeliverReport, (payload) =>
-  Effect.fn(async function* () {
-    console.log(`delivered ${payload.reportId} to ${payload.recipient}`)
-    return Result.ok(`delivered:${payload.reportId}`)
-  })
-)
-
-const ReportWorker = Worker.service('@app/ReportWorker')
-const ReportWorkerLive = ReportWorker.layer(() => ({
-  handlers: [deliverReport] as const,
-  flows: [reportFlow] as const,
-  concurrency: 2,
-  pollIntervalMs: 100,
-  flowSweepIntervalMs: 100,
-  flowBatchSize: 32
-}))
 
 const redisUrl = process.env.REDIS_URL
 if (redisUrl === undefined) throw new Error('REDIS_URL is required')
-
-const redis = await RedisClient.fromConfig({
-  url: redisUrl,
-  namespace: 'reports'
-})
+const redis = await RedisClient.fromConfig({ url: redisUrl, namespace: 'orders' })
 await redis.initialize()
 const flowStore = RedisFlowStore.make(redis)
-
-const AppLive = Layer.complete(
+const ApplicationLive = Layer.complete(
   Layer.merge(
     RedisJobStore.layer({
       client: redis.client,
       subscriber: redis.subscriber,
-      namespace: 'reports'
+      namespace: 'orders'
     }),
-    Layer.merge(
-      Layer.succeed(FlowStore, FlowStore.of(flowStore)),
-      Layer.merge(ClockLive, ReportWorkerLive)
-    )
+    Layer.succeed(FlowStore, FlowStore.of(flowStore))
   )
 )
-const runtime = await Runtime.make(AppLive)
-
-try {
-  const started = await runtime.run(() =>
-    Effect.gen(async function* () {
-      return Result.ok(yield* ReportWorker)
-    })
-  )
-  if (Result.isError(started)) throw started.error
-
-  const result = await runtime.run(() =>
-    Effect.gen(async function* () {
-      const payload = Schema.decodeUnknown(BuildReportPayload, { reportId: 'weekly-2025-01' })
-      if (Result.isError(payload)) throw payload.error
-      const jobId = yield* BuildReport.enqueue(payload.value)
-      const completed = yield* BuildReport.awaitResult(jobId)
-      return Result.ok({ jobId, completed })
-    })
-  )
-  if (Result.isError(result)) throw result.error
-
-  console.log(result.value)
-  await started.value.awaitIdle({ timeoutMs: 10_000 })
-} finally {
-  await runtime.dispose()
-  await redis.dispose()
-}
 ```
 
-The JobStore Layer borrows the already initialized command and subscriber
-clients. The surrounding application owns that `RedisClient`, so it disposes
-the Runtime first and the client second. The parent payload uses the same
-schema-first boundary (the preconfigured Zod `Schema`, `Schema.Class`, and
-`CoreSchema.encode`); concise result/failure codecs are suitable for plain-JSON
-values. For a named JobStore, provide
+The JobStore Layer borrows the initialized clients. The surrounding application
+owns that `RedisClient`, so it disposes the Runtime first and the client second.
+Child enqueue and relay are at least once; stable child keys and idempotent
+handlers make recovery after a crash safe. For a named JobStore, provide
 `FlowStore.for(namedStore)` and the matching `RedisFlowStore` instance under
 that associated token.
 

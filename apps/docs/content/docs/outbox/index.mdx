@@ -7,8 +7,14 @@ icon: Send
 `better-effect-mq-outbox` is the storage-neutral outbox package for
 `better-effect-mq`. It defines immutable `OutboxRecord` values, an
 `OutboxStore` contract, explicit target routes and a Layer-owned publisher.
-Database adapters remain separate packages and own their transaction boundaries. Prepare a request
-and `OutboxRecord` first, then let the selected adapter append it after the domain callback succeeds.
+Database adapters remain separate packages and own their transaction boundaries. In the concrete
+order-to-confirmation workflow below, the order row and the confirmation request become visible
+together, then a Runtime-owned publisher and Worker deliver the confirmation after commit.
+
+Without an outbox, an application can commit an order and crash before enqueueing its confirmation,
+or enqueue first and then roll back the order. Those two writes have no shared boundary. The outbox
+stores the prepared request beside the order so either both are durable or neither is; it does not
+put an email provider or other remote side effect inside the database transaction.
 Use a provider-backed Zod 4 schema through `Codec.standardSchema` for the Job
 payload; the [`better-effect-schema`](../integrations/schema) guide covers
 schema-backed classes and normalized failures. The [trusted JSON escape hatch](../mq/defining-jobs#trusted-json-escape-hatch)
@@ -63,7 +69,8 @@ const SendEmailPayloadCodec = Codec.standardSchema({
 const SendEmail = Emails.job('send-email', {
   version: 1,
   payload: SendEmailPayloadCodec,
-  result: Codec.standardSchema({ schema: z.string() })
+  result: Codec.standardSchema({ schema: z.string() }),
+  idempotencyKey: ({ messageId }) => `confirmation:${messageId}`
 })
 
 const EmailWorker = Worker.service('@app/EmailWorker')
@@ -74,7 +81,7 @@ const emailHandler = Worker.handle(SendEmail, (payload) =>
   })
 )
 
-const BillingOutbox = OutboxStore.named('billing')
+const BillingOutbox = OutboxStore
 const Routes = OutboxRoutes.make({ jobs: JobStore })
 const Publisher = OutboxPublisher.service('@app/OutboxPublisher')
 const StorageLive = Layer.merge(
@@ -115,9 +122,10 @@ try {
 }
 ```
 
-The example uses in-memory stores only to show the composition shape. In production, replace the
-two storage providers with a database adapter and use that adapter's transaction helper to append
-the prepared record with the domain change.
+The example uses in-memory stores only to show the publisher and Worker composition. In production,
+replace the two storage providers with a database adapter and use that adapter's transaction helper
+as shown below. `OutboxRoutes.make({ jobs: JobStore })` maps the persisted target to the `JobStore`
+Service token; it never captures a store instance.
 
 ## Prepare before the transaction
 
@@ -133,18 +141,17 @@ import { JobStore } from 'better-effect-mq'
 import { OutboxId, OutboxRoutes, OutboxStore, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
-const BillingOutbox = OutboxStore.named('billing')
-const BillingJobs = JobStore.named('billing-jobs')
-const Routes = OutboxRoutes.make({
-  'billing-jobs': BillingJobs
-})
+const Routes = OutboxRoutes.make({ jobs: JobStore })
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const prepared = yield* SendEmail.prepare({
-      messageId: 'invoice-123',
-      recipient: 'ada@example.test'
-    })
+    const prepared = yield* SendEmail.prepare(
+      {
+        messageId: 'order-123',
+        recipient: 'ada@example.test'
+      },
+      { jobId: 'order-confirmation:order-123' }
+    )
     return Result.ok(prepared)
   })
 )
@@ -152,8 +159,8 @@ const preparedResult = await runtime.run(() =>
 if (Result.isError(preparedResult)) throw preparedResult.error
 
 const record = makeOutboxRecord({
-  id: OutboxId.make('invoice-created:123').unwrap(),
-  target: 'billing-jobs',
+  id: OutboxId.make('order-confirmation:order-123').unwrap(),
+  target: 'jobs',
   request: preparedResult.value
 })
 
@@ -162,7 +169,8 @@ if (Result.isError(record)) throw record.error
 
 The record and the domain write commit or roll back together when the selected
 database adapter appends them through its real transaction. After commit, the
-publisher resolves the named route and enqueues the prepared request.
+Runtime-owned publisher resolves the route to the `JobStore` token, enqueues the
+prepared request, and the Runtime-owned Worker claims and handles the Job.
 
 ## Transaction to publisher
 
@@ -182,26 +190,27 @@ const persisted = await PostgresOutbox.transaction(
   pool,
   record.value,
   async (transaction) => {
-    await transaction.query('INSERT INTO invoices (id, status) VALUES ($1, $2)', [
-      'invoice-123',
-      'paid'
+    await transaction.query('INSERT INTO orders (id, email, status) VALUES ($1, $2, $3)', [
+      'order-123',
+      'ada@example.test',
+      'created'
     ])
     return Result.ok(undefined)
   },
-  { namespace: 'billing' }
+  { namespace: 'orders' }
 )
 if (Result.isError(persisted)) throw persisted.error
 ```
 
 After the adapter commits, `PublisherLive` claims the durable record, resolves the
-`billing-jobs` route, and enqueues the prepared `SendEmail` request in the core
+`jobs` route, and enqueues the prepared `SendEmail` request in the core
 `JobStore`. The same Runtime-owned Worker then claims that Job and runs the
 `Worker.handle` callback; the outbox record is marked published only after the
 enqueue succeeds.
 
-Without the outbox, committing the invoice and enqueueing the email are two
-unrelated writes: a crash between them can leave a paid invoice with no email,
-or enqueue an email for an invoice whose transaction later rolled back. The
+Without the outbox, committing the order and enqueueing the email are two
+unrelated writes: a crash between them can leave a saved order with no email,
+or enqueue an email for an order whose transaction later rolled back. The
 record makes the handoff durable and replayable; it does not make a remote email
 provider part of the database transaction, so the handler still needs an
 idempotency key.
@@ -236,10 +245,11 @@ There is no detached loop and no second Runtime.
 
 ## Delivery and adapters
 
-Outbox delivery is at-least-once. A crash after enqueue and before publication
-settlement can redeliver the same record. Deterministic Job IDs or idempotency
-keys make that replay converge; the pipeline does not promise exactly-once
-execution.
+Outbox delivery is at-least-once. A crash after the publisher enqueues the Job
+but before it settles the outbox record can redeliver the same record. The
+deterministic Job ID/idempotency key makes enqueue replay converge, while the
+confirmation handler must also use that key with the email provider or its
+own sent-message table. The pipeline does not promise exactly-once execution.
 
 [`PostgreSQL`](../integrations/adapters/postgres),
 [`Redis/Valkey`](../integrations/adapters/redis),

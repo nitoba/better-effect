@@ -137,7 +137,33 @@ if (Result.isError(persisted)) throw persisted.error
 The adapter appends the prepared outbox record after the callback succeeds,
 commits only after that append succeeds, rolls back on thrown, rejected, or
 nominal `Result.err` failures, and always releases the client. Neither helper
-turns a remote publish into a distributed transaction.
+turns a remote publish into a distributed transaction. After commit, compose
+the Runtime-owned publisher beside the existing Worker:
+
+```ts
+import { JobStore } from 'better-effect-mq'
+import { OutboxPublisher, OutboxRoutes } from 'better-effect-mq-outbox'
+import { PostgresOutbox } from 'better-effect-mq-postgres'
+
+const Routes = OutboxRoutes.make({ orders: JobStore })
+const Publisher = OutboxPublisher.service('@app/OrderOutboxPublisher')
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [PostgresOutbox] as const,
+  routes: Routes,
+  concurrency: 2,
+  pollIntervalMs: 500
+}))
+// Add PublisherLive and the existing Worker Layer to the same Runtime.
+const delivered = await runtime.run(() =>
+  SendConfirmation.awaitResult('order-confirmation:order-123')
+)
+```
+
+`OutboxRoutes` stores the `JobStore` Service token, never a store instance. A
+crash after enqueue and before settlement can replay the request; use the
+deterministic Job ID as the downstream idempotency key. See the [outbox
+transaction guide](../../outbox) for the complete order-to-confirmation
+workflow, including request preparation and record creation.
 
 ### Advanced: caller-owned transactions
 

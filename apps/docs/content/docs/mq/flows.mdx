@@ -5,13 +5,16 @@ icon: GitBranch
 ---
 
 Use a Flow when one durable parent Job owns several child Jobs: for example, an order that must
-reserve multiple items before it can be confirmed. The parent remains visible in the same queue,
-while the Flow store records child progress and lets a Worker collect a typed result.
+reserve each line and charge the order before fulfillment can finish. The parent remains visible
+as the order-level operation, while the Flow store records child progress and lets a Worker collect
+a typed result. That gives operators one lifecycle to inspect, retry, or cancel instead of a set of
+unrelated jobs whose relationship exists only in logs.
 
 ## A complete parent-and-child flow
 
-This example creates two child jobs for every order, runs them through one Layer-owned Worker, and
-completes the parent with the number of successful reservations.
+This example creates one inventory child per order line plus a payment child, runs them through one
+Layer-owned Worker, and completes the parent with a useful fulfillment summary. The Zod 4 provider
+schemas make each persisted payload boundary explicit.
 
 ```ts
 import * as z from 'zod'
@@ -32,11 +35,15 @@ import {
 import { Schema as CoreSchema } from 'better-effect-schema'
 import { Schema } from 'better-effect-schema/zod'
 
-const Orders = Queue.define('orders')
-const FulfillOrderPayloadSchema = z.object({ orderId: z.string().min(1) })
-class FulfillOrderPayload extends Schema.Class<FulfillOrderPayload>('app/FulfillOrderPayload')(
-  FulfillOrderPayloadSchema
-) {}
+const OrderItem = z.object({ sku: z.string().min(1), quantity: z.int().positive() })
+const OrderFailure = z.object({ code: z.string().min(1), message: z.string().min(1) })
+
+class FulfillOrderPayload extends Schema.Class<FulfillOrderPayload>('app/FulfillOrderPayload')({
+  orderId: z.string().min(1),
+  currency: z.string().length(3),
+  totalCents: z.int().positive(),
+  items: z.array(OrderItem).min(1)
+}) {}
 const FulfillOrderPayloadCodec = Codec.standardSchema({
   schema: FulfillOrderPayload,
   encode: (value) =>
@@ -44,39 +51,76 @@ const FulfillOrderPayloadCodec = Codec.standardSchema({
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
-const FulfillOrderResult = z.object({
+
+class ReserveInventoryPayload extends Schema.Class<ReserveInventoryPayload>(
+  'app/ReserveInventoryPayload'
+)({
   orderId: z.string().min(1),
-  fulfilled: z.int().nonnegative()
-})
-const FulfillItemPayloadSchema = z.object({
-  orderId: z.string().min(1),
-  itemId: z.string().min(1)
-})
-class FulfillItemPayload extends Schema.Class<FulfillItemPayload>('app/FulfillItemPayload')(
-  FulfillItemPayloadSchema
-) {}
-const FulfillItemPayloadCodec = Codec.standardSchema({
-  schema: FulfillItemPayload,
+  sku: z.string().min(1),
+  quantity: z.int().positive()
+}) {}
+const ReserveInventoryPayloadCodec = Codec.standardSchema({
+  schema: ReserveInventoryPayload,
   encode: (value) =>
-    CoreSchema.encode(FulfillItemPayload, value).mapError(
+    CoreSchema.encode(ReserveInventoryPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
-const FulfillItemResult = z.object({ itemId: z.string().min(1), accepted: z.boolean() })
+const ReserveInventoryResult = z.object({
+  kind: z.literal('inventory'),
+  sku: z.string().min(1),
+  reservedQuantity: z.int().nonnegative()
+})
+
+class ChargeOrderPayload extends Schema.Class<ChargeOrderPayload>('app/ChargeOrderPayload')({
+  orderId: z.string().min(1),
+  currency: z.string().length(3),
+  amountCents: z.int().positive()
+}) {}
+const ChargeOrderPayloadCodec = Codec.standardSchema({
+  schema: ChargeOrderPayload,
+  encode: (value) =>
+    CoreSchema.encode(ChargeOrderPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const ChargeOrderResult = z.object({
+  kind: z.literal('payment'),
+  chargeId: z.string().min(1),
+  amountCents: z.int().positive()
+})
+
+const FulfillOrderResult = z.object({
+  orderId: z.string().min(1),
+  requestedItems: z.int().nonnegative(),
+  reservedItems: z.int().nonnegative(),
+  payment: z.enum(['charged', 'not-charged']),
+  failedChildren: z.array(z.string())
+})
+
+const Orders = Queue.define('orders')
 const FulfillOrder = Orders.job('fulfill-order', {
   version: 1,
   payload: FulfillOrderPayloadCodec,
-  result: Codec.standardSchema({ schema: FulfillOrderResult })
+  result: Codec.standardSchema({ schema: FulfillOrderResult }),
+  failure: Codec.standardSchema({ schema: OrderFailure })
 })
-const FulfillItem = Orders.job('fulfill-item', {
+const ReserveInventory = Orders.job('reserve-inventory', {
   version: 1,
-  payload: FulfillItemPayloadCodec,
-  result: Codec.standardSchema({ schema: FulfillItemResult })
+  payload: ReserveInventoryPayloadCodec,
+  result: Codec.standardSchema({ schema: ReserveInventoryResult }),
+  failure: Codec.standardSchema({ schema: OrderFailure })
+})
+const ChargeOrder = Orders.job('charge-order', {
+  version: 1,
+  payload: ChargeOrderPayloadCodec,
+  result: Codec.standardSchema({ schema: ChargeOrderResult }),
+  failure: Codec.standardSchema({ schema: OrderFailure })
 })
 
 const Fulfillment = Flow.define('order-fulfillment', {
   parent: FulfillOrder,
-  children: [FulfillItem] as const,
+  children: [ReserveInventory, ChargeOrder] as const,
   onChildFailure: 'continue'
 })
 
@@ -84,35 +128,73 @@ const FulfillmentRoute = Flow.handle(Fulfillment, {
   fanOut: (payload) =>
     Effect.fn(async function* () {
       return Result.ok([
-        Flow.children(FulfillItem, [
+        Flow.children(
+          ReserveInventory,
+          payload.items.map((item) => ({
+            key: `reserve:${item.sku}`,
+            payload: { orderId: payload.orderId, sku: item.sku, quantity: item.quantity }
+          }))
+        ),
+        Flow.children(ChargeOrder, [
           {
-            key: 'item:sku-1',
-            payload: { orderId: payload.orderId, itemId: 'sku-1' }
-          },
-          {
-            key: 'item:sku-2',
-            payload: { orderId: payload.orderId, itemId: 'sku-2' }
+            key: 'charge',
+            payload: {
+              orderId: payload.orderId,
+              currency: payload.currency,
+              amountCents: payload.totalCents
+            }
           }
         ])
       ] as const)
     }),
   collect: (payload, results) =>
     Effect.fn(async function* () {
-      const settled = yield* Result.await(results.all()())
-      const fulfilled = settled.filter((child) => child.outcome === 'completed').length
-      return Result.ok({ orderId: payload.orderId, fulfilled })
+      const children = yield* Result.await(results.all()())
+      const reservedItems = children.filter(
+        (child) => child.outcome === 'completed' && child.result?.kind === 'inventory'
+      ).length
+      const charged = children.some(
+        (child) => child.outcome === 'completed' && child.result?.kind === 'payment'
+      )
+      const payment = charged ? ('charged' as const) : ('not-charged' as const)
+      return Result.ok({
+        orderId: payload.orderId,
+        requestedItems: payload.items.length,
+        reservedItems,
+        payment,
+        failedChildren: children
+          .filter((child) => child.outcome !== 'completed')
+          .map((child) => child.childKey)
+      })
     })
 })
 
-const itemHandler = Worker.handle(FulfillItem, (payload) =>
-  Effect.fn(async function* () {
-    // Replace this with the inventory reservation for payload.itemId.
-    return Result.ok({ itemId: payload.itemId, accepted: true })
-  })
-)
+const handlers = [
+  Worker.handle(ReserveInventory, (payload) =>
+    Effect.fn(async function* () {
+      // Reserve payload.sku in inventory; key the write by order ID and SKU for retries.
+      return Result.ok({
+        kind: 'inventory' as const,
+        sku: payload.sku,
+        reservedQuantity: payload.quantity
+      })
+    })
+  ),
+  Worker.handle(ChargeOrder, (payload) =>
+    Effect.fn(async function* () {
+      // Pass payload.orderId as the payment provider's idempotency key.
+      return Result.ok({
+        kind: 'payment' as const,
+        chargeId: `charge:${payload.orderId}`,
+        amountCents: payload.amountCents
+      })
+    })
+  )
+] as const
+
 const FulfillmentWorker = Worker.service('@app/FulfillmentWorker')
 const FulfillmentWorkerLive = FulfillmentWorker.layer(() => ({
-  handlers: [itemHandler] as const,
+  handlers,
   flows: [FulfillmentRoute] as const,
   concurrency: 4,
   pollIntervalMs: 250,
@@ -133,7 +215,15 @@ try {
   await runtime.warmup()
   const started = await runtime.run(() =>
     Effect.gen(async function* () {
-      const parentId = yield* FulfillOrder.enqueue({ orderId: 'order-123' })
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
+      })
       return Result.ok(parentId)
     })
   )
@@ -148,10 +238,10 @@ try {
 ```
 
 The parent enqueue is the only producer operation. The Worker claims it, runs `fanOut` once, and
-persists the child requests with stable keys. Child Workers settle each reservation independently;
-the Flow records those outcomes and invokes `collect` when all children are terminal. With
-`onChildFailure: 'continue'`, the parent can finish with a partial count; use `'fail'` when any
-failed child should fail the parent and cancel the remaining work.
+persists the child requests with stable keys. Child Workers settle each reservation and payment
+independently; the Flow records those outcomes and invokes `collect` when all children are terminal.
+With `onChildFailure: 'continue'`, the parent can finish with a partial summary and list failed
+children. Use `'fail'` when any failed child should fail the parent and cancel the remaining work.
 
 The Flow descriptors use Zod 4 schema-backed classes from
 `better-effect-schema` through `Codec.standardSchema`, the same provider-backed

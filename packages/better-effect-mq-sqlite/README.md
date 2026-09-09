@@ -313,8 +313,10 @@ avoid copying payloads, results, complete failures, or arbitrary metadata.
 
 ### Flows
 
-Add the flow provider when the application registers flow routes with the
-`better-effect-mq` Worker:
+Start with the complete [order-fulfillment Flow walkthrough](../better-effect-mq/README.md#flow-coordinate-a-parent-execution)
+to see a typed parent fan out to inventory and payment children, implement
+both handlers, and collect a useful parent summary. Add SQLite's flow provider
+when that application registers the same flow route with its Worker:
 
 ```ts
 import { Database } from 'bun:sqlite'
@@ -472,19 +474,34 @@ const committed = await SqliteOutboxTransactions.transaction(
 )
 if (Result.isError(committed)) throw committed.error
 console.log(`saved ${committed.value}`)
+
+const delivered = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const result = yield* SendConfirmation.awaitResult('order-confirmation:order-1')
+    return Result.ok(result)
+  })
+)
+if (Result.isError(delivered)) throw delivered.error
+console.log(delivered.value)
+
 await runtime.dispose()
 database.close()
 ```
 
-The outbox is at-least-once. Publishing and marking a row published are
-separate steps, so the downstream operation must tolerate redelivery. The
-payload uses the same schema-first boundary (the preconfigured Zod `Schema`,
-`Schema.Class`, and `CoreSchema.encode`); concise result/failure codecs are suitable
-for plain-JSON outcomes. For a named outbox, use `OutboxStore.named('billing')`
-with `SqliteOutboxStore.layerFor(...)`. If the domain callback returns
-`Result.err(error)`, throws, or rejects, both the domain write and outbox
-append are rolled back. An append conflict or validation failure is returned
-as a `Result.err` and also rolls back the domain write.
+The callback performs only the domain write. The adapter appends the prepared
+record and commits both operations together. After commit, the Runtime-owned
+publisher routes the record to the `JobStore` Service token and the Worker
+delivers the confirmation. Publishing is at least once: a crash between
+enqueue and outbox settlement may repeat delivery, so the stable Job ID must
+also be the downstream idempotency key. The payload uses the same schema-first
+boundary (the preconfigured Zod `Schema`, `Schema.Class`, and `CoreSchema.encode`);
+concise result/failure codecs are suitable for plain-JSON outcomes.
+
+For a named outbox, use `OutboxStore.named('billing')` with
+`SqliteOutboxStore.layerFor(...)`. If the domain callback returns `Result.err`,
+throws, or rejects, both the domain write and outbox append are rolled back. An
+append conflict or validation failure is returned as a `Result.err` and also
+rolls back the domain write.
 
 `Routes` maps the record target `'jobs'` to the `JobStore` Service token; it
 does not capture a store instance. The publisher resolves that token in the
@@ -637,17 +654,17 @@ composition.
 
 Use `SqliteOutboxTransactions.transaction(database, record, callback, options?)`
 for normal application writes. It serializes callbacks sharing one SQLite
-connection, owns `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`, appends the record after
-the callback returns a successful nominal `Result`, and always releases its
-serialization slot. The callback receives the typed `SqliteDatabase` so it can
-perform the domain write directly; it must not issue transaction-control SQL.
+connection, appends the record after the callback returns a successful nominal
+`Result`, and always releases its serialization slot. The callback receives the
+typed `SqliteDatabase` so it can perform the domain write directly; transaction
+control remains inside the adapter.
 
 `SqliteOutboxTransactions.appendIn(database, input, options)` inserts an
 outbox record using the supplied SQLite connection and does not own that
-connection. The caller decides when the surrounding write context commits or
-rolls back. Keep it for advanced integrations that already own the transaction
-lifecycle. `options.namespace` defaults to `default`; use the same namespace as
-the corresponding outbox Layer.
+connection. Keep it for advanced integrations that already own the surrounding
+write context; normal application code should use `transaction`. The
+`options.namespace` defaults to `default`; use the same namespace as the
+corresponding outbox Layer.
 
 This is the low-level integration point for an application that must persist a
 domain change and its outbox record together. It accepts the outbox input

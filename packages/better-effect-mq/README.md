@@ -278,17 +278,19 @@ Every Job exposes yieldable producer operations:
 
 ## Flow: coordinate a parent execution
 
-Flow solves the fan-out/fan-in problem: one parent Job can create multiple
-typed child Jobs, wait until they settle, and collect their outcomes as one
-parent result. Use it when a request naturally consists of parallel or
-dependent steps that need durable progress and a single result; use ordinary
-Jobs when each unit can be submitted and observed independently.
+Flow solves the fan-out/fan-in problem: one durable parent Job can create
+typed child Jobs, wait until every child reaches a terminal state, and publish
+one aggregate parent result. For example, order fulfillment can reserve each
+line and charge the order in parallel while keeping one order-level lifecycle.
+That gives operators one parent to inspect or retry, instead of a collection of
+unrelated jobs whose relationship only exists in application logs.
 
-The example below is complete and compilable. It defines a parent and two
-child Jobs, registers child handlers and a Flow handler on one Worker, provides
-the Job and Flow persistence services, enqueues the parent, and awaits the
-collected result. See [`examples/flow/main.ts`](./examples/flow/main.ts) for
-the runnable copy.
+The example below is complete and compilable. It uses provider-backed Zod 4
+schemas at every persisted payload boundary, fans out to two different child
+Job types, implements both child handlers, collects useful fulfillment output,
+and awaits the terminal parent result. See
+[`examples/flow/main.ts`](./examples/flow/main.ts) for a small runnable,
+plain-JSON variant.
 
 ```ts
 import * as z from 'zod'
@@ -297,9 +299,9 @@ import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import {
   Codec,
-  JobEncodeFailure,
   Flow,
   FlowStore,
+  JobEncodeFailure,
   JobStore,
   MemoryFlowStore,
   MemoryJobStore,
@@ -309,159 +311,220 @@ import {
 import { Schema as CoreSchema } from 'better-effect-schema'
 import { Schema } from 'better-effect-schema/zod'
 
-const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
-  decode: (value) => new Date(value),
-  encode: (value) => value.toISOString()
-})
+const OrderItem = z.object({ sku: z.string().min(1), quantity: z.int().positive() })
+const OrderFailure = z.object({ code: z.string().min(1), message: z.string().min(1) })
 
-class ReportPayload extends Schema.Class<ReportPayload>('app/ReportPayload')({
-  reportId: z.string().min(1),
-  requestedAt: DateFromISOString
+class FulfillOrderPayload extends Schema.Class<FulfillOrderPayload>('app/FulfillOrderPayload')({
+  orderId: z.string().min(1),
+  currency: z.string().length(3),
+  totalCents: z.int().positive(),
+  items: z.array(OrderItem).min(1)
 }) {}
-
-const ReportPayloadCodec = Codec.standardSchema({
-  schema: ReportPayload,
+const FulfillOrderPayloadCodec = Codec.standardSchema({
+  schema: FulfillOrderPayload,
   encode: (value) =>
-    CoreSchema.encode(ReportPayload, value).mapError(
+    CoreSchema.encode(FulfillOrderPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
-const RunReportResult = z.object({
-  completed: z.int().nonnegative(),
-  failed: z.int().nonnegative()
-})
-const BuildReportResult = z.object({ reportId: z.string().min(1), rows: z.int().nonnegative() })
-const ReportFailure = z.object({ code: z.string().min(1) })
 
-const Reports = Queue.define('examples.reports')
-const RunReport = Reports.job('run-report', {
-  version: 1,
-  payload: ReportPayloadCodec,
-  result: Codec.standardSchema({ schema: RunReportResult }),
-  failure: Codec.standardSchema({ schema: ReportFailure })
+class ReserveInventoryPayload extends Schema.Class<ReserveInventoryPayload>(
+  'app/ReserveInventoryPayload'
+)({
+  orderId: z.string().min(1),
+  sku: z.string().min(1),
+  quantity: z.int().positive()
+}) {}
+const ReserveInventoryPayloadCodec = Codec.standardSchema({
+  schema: ReserveInventoryPayload,
+  encode: (value) =>
+    CoreSchema.encode(ReserveInventoryPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
 })
-const BuildReport = Reports.job('build-report', {
-  version: 1,
-  payload: ReportPayloadCodec,
-  result: Codec.standardSchema({ schema: BuildReportResult }),
-  failure: Codec.standardSchema({ schema: ReportFailure })
-})
-const NotifyReport = Reports.job('notify-report', {
-  version: 1,
-  payload: ReportPayloadCodec,
-  result: Codec.string,
-  failure: Codec.standardSchema({ schema: ReportFailure })
+const ReserveInventoryResult = z.object({
+  kind: z.literal('inventory'),
+  sku: z.string().min(1),
+  reservedQuantity: z.int().nonnegative()
 })
 
-const ReportFlow = Flow.define('report-flow', {
-  parent: RunReport,
-  children: [BuildReport, NotifyReport] as const,
+class ChargeOrderPayload extends Schema.Class<ChargeOrderPayload>('app/ChargeOrderPayload')({
+  orderId: z.string().min(1),
+  currency: z.string().length(3),
+  amountCents: z.int().positive()
+}) {}
+const ChargeOrderPayloadCodec = Codec.standardSchema({
+  schema: ChargeOrderPayload,
+  encode: (value) =>
+    CoreSchema.encode(ChargeOrderPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const ChargeOrderResult = z.object({
+  kind: z.literal('payment'),
+  chargeId: z.string().min(1),
+  amountCents: z.int().positive()
+})
+
+const FulfillOrderResult = z.object({
+  orderId: z.string().min(1),
+  requestedItems: z.int().nonnegative(),
+  reservedItems: z.int().nonnegative(),
+  payment: z.enum(['charged', 'not-charged']),
+  failedChildren: z.array(z.string())
+})
+
+const Orders = Queue.define('orders')
+const FulfillOrder = Orders.job('fulfill-order', {
+  version: 1,
+  payload: FulfillOrderPayloadCodec,
+  result: Codec.standardSchema({ schema: FulfillOrderResult }),
+  failure: Codec.standardSchema({ schema: OrderFailure })
+})
+const ReserveInventory = Orders.job('reserve-inventory', {
+  version: 1,
+  payload: ReserveInventoryPayloadCodec,
+  result: Codec.standardSchema({ schema: ReserveInventoryResult }),
+  failure: Codec.standardSchema({ schema: OrderFailure })
+})
+const ChargeOrder = Orders.job('charge-order', {
+  version: 1,
+  payload: ChargeOrderPayloadCodec,
+  result: Codec.standardSchema({ schema: ChargeOrderResult }),
+  failure: Codec.standardSchema({ schema: OrderFailure })
+})
+
+const Fulfillment = Flow.define('order-fulfillment', {
+  parent: FulfillOrder,
+  children: [ReserveInventory, ChargeOrder] as const,
   onChildFailure: 'continue'
 })
 
-const ReportFlowHandler = Flow.handle(ReportFlow, {
+const FulfillmentHandler = Flow.handle(Fulfillment, {
   fanOut: (payload) =>
     Effect.fn(async function* () {
       return Result.ok([
-        Flow.children(BuildReport, [
+        Flow.children(
+          ReserveInventory,
+          payload.items.map((item) => ({
+            key: `reserve:${item.sku}`,
+            payload: { orderId: payload.orderId, sku: item.sku, quantity: item.quantity }
+          }))
+        ),
+        Flow.children(ChargeOrder, [
           {
-            key: 'build',
-            payload: { reportId: payload.reportId, requestedAt: payload.requestedAt.toISOString() }
-          }
-        ]),
-        Flow.children(NotifyReport, [
-          {
-            key: 'notify',
-            payload: { reportId: payload.reportId, requestedAt: payload.requestedAt.toISOString() }
+            key: 'charge',
+            payload: {
+              orderId: payload.orderId,
+              currency: payload.currency,
+              amountCents: payload.totalCents
+            }
           }
         ])
       ] as const)
     }),
-  collect: (_payload, results) =>
+  collect: (payload, results) =>
     Effect.fn(async function* () {
+      const children = yield* Result.await(results.all()())
+      const reservedItems = children.filter(
+        (child) => child.outcome === 'completed' && child.result?.kind === 'inventory'
+      ).length
+      const charged = children.some(
+        (child) => child.outcome === 'completed' && child.result?.kind === 'payment'
+      )
+      const payment = charged ? ('charged' as const) : ('not-charged' as const)
       return Result.ok({
-        completed: results.counts.completed,
-        failed: results.counts.failed
+        orderId: payload.orderId,
+        requestedItems: payload.items.length,
+        reservedItems,
+        payment,
+        failedChildren: children
+          .filter((child) => child.outcome !== 'completed')
+          .map((child) => child.childKey)
       })
     })
 })
 
 const handlers = [
-  Worker.handle(BuildReport, (payload) =>
+  Worker.handle(ReserveInventory, (payload) =>
     Effect.fn(async function* () {
-      return Result.ok({ reportId: payload.reportId, rows: 42 })
+      // Reserve payload.sku in inventory; make that write idempotent by order ID and SKU.
+      return Result.ok({
+        kind: 'inventory' as const,
+        sku: payload.sku,
+        reservedQuantity: payload.quantity
+      })
     })
   ),
-  Worker.handle(NotifyReport, (payload) =>
+  Worker.handle(ChargeOrder, (payload) =>
     Effect.fn(async function* () {
-      return Result.ok(`notified:${payload.reportId}`)
+      // Pass payload.orderId as the payment provider's idempotency key.
+      return Result.ok({
+        kind: 'payment' as const,
+        chargeId: `charge:${payload.orderId}`,
+        amountCents: payload.amountCents
+      })
     })
   )
 ] as const
 
-const ReportsWorker = Worker.service('@examples/ReportsWorker')
-const ReportsWorkerLive = ReportsWorker.layer(() => ({
+const FulfillmentWorker = Worker.service('@app/FulfillmentWorker')
+const FulfillmentWorkerLive = FulfillmentWorker.layer(() => ({
   handlers,
-  flows: [ReportFlowHandler] as const,
-  concurrency: 2,
-  pollIntervalMs: 1,
-  flowSweepIntervalMs: 2,
-  flowBatchSize: 16
+  flows: [FulfillmentHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 10,
+  flowSweepIntervalMs: 50,
+  flowBatchSize: 32
 }))
 
-// A durable adapter provides these same two Service tokens with its own Layer.
-const jobs = MemoryJobStore.make()
-const flows = MemoryFlowStore.make()
+// Replace these process-local providers with the matching durable adapter Layers in production.
 const AppLive = Layer.complete(
   Layer.merge(
-    Layer.succeed(JobStore, JobStore.of(jobs)),
+    Layer.succeed(JobStore, JobStore.of(MemoryJobStore.make())),
     Layer.merge(
-      Layer.succeed(FlowStore, FlowStore.of(flows)),
-      Layer.merge(ClockLive, ReportsWorkerLive)
+      Layer.succeed(FlowStore, FlowStore.of(MemoryFlowStore.make())),
+      Layer.merge(ClockLive, FulfillmentWorkerLive)
     )
   )
 )
 const runtime = await Runtime.make(AppLive)
 
 try {
-  const worker = await runtime.run(() =>
-    Effect.gen(async function* () {
-      return Result.ok(yield* ReportsWorker)
-    })
-  )
-  if (Result.isError(worker)) throw worker.error
-
   const execution = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* RunReport.enqueue({
-        reportId: 'daily-2026-01-01',
-        requestedAt: '2026-09-09T12:00:00.000Z'
+      const parentId = yield* FulfillOrder.enqueue({
+        orderId: 'order-123',
+        currency: 'USD',
+        totalCents: 12_500,
+        items: [
+          { sku: 'coffee-beans', quantity: 2 },
+          { sku: 'pour-over-kit', quantity: 1 }
+        ]
       })
-      const result = yield* RunReport.awaitResult(jobId)
-      return Result.ok({ jobId, result })
+      const result = yield* FulfillOrder.awaitResult(parentId)
+      return Result.ok({ parentId, result })
     })
   )
   if (Result.isError(execution)) throw execution.error
-
   console.log(execution.value)
-  await worker.value.awaitIdle({ timeoutMs: 2_000 })
 } finally {
   await runtime.dispose()
 }
 ```
 
 `Flow.define` is an immutable descriptor. `Flow.handle` supplies `fanOut` and
-`collect` programs; `Flow.children` keeps each child payload typed. Register
-the Flow handler in the options returned by
-`Worker.service(...).layer(() => ({ flows }))` and register ordinary child
-handlers in `handlers`. The Flow store records the parent, child manifest,
-terminal reports, and relay work. For production, replace both memory
-providers with the durable adapter's matching `JobStore` and `FlowStore`
-Layers. The Flow API remains the same.
+`collect` programs; `Flow.children` keeps each child payload tied to its Job
+definition, so adding a payment child cannot accidentally receive an inventory
+payload. The Flow store records the parent, child manifest, terminal reports,
+and relay work while the JobStore handles ordinary child delivery.
 
-`onChildFailure: 'continue'` collects successful and failed children. Use
-`'fail'` when the first failed child should fail the parent and cascade the
-remaining work.
+With `onChildFailure: 'continue'`, `collect` runs after all children settle and
+can return a partial result such as two reservations and `payment:
+'not-charged'`. Use `onChildFailure: 'fail'` when the parent must fail as soon
+as a child fails and remaining work should be cancelled. Both policies keep
+the parent-child relationship durable and replayable; choose based on whether
+partial fulfillment is useful to the caller.
 
 ## Events and observing results
 
@@ -588,15 +651,19 @@ const AppLive = Layer.complete(
   )
 )
 const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
 
 const prepared = await runtime.run(() =>
   Effect.gen(async function* () {
     return Result.ok(
-      yield* SendConfirmation.prepare({
-        orderId: 'order-123',
-        email: 'ada@example.test',
-        queuedAt: '2026-09-09T12:00:00.000Z'
-      })
+      yield* SendConfirmation.prepare(
+        {
+          orderId: 'order-123',
+          email: 'ada@example.test',
+          queuedAt: '2026-09-09T12:00:00.000Z'
+        },
+        { jobId: 'order-confirmation:order-123' }
+      )
     )
   })
 )
@@ -622,12 +689,24 @@ const persisted = await PostgresOutbox.transaction(
   { namespace: 'orders' }
 )
 if (Result.isError(persisted)) throw persisted.error
+
+const completed = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const result = yield* SendConfirmation.awaitResult('order-confirmation:order-123')
+    return Result.ok(result)
+  })
+)
+if (Result.isError(completed)) throw completed.error
+console.log(completed.value)
+await runtime.dispose()
 ```
 
 Prepare the request and record before calling the adapter helper. The adapter
 appends the record after the domain callback succeeds and owns the connection,
-commit, rollback, and cleanup. After commit, the publisher enqueues the prepared request into the routed
-`JobStore`; the normal worker then runs `SendConfirmation`. The complete
+commit, rollback, and cleanup. After commit, the Runtime-owned publisher
+enqueues the prepared request into the routed `JobStore`; the Runtime-owned
+Worker then runs `SendConfirmation`, and `awaitResult` observes the terminal
+result. The complete
 PostgreSQL setup, connection ownership rules, and adapter equivalents are in
 the outbox extension's [transaction-to-publisher example](../better-effect-mq-outbox/README.md#end-to-end-example-with-postgresql).
 
