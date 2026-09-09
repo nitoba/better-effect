@@ -130,6 +130,15 @@ const Routes = OutboxRoutes.make({
 })
 ```
 
+#### Advanced routing: named `JobStore` tokens
+
+This is a token map, not a map of store instances: `JobStore` selects the
+default store, while `JobStore.named('billing')` selects a named store. The
+record stores only the string target (`'jobs'` here); the publisher resolves
+that target to the token through `OutboxRoutes` inside the Runtime. Use
+`OutboxRoutes.make` only when a publisher needs to route records to a specific
+JobStore, especially when one Runtime contains multiple named stores.
+
 The target stored in a record must exactly match a route. Route targets must be
 unique; duplicate entries are rejected. An absent route is reported as an
 `OutboxRouteMissingError`, remains visible in the outbox, and consumes the
@@ -202,7 +211,6 @@ const SendConfirmation = Queue.define('orders').job('send-confirmation', {
     readonly email: string
   }>(),
   result: Codec.string,
-  store: JobStore,
   defaults: { attempts: 5 },
   idempotencyKey: (payload) => `order-confirmation:${payload.orderId}`
 })
@@ -278,7 +286,24 @@ if (Result.isError(record)) throw record.error
 ```
 
 Call the adapter's normal transaction boundary with the resource, prepared
-record, domain callback, and optional adapter settings:
+record, domain callback, and optional adapter settings. The callback performs
+only the domain write; the adapter appends `record.value` automatically:
+
+```ts
+const persisted = await PostgresOutbox.transaction(
+  pool,
+  record.value,
+  async (transaction) => {
+    await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
+      'order-123',
+      'ada@example.test'
+    ])
+    return Result.ok(undefined)
+  },
+  { namespace: 'orders' }
+)
+if (Result.isError(persisted)) throw persisted.error
+```
 
 `adapter.transaction(resource, preparedRecord, callback, options?)`
 
@@ -363,21 +388,25 @@ Every adapter transaction helper must provide the same guarantees:
 5. release or end every adapter resource on both success and failure, while
    preserving the original domain or append failure if cleanup also fails.
 
-This transaction helper is the primary application-facing API. An adapter may
-retain `appendIn` as an explicitly advanced escape hatch for integrations that
+This transaction helper is the primary application-facing API.
+
+### Advanced: caller-owned transactions
+
+An adapter may retain `appendIn` as an explicitly advanced escape hatch for integrations that
 already own a transaction, but that low-level helper must not be the normal
 guide or require application code to manage lifecycle. The publisher's
 post-commit operations use the adapter's regular store lifecycle and never
 hold an application transaction while delivering a job.
 
-The follow-up implementation contract is intentionally adapter-specific:
+The public adapter contract is intentionally adapter-specific:
 
-| Adapter    | Required `transaction` behavior                                                                                                           |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| PostgreSQL | Run the domain callback in the adapter's typed query context, append the supplied record automatically, and own the resource lifecycle.   |
-| MySQL      | Run the domain callback in the adapter's typed query context, append the supplied record automatically, and own the resource lifecycle.   |
-| MongoDB    | Run the domain callback in the adapter's typed session context, append the supplied record automatically, and own the resource lifecycle. |
-| SQLite     | Run the domain callback through the adapter's serialized transaction resource, append the supplied record automatically, and own cleanup. |
+| Adapter    | Required `transaction` behavior                                                                                                                                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PostgreSQL | Run the domain callback in the adapter's typed query context, append the supplied record automatically, and own the resource lifecycle.                                              |
+| MySQL      | Run the domain callback in the adapter's typed query context, append the supplied record automatically, and own the resource lifecycle.                                              |
+| MongoDB    | Run the domain callback in the adapter's typed session context, append the supplied record automatically, and own the resource lifecycle.                                            |
+| SQLite     | Run the domain callback through the adapter's serialized transaction resource, append the supplied record automatically, and own cleanup.                                            |
+| Redis      | Run Redis-native domain commands in the adapter's `MULTI` context, append the supplied record automatically, and own `EXEC`/discard cleanup; this does not include another database. |
 
 Each adapter worker should add type-safe runtime and type-level coverage for
 transaction success, domain failure, append failure, rollback, commit,

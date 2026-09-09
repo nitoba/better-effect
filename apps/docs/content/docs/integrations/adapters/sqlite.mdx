@@ -83,10 +83,10 @@ close the file with the Runtime. SQLite serializes writes, so use it for local o
 workloads; choose a distributed adapter when several hosts must share one queue. Schedules, events,
 flows, and outbox providers are optional Layers over the same database.
 
-## Durable outbox transaction
+## Transactional outbox
 
-The SQLite outbox adapter can own the serialized transaction lifecycle for a domain write and its
-outbox record. Prepare the job before the transaction, then let
+The SQLite outbox adapter owns the serialized transaction lifecycle for a domain write and its
+outbox record. Prepare the request and record first, then let
 `SqliteOutboxTransactions.transaction` append the record after the callback succeeds:
 
 ```ts
@@ -167,21 +167,31 @@ const record = makeOutboxRecord({
   target: 'jobs',
   request: prepared.value,
   attemptsMax: 5
-}).unwrap()
-
-const committed = await SqliteOutboxTransactions.transaction(database, record, (transaction) => {
-  transaction
-    .prepare('INSERT INTO orders(id, email) VALUES (?, ?)')
-    .run('order-1', 'ada@example.test')
-  return Result.ok('order-1')
 })
+if (Result.isError(record)) throw record.error
+
+const committed = await SqliteOutboxTransactions.transaction(
+  database,
+  record.value,
+  (transaction) => {
+    transaction
+      .prepare('INSERT INTO orders(id, email) VALUES (?, ?)')
+      .run('order-1', 'ada@example.test')
+    return Result.ok('order-1')
+  }
+)
 if (Result.isError(committed)) throw committed.error
 
 await runtime.dispose()
 database.close()
 ```
 
-The callback receives the typed SQLite database and must not issue `BEGIN`, `COMMIT`, or
-`ROLLBACK`. A callback `Result.err`, thrown error, rejected Promise, or failed outbox append rolls
-back the domain write. `SqliteOutboxTransactions.appendIn` remains available for integrations that
-already own a transaction as an advanced escape hatch.
+The callback performs only the domain write. The adapter appends the prepared record automatically,
+commits both operations together, and rolls back on a nominal `Result.err`, thrown callback,
+rejection, append conflict, or validation failure. Publishing remains a separate at-least-once step;
+see the [outbox transaction guide](../../outbox) for route composition.
+
+### Advanced: caller-owned write contexts
+
+Use `SqliteOutboxTransactions.appendIn` only in an integration that already owns a compatible
+write context. The normal application path is `SqliteOutboxTransactions.transaction`.

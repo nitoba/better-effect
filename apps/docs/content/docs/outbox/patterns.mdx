@@ -5,8 +5,9 @@ icon: GitBranch
 ---
 
 Use an outbox when a domain write and the job that follows it must become visible together. Prepare
-the request before the transaction, append it with the domain change, and let the publisher enqueue
-it after commit.
+the request and `OutboxRecord` first, then call the database adapter's transaction helper. The
+adapter runs the domain callback, appends the record automatically, owns the transaction lifecycle,
+and lets the publisher enqueue it after commit.
 
 ## The safe handoff
 
@@ -20,5 +21,11 @@ OutboxPublisher → JobStore → Worker.handle
 ```
 
 The publisher is at-least-once. Give downstream effects a stable idempotency key and monitor
-records that remain active, retrying, or failed. The [Outbox guide](./index) covers the API and
-the transaction-specific append helpers supplied by database adapters.
+records that remain active, retrying, or failed. The [Outbox guide](./index) covers record
+preparation, routes, and the PostgreSQL example; each adapter README documents its own
+`transaction(resource, record, callback, options?)` helper.
+
+### Advanced: caller-owned transactions
+
+Low-level `appendIn` APIs are escape hatches for code that already owns a native transaction; they
+are not part of the normal record-first guide.

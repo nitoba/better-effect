@@ -542,7 +542,7 @@ and retention policy. `:memory:` databases are test fixtures, not backups.
 - `SqliteJobEventStore.make`, `.layer`, and `.layerFor`;
 - `SqliteFlowStore.make`, `.layer`, and `.layerFor`;
 - `SqliteOutboxStore` (also available as `SqliteOutbox`) with `.make`,
-  `.appendIn`, `.transaction`, `.layer`, and `.layerFor`;
+  `.appendIn`, `.layer`, and `.layerFor`;
 - `SqliteOutboxTransactions.transaction(database, record, callback, options?)`
   for the normal domain-write-plus-outbox path;
 - `SqliteOutboxTransactions.appendIn` for an existing caller-owned SQLite

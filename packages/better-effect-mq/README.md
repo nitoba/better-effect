@@ -457,7 +457,6 @@ const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
   payload: Codec.json<{ readonly orderId: string; readonly email: string }>(),
   result: Codec.string,
-  store: JobStore,
   defaults: { attempts: 5 },
   idempotencyKey: ({ orderId }) => `order-confirmation:${orderId}`
 })
@@ -509,27 +508,33 @@ const record = makeOutboxRecord({
 })
 if (Result.isError(record)) throw record.error
 
-const transaction = await pool.connect()
-try {
-  await transaction.query('BEGIN')
-  await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
-    'order-123',
-    'ada@example.test'
-  ])
-  await PostgresOutbox.appendIn(transaction, record.value, { namespace: 'orders' })
-  await transaction.query('COMMIT')
-} catch (cause) {
-  await transaction.query('ROLLBACK')
-  throw cause
-} finally {
-  transaction.release()
-}
+const persisted = await PostgresOutbox.transaction(
+  pool,
+  record.value,
+  async (transaction) => {
+    await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
+      'order-123',
+      'ada@example.test'
+    ])
+    return Result.ok(undefined)
+  },
+  { namespace: 'orders' }
+)
+if (Result.isError(persisted)) throw persisted.error
 ```
 
-After commit, the publisher enqueues the prepared request into the routed
+Prepare the request and record before calling the adapter helper. The adapter
+appends the record after the domain callback succeeds and owns the connection,
+commit, rollback, and cleanup. After commit, the publisher enqueues the prepared request into the routed
 `JobStore`; the normal worker then runs `SendConfirmation`. The complete
 PostgreSQL setup, connection ownership rules, and adapter equivalents are in
 the outbox extension's [transaction-to-publisher example](../better-effect-mq-outbox/README.md#end-to-end-example-with-postgresql).
+
+### Advanced: caller-owned transactions
+
+Adapters may expose `appendIn` as an escape hatch when application code already
+owns a native transaction. It is not part of the normal outbox path; use the
+adapter's record-first `transaction` helper for application writes.
 
 ## Reliability
 

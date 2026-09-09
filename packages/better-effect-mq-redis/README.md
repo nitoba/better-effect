@@ -148,7 +148,7 @@ the prepared outbox record, and executes or discards the transaction for you:
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
-import { Codec, JobStore, Queue } from 'better-effect-mq'
+import { Codec, Queue } from 'better-effect-mq'
 import { Result } from 'better-result'
 import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { RedisClient, RedisJobStore, RedisOutbox, RedisOutboxStore } from 'better-effect-mq-redis'
@@ -157,8 +157,7 @@ const Emails = Queue.define('emails')
 const SendEmail = Emails.job('send-email', {
   version: 1,
   payload: Codec.json<{ readonly orderId: string }>(),
-  result: Codec.string,
-  store: JobStore
+  result: Codec.string
 })
 
 const redisUrl = process.env.REDIS_URL
@@ -232,8 +231,10 @@ eventual. Redis transactions also do not roll back commands that have already
 run when a later command reports an error, so use deterministic IDs and
 idempotent Redis writes when retrying an uncertain result.
 
+### Advanced: native client integrations
+
 `RedisTransaction` and `RedisCommandClient.multi()` remain available for
-advanced adapter integrations. Application code should use
+adapter integrations that already own the native client. Application code should use
 `RedisOutbox.transaction` so transaction setup, append ordering, and cleanup
 stay adapter-owned.
 
