@@ -5,17 +5,19 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
-  REDIS_INDEX_CONFIGURATION_CHECKSUM,
-  REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
-  REDIS_FLOW_LAYOUT_VERSION,
-  REDIS_FLOW_PROTOCOL_VERSION,
-  REDIS_LAYOUT_VERSION,
-  REDIS_PROTOCOL_VERSION,
   RedisLayoutMismatchError,
   ensureRedisLayout,
   ensureRedisFlowLayout,
   makeRedisKeyLayout
 } from '../src/index'
+import {
+  REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
+  REDIS_FLOW_LAYOUT_VERSION,
+  REDIS_FLOW_PROTOCOL_VERSION,
+  REDIS_INDEX_CONFIGURATION_CHECKSUM,
+  REDIS_LAYOUT_VERSION,
+  REDIS_PROTOCOL_VERSION
+} from '../src/layout'
 import type { RedisCommandClient, RedisSubscriberClient } from '../src/index'
 
 class LayoutClient implements RedisCommandClient {

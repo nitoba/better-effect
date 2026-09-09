@@ -11,6 +11,8 @@ API in `better-effect-mq`.
 - `RedisJobEventStore` and the combined `RedisJobStore.layerWithEvents*`
   layers for bounded, resumable transition events.
 - `RedisJobScheduleStore` layers for durable schedules.
+- `RedisOutboxStore` layers and `RedisOutbox.transaction` for durable
+  Redis-native outbox writes.
 - `RedisClient` for an initialized namespaced command/subscriber pair, and
   `RedisFlowStore.make` for the lower-level flow surface.
 - Standalone and compatible Redis Cluster client integration through the
@@ -137,6 +139,103 @@ try {
 `JobEventStore` services. Use `RedisJobStore.layerFromConfig` when event
 persistence is not needed. The Layer initializes the client before exposing the
 services and releases its resources when the runtime is disposed.
+
+## Redis-native outbox transactions
+
+When the domain write is also a Redis write, use `RedisOutbox.transaction`.
+The adapter creates the native `MULTI` context, invokes the callback, appends
+the prepared outbox record, and executes or discards the transaction for you:
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { Codec, JobStore, Queue } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { RedisClient, RedisJobStore, RedisOutbox, RedisOutboxStore } from 'better-effect-mq-redis'
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly orderId: string }>(),
+  result: Codec.string,
+  store: JobStore
+})
+
+const redisUrl = process.env.REDIS_URL
+if (redisUrl === undefined) throw new Error('REDIS_URL is required')
+const redisConfig = { url: redisUrl, namespace: 'orders' }
+const AppLive = Layer.complete(
+  Layer.merge(
+    RedisJobStore.layerFromConfig(redisConfig),
+    Layer.merge(
+      RedisOutboxStore.layerFromConfig(redisConfig),
+      RedisClient.layerFromConfig(redisConfig)
+    )
+  )
+)
+const runtime = await Runtime.make(AppLive)
+
+try {
+  const prepared = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(
+        yield* SendEmail.prepare({ orderId: 'order-123' }, { jobId: 'send-email:order-123' })
+      )
+    })
+  )
+  if (Result.isError(prepared)) throw prepared.error
+
+  const record = makeOutboxRecord({
+    id: OutboxId.make('outbox:order-123').unwrap(),
+    target: 'emails',
+    request: prepared.value,
+    attemptsMax: 5
+  })
+  if (Result.isError(record)) throw record.error
+
+  const committed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const redis = yield* RedisClient
+      const value = yield* Result.await(
+        RedisOutbox.transaction(redis, record.value, (transaction) => {
+          transaction.sendCommand([
+            'HSET',
+            `${redis.layout.base}:orders`,
+            'order-123:status',
+            'created'
+          ])
+          return Result.ok('committed')
+        })
+      )
+      return Result.ok(value)
+    })
+  )
+  if (Result.isError(committed)) throw committed.error
+} finally {
+  await runtime.dispose()
+}
+```
+
+`RedisOutboxStore.layerFromConfig` provides the `OutboxStore` used by an
+`OutboxPublisher`; compose the publisher and your canonical `Worker.layer`
+with `AppLive` in a full application. Prepare the job before the transaction so
+the callback only persists JSON-safe data. A callback `Result.err`, thrown or
+rejected callback, append conflict, or `EXEC` failure is returned as a typed
+failure, and queued commands are discarded when they have not been executed.
+
+This boundary is atomic only for Redis-native writes in the same Redis
+namespace. Redis cannot include a PostgreSQL, MySQL, SQLite, MongoDB, or other
+database write in its `MULTI/EXEC`; do not describe a database write followed
+by this helper as cross-database atomic. Use the transaction helper from the
+database adapter that owns the domain write, or make the handoff explicitly
+eventual. Redis transactions also do not roll back commands that have already
+run when a later command reports an error, so use deterministic IDs and
+idempotent Redis writes when retrying an uncertain result.
+
+`RedisTransaction` and `RedisCommandClient.multi()` remain available for
+advanced adapter integrations. Application code should use
+`RedisOutbox.transaction` so transaction setup, append ordering, and cleanup
+stay adapter-owned.
 
 ## Using an existing client
 

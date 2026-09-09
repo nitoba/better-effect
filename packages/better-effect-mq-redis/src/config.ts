@@ -38,6 +38,8 @@ export type RedisClusterCommand = (
 export interface RedisCommandClient {
   readonly sendCommand: RedisStandaloneCommand | RedisClusterCommand
   duplicate(): MaybePromise<object>
+  /** Optional node-redis MULTI builder used by the Redis-native outbox helper. */
+  multi?(): RedisTransaction
   connect?(): MaybePromise<unknown>
   close?(): MaybePromise<unknown>
   quit?(): MaybePromise<unknown>
@@ -47,6 +49,21 @@ export interface RedisCommandClient {
   on?(event: string, listener: (...args: readonly unknown[]) => void): unknown
   off?(event: string, listener: (...args: readonly unknown[]) => void): unknown
   removeListener?(event: string, listener: (...args: readonly unknown[]) => void): unknown
+}
+
+/**
+ * The adapter-owned, client-side Redis MULTI command builder.
+ *
+ * This is deliberately smaller than a Redis client: commands are queued and
+ * only become visible when `exec` runs. `discard` is optional because the
+ * node-redis builder is client-side and can be abandoned without sending a
+ * server command; test doubles and other clients may expose it for explicit
+ * cleanup.
+ */
+export interface RedisTransaction {
+  sendCommand(args: readonly string[]): RedisTransaction
+  exec(): MaybePromise<readonly unknown[] | null>
+  discard?(): MaybePromise<unknown>
 }
 
 export interface RedisSubscriberClient {

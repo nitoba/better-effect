@@ -42,10 +42,15 @@ try {
 
   const coreArchive = await pack('core', join(repositoryRoot, 'packages/better-effect'))
   const mqArchive = await pack('mq', join(repositoryRoot, 'packages/better-effect-mq'))
+  const outboxArchive = await pack(
+    'outbox',
+    join(repositoryRoot, 'packages/better-effect-mq-outbox')
+  )
   const redisArchive = await pack('redis', packageRoot)
   await Bun.write(join(nodeModules, '.keep'), '')
   await installArchive(coreArchive, 'better-effect')
   await installArchive(mqArchive, 'better-effect-mq')
+  await installArchive(outboxArchive, 'better-effect-mq-outbox')
   await installArchive(redisArchive, 'better-effect-mq-redis')
 
   run(
