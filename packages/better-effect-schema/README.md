@@ -1,170 +1,209 @@
 # better-effect-schema
 
-Provider-neutral schema classes and Result-backed operations for
-`better-effect` applications.
+Use the schema library your application already uses to validate untrusted
+data, construct typed values, and keep expected validation failures in
+`better-result` instead of throwing them.
 
-The root entrypoint depends only on Standard Schema, `better-result`, and
-`better-effect` types. Zod, Valibot, and ArkType are optional peers mounted by
-their own subpaths:
+`better-effect-schema` gives Zod, Valibot, and ArkType the same package-level
+model:
 
-```text
-better-effect-schema       Standard Schema core
-better-effect-schema/zod   Zod 4 adapter and class derivations
+- provider schemas remain native (`z.object`, `v.object`, or `type({...})`);
+- provider adapters connect those schemas to `Schema.decode`, `Schema.make`,
+  and the other package operations;
+- successful values keep the provider's inferred TypeScript types; and
+- expected failures are returned as `Result.err` values with normalized
+  `SchemaFailure` issues.
+
+The root entrypoint is provider-neutral. Optional integrations are available
+from their own subpaths:
+
+~~~text
+better-effect-schema       Standard Schema core and portable operations
+better-effect-schema/zod   Zod 4 adapter and class factories
 better-effect-schema/valibot
 better-effect-schema/arktype
-```
+~~~
 
-## Quick start
+## Quick start with Zod
 
-`Schema.Class` consumes an explicit Standard Schema definition. The class
-constructor is for already decoded props; boundary operations return
-`better-result` values and never throw expected validation failures.
+Install the package, Zod, and `better-result` for inspecting operation results:
 
-```ts
-import type { StandardSchemaV1 } from '@standard-schema/spec'
-import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
+~~~sh
+bun add better-effect-schema zod better-result
+~~~
 
-const userFields: StandardSchemaV1<{ id: string }, { id: string }> = {
-  '~standard': {
-    version: 1,
-    vendor: 'example',
-    validate(value) {
-      return typeof value === 'object' && value !== null &&
-        typeof (value as { id?: unknown }).id === 'string'
-        ? { value: value as { id: string } }
-        : { issues: [{ message: 'Expected a user' }] }
-    }
-  }
-}
+Define a real Zod schema, infer the data type you use in your application, and
+give the schema to the Zod-backed local facade:
 
-class User extends Schema.Class<User>('example/User')({
-  schema: userFields,
-  propsSchema: userFields,
-  encodedSchema: userFields,
-  encode: (value) => value
-}) {}
-
-const decoded = Schema.decodeUnknown(User, { id: 'user-1' })
-if (Result.isError(decoded)) throw decoded.error
-const user = decoded.value
-```
-
-`Schema.decode` preserves the encoded input type. `Schema.make` validates
-decoded constructor props, and `Schema.encode` requires an explicit encoder.
-Use `yield*` with these values in an `Effect.gen` workflow:
-
-```ts
-import { Effect } from 'better-effect'
-import { Result } from 'better-result'
-
-const workflow = Effect.gen(function* () {
-  const value = yield* Schema.decode(User)({ id: 'user-1' })
-  const encoded = yield* Schema.encode(User)(value)
-  return Result.ok(encoded)
-})
-```
-
-## Optional provider adapters
-
-Provider packages are imported only by their subpath. This keeps the root
-package free of Zod, Valibot, and ArkType runtime code.
-
-```ts
+~~~ts
 import * as z from 'zod'
 import { Result } from 'better-result'
 import { Schema } from 'better-effect-schema'
 import { ZodAdapter } from 'better-effect-schema/zod'
 
-const Local = Schema.with(ZodAdapter)
+const local = Schema.with(ZodAdapter)
+
+const UserSchema = z.object({
+  id: z.string().min(1),
+  email: z.email(),
+  displayName: z.string().min(1)
+})
+
+type UserInput = z.infer<typeof UserSchema>
+
+const example: UserInput = {
+  id: 'user-1',
+  email: 'ada@example.com',
+  displayName: 'Ada Lovelace'
+}
+
+class User extends local.Class<User>('app/User')(UserSchema) {}
+~~~
+
+Validate at the boundary where data is still `unknown`. `Schema.decodeUnknown`
+uses the Zod schema and returns a real `User` instance on success:
+
+~~~ts
+const input: unknown = JSON.parse('{"id":"user-1","email":"ada@example.com","displayName":"Ada Lovelace"}')
+const decoded = Schema.decodeUnknown(User, input)
+
+if (Result.isError(decoded)) {
+  console.error(decoded.error._tag) // SchemaDecodeFailure
+  console.error(decoded.error.issues) // normalized paths and messages
+  throw decoded.error
+}
+
+const user: User = decoded.value
+console.log(`Welcome ${user.displayName}`)
+~~~
+
+Invalid input stays in the same explicit failure channel. You can inspect the
+provider's own issues before crossing into the package boundary, or inspect
+the normalized `SchemaDecodeFailure` returned by `better-effect-schema`:
+
+~~~ts
+const untrusted: unknown = {
+  id: 42,
+  email: 'not-an-email',
+  displayName: ''
+}
+
+const zodCheck = UserSchema.safeParse(untrusted)
+if (!zodCheck.success) {
+  console.error(zodCheck.error.issues)
+}
+
+const result = Schema.decodeUnknown(User, untrusted)
+if (Result.isError(result)) {
+  console.error(result.error.issues)
+  // result.error is a SchemaDecodeFailure; no expected validation error was thrown.
+}
+~~~
+
+The validated value is now an application-level `User`, so pass it to your
+normal domain code with its exact class type:
+
+~~~ts
+function userLabel(user: User): string {
+  return `${user.displayName} <${user.email}>`
+}
+
+if (Result.isOk(decoded)) {
+  const label = userLabel(decoded.value)
+  console.log(label)
+}
+~~~
+
+Use `Schema.decode` when the input already has the schema's encoded type, and
+use `Schema.decodeUnknown` for data from JSON, HTTP, queues, or other untrusted
+boundaries. Both operations return `Result` values and can be yielded from a
+`better-effect` generator.
+
+## Choose a provider
+
+All three providers plug into the same flow: define a native schema, validate
+unknown data, and hand the successful output to the package API. Choose the
+provider that best matches the rest of your application:
+
+| Provider | Choose it when | Guide |
+| --- | --- | --- |
+| Zod | You want a broad ecosystem, codecs, or provider-owned schema classes and derivations. | [Zod guide](docs/zod.md) |
+| Valibot | You want a modular API and small bundles while keeping schemas close to ordinary data definitions. | [Valibot guide](docs/valibot.md) |
+| ArkType | You prefer concise type syntax with runtime inference and detailed structural errors. | [ArkType guide](docs/arktype.md) |
+
+Each adapter is imported from its package subpath, so applications do not
+load other providers accidentally. The provider-neutral operations and failure
+types are documented in the [API reference](docs/api.md).
+
+## Zod codecs
+
+When transport and application values differ, define that conversion in a Zod
+codec and let the package validate both directions:
+
+~~~ts
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class Person extends Local.Class<Person>('example/Person')({
-  id: z.int().positive(),
-  name: z.string(),
-  bornAt: DateFromISOString
+class Event extends local.Class<Event>('app/Event')({
+  id: z.string(),
+  occurredAt: DateFromISOString
 }) {}
 
-const result = Schema.decode(Person, {
-  id: 1,
-  name: 'Ada',
-  bornAt: '1990-12-10T00:00:00.000Z'
+const decodedEvent = Schema.decode(Event, {
+  id: 'event-1',
+  occurredAt: '2026-09-06T00:00:00.000Z'
 })
-if (Result.isError(result)) throw result.error
+if (Result.isError(decodedEvent)) throw decodedEvent.error
 
-const wire = Schema.encode(Person, result.value)
-if (Result.isError(wire)) throw wire.error
-```
+const wireEvent = Schema.encode(Event, decodedEvent.value)
+if (Result.isError(wireEvent)) throw wireEvent.error
+~~~
 
-Zod-specific class factories and derivations belong to `ZodAdapter`. The
-portable `Schema.Class` API is still available for applications that do not
-want a provider dependency. See [the Zod adapter guide](docs/zod.md),
-[the ArkType guide](docs/arktype.md), and the [Valibot guide](docs/valibot.md).
+Encoding is explicit. A read-only schema without a codec does not get an
+invented inverse encoder.
+
+## Advanced: custom Standard Schema providers
+
+Most applications should use a native provider and its adapter. Hand-writing a
+`StandardSchemaV1` object is unusual; use it only when no provider package
+fits, or when you are authoring an adapter. The manual contract and its
+failure behavior are documented in the [advanced API section](docs/api.md#advanced-custom-provider-authoring).
 
 ## Tagged classes and errors
 
-Tagged factories use Standard Schema fields and inject a protected literal
-`_tag`. Tagged errors are also `Error` instances and use the
-`better-result.TaggedError` protocol, so they can be yielded from
-`Result.gen`.
+The root facade also exports portable tagged factories. Provider adapters add
+their own provider-native class capabilities where supported. Use a provider
+schema for ordinary input validation and the tagged factories for domain
+values or errors that need a stable tag:
 
-```ts
-import type { StandardSchemaV1 } from '@standard-schema/spec'
+~~~ts
+import * as z from 'zod'
 import { Result } from 'better-result'
 import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 
-const stringSchema: StandardSchemaV1<string, string> = {
-  '~standard': {
-    version: 1,
-    vendor: 'example',
-    validate: (value) => typeof value === 'string'
-      ? { value }
-      : { issues: [{ message: 'Expected a string' }] }
-  }
-}
+const local = Schema.with(ZodAdapter)
 
-class UserNotFound extends Schema.TaggedError<UserNotFound>()('UserNotFound', {
-  userId: stringSchema
+class UserNotFound extends local.TaggedError<UserNotFound>()('UserNotFound', {
+  userId: z.string()
 }) {}
 
 const failure = UserNotFound.make({ userId: 'user-1' })
 if (Result.isError(failure)) throw failure.error
-if (!failure.value.message.includes(failure.value.userId)) throw new Error('unreachable')
-```
+console.log(failure.value._tag, failure.value.userId)
+~~~
 
-## Public operations
+## Package checks
 
-All synchronous operations are requirement-free `Effect<Value, Failure, never>`
-values backed by `better-result`.
+The package publishes the provider-neutral root plus the `./zod`, `./valibot`,
+and `./arktype` subpaths. Run the checks with Bun from the repository root or
+from this package:
 
-| Operation | Input | Result |
-| --- | --- | --- |
-| `Schema.decodeUnknown` | `unknown` | decoded class or `SchemaDecodeFailure` |
-| `Schema.decode` | encoded input | decoded class or decode failure |
-| `Schema.make` | decoded props | class or `SchemaConstructionFailure` |
-| `Schema.encode` | class instance plus explicit encoder | encoded value or encode/unsupported failure |
-| `Schema.with(adapter)` | provider schema | adapter-owned capabilities |
-
-Async validators and encoders must use the corresponding `Async` operation.
-The sync boundary returns `SchemaAsyncRequired` and does not invoke an async
-operation twice. Unexpected provider failures become
-`SchemaExecutionFailure`.
-
-## Package boundaries
-
-The package exports the root facade plus `./zod`, `./valibot`, `./arktype`, and
-`./package.json`. Adapter packages are optional peers. No provider shim or
-legacy root alias is published, and the core source does not import Zod.
-
-Run the package checks with Bun:
-
-```bash
+~~~sh
 bun run typecheck
-bun run test:runtime
-bun run test:types
+bun run test
 bun run examples
 bun run check
-```
+~~~
