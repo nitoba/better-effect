@@ -44,6 +44,7 @@ import type {
   DurableJobEventType,
   JobStoreError,
   JobListCursor,
+  JobOperation,
   JobRecord,
   JobState,
   JobStoreOperation,
@@ -1032,7 +1033,9 @@ const auditMutationResult = async <Value>(
     action,
     Result.isError(result) ? 'failure' : 'success',
     Result.isError(result) ? 'failure' : 'success',
-    Result.isError(result) ? result.error.code : undefined
+    Result.isError(result) && result.error instanceof DashboardHttpError
+      ? result.error.code
+      : undefined
   )
   return result
 }
@@ -1651,6 +1654,22 @@ const runOperation = async <Value, Failure extends JobStoreError>(
     return Result.isError(result) ? Result.err(storageError(result.error)) : Result.ok(result.value)
   } catch (error) {
     return Result.err(storageError(error))
+  }
+}
+
+const runAdminOperation = async <Value, Failure>(
+  operation: JobOperation<Value, Failure, typeof JobStore, true>
+): Promise<DashboardResult<Value>> => {
+  try {
+    const result = await Effect.gen(async function* () {
+      return Result.ok(yield* operation)
+    })
+    // Keep JobAdmin's original error object so Hono's failure mapper preserves its HTTP result.
+    return Result.isError(result)
+      ? Result.err(result.error as DashboardHttpError)
+      : Result.ok(result.value)
+  } catch (error) {
+    return Result.err(error as DashboardHttpError)
   }
 }
 
@@ -2603,8 +2622,7 @@ export const DashboardApp = HonoEffect.app(
           store
         )
         if (Result.isError(authorized)) return authorized
-        const now = (yield* Clock).now().getTime()
-        const result = await runOperation(store.remove({ jobId: jobId.value, now }))
+        const result = await runAdminOperation(JobAdmin.for(JobStore).remove(jobId.value))
         const audited = await auditMutationResult(
           auditSink,
           metricsSink,
@@ -2623,16 +2641,15 @@ export const DashboardApp = HonoEffect.app(
     app.post(
       '/api/queues/:queue/pause',
       yield* http.gen(async function* (context) {
+        yield* Result.await(Promise.resolve(Result.ok(undefined)))
         const authorized = await authorizeMutation(context.req.raw, 'operator', 'queue.pause')
         if (Result.isError(authorized)) return authorized
-        const queue = parseQueueName(context.req.param('queue'))
+        const queue = parseQueue(context.req.param('queue'))
         if (Result.isError(queue)) {
           recordMutationMetric(metricsSink, 'queue.pause', 'denied')
           return queue
         }
-        const store = yield* JobStore
-        const now = (yield* Clock).now().getTime()
-        const result = await runOperation(store.pause({ queue: queue.value, now }))
+        const result = await runAdminOperation(JobAdmin.for(JobStore).pause(queue.value))
         const audited = await auditMutationResult(
           auditSink,
           metricsSink,
@@ -2648,16 +2665,15 @@ export const DashboardApp = HonoEffect.app(
     app.post(
       '/api/queues/:queue/resume',
       yield* http.gen(async function* (context) {
+        yield* Result.await(Promise.resolve(Result.ok(undefined)))
         const authorized = await authorizeMutation(context.req.raw, 'operator', 'queue.resume')
         if (Result.isError(authorized)) return authorized
-        const queue = parseQueueName(context.req.param('queue'))
+        const queue = parseQueue(context.req.param('queue'))
         if (Result.isError(queue)) {
           recordMutationMetric(metricsSink, 'queue.resume', 'denied')
           return queue
         }
-        const store = yield* JobStore
-        const now = (yield* Clock).now().getTime()
-        const result = await runOperation(store.resume({ queue: queue.value, now }))
+        const result = await runAdminOperation(JobAdmin.for(JobStore).resume(queue.value))
         const audited = await auditMutationResult(
           auditSink,
           metricsSink,

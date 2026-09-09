@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 
 import { Effect, Layer, Runtime } from 'better-effect'
-import { ClockTestLayer } from 'better-effect/standard-services'
+import { Clock, ClockTestLayer } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import {
   DashboardApp,
@@ -21,6 +21,7 @@ import {
   DashboardMetricNames
 } from '../src'
 import type { DashboardMutationMetricAttributes } from '../src'
+import type { QueueName as QueueNameType } from 'better-effect-mq'
 import {
   FlowStore,
   JobId,
@@ -343,21 +344,128 @@ test('dashboard emits one bounded action label for every mutation route', async 
       expect(response.status).toBeLessThan(500)
     }
 
-    expect(new Set(metrics.map(({ action }) => action))).toEqual(
-      new Set([
-        'job.cancel',
-        'job.promote',
-        'job.retry',
-        'job.redrive',
-        'job.remove',
-        'queue.pause',
-        'queue.resume',
-        'schedule.pause',
-        'schedule.resume',
-        'schedule.remove',
-        'flow.cancel'
-      ])
+    expect(metrics).toHaveLength(requests.length)
+    expect(
+      Object.fromEntries(
+        [...new Set(metrics.map(({ action }) => action))].map((action) => [
+          action,
+          metrics.filter((metric) => metric.action === action).length
+        ])
+      )
+    ).toEqual({
+      'job.cancel': 1,
+      'job.promote': 1,
+      'job.retry': 1,
+      'job.redrive': 1,
+      'job.remove': 1,
+      'queue.pause': 1,
+      'queue.resume': 1,
+      'schedule.pause': 1,
+      'schedule.resume': 1,
+      'schedule.remove': 1,
+      'flow.cancel': 1
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test('dashboard queue mutations retain JobAdmin clock validation', async () => {
+  const pauseRequests: Array<{ readonly now: number }> = []
+  const resumeRequests: Array<{ readonly now: number }> = []
+  const store = Object.assign(MemoryJobStore.make(), {
+    pause: (request: { readonly now: number; readonly queue: QueueNameType }) => {
+      pauseRequests.push({ now: request.now })
+      return Result.ok({ queue: request.queue, paused: true })
+    },
+    resume: (request: { readonly now: number; readonly queue: QueueNameType }) => {
+      resumeRequests.push({ now: request.now })
+      return Result.ok({ queue: request.queue, paused: false })
+    }
+  })
+  const metrics: Array<DashboardMutationMetricAttributes> = []
+  const runtime = await Runtime.make(
+    Layer.merge(
+      Layer.succeed(JobStore, JobStore.of(store)),
+      Layer.merge(
+        Layer.succeed(
+          Clock,
+          Clock.of({
+            now: () => new Date(Number.NaN),
+            sleep: () => Promise.resolve()
+          })
+        ),
+        Layer.merge(
+          Layer.succeed(
+            DashboardAuthorization,
+            DashboardAuthorization.of({ authorize: () => ({ role: 'admin' as const }) })
+          ),
+          Layer.merge(
+            DashboardEventFeedDisabled,
+            Layer.merge(
+              DashboardScheduleCapabilityDisabled,
+              Layer.merge(
+                DashboardFlowCapabilityDisabled,
+                Layer.merge(
+                  DashboardControlCapabilityDisabled,
+                  Layer.merge(
+                    DashboardAuditSinkDisabled,
+                    Layer.merge(
+                      DashboardJobRedactionPolicyDisabled,
+                      Layer.merge(
+                        Layer.succeed(
+                          DashboardMutationPolicy,
+                          DashboardMutationPolicy.of({
+                            available: true,
+                            check: () => ({ allowed: true as const })
+                          })
+                        ),
+                        Layer.merge(
+                          DashboardRateLimiterDisabled,
+                          Layer.merge(
+                            Layer.succeed(
+                              DashboardMetricsSink,
+                              DashboardMetricsSink.of({
+                                available: true,
+                                increment: (_name, _value, attributes) => {
+                                  metrics.push(attributes)
+                                }
+                              })
+                            ),
+                            DashboardApp.layer
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
     )
+  )
+
+  try {
+    const appResult = await runtime.run(
+      Effect.fn(async function* () {
+        return Result.ok(yield* DashboardApp)
+      })
+    )
+    if (Result.isError(appResult)) throw appResult.error
+
+    const response = await appResult.value.request('/api/queues/emails/pause', { method: 'POST' })
+    const resumed = await appResult.value.request('/api/queues/emails/resume', { method: 'POST' })
+
+    expect(response.status).toBe(500)
+    expect(resumed.status).toBe(500)
+    expect(pauseRequests).toEqual([])
+    expect(resumeRequests).toEqual([])
+    expect(metrics).toEqual([
+      { action: 'queue.pause', outcome: 'failure' },
+      { action: 'queue.resume', outcome: 'failure' }
+    ])
   } finally {
     await runtime.dispose()
   }
