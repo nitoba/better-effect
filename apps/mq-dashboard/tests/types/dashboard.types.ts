@@ -4,6 +4,8 @@ import { Layer } from 'better-effect'
 import {
   DashboardAuditSink,
   DashboardAuditSinkDisabled,
+  DashboardMetricsSink,
+  DashboardMetricsSinkDisabled,
   DashboardJobRedactionPolicy,
   DashboardJobRedactionPolicyDisabled,
   DashboardMutationPolicy,
@@ -38,6 +40,31 @@ const policyLayer = Layer.succeed(
 const auditLayer = Layer.succeed(
   DashboardAuditSink,
   DashboardAuditSink.of({ available: true, record: async () => undefined })
+)
+
+const metricsLayer = Layer.succeed(
+  DashboardMetricsSink,
+  DashboardMetricsSink.of({
+    available: true,
+    increment: (_name, _value, attributes) => {
+      expectTypeOf(attributes.action).toEqualTypeOf<
+        | 'job.cancel'
+        | 'job.promote'
+        | 'job.retry'
+        | 'job.redrive'
+        | 'job.remove'
+        | 'queue.pause'
+        | 'queue.resume'
+        | 'schedule.pause'
+        | 'schedule.resume'
+        | 'schedule.remove'
+        | 'flow.cancel'
+      >()
+      expectTypeOf(attributes.outcome).toEqualTypeOf<
+        'success' | 'failure' | 'denied' | 'rate_limited'
+      >()
+    }
+  })
 )
 
 const limiterLayer = Layer.succeed(
@@ -92,6 +119,9 @@ expectTypeOf<Layer.Required<typeof policyLayer>>().toBeNever()
 expectTypeOf<Layer.Provided<typeof auditLayer>>().toEqualTypeOf<
   InstanceType<typeof DashboardAuditSink>
 >()
+expectTypeOf<Layer.Provided<typeof metricsLayer>>().toEqualTypeOf<
+  InstanceType<typeof DashboardMetricsSink>
+>()
 expectTypeOf<Layer.Provided<typeof limiterLayer>>().toEqualTypeOf<
   InstanceType<typeof DashboardRateLimiter>
 >()
@@ -104,6 +134,9 @@ expectTypeOf<Layer.Provided<typeof DashboardMutationPolicyDisabled>>().toEqualTy
 expectTypeOf<Layer.Provided<typeof DashboardAuditSinkDisabled>>().toEqualTypeOf<
   InstanceType<typeof DashboardAuditSink>
 >()
+expectTypeOf<Layer.Provided<typeof DashboardMetricsSinkDisabled>>().toEqualTypeOf<
+  InstanceType<typeof DashboardMetricsSink>
+>()
 expectTypeOf<Layer.Provided<typeof DashboardRateLimiterDisabled>>().toEqualTypeOf<
   InstanceType<typeof DashboardRateLimiter>
 >()
@@ -113,5 +146,6 @@ expectTypeOf<Layer.Provided<typeof DashboardJobRedactionPolicyDisabled>>().toEqu
 
 void policyLayer
 void auditLayer
+void metricsLayer
 void limiterLayer
 void redactionLayer
