@@ -180,6 +180,14 @@ required-extension, flow, and schedule checks use the small `extensions` hook;
 without one they remain explicit `skipped` diagnostics instead of assuming an
 API that the adapter does not provide.
 
+The in-process `MemoryJobEventStore` conformance suite declares retention,
+cursor expiry, and optional EventStore wiring, and installs extensions for
+event-driven `awaitResult` and its polling fallback. Lifecycle ownership,
+required-extension rollout, flow, and schedule scenarios remain explicit
+skips because Memory has no owning consumer lifecycle or durable flow/schedule
+adapter; each scenario instead gets fresh store instances and a resettable
+deterministic clock.
+
 ## Controlled claims
 
 `QueueControls` is the Layer-first, yieldable controls extension. It keeps
