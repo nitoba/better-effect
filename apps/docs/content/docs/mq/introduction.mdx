@@ -93,19 +93,18 @@ attempt default. `Codec.standardSchema` accepts native Zod 4 schemas and the
 schemas exposed by `better-effect-schema`; it decodes persisted JSON before the
 handler runs.
 
-Use `Job.define` when the direct form is more convenient. Multiple versions can
-be kept in a local immutable registry:
+Use `Job.define` when the direct form is more convenient. This continuation
+reuses the schema-backed payload codec from the canonical definition above;
+when the persisted contract changes, create a new local class and codec as
+shown in [Defining Jobs](./defining-jobs):
 
 ```ts
-import * as z from 'zod'
-import { Codec, Job, JobRegistry } from 'better-effect-mq'
+import { Job, JobRegistry } from 'better-effect-mq'
 
 const SendEmailV2 = Job.define('send-email', {
   queue: Emails,
   version: 2,
-  payload: Codec.standardSchema({
-    schema: z.object({ messageId: z.string().min(1), recipient: z.email() })
-  })
+  payload: SendEmailPayloadCodec
 })
 const Jobs = JobRegistry.make([SendEmail, SendEmailV2] as const)
 ```
@@ -197,15 +196,10 @@ recorded observer. Its `enqueued`, `enqueuedPayloads`, `job`, `attempts`, and
 store contract, not a second worker or a private state mutator.
 
 ```ts
-import * as z from 'zod'
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
-import { Codec, Queue } from 'better-effect-mq'
 import { TestJobStore } from 'better-effect-mq/testing'
+import { SendEmail } from './jobs'
 
-const SendEmail = Queue.define('emails').job('send-email', {
-  version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ to: z.email() }) })
-})
 const testStore = TestJobStore.make({
   clock: new ClockTest(0),
   ids: IdGeneratorTest.from((index) => `test-${index}`)

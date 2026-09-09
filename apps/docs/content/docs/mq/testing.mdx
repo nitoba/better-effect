@@ -9,21 +9,16 @@ wraps the real `MemoryJobStore` contract and keeps a `ClockTest`, an
 mutate private state or implement a second Worker.
 
 ```ts
-import * as z from 'zod'
 import { Effect } from 'better-effect'
 import { ClockTest, IdGeneratorTest } from 'better-effect/standard-services'
 import { TestRuntime } from 'better-effect/testing'
 import { Result } from 'better-result'
-import { Codec, Queue } from 'better-effect-mq'
 import { TestJobStore } from 'better-effect-mq/testing'
+import { SendEmail } from './jobs'
 
 const clock = new ClockTest(Date.UTC(2026, 0, 1))
 const ids = IdGeneratorTest.from((index) => `job-${index + 1}`)
 const testStore = TestJobStore.make({ clock, ids })
-const SendEmail = Queue.define('emails').job('send', {
-  version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ to: z.email() }) })
-})
 const runtime = await TestRuntime.make(testStore.layer, {
   clock,
   idGenerator: ids
@@ -32,7 +27,10 @@ const runtime = await TestRuntime.make(testStore.layer, {
 try {
   const id = await runtime.run(() =>
     Effect.gen(async function* () {
-      const value = yield* SendEmail.enqueue({ to: 'ada@example.test' })
+      const value = yield* SendEmail.enqueue({
+        messageId: 'message-test-1',
+        recipient: 'ada@example.test'
+      })
       return Result.ok(value)
     })
   )
@@ -48,8 +46,9 @@ The harness assertions are oldest-first and readonly:
 `settle` and `release` call the public contract with explicit lease tokens.
 Named stores use `TestJobStore.makeFor(namedToken, options)`.
 
-The test Job uses a Zod 4 schema through `Codec.standardSchema`, matching the
-recommended production boundary. Keep the [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
+The test Job reuses the canonical Zod 4 schema-backed class from
+`better-effect-schema` through `Codec.standardSchema`, matching the recommended
+production boundary. Keep the [trusted JSON escape hatch](./defining-jobs#trusted-json-escape-hatch)
 for intentionally trusted JSON fixtures that do not need runtime validation.
 
 For Worker scenarios, start the real `Worker` through the test Runtime's public

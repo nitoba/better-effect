@@ -112,7 +112,7 @@ import * as z from 'zod'
 import { Database } from 'bun:sqlite'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import {
   OutboxId,
   OutboxPublisher,
@@ -126,16 +126,29 @@ import {
   SqliteOutboxStore,
   SqliteOutboxTransactions
 } from 'better-effect-mq-sqlite'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Orders = Queue.define('orders')
-const SendConfirmationPayload = z.object({
+const local = Schema.with(ZodAdapter)
+const SendConfirmationPayloadSchema = z.object({
   orderId: z.string().min(1),
   email: z.email()
 })
+class SendConfirmationPayload extends local.Class<SendConfirmationPayload>(
+  'app/SendConfirmationPayload'
+)(SendConfirmationPayloadSchema) {}
+const SendConfirmationPayloadCodec = Codec.standardSchema({
+  schema: SendConfirmationPayload,
+  encode: (value) =>
+    Schema.encode(SendConfirmationPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: Codec.standardSchema({ schema: SendConfirmationPayload }),
+  payload: SendConfirmationPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 const ConfirmationWorker = Worker.service('@app/ConfirmationWorker')
@@ -165,10 +178,12 @@ SqliteMigrator.migrate({ database })
 database.exec('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, email TEXT NOT NULL)')
 const AppLive = Layer.complete(
   Layer.merge(
-    SqliteJobStore.layer({ database, namespace: 'orders' }),
-    SqliteOutboxStore.layer({ database, namespace: 'orders' })
-  ),
-  Layer.merge(ClockLive, Layer.merge(ConfirmationWorkerLive, PublisherLive))
+    Layer.merge(
+      SqliteJobStore.layer({ database, namespace: 'orders' }),
+      SqliteOutboxStore.layer({ database, namespace: 'orders' })
+    ),
+    Layer.merge(ClockLive, Layer.merge(ConfirmationWorkerLive, PublisherLive))
+  )
 )
 const runtime = await Runtime.make(AppLive)
 

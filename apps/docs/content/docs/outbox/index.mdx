@@ -26,23 +26,44 @@ transactional append and publisher are new:
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, JobStore, MemoryJobStore, Queue, Worker } from 'better-effect-mq'
+import {
+  Codec,
+  JobContext,
+  JobEncodeFailure,
+  JobStore,
+  MemoryJobStore,
+  Queue,
+  Worker
+} from 'better-effect-mq'
 import {
   MemoryOutboxStore,
   OutboxPublisher,
   OutboxRoutes,
   OutboxStore
 } from 'better-effect-mq-outbox'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
-const SendEmailPayload = z.object({
+const local = Schema.with(ZodAdapter)
+const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+  SendEmailPayloadSchema
+) {}
+const SendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const SendEmail = Emails.job('send-email', {
   version: 1,
-  payload: Codec.standardSchema({ schema: SendEmailPayload }),
+  payload: SendEmailPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 

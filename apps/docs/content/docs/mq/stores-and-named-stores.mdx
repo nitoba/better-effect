@@ -9,9 +9,8 @@ heartbeat, stalled recovery, wake, inspection and administration. The core
 never sees SQL, Redis keys, connection objects or driver-specific DTOs.
 
 ```ts
-import * as z from 'zod'
 import { Layer, Runtime } from 'better-effect'
-import { Codec, JobStore, MemoryJobStore, Queue } from 'better-effect-mq'
+import { JobStore, MemoryJobStore, Queue } from 'better-effect-mq'
 
 declare const adapter: JobStore.Contract
 const Durable = JobStore.named('durable')
@@ -21,9 +20,24 @@ const DurableLayer = Layer.succeed(Durable, Durable.of(adapter))
 Bind a Job explicitly when several stores share one Runtime:
 
 ```ts
+import * as z from 'zod'
+import { Codec, JobEncodeFailure } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const local = Schema.with(ZodAdapter)
+const AuditPayloadSchema = z.object({ event: z.string().min(1) })
+class AuditPayload extends local.Class<AuditPayload>('app/AuditPayload')(AuditPayloadSchema) {}
+const AuditPayloadCodec = Codec.standardSchema({
+  schema: AuditPayload,
+  encode: (value) =>
+    Schema.encode(AuditPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const AuditJob = Queue.define('audit').job('write', {
   version: 1,
-  payload: Codec.standardSchema({ schema: z.object({ event: z.string().min(1) }) }),
+  payload: AuditPayloadCodec,
   store: Durable
 })
 ```

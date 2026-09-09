@@ -15,15 +15,9 @@ There are two separate idempotency boundaries:
   key so a redelivered attempt is a no-op or safely replaces the prior write.
 
 ```ts
-import * as z from 'zod'
+import { SendEmail } from './jobs'
 
-const SendEmail = Emails.job('send-email', {
-  version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ messageId: z.string().min(1), to: z.email() })
-  }),
-  idempotencyKey: ({ messageId }) => messageId
-})
+// SendEmail uses the schema-backed payload codec from the canonical Job definition.
 
 // The email provider should also receive messageId as its idempotency key.
 ```
