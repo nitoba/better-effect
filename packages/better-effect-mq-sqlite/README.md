@@ -79,7 +79,7 @@ starts a Runtime-owned Worker, and waits for one typed job:
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { Schema } from 'better-effect-schema'
 import { ZodAdapter } from 'better-effect-schema/zod'
 import { SqliteMigrator } from 'better-effect-mq-sqlite'
@@ -97,9 +97,22 @@ try {
 }
 
 const local = Schema.with(ZodAdapter)
-const SendEmailPayload = z.object({ recipient: z.email() })
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+  recipient: z.email(),
+  requestedAt: DateFromISOString
+}) {}
 const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
-const sendEmailPayloadCodec = Codec.standardSchema({ schema: SendEmailPayload })
+const sendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
 
 const Emails = Queue.define('emails')
@@ -112,6 +125,7 @@ const SendEmail = Emails.job('send-email', {
 const EmailWorker = Worker.service('@app/EmailWorker')
 const emailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
+    console.log(`sending to ${payload.recipient} at ${payload.requestedAt.toISOString()}`)
     return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
@@ -137,7 +151,10 @@ try {
 
   const result = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, { recipient: 'ada@example.test' })
+      const payload = local.decodeUnknown(SendEmailPayload, {
+        recipient: 'ada@example.test',
+        requestedAt: '2026-09-09T10:00:00.000Z'
+      })
       if (Result.isError(payload)) throw payload.error
       const jobId = yield* SendEmail.enqueue(payload.value)
       const completed = yield* SendEmail.awaitResult(jobId)
@@ -158,8 +175,11 @@ not run migrations. Calling `migrate` again is safe and returns no newly
 applied entries when the file is already current.
 
 The local `better-effect-schema` facade uses the Zod 4 provider for boundary
-validation, and `Codec.standardSchema` adapts those schemas to Job payloads and
+validation, `Schema.encode` projects the decoded `SendEmailPayload` class to
+JSON, and `Codec.standardSchema` adapts that contract to Job payloads and
 results. The storage Layer remains responsible only for SQLite persistence.
+The later Outbox snippets use smaller `z.object` Standard Schema codecs
+deliberately when a decoded class is unnecessary.
 
 ## Owning the database connection
 

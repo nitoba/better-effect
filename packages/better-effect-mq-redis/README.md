@@ -61,15 +61,28 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
-import { Codec, JobEventStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobEventStore, Queue, Worker } from 'better-effect-mq'
 import { Schema } from 'better-effect-schema'
 import { ZodAdapter } from 'better-effect-schema/zod'
 import { RedisJobStore } from 'better-effect-mq-redis'
 
 const local = Schema.with(ZodAdapter)
-const SendEmailPayload = z.object({ recipient: z.email() })
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+  recipient: z.email(),
+  requestedAt: DateFromISOString
+}) {}
 const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
-const sendEmailPayloadCodec = Codec.standardSchema({ schema: SendEmailPayload })
+const sendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
 
 const Emails = Queue.define('emails')
@@ -82,6 +95,7 @@ const SendEmail = Emails.job('send-email', {
 const EmailWorker = Worker.service('@app/EmailWorker')
 const emailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
+    console.log(`sending to ${payload.recipient} at ${payload.requestedAt.toISOString()}`)
     return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
@@ -124,7 +138,10 @@ try {
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, { recipient: 'ada@example.test' })
+      const payload = local.decodeUnknown(SendEmailPayload, {
+        recipient: 'ada@example.test',
+        requestedAt: '2026-09-09T10:00:00.000Z'
+      })
       if (Result.isError(payload)) throw payload.error
       const jobId = yield* SendEmail.enqueue(payload.value)
       const result = yield* SendEmail.awaitResult(jobId, {
@@ -150,9 +167,12 @@ persistence is not needed. The Layer initializes the client before exposing the
 services and releases its resources when the runtime is disposed.
 
 The local `better-effect-schema` facade uses the Zod 4 provider for boundary
-validation, and `Codec.standardSchema` adapts those schemas to durable Job
-payloads and results. Redis supplies persistence and wake-ups; it does not
-replace the core Job or Worker APIs.
+validation, `Schema.encode` projects the decoded `SendEmailPayload` class to
+JSON, and `Codec.standardSchema` adapts that contract to durable Job payloads
+and results. Redis supplies persistence and wake-ups; it does not replace the
+core Job or Worker APIs. The later Outbox and Flow snippets use smaller
+`z.object` Standard Schema codecs deliberately when a decoded class is
+unnecessary.
 
 ## Redis-native outbox transactions
 
@@ -623,9 +643,8 @@ path.
   factories and verify that command and subscriber connections are distinct.
 
 Custom integrations should implement the exported `RedisCommandClient` and
-`RedisSubscriberClient` shapes and use the public exports from `src/index.ts`.
-The adapter's internal key and command representation is not a compatibility
-surface.
+`RedisSubscriberClient` shapes and use the public exports from the package
+entrypoint.
 
 ## Development
 

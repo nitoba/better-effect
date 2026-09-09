@@ -42,7 +42,7 @@ import * as z from 'zod'
 import { Pool } from 'pg'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobContext, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobContext, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Schema } from 'better-effect-schema'
 import { ZodAdapter } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
@@ -52,9 +52,22 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 await PostgresMigrator.run(pool, { schema: 'public' })
 
 const local = Schema.with(ZodAdapter)
-const SendEmailPayload = z.object({ recipient: z.email() })
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+  recipient: z.email(),
+  requestedAt: DateFromISOString
+}) {}
 const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email() })
-const sendEmailPayloadCodec = Codec.standardSchema({ schema: SendEmailPayload })
+const sendEmailPayloadCodec = Codec.standardSchema({
+  schema: SendEmailPayload,
+  encode: (value) =>
+    Schema.encode(SendEmailPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 const sendEmailResultCodec = Codec.standardSchema({ schema: SendEmailResult })
 
 const Emails = Queue.define('emails')
@@ -68,7 +81,9 @@ const SendEmail = Emails.job('send-email', {
 const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
   Effect.fn(async function* () {
     const context = yield* JobContext
-    console.log(`attempt ${context.attempt}: sending to ${payload.recipient}`)
+    console.log(
+      `attempt ${context.attempt}: sending to ${payload.recipient} at ${payload.requestedAt.toISOString()}`
+    )
     return Result.ok({ status: 'sent' as const, recipient: payload.recipient })
   })
 )
@@ -90,7 +105,10 @@ await runtime.warmup()
 try {
   const submitted = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, { recipient: 'ada@example.test' })
+      const payload = local.decodeUnknown(SendEmailPayload, {
+        recipient: 'ada@example.test',
+        requestedAt: '2026-09-09T10:00:00.000Z'
+      })
       if (Result.isError(payload)) throw payload.error
       const jobId = yield* SendEmail.enqueue(payload.value)
       return Result.ok(jobId)
@@ -114,12 +132,15 @@ try {
 
 `Queue.define` and `Queue.job` only create immutable descriptors. They do not
 open a connection or register a handler. The Zod 4 schema is validated through
-the `better-effect-schema/zod` adapter, and `Codec.standardSchema` keeps the
-same contract at the durable job boundary. `Worker.handle` associates a typed
-payload with a `better-effect` program, while `Worker.service(...).layer(...)`
-owns polling, leases, attempts, and graceful worker shutdown. `runtime.run`
-provides the declared Services and execution Scope; `awaitResult` reads the
-durable Job until it reaches a terminal state.
+the `better-effect-schema/zod` adapter, and `Schema.encode` projects the
+decoded class back to JSON for the durable job boundary. `Codec.standardSchema`
+keeps that contract in one codec. `Worker.handle` associates a typed payload
+with a `better-effect` program, while `Worker.service(...).layer(...)` owns
+polling, leases, attempts, and graceful worker shutdown. `runtime.run` provides
+the declared Services and execution Scope; `awaitResult` reads the durable Job
+until it reaches a terminal state. The later Flow and Outbox snippets use
+smaller `z.object` Standard Schema codecs deliberately; they keep the same
+provider-backed validation boundary when a decoded class is unnecessary.
 
 The example uses `PostgresJobStore.layer`, so the application owns `pool` and
 must call `pool.end()`. If the adapter should create and close the pool, use:
