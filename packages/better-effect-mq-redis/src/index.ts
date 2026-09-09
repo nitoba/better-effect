@@ -2,6 +2,7 @@ export { RedisJobStore } from './store'
 export { RedisJobEventStore } from './event-store'
 export { RedisFlowStore } from './flow-store'
 export { RedisJobScheduleStore } from './schedule-store'
+export { RedisOutbox, RedisOutboxStore } from './outbox'
 export {
   RedisClient,
   createRedisClient,
@@ -27,6 +28,18 @@ export type {
   RedisJobStoreConnectionConfig,
   RedisSubscriberClient
 } from './config'
+export type { RedisTransaction } from './config'
+export type {
+  RedisOutboxAppendOptions,
+  RedisOutboxClient,
+  RedisOutboxStoreConfig,
+  RedisOutboxStoreConnectionConfig,
+  RedisOutboxStoreContract,
+  RedisOutboxTransaction,
+  RedisOutboxTransactionCallback
+} from './outbox'
+
+export { OutboxStore, isOutboxStoreToken, outboxStoreTag } from 'better-effect-mq-outbox'
 
 export { decodeAttempt, decodeJobRecord, encodeAttempt, encodeJobRecord } from './codec'
 export type { RedisDecodeResult, RedisHashFields } from './codec'
@@ -52,15 +65,6 @@ export {
 } from './errors'
 
 export {
-  REDIS_ADAPTER_VERSION,
-  REDIS_INDEX_CONFIGURATION,
-  REDIS_INDEX_CONFIGURATION_CHECKSUM,
-  REDIS_LAYOUT_VERSION,
-  REDIS_FLOW_INDEX_CONFIGURATION,
-  REDIS_FLOW_INDEX_CONFIGURATION_CHECKSUM,
-  REDIS_FLOW_LAYOUT_VERSION,
-  REDIS_FLOW_PROTOCOL_VERSION,
-  REDIS_PROTOCOL_VERSION,
   ensureRedisFlowLayout,
   ensureRedisLayout,
   MAX_LAYOUT_SCAN_KEYS,

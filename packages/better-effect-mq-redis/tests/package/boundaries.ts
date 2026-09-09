@@ -29,7 +29,13 @@ const exports = manifest.exports as Record<string, unknown>
 if (exports['.'] !== './dist/index.mjs') throw new Error('Unexpected main export')
 if (exports['./package.json'] !== './package.json') throw new Error('Missing package export')
 const peers = manifest.peerDependencies as Record<string, unknown>
-for (const peer of ['better-effect', 'better-effect-mq', 'better-result', 'redis']) {
+for (const peer of [
+  'better-effect',
+  'better-effect-mq',
+  'better-effect-mq-outbox',
+  'better-result',
+  'redis'
+]) {
   if (peers[peer] === undefined) throw new Error(`Missing ${peer} peer`)
 }
 const peerMeta = manifest.peerDependenciesMeta as Record<string, Record<string, unknown>>

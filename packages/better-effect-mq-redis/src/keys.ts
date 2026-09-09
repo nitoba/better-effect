@@ -2,6 +2,7 @@
 // oxlint-disable anti-slop/no-runtime-typeof -- runtime key validation establishes the string domain before encoding.
 
 import type { JobState } from 'better-effect-mq'
+import type { OutboxState } from 'better-effect-mq-outbox'
 
 import { RedisLayoutError } from './errors'
 import { hasUnpairedSurrogate, utf8ByteLength } from './internal/text'
@@ -307,6 +308,10 @@ export interface RedisKeyLayout {
   readonly flowOutboxSequence: string
   readonly flowOutboxEntry: (entryId: string) => string
   readonly flowLayout: string
+  readonly outboxRecord: (id: string) => string
+  readonly outboxAll: string
+  readonly outboxState: (state: OutboxState) => string
+  readonly outboxSequence: string
 }
 
 const stateKey = (state: JobState, field: string): string => {
@@ -385,7 +390,11 @@ export const makeRedisKeyLayout = (prefixValue: string, namespaceValue: string):
     flowOutbox: suffix('flow-outbox'),
     flowOutboxSequence: suffix('seq:flow-outbox'),
     flowOutboxEntry: (entryId: string) => suffix(`flow-outbox-entry:${encodeKeySegment(entryId)}`),
-    flowLayout: suffix('flow-layout')
+    flowLayout: suffix('flow-layout'),
+    outboxRecord: (id: string) => suffix(`outbox-record:${encodeKeySegment(id)}`),
+    outboxAll: suffix('outbox-all'),
+    outboxState: (state: OutboxState) => suffix(`outbox-state:${encodeKeySegment(state)}`),
+    outboxSequence: suffix('seq:outbox')
   }
   return Object.freeze(layout)
 }

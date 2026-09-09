@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add the Redis-native `RedisOutbox.transaction` callback and durable
+  `RedisOutboxStore` Layer. The callback owns `MULTI`/`EXEC` cleanup for a
+  Redis domain write plus outbox append and documents the boundary as
+  Redis-only rather than cross-database atomicity.
 - Atomically append terminal Flow child reports to the Redis JobStore outbox for settlement, cancellation, release, retry exhaustion, and stalled recovery, with at-least-once relay support.
 - Implement QueueControls protocol v3 with revision fencing, atomic permits, persisted `dispatchKey`, fixed-window rate limits, and controlled lifecycle transitions.
 
