@@ -1,15 +1,14 @@
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
-import { JobStore, JobContext, MemoryJobStore, Worker } from 'better-effect-mq'
+import { JobStore, MemoryJobStore, Worker } from 'better-effect-mq'
 
 import { SendEmail } from '../shared/jobs'
 
 const store = MemoryJobStore.make()
 const handler = Worker.handle(SendEmail, (payload) =>
+  // oxlint-disable-next-line require-yield -- this handler has no contextual requirements.
   Effect.fn(async function* () {
-    const context = yield* JobContext
-    void context
     return Result.ok(`sent:${payload.recipient}`)
   })
 )
