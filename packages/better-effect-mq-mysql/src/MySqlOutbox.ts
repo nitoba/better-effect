@@ -8,7 +8,7 @@
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- assertions follow record validation.
 
 import { createHash } from 'node:crypto'
-import { Result } from 'better-result'
+import { Err, Result, type Result as ResultType } from 'better-result'
 import type { PoolConnection as DriverPoolConnection } from 'mysql2/promise'
 import {
   OutboxConflictError,
@@ -24,7 +24,13 @@ import {
   type OutboxStoreError
 } from 'better-effect-mq-outbox'
 
-import { normalizeMySqlJobStoreConfig, type PoolConnection, type QueryResult } from './config'
+import {
+  normalizeMySqlJobStoreConfig,
+  type Pool,
+  type PoolConnection,
+  type QueryResult
+} from './config'
+import { MySqlClient } from './client'
 import { isOutboxStoreToken, OutboxStore, type AnyOutboxStoreToken } from './outbox-token'
 import { MYSQL_TABLES, quoteIdentifier } from './schema'
 
@@ -33,6 +39,9 @@ export type MySqlOutboxAppendOptions = Readonly<{
   token?: AnyOutboxStoreToken
 }>
 export type MySqlOutboxTransaction = PoolConnection | DriverPoolConnection
+export type MySqlOutboxTransactionCallback<Value> = (
+  connection: PoolConnection
+) => Value | PromiseLike<Value>
 export type MySqlOutboxRow = Record<string, unknown>
 type MySqlOutboxQueryResult<Row> = QueryResult<Row> & { readonly insertId?: number }
 
@@ -226,11 +235,55 @@ const normalizedNamespace = (options: MySqlOutboxAppendOptions | undefined): str
   return namespaceForOutboxToken(options.token, namespace)
 }
 
+const isResultError = (value: unknown): value is ResultType<unknown, unknown> => {
+  return value instanceof Err
+}
+
 /**
  * Append an outbox record using a caller-owned MySQL transaction.
  * This method never begins, commits, rolls back, or releases the connection.
  */
 export const MySqlOutbox = Object.freeze({
+  /**
+   * Run a domain write and outbox append in one adapter-owned transaction.
+   * The callback may return a `better-result` `Result.err` to request rollback.
+   */
+  async transaction<Value>(
+    pool: Pool,
+    callback: MySqlOutboxTransactionCallback<Value>,
+    options?: MySqlOutboxAppendOptions
+  ): Promise<Value> {
+    const namespace = normalizedNamespace(options)
+    const client = MySqlClient.fromPool({ pool, namespace, validateSchema: false })
+    let connection: PoolConnection | undefined
+    let committed = false
+    let rollbackAttempted = false
+    try {
+      connection = await client.pool.getConnection()
+      await connection.beginTransaction()
+      const result = await callback(connection)
+      if (isResultError(result)) {
+        rollbackAttempted = true
+        await connection.rollback()
+        return result as Value
+      }
+      await connection.commit()
+      committed = true
+      return result
+    } catch (cause) {
+      if (connection !== undefined && !committed && !rollbackAttempted) {
+        rollbackAttempted = true
+        try {
+          await connection.rollback()
+        } catch {
+          // Preserve the original domain, append, or commit failure.
+        }
+      }
+      throw cause
+    } finally {
+      connection?.release()
+    }
+  },
   async appendIn(
     connection: MySqlOutboxTransaction,
     input: OutboxRecord,

@@ -387,21 +387,16 @@ the application (`await flow.dispose()`) when the surrounding Runtime stops.
 ### Outbox
 
 Use `MySqlOutboxStore` when a domain write and a prepared job request must become
-durable together. The application owns the transaction connection; the adapter
-only appends and verifies the outbox record. It does not begin, commit, roll
-back, or release that connection.
+durable together. `MySqlOutbox.transaction` owns the connection and transaction
+lifecycle while your callback performs the domain write and appends the record.
+The lower-level `appendIn` method remains available as an advanced escape hatch
+when an application already owns a transaction.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
-import {
-  MySqlJobStore,
-  MySqlOutbox,
-  MySqlOutboxStore,
-  OutboxStore,
-  type PoolConnection
-} from 'better-effect-mq-mysql'
+import { MySqlJobStore, MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
@@ -466,28 +461,31 @@ const preparedResult = await runtime.run(() =>
 )
 if (Result.isError(preparedResult)) throw preparedResult.error
 
-const connection = (await pool.getConnection()) as PoolConnection
-try {
-  await connection.beginTransaction()
-  const appended = await MySqlOutbox.appendIn(
-    connection,
-    makeOutboxRecord({
-      id: OutboxId.make('invoice-created:123').unwrap(),
-      target: 'billingJobs',
-      request: preparedResult.value,
-      nowMs: Date.now()
-    }).unwrap(),
-    { namespace: 'billing', token: ApplicationOutbox }
-  )
-  if (Result.isError(appended)) throw appended.error
-  // Save the invoice with this same connection before committing.
-  await connection.commit()
-} catch (cause) {
-  await connection.rollback()
-  throw cause
-} finally {
-  connection.release()
-}
+const record = makeOutboxRecord({
+  id: OutboxId.make('invoice-created:123').unwrap(),
+  target: 'billingJobs',
+  request: preparedResult.value,
+  nowMs: Date.now()
+}).unwrap()
+
+const transactionResult = await MySqlOutbox.transaction(
+  pool,
+  async (connection) => {
+    // The domain write and outbox append use the same adapter-owned transaction.
+    await connection.query('INSERT INTO invoices (id, status) VALUES (?, ?)', [
+      'invoice-created:123',
+      'created'
+    ])
+    const appended = await MySqlOutbox.appendIn(connection, record, {
+      namespace: 'billing',
+      token: ApplicationOutbox
+    })
+    if (Result.isError(appended)) return Result.err(appended.error)
+    return Result.ok(appended.value)
+  },
+  { namespace: 'billing', token: ApplicationOutbox }
+)
+if (Result.isError(transactionResult)) throw transactionResult.error
 
 const completed = await runtime.run(() =>
   Effect.gen(async function* () {
@@ -497,6 +495,10 @@ const completed = await runtime.run(() =>
 if (Result.isError(completed)) throw completed.error
 await runtime.dispose()
 ```
+
+The callback may return `Result.err` to roll back without throwing; thrown or
+rejected failures also roll back. The adapter commits only after the callback
+returns successfully and always releases the connection.
 
 Keep `target` equal to a route configured for the publisher, such as
 `'billingJobs'`. Configure the relay or publisher used by your application so

@@ -1,5 +1,6 @@
 import { expectTypeOf } from 'bun:test'
 import { Layer } from 'better-effect'
+import { Result } from 'better-result'
 import type {
   OutboxAppendError,
   OutboxAppendResult,
@@ -13,7 +14,9 @@ import {
   OutboxStore,
   type MySqlOutboxAppendOptions,
   type MySqlOutboxTransaction,
-  type Pool
+  type MySqlOutboxTransactionCallback,
+  type Pool,
+  type PoolConnection
 } from '../../src'
 
 const pool: Pool = {
@@ -36,5 +39,20 @@ expectTypeOf(MySqlOutbox.appendIn).toMatchTypeOf<
   ) => Promise<OutboxEffect<OutboxAppendResult, OutboxAppendError>>
 >()
 
+const transactional = MySqlOutbox.transaction(pool, (connection) => {
+  expectTypeOf(connection).toEqualTypeOf<PoolConnection>()
+  return Result.ok('saved')
+})
+
+expectTypeOf(MySqlOutbox.transaction).toMatchTypeOf<
+  <Value>(
+    pool: Pool,
+    callback: MySqlOutboxTransactionCallback<Value>,
+    options?: MySqlOutboxAppendOptions
+  ) => Promise<Value>
+>()
+expectTypeOf(transactional).toEqualTypeOf<Promise<ReturnType<typeof Result.ok<string>>>>()
+
 void defaultLayer
 void namedLayer
+void transactional

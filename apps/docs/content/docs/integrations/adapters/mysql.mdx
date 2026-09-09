@@ -83,3 +83,50 @@ The example borrows the pool and closes it after Runtime disposal. Use `layerFro
 adapter should own a `mysql2/promise` pool. Schedules, events, flows, and outbox storage use the
 same namespace and Layer-first composition. MySQL delivery is at least once; design handlers and
 downstream effects for safe repetition.
+
+## Transactional outbox writes
+
+When a domain write and a prepared job request must commit together, use the MySQL adapter's
+transaction helper. It acquires and releases the connection, begins and ends the transaction, and
+rolls back when the callback throws, rejects, or returns a `Result.err`.
+
+```ts
+import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
+import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { Result } from 'better-result'
+
+const ApplicationOutbox = OutboxStore.named('application')
+const OutboxLive = MySqlOutboxStore.layerFor(ApplicationOutbox, {
+  pool,
+  namespace: 'emails'
+})
+
+// Merge OutboxLive into the same AppLive as MySqlJobStore and EmailWorker.
+const record = makeOutboxRecord({
+  id: OutboxId.make('invoice-created:123').unwrap(),
+  target: 'emailJobs',
+  request: preparedRequest,
+  nowMs: Date.now()
+}).unwrap()
+
+const committed = await MySqlOutbox.transaction(
+  pool,
+  async (connection) => {
+    await connection.query('INSERT INTO invoices (id, status) VALUES (?, ?)', [
+      'invoice-created:123',
+      'created'
+    ])
+    const appended = await MySqlOutbox.appendIn(connection, record, {
+      namespace: 'emails',
+      token: ApplicationOutbox
+    })
+    return Result.isError(appended) ? Result.err(appended.error) : Result.ok(appended.value)
+  },
+  { namespace: 'emails', token: ApplicationOutbox }
+)
+if (Result.isError(committed)) throw committed.error
+```
+
+`appendIn` remains available for advanced integrations that already own a transaction. Those
+callers must manage the connection lifecycle themselves; the managed helper is the recommended
+application path.
