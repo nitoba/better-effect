@@ -43,6 +43,8 @@ export type { MongoFlowStoreInstance } from './flow'
 export type {
   MongoOutboxAppendOptions,
   MongoOutboxRow,
+  MongoOutboxTransactionBody,
+  MongoOutboxTransactionOptions,
   MongoOutboxTransaction
 } from './MongoOutbox'
 export type {

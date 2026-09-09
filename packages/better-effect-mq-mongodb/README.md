@@ -381,16 +381,16 @@ await MongoFlowStore.migrate({ db })
 ### Outbox
 
 For transactional handoff from domain writes to jobs, use
-[`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md) with MongoDB's
-transaction-bound append helper. `MongoOutboxStore.layer` persists records,
-`OutboxPublisher` delivers them to a `JobStore` after commit, and
-`MongoOutbox.appendIn` writes the outbox record inside the application's
-transaction.
+[`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md) with the
+adapter-owned MongoDB transaction helper. `MongoOutboxStore.layer` persists
+records, `OutboxPublisher` delivers them to a `JobStore` after commit, and
+`MongoOutbox.transaction` owns the session lifecycle around the domain write
+and append.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { JobStore } from 'better-effect-mq'
+import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
 import {
   OutboxId,
@@ -401,7 +401,25 @@ import {
 } from 'better-effect-mq-outbox'
 import { MongoJobStore, MongoOutbox, MongoOutboxStore } from 'better-effect-mq-mongodb'
 
-// `SendEmail` is the Job descriptor from the quick-start example above.
+const InvoiceEmails = Queue.define('application.invoice-emails')
+const SendInvoiceEmail = InvoiceEmails.job('send-invoice-email', {
+  version: 1,
+  payload: Codec.json<{ readonly orderId: string; readonly recipient: string }>(),
+  result: Codec.string
+})
+const invoiceHandler = Worker.handle(SendInvoiceEmail, (payload) =>
+  Effect.fn(async function* () {
+    console.log(`sending invoice for ${payload.orderId} to ${payload.recipient}`)
+    return Result.ok(`sent:${payload.orderId}`)
+  })
+)
+const ApplicationWorker = Worker.service('ApplicationInvoiceWorker')
+const ApplicationWorkerLive = ApplicationWorker.layer(() => ({
+  handlers: [invoiceHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 100
+}))
+
 const Routes = OutboxRoutes.make({ jobs: JobStore })
 const Publisher = OutboxPublisher.service('ApplicationOutboxPublisher')
 const PublisherLive = Publisher.layer(() => ({
@@ -418,7 +436,7 @@ const ApplicationLive = Layer.complete(
     MongoJobStore.layer({ db, namespace: 'application' }),
     Layer.merge(
       MongoOutboxStore.layer({ db, namespace: 'application' }),
-      Layer.merge(ClockLive, PublisherLive)
+      Layer.merge(ClockLive, Layer.merge(ApplicationWorkerLive, PublisherLive))
     )
   )
 )
@@ -428,9 +446,9 @@ await runtime.warmup()
 
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const prepared = yield* SendEmail.prepare(
-      { recipient: 'ada@example.test' },
-      { jobId: 'welcome-email:ada' }
+    const prepared = yield* SendInvoiceEmail.prepare(
+      { orderId: 'order-123', recipient: 'ada@example.test' },
+      { jobId: 'invoice-email:order-123' }
     )
     return Result.ok(prepared)
   })
@@ -438,35 +456,32 @@ const preparedResult = await runtime.run(() =>
 if (Result.isError(preparedResult)) throw preparedResult.error
 
 const record = makeOutboxRecord({
-  id: OutboxId.make('welcome-email:ada').unwrap(),
+  id: OutboxId.make('invoice-email:order-123').unwrap(),
   target: 'jobs',
   request: preparedResult.value,
   attemptsMax: 5
 })
 if (Result.isError(record)) throw record.error
 
-const session = client.startSession()
-try {
-  await session.withTransaction(async () => {
+const transactionResult = await MongoOutbox.transaction(
+  db,
+  record.value,
+  async (session) => {
     await db
       .collection('orders')
       .insertOne({ _id: 'order-123', email: 'ada@example.test' }, { session })
-    const appended = await MongoOutbox.appendIn(session, record.value, {
-      db,
-      namespace: 'application'
-    })
-    if (Result.isError(appended)) throw appended.error
-  })
-} finally {
-  await session.endSession()
-}
+    return Result.ok({ orderId: 'order-123', outboxId: record.value.id })
+  },
+  { namespace: 'application' }
+)
+if (Result.isError(transactionResult)) throw transactionResult.error
 
 // The publisher observes the committed record and enqueues the prepared request.
 const jobResult = await runtime.run(() =>
   Effect.gen(async function* () {
     const jobId = record.value.request.id
     if (jobId === undefined) throw new Error('the prepared request has no job ID')
-    const result = yield* SendEmail.awaitResult(jobId)
+    const result = yield* SendInvoiceEmail.awaitResult(jobId)
     return Result.ok({ jobId, result })
   })
 )
@@ -477,11 +492,20 @@ console.log(jobResult.value)
 await runtime.dispose()
 ```
 
-Prepare the job before opening the application transaction. The request is
-fully encoded and can be stored safely. The domain write and
-`MongoOutbox.appendIn` call share the same session, so either both commit or
-both roll back. The application owns the session, transaction, and
-`endSession()`; `appendIn` does not begin, commit, roll back, or release them.
+Prepare the job before calling the application transaction helper. The request
+is fully encoded and can be stored safely. `MongoOutbox.transaction` receives
+the database, prepared record, and domain callback; it appends that record
+after the callback succeeds, then commits both writes together. It owns the
+session, transaction, and cleanup, aborts thrown/rejected or nominal
+`Result.err` outcomes, and always ends the session. MongoDB may retry a
+transaction callback after a transient error, so domain writes in the callback
+must be safe to retry.
+
+Pass a `MongoClient` as the first argument when the database is not available
+there; in that form provide the database as `options.db` so the adapter can
+append to the selected database. `MongoOutbox.appendIn` remains available only
+as an advanced escape hatch for code that intentionally owns the session and
+transaction lifecycle.
 
 After commit, the running `OutboxPublisher` claims the record and calls the
 `jobs` route. The `JobStore` receives the prepared request, and the outbox
