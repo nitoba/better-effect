@@ -402,12 +402,7 @@ import {
   OutboxStore,
   type PoolConnection
 } from 'better-effect-mq-mysql'
-import {
-  OutboxId,
-  OutboxPublisher,
-  OutboxRoutes,
-  makeOutboxRecord
-} from 'better-effect-mq-outbox'
+import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
 const SendEmail = Queue.define('billing').job('send-email', {
