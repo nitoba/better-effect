@@ -22,6 +22,47 @@ The independent `better-effect-better-auth` package is prepared for its first
 session helper, and `/hooks` middleware bridge are documented in the package
 README and released through the package-qualified tag route.
 
+## [0.14.0] - 2026-09-09
+
+### Added
+
+- Added the non-owning `Runtime.Executor` API for isolated child executions,
+  request-local Layers, and managed readiness/completion boundaries, together
+  with Scope-owned `Effect.forkScoped` tasks and task inspection/observer
+  events.
+- Added lifecycle-only Layers (`Layer.scopedDiscard`,
+  `Layer.scopedDiscardGen`, and `Layer.effectDiscard`) with quiesce and release
+  hooks for application startup and graceful teardown.
+- Added phased Runtime shutdown and `NodeRuntime.launch`, coordinating
+  quiesce, drain, abort, and release while preserving cooperative
+  `AbortSignal` cancellation.
+- Added managed Web streaming through `WebEffect.streamWith`, retaining the
+  request execution and request-scoped resources through response consumption,
+  plus Layer-first managed streaming routes for Hono.
+- Added Layer-first Bun integration through `BunEffect.handler`,
+  `BunEffect.server`, and `BunEffect.layer`, with server quiesce, request drain,
+  and release tied to the Runtime lifecycle.
+- Added OpenTelemetry lifecycle and shutdown event/span modes for Runtime
+  activity and executor-backed executions.
+- Added schema-bound `Config.withSchema` tokens with decoded-output key
+  inference for `Config.get`.
+
+### Changed
+
+- Web boundaries now run through the non-owning Runtime executor, and managed
+  streams keep their execution context alive until EOF, cancellation, timeout,
+  or shutdown. Next.js now exposes explicit `NextEffect.managed` and
+  `NextEffect.fromCurrent` ownership modes.
+- Layer, Runtime, and framework integration APIs were aligned around
+  Layer-first composition, typed request boundaries, and graceful lifecycle
+  ownership.
+
+### Documentation
+
+- Refreshed the package README, documentation site, examples, and migration
+  guidance for the executor, scoped tasks, lifecycle-only Layers, phased
+  shutdown, managed Web/Next/Hono/Bun boundaries, streaming, and telemetry.
+
 ## [0.13.0] - 2026-08-30
 
 ### Added
