@@ -87,3 +87,35 @@ Use `layerWithEventsFromConfig` when queue transitions need a bounded event feed
 providers follow the same namespace and named-token conventions as `JobStore`. Redis and Valkey
 delivery is at least once, so configure persistence, replication, memory limits, and idempotent
 handlers for the failure modes of the service you operate.
+
+## Redis-native transactional outbox
+
+When the domain write is also a Redis write, use `RedisOutbox.transaction`. Prepare the request and
+record first; the adapter creates the `MULTI` context, appends the record automatically, executes
+the commands, and discards the context when the callback fails:
+
+```ts
+import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { RedisOutbox } from 'better-effect-mq-redis'
+import { Result } from 'better-result'
+
+const record = makeOutboxRecord({
+  id: OutboxId.make('outbox:message-123').unwrap(),
+  target: 'emails',
+  request: preparedRequest,
+  attemptsMax: 5
+})
+if (Result.isError(record)) throw record.error
+
+const committed = await RedisOutbox.transaction(redis, record.value, (transaction) => {
+  transaction.sendCommand(['HSET', 'orders:message-123', 'recipient', 'ada@example.test'])
+  return Result.ok(undefined)
+})
+if (Result.isError(committed)) throw committed.error
+```
+
+This boundary is atomic only for Redis-native writes in the same namespace. It cannot include a
+PostgreSQL, MySQL, SQLite, MongoDB, or remote-service write in `MULTI/EXEC`; use that database's
+transaction helper for a database-owned domain write. Compose `RedisOutboxStore.layer*` with the
+publisher when a committed record should feed a Job, and see the [outbox transaction guide](../../outbox)
+for route and publisher setup.

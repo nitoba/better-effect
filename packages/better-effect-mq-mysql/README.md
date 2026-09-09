@@ -388,10 +388,8 @@ the application (`await flow.dispose()`) when the surrounding Runtime stops.
 
 Use `MySqlOutboxStore` when a domain write and a prepared job request must become
 durable together. `MySqlOutbox.transaction` owns the connection and transaction
-lifecycle while your callback performs the domain write and the adapter appends
-the supplied record.
-The lower-level `appendIn` method remains available as an advanced escape hatch
-when an application already owns a transaction.
+lifecycle while your callback performs the domain write; the adapter appends the
+supplied prepared record automatically after the callback succeeds.
 
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
@@ -408,7 +406,6 @@ const SendEmail = Queue.define('billing').job('send-email', {
     readonly recipient: string
   }>(),
   result: Codec.string,
-  store: JobStore,
   idempotencyKey: ({ messageId }) => messageId
 })
 
@@ -469,11 +466,11 @@ const record = makeOutboxRecord({
   nowMs: Date.now()
 }).unwrap()
 
-const transactionResult = await MySqlOutbox.transaction(
+const committed = await MySqlOutbox.transaction(
   pool,
   record,
   async (connection) => {
-    // The domain write and automatic outbox append use the same adapter-owned transaction.
+    // Save the invoice in the same adapter-owned transaction.
     await connection.query('INSERT INTO invoices (id, status) VALUES (?, ?)', [
       'invoice-created:123',
       'created'
@@ -482,7 +479,7 @@ const transactionResult = await MySqlOutbox.transaction(
   },
   { namespace: 'billing', token: ApplicationOutbox }
 )
-if (Result.isError(transactionResult)) throw transactionResult.error
+if (Result.isError(committed)) throw committed.error
 
 const completed = await runtime.run(() =>
   Effect.gen(async function* () {
@@ -493,13 +490,16 @@ if (Result.isError(completed)) throw completed.error
 await runtime.dispose()
 ```
 
-The callback may return `Result.err` to roll back without throwing; thrown or
-rejected failures also roll back. The adapter commits only after the callback
-returns successfully and always releases the connection.
-
 Keep `target` equal to a route configured for the publisher, such as
-`'billingJobs'`. Configure the relay or publisher used by your application so
-that route points to the JobStore that should receive the prepared request.
+`'billingJobs'`. The adapter appends the record after the domain callback
+succeeds, commits only after both writes succeed, and cleans up the connection
+on success or failure. Configure the publisher so that route points to the
+JobStore that should receive the prepared request.
+
+### Advanced: caller-owned transactions
+
+`MySqlOutbox.appendIn` remains available only as an advanced escape hatch when
+an application already owns a compatible transaction.
 
 The store provides leases, retry, and recovery operations for that delivery
 loop. A crash after publishing but before settlement can publish the same

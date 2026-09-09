@@ -31,6 +31,7 @@ For application-facing runtime validation, see the package README's
 and the runnable [`better-effect-schema` MQ example](../../better-effect-schema/examples/mq-codec.ts).
 
 The complete Flow walkthrough is in the [package README](../README.md#flow-coordinate-a-parent-execution).
-For a database transaction that atomically writes a domain row and an outbox
-record before publishing into the same core Job/Worker model, see the
-[outbox extension's PostgreSQL example](../../better-effect-mq-outbox/README.md#end-to-end-example-with-postgresql).
+For a record-first database handoff, prepare the request, call the adapter's
+transaction helper, and let it append the record and own transaction cleanup
+before publishing into the same core Job/Worker model. See the [outbox
+extension's PostgreSQL example](../../better-effect-mq-outbox/README.md#end-to-end-example-with-postgresql).

@@ -90,3 +90,55 @@ or outbox Layer only when needed, keeping the same database and namespace.
 MongoDB change streams can reduce wake latency but are not the source of truth. Keep polling,
 backups, transaction limits, and document size limits in your operational plan. Delivery remains
 at least once, so external effects must tolerate retries.
+
+## Transactional outbox
+
+Use `MongoOutbox.transaction` when a MongoDB domain write and a prepared Job request must commit
+together. Prepare the request and `OutboxRecord` before entering the helper; the adapter owns the
+session, transaction, automatic append, and cleanup:
+
+```ts
+import { Effect } from 'better-effect'
+import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { MongoOutbox } from 'better-effect-mq-mongodb'
+import { Result } from 'better-result'
+
+const prepared = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(
+      yield* SendEmail.prepare(
+        { messageId: 'message-123', recipient: 'ada@example.test' },
+        { jobId: 'email:message-123' }
+      )
+    )
+  })
+)
+if (Result.isError(prepared)) throw prepared.error
+
+const record = makeOutboxRecord({
+  id: OutboxId.make('outbox:message-123').unwrap(),
+  target: 'emails',
+  request: prepared.value,
+  attemptsMax: 5
+})
+if (Result.isError(record)) throw record.error
+
+const committed = await MongoOutbox.transaction(
+  db,
+  record.value,
+  async (session) => {
+    await db
+      .collection('emails')
+      .insertOne({ _id: 'message-123', recipient: 'ada@example.test' }, { session })
+    return Result.ok(undefined)
+  },
+  { namespace: 'emails' }
+)
+if (Result.isError(committed)) throw committed.error
+```
+
+The adapter appends the supplied record after the callback succeeds and commits both writes in the
+same MongoDB transaction. A thrown, rejected, or nominal `Result.err` callback aborts the work;
+MongoDB may retry a transaction callback, so domain writes must be safe to retry. If the first
+argument is a `MongoClient` instead of `db`, pass the database as `options.db`. See the
+[outbox transaction guide](../../outbox) for publisher routing and delivery semantics.

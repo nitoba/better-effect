@@ -32,3 +32,8 @@ Runtime composition stay the same.
 The application owns job identity and handler behavior. The adapter owns its connection, schema,
 transactions, and storage-specific wake or recovery details. Read the [MQ introduction](../../mq)
 for the core model, then use one adapter's quick start to provide the same `JobStore` Service.
+
+For an outbox handoff, prepare the request and record before the domain write, then call the
+adapter's `transaction(resource, record, callback, options?)` helper. The callback performs the
+domain write; the adapter appends the record automatically and owns commit, rollback, and cleanup.
+See the [outbox guide](../../outbox) and the adapter page for the exact resource and options shape.

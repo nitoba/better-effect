@@ -430,7 +430,6 @@ const SendConfirmation = Orders.job('send-confirmation', {
     readonly orderId: string
     readonly email: string
   }>(),
-  store: JobStore,
   result: Codec.string,
   idempotencyKey: (payload) => `confirmation:${payload.orderId}`
 })
@@ -531,6 +530,8 @@ and any remote effect must tolerate retries. For an adapter-owned pool,
 replace both Layers with their `layerFromConfig` forms and let
 `runtime.dispose()` own pool shutdown.
 
+### Advanced: caller-owned transactions
+
 `PostgresOutbox.appendIn(transaction, record, options)` remains available as
 an advanced escape hatch when an application already owns a compatible
 transaction. It never begins, commits, rolls back, or releases that client;
@@ -616,8 +617,8 @@ the durable Job record. A retained-away cursor must be rebased.
 Confirm the publisher is in the same Runtime, its `outboxes` list contains the
 token used by the adapter Layer, and its route target matches the record's
 `target`. Recover stalled leases and inspect the publisher's retry or failure
-state. `transaction` and `appendIn` only record the intent; neither publishes
-it.
+state. The transaction helper only records the intent; it does not publish
+the Job.
 
 ### The pool closes too early or never closes
 

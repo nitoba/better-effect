@@ -7,7 +7,8 @@ icon: Send
 `better-effect-mq-outbox` is the storage-neutral outbox package for
 `better-effect-mq`. It defines immutable `OutboxRecord` values, an
 `OutboxStore` contract, explicit target routes and a Layer-owned publisher.
-Database adapters remain separate packages and own their transaction handles.
+Database adapters remain separate packages and own their transaction boundaries. Prepare a request
+and `OutboxRecord` first, then let the selected adapter append it after the domain callback succeeds.
 
 ## Quick start: the canonical MQ shape
 

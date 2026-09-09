@@ -503,9 +503,12 @@ must be safe to retry.
 
 Pass a `MongoClient` as the first argument when the database is not available
 there; in that form provide the database as `options.db` so the adapter can
-append to the selected database. `MongoOutbox.appendIn` remains available only
-as an advanced escape hatch for code that intentionally owns the session and
-transaction lifecycle.
+append to the selected database.
+
+### Advanced: caller-owned transactions
+
+`MongoOutbox.appendIn` remains available only as an advanced escape hatch for
+code that intentionally owns the session and transaction lifecycle.
 
 After commit, the running `OutboxPublisher` claims the record and calls the
 `jobs` route. The `JobStore` receives the prepared request, and the outbox
