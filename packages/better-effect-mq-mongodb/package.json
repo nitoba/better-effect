@@ -30,7 +30,8 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "publint": "publint",
-    "check": "bun run typecheck && bun run test:types && bun test && bun run format:check && bun run build && bun run publint && bun run test:package-boundaries && bun run test:package-consumer && bun run lint"
+    "check": "bun run typecheck && bun run test:types && bun test && bun run format:check && bun run build && bun run publint && bun run test:package-boundaries && bun run test:package-consumer && bun run release:dry && bun run lint",
+    "release:dry": "bun ../../scripts/release-artifact.ts --package better-effect-mq-mongodb"
   },
   "devDependencies": {
     "@types/bun": "1.4.1",

@@ -73,11 +73,16 @@ Usage:
 Allowlisted packages and tags:
   better-effect             v<version>
   better-effect-better-auth better-effect-better-auth-v<version>
+  better-effect-http        better-effect-http-v<version>
   better-effect-mq          better-effect-mq-v<version>
+  better-effect-mq-mongodb  better-effect-mq-mongodb-v<version>
+  better-effect-mq-mysql    better-effect-mq-mysql-v<version>
+  better-effect-mq-outbox   better-effect-mq-outbox-v<version>
   better-effect-kysely      better-effect-kysely-v<version>
   better-effect-schema      better-effect-schema-v<version>
   better-effect-mq-postgres better-effect-mq-postgres-v<version>
   better-effect-mq-redis    better-effect-mq-redis-v<version>
+  better-effect-mq-sqlite   better-effect-mq-sqlite-v<version>
 
 The release must be run from a clean maintainer checkout on main. The dry-run
 validates the selected route and packed artifact without changing or publishing
