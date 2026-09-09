@@ -1,12 +1,14 @@
 # better-effect Agent Skill
 
-Official skill for the [`nitoba/better-effect`](https://github.com/nitoba/better-effect) TypeScript library. It teaches coding agents how to implement, review, debug, and refactor applications using `better-effect` together with `better-result`.
+Official skill for the [better-effect ecosystem](https://github.com/nitoba/better-effect/).
+It teaches coding agents to implement, review, debug, and refactor TypeScript
+applications using better-effect and better-result, together with the monorepo's
+schema, HTTP, authentication, database, and durable-work integrations.
 
-The published Runtime entrypoint is officially supported on Node.js and Bun;
-the repository uses the latest Bun release and the current Node.js LTS for
-interoperability smoke tests. The explicit runtime
-subpath is a manually managed, sequential strategy only when the package
-entrypoint and host can load it; it is not a general portability layer.
+The published Runtime entrypoint supports Node.js and Bun. Explicit context
+storage is a sequential strategy, not a general browser/Edge portability layer.
+The skill records its reviewed commit and prioritizes the target application's
+installed versions, public exports, and type contracts over a moving main branch.
 
 ## Install
 
@@ -28,41 +30,60 @@ Or use it without a permanent installation:
 bunx skills use nitoba/better-effect@better-effect
 ```
 
+Install/copy the **whole skill directory**, including `references/`, rather than
+only SKILL.md. The main file routes agents to focused references; agents should
+load only the references relevant to their current task.
+
 ## What it covers
 
-- typed failures with `better-result`;
-- `Effect.gen`, lazy `Effect.fn` Programs, combinators, and `Program.all`;
-- contextual dependencies with `Service` and `yield*`;
-- `Service.of` structural implementations and stable Service identity;
-- `Layer.make`, `succeed`, `scoped`, `gen`, `scopedGen`, `merge`, `override`, and completeness;
-- typed Runtime environments, `Runtime.For`, warmup, `runWith`, cancellation, observers, and graceful shutdown;
-- hierarchical Scope ownership, `Effect.acquireRelease`, `Effect.add`, and `Resource`;
-- standard services such as Config, Clock, Random, Logger, CurrentRequest, and CurrentAbortSignal;
-- Hono request-boundary integration with `HonoEffect`;
-- optional `better-effect-http` integration with Layer-first clients, typed
-  status responses, explicit retry/auth policies, NDJSON/SSE streams, and
-  managed Hono streaming;
-- `MapLayerBackend`, ITI, and custom DI adapters;
-- testing with explicit test Layers and compile-time type contracts;
-- architecture and refactoring guidance for existing TypeScript applications;
-- anti-pattern detection and before/after transformation recipes.
+| Area | Guidance |
+| --- | --- |
+| Core | Result failures, eager Effects and lazy Programs, typed Services/Layers, Runtime executors, Scope, tasks, configuration, diagnostics, and tests |
+| Hosts | Web, Hono, Next.js, Bun, and Node boundaries; native validation; managed streaming; one owning application Runtime |
+| Schema | better-effect-schema with optional Zod, Valibot, and ArkType providers; decode/make/encode and capability failures |
+| HTTP | better-effect-http clients/endpoints, status-discriminated responses, interceptors, retry/auth policies, NDJSON/SSE, and tracing/testing subpaths |
+| Authentication | better-effect-better-auth factories, endpoint modes, hooks, and lazy request-scoped Hono sessions |
+| Database | better-effect-kysely native builders and explicit terminals, resource ownership, and native transaction semantics |
+| Durable work | better-effect-mq jobs, workers, schedules, Flow, events, controls, and administration |
+| Storage and outbox | PostgreSQL, Redis/Valkey, MySQL, MongoDB, and SQLite adapter Layers; migrations; record-first transactions and routed publishers |
+| Migration and review | Version-aware refactoring, concrete transformation recipes, lifecycle/failure checks, and agent-evaluation scenarios |
 
-## Official documentation
-
-The skill treats the published documentation as a live reference:
-
-- <https://better-effect.nitodev.com.br/docs> — human-readable docs;
-- <https://better-effect.nitodev.com.br/llms.txt> — page index for agents/LLMs;
-- `https://better-effect.nitodev.com.br/llms.mdx/docs/<path>/content.md` — focused Markdown for a documentation page;
-- <https://better-effect.nitodev.com.br/llms-full.txt> — complete corpus used as a fallback.
-
-The installed package version always wins for compatibility. The published documentation may describe a newer release than the application being edited.
+The skill does not reproduce Effect TS or invent a second queue, ORM, or schema
+framework. It emphasizes public integration APIs, preserved type inference,
+explicit transport encoding, and one owner per resource.
 
 ## Files
 
-- `SKILL.md` contains the main workflow, mental model, API guidance, ownership rules, testing rules, and completion criteria.
-- `references/refactoring-rules.md` contains the full inventory and decision rules for existing codebases.
-- `references/transformation-patterns.md` contains practical before/after refactoring recipes.
-- `references/official-documentation.md` defines the live documentation lookup protocol and route map.
+Start with [SKILL.md](SKILL.md), which contains the package routing table,
+shared rules, and a minimal application example.
 
-The skill deliberately does **not** teach agents to reproduce Effect TS. `better-effect` keeps `better-result` as its error/control-flow model and adds a focused set of typed Service, Layer, Runtime, Scope, and integration primitives around it.
+| Reference | Purpose |
+| --- | --- |
+| [Core API](references/core-api.md) | Effect/Program, Service/Layer, execution, ownership, standard services, and diagnostics |
+| [Frameworks](references/frameworks.md) | Request/host integration and streaming lifetimes |
+| [Schema](references/schema.md) | Provider-neutral operations and explicit wire encoding |
+| [HTTP client](references/http-client.md) | Typed outbound operations, policies, and streams |
+| [Better Auth](references/better-auth.md) | Auth factories, hooks, endpoint modes, and sessions |
+| [Kysely](references/kysely.md) | Native queries, transaction boundaries, and ownership |
+| [MQ](references/mq.md) | Core durable-work application APIs |
+| [MQ storage and outbox](references/mq-storage-outbox.md) | All five storage adapters and transactional publication |
+| [Refactoring rules](references/refactoring-rules.md) | Inventory and decision rules for existing applications |
+| [Transformation patterns](references/transformation-patterns.md) | Corrected and current migration recipes |
+| [Official documentation](references/official-documentation.md) | Version precedence, reviewed source map, and targeted documentation lookup |
+| [Validation](references/validation.md) | Structural, type, runtime, consumer, and agent-evaluation checks |
+
+The evaluation rubric describes checks to perform; it does not claim that an
+independent agent evaluation or every integration test has already run.
+
+## Official documentation
+
+Use the [documentation](https://better-effect.nitodev.com.br/docs) and
+[LLM page index](https://better-effect.nitodev.com.br/llms.txt) to discover the
+smallest relevant page. The
+[complete corpus](https://better-effect.nitodev.com.br/llms-full.txt) is a
+fallback for cross-cutting research, not a default context load.
+
+Installed-version source and declarations win when current documentation is
+ahead of the application. Read the validation guide before claiming a skill or
+application change is verified, and distinguish structural checks from actual
+TypeScript, runtime, and packed-consumer test execution.
