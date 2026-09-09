@@ -26,7 +26,6 @@ const versions = {
   '@opentelemetry/api': '1.9.1',
   '@types/node': '26.1.2',
   arktype: '2.2.3',
-  'better-effect': '0.13.0',
   'better-effect-http': '0.1.0',
   'better-effect-schema': '0.1.0',
   'better-result': '3.0.1',
@@ -38,7 +37,8 @@ const versions = {
 
 const optionalPackages = ['@opentelemetry/api', 'arktype', 'hono', 'valibot', 'zod'] as const
 
-type PackageName = keyof typeof versions
+type PackageName = keyof typeof versions | 'better-effect'
+type ExpectedVersions = Readonly<Record<PackageName, string>>
 type ConsumerCase = Readonly<{
   readonly name: string
   readonly fixture: string
@@ -97,6 +97,7 @@ type PackageManifest = JsonObject & {
   readonly version?: string
   readonly dependencies?: JsonObject
   readonly devDependencies?: JsonObject
+  readonly overrides?: JsonObject
   readonly exports?: JsonObject
   readonly peerDependenciesMeta?: JsonObject
 }
@@ -127,6 +128,20 @@ const assertSuccess = (result: CommandResult, label: string): void => {
 const readManifest = async (path: string): Promise<PackageManifest> => {
   // SAFETY: package.json is a repository-controlled or freshly installed package manifest.
   return JSON.parse(await readFile(path, 'utf8')) as PackageManifest
+}
+
+const readPackageVersion = async (
+  packageDirectory: string,
+  packageName: string
+): Promise<string> => {
+  const manifest = await readManifest(join(packageDirectory, 'package.json'))
+  assertCondition(manifest.name === packageName, `${packageName} manifest has the wrong name`)
+  const version = manifest.version
+  assertCondition(
+    typeof version === 'string' && version.length > 0,
+    `${packageName} manifest is missing a version`
+  )
+  return version
 }
 
 const packageExists = async (path: string): Promise<boolean> => {
@@ -254,7 +269,8 @@ const assertManifestExports = async (fixture: string): Promise<void> => {
 const installCase = async (
   root: string,
   currentCase: ConsumerCase,
-  archives: Readonly<Record<string, string>>
+  archives: Readonly<Record<string, string>>,
+  coreVersion: string
 ): Promise<string> => {
   const fixture = join(root, currentCase.name)
   await cp(join(fixtureRoot, currentCase.fixture), fixture, { recursive: true })
@@ -268,16 +284,29 @@ const installCase = async (
       archiveName === 'http'
         ? 'better-effect-http.tgz'
         : archiveName === 'core'
-          ? 'better-effect-0.13.0.tgz'
+          ? `better-effect-${coreVersion}.tgz`
           : 'better-effect-schema-0.1.0.tgz'
     await cp(archive, join(artifacts, fileName))
   }
 
   const manifest = await readManifest(join(fixture, 'package.json'))
+  const coreReference = `file:./artifacts/better-effect-${coreVersion}.tgz`
+  const dependencies = { ...manifest.dependencies }
+  const overrides = { ...manifest.overrides }
+  assertCondition(
+    dependencies['better-effect'] !== undefined,
+    `${currentCase.name} fixture must declare better-effect`
+  )
+  assertCondition(
+    overrides['better-effect'] !== undefined,
+    `${currentCase.name} fixture must override better-effect`
+  )
+  dependencies['better-effect'] = coreReference
+  overrides['better-effect'] = coreReference
   const devDependencies = { ...manifest.devDependencies, typescript: versions.typescript }
   await writeFile(
     join(fixture, 'package.json'),
-    `${JSON.stringify({ ...manifest, devDependencies }, null, 2)}\n`
+    `${JSON.stringify({ ...manifest, dependencies, devDependencies, overrides }, null, 2)}\n`
   )
 
   assertSuccess(
@@ -293,10 +322,11 @@ const installCase = async (
 
 const assertCaseDependencies = async (
   fixture: string,
-  currentCase: ConsumerCase
+  currentCase: ConsumerCase,
+  expectedVersions: ExpectedVersions
 ): Promise<void> => {
   for (const dependency of currentCase.required) {
-    await assertInstalledPackage(fixture, dependency, versions[dependency])
+    await assertInstalledPackage(fixture, dependency, expectedVersions[dependency])
   }
   const modules = join(fixture, 'node_modules')
   for (const dependency of currentCase.absent) {
@@ -348,6 +378,7 @@ const main = async (): Promise<void> => {
   process.env['BUN_INSTALL_CACHE_DIR'] = join(root, 'bun-cache')
 
   try {
+    const coreVersion = await readPackageVersion(corePackageRoot, 'better-effect')
     const archiveRoot = join(root, 'archives')
     await mkdir(archiveRoot)
     const archives = {
@@ -358,8 +389,11 @@ const main = async (): Promise<void> => {
     await assertPackedArtifact(archives.http)
 
     for (const currentCase of cases) {
-      const fixture = await installCase(root, currentCase, archives)
-      await assertCaseDependencies(fixture, currentCase)
+      const fixture = await installCase(root, currentCase, archives, coreVersion)
+      await assertCaseDependencies(fixture, currentCase, {
+        ...versions,
+        'better-effect': coreVersion
+      })
       await assertManifestExports(fixture)
       typecheck(fixture, currentCase)
       smoke(fixture, currentCase)
