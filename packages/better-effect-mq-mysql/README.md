@@ -190,9 +190,11 @@ try {
 `Schema.with(ZodAdapter)` provides the provider-backed validation boundary;
 `Schema.encode` projects the decoded `SendEmailPayload` class back to JSON, and
 `Codec.standardSchema` adapts that contract to durable Job payloads and
-results. `Worker.handle` receives the inferred decoded class type. The later
-Flow and Outbox snippets use smaller `z.object` Standard Schema codecs
-deliberately when a decoded class is unnecessary.
+results. `Worker.handle` receives the inferred decoded class type. The Flow
+and Outbox journeys below use the same schema-first payload boundary. Result or
+failure values that are already plain JSON may use a concise
+`Codec.standardSchema` shape; the payload boundaries in both journeys remain
+schema-first.
 
 `namespace` is the logical boundary for one application or tenant. Use the
 same namespace when composing the JobStore and its extensions. If you run
@@ -380,9 +382,10 @@ import { FlowStore } from 'better-effect-mq'
 import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
 
 // Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start. In
-// particular, the flow parent uses the Quick Start's schema-backed
-// SendEmailPayload class and codec; this composition does not introduce a
-// second payload contract.
+// particular, the flow parent uses the Quick Start's schema-first
+// SendEmailPayload class and codec: Schema.with(ZodAdapter) provides the local
+// provider and the codec projects the class with Schema.encode. This
+// composition does not introduce a second payload contract.
 
 const flow = await MySqlFlowStore.make({
   pool,
@@ -417,6 +420,11 @@ once. There is no transaction spanning multiple stores; design child handlers
 and any external effects for duplicate delivery. If the flow store was opened
 with `MySqlFlowStore.makeFromConfig`, it owns its pool and must be disposed by
 the application (`await flow.dispose()`) when the surrounding Runtime stops.
+
+The reused parent payload follows the schema-first boundary from the Quick
+Start (`Schema.with(ZodAdapter)`, `local.Class`, and `Schema.encode`). Result
+and failure values that remain plain JSON can use concise Standard Schema
+codecs.
 
 ### Outbox
 
@@ -535,7 +543,11 @@ await runtime.dispose()
 ```
 
 Keep `target` equal to a route configured for the publisher, such as
-`'billingJobs'`. The adapter appends the record after the domain callback
+`'billingJobs'`. `OutboxRoutes` maps that string to the `JobStore` Service
+token; it does not store a JobStore instance. The payload uses the same
+schema-first boundary (`Schema.with(ZodAdapter)`, `local.Class`, and
+`Schema.encode`), while concise result/failure codecs are suitable for
+plain-JSON outcomes. The adapter appends the record after the domain callback
 succeeds, commits only after both writes succeed, and cleans up the connection
 on success or failure. Configure the publisher so that route points to the
 JobStore that should receive the prepared request.

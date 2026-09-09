@@ -170,9 +170,10 @@ The local `better-effect-schema` facade uses the Zod 4 provider for boundary
 validation, `Schema.encode` projects the decoded `SendEmailPayload` class to
 JSON, and `Codec.standardSchema` adapts that contract to durable Job payloads
 and results. Redis supplies persistence and wake-ups; it does not replace the
-core Job or Worker APIs. The later Outbox and Flow snippets use smaller
-`z.object` Standard Schema codecs deliberately when a decoded class is
-unnecessary.
+core Job or Worker APIs. The Outbox and Flow journeys below use the same
+schema-first payload boundary. Result or failure values that are already plain
+JSON may use a concise `Codec.standardSchema` shape; the payload boundaries in
+both journeys remain schema-first.
 
 ## Redis-native outbox transactions
 
@@ -267,9 +268,12 @@ try {
 `RedisOutboxStore.layerFromConfig` provides the `OutboxStore` used by an
 `OutboxPublisher`; compose the publisher and your canonical `Worker.layer`
 with `AppLive` in a full application. Prepare the job before the transaction so
-the callback only persists JSON-safe data. A callback `Result.err`, thrown or
-rejected callback, append conflict, or `EXEC` failure is returned as a typed
-failure, and queued commands are discarded when they have not been executed.
+the callback only persists JSON-safe data. The payload uses the same
+schema-first boundary shown in the example (`Schema.with(ZodAdapter)`,
+`local.Class`, and `Schema.encode`); concise result/failure codecs are suitable
+for plain-JSON outcomes. A callback `Result.err`, thrown or rejected callback,
+append conflict, or `EXEC` failure is returned as a typed failure, and queued
+commands are discarded when they have not been executed.
 
 This boundary is atomic only for Redis-native writes in the same Redis
 namespace. Redis cannot include a PostgreSQL, MySQL, SQLite, MongoDB, or other
@@ -428,6 +432,17 @@ const buildReportPayloadCodec = Codec.standardSchema({
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
+class DeliverReportPayload extends local.Class<DeliverReportPayload>('app/DeliverReportPayload')({
+  reportId: z.string(),
+  recipient: z.email()
+}) {}
+const deliverReportPayloadCodec = Codec.standardSchema({
+  schema: DeliverReportPayload,
+  encode: (value) =>
+    Schema.encode(DeliverReportPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const Reports = Queue.define('reports')
 const BuildReport = Reports.job('build-report', {
@@ -439,9 +454,7 @@ const BuildReport = Reports.job('build-report', {
 })
 const DeliverReport = Reports.job('deliver-report', {
   version: 1,
-  payload: Codec.standardSchema({
-    schema: z.object({ reportId: z.string(), recipient: z.email() })
-  }),
+  payload: deliverReportPayloadCodec,
   result: Codec.standardSchema({ schema: z.string() })
 })
 
@@ -547,7 +560,10 @@ try {
 
 The JobStore Layer borrows the already initialized command and subscriber
 clients. The surrounding application owns that `RedisClient`, so it disposes
-the Runtime first and the client second. For a named JobStore, provide
+the Runtime first and the client second. The parent payload uses the same
+schema-first boundary (`Schema.with(ZodAdapter)`, `local.Class`, and
+`Schema.encode`); concise result/failure codecs are suitable for plain-JSON
+values. For a named JobStore, provide
 `FlowStore.for(namedStore)` and the matching `RedisFlowStore` instance under
 that associated token.
 

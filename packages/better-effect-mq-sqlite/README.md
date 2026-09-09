@@ -178,8 +178,10 @@ The local `better-effect-schema` facade uses the Zod 4 provider for boundary
 validation, `Schema.encode` projects the decoded `SendEmailPayload` class to
 JSON, and `Codec.standardSchema` adapts that contract to Job payloads and
 results. The storage Layer remains responsible only for SQLite persistence.
-The later Outbox snippets use smaller `z.object` Standard Schema codecs
-deliberately when a decoded class is unnecessary.
+The Flow and Outbox journeys below use the same schema-first payload boundary.
+Result or failure values that are already plain JSON may use a concise
+`Codec.standardSchema` shape; the payload boundaries in both journeys remain
+schema-first.
 
 ## Owning the database connection
 
@@ -340,10 +342,13 @@ const runtime = await Runtime.make(AppLive)
 The flow layer persists parent/child state and durable child reports. The
 Worker still owns enqueueing child jobs and relaying reports between the
 associated store Services; SQLite does not make separate store keys or
-separate databases one atomic boundary. Flow routes reuse the schema-backed
-Job descriptors from the Quick Start, including its `SendEmailPayload` class
-and codec; this provider-only snippet does not introduce a second payload
-contract.
+separate databases one atomic boundary. Flow routes reuse the schema-first Job
+descriptors from the Quick Start, including its `SendEmailPayload` class and
+codec: `Schema.with(ZodAdapter)` provides the local provider, `local.Class`
+gives the handler a decoded class, and `Schema.encode` projects it at the
+boundary. This provider-only snippet does not introduce a second payload
+contract; concise result/failure codecs remain appropriate for plain JSON
+values.
 
 ### Durable outbox
 
@@ -474,12 +479,18 @@ database.close()
 ```
 
 The outbox is at-least-once. Publishing and marking a row published are
-separate steps, so the downstream operation must tolerate redelivery. For a
-named outbox, use `OutboxStore.named('billing')` with
-`SqliteOutboxStore.layerFor(...)`. If the domain callback returns
+separate steps, so the downstream operation must tolerate redelivery. The
+payload uses the same schema-first boundary (`Schema.with(ZodAdapter)`,
+`local.Class`, and `Schema.encode`); concise result/failure codecs are suitable
+for plain-JSON outcomes. For a named outbox, use `OutboxStore.named('billing')`
+with `SqliteOutboxStore.layerFor(...)`. If the domain callback returns
 `Result.err(error)`, throws, or rejects, both the domain write and outbox
 append are rolled back. An append conflict or validation failure is returned
 as a `Result.err` and also rolls back the domain write.
+
+`Routes` maps the record target `'jobs'` to the `JobStore` Service token; it
+does not capture a store instance. The publisher resolves that token in the
+Runtime before enqueueing the prepared request.
 
 ### One Runtime with every extension
 
