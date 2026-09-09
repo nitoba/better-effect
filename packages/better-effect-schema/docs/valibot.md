@@ -1,47 +1,135 @@
 # Valibot adapter
 
-`better-effect-schema/valibot` is an optional adapter for Valibot 1.x. The
-Valibot package is imported only by this subpath; the core entry point remains
-provider-neutral.
+Use `better-effect-schema/valibot` when your application already uses Valibot
+schemas. Valibot keeps its modular, function-based API; the adapter connects
+those native schemas to the same package-level decode and failure model used by
+the other providers.
 
-```ts
+## Install
+
+~~~sh
+bun add better-effect-schema valibot better-result
+~~~
+
+Import Valibot and the adapter from their normal entrypoints:
+
+~~~ts
 import * as v from 'valibot'
+import { Result } from 'better-result'
 import { Schema } from 'better-effect-schema'
 import { ValibotAdapter } from 'better-effect-schema/valibot'
+~~~
 
-const LocalSchema = Schema.with(ValibotAdapter)
-const User = v.object({ id: v.string() })
-const fields = LocalSchema.fields(User)
-```
+## Define and validate a Valibot schema
 
-## Capability matrix
+Define an object schema with Valibot's composable functions and infer its
+input/output types:
 
-The matrix describes the native Valibot 1.4 surface tested by this package.
+~~~ts
+const UserSchema = v.object({
+  id: v.pipe(v.string(), v.minLength(1)),
+  email: v.pipe(v.string(), v.email()),
+  displayName: v.pipe(v.string(), v.minLength(1))
+})
 
-| Capability                   | Status        | Semantics                                                                                                                                                                                                                         |
-| ---------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `read`                       | Supported     | Accepts native Valibot Standard Schemas and rejects foreign definitions.                                                                                                                                                          |
-| `bridge`                     | Supported     | Returns the validated native schema without running it again.                                                                                                                                                                     |
-| `props` / `make`             | Supported     | Validates `propsSchema` through Standard Schema, preserves `ConstructionInput`, then calls `construct` with normalized props.                                                                                                     |
-| `fields`                     | Supported     | Reads entries from `object`, `looseObject`, `strictObject`, and `objectWithRest`.                                                                                                                                                 |
-| `struct` / `extend`          | Supported     | Rebuilds the same object policy while retaining native field schemas.                                                                                                                                                             |
-| `pick` / `omit`              | Supported     | Supports key arrays and `{ keys: { field: true } }` masks; unknown fields are definition failures.                                                                                                                                |
-| `partial`                    | Supported     | Delegates to Valibot so existing defaults and native optional semantics remain intact.                                                                                                                                            |
-| `exactPartial`               | Supported     | Uses exact optional fields and leaves already-optional fields unchanged, preserving defaults.                                                                                                                                     |
-| `deepPartial`                | Supported     | Recursively optionalizes objects, arrays, nullable/optional wrappers, and lazy structures when their native shapes are available.                                                                                                 |
-| `required`                   | Supported     | Delegates to the matching sync or async Valibot constructor.                                                                                                                                                                      |
-| `strict` / `loose` / `strip` | Supported     | Maps to the corresponding Valibot object constructor.                                                                                                                                                                             |
-| `catchall`                   | Conditional   | Preserves an existing `objectWithRest` rest schema; a bare object has no rest schema to infer, so the operation returns a typed unsupported failure.                                                                              |
-| `encoded`                    | Conservative  | Projects structural schemas to their Input side and removes defaults. Validation and read-only pipeline actions are retained; transformations, fallbacks, and other output-changing pipelines return a typed unsupported failure. |
-| `encode` / `encodeAsync`     | Explicit only | No inverse is invented. Supply an encoder with `ValibotAdapter.withEncoder`; throws and rejections become typed failures.                                                                                                         |
-| JSON Schema                  | Unsupported   | Valibot's optional converter is not a dependency of this adapter, so no `toJSONSchema` capability is mounted.                                                                                                                     |
+type UserInput = v.InferInput<typeof UserSchema>
+type User = v.InferOutput<typeof UserSchema>
 
-Async Valibot schemas are accepted by `read` and derived constructors choose
-the async native operation. Synchronous facade calls report
-`SchemaAsyncRequired`; use the corresponding async schema validation or
-`encodeAsync` boundary.
+const input: unknown = {
+  id: 'user-1',
+  email: 'ada@example.com',
+  displayName: 'Ada Lovelace'
+}
+~~~
 
-Object-level transformations and checks are not silently copied into
-structural derivations. They return `SchemaUnsupportedOperation` because
-changing the object shape could invalidate their assumptions. Input-preserving
-validation and read-only actions remain available through `encoded`.
+Valibot's native boundary returns a discriminated result with either
+`output` or `issues`:
+
+~~~ts
+const checked = v.safeParse(UserSchema, input)
+if (checked.success) {
+  const user: User = checked.output
+  console.log(user.displayName)
+} else {
+  console.error(checked.issues)
+}
+~~~
+
+For a provider-neutral package boundary, create a local facade and call
+`decodeUnknown`. The successful value retains the Valibot output type, and failures
+are `Result.err` values with normalized issues:
+
+~~~ts
+const local = Schema.with(ValibotAdapter)
+const decoded = local.decodeUnknown(UserSchema, input)
+
+if (Result.isError(decoded)) {
+  console.error(decoded.error._tag) // SchemaDecodeFailure
+  console.error(decoded.error.issues)
+  throw decoded.error
+}
+
+const user: User = decoded.value
+console.log(`Welcome ${user.displayName}`)
+~~~
+
+Use `local.decode` when the input has the schema's inferred input type, and
+`local.decodeUnknown` when the value is truly `unknown`:
+
+~~~ts
+const fromBoundary = local.decodeUnknown(UserSchema, input)
+if (Result.isError(fromBoundary)) throw fromBoundary.error
+~~~
+
+## Construction and structural capabilities
+
+Valibot is a native-schema adapter rather than a class factory. Use
+`local.make` when you want the package to validate props and then construct a
+domain value:
+
+~~~ts
+const descriptor = {
+  schema: UserSchema,
+  propsSchema: UserSchema,
+  construct: (props: User) => ({ ...props, kind: 'user' as const })
+}
+
+const made = local.make(descriptor, {
+  id: 'user-1',
+  email: 'ada@example.com',
+  displayName: 'Ada Lovelace'
+})
+if (Result.isError(made)) throw made.error
+console.log(made.value.kind)
+~~~
+
+The facade also exposes provider-owned structure and derivation operations where
+Valibot can preserve the schema's semantics:
+
+~~~ts
+const fields = local.fields(UserSchema)
+if (Result.isError(fields)) throw fields.error
+
+const PartialUserSchema = local.derive(UserSchema, 'partial')
+if (Result.isError(PartialUserSchema)) throw PartialUserSchema.error
+~~~
+
+Validation and read-only pipelines are preserved. Object transformations,
+unsupported shape operations, and missing inverse encoders return typed
+`SchemaUnsupportedOperation` failures instead of silently changing behavior.
+Async Valibot schemas require the corresponding async package operation.
+
+## Provider-neutral model
+
+Valibot remains the schema authoring and native-validation layer. The adapter
+only supplies the bridge that lets `better-effect-schema` use the schema with
+the same `Result`-backed operations as Zod and ArkType. Choose Valibot when
+its modular API, small bundles, and functional schema composition fit your
+application.
+
+## Further reading
+
+- [Valibot documentation](https://valibot.dev/)
+- [Provider-neutral API reference](api.md)
+- [Zod adapter](zod.md)
+- [ArkType adapter](arktype.md)
