@@ -21,6 +21,13 @@
 - The deterministic TestJobStore harness, end-to-end examples, MQ documentation,
   and package/type-system release gates.
 
+## [0.1.1] - 2026-09-09
+
+### Changed
+
+- Refreshed the public README with schema-first Flow, outbox, and adapter
+  documentation and runnable examples.
+
 ## [0.1.0] - 2026-08-31
 
 ### Added
