@@ -82,6 +82,154 @@ test('appendIn participates in the caller transaction and does not commit it', a
   expect((await resolve(store.get(OutboxId.make('commit-me').unwrap())))?.state).toBe('pending')
 })
 
+test('transaction commits the domain write and outbox record after the callback succeeds', async () => {
+  const database = open()
+  const store = SqliteOutboxStore.make({ database })
+  database.exec('CREATE TABLE domain_rows (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+
+  const result = await SqliteOutboxTransactions.transaction(
+    database,
+    record('transaction-success'),
+    (transaction) => {
+      transaction
+        .prepare('INSERT INTO domain_rows(id, value) VALUES (?, ?)')
+        .run('order-1', 'created')
+      return Result.ok('saved')
+    }
+  )
+
+  expect(result.isOk()).toBe(true)
+  expect(database.prepare('SELECT value FROM domain_rows WHERE id = ?').get('order-1')).toEqual({
+    value: 'created'
+  })
+  expect((await resolve(store.get(OutboxId.make('transaction-success').unwrap())))?.state).toBe(
+    'pending'
+  )
+})
+
+test('transaction rolls back the domain write when the callback returns Result.err', async () => {
+  const database = open()
+  const store = SqliteOutboxStore.make({ database })
+  database.exec('CREATE TABLE domain_rows (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  const failure = new Error('domain rejected')
+
+  const result = await SqliteOutboxTransactions.transaction(
+    database,
+    record('transaction-domain-failure'),
+    (transaction) => {
+      transaction
+        .prepare('INSERT INTO domain_rows(id, value) VALUES (?, ?)')
+        .run('order-2', 'rolled-back')
+      return Result.err(failure)
+    }
+  )
+
+  expect(result.isErr()).toBe(true)
+  if (result.isErr()) expect(result.error).toBe(failure)
+  expect(database.prepare('SELECT * FROM domain_rows WHERE id = ?').get('order-2')).toBeNull()
+  expect(
+    await resolve(store.get(OutboxId.make('transaction-domain-failure').unwrap()))
+  ).toBeUndefined()
+})
+
+test('transaction rolls back the domain write when appending the outbox record fails', async () => {
+  const database = open()
+  const store = SqliteOutboxStore.make({ database })
+  database.exec('CREATE TABLE domain_rows (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  await resolve(store.append(record('transaction-append-failure')))
+  const conflicting = makeOutboxRecord({
+    id: OutboxId.make('transaction-append-failure').unwrap(),
+    target: 'jobs-sqlite',
+    request: validatePreparedEnqueue({ ...request, payload: { message: 'different' } }).unwrap(),
+    nowMs: 0
+  }).unwrap()
+
+  const result = await SqliteOutboxTransactions.transaction(
+    database,
+    conflicting,
+    (transaction) => {
+      transaction
+        .prepare('INSERT INTO domain_rows(id, value) VALUES (?, ?)')
+        .run('order-3', 'rolled-back')
+      return Result.ok('saved')
+    }
+  )
+
+  expect(result.isErr()).toBe(true)
+  expect(database.prepare('SELECT * FROM domain_rows WHERE id = ?').get('order-3')).toBeNull()
+  expect(
+    (await resolve(store.get(OutboxId.make('transaction-append-failure').unwrap())))?.state
+  ).toBe('pending')
+})
+
+test('transaction cleans up after thrown and rejected callbacks and serializes shared writes', async () => {
+  const database = open()
+  const store = SqliteOutboxStore.make({ database })
+  database.exec('CREATE TABLE domain_rows (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  const failure = new Error('domain defect')
+  let caught: unknown
+  try {
+    await SqliteOutboxTransactions.transaction(
+      database,
+      record('transaction-cleanup-failure'),
+      () => {
+        throw failure
+      }
+    )
+  } catch (cause) {
+    caught = cause
+  }
+  expect(caught).toBe(failure)
+
+  const rejection = new Error('domain rejection')
+  caught = undefined
+  try {
+    await SqliteOutboxTransactions.transaction(
+      database,
+      record('transaction-cleanup-rejection'),
+      async () => {
+        throw rejection
+      }
+    )
+  } catch (cause) {
+    caught = cause
+  }
+  expect(caught).toBe(rejection)
+
+  const events: string[] = []
+  const first = SqliteOutboxTransactions.transaction(
+    database,
+    record('transaction-serialized-1'),
+    async (transaction) => {
+      events.push('first-start')
+      await Promise.resolve()
+      transaction
+        .prepare('INSERT INTO domain_rows(id, value) VALUES (?, ?)')
+        .run('order-4', 'first')
+      events.push('first-end')
+      return Result.ok('first')
+    }
+  )
+  const second = SqliteOutboxTransactions.transaction(
+    database,
+    record('transaction-serialized-2'),
+    (transaction) => {
+      events.push('second-start')
+      transaction
+        .prepare('INSERT INTO domain_rows(id, value) VALUES (?, ?)')
+        .run('order-5', 'second')
+      events.push('second-end')
+      return Result.ok('second')
+    }
+  )
+
+  const results = await Promise.all([first, second])
+  expect(results.every((result) => result.isOk())).toBe(true)
+  expect(events).toEqual(['first-start', 'first-end', 'second-start', 'second-end'])
+  expect(database.prepare('SELECT COUNT(*) AS count FROM domain_rows').get()).toEqual({ count: 2 })
+  expect(await resolve(store.counts())).toMatchObject({ pending: 2 })
+})
+
 test('SQLite outbox append is idempotent and rejects a digest conflict', async () => {
   const database = open()
   const store = SqliteOutboxStore.make({ database })

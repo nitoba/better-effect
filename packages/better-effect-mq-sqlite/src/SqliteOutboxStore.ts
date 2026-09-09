@@ -7,7 +7,7 @@
 
 import { Layer } from 'better-effect'
 import type { ServiceContract } from 'better-effect'
-import { Result, type Result as ResultType } from 'better-result'
+import { Err, Result, type Result as ResultType } from 'better-result'
 import {
   cloneOutboxRecord,
   makeOutboxRecord,
@@ -52,6 +52,7 @@ import { DEFAULT_NAMESPACE, normalizeSqliteJobStoreConfig, validateNamespace } f
 import type { SqliteDatabase, SqliteJobStoreConfig } from './config'
 import { SqliteMigrator } from './migrator'
 import type { SqliteMigrationOptions } from './migrator'
+import { withSqliteTransaction } from './internal/transactions'
 import { SQLITE_TABLES } from './schema'
 
 export interface SqliteOutboxStoreConfig extends SqliteJobStoreConfig {}
@@ -832,6 +833,59 @@ const appendIn = (
   }
 }
 
+type TransactionCallback<Value, Failure> = (
+  database: SqliteTransaction
+) => ResultType<Value, Failure> | PromiseLike<ResultType<Value, Failure>>
+
+/**
+ * Run a domain write and its outbox append in one serialized SQLite transaction.
+ *
+ * The callback returns a nominal `better-result` Result. An `Err` rolls back and
+ * is returned unchanged; an `Ok` is followed by the adapter-owned append and
+ * commit. Callback defects are rethrown after rollback.
+ */
+export const transaction = async <Value, Failure>(
+  database: SqliteTransaction,
+  input: OutboxRecordInput,
+  callback: TransactionCallback<Value, Failure>,
+  options: SqliteOutboxAppendOptions = {}
+): Promise<ResultType<Value, Failure | OutboxAppendError>> =>
+  withSqliteTransaction(database, async () => {
+    let started = false
+    const rollback = (primary: unknown): void => {
+      if (!started) return
+      started = false
+      try {
+        database.exec('ROLLBACK')
+      } catch (cause) {
+        throw new AggregateError([primary, cause], 'SQLite outbox transaction cleanup failed')
+      }
+    }
+
+    try {
+      database.exec('BEGIN IMMEDIATE')
+      started = true
+      const result = await callback(database)
+      if (result instanceof Err) {
+        rollback(result.error)
+        return result as ResultType<Value, Failure | OutboxAppendError>
+      }
+
+      const appended = appendIn(database, input, options)
+      if (appended instanceof Err) {
+        rollback(appended.error)
+        return appended as ResultType<Value, Failure | OutboxAppendError>
+      }
+
+      database.exec('COMMIT')
+      started = false
+      return result as ResultType<Value, Failure | OutboxAppendError>
+    } catch (cause) {
+      rollback(cause)
+      throw cause
+    }
+  })
+
 const makeLayer = <Token extends AnyOutboxStoreToken>(
   token: Token,
   config: SqliteOutboxStoreConfig
@@ -853,12 +907,13 @@ const makeLayer = <Token extends AnyOutboxStoreToken>(
   )
 }
 
-export const SqliteOutboxTransactions = Object.freeze({ appendIn })
+export const SqliteOutboxTransactions = Object.freeze({ appendIn, transaction })
 
 interface SqliteOutboxStoreApi {
   readonly migrate: typeof SqliteMigrator.migrate
   readonly make: (config: SqliteOutboxStoreConfig) => SqliteOutboxStoreContract
   readonly appendIn: typeof appendIn
+  readonly transaction: typeof transaction
   readonly layer: (
     config: SqliteOutboxStoreConfig
   ) => Layer<InstanceType<typeof OutboxStoreToken>, never>
@@ -874,6 +929,7 @@ export const SqliteOutboxStore: SqliteOutboxStoreApi = Object.freeze({
     return makeStore(config)
   },
   appendIn,
+  transaction,
   layer(config: SqliteOutboxStoreConfig) {
     return makeLayer(OutboxStoreToken, config)
   },

@@ -7,6 +7,8 @@
   fencing, and SQLite migration 5.
 - Add SQLite migration 3 and durable `OutboxStore` support with transactional append, leases,
   recovery, settlement, administration, named layers, and Bun/Node file layers.
+- Add the adapter-owned `SqliteOutboxTransactions.transaction` helper for serialized domain-write
+  and outbox transactions with automatic commit, rollback, and cleanup.
 
 ## [0.1.0]
 
