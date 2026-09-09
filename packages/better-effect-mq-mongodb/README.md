@@ -1,233 +1,248 @@
 # better-effect-mq-mongodb
 
-MongoDB adapter for the protocol-v1 [`better-effect-mq`](../better-effect-mq) `JobStore`, durable `JobEventStore`, and its schedules extension.
+Adapter MongoDB para os serviços duráveis de [`better-effect-mq`](../better-effect-mq): filas de jobs, schedules, flows, eventos e outbox. A aplicação continua usando as APIs de `better-effect-mq`; este pacote fornece apenas as Layers que conectam essas APIs a um banco MongoDB.
 
-`mongodb` is an optional peer: importing this package and using a caller-owned
-`Db` does not load the driver. The adapter requires MongoDB transactions, so a
-standalone server is rejected at layer acquisition. Use a replica set (including
-a single-node replica set for local development) or a transaction-capable mongos
-deployment. Sharded deployments are not claimed as officially supported until
-they have dedicated integration coverage.
+## O que resolve e quando escolher MongoDB
 
-## QueueControls protocol v3
+Escolha este adapter quando a aplicação já opera MongoDB e precisa de:
 
-The adapter implements durable, revisioned queue controls over separate
-`${collectionPrefix}_controls`, `${collectionPrefix}_controlled_permits`,
-`${collectionPrefix}_controlled_rate_windows`, and
-`${collectionPrefix}_controlled_cursors` collections. Enqueue persists the
-producer's `dispatchKey`; workers never derive it again. Controlled claims are
-atomic MongoDB transactions that lock the control revision, fixed rate window,
-bounded fairness cursor, candidate jobs, and owner-fenced permits. A legacy
-`claim` is rejected while a queue has enabled controls, and a stale
-`controlsRevision` fails closed.
+- jobs duráveis com enqueue, claim, settlement, retry, cancelamento, pausa, retomada e inspeção;
+- isolamento por namespace e suporte a múltiplas filas ou stores no mesmo banco;
+- operações transacionais para mudanças de estado, schedules, flows e outbox;
+- eventos duráveis opcionais, com retenção por idade ou quantidade;
+- um único modelo operacional para o estado da aplicação e o estado das filas.
 
-Global concurrency, per-key concurrency, and fixed-window rate limits are
-enforced together. The window is anchored at its first accepted claim and does
-not refund capacity on settlement, release, cancellation, or recovery. Permits
-are removed only for the matching `jobId` and `leaseToken`; stale settlement,
-release, and recovery requests cannot release a newer owner. Reconciliation is
-idempotent and monotonic, and `removal: 'disable'` is explicit.
+MongoDB é uma boa opção quando payloads BSON/documentos, a operação existente do cluster e transações multi-documento são importantes. Prefira um adapter relacional quando relatórios relacionais e ferramentas SQL forem a prioridade, ou Redis/Valkey quando a prioridade for latência mínima em filas.
 
-```ts
-import { JobScheduleStore, JobStore } from 'better-effect-mq'
-import { MongoJobScheduleStore, MongoJobStore } from 'better-effect-mq-mongodb'
+O pacote não inicia workers nem define jobs. Esses comportamentos pertencem a `better-effect-mq` e podem usar o mesmo Runtime que fornece esta Layer.
 
-const StoreLive = MongoJobStore.layer({
-  db,
-  namespace: 'notifications',
-  collectionPrefix: 'better_effect_mq'
-})
+## Instalação
+
+```bash
+bun add better-effect-mq-mongodb better-effect better-effect-mq better-effect-mq-outbox better-result mongodb
 ```
 
-## Durable JobEventStore
+Os peers públicos são:
 
-The event extension is explicit and Layer-first. It stores safe, cursor-ordered
-transition records in `${collectionPrefix}_events` and allocates a monotonic
-cursor from the namespace counter. It never records payloads, results, failure
-data, or arbitrary metadata. Run the normal migration first; event-enabled
-layers validate the layout and do not migrate automatically:
+| Pacote                    | Faixa                           |
+| ------------------------- | ------------------------------- |
+| `better-effect`           | `>=0.13.0 <0.14.0`              |
+| `better-effect-mq`        | `>=0.1.0 <0.2.0`                |
+| `better-effect-mq-outbox` | `>=0.1.0 <0.2.0`                |
+| `better-result`           | `^3.0.0`                        |
+| `mongodb`                 | `>=6.0.0 <8.0.0`, peer opcional |
+| `typescript`              | `>=6.0.0`                       |
 
-```ts
-import { JobEventStore, JobStore } from 'better-effect-mq'
-import { MongoJobEventStore, MongoJobStore } from 'better-effect-mq-mongodb'
+`mongodb` é opcional porque o adapter aceita um `Db` já criado pela aplicação. Nesse caminho, importar o pacote não carrega o driver. Use o peer `mongodb` quando quiser que `layerFromConfig` abra a conexão para você.
 
-await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
-const EventsLive = MongoJobEventStore.layer({ db, namespace: 'notifications' })
-const StoreAndEventsLive = MongoJobStore.layerWithEvents(
-  { db, namespace: 'notifications' },
-  { retention: { ageMs: 7 * 24 * 60 * 60 * 1000, count: 100_000 } }
-)
-const Durable = JobStore.named('durable')
-const Events = JobEventStore.for(Durable)
-```
+## Quick start: um `Db` da aplicação e uma Layer
 
-`read({ after })` is exclusive and advances in cursor order even when filters
-skip events. Retention is enforced by bounded sweeps for both age and count;
-expired cursors return `JobEventCursorExpiredError`. `awaitEvents` uses a
-MongoDB change stream only as a best-effort wake hint and always retains a
-polling fallback. With `layerWithEvents`, a transition and its event append
-commit or rollback together.
-
-Flow and schedule layers use the same optional `eventWriter` configuration to
-append their extension events in their own MongoDB transactions. Controls are
-appended by the JobStore layer. Pass the writer capability to each installed
-extension layer when composing it with a separately provided `JobEventStore`:
+O fluxo recomendado é conectar o cliente, executar a migração explicitamente e fornecer o `Db` ao adapter:
 
 ```ts
-const eventWriter = { id: 'better-effect-mq-mongodb', version: 'current', canAppend: true }
-const FlowLive = MongoFlowStore.layer({ db, namespace: 'notifications', eventWriter })
-const ScheduleLive = MongoJobScheduleStore.layer({ db, namespace: 'notifications', eventWriter })
-```
-
-Effective Flow, schedule, and controls transitions append only their canonical
-extension event; idempotent retries and no-op transitions append nothing.
-
-Event rollout is coordinated per namespace in the counters collection. The
-first append records `optional`; promote explicitly with
-`JobEventStore.activate({ mode: 'required' })`. A writer that cannot append is
-rejected before a JobStore transaction mutates state. The activation document
-uses the same MongoDB transaction as event appends.
-
-Schedules use the associated `JobStore` token and are provided as a separate
-Layer. Named stores therefore remain isolated in MongoDB namespaces:
-
-```ts
-const Durable = JobStore.named('durable')
-const DurableSchedules = JobScheduleStore.for(Durable)
-const StoreLive = MongoJobStore.layerFor(Durable, { db })
-const ScheduleLive = MongoJobScheduleStore.layerFor(DurableSchedules, { db })
-```
-
-`tickSchedule` performs compare-and-set, deterministic occurrence insertion,
-queue wake-up, and schedule advancement in one MongoDB transaction. The adapter
-requires a replica set or transaction-capable mongos; standalone MongoDB is
-rejected during Layer acquisition. MongoDB's transaction retry policy is
-bounded, and an unknown commit result is safe to replay because the schedule
-revision and occurrence ID are both deterministic.
-
-## FlowStore v2
-
-MongoDB also provides the protocol-v2 `FlowStore` adapter. Flow persistence is
-enabled by a separate, explicit migration so an existing JobStore v1 layout is
-never silently rewritten:
-
-```ts
+import { MongoClient } from 'mongodb'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, Queue } from 'better-effect-mq'
+import { Result } from 'better-result'
 import { MongoJobStore } from 'better-effect-mq-mongodb'
-import { MongoFlowStore } from 'better-effect-mq-mongodb'
 
-await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
-await MongoFlowStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
+const uri = process.env.MONGODB_URI ?? 'mongodb://localhost:27017/?replicaSet=rs0'
+const client = new MongoClient(uri)
+await client.connect()
+const db = client.db('application')
 
-const FlowLive = MongoFlowStore.layer({
-  db,
-  namespace: 'notifications',
-  collectionPrefix: 'better_effect_mq'
+await MongoJobStore.migrate({ db })
+
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send', {
+  version: 1,
+  payload: Codec.json<{ readonly to: string }>()
+})
+
+const ApplicationLive = Layer.complete(
+  Layer.merge(MongoJobStore.layer({ db, namespace: 'application' }), ClockLive)
+)
+const runtime = await Runtime.make(ApplicationLive)
+
+try {
+  const result = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue(
+        { to: 'ada@example.test' },
+        { idempotencyKey: 'welcome-ada' }
+      )
+      return Result.ok(jobId)
+    })
+  )
+
+  if (Result.isError(result)) throw result.error
+  console.log(result.value)
+} finally {
+  await runtime.dispose()
+  await client.close()
+}
+```
+
+O `Db` deve ser o `Db` do driver oficial e manter acesso ao seu `MongoClient` (`db.client`), necessário para abrir sessões transacionais.
+
+O worker, os handlers e a leitura do resultado usam somente `better-effect-mq`. Por exemplo, um worker pode ser adicionado à mesma `ApplicationLive` com `Worker.service` e `Worker.handle`, sem consultar coleções nem conhecer MongoDB. Consulte o [guia de composição de `better-effect-mq`](../better-effect-mq/docs/composition.md) para esse lado da aplicação.
+
+### Cliente gerenciado pelo adapter
+
+Quando preferir passar uma URI em vez de um `Db`, use a Layer equivalente:
+
+```ts
+const StoreLive = MongoJobStore.layerFromConfig({
+  uri,
+  database: 'application',
+  namespace: 'application'
 })
 ```
 
-The flow migration records protocol v2/layout 1 independently, extends the
-jobs validator with flow fields, and creates dedicated flow-child and
-flow-report outbox collections. `fanOut`, child result recording, cancellation,
-reconciliation, and cascade acknowledgement run in MongoDB transactions. A
-terminal child settlement appends its report in the same transaction when the
-persisted child carries a valid parent envelope; reports remain durable until
-the parent store confirms the exact payload through `ackOutbox`.
+`layerFromConfig` cria e fecha o `MongoClient` junto com o Runtime. A migração continua sendo uma operação explícita e deve ser executada com um `Db` administrativo antes de iniciar a aplicação.
 
-Named JobStores use the matching FlowStore token and namespace:
+## Migrações e requisitos operacionais
+
+Antes da primeira execução de uma Layer, aplique a migração correspondente:
+
+```ts
+await MongoJobStore.migrate({ db })
+```
+
+O comando é idempotente. A Layer valida o layout existente por padrão (`validateLayout: true`) e falha cedo quando a migração está ausente ou incompatível; ela não altera o banco automaticamente. `collectionPrefix` permite separar instalações do adapter no mesmo banco, e `namespace` separa stores lógicos da aplicação.
+
+Se a aplicação usar flows, aplique também a migração de flows depois da migração principal:
+
+```ts
+import { MongoFlowStore, MongoJobStore } from 'better-effect-mq-mongodb'
+
+await MongoJobStore.migrate({ db })
+await MongoFlowStore.migrate({ db })
+```
+
+Schedules, eventos e outbox usam a migração principal; não há uma migração automática durante a aquisição dessas Layers.
+
+O MongoDB precisa aceitar transações: use um replica set (um replica set de um único nó é suficiente para desenvolvimento) ou um deployment mongos compatível com transações. MongoDB standalone é rejeitado quando a Layer é adquirida. Esse requisito vale para jobs, schedules, flows e outbox.
+
+> **Ownership do `Db`:** `MongoJobStore.layer`, `MongoJobScheduleStore.layer`, `MongoFlowStore.layer`, `MongoJobEventStore.layer` e `MongoOutboxStore.layer` usam o `Db` fornecido, mas não fecham o `MongoClient` da aplicação. O código que criou o cliente deve fechá-lo depois de `runtime.dispose()`. As variantes `layerFromConfig` criam o cliente e assumem esse fechamento.
+
+Recomendações de operação:
+
+- mantenha `validateLayout` habilitado em produção;
+- configure backups, retenção, monitoramento, capacidade de índices e limites de tamanho de documento conforme o volume da aplicação;
+- escolha `notifications: 'poll'` quando change streams não estiverem disponíveis; o modo padrão (`'auto'`) usa change streams apenas como sinal de despertar e mantém polling como fallback;
+- mantenha `collectionPrefix` estável depois de uma migração e use o mesmo valor em todas as Layers que compartilham o layout.
+
+## Composição com `better-effect-mq` e eventos
+
+`better-effect-mq` define o contrato de `JobStore`. A Layer do adapter fornece esse contrato:
 
 ```ts
 import { JobStore } from 'better-effect-mq'
+import { MongoJobStore } from 'better-effect-mq-mongodb'
 
 const Durable = JobStore.named('durable')
-const FlowLive = MongoFlowStore.layerFor(Durable, { db, namespace: 'application' })
+const DurableStoreLive = MongoJobStore.layerFor(Durable, {
+  db,
+  namespace: 'application'
+})
 ```
 
-Flow layers validate both layout markers during acquisition and never migrate
-automatically. MongoDB transactions provide the atomicity boundary; cross-store
-parent/child transactions are intentionally not claimed.
+Use `layerFor` quando vários stores precisarem coexistir no mesmo Runtime. Jobs associados ao token `Durable` devem ser fornecidos por essa Layer; a aplicação não precisa fazer resolução manual de serviços.
 
-## Durable outbox
+### Eventos duráveis
 
-The package also provides the durable protocol-v1 `OutboxStore` adapter. It
-stores outbox records in a separate `${collectionPrefix}_outbox` collection and
-uses the canonical default/named tokens from `better-effect-mq-outbox`:
+Eventos são opcionais. Para fornecer o `JobStore` e o `JobEventStore` juntos, use:
+
+```ts
+import { MongoJobStore } from 'better-effect-mq-mongodb'
+
+const DurableWithEvents = MongoJobStore.layerWithEvents(
+  { db, namespace: 'application' },
+  { retention: { ageMs: 7 * 24 * 60 * 60 * 1_000, count: 100_000 } }
+)
+```
+
+Também é possível fornecer somente `MongoJobEventStore.layer(...)` ou associar o evento a um token nomeado com `layerFor`. A leitura usa cursores monotônicos e paginação; cursores além da retenção retornam erro de expiração. O log registra transições seguras, não payloads de jobs, resultados, falhas completas ou metadados arbitrários.
+
+Com `layerWithEvents`, a transição do job e seu evento são confirmados ou desfeitos juntos. A espera por eventos pode usar change streams como uma dica de baixa latência, mas mantém polling para recuperar reconexões e lacunas. A publicação de eventos para sistemas externos continua sendo responsabilidade da aplicação.
+
+## Capacidades disponíveis
+
+### Filas e controles
+
+O adapter implementa o `JobStore` usado por `better-effect-mq`: enqueue idempotente, claim concorrente, settlement com resultado ou retry, cancelamento, recuperação de jobs interrompidos, pausa/retomada e consultas limitadas. Ele também suporta os controles de fila expostos por `better-effect-mq`, incluindo concorrência global, concorrência por chave e limite por janela de tempo.
+
+O `Worker` de `better-effect-mq` continua sendo responsável por executar handlers, supervisionar tentativas e encerrar de forma ordenada. A Layer MongoDB fornece apenas a persistência necessária para esses ciclos.
+
+### Schedules
+
+Schedules são fornecidos em uma Layer separada:
+
+```ts
+import { JobScheduleStore } from 'better-effect-mq'
+import { MongoJobScheduleStore } from 'better-effect-mq-mongodb'
+
+const SchedulesLive = MongoJobScheduleStore.layer({
+  db,
+  namespace: 'application'
+})
+```
+
+Componha `SchedulesLive` com a Layer do `JobStore` associado. Ticks usam uma operação transacional de compare-and-set, inserem ocorrências determinísticas, acordam a fila e avançam o schedule como uma única mudança observável. Para stores nomeados, crie o token associado e forneça-o explicitamente:
+
+```ts
+const DurableSchedules = JobScheduleStore.for(Durable)
+const NamedSchedulesLive = MongoJobScheduleStore.layerFor(DurableSchedules, {
+  db,
+  namespace: 'application'
+})
+```
+
+### Flows
+
+Flows usam uma Layer explícita e uma migração própria:
+
+```ts
+import { MongoFlowStore } from 'better-effect-mq-mongodb'
+
+const FlowLive = MongoFlowStore.layer({
+  db,
+  namespace: 'application'
+})
+```
+
+O adapter persiste fan-out de filhos, resultados de filhos, cancelamento, reconciliação e relatórios pendentes para entrega ao pai. A entrega é pelo menos uma vez e pode ser repetida com segurança. Stores diferentes não participam de uma única transação; não há garantia de commit atômico entre bancos ou namespaces.
+
+### Outbox
+
+Para o `OutboxStore` de [`better-effect-mq-outbox`](../better-effect-mq-outbox/README.md), use:
 
 ```ts
 import { MongoOutboxStore, OutboxStore } from 'better-effect-mq-mongodb'
 
-const OutboxLive = MongoOutboxStore.layer({ db, namespace: 'billing' })
+const OutboxLive = MongoOutboxStore.layer({
+  db,
+  namespace: 'billing'
+})
+
 const NamedOutboxLive = MongoOutboxStore.layerFor(OutboxStore.named('billing'), {
   db,
   namespace: 'billing'
 })
 ```
 
-`MongoOutbox.appendIn` is the adapter-specific append boundary for an existing
-MongoDB transaction. The caller starts, commits, aborts, and ends the session;
-the adapter only uses it for the upsert. Equal request digests are idempotent
-duplicates, while the same outbox ID with a different digest is a conflict:
+`MongoOutbox.appendIn(session, record, options)` integra um registro a uma transação MongoDB que a aplicação já abriu. A aplicação é dona da sessão, do commit/abort e de `endSession()`. Depois do commit, o `OutboxStore` oferece claims com expiração, heartbeat, settlement e recuperação; a publicação externa é pelo menos uma vez e deve ser confirmada explicitamente com `markPublished`.
 
-```ts
-import { MongoOutbox } from 'better-effect-mq-mongodb'
-import { Result } from 'better-result'
+## Garantias de durabilidade e limites
 
-const session = client.startSession()
-try {
-  await session.withTransaction(async () => {
-    const result = await MongoOutbox.appendIn(session, record, { db })
-    if (Result.isError(result)) throw result.error
-  })
-} finally {
-  await session.endSession()
-}
-```
+- As mudanças mutáveis do adapter usam transações MongoDB com leitura snapshot e confirmação `majority`.
+- Enqueue, claim, settlement, retry, cancelamento, schedules, flows e operações do outbox têm uma unidade atômica no mesmo banco e namespace.
+- Repetições de uma operação idempotente não criam um segundo estado lógico; respostas perdidas podem ser repetidas pelo chamador.
+- A entrega de jobs, eventos consumidos e outbox é pelo menos uma vez. Consumidores devem persistir seus cursores ou confirmações e tolerar duplicatas.
+- Change streams são apenas uma otimização de despertar; indisponibilidade ou reconexão não deve ser tratada como perda de estado.
+- O adapter não fornece transações distribuídas, exactly-once para publicação externa, filas entre bancos, armazenamento ilimitado de eventos ou backups automáticos.
+- O tamanho máximo dos documentos, a capacidade de índices, a retenção e a recuperação de backups continuam sendo limites e responsabilidades do ambiente MongoDB.
 
-Post-commit `OutboxStore` operations claim records with expiring leases and
-fresh fencing tokens. Heartbeats and settlements reject stale workers;
-expired leases are recovered and records that exhaust their attempt limit are
-marked failed. Delivery remains at-least-once: publication is external to the
-store and must be settled explicitly with `markPublished`.
-
-The caller retains ownership of `db.client`. For an adapter-owned client:
-
-```ts
-const StoreLive = MongoJobStore.layerFromConfig({
-  uri: 'mongodb://localhost:27017/?replicaSet=rs0',
-  database: 'application',
-  namespace: 'notifications'
-})
-```
-
-Run migrations deliberately; layers validate an existing layout and never
-migrate automatically:
-
-```ts
-await MongoJobStore.migrate({ db, collectionPrefix: 'better_effect_mq' })
-```
-
-Migration creates validated `jobs`, `attempts`, `queues`, `counters`,
-`migrations`, `schedules`, `outbox`, `events`, and the four QueueControls collections,
-plus claim, idempotency, lease, list, ledger, metadata, controlled-claim,
-permit, rate-window, due-schedule, and outbox fencing indexes. The schedules,
-outbox, controls, and event extensions advance the MongoDB layout marker to 5 without
-deleting or rewriting existing protocol-v1 data. Validation uses `moderate`/`error` to support
-expand/migrate/contract rollouts; it is additional protection, not a
-replacement for document decoding at the adapter boundary.
-
-Every mutating operation runs in a short snapshot transaction with majority
-write concern. The persisted queue `wakeVersion` is authoritative. Change
-streams only wake local waiters when available; polling closes reconnect/history
-gaps and preserves correctness. The adapter never uses server time for protocol
-transitions: callers supply every `now` value.
-
-MongoDB is responsible for replica configuration, backups, retention, document
-size limits, monitoring, and index capacity. Attempt history is stored in its
-own collection to avoid unbounded Job document growth. Metadata exact matches
-use canonical `{ key, value }` entries, so metadata keys containing `.` or `$`
-remain ordinary data; compound multikey metadata queries should be measured with
-`explain('executionStats')` for the application's real filters.
-
-Prefer PostgreSQL when relational reporting and mature operational tooling are
-the priority, or Redis/Valkey for low-latency queue-centric deployments. MongoDB
-is useful when the application already operates a transaction-capable replica
-set and benefits from BSON document administration.
+Para a API de jobs, workers, schedules e flows, consulte a [documentação pública de `better-effect-mq`](../better-effect-mq/README.md). Para detalhes específicos de operação do MongoDB, consulte a documentação do deployment usado pela aplicação.
