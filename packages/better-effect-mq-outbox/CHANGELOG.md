@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Document adapter-owned transaction callbacks as the application boundary for
+  atomic domain writes and outbox appends; low-level `appendIn` helpers remain
+  advanced adapter integrations.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added

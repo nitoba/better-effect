@@ -128,7 +128,13 @@ export type OutboxSettlementError = OutboxLeaseError
 export type OutboxRecoveryError = OutboxDefinitionError | OutboxStoreFailure
 export type OutboxStoreProtocolError = OutboxProtocolMismatchError | OutboxDefinitionError
 
-/** Post-commit operations used by the future publisher and storage adapters. */
+/**
+ * Post-commit operations used by the publisher and storage adapters.
+ *
+ * The core contract intentionally has no transaction method or native
+ * transaction handle. Durable adapters own their transaction lifecycle and
+ * expose their own typed callback helper for a domain write plus append.
+ */
 export interface OutboxStore {
   readonly descriptor: OutboxStoreDescriptor
   claim(
@@ -252,7 +258,13 @@ export const isOutboxStoreToken = (value: unknown): value is AnyOutboxStoreToken
   }
 }
 
-/** Reference-only append capability; database adapters expose `appendIn` with their real tx type. */
+/**
+ * Reference-only append capability for adapter implementations.
+ *
+ * Durable adapters may expose a low-level `appendIn` compatibility helper for
+ * advanced integrations, but normal application code should use the adapter's
+ * transaction callback so the adapter owns commit, rollback, and cleanup.
+ */
 export interface OutboxAppendStore {
   append(input: OutboxRecordInput): OutboxOperation<OutboxAppendResult, OutboxAppendError>
 }
