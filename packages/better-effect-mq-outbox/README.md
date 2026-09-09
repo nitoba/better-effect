@@ -7,7 +7,9 @@ the committed work to a `JobStore` in the background.
 
 The package is storage-neutral. Database adapters provide the durable
 `OutboxStore` implementation and the transaction helper for their own
-connection type.
+connection type. Jobs and Workers remain the application-facing API from
+`better-effect-mq`; the publisher is a bridge from a durable outbox to a
+typed Job descriptor.
 
 ## Why use an outbox?
 
@@ -170,7 +172,7 @@ your application:
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue } from 'better-effect-mq'
+import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import {
@@ -192,10 +194,23 @@ const SendConfirmation = Queue.define('orders').job('send-confirmation', {
     readonly orderId: string
     readonly email: string
   }>(),
+  result: Codec.string,
   store: JobStore,
   defaults: { attempts: 5 },
   idempotencyKey: (payload) => `order-confirmation:${payload.orderId}`
 })
+
+const ConfirmationWorker = Worker.service('@orders/ConfirmationWorker')
+const confirmationHandler = Worker.handle(SendConfirmation, (payload) =>
+  Effect.fn(async function* () {
+    return Result.ok(`sent:${payload.email}`)
+  })
+)
+const ConfirmationWorkerLive = ConfirmationWorker.layer(() => ({
+  handlers: [confirmationHandler] as const,
+  concurrency: 2,
+  pollIntervalMs: 100
+}))
 
 const Routes = OutboxRoutes.make({
   jobs: JobStore
@@ -206,18 +221,19 @@ const PublisherLive = Publisher.layer(() => ({
   // PostgresOutbox is the durable adapter token used by this example.
   outboxes: [PostgresOutbox] as const,
   routes: Routes,
-  concurrency: 4,
+  concurrency: 2,
   leaseDurationMs: 30_000,
   heartbeatIntervalMs: 10_000,
-  pollIntervalMs: 1_000
+  pollIntervalMs: 100
 }))
 
 const AppLive = Layer.complete(
   Layer.merge(
-    ClockLive,
-    PostgresJobStore.layer({ pool, namespace: 'orders' }),
-    PostgresOutbox.layer({ pool, namespace: 'orders' }),
-    PublisherLive
+    Layer.merge(
+      PostgresJobStore.layer({ pool, namespace: 'orders' }),
+      PostgresOutbox.layer({ pool, namespace: 'orders' })
+    ),
+    Layer.merge(ClockLive, Layer.merge(ConfirmationWorkerLive, PublisherLive))
   )
 )
 
@@ -231,10 +247,13 @@ now fully encoded and can be stored safely:
 ```ts
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
-    const prepared = yield* SendConfirmation.prepare({
-      orderId: 'order-123',
-      email: 'ada@example.test'
-    })
+    const prepared = yield* SendConfirmation.prepare(
+      {
+        orderId: 'order-123',
+        email: 'ada@example.test'
+      },
+      { jobId: 'order-confirmation:order-123' }
+    )
     return Result.ok(prepared)
   })
 )
@@ -277,11 +296,18 @@ try {
 
 After `COMMIT`, the running publisher claims the record and calls the `jobs`
 route. The `JobStore` receives the prepared request and the outbox record is
-marked `published` only after that enqueue succeeds. Keep the Runtime alive for
-the lifetime of the application and dispose it during graceful shutdown:
+marked `published` only after that enqueue succeeds. The Worker then handles
+the typed `SendConfirmation` job. Keep the Runtime alive for the lifetime of
+the application and dispose it during graceful shutdown:
 
 ```ts
 // ...serve requests while `runtime` is alive...
+const completed = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(yield* SendConfirmation.awaitResult('order-confirmation:order-123'))
+  })
+)
+if (Result.isError(completed)) throw completed.error
 await runtime.dispose()
 await pool.end?.() // the application owns this pool
 ```

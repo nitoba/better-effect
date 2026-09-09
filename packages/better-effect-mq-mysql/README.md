@@ -1,8 +1,9 @@
 # better-effect-mq-mysql
 
 `better-effect-mq-mysql` is the MySQL adapter for `better-effect-mq`. It gives a
-queue a durable home in MySQL while keeping job definitions, workers, retries,
-and application code in the storage-neutral `better-effect-mq` package.
+queue a durable home in MySQL while keeping `Queue`/`Job` descriptors, Workers,
+retries, and application code in the storage-neutral `better-effect-mq`
+package. It is a provider Layer, not an independent job API.
 
 Use it when MySQL is already part of your production platform and you want:
 
@@ -27,7 +28,8 @@ For a caller-owned `mysql2` pool:
 bun add better-effect-mq-mysql better-effect-mq better-effect better-result mysql2
 ```
 
-Add the outbox foundations when you use the outbox integration:
+Add the outbox foundations when you use the outbox integration; the publisher
+still runs in the same Runtime as the JobStore and Worker:
 
 ```sh
 bun add better-effect-mq-outbox
@@ -213,10 +215,12 @@ schedule tick is deterministic: retrying a lost response does not create a
 second occurrence for the same slot.
 
 ```ts
-import { Layer } from 'better-effect'
+import { Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { JobSchedules, JobScheduler } from 'better-effect-mq'
 import { MySqlJobScheduleStore, MySqlJobStore } from 'better-effect-mq-mysql'
+
+// Reuse SendEmail and AppWorkerLive from Quick Start.
 
 const BillingSchedules = JobSchedules.define({
   group: 'billing',
@@ -244,9 +248,11 @@ const SchedulingLive = Layer.complete(
       MySqlJobStore.layer({ pool, namespace: 'billing' }),
       MySqlJobScheduleStore.layer({ pool, namespace: 'billing' })
     ),
-    Layer.merge(ClockLive, SchedulerLive)
+    Layer.merge(ClockLive, Layer.merge(SchedulerLive, AppWorkerLive))
   )
 )
+
+const runtime = await Runtime.make(SchedulingLive)
 ```
 
 The schedule store is associated with a JobStore token. For a named store,
@@ -281,6 +287,8 @@ import { ClockLive } from 'better-effect/standard-services'
 import { JobEventStore } from 'better-effect-mq'
 import { MySqlJobEventStore, MySqlJobStore } from 'better-effect-mq-mysql'
 
+// Reuse the SendEmail descriptor and AppWorkerLive from Quick Start.
+
 const DurableLive = Layer.complete(
   Layer.merge(
     MySqlJobStore.layer({ pool, namespace: 'billing' }),
@@ -290,7 +298,7 @@ const DurableLive = Layer.complete(
         namespace: 'billing',
         retention: { count: 100_000, ageMs: 7 * 24 * 60 * 60 * 1_000 }
       }),
-      ClockLive
+      Layer.merge(ClockLive, AppWorkerLive)
     )
   )
 )
@@ -336,8 +344,11 @@ under the associated `FlowStore` token:
 
 ```ts
 import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
 import { FlowStore } from 'better-effect-mq'
 import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
+
+// Reuse the Queue/Job descriptors and AppWorkerLive from Quick Start.
 
 const flow = await MySqlFlowStore.make({
   pool,
@@ -346,7 +357,10 @@ const flow = await MySqlFlowStore.make({
 
 const FlowLive = Layer.succeed(FlowStore, FlowStore.of(flow))
 const AppWithFlows = Layer.complete(
-  Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), FlowLive)
+  Layer.merge(
+    Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), FlowLive),
+    Layer.merge(ClockLive, AppWorkerLive)
+  )
 )
 
 const runtime = await Runtime.make(AppWithFlows)
@@ -380,44 +394,86 @@ back, or release that connection.
 ```ts
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { MySqlJobStore, MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
-import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import {
+  MySqlJobStore,
+  MySqlOutbox,
+  MySqlOutboxStore,
+  OutboxStore,
+  type PoolConnection
+} from 'better-effect-mq-mysql'
+import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
+
+const SendEmail = Queue.define('billing').job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly messageId: string
+    readonly recipient: string
+  }>(),
+  result: Codec.string,
+  store: JobStore,
+  idempotencyKey: ({ messageId }) => messageId
+})
+
+const EmailWorker = Worker.service('@billing/EmailWorker')
+const emailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    return Result.ok(`sent:${payload.recipient}`)
+  })
+)
+const EmailWorkerLive = EmailWorker.layer(() => ({
+  handlers: [emailHandler] as const,
+  concurrency: 2,
+  pollIntervalMs: 100
+}))
 
 const ApplicationOutbox = OutboxStore.named('application')
 const OutboxLive = MySqlOutboxStore.layerFor(ApplicationOutbox, {
   pool,
   namespace: 'billing'
 })
+const Routes = OutboxRoutes.make({ billingJobs: JobStore })
+const Publisher = OutboxPublisher.service('@billing/OutboxPublisher')
+const PublisherLive = Publisher.layer(() => ({
+  outboxes: [ApplicationOutbox] as const,
+  routes: Routes,
+  concurrency: 2,
+  pollIntervalMs: 100
+}))
 
-const runtime = await Runtime.make(
-  Layer.complete(
-    Layer.merge(
-      Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), OutboxLive),
-      ClockLive
-    )
+const AppLive = Layer.complete(
+  Layer.merge(
+    Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), OutboxLive),
+    Layer.merge(ClockLive, Layer.merge(EmailWorkerLive, PublisherLive))
   )
 )
+const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
+
 const preparedResult = await runtime.run(() =>
   Effect.gen(async function* () {
     return Result.ok(
-      yield* SendEmail.prepare({
-        messageId: 'message-789',
-        recipient: 'lin@example.test'
-      })
+      yield* SendEmail.prepare(
+        {
+          messageId: 'message-789',
+          recipient: 'lin@example.test'
+        },
+        { jobId: 'invoice-created:123' }
+      )
     )
   })
 )
 if (Result.isError(preparedResult)) throw preparedResult.error
 
-const connection = await pool.getConnection()
+const connection = (await pool.getConnection()) as PoolConnection
 try {
   await connection.beginTransaction()
   const appended = await MySqlOutbox.appendIn(
     connection,
     makeOutboxRecord({
       id: OutboxId.make('invoice-created:123').unwrap(),
-      target: 'billing-jobs',
+      target: 'billingJobs',
       request: preparedResult.value,
       nowMs: Date.now()
     }).unwrap(),
@@ -432,11 +488,18 @@ try {
 } finally {
   connection.release()
 }
+
+const completed = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(yield* SendEmail.awaitResult('invoice-created:123'))
+  })
+)
+if (Result.isError(completed)) throw completed.error
 await runtime.dispose()
 ```
 
 Keep `target` equal to a route configured for the publisher, such as
-`'billing-jobs'`. Configure the relay or publisher used by your application so
+`'billingJobs'`. Configure the relay or publisher used by your application so
 that route points to the JobStore that should receive the prepared request.
 
 The store provides leases, retry, and recovery operations for that delivery
