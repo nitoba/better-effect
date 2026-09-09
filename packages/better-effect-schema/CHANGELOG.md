@@ -7,6 +7,27 @@
 - Renamed the workspace package and release-artifact route from `better-effect-zod` to `better-effect-schema`.
 - Added `@standard-schema/spec` as a production dependency for future public type declarations.
 
+## [0.1.1] - 2026-09-09
+
+### Added
+
+- Added preconfigured `Schema` facades to the `better-effect-schema/zod`,
+  `better-effect-schema/valibot`, and `better-effect-schema/arktype`
+  subpaths, including shared namespace type helpers and provider-native class
+  and derivation capabilities.
+
+### Changed
+
+- Provider integrations remain optional and provider-neutral code stays on the
+  root entrypoint, while provider-specific classes and operations can use the
+  matching facade without manually calling `Schema.with`.
+
+### Documentation
+
+- Refreshed the README, API and architecture references, provider quick starts,
+  migration guide, and runnable examples to use the preconfigured provider
+  facades and schema-first interoperability patterns.
+
 ## [0.1.0] - 2026-09-09
 
 Initial release of `better-effect-schema`, completing the provider-neutral schema cutover.
