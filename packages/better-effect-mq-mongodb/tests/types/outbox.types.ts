@@ -15,6 +15,7 @@ import {
   OutboxStore,
   type MongoDb,
   type MongoOutboxAppendOptions,
+  type MongoOutboxTransactionBody,
   type MongoOutboxTransaction,
   type MongoJobStoreConfig
 } from '../../src'
@@ -34,6 +35,12 @@ expectTypeOf(MongoOutbox.appendIn).toMatchTypeOf<
     record: OutboxRecord,
     options: MongoOutboxAppendOptions
   ) => Promise<OutboxEffect<OutboxAppendResult, OutboxAppendError>>
+>()
+expectTypeOf(MongoOutbox.transaction).toMatchTypeOf<
+  <Value>(
+    body: MongoOutboxTransactionBody<Value>,
+    options: MongoOutboxAppendOptions
+  ) => Promise<Value>
 >()
 
 void defaultLayer

@@ -7,7 +7,7 @@
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- optional BSON fields are omitted rather than persisted as undefined.
 
 import { createHash } from 'node:crypto'
-import { Result } from 'better-result'
+import { Err, Result } from 'better-result'
 import {
   OutboxConflictError,
   OutboxDefinitionError,
@@ -43,6 +43,10 @@ export interface MongoOutboxAppendOptions {
   readonly collectionPrefix?: string
   readonly token?: AnyOutboxStoreToken
 }
+
+export type MongoOutboxTransactionBody<Value> = (
+  session: MongoOutboxTransaction
+) => Value | PromiseLike<Value>
 
 const failed = <Value, Failure extends OutboxStoreError>(
   error: Failure
@@ -222,7 +226,57 @@ const appendRecord = async (
   return { record: persisted, duplicate: updatedExisting(reply) }
 }
 
+const mongoTransactionOptions = Object.freeze({
+  readConcern: { level: 'snapshot' },
+  writeConcern: { w: 'majority' }
+})
+
+interface RollbackResult {
+  result: unknown
+}
+
+const isResultError = (value: unknown): value is Err<unknown, unknown> => value instanceof Err
+
 export const MongoOutbox = Object.freeze({
+  /**
+   * Run domain writes and an outbox append in one adapter-owned transaction.
+   *
+   * The callback may return a better-result `Result.err`; it is returned to the
+   * caller after MongoDB aborts the transaction. Thrown and rejected failures
+   * are rethrown after the session is ended. MongoDB may retry the callback for
+   * transient transaction errors, so domain writes must be retry-safe.
+   */
+  async transaction<Value>(
+    body: MongoOutboxTransactionBody<Value>,
+    options: MongoOutboxAppendOptions
+  ): Promise<Value> {
+    const normalized = normalize(options)
+    const client = normalized.db.client
+    if (client === undefined || typeof client.startSession !== 'function')
+      throw new Error('MongoOutbox.transaction requires db.client to open a MongoDB session')
+
+    const session = client.startSession()
+    const rollback: RollbackResult = { result: undefined }
+    try {
+      try {
+        return await session.withTransaction(async () => {
+          const value = await body(session)
+          if (isResultError(value)) {
+            rollback.result = value
+            throw rollback
+          }
+          return value
+        }, mongoTransactionOptions)
+      } catch (cause) {
+        if (cause === rollback) return rollback.result as Value
+        throw cause
+      }
+    } finally {
+      await session.endSession()
+    }
+  },
+
+  /** Advanced escape hatch: append using a caller-owned session transaction. */
   async appendIn(
     session: MongoOutboxTransaction,
     record: OutboxRecord,
