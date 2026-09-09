@@ -287,7 +287,10 @@ while IFS= read -r changed_file; do
   esac
 done <<< "$changed_files"
 
-git add "$PACKAGE_FILE" "$LOCK_FILE" "$CHANGELOG_FILE" "${SYNCED_PACKAGE_FILES[@]}"
+git add "$PACKAGE_FILE" "$LOCK_FILE" "$CHANGELOG_FILE"
+if [[ ${#SYNCED_PACKAGE_FILES[@]} -gt 0 ]]; then
+  git add "${SYNCED_PACKAGE_FILES[@]}"
+fi
 if git diff --cached --quiet; then
   info "No version files changed; tagging the prepared initial release commit"
 else
