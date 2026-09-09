@@ -1,200 +1,510 @@
 # better-effect-mq-mysql
 
-`better-effect-mq-mysql` provides the optional MySQL/InnoDB `JobStore`,
-`JobScheduleStore`, durable `JobEventStore`, and durable outbox adapters for [`better-effect-mq`](../better-effect-mq).
-It implements protocol v1, QueueControls protocol v3, schedules v1, outbox v1, and Flow protocol v2 with short transactions,
-fenced leases, durable attempt records, deterministic occurrence IDs, keyset
-inspection queries, and a per-process wake notifier backed by durable queue wake
-versions.
+`better-effect-mq-mysql` is the MySQL adapter for `better-effect-mq`. It gives a
+queue a durable home in MySQL while keeping job definitions, workers, retries,
+and application code in the storage-neutral `better-effect-mq` package.
 
-```ts
-import { Layer } from 'better-effect'
-import { JobScheduleStore, JobStore } from 'better-effect-mq'
-import { MySqlJobScheduleStore, MySqlJobStore } from 'better-effect-mq-mysql'
+Use it when MySQL is already part of your production platform and you want:
 
-const StoreLive = Layer.merge(
-  MySqlJobStore.layer({ pool, namespace: 'billing', validateSchema: true }),
-  MySqlJobScheduleStore.layer({ pool, namespace: 'billing', validateSchema: true })
-)
+- durable enqueue, claim, settlement, cancellation, and inspection;
+- SQL-backed operations, backups, replication, and familiar database tooling;
+- schedules, durable job events, flows, and an outbox that can share the same
+  database and namespace;
+- leases that fence stale workers, with no database connection held while a
+  handler runs; and
+- Layer-first composition with one `better-effect` Runtime.
+
+This adapter is a good fit for durable background work and database-adjacent
+workflows. It is not an exactly-once system, a replacement for a streaming
+platform, or a cross-database transaction coordinator. Delivery and publishing
+are at least once, so handlers and external side effects must be safe to repeat.
+
+## Installation
+
+For a caller-owned `mysql2` pool:
+
+```sh
+bun add better-effect-mq-mysql better-effect-mq better-effect better-result mysql2
 ```
 
-Flow v2 is exposed as a separate, container-neutral `FlowStoreV2` adapter. It
-persists the parent manifest and dependency rows in MySQL, and uses a durable
-flow outbox for cross-store child reports:
+Add the outbox foundations when you use the outbox integration:
+
+```sh
+bun add better-effect-mq-outbox
+```
+
+The current package peer ranges are:
+
+| Package                   | Supported range    |
+| ------------------------- | ------------------ |
+| `better-effect`           | `>=0.13.0 <0.14.0` |
+| `better-effect-mq`        | `>=0.1.0 <0.2.0`   |
+| `better-effect-mq-outbox` | `>=0.1.0 <0.2.0`   |
+| `better-result`           | `^3.0.0`           |
+| `mysql2`                  | `>=3.0.0 <4.0.0`   |
+| TypeScript                | `>=6.0.0`          |
+
+`mysql2` is an optional peer because applications may pass an already-created
+compatible pool. Install it when this package creates a pool from a URI or
+pool configuration.
+
+## Requirements and migration
+
+The adapter supports MySQL **8.0.16 or newer**, with InnoDB tables and
+`STRICT_TRANS_TABLES` enabled. MariaDB and older MySQL versions are not
+supported. The adapter checks server compatibility when it opens a store, and
+the default `validateSchema: true` also checks that the database has the
+complete current layout.
+
+Run the explicit migrator from a deployment step, release job, or other
+coordinated bootstrap. Store acquisition never runs migrations for you:
 
 ```ts
-import { MySqlFlowStore } from 'better-effect-mq-mysql'
+import { createPool } from 'mysql2/promise'
+import { MySqlMigrator } from 'better-effect-mq-mysql'
 
-const flows = await MySqlFlowStore.make({
+const uri = process.env.MYSQL_URL
+if (uri === undefined) throw new Error('MYSQL_URL is required')
+
+const pool = createPool(uri)
+try {
+  await MySqlMigrator.run(pool)
+  console.log('MySQL MQ schema is ready')
+  await MySqlMigrator.validate(pool)
+} finally {
+  await pool.end()
+}
+```
+
+The migrator is forward-only and safe to rerun. Run it before starting workers,
+and run it again as part of an upgrade before enabling code that uses a newly
+installed capability. `MySqlMigrator.validate(pool)` is useful as a separate
+deployment or readiness check. A layer with `validateSchema: false` skips the
+full catalog check only when that check is managed elsewhere; it still checks
+server compatibility.
+
+## Quick start: pool, Layer, and Worker
+
+The following is a complete shape for a small application. The pool is created
+by the application, migrated before the Runtime starts, and borrowed by the
+MySQL layer.
+
+```ts
+import { createPool } from 'mysql2/promise'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, Queue, Retry, Worker } from 'better-effect-mq'
+import { MySqlJobStore, MySqlMigrator } from 'better-effect-mq-mysql'
+import { Result } from 'better-result'
+
+const uri = process.env.MYSQL_URL
+if (uri === undefined) throw new Error('MYSQL_URL is required')
+
+const pool = createPool(uri)
+await MySqlMigrator.run(pool)
+
+const Emails = Queue.define('app.emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{
+    readonly messageId: string
+    readonly recipient: string
+  }>(),
+  result: Codec.string,
+  defaults: {
+    attempts: 3,
+    backoff: Retry.fixed({ delayMs: 1_000, maxAttempts: 3 }),
+    timeoutMs: 30_000
+  },
+  idempotencyKey: ({ messageId }) => messageId
+})
+
+const EmailWorker = Worker.service('@app/EmailWorker')
+const emailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    // Call the email provider here. Make that call idempotent by messageId.
+    return Result.ok(`sent:${payload.recipient}`)
+  })
+)
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    MySqlJobStore.layer({ pool, namespace: 'billing' }),
+    Layer.merge(
+      ClockLive,
+      EmailWorker.layer(() => ({
+        handlers: [emailHandler] as const,
+        concurrency: 4,
+        pollIntervalMs: 500
+      }))
+    )
+  )
+)
+
+const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
+
+try {
+  const enqueued = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({
+        messageId: 'message-123',
+        recipient: 'ada@example.test'
+      })
+      return Result.ok(jobId)
+    })
+  )
+  if (Result.isError(enqueued)) throw enqueued.error
+} finally {
+  await runtime.dispose()
+  await pool.end()
+}
+```
+
+`namespace` is the logical boundary for one application or tenant. Use the
+same namespace when composing the JobStore and its extensions. If you run
+independent stores in one database, use the associated named tokens and their
+`layerFor` forms instead of creating another Runtime.
+
+## Pool ownership
+
+There are two equivalent ways to choose who owns connections:
+
+```ts
+// The application owns `pool`; the layer never calls pool.end().
+const Borrowed = MySqlJobStore.layer({
   pool,
+  namespace: 'billing'
+})
+
+// The layer creates a mysql2/promise pool and closes it with its Layer scope.
+const Owned = MySqlJobStore.layerFromConfig({
+  uri,
   namespace: 'billing',
-  validateSchema: true
+  poolConfig: { connectionLimit: 12 }
 })
 ```
 
-`fanOut` is idempotent for an identical manifest and rejects conflicting replay.
-Child terminal transitions (`complete`, `fail`, `cancel`, and exhausted stalled
-recovery) append a report in the same MySQL transaction as the job attempt.
-`peekOutbox` and `ackOutbox` provide at-least-once delivery for relays; they do
-not promise exactly-once execution across stores. Flow v2 does not use a
-cross-store transaction.
+The `layerFromConfig` form loads `mysql2/promise` lazily, creates the pool when
+the layer is acquired, and closes that pool when the Runtime scope is released.
+The same choice is available on `MySqlJobScheduleStore`,
+`MySqlJobEventStore`, and `MySqlOutboxStore`. `MySqlClient.fromPool` and
+`MySqlClient.fromConfig` expose the corresponding lower-level choices for
+migration or compatibility tooling.
 
-Named stores retain their association explicitly:
+The config form does not migrate automatically. Migrate the database before
+acquiring the Runtime layer. If the application owns the pool, dispose the
+Runtime first and call `pool.end()` afterward; if the adapter owns it, the
+Runtime releases it for you. Do not close a borrowed pool from a store release
+callback.
+
+## Add the durable extensions
+
+The base `JobStore` is enough for enqueueing and workers. Add only the
+capabilities your application needs. These providers use the same Layer and
+namespace conventions as the base store.
+
+### Schedules
+
+`MySqlJobScheduleStore` persists recurring work next to the associated
+`JobStore`. Define schedules with `JobSchedules`, reconcile them at startup or
+deployment, and run a `JobScheduler` to turn due occurrences into jobs. A
+schedule tick is deterministic: retrying a lost response does not create a
+second occurrence for the same slot.
 
 ```ts
+import { Layer } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { JobSchedules, JobScheduler } from 'better-effect-mq'
+import { MySqlJobScheduleStore, MySqlJobStore } from 'better-effect-mq-mysql'
+
+const BillingSchedules = JobSchedules.define({
+  group: 'billing',
+  schedules: [
+    JobSchedules.schedule(SendEmail, 'hourly-reminder', {
+      everyMs: 60 * 60 * 1_000,
+      payload: {
+        messageId: 'hourly-reminder',
+        recipient: 'ops@example.test'
+      }
+    })
+  ] as const
+})
+
+const SchedulerLive = JobScheduler.service('@billing/Scheduler').layer(() => ({
+  registries: [BillingSchedules] as const,
+  startupReconcile: true,
+  sweepIntervalMs: 1_000,
+  batchSize: 100
+}))
+
+const SchedulingLive = Layer.complete(
+  Layer.merge(
+    Layer.merge(
+      MySqlJobStore.layer({ pool, namespace: 'billing' }),
+      MySqlJobScheduleStore.layer({ pool, namespace: 'billing' })
+    ),
+    Layer.merge(ClockLive, SchedulerLive)
+  )
+)
+```
+
+The schedule store is associated with a JobStore token. For a named store,
+keep that association explicit:
+
+```ts
+import { JobScheduleStore, JobStore } from 'better-effect-mq'
+
 const Durable = JobStore.named('durable')
 const DurableSchedules = JobScheduleStore.for(Durable)
-const StoreLive = Layer.merge(
+
+const DurableLive = Layer.merge(
   MySqlJobStore.layerFor(Durable, { pool, namespace: 'billing' }),
   MySqlJobScheduleStore.layerFor(DurableSchedules, { pool, namespace: 'billing' })
 )
 ```
 
-The caller-owned `mysql2/promise` pool is never closed. To let the layer own its
-pool, use `MySqlJobStore.layerFromConfig({ uri, namespace })`; `mysql2` is loaded
-lazily only for this form.
+Schedules support cron or fixed intervals, time zones, pause/resume, overlap
+policies, and bounded misfire policies. They are not a timer service by
+themselves: keep a scheduler running for continuous ticking, or call the
+schedule store operations from your own control loop.
 
-## Requirements and migrations
+### Durable events
 
-MySQL **8.0.16+** with InnoDB and `STRICT_TRANS_TABLES` is required. The startup
-handshake rejects MariaDB, unsupported server versions, non-InnoDB tables, and
-an incompatible or incomplete protocol layout. `validateSchema: false` skips the
-full catalog check but never skips the MySQL-version/SQL-mode handshake.
-
-Migrations are explicit and are never run while acquiring a layer. Migration 3
-adds the schedules table and due/group/key indexes:
+`MySqlJobEventStore` is an optional, bounded event log for committed job,
+schedule, flow, and controlled-queue transitions. Compose it with the matching
+JobStore layer and choose retention explicitly:
 
 ```ts
-import { MySqlMigrator } from 'better-effect-mq-mysql'
-
-await MySqlMigrator.run(pool)
-await MySqlMigrator.validate(pool)
-```
-
-Migration 4 adds the `better_effect_mq_outbox` table and claim, lease, target,
-and recent-record indexes. The outbox stores an already prepared request and
-delivers it at least once; it does not promise exactly-once execution.
-
-Migration 5 adds the flow v2 columns, `better_effect_mq_flow_children`, and
-`better_effect_mq_flow_outbox`. It is additive and leaves migrations 1–4
-unchanged. Opening `MySqlFlowStore` against a v1-only or incomplete flow layout
-fails with `MySqlFlowProtocolMismatchError`; run the migrator before opening it.
-
-Migration 7 adds the append-only `better_effect_mq_job_events` feed and its
-per-namespace cursor allocator. When those tables are present, `MySqlJobStore`
-appends each durable transition in the same InnoDB transaction; without the
-event extension, existing JobStore operations remain available. Read events
-through an explicit layer:
-
-```ts
-import { Layer } from 'better-effect'
-import { JobEventStore, JobStore } from 'better-effect-mq'
+import { Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { JobEventStore } from 'better-effect-mq'
 import { MySqlJobEventStore, MySqlJobStore } from 'better-effect-mq-mysql'
 
-const EventsLive = Layer.merge(
-  MySqlJobStore.layer({ pool, namespace: 'billing' }),
-  MySqlJobEventStore.layer({ pool, namespace: 'billing' })
+const DurableLive = Layer.complete(
+  Layer.merge(
+    MySqlJobStore.layer({ pool, namespace: 'billing' }),
+    Layer.merge(
+      MySqlJobEventStore.layer({
+        pool,
+        namespace: 'billing',
+        retention: { count: 100_000, ageMs: 7 * 24 * 60 * 60 * 1_000 }
+      }),
+      ClockLive
+    )
+  )
+)
+
+const runtime = await Runtime.make(DurableLive)
+```
+
+Use the event store for resumable operational feeds or event-assisted waits:
+
+```ts
+const completed = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const jobId = yield* SendEmail.enqueue({
+      messageId: 'message-456',
+      recipient: 'grace@example.test'
+    })
+    return Result.ok(
+      yield* SendEmail.awaitResult(jobId, {
+        strategy: 'events',
+        eventStore: JobEventStore,
+        pollFallbackMs: 5_000
+      })
+    )
+  })
 )
 ```
 
-`JobEventCursor` values are opaque to callers. Reads use exclusive keyset
-pagination and advance over filtered events; count/age retention is applied by
-the adapter and old cursors return `JobEventCursorExpiredError`. `awaitEvents`
-uses a process-local wake after commit with polling as the authoritative
-fallback. Event records contain only bounded operational fields and safe
-attributes, never payloads, results, full failures, or arbitrary metadata.
+The fallback is bounded polling and remains authoritative if a notification is
+late or lost. Retention is finite; consumers must handle an expired cursor by
+rebasing or requesting a replay from another source. Event records contain
+bounded operational fields and safe attributes, not job payloads, results,
+complete failure bodies, or arbitrary metadata. Use the detailed attempt
+ledger for debugging and a process-local observer for metrics and tracing.
 
-Event rollout is coordinated per namespace through `JobEventStore.activation()`
-and `readiness()`. The first append records `optional`; promote explicitly with
-`activate({ mode: 'required' })`. A writer that cannot append is rejected before
-a JobStore mutation once the namespace is required. The activation metadata
-table is created lazily, while event and state changes remain in the same
-InnoDB transaction.
+For a named JobStore, use `JobEventStore.for(Durable)` and
+`MySqlJobEventStore.layerFor(...)` with the same pool and namespace.
+
+### Flows
+
+`MySqlFlowStore` provides the durable parent/child state needed by `Flow`
+definitions and Worker flow handlers. It is created explicitly, then provided
+under the associated `FlowStore` token:
 
 ```ts
-import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
+import { Layer, Runtime } from 'better-effect'
+import { FlowStore } from 'better-effect-mq'
+import { MySqlFlowStore, MySqlJobStore } from 'better-effect-mq-mysql'
+
+const flow = await MySqlFlowStore.make({
+  pool,
+  namespace: 'billing'
+})
+
+const FlowLive = Layer.succeed(FlowStore, FlowStore.of(flow))
+const AppWithFlows = Layer.complete(
+  Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), FlowLive)
+)
+
+const runtime = await Runtime.make(AppWithFlows)
+try {
+  // Register flow handlers and run the application while this Runtime is live.
+} finally {
+  await runtime.dispose()
+  await flow.dispose()
+}
+```
+
+Use `Flow.define` and `Flow.handle` from `better-effect-mq`; register the flow
+handler in the Worker options with `flows: [handler]`. The adapter records the
+parent manifest before child work proceeds, accepts an identical replay, and
+rejects a conflicting replay. Child terminal reports are durable and
+retryable, so a worker or relay can recover after a crash.
+
+Flow relay and child execution across different JobStores are still at least
+once. There is no transaction spanning multiple stores; design child handlers
+and any external effects for duplicate delivery. If the flow store was opened
+with `MySqlFlowStore.makeFromConfig`, it owns its pool and must be disposed by
+the application (`await flow.dispose()`) when the surrounding Runtime stops.
+
+### Outbox
+
+Use `MySqlOutboxStore` when a domain write and a prepared job request must become
+durable together. The application owns the transaction connection; the adapter
+only appends and verifies the outbox record. It does not begin, commit, roll
+back, or release that connection.
+
+```ts
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { MySqlJobStore, MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
 import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { Result } from 'better-result'
 
 const ApplicationOutbox = OutboxStore.named('application')
 const OutboxLive = MySqlOutboxStore.layerFor(ApplicationOutbox, {
   pool,
-  namespace: 'billing',
-  validateSchema: true
+  namespace: 'billing'
 })
 
-const record = makeOutboxRecord({
-  id: OutboxId.make('invoice-created:123').unwrap(),
-  target: 'jobs-mysql',
-  request: prepared,
-  nowMs: Date.now()
-}).unwrap()
-
-await database.transaction(async (connection) => {
-  await saveInvoice(connection, invoice)
-  const result = await MySqlOutbox.appendIn(connection, record, {
-    namespace: 'billing',
-    token: ApplicationOutbox
+const runtime = await Runtime.make(
+  Layer.complete(
+    Layer.merge(
+      Layer.merge(MySqlJobStore.layer({ pool, namespace: 'billing' }), OutboxLive),
+      ClockLive
+    )
+  )
+)
+const preparedResult = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(
+      yield* SendEmail.prepare({
+        messageId: 'message-789',
+        recipient: 'lin@example.test'
+      })
+    )
   })
-  if (Result.isError(result)) throw result.error
-})
+)
+if (Result.isError(preparedResult)) throw preparedResult.error
+
+const connection = await pool.getConnection()
+try {
+  await connection.beginTransaction()
+  const appended = await MySqlOutbox.appendIn(
+    connection,
+    makeOutboxRecord({
+      id: OutboxId.make('invoice-created:123').unwrap(),
+      target: 'billing-jobs',
+      request: preparedResult.value,
+      nowMs: Date.now()
+    }).unwrap(),
+    { namespace: 'billing', token: ApplicationOutbox }
+  )
+  if (Result.isError(appended)) throw appended.error
+  // Save the invoice with this same connection before committing.
+  await connection.commit()
+} catch (cause) {
+  await connection.rollback()
+  throw cause
+} finally {
+  connection.release()
+}
+await runtime.dispose()
 ```
 
-`MySqlOutbox.appendIn` uses the caller's real `mysql2/promise` connection and
-never begins, commits, rolls back, or releases it. Domain writes and the
-outbox row therefore commit or roll back together. The store layer owns only
-its own short-lived connections; it never holds one while a publisher handler
-runs.
+Keep `target` equal to a route configured for the publisher, such as
+`'billing-jobs'`. Configure the relay or publisher used by your application so
+that route points to the JobStore that should receive the prepared request.
 
-The migrator holds a MySQL `GET_LOCK`, applies idempotent statements in order,
-and records a migration only after all of its DDL succeeds. Since MySQL DDL can
-commit implicitly, an interrupted migration remains detectable and safe to rerun.
+The store provides leases, retry, and recovery operations for that delivery
+loop. A crash after publishing but before settlement can publish the same
+record again; deterministic Job IDs or idempotency keys make retries converge.
+The outbox is not exactly-once delivery.
 
-Schedule ticks lock the schedule row, compare revision/`next_run_at_ms`, enqueue
-deterministic `sched/<encoded-key>/<slot-ms>` jobs, update the schedule, and
-advance the durable queue wake version in the same transaction. Duplicate
-occurrence IDs are safe to retry, including after a lost response.
+## Durability, retries, and leases
 
-Claims use `SELECT … FOR UPDATE SKIP LOCKED` under short transactions. No
-connection or transaction is held while a worker handler executes. MySQL has no
-required cross-process push channel here: mutations wake local waiters after
-commit, while other processes discover changes through the worker poll interval.
-Correctness does not depend on that optimization.
+The important operational guarantees are:
 
-## QueueControls protocol v3
+- A successful enqueue or state transition is durable in MySQL before the
+  operation reports success. With events enabled, the corresponding event is
+  appended as part of that committed transition.
+- Job delivery is at least once. A worker can perform an external side effect
+  and crash before settlement; use the Job ID, an idempotency key, or a
+  provider-side idempotency mechanism to make that effect repeat-safe.
+- Each delivery has a lease and a fencing token. When a lease expires, another
+  worker may recover and claim the job. A stale worker cannot settle the newer
+  delivery with its old token.
+- Retry policy is part of the Job definition. Set `attempts`, a persisted
+  `Retry.fixed`, `Retry.linear`, or `Retry.exponential` backoff, and a
+  `retryable` predicate for typed failures. Transient MySQL deadlocks and lock
+  wait timeouts are retried at the complete storage-operation boundary; a
+  handler is never rerun inside a database transaction.
+- Worker and publisher shutdown is graceful: new work stops, admitted work is
+  allowed to finish, and leases remain recoverable if a process disappears.
+- With QueueControls configured, the MySQL store enforces global concurrency,
+  per-dispatch-key concurrency, and fixed-window rate limits durably. The
+  producer's `dispatchKey` is persisted with the job, so workers do not derive
+  a different key later.
 
-Migration 6 adds the durable QueueControls layout: producer-persisted
-`dispatchKey`, revisioned queue controls, bounded rotation cursors, owner-fenced
-permits, and protocol-clock fixed-rate windows. `claimControlled` performs the
-queue pause, global concurrency, per-key concurrency, and rate checks in one
-InnoDB transaction. Controlled settlements, releases, cancellation transitions,
-and stalled recovery remove only the permit matching the job's current
-`leaseToken`; a stale controls revision or legacy claim fails closed.
+## Limits and operational decisions
 
-The adapter uses the deterministic lock order `control → rate window → cursor /
-permits → job`, retries deadlock/lock-timeout failures at the complete
-transaction boundary, and scans a bounded rotating candidate window so one
-blocked dispatch key cannot starve other keys. The fixed rate window starts at
-the first accepted claim; completion and release do not refund its capacity.
+- This package supports MySQL 8.0.16+ and InnoDB. MariaDB is intentionally not
+  advertised as compatible.
+- The adapter is durable, but not exactly once. Database durability cannot
+  undo an external side effect that happened before a crash.
+- The MySQL queue is a database-backed work queue, not a high-throughput log or
+  an infinite event archive. Size the pool for worker concurrency plus short
+  administrative work, and monitor lock waits, deadlocks, query plans, storage,
+  and replication lag.
+- Event retention is bounded by count and/or age. An expired event cursor needs
+  an explicit replay or rebase policy.
+- Metadata filtering is a residual query rather than a general-purpose
+  secondary index. Prefer explicit job identity, queue, and state filters for
+  routine operations; do not assume arbitrary metadata queries will scale like
+  indexed lookups.
+- Schedules are durable declarations, but they need a running scheduler (or a
+  deliberate control loop) to tick them. Misfire and overlap policies are
+  application choices.
+- Flow and outbox relays can redeliver. Cross-store fan-out and publishing do
+  not become atomic merely because the stores use MySQL.
+- Operators remain responsible for backups, replication, failover, credentials,
+  capacity, and recovery drills.
 
-The producer persists the validated `dispatchKey` when enqueuing; workers never
-derive it again. Reconcile the registry through the same Worker/Runtime root as
-the JobStore.
+## Further reading
 
-Protocol timestamps are caller/Clock supplied epoch milliseconds; this adapter
-does not use `NOW()` or `CURRENT_TIMESTAMP` for protocol decisions. Size the
-pool for concurrent workers plus short administrative transactions. Deadlocks and
-lock-wait timeouts are retried only at the complete transaction boundary.
+For the shared contracts and advanced behavior, see:
 
-Metadata filtering uses `JSON_CONTAINS` and is residual (arbitrary metadata is
-not generically indexed). Operators own backups, replication, failover, and
-query-plan monitoring. MariaDB is intentionally not advertised as supported.
+- [The `better-effect-mq` composition guide](../better-effect-mq/docs/composition.md)
+- [JobStore and operation semantics](../better-effect-mq/docs/protocol/job-store-v1.md)
+- [Time, retries, and leases](../better-effect-mq/docs/protocol/time-and-leases-v1.md)
+- [Durable job events](../better-effect-mq/docs/protocol/durable-events-v1.md)
+- [Flow composition](../better-effect-mq/docs/protocol/flows-v2.md)
+- [Controlled queues](../better-effect-mq/docs/protocol/controls-v3.md)
+- [Storage-neutral outbox foundations](../better-effect-mq-outbox/README.md)
 
-## Integration verification
-
-The repository runs the MySQL conformance suites when `MYSQL_URL` is set to a
-dedicated MySQL 8.0.16+ test database. They cover protocol transitions, queue
-pause/wake behavior, lease fencing, settlement replay, durable outbox append and
-recovery, Flow v2 manifest/report/cascade behavior, and isolated named stores.
-Without that variable the real-engine suites are skipped; unit, package, and
-tarball checks still run.
+The adapter's MySQL conformance suites run against a dedicated MySQL instance
+when `MYSQL_URL` is set. Without it, unit, type, package, and artifact checks
+still run; database-engine scenarios are skipped.
