@@ -52,18 +52,13 @@ const configuredPool = (): MySqlPool => {
 }
 
 const appendCommitted = async (value: ReturnType<typeof record>): Promise<void> => {
-  const connection = await configuredPool().getConnection()
-  try {
-    await connection.beginTransaction()
-    const result = await MySqlOutbox.appendIn(connection, value, { namespace })
-    if (Result.isError(result)) throw result.error
-    await connection.commit()
-  } catch (cause) {
-    await connection.rollback()
-    throw cause
-  } finally {
-    connection.release()
-  }
+  const result = await MySqlOutbox.transaction(
+    configuredPool(),
+    value,
+    async () => Result.ok(undefined),
+    { namespace }
+  )
+  if (Result.isError(result)) throw result.error
 }
 
 const integration = uri === undefined ? test.skip : test

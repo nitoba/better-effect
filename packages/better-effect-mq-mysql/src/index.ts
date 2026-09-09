@@ -58,7 +58,8 @@ export type {
 export type {
   MySqlOutboxAppendOptions,
   MySqlOutboxRow,
-  MySqlOutboxTransaction
+  MySqlOutboxTransaction,
+  MySqlOutboxTransactionCallback
 } from './MySqlOutbox'
 export type {
   MySqlMigration,
