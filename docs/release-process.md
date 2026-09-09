@@ -28,10 +28,9 @@ Only the twelve package entries above are release routes. The documentation
 applications and MQ dashboard remain private workspaces and are never selected
 for npm publication. Every non-core route requires its package-local
 `CHANGELOG.md`; the core route intentionally uses the root changelog.
-Having a route does not bypass a package's readiness gate: for example,
-`better-effect-schema/CHANGELOG.md` currently records that its release is
-blocked until its root entrypoint migration is complete, so maintainers must
-not create that tag until the package's own release status is cleared.
+Having a route does not bypass a package's readiness gate: maintainers must
+verify the selected package's own checks and release notes before creating its
+tag.
 
 ```text
 Pull request merge
@@ -103,7 +102,7 @@ Git tag; both remain a separate maintainer release decision.
 npm Trusted Publishers can only be configured after the package name exists on
 npm. Before creating the first qualified tag for any non-core route in the
 table above (including HTTP, MQ storage adapters, the outbox, Kysely, and
-Schema once its documented release block is cleared), perform this one-time
+Schema), perform this one-time
 maintainer bootstrap:
 
 1. Merge the package preparation change and check out the resulting `main`

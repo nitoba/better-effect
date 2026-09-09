@@ -7,12 +7,18 @@
 - Renamed the workspace package and release-artifact route from `better-effect-zod` to `better-effect-schema`.
 - Added `@standard-schema/spec` as a production dependency for future public type declarations.
 
-### Release status
+## [0.1.0] - 2026-09-09
 
-- Release is blocked while the root entrypoint remains Zod-backed and before the provider adapters are integrated.
-- The historical `better-effect-zod@0.1.0` record below is preserved unchanged.
+Initial release of `better-effect-schema`, completing the provider-neutral schema cutover.
 
-## 0.1.0 - 2026-09-02
+### Added
+
+- Provider-neutral Standard Schema classes, tagged classes and errors, codec operations, JSON Schema utilities, and `better-result`-backed failures from the root package entrypoint.
+- Optional provider adapters at `better-effect-schema/zod`, `better-effect-schema/valibot`, and `better-effect-schema/arktype`; provider packages remain optional peer dependencies and are not loaded by the root entrypoint.
+- `better-effect` integration for typed schema operations and Effect-compatible results.
+- Public migration, architecture, and provider interoperability documentation.
+
+## [Historical] `better-effect-zod@0.1.0` - 2026-09-02
 
 Initial release under the `better-effect-zod` package identity, based on `zod-class@0.2.0`.
 
