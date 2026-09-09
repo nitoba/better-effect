@@ -1,15 +1,15 @@
 import * as z from 'zod'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema, ZodAdapter } from 'better-effect-schema/zod'
 
-const Local = Schema.with(ZodAdapter)
+const Local = CoreSchema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class ExternalEvent extends Local.Class<ExternalEvent>('external/ZodEvent')({
+class ExternalEvent extends Schema.Class<ExternalEvent>('external/ZodEvent')({
   id: z.uuid(),
   createdAt: DateFromISOString
 }) {}
@@ -20,7 +20,7 @@ const decoded = Schema.decodeUnknown(ExternalEvent, {
 })
 if (Result.isError(decoded)) throw decoded.error
 
-const encoded = Schema.encode(ExternalEvent, decoded.value)
+const encoded = CoreSchema.encode(ExternalEvent, decoded.value)
 if (Result.isError(encoded) || encoded.value.createdAt !== '2026-09-07T00:00:00.000Z') {
   throw new Error('Zod codec round-trip failed')
 }
