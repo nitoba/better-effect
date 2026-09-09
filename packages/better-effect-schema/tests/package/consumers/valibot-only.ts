@@ -1,17 +1,17 @@
 import * as v from 'valibot'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ValibotAdapter } from 'better-effect-schema/valibot'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema, ValibotAdapter } from 'better-effect-schema/valibot'
 
-const Local = Schema.with(ValibotAdapter)
+const Local = CoreSchema.with(ValibotAdapter)
 const User = v.object({ id: v.string(), name: v.optional(v.string(), 'Ada') })
 
-const fields = Local.fields(User)
+const fields = Schema.fields(User)
 if (Result.isError(fields) || fields.value.id !== User.entries.id) {
   throw new Error('Valibot fields capability failed')
 }
 
-const decoded = Local.decode(User, { id: 'valibot-user' })
+const decoded = Schema.decode(User, { id: 'valibot-user' })
 if (Result.isError(decoded) || decoded.value.name !== 'Ada') {
   throw new Error('Valibot validation failed')
 }
@@ -21,7 +21,7 @@ const descriptor = {
   propsSchema: User,
   construct: (props: v.InferOutput<typeof User>) => ({ ...props, kind: 'valibot' as const })
 }
-const made = Local.make(descriptor, { id: 'made-user' })
+const made = Schema.make(descriptor, { id: 'made-user' })
 if (Result.isError(made) || made.value.kind !== 'valibot') {
   throw new Error('Valibot construction failed')
 }
