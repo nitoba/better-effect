@@ -44,6 +44,10 @@ export type MySqlOutboxTransactionCallback<Value> = (
 ) => Value | PromiseLike<Value>
 export type MySqlOutboxRow = Record<string, unknown>
 type MySqlOutboxQueryResult<Row> = QueryResult<Row> & { readonly insertId?: number }
+type MySqlOutboxTransactionResult<Value> =
+  Value extends ResultType<infer Success, infer Failure>
+    ? ResultType<Success, Failure | OutboxAppendError>
+    : Value | OutboxEffect<never, OutboxAppendError>
 
 export const outboxColumnNames = [
   'id',
@@ -244,15 +248,13 @@ const isResultError = (value: unknown): value is ResultType<unknown, unknown> =>
  * This method never begins, commits, rolls back, or releases the connection.
  */
 export const MySqlOutbox = Object.freeze({
-  /**
-   * Run a domain write and outbox append in one adapter-owned transaction.
-   * The callback may return a `better-result` `Result.err` to request rollback.
-   */
+  /** Run a domain write and append a prepared record in one adapter-owned transaction. */
   async transaction<Value>(
     pool: Pool,
+    input: OutboxRecord,
     callback: MySqlOutboxTransactionCallback<Value>,
     options?: MySqlOutboxAppendOptions
-  ): Promise<Value> {
+  ): Promise<MySqlOutboxTransactionResult<Value>> {
     const namespace = normalizedNamespace(options)
     const client = MySqlClient.fromPool({ pool, namespace, validateSchema: false })
     let connection: PoolConnection | undefined
@@ -265,11 +267,17 @@ export const MySqlOutbox = Object.freeze({
       if (isResultError(result)) {
         rollbackAttempted = true
         await connection.rollback()
-        return result as Value
+        return result as MySqlOutboxTransactionResult<Value>
+      }
+      const appended = await MySqlOutbox.appendIn(connection, input, options)
+      if (Result.isError(appended)) {
+        rollbackAttempted = true
+        await connection.rollback()
+        return appended as MySqlOutboxTransactionResult<Value>
       }
       await connection.commit()
       committed = true
-      return result
+      return result as MySqlOutboxTransactionResult<Value>
     } catch (cause) {
       if (connection !== undefined && !committed && !rollbackAttempted) {
         rollbackAttempted = true

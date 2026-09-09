@@ -1,6 +1,5 @@
 import { Layer } from 'better-effect'
 import {
-  MySqlOutbox,
   MySqlOutboxStore,
   MySqlJobEventStore,
   MySqlJobScheduleStore,
@@ -43,6 +42,5 @@ const outboxLayer = MySqlOutboxStore.layerFor(OutboxStore.named('billing'), {
   validateSchema: false
 })
 if (!(outboxLayer instanceof Layer)) throw new Error('Expected an outbox Layer')
-await MySqlOutbox.transaction(pool, async () => 'managed transaction export')
 const eventLayer = MySqlJobEventStore.layer({ pool, validateSchema: false })
 if (!(eventLayer instanceof Layer)) throw new Error('Expected an event Layer')

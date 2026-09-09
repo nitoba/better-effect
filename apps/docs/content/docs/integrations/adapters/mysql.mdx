@@ -88,7 +88,8 @@ downstream effects for safe repetition.
 
 When a domain write and a prepared job request must commit together, use the MySQL adapter's
 transaction helper. It acquires and releases the connection, begins and ends the transaction, and
-rolls back when the callback throws, rejects, or returns a `Result.err`.
+appends the supplied record after the callback succeeds, and rolls back when the callback throws,
+rejects, or returns a `Result.err`.
 
 ```ts
 import { MySqlOutbox, MySqlOutboxStore, OutboxStore } from 'better-effect-mq-mysql'
@@ -111,16 +112,13 @@ const record = makeOutboxRecord({
 
 const committed = await MySqlOutbox.transaction(
   pool,
+  record,
   async (connection) => {
     await connection.query('INSERT INTO invoices (id, status) VALUES (?, ?)', [
       'invoice-created:123',
       'created'
     ])
-    const appended = await MySqlOutbox.appendIn(connection, record, {
-      namespace: 'emails',
-      token: ApplicationOutbox
-    })
-    return Result.isError(appended) ? Result.err(appended.error) : Result.ok(appended.value)
+    return Result.ok(undefined)
   },
   { namespace: 'emails', token: ApplicationOutbox }
 )

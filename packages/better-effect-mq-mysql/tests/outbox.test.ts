@@ -103,12 +103,15 @@ const transactionalPool = (calls: string[], options: TransactionalConnectionOpti
 
 test('MySqlOutbox.transaction commits a domain write and outbox append', async () => {
   const calls: string[] = []
-  const result = await MySqlOutbox.transaction(transactionalPool(calls), async (connection) => {
-    await connection.query('INSERT DOMAIN')
-    const appended = await MySqlOutbox.appendIn(connection, record(), { namespace: 'billing' })
-    if (Result.isError(appended)) return Result.err(appended.error)
-    return Result.ok('saved')
-  })
+  const result = await MySqlOutbox.transaction(
+    transactionalPool(calls),
+    record(),
+    async (connection) => {
+      await connection.query('INSERT DOMAIN')
+      return Result.ok('saved')
+    },
+    { namespace: 'billing' }
+  )
 
   expect(Result.isOk(result)).toBe(true)
   expect(calls).toEqual([
@@ -123,21 +126,31 @@ test('MySqlOutbox.transaction commits a domain write and outbox append', async (
 
 test('MySqlOutbox.transaction commits ordinary status-shaped callback values', async () => {
   const calls: string[] = []
-  const result = await MySqlOutbox.transaction(transactionalPool(calls), () => ({
+  const result = await MySqlOutbox.transaction(transactionalPool(calls), record(), () => ({
     status: 'error' as const
   }))
 
   expect(result).toEqual({ status: 'error' })
-  expect(calls).toEqual(['BEGIN', 'COMMIT', 'RELEASE'])
+  expect(calls).toEqual([
+    'BEGIN',
+    expect.stringContaining('INSERT INTO'),
+    expect.stringContaining('SELECT'),
+    'COMMIT',
+    'RELEASE'
+  ])
 })
 
 test('MySqlOutbox.transaction rolls back a nominal domain Result.err', async () => {
   const calls: string[] = []
   const failure = new Error('domain failed')
-  const result = await MySqlOutbox.transaction(transactionalPool(calls), async (connection) => {
-    await connection.query('INSERT DOMAIN')
-    return Result.err(failure)
-  })
+  const result = await MySqlOutbox.transaction(
+    transactionalPool(calls),
+    record(),
+    async (connection) => {
+      await connection.query('INSERT DOMAIN')
+      return Result.err(failure)
+    }
+  )
 
   expect(Result.isError(result)).toBe(true)
   if (Result.isOk(result)) return
@@ -149,9 +162,10 @@ test('MySqlOutbox.transaction rolls back when appending returns Result.err', asy
   const calls: string[] = []
   const result = await MySqlOutbox.transaction(
     transactionalPool(calls, { failAppend: true }),
+    record(),
     async (connection) => {
       await connection.query('INSERT DOMAIN')
-      return MySqlOutbox.appendIn(connection, record(), { namespace: 'billing' })
+      return Result.ok(undefined)
     }
   )
 
@@ -169,7 +183,7 @@ test('MySqlOutbox.transaction rolls back and releases after a rejected callback'
   const calls: string[] = []
   const failure = new Error('callback failed')
 
-  const rejected = MySqlOutbox.transaction(transactionalPool(calls), async () => {
+  const rejected = MySqlOutbox.transaction(transactionalPool(calls), record(), async () => {
     throw failure
   }).catch((cause) => cause)
   expect(await rejected).toBe(failure)

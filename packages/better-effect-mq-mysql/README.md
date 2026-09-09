@@ -388,7 +388,8 @@ the application (`await flow.dispose()`) when the surrounding Runtime stops.
 
 Use `MySqlOutboxStore` when a domain write and a prepared job request must become
 durable together. `MySqlOutbox.transaction` owns the connection and transaction
-lifecycle while your callback performs the domain write and appends the record.
+lifecycle while your callback performs the domain write and the adapter appends
+the supplied record.
 The lower-level `appendIn` method remains available as an advanced escape hatch
 when an application already owns a transaction.
 
@@ -470,18 +471,14 @@ const record = makeOutboxRecord({
 
 const transactionResult = await MySqlOutbox.transaction(
   pool,
+  record,
   async (connection) => {
-    // The domain write and outbox append use the same adapter-owned transaction.
+    // The domain write and automatic outbox append use the same adapter-owned transaction.
     await connection.query('INSERT INTO invoices (id, status) VALUES (?, ?)', [
       'invoice-created:123',
       'created'
     ])
-    const appended = await MySqlOutbox.appendIn(connection, record, {
-      namespace: 'billing',
-      token: ApplicationOutbox
-    })
-    if (Result.isError(appended)) return Result.err(appended.error)
-    return Result.ok(appended.value)
+    return Result.ok(undefined)
   },
   { namespace: 'billing', token: ApplicationOutbox }
 )

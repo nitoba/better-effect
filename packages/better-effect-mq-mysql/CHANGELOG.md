@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Add `MySqlOutbox.transaction` for adapter-owned connection and transaction
-  lifecycle around domain writes and outbox appends; keep `appendIn` as the
-  advanced caller-owned transaction escape hatch.
+- Add `MySqlOutbox.transaction(pool, record, callback, options?)` for
+  adapter-owned connection and transaction lifecycle around domain writes and
+  automatic outbox appends; keep `appendIn` as the advanced caller-owned
+  transaction escape hatch.
 - Add the durable `JobEventStore` extension with migration 007, opaque
   namespace cursors, atomic transition appends, keyset reads, retention, and
   polling/local-wake event waits.
