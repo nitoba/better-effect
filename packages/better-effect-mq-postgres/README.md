@@ -1,57 +1,57 @@
 # better-effect-mq-postgres
 
-`better-effect-mq-postgres` torna o PostgreSQL o armazenamento durável de
-[`better-effect-mq`](../better-effect-mq). Ele fornece o `JobStore` para
-enfileirar, reivindicar e finalizar jobs com segurança entre processos, além de
-extensões opcionais para eventos duráveis, schedules, flows e outbox.
+`better-effect-mq-postgres` makes PostgreSQL the durable storage backend for
+[`better-effect-mq`](../better-effect-mq). It provides the `JobStore` for
+enqueueing, claiming, and settling jobs safely across processes, along with
+optional extensions for durable events, schedules, flows, and outbox records.
 
-O pacote foi feito para aplicações que precisam de jobs que sobrevivam a
-reinícios, múltiplos workers e falhas de rede sem adicionar um broker separado.
-O PostgreSQL continua sendo a fonte de verdade; o Worker do `better-effect-mq`
-cuida do processamento e a sua aplicação continua dona da lógica de negócio.
+The package is designed for applications that need jobs to survive restarts,
+multiple workers, and network failures without adding a separate broker.
+PostgreSQL remains the source of truth; the `better-effect-mq` Worker handles
+processing while your application remains responsible for its business logic.
 
-## Quando usar
+## When to use
 
-Use este adapter quando você já opera PostgreSQL e precisa de:
+Use this adapter when you already operate PostgreSQL and need:
 
-- jobs duráveis com enqueue, claim, lease, retry, cancelamento e inspeção;
-- vários processos ou réplicas consumindo a mesma fila;
-- schedules persistentes com tick idempotente;
-- um feed de eventos finito para dashboards, auditoria operacional ou esperas
-  orientadas a eventos;
-- flows com fan-out/fan-in e reconciliação;
-- outbox para gravar uma intenção de publicação na mesma transação do domínio.
+- durable jobs with enqueue, claim, lease, retry, cancellation, and inspection;
+- multiple processes or replicas consuming the same queue;
+- persistent schedules with idempotent ticks;
+- a finite event feed for dashboards, operational auditing, or event-driven
+  waits;
+- flows with fan-out/fan-in and reconciliation; and
+- an outbox for recording a publishing intent in the same transaction as the
+  domain change.
 
-Ele não transforma PostgreSQL em um sistema de exactly-once. A entrega é
-at-least-once: se o processo executar um efeito externo e cair antes de
-persistir a finalização, o job pode ser entregue novamente. Torne efeitos
-externos idempotentes usando o ID do job ou uma chave de idempotência da sua
-aplicação.
+It does not turn PostgreSQL into an exactly-once system. Delivery is
+at-least-once: if a process performs an external effect and crashes before
+persisting settlement, the job may be delivered again. Make external effects
+idempotent by using the job ID or an idempotency key from your application.
 
-## Instalação
+## Installation
 
-Com Bun:
+With Bun:
 
 ```bash
 bun add better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-mq-outbox pg
 ```
 
-Com npm:
+With npm:
 
 ```bash
 npm install better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-mq-outbox pg
 ```
 
-`pg` é um peer opcional. Ele só é carregado quando você usa uma configuração
-com `connectionString` (`layerFromConfig`, `PostgresClient.fromConfig` etc.).
-Quando você fornece um pool já criado, o adapter usa apenas a interface de pool
-e não importa `pg` por conta própria.
+`pg` is an optional peer. It is loaded only when you use a configuration with
+`connectionString` (`layerFromConfig`, `PostgresClient.fromConfig`, etc.).
+When you provide an existing pool, the adapter uses only the pool interface
+and does not import `pg` itself.
 
-## Começo rápido: pool e Layer
+## Quick start: pool and Layer
 
-O fluxo recomendado é executar a migração como uma etapa explícita do deploy,
-validar o schema ao iniciar e então fornecer o pool ao Runtime. A migração não é
-executada automaticamente por um Layer.
+The recommended workflow is to run the migration as an explicit deployment
+step, validate the schema at startup, and then provide the pool to the Runtime.
+A Layer does not run migrations automatically.
 
 ```ts
 import { Pool } from 'pg'
@@ -96,9 +96,9 @@ try {
 }
 ```
 
-`layer({ pool })` usa um pool emprestado: o Runtime não o fecha. Feche o pool
-no componente que o criou, como no exemplo. Para deixar o adapter criar e ser
-responsável pelo pool, use `layerFromConfig`:
+`layer({ pool })` uses a borrowed pool: the Runtime does not close it. Close
+the pool in the component that created it, as in the example. To have the
+adapter create and own the pool, use `layerFromConfig`:
 
 ```ts
 const DurableLive = PostgresJobStore.layerFromConfig({
@@ -107,50 +107,50 @@ const DurableLive = PostgresJobStore.layerFromConfig({
 })
 const runtime = await Runtime.make(DurableLive)
 
-// runtime.dispose() fecha o pool criado pelo adapter.
+// runtime.dispose() closes the pool created by the adapter.
 ```
 
-As quatro formas seguem o mesmo padrão:
+The four forms follow the same pattern:
 
-| Recurso   | Pool fornecido pela aplicação    | Pool criado pelo adapter                   |
+| Resource  | Pool supplied by the application | Pool created by the adapter                |
 | --------- | -------------------------------- | ------------------------------------------ |
 | Jobs      | `PostgresJobStore.layer`         | `PostgresJobStore.layerFromConfig`         |
 | Events    | `PostgresJobEventStore.layer`    | `PostgresJobEventStore.layerFromConfig`    |
 | Schedules | `PostgresJobScheduleStore.layer` | `PostgresJobScheduleStore.layerFromConfig` |
 | Outbox    | `PostgresOutbox.layer`           | `PostgresOutbox.layerFromConfig`           |
 
-As variantes `layerFor` e `layerFromConfigFor` permitem fornecer um token
-nomeado. O `namespace` separa dados de aplicações ou ambientes que compartilham
-o mesmo PostgreSQL; mantenha o mesmo `pool`, `schema` e `namespace` quando dois
-Layers precisam acessar o mesmo store.
+The `layerFor` and `layerFromConfigFor` variants let you provide a named
+token. `namespace` separates data for applications or environments that share
+the same PostgreSQL instance; keep the same `pool`, `schema`, and `namespace`
+when two Layers need to access the same store.
 
-## Migrações e requisitos
+## Migrations and requirements
 
-- PostgreSQL 12 ou superior.
-- Um schema PostgreSQL que a aplicação possa ler e atualizar.
-- A versão do pacote e o schema devem ser atualizados juntos no deploy.
+- PostgreSQL 12 or newer.
+- A PostgreSQL schema that the application can read and update.
+- The package version and schema must be upgraded together during deployment.
 
-Execute `PostgresMigrator.run(pool, { schema })` em uma etapa controlada de
-deploy e mantenha `validateSchema: true` (o padrão) nos Layers de produção. A
-validação falha cedo quando o banco está incompleto, pertence a outro
-componente ou ainda não foi atualizado para a versão esperada pelo adapter.
+Run `PostgresMigrator.run(pool, { schema })` in a controlled deployment step
+and keep `validateSchema: true` (the default) in production Layers. Validation
+fails early when the database is incomplete, belongs to another component, or
+has not yet been updated to the version expected by the adapter.
 
-O migrator é progressivo, verifica a integridade do que já foi aplicado e não
-faz downgrade nem remove dados automaticamente. Para um rollback de aplicação,
-restaure um backup compatível ou execute uma migração manual revisada; não
-espere que o startup reverta o banco.
+The migrator is forward-only, checks the integrity of what has already been
+applied, and does not downgrade or remove data automatically. For an
+application rollback, restore a compatible backup or run a reviewed manual
+migration; do not expect startup to revert the database.
 
-Durante um deploy gradual, faça primeiro mudanças compatíveis com as versões em
-execução, depois publique o código que as utiliza e só então remova o que ficou
-obsoleto. Em ambientes de produção, prefira separar a etapa de migração da
-inicialização das réplicas e deixe a validação do adapter como uma segunda
-barreira.
+During a gradual deployment, first make changes compatible with the versions
+currently running, then publish the code that uses them, and only afterward
+remove what has become obsolete. In production environments, prefer separating
+the migration step from replica startup and use adapter validation as a second
+barrier.
 
-## Composição: JobStore, JobEventStore e Runtime
+## Composition: JobStore, JobEventStore, and Runtime
 
-Jobs e eventos são Services do mesmo Runtime. Não crie um Runtime separado para
-ler eventos: isso pode produzir pools, escopos e configurações diferentes para
-o mesmo namespace.
+Jobs and events are Services in the same Runtime. Do not create a separate
+Runtime to read events: doing so can produce different pools, scopes, and
+configurations for the same namespace.
 
 ```ts
 import { Layer, Runtime } from 'better-effect'
@@ -177,14 +177,13 @@ const DurableLive = Layer.complete(
 const runtime = await Runtime.make(DurableLive)
 ```
 
-Quando os dois Layers usam o mesmo pool e namespace, as mutações do
-`JobStore` passam a alimentar o `JobEventStore` de forma consistente com a
-operação durável. O feed pode ser lido com `JobEvents.page`/`JobEvents.forEach`
-ou usado por `Job.awaitResult` com `strategy: 'events'` e um `pollFallbackMs`.
-O fallback de polling continua sendo a fonte autoritativa quando um sinal de
-wake é atrasado ou perdido.
+When both Layers use the same pool and namespace, `JobStore` mutations feed
+`JobEventStore` consistently with the durable operation. The feed can be read
+with `JobEvents.page`/`JobEvents.forEach` or used by `Job.awaitResult` with
+`strategy: 'events'` and a `pollFallbackMs`. Polling fallback remains the
+authoritative source when a wake signal is delayed or lost.
 
-Para stores nomeados, use tokens correspondentes no mesmo Runtime:
+For named stores, use matching tokens in the same Runtime:
 
 ```ts
 import { JobEventStore, JobStore } from 'better-effect-mq'
@@ -202,8 +201,8 @@ const DurableLive = Layer.merge(
 )
 ```
 
-Se a persistência de eventos for obrigatória para todos os writers do
-namespace, promova explicitamente o store:
+If event persistence is mandatory for every writer in the namespace, explicitly
+promote the store:
 
 ```ts
 import { ServiceRuntime } from 'better-effect'
@@ -214,18 +213,18 @@ const activation = await events.activate({ mode: 'required', now: Date.now() })
 if (activation.isErr()) throw activation.error
 ```
 
-Faça isso apenas depois que todos os processos do rollout suportarem o EventLog;
-caso contrário, uma versão antiga pode continuar gravando jobs sem os eventos
-esperados.
+Do this only after every process in the rollout supports EventLog; otherwise,
+an older version may continue writing jobs without the expected events.
 
 ## Schedules
 
-`PostgresJobScheduleStore` persiste schedules e suas revisões junto do
-`JobStore`. O tick verifica a revisão e o próximo horário esperado, cria as
-ocorrências determinísticas e avança o schedule em uma operação única. Repetir
-um tick depois de uma resposta perdida não cria a mesma ocorrência duas vezes.
+`PostgresJobScheduleStore` persists schedules and their revisions alongside the
+`JobStore`. Each tick checks the revision and the next expected time, creates
+deterministic occurrences, and advances the schedule in one operation.
+Repeating a tick after a lost response does not create the same occurrence
+twice.
 
-Forneça os dois Layers usando o mesmo pool, schema e namespace:
+Provide both Layers with the same pool, schema, and namespace:
 
 ```ts
 import { Layer, Runtime, ServiceRuntime } from 'better-effect'
@@ -242,16 +241,16 @@ const runtime = await Runtime.make(
 const schedules = await runtime.run(() => ServiceRuntime.resolve(JobScheduleStore))
 ```
 
-O contrato expõe `upsertSchedule`, `dueSchedules`, `tickSchedule`,
-`pauseSchedule`, `resumeSchedule`, `getSchedule`, `listSchedules` e
-`removeSchedule`. A decisão de misfire e overlap pertence ao schedule; o
-adapter persiste o resultado e mantém a criação do job associada ao tick.
+The contract exposes `upsertSchedule`, `dueSchedules`, `tickSchedule`,
+`pauseSchedule`, `resumeSchedule`, `getSchedule`, `listSchedules`, and
+`removeSchedule`. Misfire and overlap decisions belong to the schedule; the
+adapter persists the result and keeps job creation associated with the tick.
 
 ## Flows
 
-Flows são opcionais. Use `PostgresFlowStore` quando a aplicação precisa
-coordenar fan-out/fan-in, relatórios de filhos ou reconciliação de cascatas.
-Ele é um store explícito, não um Layer do Runtime:
+Flows are optional. Use `PostgresFlowStore` when the application needs to
+coordinate fan-out/fan-in, child reports, or cascade reconciliation. It is an
+explicit store, not a Runtime Layer:
 
 ```ts
 import { PostgresFlowStore } from 'better-effect-mq-postgres'
@@ -270,22 +269,22 @@ try {
 }
 ```
 
-Use `makeFromConfig` quando o adapter deve criar e fechar o pool. Antes de
-instanciar o flow store, aplique as migrações atuais e mantenha a validação
-habilitada. Se a extensão de flow não estiver presente, a criação falha cedo;
-ela não interpreta um schema antigo como se suportasse flows.
+Use `makeFromConfig` when the adapter should create and close the pool. Before
+instantiating the flow store, apply the current migrations and keep validation
+enabled. If the flow extension is not present, creation fails early; it does
+not interpret an old schema as supporting flows.
 
-As operações de fan-out e relatórios são idempotentes para replays do mesmo
-comando. Enfileirar ou cancelar jobs em stores diferentes continua sendo uma
-operação at-least-once: não existe uma transação distribuída entre dois
-PostgreSQL, dois namespaces ou dois adapters.
+Fan-out operations and reports are idempotent for replays of the same command.
+Enqueueing or cancelling jobs in different stores remains an at-least-once
+operation: there is no distributed transaction across two PostgreSQL
+instances, two namespaces, or two adapters.
 
 ## Outbox
 
-O adapter de outbox oferece um `OutboxStore` durável com claim, heartbeat,
-publicação, retry, falha, release, recuperação de leases parados, listagem e
-contagens. Forneça-o ao mesmo Runtime quando um publisher da aplicação usar o
-token `PostgresOutbox`:
+The outbox adapter provides a durable `OutboxStore` with claim, heartbeat,
+publishing, retry, failure, release, stalled-lease recovery, listing, and
+counting. Provide it to the same Runtime when an application publisher uses
+the `PostgresOutbox` token:
 
 ```ts
 import { Layer, Runtime, ServiceRuntime } from 'better-effect'
@@ -301,143 +300,143 @@ const runtime = await Runtime.make(
 const outbox = await runtime.run(() => ServiceRuntime.resolve(PostgresOutbox))
 ```
 
-Para garantir que uma mudança de domínio e uma intenção de publicação sejam
-confirmadas juntas, prepare o record e chame
-`PostgresOutbox.appendIn(transaction, record, { namespace, schema })` dentro da
-transação que a aplicação já abriu. `appendIn` não inicia, confirma nem desfaz
-essa transação; o chamador continua responsável pelo commit, rollback e
-liberação do client.
+To ensure that a domain change and a publishing intent are committed together,
+prepare the record and call
+`PostgresOutbox.appendIn(transaction, record, { namespace, schema })` inside
+the transaction the application has already opened. `appendIn` does not begin,
+commit, or roll back that transaction; the caller remains responsible for
+commit, rollback, and releasing the client.
 
-Use `PostgresOutbox.named('emails')` e `PostgresOutbox.layerFor(...)` quando
-precisar de outboxes isolados no mesmo Runtime. A publicação posterior ainda é
-at-least-once; o consumidor deve aceitar replays e confirmar o record somente
-depois de concluir o efeito externo.
+Use `PostgresOutbox.named('emails')` and `PostgresOutbox.layerFor(...)` when
+you need isolated outboxes in the same Runtime. Later publishing is still
+at-least-once; the consumer must accept replays and acknowledge the record only
+after completing the external effect.
 
-## Eventos, tentativas e observadores
+## Events, attempts, and observers
 
-Existem três superfícies complementares. Escolha a que corresponde à pergunta
-operacional:
+There are three complementary surfaces. Choose the one that matches the
+operational question:
 
-| Superfície                                 | Serve para                                                             | Durabilidade e limites                                                                 |
-| ------------------------------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `JobEventStore` (EventLog)                 | Feed ordenado de fatos seguros, cursores, dashboards e wakeups         | Durável, mas com retenção finita por `count`, `ageMs` ou ambos; cursores podem expirar |
-| `AttemptRecord` via `JobStore.getAttempts` | Histórico detalhado de cada entrega, retry e resultado/falha de um job | Durável com o job; não é feed, não é cursor e pode conter dados sensíveis              |
-| `JobObserver` local                        | Logs, métricas, tracing e sinais do processo/Worker                    | Best-effort e process-local; callbacks não são persistidos e não alteram a execução    |
+| Surface                                    | Use it for                                                       | Durability and limits                                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `JobEventStore` (EventLog)                 | Ordered feed of safe facts, cursors, dashboards, and wakeups     | Durable, but with finite retention by `count`, `ageMs`, or both; cursors can expire   |
+| `AttemptRecord` via `JobStore.getAttempts` | Detailed history of each delivery, retry, and job result/failure | Durable with the job; not a feed, not a cursor, and may contain sensitive data        |
+| `JobObserver` local                        | Logs, metrics, tracing, and process/Worker signals               | Best-effort and process-local; callbacks are not persisted and do not alter execution |
 
-O EventLog omite payloads, resultados, falhas completas e metadados arbitrários
-por padrão. Não o use como arquivo histórico infinito nem como substituto do
-`AttemptRecord`. O observer também não substitui nenhum dos dois: ele pode
-perder eventos em crash, shutdown ou falha do callback.
+By default, EventLog omits payloads, results, complete failures, and arbitrary
+metadata. Do not use it as an infinite historical archive or as a replacement
+for `AttemptRecord`. The observer does not replace either one: it may lose
+events during a crash, shutdown, or callback failure.
 
-Ao consumir páginas, persista o cursor somente depois que o handler terminar
-com sucesso. Se a retenção já removeu o cursor, o adapter retorna
-`JobEventCursorExpiredError`; escolha uma política explícita, como recomeçar do
-tail atual, solicitar replay de outra fonte ou falhar de forma visível.
+When consuming pages, persist the cursor only after the handler finishes
+successfully. If retention has already removed the cursor, the adapter returns
+`JobEventCursorExpiredError`; choose an explicit policy, such as restarting
+from the current tail, requesting a replay from another source, or failing
+visibly.
 
-O `awaitEvents` é uma dica de wake. Use o polling limitado como fallback e não
-baseie a correção do processamento em qualquer sinal de notificação.
+`awaitEvents` is a wakeup hint. Use bounded polling as a fallback and do not
+base processing correctness on any notification signal.
 
-## Garantias e limites operacionais
+## Operational guarantees and limits
 
-- **Persistência:** enqueue, claim, lease, settlement, retry, recuperação de
-  stalled jobs e as extensões habilitadas usam a unidade transacional do
-  PostgreSQL.
-- **Concorrência:** leases e tokens impedem que um worker antigo finalize a
-  entrega de um worker mais novo. Eles não desfazem um efeito externo já
-  executado.
-- **Entrega:** é at-least-once. Quedas entre o efeito externo e a finalização
-  persistida podem gerar reentrega.
-- **Wakeups:** notificações aceleram o worker, mas não são a fonte de verdade;
-  o worker deve continuar consultando o estado durável.
-- **Retenção:** o EventLog é sempre limitado por política de retenção quando
-  você define `count`/`ageMs`; retenção não equivale a backup ou arquivamento.
-- **Transações externas:** `appendIn` participa da transação do chamador, mas o
-  adapter não coordena transações entre bancos, pools, namespaces ou serviços.
-- **Falhas transitórias:** conflitos temporários do banco podem ser reportados
-  como retryable; configure retries e backoff no Worker ou na operação que chama
-  o store.
-- **Capacidade:** pool, conexões, índices, I/O e tamanho das filas continuam
-  sendo limites do PostgreSQL. Dimensione o pool e monitore latência antes de
-  aumentar a concorrência dos workers.
+- **Persistence:** enqueue, claim, lease, settlement, retry, stalled-job
+  recovery, and enabled extensions use PostgreSQL's transactional unit.
+- **Concurrency:** leases and tokens prevent an old worker from settling a
+  newer worker's delivery. They do not undo an external effect that has already
+  run.
+- **Delivery:** it is at-least-once. Crashes between the external effect and
+  persisted settlement can cause redelivery.
+- **Wakeups:** notifications speed up the worker, but are not the source of
+  truth; the worker must continue querying durable state.
+- **Retention:** EventLog is always bounded by the retention policy when you
+  define `count`/`ageMs`; retention is not a backup or an archive.
+- **External transactions:** `appendIn` participates in the caller's
+  transaction, but the adapter does not coordinate transactions across
+  databases, pools, namespaces, or services.
+- **Transient failures:** temporary database conflicts may be reported as
+  retryable; configure retries and backoff in the Worker or in the operation
+  that calls the store.
+- **Capacity:** pool size, connections, indexes, I/O, and queue size remain
+  PostgreSQL limits. Size the pool and monitor latency before increasing worker
+  concurrency.
 
-## Produção
+## Production
 
-Antes de liberar tráfego:
+Before directing traffic to the application:
 
-1. Execute `PostgresMigrator.run` com uma identidade de deploy controlada.
-2. Deixe `validateSchema` no padrão (`true`) nos Layers das réplicas.
-3. Confirme que workers, schedules, events e outbox usam o mesmo namespace
-   quando devem compartilhar estado.
-4. Defina retenção de EventLog de acordo com a janela de consumo e mantenha um
-   arquivo de auditoria separado quando precisar de histórico ilimitado.
-5. Configure heartbeat e lease para que handlers legítimos tenham tempo de
-   terminar, e monitore reentregas e recuperação de stalled jobs.
-6. Monitore profundidade e idade da fila, jobs ativos, falhas, leases perdidos,
-   stalled recovery, latência do banco, uso do pool, atraso de eventos e
-   cursores expirados.
-7. Teste replays, respostas perdidas, reinício de worker e indisponibilidade
-   temporária do banco antes do primeiro rollout.
+1. Run `PostgresMigrator.run` with a controlled deployment identity.
+2. Keep `validateSchema` at its default (`true`) in replica Layers.
+3. Confirm that workers, schedules, events, and outbox use the same namespace
+   when they should share state.
+4. Set EventLog retention according to the consumption window, and keep a
+   separate audit archive when unlimited history is required.
+5. Configure heartbeat and lease durations so legitimate handlers have time to
+   finish, and monitor redeliveries and stalled-job recovery.
+6. Monitor queue depth and age, active jobs, failures, lost leases, stalled
+   recovery, database latency, pool usage, event lag, and expired cursors.
+7. Test replays, lost responses, worker restarts, and temporary database
+   unavailability before the first rollout.
 
-Se o pool pertence ao host, use `layer`; se o Runtime deve ser o dono do pool,
-use `layerFromConfig` e deixe `runtime.dispose()` concluir o ciclo de vida.
-Não encerre um pool emprestado enquanto houver Runtime ou operação usando-o.
+If the host owns the pool, use `layer`; if the Runtime should own the pool, use
+`layerFromConfig` and let `runtime.dispose()` complete the lifecycle. Do not
+close a borrowed pool while a Runtime or operation is using it.
 
 ## Troubleshooting
 
-### O Layer falha na inicialização por schema inválido
+### The Layer fails to initialize because the schema is invalid
 
-Rode `PostgresMigrator.validate(pool, { schema })` com o mesmo schema e
-namespace usados pela aplicação. Se ainda não estiver atualizado, execute
-`PostgresMigrator.run` na etapa de deploy. Verifique também se a aplicação está
-conectando no banco correto e se o usuário pode ler e modificar o schema.
+Run `PostgresMigrator.validate(pool, { schema })` with the same schema and
+namespace used by the application. If it is not up to date, run
+`PostgresMigrator.run` during deployment. Also verify that the application is
+connecting to the correct database and that the user can read and modify the
+schema.
 
-### Um flow não inicia, mas jobs comuns funcionam
+### A flow does not start, but regular jobs work
 
-Flows exigem a extensão de flow instalada no schema. Atualize o banco antes de
-criar `PostgresFlowStore`; não desabilite a validação para contornar o problema
-em produção. Se não precisa de flows, use somente `PostgresJobStore`.
+Flows require the flow extension to be installed in the schema. Update the
+database before creating `PostgresFlowStore`; do not disable validation to work
+around the problem in production. If you do not need flows, use only
+`PostgresJobStore`.
 
-### O consumidor recebe `JobEventCursorExpiredError`
+### The consumer receives `JobEventCursorExpiredError`
 
-O cursor foi removido pela retenção. Recomece de um tail recente ou recupere os
-fatos de uma fonte de replay que a sua aplicação mantém. Aumentar `count` ou
-`ageMs` ajuda consumidores lentos, mas não cria arquivo infinito.
+Retention removed the cursor. Restart from a recent tail or recover the facts
+from a replay source maintained by your application. Increasing `count` or
+`ageMs` helps slow consumers but does not create an infinite archive.
 
-### Jobs parecem ser executados duas vezes
+### Jobs appear to run twice
 
-Isso é possível no modelo at-least-once, especialmente quando o processo cai
-antes do settlement ou perde a conexão durante a confirmação. Use uma chave de
-idempotência no efeito externo, examine `AttemptRecord` com
-`JobStore.getAttempts` e verifique lease/heartbeat do Worker.
+This is possible with the at-least-once model, especially when the process
+crashes before settlement or loses its connection during confirmation. Use an
+idempotency key for the external effect, inspect `AttemptRecord` with
+`JobStore.getAttempts`, and check the Worker's lease and heartbeat.
 
-### Eventos não aparecem
+### Events do not appear
 
-Confirme que `PostgresJobStore.layer` e `PostgresJobEventStore.layer` usam o
-mesmo pool, schema e namespace e pertencem ao mesmo Runtime. Verifique se a
-retenção não removeu os eventos e se a ativação obrigatória não está sendo
-tentada antes de todos os writers estarem atualizados. Para waits, mantenha o
-poll fallback habilitado.
+Confirm that `PostgresJobStore.layer` and `PostgresJobEventStore.layer` use the
+same pool, schema, and namespace and belong to the same Runtime. Check whether
+retention removed the events and whether required activation is being attempted
+before all writers have been updated. Keep polling fallback enabled for waits.
 
-### Outbox ficou com records ativos ou parados
+### The outbox has active or stalled records
 
-Use `recoverStalled`, confirme que o relógio usado pelo publisher está correto e
-verifique a conectividade do pool. `appendIn` só registra o record; claim,
-heartbeat e settlement ainda precisam ser executados pelo publisher. O efeito
-externo deve ser idempotente porque a confirmação da publicação também pode ser
-repetida.
+Use `recoverStalled`, confirm that the publisher's clock is correct, and check
+pool connectivity. `appendIn` only records the entry; the publisher still
+needs to perform claim, heartbeat, and settlement. The external effect must be
+idempotent because publication confirmation may also be repeated.
 
-### O pool fecha cedo ou nunca fecha
+### The pool closes too early or never closes
 
-Pool fornecido pela aplicação (`layer`) é emprestado e deve ser encerrado pelo
-host. Pool criado por `layerFromConfig` pertence ao Runtime e é fechado durante
-`runtime.dispose()`. Não misture os dois ciclos de vida nem chame `pool.end()`
-enquanto o Runtime ainda estiver ativo.
+An application-provided pool (`layer`) is borrowed and must be closed by the
+host. A pool created by `layerFromConfig` belongs to the Runtime and is closed
+during `runtime.dispose()`. Do not mix the two lifecycles or call `pool.end()`
+while the Runtime is still active.
 
-## Mais informações
+## More information
 
-- [`better-effect-mq`](../better-effect-mq) — contratos de jobs, Worker,
-  schedules, eventos e outbox.
-- [Guia de composição](../better-effect-mq/docs/composition.md) — regras
-  compartilhadas para stores, events, Runtime, retenção e observabilidade.
-- [Exemplo de composição](../better-effect-mq/examples/composition/main.ts) —
-  um Runtime com `JobStore` e `JobEventStore`.
+- [`better-effect-mq`](../better-effect-mq) — job contracts, Worker, schedules,
+  events, and outbox.
+- [Composition guide](../better-effect-mq/docs/composition.md) — shared rules
+  for stores, events, Runtime, retention, and observability.
+- [Composition example](../better-effect-mq/examples/composition/main.ts) — a
+  Runtime with `JobStore` and `JobEventStore`.
