@@ -1,443 +1,631 @@
 # better-effect-mq-postgres
 
-`better-effect-mq-postgres` torna o PostgreSQL o armazenamento durável de
-[`better-effect-mq`](../better-effect-mq). Ele fornece o `JobStore` para
-enfileirar, reivindicar e finalizar jobs com segurança entre processos, além de
-extensões opcionais para eventos duráveis, schedules, flows e outbox.
+`better-effect-mq-postgres` is the PostgreSQL adapter for
+[`better-effect-mq`](../better-effect-mq). It supplies a durable `JobStore`
+for the core queue API and optional PostgreSQL stores for job events,
+schedules, flows, and the outbox. It is an adapter, not a second jobs API:
+application code still defines `Queue` and `Job` descriptors, registers
+`Worker.handle` handlers, and composes one `Layer` and `Runtime`.
 
-O pacote foi feito para aplicações que precisam de jobs que sobrevivam a
-reinícios, múltiplos workers e falhas de rede sem adicionar um broker separado.
-O PostgreSQL continua sendo a fonte de verdade; o Worker do `better-effect-mq`
-cuida do processamento e a sua aplicação continua dona da lógica de negócio.
+PostgreSQL gives the queue durable state, leases, retries, and recovery across
+processes. Delivery remains at-least-once. If a process crashes after an
+external side effect but before settlement, the job may run again; make
+external effects idempotent with a job ID or an application idempotency key.
 
-## Quando usar
-
-Use este adapter quando você já opera PostgreSQL e precisa de:
-
-- jobs duráveis com enqueue, claim, lease, retry, cancelamento e inspeção;
-- vários processos ou réplicas consumindo a mesma fila;
-- schedules persistentes com tick idempotente;
-- um feed de eventos finito para dashboards, auditoria operacional ou esperas
-  orientadas a eventos;
-- flows com fan-out/fan-in e reconciliação;
-- outbox para gravar uma intenção de publicação na mesma transação do domínio.
-
-Ele não transforma PostgreSQL em um sistema de exactly-once. A entrega é
-at-least-once: se o processo executar um efeito externo e cair antes de
-persistir a finalização, o job pode ser entregue novamente. Torne efeitos
-externos idempotentes usando o ID do job ou uma chave de idempotência da sua
-aplicação.
-
-## Instalação
-
-Com Bun:
+## Install
 
 ```bash
-bun add better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-mq-outbox pg
+bun add better-effect-mq-postgres better-effect-mq better-effect better-result pg
 ```
 
-Com npm:
+If you use the optional outbox publisher, also install:
 
 ```bash
-npm install better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-mq-outbox pg
+bun add better-effect-mq-outbox
 ```
 
-`pg` é um peer opcional. Ele só é carregado quando você usa uma configuração
-com `connectionString` (`layerFromConfig`, `PostgresClient.fromConfig` etc.).
-Quando você fornece um pool já criado, o adapter usa apenas a interface de pool
-e não importa `pg` por conta própria.
+The package expects `better-effect >=0.13`, `better-effect-mq >=0.1`,
+`better-result ^3`, and TypeScript 6 or newer. `pg` is an optional peer: it is
+loaded lazily only by the `layerFromConfig` and `PostgresClient.fromConfig`
+forms that create a pool. A caller-provided pool uses the adapter's small pool
+interface and does not load `pg` itself.
 
-## Começo rápido: pool e Layer
+## Quick start
 
-O fluxo recomendado é executar a migração como uma etapa explícita do deploy,
-validar o schema ao iniciar e então fornecer o pool ao Runtime. A migração não é
-executada automaticamente por um Layer.
+Run migrations as an explicit deploy or startup step, define the queue and
+jobs with `better-effect-mq`, then provide the PostgreSQL `JobStore` through a
+Layer. The following is the complete application shape: one typed Job, one
+Worker handler, one Runtime, and one durable store.
 
 ```ts
 import { Pool } from 'pg'
-import { Runtime, ServiceRuntime } from 'better-effect'
-import { JobName, JobStore, QueueName } from 'better-effect-mq'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, JobContext, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Result } from 'better-result'
 import { PostgresJobStore, PostgresMigrator } from 'better-effect-mq-postgres'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
-
 await PostgresMigrator.run(pool, { schema: 'public' })
-await PostgresMigrator.validate(pool, { schema: 'public' })
 
-const runtime = await Runtime.make(
-  PostgresJobStore.layer({
-    pool,
-    namespace: 'billing'
+const Emails = Queue.define('emails')
+const SendEmail = Emails.job('send-email', {
+  version: 1,
+  payload: Codec.json<{ readonly recipient: string }>(),
+  result: Codec.string,
+  idempotencyKey: (payload) => `send-email:${payload.recipient}`
+})
+
+const SendEmailHandler = Worker.handle(SendEmail, (payload) =>
+  Effect.fn(async function* () {
+    const context = yield* JobContext
+    console.log(`attempt ${context.attempt}: sending to ${payload.recipient}`)
+    return Result.ok(`sent:${payload.recipient}`)
   })
 )
 
-try {
-  const enqueued = await runtime.run(async () => {
-    const store = await ServiceRuntime.resolve(JobStore)
-    return store.enqueue({
-      job: {
-        queue: QueueName.make('billing').unwrap(),
-        name: JobName.make('send-invoice').unwrap(),
-        version: 1
-      },
-      payload: { invoiceId: 'inv_123' },
-      metadata: { source: 'billing-api' },
-      runAt: Date.now(),
-      attemptsMax: 3,
-      now: Date.now()
-    })
-  })
+const EmailWorker = Worker.service('EmailWorker')
+const EmailWorkerLive = EmailWorker.layer(() => ({
+  handlers: [SendEmailHandler] as const,
+  concurrency: 4,
+  pollIntervalMs: 1_000
+}))
 
-  if (enqueued.isErr()) throw enqueued.error
-  console.log(enqueued.value.job.id)
+const AppLive = Layer.complete(
+  Layer.merge(PostgresJobStore.layer({ pool, namespace: 'mailing' }), ClockLive, EmailWorkerLive)
+)
+
+const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
+
+try {
+  const submitted = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+      return Result.ok(jobId)
+    })
+  )
+  if (Result.isError(submitted)) throw submitted.error
+
+  const completed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const value = yield* SendEmail.awaitResult(submitted.value)
+      return Result.ok(value)
+    })
+  )
+  if (Result.isError(completed)) throw completed.error
+  console.log(completed.value)
 } finally {
   await runtime.dispose()
   await pool.end()
 }
 ```
 
-`layer({ pool })` usa um pool emprestado: o Runtime não o fecha. Feche o pool
-no componente que o criou, como no exemplo. Para deixar o adapter criar e ser
-responsável pelo pool, use `layerFromConfig`:
+`Queue.define` and `Queue.job` only create immutable descriptors. They do not
+open a connection or register a handler. `Worker.handle` associates a typed
+payload with a `better-effect` program, while `Worker.service(...).layer(...)`
+owns polling, leases, attempts, and graceful worker shutdown. `runtime.run`
+provides the declared Services and execution Scope; `awaitResult` reads the
+durable Job until it reaches a terminal state.
+
+The example uses `PostgresJobStore.layer`, so the application owns `pool` and
+must call `pool.end()`. If the adapter should create and close the pool, use:
 
 ```ts
-const DurableLive = PostgresJobStore.layerFromConfig({
+const AppStoreLive = PostgresJobStore.layerFromConfig({
   connectionString: process.env.DATABASE_URL,
-  namespace: 'billing'
+  namespace: 'mailing'
 })
-const runtime = await Runtime.make(DurableLive)
 
-// runtime.dispose() fecha o pool criado pelo adapter.
+const runtime = await Runtime.make(AppStoreLive)
+// runtime.dispose() closes the pool created by the adapter.
 ```
 
-As quatro formas seguem o mesmo padrão:
+Do not call `pool.end()` for a pool created by `layerFromConfig`.
 
-| Recurso   | Pool fornecido pela aplicação    | Pool criado pelo adapter                   |
+## Migrations and configuration
+
+The shipped schema supports PostgreSQL 12 or newer. Apply migrations before a
+Runtime whose Layers validate the schema:
+
+```ts
+import { PostgresMigrator } from 'better-effect-mq-postgres'
+
+await PostgresMigrator.run(pool, { schema: 'public' })
+await PostgresMigrator.validate(pool, { schema: 'public' })
+```
+
+`run` is forward-only, ordered, checksummed, and protected by a transaction
+advisory lock. It does not downgrade or remove data. Keep migration execution
+in a controlled deploy step and leave `validateSchema: true` (the default) on
+production Layers so incompatible or incomplete schemas fail during
+acquisition. For a rolling deploy, add compatible schema changes first, then
+deploy readers and writers, and remove obsolete columns only in a later
+expand/migrate/contract step.
+
+Every store accepts the same connection settings:
+
+| Store     | Caller-owned pool                | Adapter-owned pool                         |
 | --------- | -------------------------------- | ------------------------------------------ |
 | Jobs      | `PostgresJobStore.layer`         | `PostgresJobStore.layerFromConfig`         |
 | Events    | `PostgresJobEventStore.layer`    | `PostgresJobEventStore.layerFromConfig`    |
 | Schedules | `PostgresJobScheduleStore.layer` | `PostgresJobScheduleStore.layerFromConfig` |
 | Outbox    | `PostgresOutbox.layer`           | `PostgresOutbox.layerFromConfig`           |
 
-As variantes `layerFor` e `layerFromConfigFor` permitem fornecer um token
-nomeado. O `namespace` separa dados de aplicações ou ambientes que compartilham
-o mesmo PostgreSQL; mantenha o mesmo `pool`, `schema` e `namespace` quando dois
-Layers precisam acessar o mesmo store.
+Use the same `pool`, `schema`, and `namespace` for stores that must share a
+state boundary. A namespace separates independent applications or environments
+inside one PostgreSQL schema. `layerFor` and `layerFromConfigFor` provide a
+named `JobStore`, `JobEventStore`, `JobScheduleStore`, or outbox token when one
+Runtime contains independent stores.
 
-## Migrações e requisitos
+## Optional job events
 
-- PostgreSQL 12 ou superior.
-- Um schema PostgreSQL que a aplicação possa ler e atualizar.
-- A versão do pacote e o schema devem ser atualizados juntos no deploy.
-
-Execute `PostgresMigrator.run(pool, { schema })` em uma etapa controlada de
-deploy e mantenha `validateSchema: true` (o padrão) nos Layers de produção. A
-validação falha cedo quando o banco está incompleto, pertence a outro
-componente ou ainda não foi atualizado para a versão esperada pelo adapter.
-
-O migrator é progressivo, verifica a integridade do que já foi aplicado e não
-faz downgrade nem remove dados automaticamente. Para um rollback de aplicação,
-restaure um backup compatível ou execute uma migração manual revisada; não
-espere que o startup reverta o banco.
-
-Durante um deploy gradual, faça primeiro mudanças compatíveis com as versões em
-execução, depois publique o código que as utiliza e só então remova o que ficou
-obsoleto. Em ambientes de produção, prefira separar a etapa de migração da
-inicialização das réplicas e deixe a validação do adapter como uma segunda
-barreira.
-
-## Composição: JobStore, JobEventStore e Runtime
-
-Jobs e eventos são Services do mesmo Runtime. Não crie um Runtime separado para
-ler eventos: isso pode produzir pools, escopos e configurações diferentes para
-o mesmo namespace.
+`PostgresJobEventStore` is a durable EventLog for compact transition facts,
+cursor-based feeds, dashboards, and wake-ups. Compose it with the matching
+`JobStore` in the same Runtime:
 
 ```ts
-import { Layer, Runtime } from 'better-effect'
+import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
+import { JobEventStore, JobStore } from 'better-effect-mq'
+import { Result } from 'better-result'
 import { PostgresJobEventStore, PostgresJobStore } from 'better-effect-mq-postgres'
 
-const DurableLive = Layer.complete(
+const AppLive = Layer.complete(
   Layer.merge(
-    PostgresJobStore.layer({ pool, namespace: 'billing' }),
-    Layer.merge(
-      PostgresJobEventStore.layer({
-        pool,
-        namespace: 'billing',
-        retention: {
-          count: 100_000,
-          ageMs: 7 * 24 * 60 * 60 * 1_000
-        }
-      }),
-      ClockLive
-    )
+    PostgresJobStore.layer({ pool, namespace: 'mailing' }),
+    PostgresJobEventStore.layer({
+      pool,
+      namespace: 'mailing',
+      retention: { count: 100_000, ageMs: 7 * 24 * 60 * 60 * 1_000 }
+    }),
+    ClockLive,
+    EmailWorkerLive
   )
 )
 
-const runtime = await Runtime.make(DurableLive)
+const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
+const completed = await runtime.run(() =>
+  Effect.gen(async function* () {
+    const jobId = yield* SendEmail.enqueue({ recipient: 'ada@example.test' })
+    const value = yield* SendEmail.awaitResult(jobId, {
+      strategy: 'events',
+      eventStore: JobEventStore,
+      pollFallbackMs: 5_000
+    })
+    return Result.ok({ jobId, value })
+  })
+)
+await runtime.dispose()
 ```
 
-Quando os dois Layers usam o mesmo pool e namespace, as mutações do
-`JobStore` passam a alimentar o `JobEventStore` de forma consistente com a
-operação durável. O feed pode ser lido com `JobEvents.page`/`JobEvents.forEach`
-ou usado por `Job.awaitResult` com `strategy: 'events'` e um `pollFallbackMs`.
-O fallback de polling continua sendo a fonte autoritativa quando um sinal de
-wake é atrasado ou perdido.
+An event is a wake hint, not the source of truth: `awaitResult` rereads the
+Job record before decoding its result or failure, and the bounded poll fallback
+keeps progress when a notification is delayed or lost. Retention is finite;
+an expired cursor must be rebased or replayed from another source. Use the
+EventLog for a resumable feed, the Job attempt ledger for per-delivery detail,
+and a local `JobObserver` for best-effort logs and metrics.
 
-Para stores nomeados, use tokens correspondentes no mesmo Runtime:
+## Durable schedules
+
+`PostgresJobScheduleStore` persists schedule definitions and lets the core
+`JobSchedules` and `JobScheduler` APIs reconcile and tick them. Schedules use
+the same Job descriptors and Workers as manually enqueued work:
 
 ```ts
-import { JobEventStore, JobStore } from 'better-effect-mq'
-import { PostgresJobEventStore, PostgresJobStore } from 'better-effect-mq-postgres'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { JobScheduleStore, JobScheduler, JobSchedules, JobStore } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { PostgresJobScheduleStore, PostgresJobStore } from 'better-effect-mq-postgres'
 
-const Durable = JobStore.named('durable')
-const DurableEvents = JobEventStore.for(Durable)
+const ReminderSchedules = JobSchedules.define({
+  group: 'mailing',
+  schedules: [
+    JobSchedules.schedule(SendEmail, 'hourly-reminder', {
+      everyMs: 60 * 60 * 1_000,
+      payload: { recipient: 'ops@example.test' },
+      overlap: 'skip'
+    })
+  ],
+  stores: [JobStore]
+})
 
-const DurableLive = Layer.merge(
-  PostgresJobStore.layerFor(Durable, { pool, namespace: 'billing' }),
-  PostgresJobEventStore.layerFor(DurableEvents, {
-    pool,
-    namespace: 'billing'
+const Scheduler = JobScheduler.service('ReminderScheduler')
+const SchedulerLive = Scheduler.layer(() => ({
+  registries: [ReminderSchedules] as const,
+  startupReconcile: true,
+  sweepIntervalMs: 30_000
+}))
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    PostgresJobStore.layer({ pool, namespace: 'mailing' }),
+    PostgresJobScheduleStore.layer({ pool, namespace: 'mailing' }),
+    ClockLive,
+    SchedulerLive
+  )
+)
+
+const runtime = await Runtime.make(AppLive)
+const report = await runtime.run(() =>
+  Effect.gen(async function* () {
+    return Result.ok(yield* JobSchedules.reconcile(ReminderSchedules, { nowMs: Date.now() }))
   })
 )
 ```
 
-Se a persistência de eventos for obrigatória para todos os writers do
-namespace, promova explicitamente o store:
+The schedule store makes each tick duplicate-safe and associates schedules
+with their JobStore token. Configure misfire and overlap policies on the
+schedule; use a Worker to process the resulting Jobs. For named stores, pair
+`JobScheduleStore.for(MyJobs)` with
+`PostgresJobScheduleStore.layerFor(MySchedules, config)`.
+
+## Flows: durable parent/child work
+
+Use a Flow when one Job coordinates related work that should fan out to
+children and then fan in to a parent result—for example, importing all lines
+of an order, generating one report per customer, or reconciling a batch. The
+parent and child Jobs remain normal Queue descriptors; the Flow adds durable
+child state, reports, and recovery for the coordination step.
+
+This example runs a parent import, creates one child Job per line, waits for
+the children, and returns a typed aggregate result. `PostgresFlowStore` is an
+explicit store, so provide it under the associated core `FlowStore` token in
+the same Runtime as the JobStore and Worker.
 
 ```ts
-import { ServiceRuntime } from 'better-effect'
-import { JobEventStore } from 'better-effect-mq'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, Flow, FlowStore, Queue, Worker } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { PostgresFlowStore, PostgresJobStore } from 'better-effect-mq-postgres'
 
-const events = await runtime.run(() => ServiceRuntime.resolve(JobEventStore))
-const activation = await events.activate({ mode: 'required', now: Date.now() })
-if (activation.isErr()) throw activation.error
-```
+const Orders = Queue.define('orders')
+const ImportOrder = Orders.job('import-order', {
+  version: 1,
+  payload: Codec.json<{
+    readonly orderId: string
+    readonly lineIds: readonly string[]
+  }>(),
+  result: Codec.json<{ readonly completed: number }>()
+})
+const ImportLine = Orders.job('import-line', {
+  version: 1,
+  payload: Codec.json<{ readonly lineId: string }>(),
+  result: Codec.string
+})
 
-Faça isso apenas depois que todos os processos do rollout suportarem o EventLog;
-caso contrário, uma versão antiga pode continuar gravando jobs sem os eventos
-esperados.
+const ImportFlow = Flow.define('import-order', {
+  parent: ImportOrder,
+  children: [ImportLine] as const,
+  onChildFailure: 'fail'
+})
 
-## Schedules
+const ImportFlowHandler = Flow.handle(ImportFlow, {
+  fanOut: (payload) =>
+    Effect.fn(async function* () {
+      return Result.ok([
+        Flow.children(
+          ImportLine,
+          payload.lineIds.map((lineId) => ({
+            key: `line:${lineId}`,
+            payload: { lineId }
+          }))
+        )
+      ])
+    }),
+  collect: (_payload, results) =>
+    Effect.fn(async function* () {
+      return Result.ok({ completed: results.counts.completed } as const)
+    })
+})
 
-`PostgresJobScheduleStore` persiste schedules e suas revisões junto do
-`JobStore`. O tick verifica a revisão e o próximo horário esperado, cria as
-ocorrências determinísticas e avança o schedule em uma operação única. Repetir
-um tick depois de uma resposta perdida não cria a mesma ocorrência duas vezes.
+const ImportLineHandler = Worker.handle(ImportLine, (payload) =>
+  Effect.fn(async function* () {
+    return Result.ok(`imported:${payload.lineId}`)
+  })
+)
 
-Forneça os dois Layers usando o mesmo pool, schema e namespace:
+const OrdersWorker = Worker.service('OrdersWorker')
+const OrdersWorkerLive = OrdersWorker.layer(() => ({
+  handlers: [ImportLineHandler] as const,
+  flows: [ImportFlowHandler] as const,
+  concurrency: 8,
+  pollIntervalMs: 1_000,
+  flowSweepIntervalMs: 5_000
+}))
 
-```ts
-import { Layer, Runtime, ServiceRuntime } from 'better-effect'
-import { JobScheduleStore, JobStore } from 'better-effect-mq'
-import { PostgresJobScheduleStore, PostgresJobStore } from 'better-effect-mq-postgres'
+const flowStore = await PostgresFlowStore.make({
+  pool,
+  namespace: 'orders'
+})
 
-const runtime = await Runtime.make(
+const AppLive = Layer.complete(
   Layer.merge(
-    PostgresJobStore.layer({ pool, namespace: 'billing' }),
-    PostgresJobScheduleStore.layer({ pool, namespace: 'billing' })
+    PostgresJobStore.layer({ pool, namespace: 'orders' }),
+    Layer.succeed(FlowStore, FlowStore.of(flowStore)),
+    ClockLive,
+    OrdersWorkerLive
   )
 )
 
-const schedules = await runtime.run(() => ServiceRuntime.resolve(JobScheduleStore))
-```
-
-O contrato expõe `upsertSchedule`, `dueSchedules`, `tickSchedule`,
-`pauseSchedule`, `resumeSchedule`, `getSchedule`, `listSchedules` e
-`removeSchedule`. A decisão de misfire e overlap pertence ao schedule; o
-adapter persiste o resultado e mantém a criação do job associada ao tick.
-
-## Flows
-
-Flows são opcionais. Use `PostgresFlowStore` quando a aplicação precisa
-coordenar fan-out/fan-in, relatórios de filhos ou reconciliação de cascatas.
-Ele é um store explícito, não um Layer do Runtime:
-
-```ts
-import { PostgresFlowStore } from 'better-effect-mq-postgres'
-
-const flows = await PostgresFlowStore.make({
-  pool,
-  namespace: 'billing'
-})
+const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
 
 try {
-  const snapshot = await flows.getFlow({ flowId })
-  if (snapshot.isErr()) throw snapshot.error
-  console.log(snapshot.value)
+  const completed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const flowId = yield* ImportOrder.enqueue({
+        orderId: 'order-42',
+        lineIds: ['line-a', 'line-b', 'line-c']
+      })
+      const result = yield* ImportOrder.awaitResult(flowId)
+      return Result.ok({ flowId, result })
+    })
+  )
+  if (Result.isError(completed)) throw completed.error
+  console.log(completed.value)
 } finally {
-  await flows.dispose()
+  await runtime.dispose()
+  await flowStore.dispose()
+  await pool.end()
 }
 ```
 
-Use `makeFromConfig` quando o adapter deve criar e fechar o pool. Antes de
-instanciar o flow store, aplique as migrações atuais e mantenha a validação
-habilitada. Se a extensão de flow não estiver presente, a criação falha cedo;
-ela não interpreta um schema antigo como se suportasse flows.
+The Worker executes the Flow phases and relays child outcomes through the
+durable flow store. Child enqueue and relay across different JobStore tokens
+remain at-least-once; deterministic child IDs, leases, and reconciliation make
+replays safe. Use `FlowStore.for(MyJobs)` and a matching
+`PostgresFlowStore.make` instance when parent and child Jobs use named stores.
+Flow storage requires the flow schema extension; migrations run by
+`PostgresMigrator` install it with the rest of the package schema.
 
-As operações de fan-out e relatórios são idempotentes para replays do mesmo
-comando. Enfileirar ou cancelar jobs em stores diferentes continua sendo uma
-operação at-least-once: não existe uma transação distribuída entre dois
-PostgreSQL, dois namespaces ou dois adapters.
+## Outbox: transaction, record, publisher
 
-## Outbox
+Use the outbox when a domain transaction must reliably hand work to a Job. A
+direct `domain INSERT` followed by `Job.enqueue` has a dual-write gap: the
+domain row can commit while enqueue fails, or the Job can be accepted while
+the domain transaction rolls back. `PostgresOutbox.appendIn` puts a prepared
+request in the caller's transaction, so both writes commit or roll back
+together.
 
-O adapter de outbox oferece um `OutboxStore` durável com claim, heartbeat,
-publicação, retry, falha, release, recuperação de leases parados, listagem e
-contagens. Forneça-o ao mesmo Runtime quando um publisher da aplicação usar o
-token `PostgresOutbox`:
+After commit, `OutboxPublisher` claims the record, resolves its target route,
+enqueues the prepared Job, and marks the record published. The publisher is
+post-commit work; it never holds the domain transaction open.
+
+```text
+domain transaction
+  ├─ write order
+  └─ append prepared outbox record
+        │ COMMIT
+        ▼
+OutboxPublisher
+  ├─ claim with a lease
+  ├─ enqueue the routed Job
+  └─ settle the record as published
+        ▼
+Worker.handle(SendConfirmation)
+```
+
+The following composition includes the durable JobStore, durable outbox,
+publisher, and Worker. It then prepares a request, appends it beside a domain
+write, and waits for the Worker to process the post-commit Job.
 
 ```ts
-import { Layer, Runtime, ServiceRuntime } from 'better-effect'
-import { PostgresOutbox } from 'better-effect-mq-postgres'
+import { Pool } from 'pg'
+import { Effect, Layer, Runtime } from 'better-effect'
+import { ClockLive } from 'better-effect/standard-services'
+import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Result } from 'better-result'
+import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
+import { PostgresJobStore, PostgresMigrator, PostgresOutbox } from 'better-effect-mq-postgres'
 
-const runtime = await Runtime.make(
-  PostgresOutbox.layer({
-    pool,
-    namespace: 'billing'
+const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+const Orders = Queue.define('orders')
+const SendConfirmation = Orders.job('send-confirmation', {
+  version: 1,
+  payload: Codec.json<{
+    readonly orderId: string
+    readonly email: string
+  }>(),
+  store: JobStore,
+  result: Codec.string,
+  idempotencyKey: (payload) => `confirmation:${payload.orderId}`
+})
+
+const SendConfirmationHandler = Worker.handle(SendConfirmation, (payload) =>
+  Effect.fn(async function* () {
+    console.log(`sending confirmation for ${payload.orderId} to ${payload.email}`)
+    return Result.ok(`sent:${payload.orderId}`)
   })
 )
 
-const outbox = await runtime.run(() => ServiceRuntime.resolve(PostgresOutbox))
+const Routes = OutboxRoutes.make({ orders: JobStore })
+const Publisher = OutboxPublisher.service('OrderOutboxPublisher')
+const OrderWorker = Worker.service('OrderWorker')
+
+const AppLive = Layer.complete(
+  Layer.merge(
+    PostgresJobStore.layer({ pool, namespace: 'orders' }),
+    PostgresOutbox.layer({ pool, namespace: 'orders' }),
+    ClockLive,
+    OrderWorker.layer(() => ({
+      handlers: [SendConfirmationHandler] as const,
+      concurrency: 4,
+      pollIntervalMs: 1_000
+    })),
+    Publisher.layer(() => ({
+      outboxes: [PostgresOutbox] as const,
+      routes: Routes,
+      concurrency: 2,
+      pollIntervalMs: 1_000
+    }))
+  )
+)
+
+await PostgresMigrator.run(pool, { schema: 'public' })
+const runtime = await Runtime.make(AppLive)
+await runtime.warmup()
+
+try {
+  const prepared = await runtime.run(() =>
+    Effect.gen(async function* () {
+      return Result.ok(
+        yield* SendConfirmation.prepare(
+          {
+            orderId: 'order-123',
+            email: 'ada@example.test'
+          },
+          { jobId: 'send-confirmation:order-123' }
+        )
+      )
+    })
+  )
+  if (Result.isError(prepared)) throw prepared.error
+
+  const record = makeOutboxRecord({
+    id: OutboxId.make('outbox:order-123').unwrap(),
+    target: 'orders',
+    request: prepared.value,
+    attemptsMax: 5
+  })
+  if (Result.isError(record)) throw record.error
+
+  const transaction = await pool.connect()
+  try {
+    await transaction.query('BEGIN')
+    await transaction.query('INSERT INTO orders (id, email) VALUES ($1, $2)', [
+      'order-123',
+      'ada@example.test'
+    ])
+    await PostgresOutbox.appendIn(transaction, record.value, { namespace: 'orders' })
+    await transaction.query('COMMIT')
+  } catch (cause) {
+    await transaction.query('ROLLBACK')
+    throw cause
+  } finally {
+    transaction.release()
+  }
+
+  const completed = await runtime.run(() =>
+    Effect.gen(async function* () {
+      const value = yield* SendConfirmation.awaitResult('send-confirmation:order-123')
+      return Result.ok(value)
+    })
+  )
+  if (Result.isError(completed)) throw completed.error
+  console.log(completed.value)
+} finally {
+  await runtime.dispose()
+  await pool.end()
+}
 ```
 
-Para garantir que uma mudança de domínio e uma intenção de publicação sejam
-confirmadas juntas, prepare o record e chame
-`PostgresOutbox.appendIn(transaction, record, { namespace, schema })` dentro da
-transação que a aplicação já abriu. `appendIn` não inicia, confirma nem desfaz
-essa transação; o chamador continua responsável pelo commit, rollback e
-liberação do client.
+`prepare` encodes the request before the transaction begins. `appendIn` does
+not begin, commit, roll back, or release the transaction; the application owns
+all of those decisions. Reusing the same outbox ID and request is
+digest-idempotent, while reusing an ID for a different request is a conflict.
+Publishing is still at-least-once, so the Job handler and any remote effect
+must tolerate retries. For an adapter-owned pool, replace both Layers with
+their `layerFromConfig` forms and let `runtime.dispose()` own pool shutdown.
 
-Use `PostgresOutbox.named('emails')` e `PostgresOutbox.layerFor(...)` quando
-precisar de outboxes isolados no mesmo Runtime. A publicação posterior ainda é
-at-least-once; o consumidor deve aceitar replays e confirmar o record somente
-depois de concluir o efeito externo.
+## Named stores
 
-## Eventos, tentativas e observadores
+The core API keeps store identity in the Job descriptor. Use a named token when
+one Runtime serves independent queues:
 
-Existem três superfícies complementares. Escolha a que corresponde à pergunta
-operacional:
+```ts
+import { Codec, JobStore, Queue } from 'better-effect-mq'
+import { PostgresJobStore } from 'better-effect-mq-postgres'
 
-| Superfície                                 | Serve para                                                             | Durabilidade e limites                                                                 |
-| ------------------------------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `JobEventStore` (EventLog)                 | Feed ordenado de fatos seguros, cursores, dashboards e wakeups         | Durável, mas com retenção finita por `count`, `ageMs` ou ambos; cursores podem expirar |
-| `AttemptRecord` via `JobStore.getAttempts` | Histórico detalhado de cada entrega, retry e resultado/falha de um job | Durável com o job; não é feed, não é cursor e pode conter dados sensíveis              |
-| `JobObserver` local                        | Logs, métricas, tracing e sinais do processo/Worker                    | Best-effort e process-local; callbacks não são persistidos e não alteram a execução    |
+const BillingJobs = JobStore.named('billing')
+const Billing = Queue.define('billing')
+const Charge = Billing.job('charge', {
+  version: 1,
+  payload: Codec.number,
+  store: BillingJobs
+})
 
-O EventLog omite payloads, resultados, falhas completas e metadados arbitrários
-por padrão. Não o use como arquivo histórico infinito nem como substituto do
-`AttemptRecord`. O observer também não substitui nenhum dos dois: ele pode
-perder eventos em crash, shutdown ou falha do callback.
+const BillingLive = PostgresJobStore.layerFor(BillingJobs, {
+  pool,
+  namespace: 'billing'
+})
+```
 
-Ao consumir páginas, persista o cursor somente depois que o handler terminar
-com sucesso. Se a retenção já removeu o cursor, o adapter retorna
-`JobEventCursorExpiredError`; escolha uma política explícita, como recomeçar do
-tail atual, solicitar replay de outra fonte ou falhar de forma visível.
+Use corresponding associated tokens for extensions:
+`JobEventStore.for(BillingJobs)`, `JobScheduleStore.for(BillingJobs)`, and
+`FlowStore.for(BillingJobs)`. Named outboxes use
+`PostgresOutbox.named('billing')` with `PostgresOutbox.layerFor(...)` and a
+matching `outboxes` entry in the publisher options.
 
-O `awaitEvents` é uma dica de wake. Use o polling limitado como fallback e não
-baseie a correção do processamento em qualquer sinal de notificação.
+## Operational guarantees
 
-## Garantias e limites operacionais
-
-- **Persistência:** enqueue, claim, lease, settlement, retry, recuperação de
-  stalled jobs e as extensões habilitadas usam a unidade transacional do
-  PostgreSQL.
-- **Concorrência:** leases e tokens impedem que um worker antigo finalize a
-  entrega de um worker mais novo. Eles não desfazem um efeito externo já
-  executado.
-- **Entrega:** é at-least-once. Quedas entre o efeito externo e a finalização
-  persistida podem gerar reentrega.
-- **Wakeups:** notificações aceleram o worker, mas não são a fonte de verdade;
-  o worker deve continuar consultando o estado durável.
-- **Retenção:** o EventLog é sempre limitado por política de retenção quando
-  você define `count`/`ageMs`; retenção não equivale a backup ou arquivamento.
-- **Transações externas:** `appendIn` participa da transação do chamador, mas o
-  adapter não coordena transações entre bancos, pools, namespaces ou serviços.
-- **Falhas transitórias:** conflitos temporários do banco podem ser reportados
-  como retryable; configure retries e backoff no Worker ou na operação que chama
-  o store.
-- **Capacidade:** pool, conexões, índices, I/O e tamanho das filas continuam
-  sendo limites do PostgreSQL. Dimensione o pool e monitore latência antes de
-  aumentar a concorrência dos workers.
-
-## Produção
-
-Antes de liberar tráfego:
-
-1. Execute `PostgresMigrator.run` com uma identidade de deploy controlada.
-2. Deixe `validateSchema` no padrão (`true`) nos Layers das réplicas.
-3. Confirme que workers, schedules, events e outbox usam o mesmo namespace
-   quando devem compartilhar estado.
-4. Defina retenção de EventLog de acordo com a janela de consumo e mantenha um
-   arquivo de auditoria separado quando precisar de histórico ilimitado.
-5. Configure heartbeat e lease para que handlers legítimos tenham tempo de
-   terminar, e monitore reentregas e recuperação de stalled jobs.
-6. Monitore profundidade e idade da fila, jobs ativos, falhas, leases perdidos,
-   stalled recovery, latência do banco, uso do pool, atraso de eventos e
-   cursores expirados.
-7. Teste replays, respostas perdidas, reinício de worker e indisponibilidade
-   temporária do banco antes do primeiro rollout.
-
-Se o pool pertence ao host, use `layer`; se o Runtime deve ser o dono do pool,
-use `layerFromConfig` e deixe `runtime.dispose()` concluir o ciclo de vida.
-Não encerre um pool emprestado enquanto houver Runtime ou operação usando-o.
+- **Durability:** enqueue, claims, leases, settlement, retries, stalled-job
+  recovery, and enabled extension records use PostgreSQL transactions.
+- **Concurrency:** lease tokens and fencing prevent an old worker from
+  settling a newer delivery. They cannot undo an external side effect.
+- **Delivery:** work is at-least-once, not exactly-once. Use idempotency keys
+  for external APIs and handlers.
+- **Wake-ups:** event notifications accelerate polling but are not the source
+  of truth. Keep bounded polling fallbacks enabled for waits.
+- **Retention:** EventLog retention is finite and cursors can expire; it is
+  not an infinite audit archive or a replacement for attempt records.
+- **Transactions:** `appendIn` participates in the transaction supplied by the
+  caller. The adapter does not coordinate transactions across databases,
+  pools, namespaces, or remote services.
+- **Capacity:** PostgreSQL connection pools, locks, indexes, I/O, and queue
+  depth still limit throughput. Increase worker concurrency only after
+  measuring database and pool latency.
 
 ## Troubleshooting
 
-### O Layer falha na inicialização por schema inválido
+### Layer acquisition reports an invalid schema
 
-Rode `PostgresMigrator.validate(pool, { schema })` com o mesmo schema e
-namespace usados pela aplicação. Se ainda não estiver atualizado, execute
-`PostgresMigrator.run` na etapa de deploy. Verifique também se a aplicação está
-conectando no banco correto e se o usuário pode ler e modificar o schema.
+Run `PostgresMigrator.run(pool, { schema })` in the deploy step, then validate
+with the same schema. Check that the Runtime connects to the intended database
+and that the database user can read and update the schema.
 
-### Um flow não inicia, mas jobs comuns funcionam
+### A Flow store cannot start
 
-Flows exigem a extensão de flow instalada no schema. Atualize o banco antes de
-criar `PostgresFlowStore`; não desabilite a validação para contornar o problema
-em produção. Se não precisa de flows, use somente `PostgresJobStore`.
+Flows require the flow extension installed by the current migrations. Upgrade
+the schema before calling `PostgresFlowStore.make`; do not disable validation in
+production to bypass the check.
 
-### O consumidor recebe `JobEventCursorExpiredError`
+### Jobs run more than once
 
-O cursor foi removido pela retenção. Recomece de um tail recente ou recupere os
-fatos de uma fonte de replay que a sua aplicação mantém. Aumentar `count` ou
-`ageMs` ajuda consumidores lentos, mas não cria arquivo infinito.
+This is expected after a crash or uncertain settlement under at-least-once
+delivery. Use an explicit `jobId` or idempotency key for the external effect,
+inspect the Job attempt ledger, and make sure the Worker lease and heartbeat
+durations cover the handler's normal runtime.
 
-### Jobs parecem ser executados duas vezes
+### Events or waits appear stale
 
-Isso é possível no modelo at-least-once, especialmente quando o processo cai
-antes do settlement ou perde a conexão durante a confirmação. Use uma chave de
-idempotência no efeito externo, examine `AttemptRecord` com
-`JobStore.getAttempts` e verifique lease/heartbeat do Worker.
+Confirm the JobStore and JobEventStore use the same pool, schema, namespace,
+and Runtime. An EventLog wake is only a hint; use `pollFallbackMs` and inspect
+the durable Job record. A retained-away cursor must be rebased.
 
-### Eventos não aparecem
+### Outbox records remain active or pending
 
-Confirme que `PostgresJobStore.layer` e `PostgresJobEventStore.layer` usam o
-mesmo pool, schema e namespace e pertencem ao mesmo Runtime. Verifique se a
-retenção não removeu os eventos e se a ativação obrigatória não está sendo
-tentada antes de todos os writers estarem atualizados. Para waits, mantenha o
-poll fallback habilitado.
+Confirm the publisher is in the same Runtime, its `outboxes` list contains the
+token used by the adapter Layer, and its route target matches the record's
+`target`. Recover stalled leases and inspect the publisher's retry or failure
+state. `appendIn` only records the intent; it does not publish it.
 
-### Outbox ficou com records ativos ou parados
+### The pool closes too early or never closes
 
-Use `recoverStalled`, confirme que o relógio usado pelo publisher está correto e
-verifique a conectividade do pool. `appendIn` só registra o record; claim,
-heartbeat e settlement ainda precisam ser executados pelo publisher. O efeito
-externo deve ser idempotente porque a confirmação da publicação também pode ser
-repetida.
+`layer` borrows a caller-owned pool and never closes it. The host must call
+`pool.end()` after Runtime shutdown. `layerFromConfig` owns its pool and closes
+it during `runtime.dispose()`; do not call `pool.end()` for that pool.
 
-### O pool fecha cedo ou nunca fecha
+## More information
 
-Pool fornecido pela aplicação (`layer`) é emprestado e deve ser encerrado pelo
-host. Pool criado por `layerFromConfig` pertence ao Runtime e é fechado durante
-`runtime.dispose()`. Não misture os dois ciclos de vida nem chame `pool.end()`
-enquanto o Runtime ainda estiver ativo.
-
-## Mais informações
-
-- [`better-effect-mq`](../better-effect-mq) — contratos de jobs, Worker,
-  schedules, eventos e outbox.
-- [Guia de composição](../better-effect-mq/docs/composition.md) — regras
-  compartilhadas para stores, events, Runtime, retenção e observabilidade.
-- [Exemplo de composição](../better-effect-mq/examples/composition/main.ts) —
-  um Runtime com `JobStore` e `JobEventStore`.
+- [`better-effect-mq`](../better-effect-mq) — the storage-neutral Job,
+  Worker, EventLog, Flow, and schedule APIs.
+- [`better-effect-mq-outbox`](../better-effect-mq-outbox) — outbox records,
+  routes, and the publisher lifecycle.
+- [MQ composition guide](../better-effect-mq/docs/composition.md) — shared
+  Layer and Runtime patterns for adapters.
+- [MQ examples](../better-effect-mq/examples/README.md) — runnable in-memory
+  producer and Worker examples.
