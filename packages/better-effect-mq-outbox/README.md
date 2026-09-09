@@ -182,14 +182,26 @@ The following example uses the PostgreSQL adapter as a concrete durable
 its migrations and use its durable layers. The adapter's transaction helper is
 the application boundary for a domain write and its outbox append.
 
+This example uses a Zod 4 schema through `better-effect-schema`, so the payload
+is validated before it becomes a prepared request and its in-memory `Date` is
+projected back to a JSON timestamp at the Job boundary. Install the schema
+integration alongside the queue and adapter packages:
+
+```sh
+bun add better-effect-mq-outbox better-effect-mq-postgres better-effect-mq better-effect better-result better-effect-schema zod
+```
+
 The database pool below is caller-owned. It could be a `pg.Pool` created by
 your application:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import {
   PostgresJobStore,
@@ -200,16 +212,33 @@ import {
 
 declare const pool: Pool
 
+const local = Schema.with(ZodAdapter)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+
+class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+  orderId: z.string().min(1),
+  email: z.email(),
+  queuedAt: DateFromISOString
+}) {}
+
+const ConfirmationPayloadCodec = Codec.standardSchema({
+  schema: ConfirmationPayload,
+  encode: (value) =>
+    Schema.encode(ConfirmationPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 // Run this during deployment or an explicit startup step, before the layers
 // validate the schema.
 await PostgresMigrator.run(pool)
 
 const SendConfirmation = Queue.define('orders').job('send-confirmation', {
   version: 1,
-  payload: Codec.json<{
-    readonly orderId: string
-    readonly email: string
-  }>(),
+  payload: ConfirmationPayloadCodec,
   result: Codec.string,
   defaults: { attempts: 5 },
   idempotencyKey: (payload) => `order-confirmation:${payload.orderId}`
@@ -265,7 +294,8 @@ const preparedResult = await runtime.run(() =>
     const prepared = yield* SendConfirmation.prepare(
       {
         orderId: 'order-123',
-        email: 'ada@example.test'
+        email: 'ada@example.test',
+        queuedAt: '2026-09-09T12:00:00.000Z'
       },
       { jobId: 'order-confirmation:order-123' }
     )

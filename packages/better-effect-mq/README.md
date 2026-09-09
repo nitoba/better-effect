@@ -145,17 +145,35 @@ try {
 for examples, tests, and local development; use a durable adapter when work
 must survive a restart or be shared by multiple processes.
 
-`Codec.standardSchema` is the bridge between a Standard Schema implementation
-and a Job codec. With a schema class, the codec decodes persisted JSON into the
-class used by the handler; the explicit `encode` callback delegates the wire
-projection to `Schema.encode`. If the schema output is already JSON-safe, omit
-`encode` and the standard schema codec uses that value for both sides.
+The schema-backed codec decodes persisted JSON into the class used by the
+handler; the explicit `encode` callback delegates the wire projection to
+`Schema.encode`. If a provider schema's output is already JSON-safe, omit
+`encode` and the codec uses that value for both sides.
 
-Use `Codec.json<T>()` when a value is already plain JSON and a separate runtime
-validator would add no value—for example, a small internal-only payload or a
-primitive result. Prefer a schema-backed codec for HTTP, database, queue, or
-other untrusted boundaries where runtime validation, normalized failures, or a
-decoded domain class matters.
+### Plain JSON escape hatch
+
+For internal or otherwise simple data that is already JSON-safe, `Codec.json<T>()`
+is the smallest option:
+
+```ts
+const InternalPing = Queue.define('internal').job('ping', {
+  version: 1,
+  payload: Codec.json<{ readonly requestId: string }>(),
+  result: Codec.string
+})
+```
+
+Prefer a schema-backed codec for HTTP, database, queue, or other untrusted
+boundaries where runtime validation, normalized failures, or a decoded domain
+class matters.
+
+## Advanced: raw Standard Schema interoperability
+
+`Codec.standardSchema` can bridge a schema that implements the Standard Schema
+contract when no provider adapter is available. Prefer a native provider such
+as Zod 4 through `better-effect-schema`; hand-writing a `StandardSchemaV1`
+object is an adapter/interoperability escape hatch, not the recommended Job
+definition path.
 
 ## Define jobs with `Queue` and `Job`
 
@@ -164,19 +182,35 @@ stable identity and declares the codecs used at the storage boundary:
 
 ```ts
 import * as z from 'zod'
-import { Codec, Queue, Retry } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const local = Schema.with(ZodAdapter)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
 
 const Billing = Queue.define('billing')
-const ChargeCardPayload = z.object({
+class ChargeCardPayload extends local.Class<ChargeCardPayload>('app/ChargeCardPayload')({
   paymentId: z.string().min(1),
-  amountCents: z.int().positive()
-})
+  amountCents: z.int().positive(),
+  requestedAt: DateFromISOString
+}) {}
 const ChargeCardResult = z.object({ receiptId: z.string().min(1) })
 const ChargeCardFailure = z.object({ code: z.string().min(1) })
+const ChargeCardPayloadCodec = Codec.standardSchema({
+  schema: ChargeCardPayload,
+  encode: (value) =>
+    Schema.encode(ChargeCardPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
 
 const ChargeCard = Billing.job('charge-card', {
   version: 1,
-  payload: Codec.standardSchema({ schema: ChargeCardPayload }),
+  payload: ChargeCardPayloadCodec,
   result: Codec.standardSchema({ schema: ChargeCardResult }),
   failure: Codec.standardSchema({ schema: ChargeCardFailure }),
   defaults: {
@@ -200,6 +234,9 @@ The descriptor is inert: defining a Job does not resolve a Service, create a
 worker, or register anything globally. For a payload whose in-memory value is
 different from its wire value—such as a `Date` or a schema class—provide the
 explicit encoder shown in the quick start.
+
+The `version` identifies the persisted Job contract. Increment it when a
+payload, result, or typed failure changes incompatibly.
 
 ## `JobStore`: the persistence seam
 
@@ -257,11 +294,13 @@ collected result. See [`examples/flow/main.ts`](./examples/flow/main.ts) for
 the runnable copy.
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import {
   Codec,
+  JobEncodeFailure,
   Flow,
   FlowStore,
   JobStore,
@@ -270,25 +309,52 @@ import {
   Queue,
   Worker
 } from 'better-effect-mq'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
+
+const local = Schema.with(ZodAdapter)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+
+class ReportPayload extends local.Class<ReportPayload>('app/ReportPayload')({
+  reportId: z.string().min(1),
+  requestedAt: DateFromISOString
+}) {}
+
+const ReportPayloadCodec = Codec.standardSchema({
+  schema: ReportPayload,
+  encode: (value) =>
+    Schema.encode(ReportPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+const RunReportResult = z.object({
+  completed: z.int().nonnegative(),
+  failed: z.int().nonnegative()
+})
+const BuildReportResult = z.object({ reportId: z.string().min(1), rows: z.int().nonnegative() })
+const ReportFailure = z.object({ code: z.string().min(1) })
 
 const Reports = Queue.define('examples.reports')
 const RunReport = Reports.job('run-report', {
   version: 1,
-  payload: Codec.json<{ readonly reportId: string }>(),
-  result: Codec.json<{ readonly completed: number; readonly failed: number }>(),
-  failure: Codec.json<{ readonly code: string }>()
+  payload: ReportPayloadCodec,
+  result: Codec.standardSchema({ schema: RunReportResult }),
+  failure: Codec.standardSchema({ schema: ReportFailure })
 })
 const BuildReport = Reports.job('build-report', {
   version: 1,
-  payload: Codec.json<{ readonly reportId: string }>(),
-  result: Codec.json<{ readonly reportId: string; readonly rows: number }>(),
-  failure: Codec.json<{ readonly code: string }>()
+  payload: ReportPayloadCodec,
+  result: Codec.standardSchema({ schema: BuildReportResult }),
+  failure: Codec.standardSchema({ schema: ReportFailure })
 })
 const NotifyReport = Reports.job('notify-report', {
   version: 1,
-  payload: Codec.json<{ readonly reportId: string }>(),
+  payload: ReportPayloadCodec,
   result: Codec.string,
-  failure: Codec.json<{ readonly code: string }>()
+  failure: Codec.standardSchema({ schema: ReportFailure })
 })
 
 const ReportFlow = Flow.define('report-flow', {
@@ -301,8 +367,18 @@ const ReportFlowHandler = Flow.handle(ReportFlow, {
   fanOut: (payload) =>
     Effect.fn(async function* () {
       return Result.ok([
-        Flow.children(BuildReport, [{ key: 'build', payload: { reportId: payload.reportId } }]),
-        Flow.children(NotifyReport, [{ key: 'notify', payload: { reportId: payload.reportId } }])
+        Flow.children(BuildReport, [
+          {
+            key: 'build',
+            payload: { reportId: payload.reportId, requestedAt: payload.requestedAt.toISOString() }
+          }
+        ]),
+        Flow.children(NotifyReport, [
+          {
+            key: 'notify',
+            payload: { reportId: payload.reportId, requestedAt: payload.requestedAt.toISOString() }
+          }
+        ])
       ] as const)
     }),
   collect: (_payload, results) =>
@@ -361,7 +437,10 @@ try {
 
   const execution = await runtime.run(() =>
     Effect.gen(async function* () {
-      const jobId = yield* RunReport.enqueue({ reportId: 'daily-2026-01-01' })
+      const jobId = yield* RunReport.enqueue({
+        reportId: 'daily-2026-01-01',
+        requestedAt: '2026-09-09T12:00:00.000Z'
+      })
       const result = yield* RunReport.awaitResult(jobId)
       return Result.ok({ jobId, result })
     })
@@ -444,18 +523,41 @@ OutboxPublisher → core JobStore → Worker.handle(SendConfirmation)
 The transaction-to-publisher shape is:
 
 ```ts
+import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
+import { Schema } from 'better-effect-schema'
+import { ZodAdapter } from 'better-effect-schema/zod'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { PostgresJobStore, PostgresOutbox, type Pool } from 'better-effect-mq-postgres'
 
 declare const pool: Pool
+const local = Schema.with(ZodAdapter)
+const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
+  decode: (value) => new Date(value),
+  encode: (value) => value.toISOString()
+})
+
+class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+  orderId: z.string().min(1),
+  email: z.email(),
+  queuedAt: DateFromISOString
+}) {}
+
+const ConfirmationPayloadCodec = Codec.standardSchema({
+  schema: ConfirmationPayload,
+  encode: (value) =>
+    Schema.encode(ConfirmationPayload, value).mapError(
+      (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
+    )
+})
+
 const Orders = Queue.define('orders')
 const SendConfirmation = Orders.job('send-confirmation', {
   version: 1,
-  payload: Codec.json<{ readonly orderId: string; readonly email: string }>(),
+  payload: ConfirmationPayloadCodec,
   result: Codec.string,
   defaults: { attempts: 5 },
   idempotencyKey: ({ orderId }) => `order-confirmation:${orderId}`
@@ -495,7 +597,11 @@ const runtime = await Runtime.make(AppLive)
 const prepared = await runtime.run(() =>
   Effect.gen(async function* () {
     return Result.ok(
-      yield* SendConfirmation.prepare({ orderId: 'order-123', email: 'ada@example.test' })
+      yield* SendConfirmation.prepare({
+        orderId: 'order-123',
+        email: 'ada@example.test',
+        queuedAt: '2026-09-09T12:00:00.000Z'
+      })
     )
   })
 )
@@ -564,5 +670,4 @@ bun examples/flow/main.ts
 
 The [examples README](./examples/README.md) describes each runnable example.
 For application-facing adapter composition, see the [composition guide](./docs/composition.md).
-For adapter authors and maintainers, see the [driver author guide](./docs/writing-a-driver.md)
-and the [technical protocol notes](./docs/protocol/).
+For adapter authors and maintainers, see the [driver author guide](./docs/writing-a-driver.md).
