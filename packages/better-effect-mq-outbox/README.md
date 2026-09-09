@@ -200,8 +200,8 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import {
   PostgresJobStore,
@@ -212,13 +212,12 @@ import {
 
 declare const pool: Pool
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/ConfirmationPayload')({
+class ConfirmationPayload extends Schema.Class<ConfirmationPayload>('app/ConfirmationPayload')({
   orderId: z.string().min(1),
   email: z.email(),
   queuedAt: DateFromISOString
@@ -227,7 +226,7 @@ class ConfirmationPayload extends local.Class<ConfirmationPayload>('app/Confirma
 const ConfirmationPayloadCodec = Codec.standardSchema({
   schema: ConfirmationPayload,
   encode: (value) =>
-    Schema.encode(ConfirmationPayload, value).mapError(
+    CoreSchema.encode(ConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -346,8 +345,8 @@ cross-database transaction context; the adapter owns that context and its
 lifecycle.
 
 `ConfirmationPayload` uses the schema-first boundary shown in the example:
-`Schema.with(ZodAdapter)` provides the local provider, `local.Class` gives the
-handler a decoded payload, and `Schema.encode` projects it to the JSON request.
+The preconfigured Zod `Schema` facade gives the handler a decoded payload, and
+`CoreSchema.encode` projects it to the JSON request.
 The result uses the concise `Codec.string` codec because it is already plain
 JSON; use a concise `Codec.standardSchema` for a structured result or failure
 shape that is also plain JSON.

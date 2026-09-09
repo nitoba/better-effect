@@ -1,12 +1,9 @@
 import * as z from "zod"
 import { Result } from "better-result"
 
-import { Schema } from "better-effect-schema"
-import { ZodAdapter } from "better-effect-schema/zod"
+import { Schema } from "better-effect-schema/zod"
 
-const local = Schema.with(ZodAdapter)
-
-class Person extends local.Class<Person>("example/ObjectModePerson")({
+class Person extends Schema.Class<Person>("example/ObjectModePerson")({
   id: z.int(),
   name: z.string()
 }) {}

@@ -22,16 +22,15 @@ Bind a Job explicitly when several stores share one Runtime:
 ```ts
 import * as z from 'zod'
 import { Codec, JobEncodeFailure } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
 const AuditPayloadSchema = z.object({ event: z.string().min(1) })
-class AuditPayload extends local.Class<AuditPayload>('app/AuditPayload')(AuditPayloadSchema) {}
+class AuditPayload extends Schema.Class<AuditPayload>('app/AuditPayload')(AuditPayloadSchema) {}
 const AuditPayloadCodec = Codec.standardSchema({
   schema: AuditPayload,
   encode: (value) =>
-    Schema.encode(AuditPayload, value).mapError(
+    CoreSchema.encode(AuditPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })

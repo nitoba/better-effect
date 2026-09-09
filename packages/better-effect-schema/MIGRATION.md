@@ -15,15 +15,24 @@ import { Schema } from 'better-effect-schema'
 Zod code opts in explicitly:
 
 ```ts
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema } from 'better-effect-schema/zod'
 
-const Local = Schema.with(ZodAdapter)
-class User extends Local.Class<User>('app/User')({ /* Zod fields */ }) {}
+class User extends Schema.Class<User>('app/User')({ /* Zod fields */ }) {}
 ```
 
-Equivalent adapters are available from `better-effect-schema/valibot` and
-`better-effect-schema/arktype`.
+Valibot and ArkType use the same direct-import pattern (choose one):
+
+```ts
+import { Schema } from 'better-effect-schema/valibot'
+```
+
+```ts
+import { Schema } from 'better-effect-schema/arktype'
+```
+
+Choose Zod for its ecosystem and codecs, Valibot for modular schemas and small
+bundles, or ArkType for concise definitions and inferred runtime types. The
+provider-neutral root remains the right import for Standard Schema-only code.
 
 ## Replace class-boundary calls
 
@@ -34,7 +43,7 @@ Equivalent adapters are available from `better-effect-schema/valibot` and
 | validated props construction | `Schema.make(Model, props)` or `Model.make(props)` |
 | explicit encode | `Schema.encode(Model, instance)` |
 | async boundary | `Schema.decodeAsync` / `Schema.encodeAsync` / `Schema.makeAsync` |
-| provider capability | `Schema.with(Adapter)` |
+| provider capability | import `Schema` from the matching provider subpath |
 
 The new calls return `Result`-backed `Effect` values. Use `Result.isError` at a
 boundary or `yield*` inside `Effect.gen`/`Result.gen`.
@@ -52,11 +61,12 @@ at the encoded boundary.
 ## Tagged values
 
 `Schema.TaggedClass` and `Schema.TaggedError` now accept Standard Schema fields.
-For provider-native fields, use the provider facade:
+For provider-native fields, import the matching provider facade:
 
 ```ts
-const Local = Schema.with(ZodAdapter)
-class NotFound extends Local.TaggedError<NotFound>()('NotFound', {
+import { Schema } from 'better-effect-schema/zod'
+
+class NotFound extends Schema.TaggedError<NotFound>()('NotFound', {
   id: z.uuid()
 }) {}
 ```

@@ -8,7 +8,7 @@ provider-neutral decisions in issue #209.
 
 | Legacy surface                                | `better-effect-schema` destination                                                |
 | --------------------------------------------- | --------------------------------------------------------------------------------- |
-| `better-effect-zod` import                    | `better-effect-schema`, plus an optional adapter only when a capability needs one |
+| `better-effect-zod` import                    | `better-effect-schema/zod` for the preconfigured facade, or the root for provider-neutral code |
 | `decode*` / `encode*` throwing provider calls | `Schema.decode*` / `Schema.encode*` returning `Result` through `SchemaEffect`     |
 | `new Model(props)` as validation              | `Model.make(props)` / `makeAsync(props)` returning a Result                       |
 | Zod safe-parse result                         | `better-result` `Result.ok` / `Result.err`                                        |
@@ -161,7 +161,7 @@ Repository references were classified as follows:
 | ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------- |
 | integration         | root manifest, lockfile, `src/index.ts`, workflows, release routing       | provider capability semantics owned by feature branches |
 | failures/operations | `failure.ts`, `schema-effect.ts`, `internal/`, `operations/`, `standard/` | adapters and class runtime                              |
-| portable types      | `types/`, `capabilities/`, `Schema.with`                                  | provider-specific imports                               |
+| portable types      | `types/`, `capabilities/`, root `Schema`                                  | provider-specific imports                               |
 | classes             | `classes/`, class type fixtures                                           | derivation algorithms and adapters                      |
 | derivations         | `derivation/` and object policy tests                                     | tagged/class identity declarations                      |
 | adapters            | `adapters/{zod,valibot,arktype}/` and local tests                         | root barrels, manifest, lockfile                        |
@@ -226,8 +226,13 @@ const user = User.make({ name: 'Ada' })
 ### Explicit provider capability
 
 ```ts
-const Local = Schema.with(ZodAdapter)
-const encoded = Local.encode(DateModel, new Date())
+// Built-in providers are imported from their preconfigured subpaths. This
+// custom-facade form is only for an adapter authored by your application.
+import { Schema } from 'better-effect-schema'
+import { CustomAdapter } from './custom-adapter.js'
+
+const CustomSchema = Schema.with(CustomAdapter)
+const encoded = CustomSchema.encode(DateModel, new Date())
 ```
 
 The exact adapter methods are capability-gated and return a typed Result; no

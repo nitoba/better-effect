@@ -16,8 +16,7 @@ Import Valibot and the adapter from their normal entrypoints:
 ~~~ts
 import * as v from 'valibot'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ValibotAdapter } from 'better-effect-schema/valibot'
+import { Schema } from 'better-effect-schema/valibot'
 ~~~
 
 ## Define and validate a Valibot schema
@@ -55,13 +54,12 @@ if (checked.success) {
 }
 ~~~
 
-For a provider-neutral package boundary, create a local facade and call
+For a provider-neutral package boundary, use the preconfigured `Schema` facade and call
 `decodeUnknown`. The successful value retains the Valibot output type, and failures
 are `Result.err` values with normalized issues:
 
 ~~~ts
-const local = Schema.with(ValibotAdapter)
-const decoded = local.decodeUnknown(UserSchema, input)
+const decoded = Schema.decodeUnknown(UserSchema, input)
 
 if (Result.isError(decoded)) {
   console.error(decoded.error._tag) // SchemaDecodeFailure
@@ -73,18 +71,18 @@ const user: User = decoded.value
 console.log(`Welcome ${user.displayName}`)
 ~~~
 
-Use `local.decode` when the input has the schema's inferred input type, and
-`local.decodeUnknown` when the value is truly `unknown`:
+Use `Schema.decode` when the input has the schema's inferred input type, and
+`Schema.decodeUnknown` when the value is truly `unknown`:
 
 ~~~ts
-const fromBoundary = local.decodeUnknown(UserSchema, input)
+const fromBoundary = Schema.decodeUnknown(UserSchema, input)
 if (Result.isError(fromBoundary)) throw fromBoundary.error
 ~~~
 
 ## Construction and structural capabilities
 
 Valibot is a native-schema adapter rather than a class factory. Use
-`local.make` when you want the package to validate props and then construct a
+`Schema.make` when you want the package to validate props and then construct a
 domain value:
 
 ~~~ts
@@ -94,7 +92,7 @@ const descriptor = {
   construct: (props: User) => ({ ...props, kind: 'user' as const })
 }
 
-const made = local.make(descriptor, {
+const made = Schema.make(descriptor, {
   id: 'user-1',
   email: 'ada@example.com',
   displayName: 'Ada Lovelace'
@@ -107,10 +105,10 @@ The facade also exposes provider-owned structure and derivation operations where
 Valibot can preserve the schema's semantics:
 
 ~~~ts
-const fields = local.fields(UserSchema)
+const fields = Schema.fields(UserSchema)
 if (Result.isError(fields)) throw fields.error
 
-const PartialUserSchema = local.derive(UserSchema, 'partial')
+const PartialUserSchema = Schema.derive(UserSchema, 'partial')
 if (Result.isError(PartialUserSchema)) throw PartialUserSchema.error
 ~~~
 

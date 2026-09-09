@@ -38,23 +38,22 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobContext, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
 import { PostgresJobStore } from 'better-effect-mq-postgres'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 
 const Emails = Queue.define('emails')
-const local = Schema.with(ZodAdapter)
 const SendEmailPayloadSchema = z.object({
   messageId: z.string().min(1),
   recipient: z.email()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')(
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')(
   SendEmailPayloadSchema
 ) {}
 const SendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -107,7 +106,7 @@ The pool is borrowed by `PostgresJobStore.layer`; the application closes it afte
 `PostgresJobStore.layerFromConfig` when the adapter should create and release the pool itself.
 The payload codec uses a Zod 4 schema-backed class from
 [`better-effect-schema`](../schema) through `Codec.standardSchema`. Its explicit
-`Schema.encode` callback maps the class value to JSON for persistence.
+`CoreSchema.encode` callback maps the class value to JSON for persistence.
 
 ## Optional capabilities
 

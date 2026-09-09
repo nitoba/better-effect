@@ -43,20 +43,19 @@ import { Pool } from 'pg'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobContext, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { PostgresJobStore, PostgresMigrator } from 'better-effect-mq-postgres'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 await PostgresMigrator.run(pool, { schema: 'public' })
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')({
   recipient: z.email(),
   requestedAt: DateFromISOString
 }) {}
@@ -64,7 +63,7 @@ const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email
 const sendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -105,7 +104,7 @@ await runtime.warmup()
 try {
   const submitted = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, {
+      const payload = Schema.decodeUnknown(SendEmailPayload, {
         recipient: 'ada@example.test',
         requestedAt: '2026-09-09T10:00:00.000Z'
       })
@@ -132,15 +131,15 @@ try {
 
 `Queue.define` and `Queue.job` only create immutable descriptors. They do not
 open a connection or register a handler. The Zod 4 schema is validated through
-the `better-effect-schema/zod` adapter, and `Schema.encode` projects the
+the `better-effect-schema/zod` facade, and `CoreSchema.encode` projects the
 decoded class back to JSON for the durable job boundary. `Codec.standardSchema`
 keeps that contract in one codec. `Worker.handle` associates a typed payload
 with a `better-effect` program, while `Worker.service(...).layer(...)` owns
 polling, leases, attempts, and graceful worker shutdown. `runtime.run` provides
 the declared Services and execution Scope; `awaitResult` reads the durable Job
 until it reaches a terminal state. The Flow and Outbox journeys below use the
-same schema-first payload boundary: `Schema.with(ZodAdapter)` provides the
-local provider, `local.Class` gives handlers a decoded class, and `Schema.encode`
+same schema-first payload boundary: the preconfigured Zod `Schema` facade gives
+handlers a decoded class, and `CoreSchema.encode`
 projects it back to JSON. Result/failure values that are already plain JSON may
 use a concise `Codec.standardSchema` shape; the payload boundaries in both
 journeys remain schema-first.
@@ -317,30 +316,29 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { PostgresFlowStore, PostgresJobStore } from 'better-effect-mq-postgres'
 
-const local = Schema.with(ZodAdapter)
-class ImportOrderPayload extends local.Class<ImportOrderPayload>('app/ImportOrderPayload')({
+class ImportOrderPayload extends Schema.Class<ImportOrderPayload>('app/ImportOrderPayload')({
   orderId: z.string(),
   lineIds: z.array(z.string())
 }) {}
 const importOrderPayloadCodec = Codec.standardSchema({
   schema: ImportOrderPayload,
   encode: (value) =>
-    Schema.encode(ImportOrderPayload, value).mapError(
+    CoreSchema.encode(ImportOrderPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
-class ImportLinePayload extends local.Class<ImportLinePayload>('app/ImportLinePayload')({
+class ImportLinePayload extends Schema.Class<ImportLinePayload>('app/ImportLinePayload')({
   lineId: z.string()
 }) {}
 const importLinePayloadCodec = Codec.standardSchema({
   schema: ImportLinePayload,
   encode: (value) =>
-    Schema.encode(ImportLinePayload, value).mapError(
+    CoreSchema.encode(ImportLinePayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -417,7 +415,7 @@ await runtime.warmup()
 try {
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(ImportOrderPayload, {
+      const payload = Schema.decodeUnknown(ImportOrderPayload, {
         orderId: 'order-42',
         lineIds: ['line-a', 'line-b', 'line-c']
       })
@@ -444,8 +442,8 @@ replays safe. Use `FlowStore.for(MyJobs)` and a matching
 Flow storage requires the flow schema extension; migrations run by
 `PostgresMigrator` install it with the rest of the package schema.
 The parent payload follows the same schema-first boundary as the Quick Start:
-`Schema.with(ZodAdapter)` provides the local provider, `local.Class` gives the
-handler a decoded class, and `Schema.encode` projects it back to JSON through
+The preconfigured Zod `Schema` facade gives the handler a decoded class, and
+`CoreSchema.encode` projects it back to JSON through
 the codec. Result/failure schemas stay concise Standard Schema shapes because
 those values are already plain JSON.
 
@@ -486,15 +484,14 @@ import { Pool } from 'pg'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, JobEncodeFailure, JobStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { OutboxId, OutboxPublisher, OutboxRoutes, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { PostgresJobStore, PostgresMigrator, PostgresOutbox } from 'better-effect-mq-postgres'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
-const local = Schema.with(ZodAdapter)
-class SendConfirmationPayload extends local.Class<SendConfirmationPayload>(
+class SendConfirmationPayload extends Schema.Class<SendConfirmationPayload>(
   'app/SendConfirmationPayload'
 )({
   orderId: z.string(),
@@ -503,7 +500,7 @@ class SendConfirmationPayload extends local.Class<SendConfirmationPayload>(
 const sendConfirmationPayloadCodec = Codec.standardSchema({
   schema: SendConfirmationPayload,
   encode: (value) =>
-    Schema.encode(SendConfirmationPayload, value).mapError(
+    CoreSchema.encode(SendConfirmationPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -552,7 +549,7 @@ await runtime.warmup()
 try {
   const prepared = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendConfirmationPayload, {
+      const payload = Schema.decodeUnknown(SendConfirmationPayload, {
         orderId: 'order-123',
         email: 'ada@example.test'
       })
@@ -601,8 +598,8 @@ try {
 ```
 
 `prepare` encodes the request before `transaction` acquires a client. The
-payload uses the same `Schema.with(ZodAdapter)`/`local.Class` boundary as the
-Quick Start, with `Schema.encode` projecting it to the JSON request; concise
+payload uses the same preconfigured Zod `Schema`/`Schema.Class` boundary as the
+Quick Start, with `CoreSchema.encode` projecting it to the JSON request; concise
 result/failure codecs remain appropriate for plain-JSON outcomes. The adapter
 appends the record only after the callback succeeds, commits only after that
 append succeeds, rolls back on thrown, rejected, or nominal `Result.err`

@@ -16,8 +16,7 @@ Import the native `type` builder and the adapter from their public entrypoints:
 ~~~ts
 import { type } from 'arktype'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ArkTypeAdapter } from 'better-effect-schema/arktype'
+import { Schema } from 'better-effect-schema/arktype'
 ~~~
 
 ## Define and validate an ArkType schema
@@ -55,13 +54,12 @@ if (checked instanceof type.errors) {
 }
 ~~~
 
-For a provider-neutral package boundary, create a local facade and call
+For a provider-neutral package boundary, use the preconfigured `Schema` facade and call
 `decodeUnknown`. The successful value retains the ArkType output type, and failures
 are `Result.err` values with normalized issues:
 
 ~~~ts
-const local = Schema.with(ArkTypeAdapter)
-const decoded = local.decodeUnknown(UserSchema, input)
+const decoded = Schema.decodeUnknown(UserSchema, input)
 
 if (Result.isError(decoded)) {
   console.error(decoded.error._tag) // SchemaDecodeFailure
@@ -76,24 +74,24 @@ console.log(user.displayName)
 Use `Schema.decodeUnknown` when the input is not yet typed:
 
 ~~~ts
-const fromBoundary = local.decodeUnknown(UserSchema, input)
+const fromBoundary = Schema.decodeUnknown(UserSchema, input)
 if (Result.isError(fromBoundary)) throw fromBoundary.error
 ~~~
 
 ## Structure and derivation
 
-The local facade exposes structural operations supported by ArkType:
+The preconfigured `Schema` facade exposes structural operations supported by ArkType:
 
 ~~~ts
-const fields = local.fields(UserSchema)
+const fields = Schema.fields(UserSchema)
 if (Result.isError(fields)) throw fields.error
 
-const PartialUserSchema = local.derive(UserSchema, 'partial')
+const PartialUserSchema = Schema.derive(UserSchema, 'partial')
 if (Result.isError(PartialUserSchema)) throw PartialUserSchema.error
 ~~~
 
 Use ArkType's native callable definition when you want its `ArkErrors`
-instance and summary. Use `local.decode` or `Schema.decodeUnknown` when you
+instance and summary. Use `Schema.decode` or `Schema.decodeUnknown` when you
 want the package's normalized `Result` failure channel and provider-neutral
 application code.
 

@@ -10,19 +10,18 @@ validated callback-free policy data. The policy is persisted with the Job;
 ```ts
 import * as z from 'zod'
 import { Codec, JobEncodeFailure, Queue, Retry } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
 const Jobs = Queue.define('billing')
 const ChargeCardPayloadSchema = z.object({ paymentId: z.string().min(1) })
-class ChargeCardPayload extends local.Class<ChargeCardPayload>('app/ChargeCardPayload')(
+class ChargeCardPayload extends Schema.Class<ChargeCardPayload>('app/ChargeCardPayload')(
   ChargeCardPayloadSchema
 ) {}
 const ChargeCardPayloadCodec = Codec.standardSchema({
   schema: ChargeCardPayload,
   encode: (value) =>
-    Schema.encode(ChargeCardPayload, value).mapError(
+    CoreSchema.encode(ChargeCardPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })

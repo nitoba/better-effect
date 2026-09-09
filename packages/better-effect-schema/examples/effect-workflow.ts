@@ -2,7 +2,6 @@ import * as z from 'zod'
 import { Effect } from 'better-effect'
 import { Result } from 'better-result'
 import {
-  Schema,
   SchemaAsyncRequired,
   SchemaConstructionFailure,
   SchemaDecodeFailure,
@@ -10,16 +9,15 @@ import {
   SchemaEncodeFailure,
   SchemaExecutionFailure
 } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
-
-const local = Schema.with(ZodAdapter)
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class User extends local.Class<User>('examples/EffectUser')({
+class User extends Schema.Class<User>('examples/EffectUser')({
   id: z.uuid(),
   createdAt: DateFromISOString
 }) {}
@@ -42,7 +40,7 @@ decoded satisfies Effect<
 
 const roundTrip = Effect.gen(function* () {
   const user = yield* decoded
-  const encoded = yield* Schema.encode(User)(user)
+  const encoded = yield* CoreSchema.encode(User, user)
   return Result.ok(encoded)
 })
 

@@ -62,16 +62,15 @@ import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import { Codec, JobEncodeFailure, JobEventStore, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { RedisJobStore } from 'better-effect-mq-redis'
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')({
   recipient: z.email(),
   requestedAt: DateFromISOString
 }) {}
@@ -79,7 +78,7 @@ const SendEmailResult = z.object({ status: z.literal('sent'), recipient: z.email
 const sendEmailPayloadCodec = Codec.standardSchema({
   schema: SendEmailPayload,
   encode: (value) =>
-    Schema.encode(SendEmailPayload, value).mapError(
+    CoreSchema.encode(SendEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -138,7 +137,7 @@ try {
 
   const completed = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(SendEmailPayload, {
+      const payload = Schema.decodeUnknown(SendEmailPayload, {
         recipient: 'ada@example.test',
         requestedAt: '2026-09-09T10:00:00.000Z'
       })
@@ -166,8 +165,8 @@ try {
 persistence is not needed. The Layer initializes the client before exposing the
 services and releases its resources when the runtime is disposed.
 
-The local `better-effect-schema` facade uses the Zod 4 provider for boundary
-validation, `Schema.encode` projects the decoded `SendEmailPayload` class to
+The preconfigured Zod `better-effect-schema` facade uses the Zod 4 provider for boundary
+validation, `CoreSchema.encode` projects the decoded `SendEmailPayload` class to
 JSON, and `Codec.standardSchema` adapts that contract to durable Job payloads
 and results. Redis supplies persistence and wake-ups; it does not replace the
 core Job or Worker APIs. The Outbox and Flow journeys below use the same
@@ -185,20 +184,19 @@ the prepared outbox record, and executes or discards the transaction for you:
 import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { Codec, JobEncodeFailure, Queue } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { OutboxId, makeOutboxRecord } from 'better-effect-mq-outbox'
 import { RedisClient, RedisJobStore, RedisOutbox, RedisOutboxStore } from 'better-effect-mq-redis'
 
-const local = Schema.with(ZodAdapter)
-class OrderEmailPayload extends local.Class<OrderEmailPayload>('app/OrderEmailPayload')({
+class OrderEmailPayload extends Schema.Class<OrderEmailPayload>('app/OrderEmailPayload')({
   orderId: z.string()
 }) {}
 const orderEmailPayloadCodec = Codec.standardSchema({
   schema: OrderEmailPayload,
   encode: (value) =>
-    Schema.encode(OrderEmailPayload, value).mapError(
+    CoreSchema.encode(OrderEmailPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -227,7 +225,7 @@ const runtime = await Runtime.make(AppLive)
 try {
   const prepared = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(OrderEmailPayload, { orderId: 'order-123' })
+      const payload = Schema.decodeUnknown(OrderEmailPayload, { orderId: 'order-123' })
       if (Result.isError(payload)) throw payload.error
       return Result.ok(yield* SendEmail.prepare(payload.value, { jobId: 'send-email:order-123' }))
     })
@@ -269,8 +267,8 @@ try {
 `OutboxPublisher`; compose the publisher and your canonical `Worker.layer`
 with `AppLive` in a full application. Prepare the job before the transaction so
 the callback only persists JSON-safe data. The payload uses the same
-schema-first boundary shown in the example (`Schema.with(ZodAdapter)`,
-`local.Class`, and `Schema.encode`); concise result/failure codecs are suitable
+schema-first boundary shown in the example (the preconfigured Zod `Schema`,
+`Schema.Class`, and `CoreSchema.encode`); concise result/failure codecs are suitable
 for plain-JSON outcomes. A callback `Result.err`, thrown or rejected callback,
 append conflict, or `EXEC` failure is returned as a typed failure, and queued
 commands are discarded when they have not been executed.
@@ -416,30 +414,29 @@ import * as z from 'zod'
 import { Effect, Layer, Runtime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Codec, Flow, FlowStore, JobEncodeFailure, Queue, Worker } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 import { Result } from 'better-result'
 import { RedisClient, RedisFlowStore, RedisJobStore } from 'better-effect-mq-redis'
 
-const local = Schema.with(ZodAdapter)
-class BuildReportPayload extends local.Class<BuildReportPayload>('app/BuildReportPayload')({
+class BuildReportPayload extends Schema.Class<BuildReportPayload>('app/BuildReportPayload')({
   reportId: z.string()
 }) {}
 const buildReportPayloadCodec = Codec.standardSchema({
   schema: BuildReportPayload,
   encode: (value) =>
-    Schema.encode(BuildReportPayload, value).mapError(
+    CoreSchema.encode(BuildReportPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
-class DeliverReportPayload extends local.Class<DeliverReportPayload>('app/DeliverReportPayload')({
+class DeliverReportPayload extends Schema.Class<DeliverReportPayload>('app/DeliverReportPayload')({
   reportId: z.string(),
   recipient: z.email()
 }) {}
 const deliverReportPayloadCodec = Codec.standardSchema({
   schema: DeliverReportPayload,
   encode: (value) =>
-    Schema.encode(DeliverReportPayload, value).mapError(
+    CoreSchema.encode(DeliverReportPayload, value).mapError(
       (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
     )
 })
@@ -541,7 +538,7 @@ try {
 
   const result = await runtime.run(() =>
     Effect.gen(async function* () {
-      const payload = local.decodeUnknown(BuildReportPayload, { reportId: 'weekly-2025-01' })
+      const payload = Schema.decodeUnknown(BuildReportPayload, { reportId: 'weekly-2025-01' })
       if (Result.isError(payload)) throw payload.error
       const jobId = yield* BuildReport.enqueue(payload.value)
       const completed = yield* BuildReport.awaitResult(jobId)
@@ -561,8 +558,8 @@ try {
 The JobStore Layer borrows the already initialized command and subscriber
 clients. The surrounding application owns that `RedisClient`, so it disposes
 the Runtime first and the client second. The parent payload uses the same
-schema-first boundary (`Schema.with(ZodAdapter)`, `local.Class`, and
-`Schema.encode`); concise result/failure codecs are suitable for plain-JSON
+schema-first boundary (the preconfigured Zod `Schema`, `Schema.Class`, and
+`CoreSchema.encode`); concise result/failure codecs are suitable for plain-JSON
 values. For a named JobStore, provide
 `FlowStore.for(namedStore)` and the matching `RedisFlowStore` instance under
 that associated token.

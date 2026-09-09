@@ -19,9 +19,9 @@ from their own subpaths:
 
 ```text
 better-effect-schema       Standard Schema core and portable operations
-better-effect-schema/zod   Zod 4 adapter and class factories
-better-effect-schema/valibot
-better-effect-schema/arktype
+better-effect-schema/zod   Preconfigured Zod 4 Schema facade and adapter
+better-effect-schema/valibot Preconfigured Valibot Schema facade and adapter
+better-effect-schema/arktype Preconfigured ArkType Schema facade and adapter
 ```
 
 ## Quick start with Zod
@@ -33,15 +33,13 @@ bun add better-effect-schema zod better-result
 ```
 
 Define a real Zod schema, infer the data type you use in your application, and
-give the schema to the Zod-backed local facade:
+use the preconfigured Zod facade:
 
 ```ts
 import * as z from 'zod'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
-
-const local = Schema.with(ZodAdapter)
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
 const UserSchema = z.object({
   id: z.string().min(1),
@@ -57,7 +55,7 @@ const example: UserInput = {
   displayName: 'Ada Lovelace'
 }
 
-class User extends local.Class<User>('app/User')(UserSchema) {}
+class User extends Schema.Class<User>('app/User')(UserSchema) {}
 ```
 
 Validate at the boundary where data is still `unknown`. `Schema.decodeUnknown`
@@ -142,7 +140,7 @@ const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   encode: (value) => value.toISOString()
 })
 
-class Event extends local.Class<Event>('app/Event')({
+class Event extends Schema.Class<Event>('app/Event')({
   id: z.string(),
   occurredAt: DateFromISOString
 }) {}
@@ -153,7 +151,7 @@ const decodedEvent = Schema.decode(Event, {
 })
 if (Result.isError(decodedEvent)) throw decodedEvent.error
 
-const wireEvent = Schema.encode(Event, decodedEvent.value)
+const wireEvent = CoreSchema.encode(Event, decodedEvent.value)
 if (Result.isError(wireEvent)) throw wireEvent.error
 ```
 
@@ -171,16 +169,15 @@ Use the same provider-backed schemas at a queue boundary. Define a Job with
 ```ts
 import * as z from 'zod'
 import { Codec, JobEncodeFailure, Queue } from 'better-effect-mq'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema as CoreSchema } from 'better-effect-schema'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
 const DateFromISOString = z.codec(z.iso.datetime(), z.date(), {
   decode: (value) => new Date(value),
   encode: (value) => value.toISOString()
 })
 
-class SendEmailPayload extends local.Class<SendEmailPayload>('app/SendEmailPayload')({
+class SendEmailPayload extends Schema.Class<SendEmailPayload>('app/SendEmailPayload')({
   recipient: z.email(),
   subject: z.string().min(1),
   scheduledAt: DateFromISOString
@@ -192,7 +189,7 @@ const SendEmail = Emails.job('send-email', {
   payload: Codec.standardSchema({
     schema: SendEmailPayload,
     encode: (value) =>
-      Schema.encode(SendEmailPayload, value).mapError(
+      CoreSchema.encode(SendEmailPayload, value).mapError(
         (error) => new JobEncodeFailure({ message: error.message, code: 'schema-encode' })
       )
   }),
@@ -213,20 +210,17 @@ failure behavior are documented in the [advanced API section](docs/api.md#advanc
 
 ## Tagged classes and errors
 
-The root facade also exports portable tagged factories. Provider adapters add
-their own provider-native class capabilities where supported. Use a provider
+The provider-neutral root API also exports portable tagged factories. Provider
+subpaths add their own provider-native class capabilities where supported. Use a provider
 schema for ordinary input validation and the tagged factories for domain
 values or errors that need a stable tag:
 
 ```ts
 import * as z from 'zod'
 import { Result } from 'better-result'
-import { Schema } from 'better-effect-schema'
-import { ZodAdapter } from 'better-effect-schema/zod'
+import { Schema } from 'better-effect-schema/zod'
 
-const local = Schema.with(ZodAdapter)
-
-class UserNotFound extends local.TaggedError<UserNotFound>()('UserNotFound', {
+class UserNotFound extends Schema.TaggedError<UserNotFound>()('UserNotFound', {
   userId: z.string()
 }) {}
 
