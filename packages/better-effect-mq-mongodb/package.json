@@ -3,6 +3,10 @@
   "version": "0.1.2",
   "description": "MongoDB JobStore adapter and migrations for better-effect-mq.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nitoba/better-effect.git"
+  },
   "files": [
     "dist",
     "LICENSE",
