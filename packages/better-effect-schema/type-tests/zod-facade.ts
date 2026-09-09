@@ -24,6 +24,10 @@ class User extends Schema.Class<User>('types/ZodFacadeUser')({
   createdAt: DateFromISOString
 }) {}
 
+type _Input = Expect<Equal<Schema.Input<typeof DateFromISOString>, string>>
+type _Output = Expect<Equal<Schema.Output<typeof DateFromISOString>, Date>>
+type _Effect = Expect<Equal<Schema.Effect<string, never>, Effect<string, never, never>>>
+
 const decoded = Schema.decode(User, {
   id: '550e8400-e29b-41d4-a716-446655440000',
   createdAt: '2026-09-09T00:00:00.000Z'
