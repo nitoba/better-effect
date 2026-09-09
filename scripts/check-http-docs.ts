@@ -70,10 +70,6 @@ const assertDocs = async (): Promise<void> => {
   const skillDocumentation = await read(
     resolve(repositoryRoot, 'skills/better-effect/references/official-documentation.md')
   )
-  // SAFETY: meta.json is a repository-owned navigation object; only its pages array is inspected.
-  const meta = JSON.parse(await read(resolve(docsRoot, 'content/docs/meta.json'))) as {
-    readonly pages?: readonly unknown[]
-  }
   // SAFETY: package.json is a repository-owned manifest; only the script map is inspected.
   const packageManifest = JSON.parse(await read(resolve(packageRoot, 'package.json'))) as {
     readonly scripts?: Record<string, string>
@@ -90,6 +86,7 @@ const assertDocs = async (): Promise<void> => {
     'hono-streaming.ts'
   ] as const
 
+  // SAFETY: integrations meta.json is a repository-owned navigation object; only its pages array is inspected.
   const integrationsMeta = JSON.parse(
     await read(resolve(docsRoot, 'content/docs/integrations/meta.json'))
   ) as { readonly pages?: readonly unknown[] }

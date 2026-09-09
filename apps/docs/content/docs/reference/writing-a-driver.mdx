@@ -39,7 +39,7 @@ capability configuration, passing every capability explicitly (including
 `false`) so the descriptor manifest is checked. A declared-true
 `durableChangeFeed`, `globalConcurrency`, or `rateLimiting` flag requires a
 separate extension Service/interface and an executable `extensions` scenario;
-these flags never add optional methods to `JobStore` v1. The report marks a
+these flags never add optional methods to the `JobStore` contract. The report marks a
 true declaration without such a scenario as `capabilitiesNotTested`. Then add
 backend tests for rollback, concurrent writers, reconnects, lost responses,
 migration boundaries, and borrowed-versus-owned cleanup. Before release, run
