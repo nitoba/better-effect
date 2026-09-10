@@ -255,7 +255,7 @@ const runConsumer = async (
     'better-effect',
     await readPackageVersion(coreRoot, 'better-effect')
   )
-  await assertInstalledPackage(fixture, 'better-effect-kysely', '0.1.0')
+  await assertInstalledPackage(fixture, 'better-effect-kysely', '0.1.1')
   assertCondition(
     (await readInstalledVersion(fixture, 'kysely')) === cell.expectedVersion,
     `Consumer did not resolve Kysely ${cell.expectedVersion}`
@@ -283,7 +283,7 @@ const runImportConsumer = async (root: string, archives: ArchiveSet): Promise<vo
     'better-effect',
     await readPackageVersion(coreRoot, 'better-effect')
   )
-  await assertInstalledPackage(fixture, 'better-effect-kysely', '0.1.0')
+  await assertInstalledPackage(fixture, 'better-effect-kysely', '0.1.1')
   await reportVersions(fixture, 'import-only')
   typecheck(fixture)
   assertSuccess(run(['bun', 'smoke.mjs'], fixture), 'Import-only consumer smoke with Bun')

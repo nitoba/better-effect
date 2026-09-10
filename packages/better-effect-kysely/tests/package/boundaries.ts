@@ -163,7 +163,7 @@ const assertManifest = async (): Promise<void> => {
     join(repositoryRoot, 'packages/better-effect/package.json')
   )
   assertCondition(manifest['name'] === 'better-effect-kysely', 'Unexpected package name')
-  assertCondition(manifest['version'] === '0.1.0', 'Unexpected package version')
+  assertCondition(manifest['version'] === '0.1.1', 'Unexpected package version')
   assertCondition(manifest['type'] === 'module', 'Package must be ESM')
   assertCondition(manifest['sideEffects'] === false, 'Package must be side-effect free')
   assertCondition(
