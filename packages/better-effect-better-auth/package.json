@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "typecheck": "tsc --noEmit && bun run typecheck:examples",
+    "typecheck": "tsc --noEmit && bun run build && bun run typecheck:examples",
     "typecheck:examples": "tsc --noEmit -p examples/tsconfig.json",
     "test:types": "tsc -p tests/types/tsconfig.json",
     "test:public-types": "tsc -p tests/package/public-types/tsconfig.json",
