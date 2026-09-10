@@ -1,6 +1,6 @@
 {
   "name": "better-effect-mq-sqlite",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Embedded SQLite JobStore, FlowStore, JobScheduleStore, and durable OutboxStore adapters for better-effect-mq.",
   "keywords": [
     "better-effect",

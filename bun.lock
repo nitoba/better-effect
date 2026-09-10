@@ -384,7 +384,7 @@
     },
     "packages/better-effect-mq-sqlite": {
       "name": "better-effect-mq-sqlite",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "devDependencies": {
         "@types/bun": "1.4.1",
         "@types/node": "^24.0.0",
