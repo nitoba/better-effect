@@ -26,7 +26,7 @@ const versions = {
   '@opentelemetry/api': '1.9.1',
   '@types/node': '26.1.2',
   arktype: '2.2.3',
-  'better-effect-http': '0.1.1',
+  'better-effect-http': '0.1.0',
   'better-result': '3.0.1',
   hono: '4.13.3',
   typescript: process.env['BETTER_EFFECT_HTTP_TYPESCRIPT_VERSION'] ?? '7.0.2',

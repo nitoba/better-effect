@@ -22,7 +22,7 @@ for (const exportName of ['HttpRequest', 'HttpRequestError', 'HttpClient', 'vali
   }
 }
 
-if (packageJson.name !== 'better-effect-http' || packageJson.version !== '0.1.1') {
+if (packageJson.name !== 'better-effect-http' || packageJson.version !== '0.1.0') {
   throw new Error('The packed HTTP package manifest is not the expected artifact')
 }
 
