@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.3] - 2026-09-10
 
 - Add `MySqlOutbox.transaction(pool, record, callback, options?)` for
   adapter-owned connection and transaction lifecycle around domain writes and

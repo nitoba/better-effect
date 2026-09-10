@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.4] - 2026-09-10
 
 - Add `MongoOutbox.transaction(clientOrDb, preparedRecord, callback, options?)`
   for adapter-owned MongoDB session and transaction lifecycle around domain

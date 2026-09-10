@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.2] - 2026-09-10
 
 - Add QueueControls protocol v3 support with durable controls, persisted dispatch keys, atomic
   global/per-key permits, fixed-window rate limits, bounded rotating candidate scans, recovery

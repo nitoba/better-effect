@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.3] - 2026-09-10
 
 - Add the Redis-native `RedisOutbox.transaction` callback and durable
   `RedisOutboxStore` Layer. The callback owns `MULTI`/`EXEC` cleanup for a

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.3] - 2026-09-10
 
 - Add contextual `layerWith` and `layerFromConfigWith` factories for PostgreSQL
   stores. Their generators resolve configuration and caller-owned pools with
