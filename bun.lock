@@ -242,7 +242,7 @@
     },
     "packages/better-effect-mq-mongodb": {
       "name": "better-effect-mq-mongodb",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "devDependencies": {
         "@types/bun": "1.4.1",
         "@types/node": "^22.0.0",
