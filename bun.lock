@@ -133,7 +133,7 @@
     },
     "packages/better-effect-better-auth": {
       "name": "better-effect-better-auth",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/bun": "1.4.1",
         "better-auth": "^1.7.2",
