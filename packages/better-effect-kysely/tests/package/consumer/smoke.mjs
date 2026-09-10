@@ -219,7 +219,7 @@ if (queryError.cause !== cause || JSON.stringify(queryError).includes('secret SQ
   throw new Error('The packed Kysely query error did not preserve safe error semantics')
 }
 
-if (packageJson.name !== 'better-effect-kysely' || packageJson.version !== '0.1.0') {
+if (packageJson.name !== 'better-effect-kysely' || packageJson.version !== '0.1.1') {
   throw new Error('The packed Kysely package metadata is incorrect')
 }
 
