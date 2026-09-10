@@ -161,7 +161,7 @@
     },
     "packages/better-effect-http": {
       "name": "better-effect-http",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "eventsource-parser": "^3.0.6",
         "ofetch": "^1.5.1",

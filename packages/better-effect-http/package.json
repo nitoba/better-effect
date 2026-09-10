@@ -1,6 +1,6 @@
 {
   "name": "better-effect-http",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Layer-first HTTP client foundations for better-effect.",
   "keywords": [
     "better-effect",
