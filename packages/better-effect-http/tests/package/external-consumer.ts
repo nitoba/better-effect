@@ -197,6 +197,10 @@ const pack = async (
   return join(destination, archive)
 }
 
+const build = (packageDirectory: string, label: string): void => {
+  assertSuccess(run(['bun', 'run', 'build'], packageDirectory), `Building ${label}`)
+}
+
 const assertPackedArtifact = async (archive: string): Promise<void> => {
   const entries = archiveEntries(archive)
   for (const required of [
@@ -393,6 +397,7 @@ const main = async (): Promise<void> => {
     const schemaVersion = await readPackageVersion(schemaPackageRoot, 'better-effect-schema')
     const archiveRoot = join(root, 'archives')
     await mkdir(archiveRoot)
+    build(schemaPackageRoot, 'better-effect-schema')
     const archives = {
       core: await pack(corePackageRoot, archiveRoot, 'core'),
       schema: await pack(schemaPackageRoot, archiveRoot, 'schema'),
