@@ -20,7 +20,7 @@ const expectedExports = {
 
 const expectedPeers = {
   '@opentelemetry/api': '>=1.9.0 <1.10.0',
-  'better-effect': '>=0.13.0 <0.14.0',
+  'better-effect': '>=0.14.0 <0.15.0',
   'better-effect-schema': '>=0.1.0 <0.2.0',
   'better-result': '^3.0.0',
   typescript: '>=6.0.0'

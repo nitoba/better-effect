@@ -55,6 +55,14 @@ import {
 import { PostgresClient } from './client'
 import { quoteIdentifier, POSTGRES_TABLES } from './schema'
 import {
+  normalizePostgresLayerFactory,
+  type PostgresLayerFactory,
+  type PostgresLayerFactoryRequirements,
+  type PostgresLayerGenerator,
+  type PostgresLayerRequirements,
+  type PostgresLayerValueFactory
+} from './layer-factory'
+import {
   OutboxConflictError,
   OutboxDefinitionError,
   OutboxLeaseLostError,
@@ -822,15 +830,18 @@ const namedOutbox = <const Name extends string>(name: Name): PostgresOutboxToken
 const makeStore = (config: PostgresJobStoreConfig): PostgresOutboxStore =>
   new PostgresOutboxStoreImplementation(PostgresClient.fromPool(config))
 
-const makeLayer = <Token extends AnyPostgresOutboxToken>(
+const makeLayer = <
+  Token extends AnyPostgresOutboxToken,
+  Yield extends ServiceRequirement<unknown> = never
+>(
   token: Token,
-  acquire: () => Promise<PostgresClient>,
+  acquire: PostgresLayerFactory<PostgresClient, Yield>,
   ownsClient: boolean
-): Layer<InstanceType<Token>, never> =>
-  Layer.scoped(
+): Layer<InstanceType<Token>, PostgresLayerRequirements<Yield>> =>
+  Layer.scopedGen(
     token,
-    async () => {
-      const client = await acquire()
+    async function* () {
+      const client = yield* normalizePostgresLayerFactory(acquire)()
       let implementation: PostgresOutboxStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
@@ -857,7 +868,7 @@ const makeLayer = <Token extends AnyPostgresOutboxToken>(
     async (store) => {
       await (store as unknown as PostgresOutboxStoreImplementation).dispose()
     }
-  )
+  ) as Layer<InstanceType<Token>, PostgresLayerRequirements<Yield>>
 
 const namespaceForToken = (token: AnyPostgresOutboxToken, namespace: string): string =>
   token.serviceTag === postgresOutboxTag
@@ -873,6 +884,19 @@ const borrowedClient = (token: AnyPostgresOutboxToken, config: PostgresJobStoreC
     })
 }
 
+const borrowedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  token: AnyPostgresOutboxToken,
+  factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+): PostgresLayerFactory<PostgresClient, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConfig(config)
+    return PostgresClient.fromPool({
+      ...normalized,
+      namespace: namespaceForToken(token, normalized.namespace)
+    })
+  }
+
 const ownedClient = (token: AnyPostgresOutboxToken, config: PostgresJobStoreConnectionConfig) => {
   const normalized = normalizePostgresJobStoreConnectionConfig(config)
   return () =>
@@ -881,6 +905,19 @@ const ownedClient = (token: AnyPostgresOutboxToken, config: PostgresJobStoreConn
       namespace: namespaceForToken(token, normalized.namespace)
     })
 }
+
+const ownedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  token: AnyPostgresOutboxToken,
+  factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+): PostgresLayerFactory<PostgresClient, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConnectionConfig(config)
+    return await PostgresClient.fromConfig({
+      ...normalized,
+      namespace: namespaceForToken(token, normalized.namespace)
+    })
+  }
 
 const defaultToken = makeToken(undefined) as unknown as DefaultPostgresOutboxToken
 
@@ -951,7 +988,76 @@ const staticTransaction = async <Value>(
   return value as Value
 }
 
-const api = {
+type PostgresOutboxApi = {
+  readonly named: typeof namedOutbox
+  readonly appendIn: typeof staticAppendIn
+  readonly transaction: typeof staticTransaction
+  readonly make: typeof makeStore
+  readonly layer: (config: PostgresJobStoreConfig) => Layer<PostgresOutboxInstance, never>
+  readonly layerFor: <Token extends AnyPostgresOutboxToken>(
+    token: Token,
+    config: PostgresJobStoreConfig
+  ) => Layer<InstanceType<Token>, never>
+  readonly layerWith: {
+    <Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>>(
+      factory: Factory
+    ): Layer<PostgresOutboxInstance, PostgresLayerFactoryRequirements<Factory>>
+    (
+      factory: PostgresLayerValueFactory<PostgresJobStoreConfig>
+    ): Layer<PostgresOutboxInstance, never>
+  }
+  readonly layerWithFor: {
+    <
+      Token extends AnyPostgresOutboxToken,
+      Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>
+    >(
+      token: Token,
+      factory: Factory
+    ): Layer<InstanceType<Token>, PostgresLayerFactoryRequirements<Factory>>
+    <Token extends AnyPostgresOutboxToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConfig>
+    ): Layer<InstanceType<Token>, never>
+  }
+  readonly layerFromConfig: (
+    config: PostgresJobStoreConnectionConfig
+  ) => Layer<PostgresOutboxInstance, never>
+  readonly layerFromConfigFor: <Token extends AnyPostgresOutboxToken>(
+    token: Token,
+    config: PostgresJobStoreConnectionConfig
+  ) => Layer<InstanceType<Token>, never>
+  readonly layerFromConfigWith: {
+    <
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      factory: Factory
+    ): Layer<PostgresOutboxInstance, PostgresLayerFactoryRequirements<Factory>>
+    (
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): Layer<PostgresOutboxInstance, never>
+  }
+  readonly layerFromConfigWithFor: {
+    <
+      Token extends AnyPostgresOutboxToken,
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      token: Token,
+      factory: Factory
+    ): Layer<InstanceType<Token>, PostgresLayerFactoryRequirements<Factory>>
+    <Token extends AnyPostgresOutboxToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): Layer<InstanceType<Token>, never>
+  }
+}
+
+const api: PostgresOutboxApi = {
   named: namedOutbox,
   appendIn: staticAppendIn,
   transaction: staticTransaction,
@@ -965,6 +1071,13 @@ const api = {
   ) => {
     return makeLayer(token, borrowedClient(token, config), false)
   },
+  layerWith: <Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) => makeLayer(defaultToken, borrowedClientFromFactory(defaultToken, factory), false),
+  layerWithFor: <Token extends AnyPostgresOutboxToken, Yield extends ServiceRequirement<unknown>>(
+    token: Token,
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) => makeLayer(token, borrowedClientFromFactory(token, factory), false),
   layerFromConfig: (config: PostgresJobStoreConnectionConfig) => {
     return makeLayer(defaultToken, ownedClient(defaultToken, config), true)
   },
@@ -973,7 +1086,17 @@ const api = {
     config: PostgresJobStoreConnectionConfig
   ) => {
     return makeLayer(token, ownedClient(token, config), true)
-  }
+  },
+  layerFromConfigWith: <Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+  ) => makeLayer(defaultToken, ownedClientFromFactory(defaultToken, factory), true),
+  layerFromConfigWithFor: <
+    Token extends AnyPostgresOutboxToken,
+    Yield extends ServiceRequirement<unknown>
+  >(
+    token: Token,
+    factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+  ) => makeLayer(token, ownedClientFromFactory(token, factory), true)
 }
 
 Object.defineProperties(defaultToken, {
@@ -983,6 +1106,13 @@ Object.defineProperties(defaultToken, {
   make: { configurable: false, enumerable: true, value: api.make, writable: false },
   layer: { configurable: false, enumerable: true, value: api.layer, writable: false },
   layerFor: { configurable: false, enumerable: true, value: api.layerFor, writable: false },
+  layerWith: { configurable: false, enumerable: true, value: api.layerWith, writable: false },
+  layerWithFor: {
+    configurable: false,
+    enumerable: true,
+    value: api.layerWithFor,
+    writable: false
+  },
   layerFromConfig: {
     configurable: false,
     enumerable: true,
@@ -993,6 +1123,18 @@ Object.defineProperties(defaultToken, {
     configurable: false,
     enumerable: true,
     value: api.layerFromConfigFor,
+    writable: false
+  },
+  layerFromConfigWith: {
+    configurable: false,
+    enumerable: true,
+    value: api.layerFromConfigWith,
+    writable: false
+  },
+  layerFromConfigWithFor: {
+    configurable: false,
+    enumerable: true,
+    value: api.layerFromConfigWithFor,
     writable: false
   }
 })

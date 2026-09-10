@@ -1,8 +1,10 @@
-import { Layer } from 'better-effect'
+import { Layer, Service } from 'better-effect'
 import { JobScheduleStore, JobStore } from 'better-effect-mq'
 import {
   PostgresJobScheduleStore,
+  PostgresFlowStore,
   PostgresJobStore,
+  PostgresOutbox,
   loadPostgresMigrations,
   migrationSql,
   quoteIdentifier
@@ -30,3 +32,24 @@ const schedulesLayer = PostgresJobScheduleStore.layerFor(DurableSchedules, {
   validateSchema: false
 })
 if (!(schedulesLayer instanceof Layer)) throw new Error('Expected a schedule Layer')
+
+type Pool = Parameters<typeof PostgresJobStore.layer>[0]['pool']
+class SharedPool extends Service<SharedPool>()('@consumer/SharedPool') {
+  declare readonly raw: Pool
+}
+declare const sharedPool: SharedPool
+const contextualConfig = function* () {
+  const shared = yield* SharedPool
+  return { pool: shared.raw, validateSchema: false }
+}
+const contextualJobLayer = PostgresJobStore.layerWith(contextualConfig)
+const contextualLayers = Layer.complete(
+  Layer.merge(
+    Layer.succeed(SharedPool, sharedPool),
+    contextualJobLayer,
+    PostgresJobScheduleStore.layerWith(contextualConfig),
+    PostgresOutbox.layerWith(contextualConfig),
+    PostgresFlowStore.layerWith(contextualConfig)
+  )
+)
+if (!(contextualLayers instanceof Layer)) throw new Error('Expected contextual PostgreSQL Layers')

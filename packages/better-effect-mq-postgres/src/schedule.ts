@@ -6,7 +6,8 @@
 
 import { createHash } from 'node:crypto'
 import { Layer } from 'better-effect'
-import type { ServiceContract } from 'better-effect'
+import type { AnyService, ServiceContract } from 'better-effect'
+import type { ServiceRequirement } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 import {
   DuplicateScheduleError,
@@ -64,6 +65,14 @@ import {
   postgresJobEventTableAvailable
 } from './event-store'
 import { POSTGRES_TABLES, quoteIdentifier } from './schema'
+import {
+  normalizePostgresLayerFactory,
+  type PostgresLayerFactory,
+  type PostgresLayerFactoryRequirements,
+  type PostgresLayerGenerator,
+  type PostgresLayerRequirements,
+  type PostgresLayerValueFactory
+} from './layer-factory'
 
 export type PostgresJobScheduleStoreOptions = PostgresJobStoreConfig
 
@@ -1235,25 +1244,38 @@ class PostgresJobScheduleStoreImplementation implements JobScheduleStoreContract
   }
 }
 
-type ScheduleLayer<Token extends AnyJobScheduleStoreToken> = Layer<
+type ScheduleResource = {
+  readonly client: PostgresClient
+  readonly eventWriter: JobEventStoreWriter | undefined
+}
+
+type ScheduleLayer<
+  Token extends AnyJobScheduleStoreToken,
+  Yield extends ServiceRequirement<unknown> = never
+> = Layer<InstanceType<Token>, InstanceType<Token['jobStore']> | PostgresLayerRequirements<Yield>>
+
+type ScheduleLayerWithRequired<Token extends AnyJobScheduleStoreToken, Required> = Layer<
   InstanceType<Token>,
-  InstanceType<Token['jobStore']>
+  InstanceType<Token['jobStore']> | Extract<Required, AnyService>
 >
 
-const makeScheduleLayer = <Token extends AnyJobScheduleStoreToken>(
+const makeScheduleLayer = <
+  Token extends AnyJobScheduleStoreToken,
+  Yield extends ServiceRequirement<unknown>
+>(
   token: Token,
-  acquire: () => Promise<PostgresClient>,
-  eventWriter?: JobEventStoreWriter
-): ScheduleLayer<Token> =>
+  acquire: PostgresLayerFactory<ScheduleResource, Yield>
+): ScheduleLayer<Token, Yield> =>
   Layer.scopedGen(
     token,
     async function* () {
       yield* token.jobStore
-      const client = await acquire()
+      const resource = yield* normalizePostgresLayerFactory(acquire)()
+      const { client } = resource
       let implementation: PostgresJobScheduleStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
-        implementation = new PostgresJobScheduleStoreImplementation(client, eventWriter)
+        implementation = new PostgresJobScheduleStoreImplementation(client, resource.eventWriter)
         return JobScheduleStore.of(implementation as never) as unknown as ServiceContract<
           InstanceType<Token>
         >
@@ -1266,7 +1288,7 @@ const makeScheduleLayer = <Token extends AnyJobScheduleStoreToken>(
     async (store) => {
       await (store as unknown as PostgresJobScheduleStoreImplementation).dispose()
     }
-  ) as ScheduleLayer<Token>
+  ) as ScheduleLayer<Token, Yield>
 
 const hash = (value: string): string =>
   createHash('sha256').update(value).digest('hex').slice(0, 48)
@@ -1276,67 +1298,172 @@ const namespaceForToken = (token: AnyJobScheduleStoreToken, namespace: string): 
     ? namespace
     : `${namespace}:store-${hash(token.jobStore.serviceTag)}`
 
-const borrowedClient = (token: AnyJobScheduleStoreToken, config: PostgresJobStoreConfig) => {
+const borrowedClient = (
+  token: AnyJobScheduleStoreToken,
+  config: PostgresJobStoreConfig
+): (() => Promise<ScheduleResource>) => {
   const normalized = normalizePostgresJobStoreConfig(config)
+  const { eventWriter: _eventWriter, ...clientConfig } = normalized
   return () =>
-    Promise.resolve(
-      PostgresClient.fromPool({
-        ...normalized,
-        namespace: namespaceForToken(token, normalized.namespace)
-      })
-    )
-}
-
-const ownedClient = (token: AnyJobScheduleStoreToken, config: PostgresJobStoreConnectionConfig) => {
-  const normalized = normalizePostgresJobStoreConnectionConfig(config)
-  return () =>
-    PostgresClient.fromConfig({
-      ...normalized,
-      namespace: namespaceForToken(token, normalized.namespace)
+    Promise.resolve({
+      client: PostgresClient.fromPool({
+        ...clientConfig,
+        namespace: namespaceForToken(token, clientConfig.namespace)
+      }),
+      eventWriter: normalized.eventWriter
     })
 }
 
+const borrowedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  token: AnyJobScheduleStoreToken,
+  factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+): PostgresLayerFactory<ScheduleResource, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConfig(config)
+    const { eventWriter: _eventWriter, ...clientConfig } = normalized
+    return {
+      client: PostgresClient.fromPool({
+        ...clientConfig,
+        namespace: namespaceForToken(token, clientConfig.namespace)
+      }),
+      eventWriter: normalized.eventWriter
+    }
+  }
+
+const ownedClient = (
+  token: AnyJobScheduleStoreToken,
+  config: PostgresJobStoreConnectionConfig
+): (() => Promise<ScheduleResource>) => {
+  const normalized = normalizePostgresJobStoreConnectionConfig(config)
+  const { eventWriter: _eventWriter, ...clientConfig } = normalized
+  return () =>
+    PostgresClient.fromConfig({
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
+    }).then((client) => ({
+      client,
+      eventWriter: normalized.eventWriter
+    }))
+}
+
+const ownedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  token: AnyJobScheduleStoreToken,
+  factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+): PostgresLayerFactory<ScheduleResource, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConnectionConfig(config)
+    const { eventWriter: _eventWriter, ...clientConfig } = normalized
+    const client = await PostgresClient.fromConfig({
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
+    })
+    return { client, eventWriter: normalized.eventWriter }
+  }
+
 type PostgresJobScheduleStoreApi = {
-  readonly layer: (config: PostgresJobStoreConfig) => ScheduleLayer<typeof JobScheduleStore>
+  readonly layer: (config: PostgresJobStoreConfig) => ScheduleLayer<typeof JobScheduleStore, never>
   readonly layerFor: <Token extends AnyJobScheduleStoreToken>(
     token: Token,
     config: PostgresJobStoreConfig
-  ) => ScheduleLayer<Token>
+  ) => ScheduleLayer<Token, never>
+  readonly layerWith: {
+    <Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>>(
+      factory: Factory
+    ): ScheduleLayerWithRequired<typeof JobScheduleStore, PostgresLayerFactoryRequirements<Factory>>
+    (
+      factory: PostgresLayerValueFactory<PostgresJobStoreConfig>
+    ): ScheduleLayer<typeof JobScheduleStore, never>
+  }
+  readonly layerWithFor: {
+    <
+      Token extends AnyJobScheduleStoreToken,
+      Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>
+    >(
+      token: Token,
+      factory: Factory
+    ): ScheduleLayerWithRequired<Token, PostgresLayerFactoryRequirements<Factory>>
+    <Token extends AnyJobScheduleStoreToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConfig>
+    ): ScheduleLayer<Token, never>
+  }
   readonly layerFromConfig: (
     config: PostgresJobStoreConnectionConfig
-  ) => ScheduleLayer<typeof JobScheduleStore>
+  ) => ScheduleLayer<typeof JobScheduleStore, never>
   readonly layerFromConfigFor: <Token extends AnyJobScheduleStoreToken>(
     token: Token,
     config: PostgresJobStoreConnectionConfig
-  ) => ScheduleLayer<Token>
+  ) => ScheduleLayer<Token, never>
+  readonly layerFromConfigWith: {
+    <
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      factory: Factory
+    ): ScheduleLayerWithRequired<typeof JobScheduleStore, PostgresLayerFactoryRequirements<Factory>>
+    (
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): ScheduleLayer<typeof JobScheduleStore, never>
+  }
+  readonly layerFromConfigWithFor: {
+    <
+      Token extends AnyJobScheduleStoreToken,
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      token: Token,
+      factory: Factory
+    ): ScheduleLayerWithRequired<Token, PostgresLayerFactoryRequirements<Factory>>
+    <Token extends AnyJobScheduleStoreToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): ScheduleLayer<Token, never>
+  }
 }
 
 export const PostgresJobScheduleStore: PostgresJobScheduleStoreApi = Object.freeze({
   layer(config: PostgresJobStoreConfig) {
     const normalized = normalizePostgresJobStoreConfig(config)
-    return makeScheduleLayer(
-      JobScheduleStore,
-      borrowedClient(JobScheduleStore, normalized),
-      normalized.eventWriter
-    )
+    return makeScheduleLayer(JobScheduleStore, borrowedClient(JobScheduleStore, normalized))
   },
   layerFor<Token extends AnyJobScheduleStoreToken>(token: Token, config: PostgresJobStoreConfig) {
-    const normalized = normalizePostgresJobStoreConfig(config)
-    return makeScheduleLayer(token, borrowedClient(token, normalized), normalized.eventWriter)
+    return makeScheduleLayer(token, borrowedClient(token, config))
+  },
+  layerWith<Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) {
+    return makeScheduleLayer(JobScheduleStore, borrowedClientFromFactory(JobScheduleStore, factory))
+  },
+  layerWithFor<Token extends AnyJobScheduleStoreToken, Yield extends ServiceRequirement<unknown>>(
+    token: Token,
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) {
+    return makeScheduleLayer(token, borrowedClientFromFactory(token, factory))
   },
   layerFromConfig(config: PostgresJobStoreConnectionConfig) {
-    const normalized = normalizePostgresJobStoreConnectionConfig(config)
-    return makeScheduleLayer(
-      JobScheduleStore,
-      ownedClient(JobScheduleStore, normalized),
-      normalized.eventWriter
-    )
+    return makeScheduleLayer(JobScheduleStore, ownedClient(JobScheduleStore, config))
   },
   layerFromConfigFor<Token extends AnyJobScheduleStoreToken>(
     token: Token,
     config: PostgresJobStoreConnectionConfig
   ) {
-    const normalized = normalizePostgresJobStoreConnectionConfig(config)
-    return makeScheduleLayer(token, ownedClient(token, normalized), normalized.eventWriter)
+    return makeScheduleLayer(token, ownedClient(token, config))
+  },
+  layerFromConfigWith<Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+  ) {
+    return makeScheduleLayer(JobScheduleStore, ownedClientFromFactory(JobScheduleStore, factory))
+  },
+  layerFromConfigWithFor<
+    Token extends AnyJobScheduleStoreToken,
+    Yield extends ServiceRequirement<unknown>
+  >(token: Token, factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>) {
+    return makeScheduleLayer(token, ownedClientFromFactory(token, factory))
   }
 })

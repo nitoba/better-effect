@@ -68,6 +68,13 @@ export type {
 } from './migrator'
 export type { PostgresJobScheduleStoreOptions } from './schedule'
 export type {
+  PostgresLayerFactory,
+  PostgresLayerFactoryRequirements,
+  PostgresLayerGenerator,
+  PostgresLayerRequirements,
+  PostgresLayerValueFactory
+} from './layer-factory'
+export type {
   PostgresJobEventStoreConfig,
   PostgresJobEventStoreConnectionConfig,
   PostgresJobEventStoreInstance

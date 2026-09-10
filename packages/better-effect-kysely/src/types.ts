@@ -2,12 +2,20 @@ import type { Layer, Service, ServiceRequirement, ServiceToken } from 'better-ef
 
 import type { Kysely } from 'kysely'
 
+declare const KyselyServiceDatabaseTypeId: unique symbol
+
+/** Retains the exact DB parameter when Kysely's structural conditional types widen it. */
+type KyselyServiceDatabase<DB> = {
+  readonly [KyselyServiceDatabaseTypeId]?: DB
+}
+
 /** The marker-free Kysely contract represented by a Kysely Service. */
 export type KyselyService<DB> = Kysely<DB>
 
 /** A Kysely instance branded with the Service tag captured by its token. */
 export type KyselyServiceInstance<Tag extends string, DB> = KyselyService<DB> &
-  Service.Identity<Tag>
+  Service.Identity<Tag> &
+  KyselyServiceDatabase<DB>
 
 /** A non-empty literal accepted by `KyselyEffect.service`. */
 export type KyselyServiceTag<Tag extends string> = string extends Tag

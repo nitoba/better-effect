@@ -13,7 +13,7 @@
   },
   "peerDependencies": {
     "better-auth": "1.7.0",
-    "better-effect": "0.13.0",
+    "better-effect": "0.14.0",
     "better-result": "3.0.0",
     "hono": "4.0.0",
     "typescript": "7.0.2"

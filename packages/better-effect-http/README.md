@@ -25,7 +25,7 @@ peer range starts at 6.0. The package has these peers:
 
 | Peer                   | Supported range              | Why it is a peer                          |
 | ---------------------- | ---------------------------- | ----------------------------------------- |
-| `better-effect`        | `>=0.13.0 <0.14.0`           | Services, Layers, Runtime and Scope       |
+| `better-effect`        | `>=0.14.0 <0.15.0`           | Services, Layers, Runtime and Scope       |
 | `better-result`        | `^3.0.0`                     | Result, `Result.await`, and tagged errors |
 | `better-effect-schema` | `>=0.1.0 <0.2.0`             | Provider-neutral Standard Schema decode   |
 | TypeScript             | `>=6.0.0`                    | public type contracts                     |

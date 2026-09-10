@@ -41,8 +41,8 @@
     "@types/bun": "1.4.1",
     "@types/node": "^22.0.0",
     "better-effect": "0.14.0",
-    "better-effect-mq": "0.1.0",
-    "better-effect-mq-outbox": "0.1.0",
+    "better-effect-mq": "0.1.1",
+    "better-effect-mq-outbox": "0.1.2",
     "better-result": "^3.0.0",
     "mongodb": "^6.21.0",
     "oxfmt": "^0.63.0",
@@ -52,7 +52,7 @@
     "typescript": "^7.0.2"
   },
   "peerDependencies": {
-    "better-effect": ">=0.13.0 <0.14.0",
+    "better-effect": ">=0.14.0 <0.15.0",
     "better-effect-mq": ">=0.1.0 <0.2.0",
     "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
     "better-result": "^3.0.0",

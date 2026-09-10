@@ -50,7 +50,7 @@ bun add better-sqlite3
 
 | Peer            | Supported range    |
 | --------------- | ------------------ |
-| `better-effect` | `>=0.13.0 <0.14.0` |
+| `better-effect` | `>=0.14.0 <0.15.0` |
 | `better-result` | `^3.0.0`           |
 | `kysely`        | `>=0.29.5 <0.30.0` |
 | TypeScript      | `>=6.0.0`          |

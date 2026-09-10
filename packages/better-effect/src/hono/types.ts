@@ -1,5 +1,5 @@
 import type { Result as ResultType } from 'better-result'
-import type { Context, Env, HonoRequest, Input, MiddlewareHandler } from 'hono'
+import type { Context, Env, Handler, HonoRequest, Input } from 'hono'
 
 import type {
   EffectError,
@@ -26,7 +26,12 @@ export type AnyResult = ResultType<any, any>
 export type AnyProgram = ProgramType<any, any, AnyService>
 export type HonoContext = Context<any, any, any>
 export type ResponseLike = Response | Promise<Response>
-export type AnyHonoMiddleware = MiddlewareHandler<any, any, any>
+/**
+ * Hono validators are `Handler`s rather than `MiddlewareHandler`s because they
+ * may short-circuit synchronously with a Response. The input boundary accepts
+ * both shapes; the builder still returns an async MiddlewareHandler of its own.
+ */
+export type AnyHonoMiddleware = Handler<any, any, any, any>
 export type AnyProgramFactory = (context: HonoContext) => AnyProgram
 export type AnyRouteOptions = HonoEffectRouteOptions<any, any>
 
@@ -41,7 +46,7 @@ export interface HonoEffectOperation<A, Requirements extends AnyService = never>
 }
 
 export type MiddlewareInput<Middleware extends AnyHonoMiddleware> =
-  Middleware extends MiddlewareHandler<any, any, infer InputType> ? InputType : Input
+  Middleware extends Handler<any, any, infer InputType, any> ? InputType : Input
 
 type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
   value: infer Intersection
@@ -97,10 +102,10 @@ type IsAny<Type> = 0 extends 1 & Type ? true : false
 type Specific<Type> = IsAny<Type> extends true ? never : Type
 
 type MiddlewareEnvironmentOf<Middleware extends AnyHonoMiddleware> =
-  Middleware extends MiddlewareHandler<infer Environment, any, any> ? Environment : never
+  Middleware extends Handler<infer Environment, any, any, any> ? Environment : never
 
 type MiddlewarePathOf<Middleware extends AnyHonoMiddleware> =
-  Middleware extends MiddlewareHandler<any, infer Path, any> ? Path : never
+  Middleware extends Handler<any, infer Path, any, any> ? Path : never
 
 type MiddlewareEnvironmentCandidates<Middlewares extends readonly AnyHonoMiddleware[]> =
   Middlewares extends readonly [

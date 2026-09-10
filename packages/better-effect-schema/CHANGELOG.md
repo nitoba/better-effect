@@ -21,6 +21,8 @@
 - Provider integrations remain optional and provider-neutral code stays on the
   root entrypoint, while provider-specific classes and operations can use the
   matching facade without manually calling `Schema.with`.
+- Added explicit JSON-safe encoding for Zod-backed tagged classes and errors,
+  and updated the `better-effect` peer range to `>=0.14.0 <0.15.0`.
 
 ### Documentation
 

@@ -4,7 +4,7 @@
 
 - Bun and the current TypeScript compiler
 - `better-result` 3.x
-- `better-effect` 0.13.x
+- `better-effect` 0.14.x
 - optional provider peers only when an adapter is being changed
 
 ## Development rules

@@ -150,7 +150,7 @@
       },
       "peerDependencies": {
         "better-auth": "^1.7.0",
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-result": "^3.0.0",
         "hono": ">=4.0.0",
         "typescript": ">=6.0.0",
@@ -172,7 +172,7 @@
         "@types/node": "26.1.2",
         "arktype": "2.2.3",
         "better-effect": "0.14.0",
-        "better-effect-schema": "0.1.0",
+        "better-effect-schema": "0.1.1",
         "better-result": "^3.0.0",
         "hono": "4.13.3",
         "oxfmt": "^0.63.0",
@@ -186,7 +186,7 @@
       },
       "peerDependencies": {
         "@opentelemetry/api": ">=1.9.0 <1.10.0",
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-schema": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
@@ -213,7 +213,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-result": "^3.0.0",
         "kysely": ">=0.29.5 <0.30.0",
         "typescript": ">=6.0.0",
@@ -235,7 +235,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
       },
@@ -247,8 +247,8 @@
         "@types/bun": "1.4.1",
         "@types/node": "^22.0.0",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
-        "better-effect-mq-outbox": "0.1.0",
+        "better-effect-mq": "0.1.1",
+        "better-effect-mq-outbox": "0.1.2",
         "better-result": "^3.0.0",
         "mongodb": "^6.21.0",
         "oxfmt": "^0.63.0",
@@ -258,7 +258,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
         "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
@@ -276,8 +276,8 @@
         "@types/bun": "1.4.1",
         "@types/node": "^22.0.0",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
-        "better-effect-mq-outbox": "0.1.0",
+        "better-effect-mq": "0.1.1",
+        "better-effect-mq-outbox": "0.1.2",
         "better-result": "^3.0.0",
         "mysql2": "^3.16.2",
         "oxfmt": "^0.63.0",
@@ -287,7 +287,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
         "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
@@ -304,7 +304,7 @@
       "devDependencies": {
         "@types/bun": "1.4.1",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
+        "better-effect-mq": "0.1.1",
         "better-result": "^3.0.0",
         "lefthook": "^2.1.10",
         "oxfmt": "^0.63.0",
@@ -315,7 +315,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
@@ -330,8 +330,8 @@
         "@types/node": "^22.0.0",
         "@types/pg": "^8.15.5",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
-        "better-effect-mq-outbox": "0.1.0",
+        "better-effect-mq": "0.1.1",
+        "better-effect-mq-outbox": "0.1.2",
         "better-result": "^3.0.0",
         "oxfmt": "^0.63.0",
         "oxlint": "^1.78.0",
@@ -342,7 +342,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
         "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
@@ -360,8 +360,8 @@
         "@types/bun": "1.4.1",
         "@types/node": "^22.0.0",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
-        "better-effect-mq-outbox": "0.1.0",
+        "better-effect-mq": "0.1.1",
+        "better-effect-mq-outbox": "0.1.2",
         "better-result": "^3.0.0",
         "oxfmt": "^0.63.0",
         "oxlint": "^1.78.0",
@@ -371,7 +371,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
         "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
@@ -389,8 +389,8 @@
         "@types/bun": "1.4.1",
         "@types/node": "^24.0.0",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
-        "better-effect-mq-outbox": "0.1.0",
+        "better-effect-mq": "0.1.1",
+        "better-effect-mq-outbox": "0.1.2",
         "better-result": "^3.0.0",
         "oxfmt": "^0.63.0",
         "oxlint": "^1.78.0",
@@ -399,7 +399,7 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-effect-mq": ">=0.1.0 <0.2.0",
         "better-effect-mq-outbox": ">=0.1.0 <0.2.0",
         "better-result": "^3.0.0",
@@ -416,7 +416,7 @@
         "@types/node": "^26.1.2",
         "arktype": "2.2.3",
         "better-effect": "0.14.0",
-        "better-effect-mq": "0.1.0",
+        "better-effect-mq": "0.1.1",
         "better-result": "3.0.1",
         "publint": "^0.3.23",
         "typescript": "^7.0.2",
@@ -425,7 +425,7 @@
       },
       "peerDependencies": {
         "arktype": ">=2.2.3 <3.0.0",
-        "better-effect": ">=0.13.0 <0.14.0",
+        "better-effect": ">=0.14.0 <0.15.0",
         "better-result": "^3.0.0",
         "typescript": ">=6.0.0",
         "valibot": ">=1.4.2 <2",
@@ -2761,43 +2761,17 @@
 
     "better-effect-http/@types/node": ["@types/node@26.1.2", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-Vu4a5UFA9rIIFJ7rB/Vaafh9lrCQszopTCx6KjFboXTGQbPNasehVR5TEiithSDGyd1DEiUByggTZsg8jukeIg=="],
 
-    "better-effect-http/better-effect-schema": ["better-effect-schema@0.1.0", "", { "dependencies": { "@standard-schema/spec": "^1.1.0" }, "peerDependencies": { "arktype": ">=2.2.3 <3.0.0", "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0", "valibot": ">=1.4.2 <2", "zod": ">=4.5.4 <5" }, "optionalPeers": ["arktype", "valibot", "zod"] }, "sha512-hJCYlrXxRN8VaSIojcGhORG+9+58TosP8rxLfim6mIHY5OwSsG0s5dlt2YyWED0SQz4lnoCeRTP92W8JY2UJ8g=="],
-
     "better-effect-http/zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
     "better-effect-mq-mongodb/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
-    "better-effect-mq-mongodb/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
-
-    "better-effect-mq-mongodb/better-effect-mq-outbox": ["better-effect-mq-outbox@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-effect-mq": ">=0.1.0 <0.2.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-og7G2ffDpMnjroBvdpU4H06qbLORkZJcntG+8Gibsudz7pXd6Bvmyun4zQYdzi9K6CZ9qtsa2leHE82RYSu3aA=="],
-
     "better-effect-mq-mysql/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
-
-    "better-effect-mq-mysql/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
-
-    "better-effect-mq-mysql/better-effect-mq-outbox": ["better-effect-mq-outbox@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-effect-mq": ">=0.1.0 <0.2.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-og7G2ffDpMnjroBvdpU4H06qbLORkZJcntG+8Gibsudz7pXd6Bvmyun4zQYdzi9K6CZ9qtsa2leHE82RYSu3aA=="],
-
-    "better-effect-mq-outbox/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
 
     "better-effect-mq-postgres/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
-    "better-effect-mq-postgres/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
-
-    "better-effect-mq-postgres/better-effect-mq-outbox": ["better-effect-mq-outbox@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-effect-mq": ">=0.1.0 <0.2.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-og7G2ffDpMnjroBvdpU4H06qbLORkZJcntG+8Gibsudz7pXd6Bvmyun4zQYdzi9K6CZ9qtsa2leHE82RYSu3aA=="],
-
     "better-effect-mq-redis/@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
-    "better-effect-mq-redis/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
-
-    "better-effect-mq-redis/better-effect-mq-outbox": ["better-effect-mq-outbox@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-effect-mq": ">=0.1.0 <0.2.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-og7G2ffDpMnjroBvdpU4H06qbLORkZJcntG+8Gibsudz7pXd6Bvmyun4zQYdzi9K6CZ9qtsa2leHE82RYSu3aA=="],
-
     "better-effect-mq-sqlite/@types/node": ["@types/node@24.13.3", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q=="],
-
-    "better-effect-mq-sqlite/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
-
-    "better-effect-mq-sqlite/better-effect-mq-outbox": ["better-effect-mq-outbox@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-effect-mq": ">=0.1.0 <0.2.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-og7G2ffDpMnjroBvdpU4H06qbLORkZJcntG+8Gibsudz7pXd6Bvmyun4zQYdzi9K6CZ9qtsa2leHE82RYSu3aA=="],
-
-    "better-effect-schema/better-effect-mq": ["better-effect-mq@0.1.0", "", { "peerDependencies": { "better-effect": ">=0.13.0 <0.14.0", "better-result": "^3.0.0", "typescript": ">=6.0.0" } }, "sha512-JKdrtECAu9YA09hevVzeVGkWEeHqYEnwEDpq6vHzFfb1n5Yr0oTYcic/WuqZDEdRP4fBRIeDVLpaUwZYQGawAg=="],
 
     "better-effect-schema/zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 

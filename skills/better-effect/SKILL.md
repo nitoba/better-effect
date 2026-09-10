@@ -42,6 +42,13 @@ This is **not Effect TS**: do not translate Effect TS APIs by name.
 | `better-effect-mq-mongodb` | [Storage and outbox](references/mq-storage-outbox.md) | Transaction-capable MongoDB, explicit layout migrations |
 | `better-effect-mq-sqlite` | [Storage and outbox](references/mq-storage-outbox.md) | Embedded stores with separate Bun/Node bindings |
 
+### better-effect-http integration
+
+`HttpClient` is a Service. Keep HTTP operations lazy and consume them inside the
+active Runtime; do not create a nested Runtime in a client, hook, or route. For
+managed Hono/Web forwarding, use the scoped `routes.stream` boundary so request
+resources remain alive through downstream completion.
+
 For existing applications, use [refactoring rules](references/refactoring-rules.md)
 and [transformation patterns](references/transformation-patterns.md).
 For signatures, source paths, version conflicts, and live documentation lookup,

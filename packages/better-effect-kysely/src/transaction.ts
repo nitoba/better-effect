@@ -14,9 +14,15 @@ import type { KyselyOperation } from './operation'
 import type { KyselyTransactionOptions } from './transaction-options'
 
 import type { BodyOutcome } from './internal/transaction-outcome'
+import type { KyselyServiceInstance } from './types'
 
 type AnyKysely = Kysely<any>
-type DatabaseOf<Database extends AnyKysely> = Database extends Kysely<infer DB> ? DB : never
+type DatabaseOf<Database extends AnyKysely> =
+  Database extends KyselyServiceInstance<string, infer DB>
+    ? DB
+    : Database extends Kysely<infer DB>
+      ? DB
+      : never
 type AnyTransactionProgram = Program<any, any, Service.Any>
 type TransactionBody<Database extends AnyKysely, Body extends AnyTransactionProgram> = (
   transaction: Transaction<NoInfer<DatabaseOf<Database>>>

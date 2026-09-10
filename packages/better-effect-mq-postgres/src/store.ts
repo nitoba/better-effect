@@ -9,7 +9,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { Result, type Result as ResultType } from 'better-result'
 import { Layer } from 'better-effect'
-import type { ServiceContract } from 'better-effect'
+import type { AnyService, ServiceContract } from 'better-effect'
+import type { ServiceRequirement } from 'better-effect'
 import {
   JobStore,
   JobStoreWakeAbortedError,
@@ -79,6 +80,14 @@ import {
   type Pool,
   type PoolClient
 } from './config'
+import {
+  normalizePostgresLayerFactory,
+  type PostgresLayerFactory,
+  type PostgresLayerFactoryRequirements,
+  type PostgresLayerGenerator,
+  type PostgresLayerRequirements,
+  type PostgresLayerValueFactory
+} from './layer-factory'
 
 /** Build the immutable descriptor after the optional LISTEN channel is ready. */
 const postgresDescriptor = (queueFilteredNotifications: boolean): JobStoreDescriptor =>
@@ -3754,20 +3763,38 @@ class PostgresJobStoreImplementation {
   }
 }
 
-const makeStoreLayer = <T extends AnyJobStoreToken>(
+type StoreResource = {
+  readonly client: PostgresClient
+  readonly eventWriter: JobEventStoreWriter | undefined
+}
+
+type StoreLayer<Token extends AnyJobStoreToken, Yield extends ServiceRequirement<unknown>> = Layer<
+  InstanceType<Token>,
+  PostgresLayerRequirements<Yield>
+>
+
+type StoreLayerWithRequired<Token extends AnyJobStoreToken, Required> = Layer<
+  InstanceType<Token>,
+  Extract<Required, AnyService>
+>
+
+const makeStoreLayer = <
+  T extends AnyJobStoreToken,
+  Yield extends ServiceRequirement<unknown> = never
+>(
   token: T,
-  acquire: () => Promise<PostgresClient>,
-  ownsClient: boolean,
-  eventWriter?: JobEventStoreWriter
-): Layer<InstanceType<T>, never> =>
-  Layer.scoped(
+  acquire: PostgresLayerFactory<StoreResource, Yield>,
+  ownsClient: boolean
+): StoreLayer<T, Yield> =>
+  Layer.scopedGen(
     token,
-    async () => {
-      const client = await acquire()
+    async function* () {
+      const resource = yield* normalizePostgresLayerFactory(acquire)()
+      const { client } = resource
       let implementation: PostgresJobStoreImplementation | undefined
       try {
         if (client.validateSchema) await client.validate()
-        implementation = new PostgresJobStoreImplementation(client, eventWriter)
+        implementation = new PostgresJobStoreImplementation(client, resource.eventWriter)
         await implementation.start()
         return JobStore.of(implementation as never) as unknown as ServiceContract<InstanceType<T>>
       } catch (cause) {
@@ -3791,7 +3818,7 @@ const makeStoreLayer = <T extends AnyJobStoreToken>(
     async (store) => {
       await (store as unknown as PostgresJobStoreImplementation).dispose()
     }
-  ) as Layer<InstanceType<T>, never>
+  ) as StoreLayer<T, Yield>
 
 const namespaceForToken = (token: AnyJobStoreToken, namespace: string): string =>
   token.serviceTag === JobStore.serviceTag
@@ -3801,62 +3828,156 @@ const namespaceForToken = (token: AnyJobStoreToken, namespace: string): string =
 const borrowedClient = (
   token: AnyJobStoreToken,
   config: PostgresJobStoreConfig
-): (() => Promise<PostgresClient>) => {
+): (() => Promise<StoreResource>) => {
   const normalized = normalizePostgresJobStoreConfig(config)
   const { eventWriter: _eventWriter, ...clientConfig } = normalized
-  return async () =>
-    PostgresClient.fromPool({
+  return async () => ({
+    client: PostgresClient.fromPool({
       ...clientConfig,
       namespace: namespaceForToken(token, clientConfig.namespace)
-    })
+    }),
+    eventWriter: normalized.eventWriter
+  })
 }
+
+const borrowedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  token: AnyJobStoreToken,
+  factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+): PostgresLayerFactory<StoreResource, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConfig(config)
+    const { eventWriter: _eventWriter, ...clientConfig } = normalized
+    return {
+      client: PostgresClient.fromPool({
+        ...clientConfig,
+        namespace: namespaceForToken(token, clientConfig.namespace)
+      }),
+      eventWriter: normalized.eventWriter
+    }
+  }
+
 const ownedClient = (
   token: AnyJobStoreToken,
   config: PostgresJobStoreConnectionConfig
-): (() => Promise<PostgresClient>) => {
+): (() => Promise<StoreResource>) => {
   const normalized = normalizePostgresJobStoreConnectionConfig(config)
   const { eventWriter: _eventWriter, ...clientConfig } = normalized
   return () =>
     PostgresClient.fromConfig({
       ...clientConfig,
       namespace: namespaceForToken(token, clientConfig.namespace)
-    })
+    }).then((client) => ({
+      client,
+      eventWriter: normalized.eventWriter
+    }))
 }
 
-export const PostgresJobStore = Object.freeze({
+const ownedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  token: AnyJobStoreToken,
+  factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+): PostgresLayerFactory<StoreResource, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConnectionConfig(config)
+    const { eventWriter: _eventWriter, ...clientConfig } = normalized
+    const client = await PostgresClient.fromConfig({
+      ...clientConfig,
+      namespace: namespaceForToken(token, clientConfig.namespace)
+    })
+    return { client, eventWriter: normalized.eventWriter }
+  }
+
+type PostgresJobStoreApi = {
+  readonly layer: (config: PostgresJobStoreConfig) => StoreLayer<typeof JobStore, never>
+  readonly layerFor: <Token extends AnyJobStoreToken>(
+    token: Token,
+    config: PostgresJobStoreConfig
+  ) => StoreLayer<Token, never>
+  readonly layerWith: {
+    <Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>>(
+      factory: Factory
+    ): StoreLayerWithRequired<typeof JobStore, PostgresLayerFactoryRequirements<Factory>>
+    (factory: PostgresLayerValueFactory<PostgresJobStoreConfig>): StoreLayer<typeof JobStore, never>
+  }
+  readonly layerWithFor: {
+    <Token extends AnyJobStoreToken, Yield extends ServiceRequirement<unknown>>(
+      token: Token,
+      factory: PostgresLayerGenerator<PostgresJobStoreConfig, Yield>
+    ): StoreLayer<Token, Yield>
+    <Token extends AnyJobStoreToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConfig>
+    ): StoreLayer<Token, never>
+  }
+  readonly layerFromConfig: (
+    config: PostgresJobStoreConnectionConfig
+  ) => StoreLayer<typeof JobStore, never>
+  readonly layerFromConfigFor: <Token extends AnyJobStoreToken>(
+    token: Token,
+    config: PostgresJobStoreConnectionConfig
+  ) => StoreLayer<Token, never>
+  readonly layerFromConfigWith: {
+    <
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      factory: Factory
+    ): StoreLayerWithRequired<typeof JobStore, PostgresLayerFactoryRequirements<Factory>>
+    (
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): StoreLayer<typeof JobStore, never>
+  }
+  readonly layerFromConfigWithFor: {
+    <Token extends AnyJobStoreToken, Yield extends ServiceRequirement<unknown>>(
+      token: Token,
+      factory: PostgresLayerGenerator<PostgresJobStoreConnectionConfig, Yield>
+    ): StoreLayer<Token, Yield>
+    <Token extends AnyJobStoreToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): StoreLayer<Token, never>
+  }
+}
+
+export const PostgresJobStore: PostgresJobStoreApi = Object.freeze({
   layer(config: PostgresJobStoreConfig) {
-    return makeStoreLayer(
-      JobStore,
-      borrowedClient(JobStore, config),
-      false,
-      normalizePostgresJobStoreConfig(config).eventWriter
-    )
+    return makeStoreLayer(JobStore, borrowedClient(JobStore, config), false)
   },
   layerFor<T extends AnyJobStoreToken>(token: T, config: PostgresJobStoreConfig) {
-    return makeStoreLayer(
-      token,
-      borrowedClient(token, config),
-      false,
-      normalizePostgresJobStoreConfig(config).eventWriter
-    )
+    return makeStoreLayer(token, borrowedClient(token, config), false)
+  },
+  layerWith<Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) {
+    return makeStoreLayer(JobStore, borrowedClientFromFactory(JobStore, factory), false)
+  },
+  layerWithFor<T extends AnyJobStoreToken, Yield extends ServiceRequirement<unknown>>(
+    token: T,
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) {
+    return makeStoreLayer(token, borrowedClientFromFactory(token, factory), false)
   },
   layerFromConfig(config: PostgresJobStoreConnectionConfig) {
-    return makeStoreLayer(
-      JobStore,
-      ownedClient(JobStore, config),
-      true,
-      normalizePostgresJobStoreConnectionConfig(config).eventWriter
-    )
+    return makeStoreLayer(JobStore, ownedClient(JobStore, config), true)
   },
   layerFromConfigFor<T extends AnyJobStoreToken>(
     token: T,
     config: PostgresJobStoreConnectionConfig
   ) {
-    return makeStoreLayer(
-      token,
-      ownedClient(token, config),
-      true,
-      normalizePostgresJobStoreConnectionConfig(config).eventWriter
-    )
+    return makeStoreLayer(token, ownedClient(token, config), true)
+  },
+  layerFromConfigWith<Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+  ) {
+    return makeStoreLayer(JobStore, ownedClientFromFactory(JobStore, factory), true)
+  },
+  layerFromConfigWithFor<T extends AnyJobStoreToken, Yield extends ServiceRequirement<unknown>>(
+    token: T,
+    factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+  ) {
+    return makeStoreLayer(token, ownedClientFromFactory(token, factory), true)
   }
 })

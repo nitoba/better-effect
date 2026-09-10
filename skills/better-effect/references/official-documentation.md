@@ -57,6 +57,7 @@ is the integration inventory. Read the selected package's `package.json`,
 | Web/Hono/Next/Bun/Node/tracing/testing | Core package export map and matching `src/` entrypoints |
 | Schema providers and capability failures | `packages/better-effect-schema/src/index.ts`, `docs/api.md`, provider guides |
 | Outbound HTTP and endpoints/streams | `packages/better-effect-http/README.md`, `examples/endpoints-sdk.ts`, `examples/hono-streaming.ts` |
+| HTTP integration guide | [`/docs/http`](/docs/http) |
 | Auth hooks and sessions | `packages/better-effect-better-auth/README.md`, `examples/hono/` |
 | Native query and transaction contracts | `packages/better-effect-kysely/README.md`, examples and tests |
 | Jobs, controls, schedules, flows | `packages/better-effect-mq/src/index.ts`, `src/schedule/README.md`, `tests/types/scheduler.types.ts` |

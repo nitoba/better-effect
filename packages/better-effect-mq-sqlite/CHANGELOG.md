@@ -9,6 +9,8 @@
   recovery, settlement, administration, named layers, and Bun/Node file layers.
 - Add the adapter-owned `SqliteOutboxTransactions.transaction` helper for serialized domain-write
   and outbox transactions with automatic commit, rollback, and cleanup.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and aligned the
+  MQ/outbox workspace peer artifacts with the current `0.1.x` releases.
 
 ## [0.1.1] - 2026-09-09
 

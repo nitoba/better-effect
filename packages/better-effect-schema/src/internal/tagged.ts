@@ -236,7 +236,8 @@ const createTagged = <Self>(
   tag: string,
   fields: TaggedFieldMap,
   annotations: TaggedAnnotations | undefined,
-  kind: TaggedKind
+  kind: TaggedKind,
+  encode?: (value: unknown) => unknown
 ) => {
   const definitionFailure = validateDefinition(tag, fields, kind)
   const safeFields = isRecord(fields) ? fields : {}
@@ -255,7 +256,8 @@ const createTagged = <Self>(
       propsSchema,
       fields: Object.freeze(fieldMap),
       struct: schema,
-      codec: schema
+      codec: schema,
+      ...(encode === undefined ? {} : { encode })
     },
     annotations,
     {
@@ -270,14 +272,16 @@ const createTagged = <Self>(
 const makeTaggedClass = () => (
   tag: string,
   fields: TaglessFields,
-  annotations?: TaggedAnnotations
-) => createTagged(tag, fields, annotations, 'tagged-class')
+  annotations?: TaggedAnnotations,
+  encode?: (value: unknown) => unknown
+) => createTagged(tag, fields, annotations, 'tagged-class', encode)
 
 const makeTaggedError = () => (
   tag: string,
   fields: ErrorTaglessFields,
-  annotations?: TaggedAnnotations
-) => createTagged(tag, fields, annotations, 'tagged-error')
+  annotations?: TaggedAnnotations,
+  encode?: (value: unknown) => unknown
+) => createTagged(tag, fields, annotations, 'tagged-error', encode)
 
 export const createTaggedClass = makeTaggedClass
 export const createTaggedError = makeTaggedError

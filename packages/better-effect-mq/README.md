@@ -24,7 +24,7 @@ Queue.define → Job → enqueue / awaitResult
 bun add better-effect-mq better-effect better-result better-effect-schema zod
 ```
 
-The package expects `better-effect >=0.13`, `better-result ^3`, and TypeScript
+The package expects `better-effect >=0.14 <0.15`, `better-result ^3`, and TypeScript
 6 or newer. `better-effect-schema` and `zod` are optional integration packages;
 install them when a job crosses an untrusted boundary and needs runtime
 validation. Use the package's `npm` or `pnpm` equivalent if that is how your

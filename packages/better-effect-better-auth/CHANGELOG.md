@@ -13,6 +13,8 @@
 
 - Changed Better Auth hooks to the Layer-first `BetterAuthHooks.define(tag)`
   API, whose middleware builders are acquired from `BetterAuth.make`.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and preserved
+  contextual Better Auth requirements in the optional Hono session helper.
 
 ### Removed
 

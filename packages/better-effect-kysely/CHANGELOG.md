@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and preserved
+  the exact database schema type through Service instances and transactions.
+
 ## [0.1.0] - 2026-09-02
 
 Initial release of `better-effect-kysely`.

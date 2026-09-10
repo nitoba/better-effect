@@ -1,5 +1,5 @@
 import { Layer, Service } from 'better-effect'
-import type { ServiceClass, ServiceRequirement } from 'better-effect'
+import type { AnyService, ServiceClass, ServiceRequirement } from 'better-effect'
 import type { HonoContext } from 'better-effect/hono'
 import { Result, UnhandledException } from 'better-result'
 import type { Err, Result as ResultType } from 'better-result'
@@ -243,10 +243,11 @@ const resolveCurrentSession = <
 function betterAuthHonoSession<
   const Tag extends string,
   const AuthTag extends string,
-  Auth extends BetterAuthInstance
+  Auth extends BetterAuthInstance,
+  Required extends AnyService = never
 >(
   tag: BetterAuthHonoLiteralTag<Tag>,
-  auth: BetterAuthToken<AuthTag, Auth>,
+  auth: BetterAuthToken<AuthTag, Auth, Required>,
   options?: BetterAuthHonoSessionOptions
 ): BetterAuthHonoSessionToken<Tag, AuthTag, Auth> {
   type Instance = BetterAuthHonoSessionInstance<Tag, Auth>

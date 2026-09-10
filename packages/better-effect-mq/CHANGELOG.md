@@ -21,6 +21,10 @@
 - The deterministic TestJobStore harness, end-to-end examples, MQ documentation,
   and package/type-system release gates.
 
+### Compatibility
+
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0`.
+
 ## [0.1.1] - 2026-09-09
 
 ### Changed

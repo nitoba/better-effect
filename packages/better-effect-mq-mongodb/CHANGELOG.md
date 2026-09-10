@@ -20,6 +20,8 @@
 - Advance the MongoDB layout to version 5 with validated events and cursor
   collections. Event-enabled JobStore layers append transition events in the
   same MongoDB transaction as the state change.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and aligned the
+  MQ/outbox workspace peer artifacts with the current `0.1.x` releases.
 
 ## [0.1.3] - 2026-09-09
 

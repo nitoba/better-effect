@@ -417,8 +417,12 @@ const makeTagged = <Self>(
   (factory as unknown as () => (
     tag: string,
     fields: Readonly<Record<string, StandardSchemaV1>>,
-    annotations?: GenericClassAnnotations
-  ) => unknown)()(tag, toStandardFields(fields), annotations)
+    annotations?: GenericClassAnnotations,
+    encode?: (value: unknown) => unknown
+  ) => unknown)()(tag, toStandardFields(fields), annotations, (value) => {
+    const native = z.object({ ...fields, _tag: z.literal(tag) })
+    return native.encode(value as z.input<typeof native>)
+  })
 
 export const ZodClassCapabilities: ZodClassCapabilities = Object.freeze({
   Class: makeClass as ZodClassFactory,

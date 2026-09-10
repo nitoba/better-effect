@@ -8,6 +8,8 @@
   Redis-only rather than cross-database atomicity.
 - Atomically append terminal Flow child reports to the Redis JobStore outbox for settlement, cancellation, release, retry exhaustion, and stalled recovery, with at-least-once relay support.
 - Implement QueueControls protocol v3 with revision fencing, atomic permits, persisted `dispatchKey`, fixed-window rate limits, and controlled lifecycle transitions.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and aligned the
+  MQ/outbox workspace peer artifacts with the current `0.1.x` releases.
 
 ## [0.1.2] - 2026-09-09
 

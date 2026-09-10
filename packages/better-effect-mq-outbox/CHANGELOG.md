@@ -9,6 +9,8 @@
   the adapter appends the supplied record automatically, and the adapter owns
   commit, rollback, and cleanup. Low-level `appendIn` helpers remain explicitly
   advanced adapter integrations.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and the MQ peer
+  contract to the current `0.1.x` workspace release.
 
 ## [0.1.2] - 2026-09-09
 

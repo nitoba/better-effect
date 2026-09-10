@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and aligned the
+  workspace schema artifact with `better-effect-schema@0.1.1`.
+
 ## [0.1.0] - 2026-09-07
 
 Initial development package boundary for `better-effect-http`.

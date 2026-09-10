@@ -2,10 +2,14 @@
 // oxlint-disable anti-slop/no-unknown-returns -- decoded JSON is validated before it leaves this module.
 // oxlint-disable anti-slop/no-unsafe-dictionary-type -- fixed JSON protocol objects are assembled after validation.
 // oxlint-disable anti-slop/no-runtime-typeof -- database and public DTO boundaries are narrowed here.
+// oxlint-disable anti-slop/no-chained-type-assertions -- FlowStore token identity is restored at this adapter boundary.
 // oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- casts are confined to validated SQL rows.
 
+import { Layer } from 'better-effect'
+import type { AnyService, ServiceContract, ServiceRequirement } from 'better-effect'
 import { Result, type Result as ResultType } from 'better-result'
 import {
+  FlowStore,
   defaultFlowLimits,
   flowLayoutVersion,
   hardFlowMaxChildren,
@@ -47,6 +51,7 @@ import {
   type FlowStoreV2,
   type FlowStoreV2Descriptor,
   type FlowStoreV2Error,
+  type AnyFlowStoreToken,
   type GetFlowRequest,
   type SerializedJobFailure,
   type MarkCascadedRequest,
@@ -81,6 +86,14 @@ import {
 } from './event-store'
 import { PostgresFlowProtocolMismatchError } from './errors'
 import { POSTGRES_TABLES, POSTGRES_FLOW_TABLES, quoteIdentifier } from './schema'
+import {
+  normalizePostgresLayerFactory,
+  type PostgresLayerFactory,
+  type PostgresLayerFactoryRequirements,
+  type PostgresLayerGenerator,
+  type PostgresLayerRequirements,
+  type PostgresLayerValueFactory
+} from './layer-factory'
 
 const flowDescriptor: FlowStoreV2Descriptor = Object.freeze({
   protocolVersion: protocolVersionV2,
@@ -1214,6 +1227,21 @@ export type PostgresFlowStoreInstance = FlowStoreV2 & {
   dispose(): Promise<void>
 }
 
+type FlowResource = {
+  readonly client: PostgresClient
+  readonly eventWriter: JobEventStoreWriter | undefined
+}
+
+type FlowLayer<Token extends AnyFlowStoreToken, Yield extends ServiceRequirement<unknown>> = Layer<
+  InstanceType<Token>,
+  InstanceType<Token['jobStore']> | PostgresLayerRequirements<Yield>
+>
+
+type FlowLayerWithRequired<Token extends AnyFlowStoreToken, Required> = Layer<
+  InstanceType<Token>,
+  InstanceType<Token['jobStore']> | Extract<Required, AnyService>
+>
+
 const open = async (
   client: PostgresClient,
   ownsClient: boolean,
@@ -1250,7 +1278,139 @@ const open = async (
   return new PostgresFlowStoreImplementation(client, ownsClient, eventWriter)
 }
 
-export const PostgresFlowStore = Object.freeze({
+const makeLayer = <
+  Token extends AnyFlowStoreToken,
+  Yield extends ServiceRequirement<unknown> = never
+>(
+  token: Token,
+  acquire: PostgresLayerFactory<FlowResource, Yield>,
+  ownsClient: boolean
+): FlowLayer<Token, Yield> =>
+  Layer.scopedGen(
+    token,
+    async function* () {
+      yield* token.jobStore
+      const resource = yield* normalizePostgresLayerFactory(acquire)()
+      try {
+        const store = await open(resource.client, ownsClient, resource.eventWriter)
+        return FlowStore.of(store) as unknown as ServiceContract<InstanceType<Token>>
+      } catch (cause) {
+        if (ownsClient) await resource.client.dispose().catch(() => undefined)
+        throw cause
+      }
+    },
+    async (store) => {
+      await (store as unknown as PostgresFlowStoreInstance).dispose()
+    }
+  ) as FlowLayer<Token, Yield>
+
+const borrowedClient = (config: PostgresJobStoreConfig): (() => Promise<FlowResource>) => {
+  const normalized = normalizePostgresJobStoreConfig(config)
+  return async () => ({
+    client: PostgresClient.fromPool(normalized),
+    eventWriter: normalized.eventWriter
+  })
+}
+
+const borrowedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+): PostgresLayerFactory<FlowResource, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConfig(config)
+    return {
+      client: PostgresClient.fromPool(normalized),
+      eventWriter: normalized.eventWriter
+    }
+  }
+
+const ownedClient = (config: PostgresJobStoreConnectionConfig): (() => Promise<FlowResource>) => {
+  const normalized = normalizePostgresJobStoreConnectionConfig(config)
+  return () =>
+    PostgresClient.fromConfig(normalized).then((client) => ({
+      client,
+      eventWriter: normalized.eventWriter
+    }))
+}
+
+const ownedClientFromFactory = <Yield extends ServiceRequirement<unknown>>(
+  factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+): PostgresLayerFactory<FlowResource, Yield> =>
+  async function* () {
+    const config = yield* normalizePostgresLayerFactory(factory)()
+    const normalized = normalizePostgresJobStoreConnectionConfig(config)
+    const client = await PostgresClient.fromConfig(normalized)
+    return { client, eventWriter: normalized.eventWriter }
+  }
+
+type PostgresFlowStoreApi = {
+  readonly make: (config: PostgresJobStoreConfig) => Promise<PostgresFlowStoreInstance>
+  readonly makeFromConfig: (
+    config: PostgresJobStoreConnectionConfig
+  ) => Promise<PostgresFlowStoreInstance>
+  readonly layer: (config: PostgresJobStoreConfig) => FlowLayer<typeof FlowStore, never>
+  readonly layerFor: <Token extends AnyFlowStoreToken>(
+    token: Token,
+    config: PostgresJobStoreConfig
+  ) => FlowLayer<Token, never>
+  readonly layerWith: {
+    <Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>>(
+      factory: Factory
+    ): FlowLayerWithRequired<typeof FlowStore, PostgresLayerFactoryRequirements<Factory>>
+    (factory: PostgresLayerValueFactory<PostgresJobStoreConfig>): FlowLayer<typeof FlowStore, never>
+  }
+  readonly layerWithFor: {
+    <
+      Token extends AnyFlowStoreToken,
+      Factory extends PostgresLayerGenerator<PostgresJobStoreConfig, ServiceRequirement<unknown>>
+    >(
+      token: Token,
+      factory: Factory
+    ): FlowLayerWithRequired<Token, PostgresLayerFactoryRequirements<Factory>>
+    <Token extends AnyFlowStoreToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConfig>
+    ): FlowLayer<Token, never>
+  }
+  readonly layerFromConfig: (
+    config: PostgresJobStoreConnectionConfig
+  ) => FlowLayer<typeof FlowStore, never>
+  readonly layerFromConfigFor: <Token extends AnyFlowStoreToken>(
+    token: Token,
+    config: PostgresJobStoreConnectionConfig
+  ) => FlowLayer<Token, never>
+  readonly layerFromConfigWith: {
+    <
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      factory: Factory
+    ): FlowLayerWithRequired<typeof FlowStore, PostgresLayerFactoryRequirements<Factory>>
+    (
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): FlowLayer<typeof FlowStore, never>
+  }
+  readonly layerFromConfigWithFor: {
+    <
+      Token extends AnyFlowStoreToken,
+      Factory extends PostgresLayerGenerator<
+        PostgresJobStoreConnectionConfig,
+        ServiceRequirement<unknown>
+      >
+    >(
+      token: Token,
+      factory: Factory
+    ): FlowLayerWithRequired<Token, PostgresLayerFactoryRequirements<Factory>>
+    <Token extends AnyFlowStoreToken>(
+      token: Token,
+      factory: PostgresLayerValueFactory<PostgresJobStoreConnectionConfig>
+    ): FlowLayer<Token, never>
+  }
+}
+
+export const PostgresFlowStore: PostgresFlowStoreApi = Object.freeze({
   async make(config: PostgresJobStoreConfig): Promise<PostgresFlowStoreInstance> {
     const normalized = normalizePostgresJobStoreConfig(config)
     return open(PostgresClient.fromPool(normalized), false, normalized.eventWriter)
@@ -1266,5 +1426,42 @@ export const PostgresFlowStore = Object.freeze({
       await client.dispose().catch(() => undefined)
       throw cause
     }
+  },
+  layer(config: PostgresJobStoreConfig) {
+    return makeLayer<typeof FlowStore, never>(FlowStore, borrowedClient(config), false)
+  },
+  layerFor<Token extends AnyFlowStoreToken>(token: Token, config: PostgresJobStoreConfig) {
+    return makeLayer<Token, never>(token, borrowedClient(config), false)
+  },
+  layerWith<Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) {
+    return makeLayer<typeof FlowStore, Yield>(FlowStore, borrowedClientFromFactory(factory), false)
+  },
+  layerWithFor<Token extends AnyFlowStoreToken, Yield extends ServiceRequirement<unknown>>(
+    token: Token,
+    factory: PostgresLayerFactory<PostgresJobStoreConfig, Yield>
+  ) {
+    return makeLayer<Token, Yield>(token, borrowedClientFromFactory(factory), false)
+  },
+  layerFromConfig(config: PostgresJobStoreConnectionConfig) {
+    return makeLayer<typeof FlowStore, never>(FlowStore, ownedClient(config), true)
+  },
+  layerFromConfigFor<Token extends AnyFlowStoreToken>(
+    token: Token,
+    config: PostgresJobStoreConnectionConfig
+  ) {
+    return makeLayer<Token, never>(token, ownedClient(config), true)
+  },
+  layerFromConfigWith<Yield extends ServiceRequirement<unknown>>(
+    factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>
+  ) {
+    return makeLayer<typeof FlowStore, Yield>(FlowStore, ownedClientFromFactory(factory), true)
+  },
+  layerFromConfigWithFor<
+    Token extends AnyFlowStoreToken,
+    Yield extends ServiceRequirement<unknown>
+  >(token: Token, factory: PostgresLayerFactory<PostgresJobStoreConnectionConfig, Yield>) {
+    return makeLayer<Token, Yield>(token, ownedClientFromFactory(factory), true)
   }
 })

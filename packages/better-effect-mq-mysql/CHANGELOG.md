@@ -21,6 +21,8 @@
   inspection operations.
 - Add the MySQL `JobScheduleStore` adapter and schedules migration.
 - Add atomic, deterministic schedule ticks with durable queue wake versions.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and aligned the
+  MQ/outbox workspace peer artifacts with the current `0.1.x` releases.
 
 ## [0.1.2] - 2026-09-09
 

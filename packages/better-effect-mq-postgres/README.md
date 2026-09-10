@@ -24,7 +24,7 @@ If you use the optional outbox publisher, also install:
 bun add better-effect-mq-outbox
 ```
 
-The package expects `better-effect >=0.13`, `better-effect-mq >=0.1`,
+The package expects `better-effect >=0.14 <0.15`, `better-effect-mq >=0.1`,
 `better-result ^3`, and TypeScript 6 or newer. `pg` is an optional peer: it is
 loaded lazily only by the `layerFromConfig` and `PostgresClient.fromConfig`
 forms that create a pool. A caller-provided pool uses the adapter's small pool
@@ -158,6 +158,37 @@ const runtime = await Runtime.make(AppStoreLive)
 ```
 
 Do not call `pool.end()` for a pool created by `layerFromConfig`.
+
+### Contextual borrowed pools
+
+When a pool is already provided by another Layer, use `layerWith` instead of
+extracting a provider or creating a second pool. The factory runs inside the
+same Runtime and may resolve both the pool and application configuration with
+`yield*`:
+
+```ts
+const PostgresConfig = function* () {
+  const shared = yield* DatabasePool
+  const config = yield* AppConfig
+  return {
+    pool: shared.raw,
+    namespace: config.mqNamespace,
+    schema: 'public'
+  }
+}
+
+const StorageLive = Layer.merge(
+  PostgresJobStore.layerWith(PostgresConfig),
+  PostgresJobScheduleStore.layerWith(PostgresConfig),
+  PostgresOutbox.layerWith(PostgresConfig),
+  PostgresFlowStore.layerWith(PostgresConfig)
+)
+```
+
+`layerWith` provides a borrowed adapter and therefore never closes the pool.
+The same factory shape is available as `layerWithFor` for named tokens. The
+`layerFromConfigWith` variants are available when the contextual factory
+returns connection settings; those Layers own and close the pool they create.
 
 ## Migrations and configuration
 

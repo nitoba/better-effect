@@ -26,7 +26,7 @@ The public peers are:
 
 | Package                   | Range                           |
 | ------------------------- | ------------------------------- |
-| `better-effect`           | `>=0.13.0 <0.14.0`              |
+| `better-effect`           | `>=0.14.0 <0.15.0`              |
 | `better-effect-mq`        | `>=0.1.0 <0.2.0`                |
 | `better-effect-mq-outbox` | `>=0.1.0 <0.2.0`                |
 | `better-result`           | `^3.0.0`                        |

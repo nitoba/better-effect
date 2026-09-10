@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add contextual `layerWith` and `layerFromConfigWith` factories for PostgreSQL
+  stores. Their generators resolve configuration and caller-owned pools with
+  `yield*` during Runtime acquisition, preserving one shared pool boundary.
+- Add borrowed and config-backed Layers for `PostgresFlowStore`, including the
+  same contextual factory variants.
 - Add `PostgresOutbox.transaction` for adapter-owned domain writes and
   prepared outbox appends with automatic commit, rollback, and client cleanup.
 - Add PostgreSQL controlled claim protocol v3 support with durable queue
@@ -14,6 +19,8 @@
   and default/named Service Layers.
 - Add migration `003_outbox.sql` and schema validation for the durable outbox
   layout.
+- Updated the `better-effect` peer range to `>=0.14.0 <0.15.0` and aligned the
+  MQ/outbox workspace peer artifacts with the current `0.1.x` releases.
 
 ## [0.1.2] - 2026-09-09
 

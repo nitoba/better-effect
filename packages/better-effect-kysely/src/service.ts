@@ -108,7 +108,7 @@ export function service<DB>(): KyselyServiceFactory<DB> {
       )
 
       // SAFETY: Kysely's generic builder methods can look like unresolved Effect metadata to Layer's conditional type; Kysely itself has no better-effect requirements.
-      return layer as Layer<Instance, KyselyYieldRequirements<Yield>>
+      return layer as unknown as Layer<Instance, KyselyYieldRequirements<Yield>>
     }
 
     const makeBorrowedLayer = <Yield extends ServiceRequirement<unknown>>(
@@ -117,7 +117,7 @@ export function service<DB>(): KyselyServiceFactory<DB> {
       const layer = Layer.gen(layerToken, normalizeFactory(factory))
 
       // SAFETY: Kysely's generic builder methods can look like unresolved Effect metadata to Layer's conditional type; Kysely itself has no better-effect requirements.
-      return layer as Layer<Instance, KyselyYieldRequirements<Yield>>
+      return layer as unknown as Layer<Instance, KyselyYieldRequirements<Yield>>
     }
 
     function scoped<Yield extends ServiceRequirement<unknown>>(
@@ -144,7 +144,7 @@ export function service<DB>(): KyselyServiceFactory<DB> {
       const layer = Layer.succeed(layerToken, database)
 
       // SAFETY: Kysely's generic builder methods can look like unresolved Effect metadata to Layer's conditional type; Kysely itself has no better-effect requirements.
-      return layer as Layer<Instance, never>
+      return layer as unknown as Layer<Instance, never>
     }
 
     Object.defineProperties(token, {
