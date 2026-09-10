@@ -197,7 +197,7 @@
     },
     "packages/better-effect-kysely": {
       "name": "better-effect-kysely",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@electric-sql/pglite": "0.5.8",
         "@types/bun": "1.4.1",
