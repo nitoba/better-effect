@@ -1041,6 +1041,7 @@ class PostgresJobStoreImplementation {
   private listenerReservationHeld = false
   private readonly waiters = new Set<WakeWaiter>()
   private disposal: Promise<void> | undefined
+  private readonly transactions = new Set<Promise<void>>()
   constructor(
     private readonly client: PostgresClient,
     private readonly eventWriter: JobEventStoreWriter = {
@@ -1208,11 +1209,26 @@ class PostgresJobStoreImplementation {
       // Layout detection is only a compatibility aid; normal SQL remains authoritative.
     }
   }
-  private async withTx<T>(
+  private withTx<T>(operation: string, body: (tx: Tx) => Promise<T>): Promise<StoreResult<T>> {
+    if (this.closed) return Promise.resolve(fail(operation, new Error('store is closed')))
+    // Admission is synchronous with closing. A cancelled Worker wait does
+    // not cancel PostgreSQL SQL, so disposal must retain its actual lifetime.
+    const pending = this.runTransaction(operation, body)
+    const drained = pending.then(
+      () => undefined,
+      () => undefined
+    )
+    this.transactions.add(drained)
+    void drained.then(() => {
+      this.transactions.delete(drained)
+    })
+    return pending
+  }
+
+  private async runTransaction<T>(
     operation: string,
     body: (tx: Tx) => Promise<T>
   ): Promise<StoreResult<T>> {
-    if (this.closed) return fail(operation, new Error('store is closed'))
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       let tx: PoolClient | undefined
       let value: T | undefined
@@ -3770,6 +3786,9 @@ class PostgresJobStoreImplementation {
     for (const waiter of this.waiters) {
       this.finishWaiter(waiter, fail('awaitWake', new Error('store is closed')))
     }
+    // Drain this store's work, not the application's shared pool. Each
+    // promise includes commit/rollback and release of its checked-out client.
+    await Promise.all(this.transactions)
     const listener = this.listener
     this.listener = undefined
     let cleanup: unknown

@@ -284,9 +284,6 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
       assert.notEqual(executed[0]?.lease, executed[1]?.lease)
     }
     assert.deepEqual(workerErrors, [])
-    console.log(
-      'PASS: concurrency-one mixed-failure and empty flows collect exactly once under a new active lease'
-    )
   } catch (error) {
     console.error('WORKER HANDOFF REGRESSION', error)
     console.error(
@@ -302,6 +299,10 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
     await runtime.dispose()
     await flows.dispose()
   }
+  assert.deepEqual(workerErrors, [])
+  console.log(
+    'PASS: concurrency-one mixed-failure and empty flows collect under a new lease and dispose cleanly'
+  )
 }
 
 const schema = `mq_handoff_${randomUUID().replaceAll('-', '')}`
@@ -311,7 +312,10 @@ try {
   if (process.argv.includes('--worker')) await verifyWorker(pool, schema)
   else await verifyLeases(pool, schema)
 } finally {
-  await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
-  await pool.end()
-  clearTimeout(deadline)
+  try {
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+  } finally {
+    await pool.end()
+    clearTimeout(deadline)
+  }
 }

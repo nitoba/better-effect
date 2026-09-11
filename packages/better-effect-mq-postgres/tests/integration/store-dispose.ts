@@ -10,7 +10,11 @@ import type { Pool as AdapterPool, PoolClient, QueryResult } from '../../src/ind
 
 type QueryValues = Parameters<PoolClient['query']>[1]
 
-async function verifyDrain(pool: Pool, schema: string, outcome: 'COMMIT' | 'ROLLBACK'): Promise<void> {
+async function verifyDrain(
+  pool: Pool,
+  schema: string,
+  outcome: 'COMMIT' | 'ROLLBACK'
+): Promise<void> {
   const entered = Promise.withResolvers<void>()
   const permit = Promise.withResolvers<void>()
   const events: string[] = []
@@ -30,7 +34,10 @@ async function verifyDrain(pool: Pool, schema: string, outcome: 'COMMIT' | 'ROLL
             entered.resolve()
             await permit.promise
           }
-          const result = await client.query<Row & QueryResultRow>(text, values === undefined ? undefined : [...values])
+          const result = await client.query<Row & QueryResultRow>(
+            text,
+            values === undefined ? undefined : [...values]
+          )
           if (text === outcome) events.push(outcome)
           return result
         },
@@ -41,7 +48,9 @@ async function verifyDrain(pool: Pool, schema: string, outcome: 'COMMIT' | 'ROLL
       }
     }
   }
-  const runtime = await Runtime.make(PostgresJobStore.layer({ pool: gated, schema, validateSchema: false }))
+  const runtime = await Runtime.make(
+    PostgresJobStore.layer({ pool: gated, schema, validateSchema: false })
+  )
   const jobs = await runtime.run(() => ServiceRuntime.resolve(JobStore))
   const pending = jobs.pausedQueues()
   await entered.promise
@@ -63,9 +72,14 @@ async function verifyDrain(pool: Pool, schema: string, outcome: 'COMMIT' | 'ROLL
   assert.deepEqual(events, [outcome, 'released', 'disposed'])
   const result = await pending
   assert.equal(Result.isOk(result), outcome === 'COMMIT')
-  assert.ok(Result.isError(await jobs.pausedQueues()), 'Closed storage must reject new transactions')
+  assert.ok(
+    Result.isError(await jobs.pausedQueues()),
+    'Closed storage must reject new transactions'
+  )
   assert.equal((await pool.query<{ value: number }>('SELECT 1 AS value')).rows[0]?.value, 1)
-  console.log(`PASS: borrowed-store disposal drains ${outcome}, releases its client and leaves the native pool usable`)
+  console.log(
+    `PASS: borrowed-store disposal drains ${outcome}, releases its client and leaves the native pool usable`
+  )
 }
 
 const connectionString = process.env.MQ_TEST_DATABASE_URL
