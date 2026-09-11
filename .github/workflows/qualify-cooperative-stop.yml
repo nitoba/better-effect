@@ -1,0 +1,80 @@
+name: Qualify cooperative claim shutdown
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+permissions:
+  contents: write
+concurrency:
+  group: qualify-cooperative-stop
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/fix/mq-flow-lease-handoff'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mq
+          POSTGRES_PASSWORD: mq_test_only
+          POSTGRES_DB: mq_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U mq -d mq_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MQ_TEST_DATABASE_URL: postgresql://mq:mq_test_only@localhost:5432/mq_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Keep intentional stop distinct from a failed claim
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          const path = 'packages/better-effect-mq/src/worker/supervisor.ts'
+          let text = readFileSync(path, 'utf8')
+          const before = `      this.releaseClaim(plan)
+                this.notifyIdle()
+                this.emitStoreFailure('claim', result.error, {`
+          assert.equal(text.split(before).length - 1, 1)
+          text = text.replace(before, `      this.releaseClaim(plan)
+                this.notifyIdle()
+                // quiesce deliberately cancels the outstanding claim wait. Its
+                // generation fence and late compensation were established by
+                // claimOnce; stopping is not itself a storage failure event.
+                if (this.claimController.signal.aborted && result.error instanceof StoreOperationTimeoutError) return
+                this.emitStoreFailure('claim', result.error, {`)
+          writeFileSync(path, text)
+          NODE
+          bunx --no-install oxfmt --write packages/better-effect-mq/src/worker/supervisor.ts packages/better-effect-mq/docs/protocol/postgres-flow-handoff.md
+          git rm .github/workflows/qualify-cooperative-stop.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git commit -m 'fix(mq): do not report deliberate quiesce as a claim timeout'
+          git push origin HEAD:fix/mq-flow-lease-handoff
+      - name: Native PostgreSQL operations and repeated flow disposal with unchanged assertions
+        run: |
+          bun run build --filter=better-effect-mq-postgres... > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          bun packages/better-effect-mq-postgres/tests/integration/claim-clock.ts
+          bun packages/better-effect-mq-postgres/tests/integration/store-dispose.ts
+          bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
+          for attempt in 1 2 3 4 5; do
+            bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+          done
+      - name: Preserve core, real deadline and adapter regressions
+        if: always()
+        run: |
+          for package in better-effect-mq better-effect-mq-postgres; do
+            (cd packages/$package && bun run typecheck && bun test && bun run lint && bun run format:check) > /tmp/$package.log 2>&1 || { tail -160 /tmp/$package.log; exit 1; }
+            tail -12 /tmp/$package.log
+          done
+          git diff --exit-code
