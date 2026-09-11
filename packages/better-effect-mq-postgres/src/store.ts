@@ -2198,7 +2198,7 @@ class PostgresJobStoreImplementation {
           }
         }
         const rows = await tx.query<Row>(
-          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $5 FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND updated_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $5 FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, queue.value, now, json(accepted), limit]
         )
         const jobs: JobRecord[] = []
@@ -2466,7 +2466,7 @@ class PostgresJobStoreImplementation {
             : integer(cursorResult.rows[0].cursor_sequence, 'cursor_sequence')
         const scanBudget = Math.min(Math.max(limit * 4, 32), 256)
         const candidates = await tx.query<Row>(
-          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY (sequence > $5) DESC,priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $6 FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND updated_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY (sequence > $5) DESC,priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $6 FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, queue.value, now, json(accepted), cursor, scanBudget]
         )
         const permitCounts = await tx.query<Row>(
