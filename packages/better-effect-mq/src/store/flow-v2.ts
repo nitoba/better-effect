@@ -23,6 +23,10 @@ import type {
 import type { JsonValue } from '../protocol'
 
 export interface FlowStoreV2Descriptor {
+  /** A handoff atomically releases the parent job lease on successful fan-out.
+   * Collect must acquire a new lease. Omission preserves the retained-lease lifecycle
+   * of existing independent/reference FlowStores; never infer this from parent.state. */
+  readonly parentLeaseMode?: 'retained' | 'handoff'
   readonly protocolVersion: ProtocolVersionV2
   readonly layoutVersion: number | string
   readonly migration: FlowMigration
