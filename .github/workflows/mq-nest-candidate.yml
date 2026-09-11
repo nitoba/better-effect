@@ -1,0 +1,147 @@
+name: MQ candidate with Nest flows
+
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+  pull_request:
+    paths:
+      - 'packages/better-effect-mq/**'
+      - 'packages/better-effect-mq-postgres/**'
+      - '.github/workflows/mq-nest-candidate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mq-nest-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mq
+          POSTGRES_PASSWORD: mq_test_only
+          POSTGRES_DB: mq_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U mq -d mq_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MQ_TEST_DATABASE_URL: postgresql://mq:mq_test_only@localhost:5432/mq_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: engine
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: nitoba/bettter-nest-mq
+          ref: 33d6860c1d4eebccfdc56e733f4fdc3c7aaf79c8
+          path: nest
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Build and pack the exact upstream candidate
+        working-directory: engine
+        run: |
+          git rev-parse HEAD
+          bun install --frozen-lockfile
+          bun run build --filter=better-effect-mq-postgres... > /tmp/candidate-build.log 2>&1 || { tail -100 /tmp/candidate-build.log; exit 1; }
+          mkdir -p "$RUNNER_TEMP/mq-candidates"
+          for name in better-effect-mq better-effect-mq-postgres; do
+            (cd packages/$name && bun pm pack --destination "$RUNNER_TEMP/mq-candidates")
+          done
+          sha256sum "$RUNNER_TEMP/mq-candidates/"*.tgz
+          git diff --exit-code
+      - name: Install the pinned Nest dependency graph
+        working-directory: nest
+        run: bun install --frozen-lockfile
+      - name: Select local candidate archives only in the disposable consumer manifest
+        working-directory: nest
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
+          const directory = join(process.env.RUNNER_TEMP, 'mq-candidates')
+          for (const name of ['better-effect-mq', 'better-effect-mq-postgres']) {
+            const upstream = JSON.parse(readFileSync(`../engine/packages/${name}/package.json`, 'utf8'))
+            const filename = `${name}-${upstream.version}.tgz`
+            assert.ok(readdirSync(directory).includes(filename))
+            assert.ok(manifest.dependencies[name])
+            assert.equal(manifest.peerDependencies[name], undefined)
+            manifest.dependencies[name] = pathToFileURL(join(directory, filename)).href
+          }
+          writeFileSync('package.json', `${JSON.stringify(manifest, null, 2)}\n`)
+          NODE
+          bun install --ignore-scripts
+      - name: Prove installed binaries are the candidate bytes, not registry fallbacks
+        working-directory: nest
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync, readdirSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { createHash } from 'node:crypto'
+          for (const name of ['better-effect-mq', 'better-effect-mq-postgres']) {
+            const expected = `../engine/packages/${name}/dist`
+            for (const entry of readdirSync(expected).filter((file) => file.endsWith('.mjs'))) {
+              const source = readFileSync(join(expected, entry))
+              const installed = readFileSync(join('node_modules', name, 'dist', entry))
+              assert.deepEqual(installed, source, `Non-candidate installed bytes: ${name}/${entry}`)
+              console.log('CANDIDATE', name, entry, createHash('sha256').update(installed).digest('hex'))
+            }
+          }
+          NODE
+          bun run check:tooling
+          bun run typecheck
+          bun run typecheck:minimum
+          bun test
+          bun run build
+      - name: Install an unchanged package-only flow fixture for fast regression feedback
+        working-directory: nest
+        run: |
+          mkdir -p "$RUNNER_TEMP/nest-candidate"
+          bun pm pack --destination "$RUNNER_TEMP/nest-candidate"
+          cp -R tests/package/consumer "$RUNNER_TEMP/flow-consumer"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+          const root = process.env.RUNNER_TEMP
+          const files = readdirSync(join(root, 'nest-candidate')).filter((name) => name.endsWith('.tgz'))
+          assert.equal(files.length, 1)
+          const version = (name) => JSON.parse(readFileSync(join('node_modules', name, 'package.json'), 'utf8')).version
+          const dependencies = { 'better-nest-mq': pathToFileURL(join(root, 'nest-candidate', files[0])).href }
+          for (const name of ['@nestjs/common', '@nestjs/core', '@standard-schema/spec', 'reflect-metadata', 'rxjs', 'zod', 'pg']) dependencies[name] = version(name)
+          const manifest = { name: 'flow-only-candidate-consumer', private: true, type: 'module', dependencies, devDependencies: { typescript: version('typescript-minimum'), '@types/node': version('@types/node'), '@types/pg': version('@types/pg') } }
+          for (const name of ['better-effect', 'better-result', 'better-effect-mq', 'better-effect-mq-postgres', 'better-effect-mq-outbox']) assert.equal(name in manifest.dependencies, false)
+          writeFileSync(join(root, 'flow-consumer', 'package.json'), JSON.stringify(manifest))
+          NODE
+          cd "$RUNNER_TEMP/flow-consumer"
+          bun install --ignore-scripts
+          node node_modules/typescript/bin/tsc -p tsconfig.flows.json
+          node dist/flows.js
+          bun dist/flows.js
+      - name: Full unmodified Nest PostgreSQL and package consumer matrix
+        working-directory: nest
+        run: |
+          bun run test:postgres
+          bun run test:package > /tmp/nest-packed.log 2>&1 || { tail -220 /tmp/nest-packed.log; exit 1; }
+          grep '^PASS\|Packed consumers passed' /tmp/nest-packed.log
+      - name: Restore ephemeral dependency selections and assert unchanged source trees
+        if: always()
+        run: |
+          git -C nest restore package.json bun.lock
+          git -C nest diff --exit-code
+          git -C engine diff --exit-code
