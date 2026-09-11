@@ -1,0 +1,69 @@
+name: Verify flow routing and recovery fix
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+permissions:
+  contents: write
+concurrency:
+  group: apply-flow-progress
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/fix/mq-flow-lease-handoff'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mq
+          POSTGRES_PASSWORD: mq_test_only
+          POSTGRES_DB: mq_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U mq -d mq_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MQ_TEST_DATABASE_URL: postgresql://mq:mq_test_only@localhost:5432/mq_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Prove both unchanged behavioral regressions fail before the patch
+        run: |
+          bun run build --filter=better-effect-mq-postgres... > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          set +e
+          bun test packages/better-effect-mq/tests/flow-sweep-fairness.test.ts packages/better-effect-mq/tests/flow-report-route.test.ts > /tmp/red.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/red.log
+          test "$result" -ne 0
+          grep -F '2 fail' /tmp/red.log
+          grep -F 'expect(received).toBe(expected)' /tmp/red.log
+      - name: Apply the typed source fix and retire this workflow
+        run: |
+          node .github/apply-flow-progress.mjs
+          bunx --no-install oxfmt --write packages/better-effect-mq/src/worker/supervisor.ts packages/better-effect-mq/tests/flow-sweep-fairness.test.ts packages/better-effect-mq/tests/flow-report-route.test.ts packages/better-effect-mq/tests/flow-context.types.ts .github/workflows/mq-flow-handoff.yml .github/workflows/mq-nest-candidate.yml .github/diagnose-nest-flow.mjs
+          git rm .github/apply-flow-progress.mjs .github/workflows/apply-flow-progress.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git commit -m 'fix(mq): route child reports by FlowStore identity and fairly rotate bounded sweeps'
+          git push origin HEAD:fix/mq-flow-lease-handoff
+      - name: Prove the same behavioral regressions now pass
+        run: bun test packages/better-effect-mq/tests/flow-sweep-fairness.test.ts packages/better-effect-mq/tests/flow-report-route.test.ts
+      - name: Build and qualify all core and adapter sources
+        run: |
+          bun run build --filter=better-effect-mq-postgres... > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          for package in better-effect-mq better-effect-mq-postgres; do
+            (cd packages/$package && bun run typecheck && bun test && bun run lint && bun run format:check) > /tmp/$package.log 2>&1 || { tail -160 /tmp/$package.log; exit 1; }
+            tail -12 /tmp/$package.log
+          done
+          bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
+          bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+          git diff --exit-code
