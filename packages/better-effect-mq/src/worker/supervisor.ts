@@ -2217,9 +2217,12 @@ export class WorkerSupervisor<
           signal: controller.signal
         }),
       undefined,
-      1,
-      1,
-      undefined,
+      this.workerOptions.pollIntervalMs,
+      // Waiting for a notification is expected to last the polling interval.
+      // Give a cooperative adapter time to settle after the poll aborts it;
+      // an unresponsive adapter remains bounded by the operation deadline.
+      this.workerOptions.pollIntervalMs + this.workerOptions.storeOperationTimeoutMs,
+      controller.signal,
       this.jobStores.get(group.store.serviceTag)
     )
     const wakeResult = wake.then(

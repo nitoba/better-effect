@@ -18,6 +18,7 @@ import {
   makeWorkerId
 } from 'better-effect-mq'
 import { Pool } from 'pg'
+import type { WorkerErrorHandler } from 'better-effect-mq'
 import { PostgresFlowStore, PostgresJobStore, PostgresMigrator } from '../../src/index'
 
 const connectionString = process.env.MQ_TEST_DATABASE_URL
@@ -105,7 +106,9 @@ async function verifyLeases(pool: Pool, schema: string): Promise<void> {
     assert.equal(heartbeat.lost.length, 1)
     assert.equal(heartbeat.lost[0]?.jobId, parent.id)
     assert.equal(heartbeat.renewed.length, 1)
-    assert.equal(heartbeat.renewed[0]?.id, ordinary.id)
+    const renewedOrdinary = valueOf(await jobs.getJob({ jobId: ordinary.id }))
+    assert.equal(renewedOrdinary?.leaseToken, ordinary.leaseToken)
+    assert.equal(renewedOrdinary?.leaseExpiresAt, now + 3 + 60_000)
     const released = await jobs.release({
       jobId: parent.id,
       leaseToken: parent.leaseToken,
@@ -155,6 +158,9 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
     readonly lease: string
   }> = []
   const workerErrors: unknown[] = []
+  const captureError: WorkerErrorHandler = (error) => {
+    workerErrors.push(error)
+  }
   const handler = Flow.handle(definition, {
     fanOut: (payload) =>
       Effect.fn(async function* () {
@@ -231,9 +237,7 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
         flowSweepIntervalMs: 20,
         leaseDurationMs: 2_000,
         heartbeatIntervalMs: 100,
-        onError: (error) => {
-          workerErrors.push(error)
-        }
+        onError: captureError
       }))
     )
   )
