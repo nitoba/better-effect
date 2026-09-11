@@ -10,7 +10,8 @@ function region(text, begin, end, transform) {
   assert.ok(start >= 0 && finish > start, `Missing region ${begin}`)
   return text.slice(0, start) + transform(text.slice(start, finish)) + text.slice(finish)
 }
-function edit(path, transform) { writeFileSync(path, transform(readFileSync(path, 'utf8'))) }
+const staged = new Map()
+function edit(path, transform) { staged.set(path, transform(readFileSync(path, 'utf8'))) }
 
 edit('packages/better-effect-mq/src/store/flow-v2.ts', (text) => replace(text,
   'export interface FlowStoreV2Descriptor {',
@@ -89,7 +90,8 @@ edit('packages/better-effect-mq/src/worker/supervisor.ts', (text) => {
     }`)
   text = region(text, '  private async heartbeat(', '  private markLost(', (part) => {
     part = replace(part, "attempt.state !== 'lost' && attempt.state !== 'settling'", "!attempt.flowHandoff && attempt.state !== 'lost' && attempt.state !== 'settling'")
-    return replace(part, '        attempt === undefined ||', '        attempt === undefined ||\n        attempt.flowHandoff ||', 2)
+    part = replace(part, '        attempt === undefined ||', '        attempt === undefined ||\n        attempt.flowHandoff ||')
+    return replace(part, "if (attempt === undefined || attempt.state !== 'running') continue", "if (attempt === undefined || attempt.flowHandoff || attempt.state !== 'running') continue")
   })
   text = region(text, '  private markLost(', '  private ', (part) =>
     replace(part, "if (attempt.state === 'lost') return", "if (attempt.state === 'lost' || attempt.flowHandoff) return"))
@@ -118,10 +120,8 @@ edit('packages/better-effect-mq-postgres/src/store.ts', (text) => {
   }
 
   private async row(tx: Tx, id: string, lock = false): Promise<JobRecord | undefined> {`)
-  text = region(text, '  async heartbeat(', '  async ', (part) => {
-    part = replace(part, 'const r = await this.row(tx, lease.jobId, true)', 'const r = await this.readLeaseRecord(tx, lease.jobId)')
-    return replace(part, 'if (r === undefined)', "if (r === undefined || r.state === 'waiting-children')")
-  })
+  text = region(text, '  async heartbeat(', '  async ', (part) =>
+    replace(part, 'const r = await this.row(tx, lease.jobId, true)', 'const r = await this.readLeaseRecord(tx, lease.jobId)'))
   text = region(text, '  async release(', '  async heartbeat(', (part) => {
     part = replace(part, "      return this.transition('release', { jobId: jobId.value, now }, (r) => {", `      return this.withTx('release', async (tx) => {
         const record = await this.readLeaseRecord(tx, jobId.value)
@@ -134,7 +134,6 @@ edit('packages/better-effect-mq-postgres/src/store.ts', (text) => {
       })
     } catch (cause) {`)
   })
-  // Both public and controlled settlement implementations hold the job row lock here.
   const pattern = /(\s*)const current = decodeJob\(source\)/g
   let count = 0
   text = text.replace(pattern, (match, indent) => {
@@ -144,3 +143,5 @@ edit('packages/better-effect-mq-postgres/src/store.ts', (text) => {
   assert.equal(count, 2, 'Expected the two locked native settlement implementations')
   return text
 })
+
+for (const [path, contents] of staged) writeFileSync(path, contents)

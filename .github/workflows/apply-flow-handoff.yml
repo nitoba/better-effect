@@ -45,14 +45,15 @@ jobs:
           git commit -m 'fix(mq): fence released flow leases and hand Collect to a new claim'
           git push origin HEAD:fix/mq-flow-lease-handoff
       - name: Build workspace sources
+        id: build
         run: bun run build --filter=better-effect-mq-postgres... > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
       - name: Native lease regression
         run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
       - name: Native Worker regression
-        if: always()
+        if: always() && steps.build.outcome == 'success'
         run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker > /tmp/worker.log 2>&1 || { head -120 /tmp/worker.log; tail -30 /tmp/worker.log; exit 1; }
       - name: Existing core and adapter tests
-        if: always()
+        if: always() && steps.build.outcome == 'success'
         run: |
           (cd packages/better-effect-mq && bun run typecheck && bun test) > /tmp/core.log 2>&1 || { tail -150 /tmp/core.log; exit 1; }
           tail -8 /tmp/core.log
