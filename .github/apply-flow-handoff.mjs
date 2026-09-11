@@ -98,9 +98,11 @@ edit('packages/better-effect-mq/src/worker/supervisor.ts', (text) => {
   text = region(text, '  private abortActiveAttempts(): void {', '  private async runGroup(', (part) =>
     replace(part, '    for (const attempt of this.activeAttempts.values()) {', '    for (const attempt of this.activeAttempts.values()) {\n      if (attempt.flowHandoff) continue'))
   text = region(text, '  private async sweepFlow(', '  private ', (part) =>
-    replace(part, '    const snapshot = current.value', `    const snapshot = current.value
-    // An empty manifest is a real flow but has nothing to reconcile/cascade.
-    if (snapshot.children.length === 0) return`))
+    replace(part, '    const observations: FlowChildObservation[] = []', `    // An empty manifest is real but has no children to reconcile or cascade.
+    // Still consume one inspection unit so empty flows cannot bypass the budget.
+    if (snapshot.value.children.length === 0) return 1
+
+    const observations: FlowChildObservation[] = []`))
   return text
 })
 
