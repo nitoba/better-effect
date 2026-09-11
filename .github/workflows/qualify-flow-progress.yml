@@ -32,13 +32,15 @@ jobs:
             ['packages/better-effect-mq/src/worker/supervisor.ts', '      isTerminalJobState(snapshot.value.parent.state) &&', `      (snapshot.value.parent.state === 'completed' ||
                  snapshot.value.parent.state === 'failed' ||
                  snapshot.value.parent.state === 'cancelled') &&`],
-            ['packages/better-effect-mq/tests/flow-context.types.ts', '  children: [child] as const\n})', "  children: [child] as const,\n  onChildFailure: 'continue'\n})"]
+            ['packages/better-effect-mq/tests/flow-context.types.ts', "const definition = Flow.define('flow-context-types', { parent, children: [child] as const })", "const definition = Flow.define('flow-context-types', { parent, children: [child] as const, onChildFailure: 'continue' })"]
           ]
+          const staged = new Map()
           for (const [path, before, after] of changes) {
             const text = readFileSync(path, 'utf8')
-            assert.equal(text.split(before).length - 1, 1)
-            writeFileSync(path, text.replace(before, after))
+            assert.equal(text.split(before).length - 1, 1, path)
+            staged.set(path, text.replace(before, after))
           }
+          for (const [path, text] of staged) writeFileSync(path, text)
           NODE
           bunx --no-install oxfmt --write packages/better-effect-mq/src/worker/supervisor.ts packages/better-effect-mq/tests/flow-context.types.ts
           git rm .github/workflows/qualify-flow-progress.yml
