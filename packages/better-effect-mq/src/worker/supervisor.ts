@@ -513,7 +513,7 @@ export class WorkerSupervisor<
       return undefined
     }
 
-    // Handoff-mode phases occupy ordinary capacity only until durable fan-out.
+    // Handoff-mode phases retain capacity until their execution Scope has closed.
     // Retained-lease reference adapters keep their existing separate admission model.
     const globalAvailable = this.workerOptions.concurrency - this.occupiedSlots() - this.reserved
     const queueReserved = this.reservedByQueue.get(group.key) ?? 0
@@ -546,7 +546,6 @@ export class WorkerSupervisor<
 
     for (const attempt of this.activeAttempts.values()) {
       if (
-        !attempt.flowHandoff &&
         (attempt.entry.flow === undefined || this.usesFlowLeaseHandoff(attempt.entry.flow)) &&
         attempt.entry.queue === group.queue &&
         attempt.entry.store.serviceTag === group.store.serviceTag
@@ -783,10 +782,7 @@ export class WorkerSupervisor<
   private occupiedSlots(): number {
     let count = 0
     for (const attempt of this.activeAttempts.values()) {
-      if (
-        !attempt.flowHandoff &&
-        (attempt.entry.flow === undefined || this.usesFlowLeaseHandoff(attempt.entry.flow))
-      )
+      if (attempt.entry.flow === undefined || this.usesFlowLeaseHandoff(attempt.entry.flow))
         count += 1
     }
     return count
