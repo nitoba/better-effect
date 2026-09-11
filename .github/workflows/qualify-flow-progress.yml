@@ -1,0 +1,58 @@
+name: Qualify flow progress types
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+permissions:
+  contents: write
+concurrency:
+  group: qualify-flow-progress
+  cancel-in-progress: false
+jobs:
+  fix:
+    if: github.ref == 'refs/heads/fix/mq-flow-lease-handoff'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Preserve explicit flow state narrowing and required failure policy
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          const changes = [
+            ['packages/better-effect-mq/src/worker/supervisor.ts', '      isTerminalJobState(snapshot.value.parent.state) &&', `      (snapshot.value.parent.state === 'completed' ||
+                 snapshot.value.parent.state === 'failed' ||
+                 snapshot.value.parent.state === 'cancelled') &&`],
+            ['packages/better-effect-mq/tests/flow-context.types.ts', '  children: [child] as const\n})', "  children: [child] as const,\n  onChildFailure: 'continue'\n})"]
+          ]
+          for (const [path, before, after] of changes) {
+            const text = readFileSync(path, 'utf8')
+            assert.equal(text.split(before).length - 1, 1)
+            writeFileSync(path, text.replace(before, after))
+          }
+          NODE
+          bunx --no-install oxfmt --write packages/better-effect-mq/src/worker/supervisor.ts packages/better-effect-mq/tests/flow-context.types.ts
+          git rm .github/workflows/qualify-flow-progress.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git commit -m 'fix(mq): preserve v1 state typing in terminal flow retirement'
+          git push origin HEAD:fix/mq-flow-lease-handoff
+      - name: Rebuild the workspace dependency graph
+        run: bun run build --filter=better-effect-mq-postgres... > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+      - name: Check core and adapter types, tests, lint and formatting
+        run: |
+          for package in better-effect-mq better-effect-mq-postgres; do
+            (cd packages/$package && bun run typecheck && bun test && bun run lint && bun run format:check) > /tmp/$package.log 2>&1 || { tail -160 /tmp/$package.log; exit 1; }
+            tail -12 /tmp/$package.log
+          done
+          git diff --exit-code
