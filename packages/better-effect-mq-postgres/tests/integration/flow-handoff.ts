@@ -4,18 +4,8 @@ import { Effect, Layer, Runtime, ServiceRuntime } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
 import { Result } from 'better-result'
 import {
-  Codec,
-  Flow,
-  FlowStore,
-  JobContext,
-  JobStore,
-  LeaseLostError,
-  Queue,
-  Worker,
-  makeFlowChildId,
-  makePreparedEnqueue,
-  makeQueueName,
-  makeWorkerId
+  Codec, Flow, FlowStore, JobContext, JobStore, LeaseLostError, Queue, Worker,
+  makeFlowChildId, makePreparedEnqueue, makeQueueName, makeWorkerId
 } from 'better-effect-mq'
 import { Pool } from 'pg'
 import { PostgresFlowStore, PostgresJobStore, PostgresMigrator } from '../../src/index'
@@ -134,6 +124,9 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
   ))
   const runtime = await Runtime.make(live)
   try {
+    valueOf(await runtime.run(() => Effect.gen(async function* () {
+      return Result.ok(yield* token)
+    })))
     for (const empty of [false, true]) {
       const id = valueOf(await runtime.run(() => Effect.gen(async function* () {
         return Result.ok(yield* parent.enqueue({ empty }))
@@ -151,7 +144,7 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
         }
         await new Promise((resolve) => setTimeout(resolve, 10))
       }
-      assert.ok(completed, `Parent must finish under concurrency 1; errors=${workerErrors.map(String).join('; ')}`)
+      assert.ok(completed, `Parent must finish under concurrency 1; errors=${workerErrors.slice(0, 5).map(String).join('; ')}`)
       const executed = phases.filter((phase) => phase.id === id)
       assert.equal(executed.length, 2)
       assert.equal(executed[0]?.phase, 'fanOut')
@@ -163,6 +156,7 @@ async function verifyWorker(pool: Pool, schema: string): Promise<void> {
     console.log('PASS: concurrency-one mixed-failure and empty flows collect exactly once under a new active lease')
   } catch (error) {
     console.error('WORKER HANDOFF REGRESSION', error)
+    console.error('DURABLE HANDOFF STATE', (await pool.query(`SELECT name,state,delivery_count,flow FROM "${schema}".better_effect_mq_jobs`)).rows)
     throw error
   } finally {
     await runtime.dispose()
