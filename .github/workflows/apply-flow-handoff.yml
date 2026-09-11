@@ -1,0 +1,60 @@
+name: Apply flow handoff source patch
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+permissions:
+  contents: write
+concurrency:
+  group: apply-flow-handoff
+  cancel-in-progress: false
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/fix/mq-flow-lease-handoff'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mq
+          POSTGRES_PASSWORD: mq_test_only
+          POSTGRES_DB: mq_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U mq -d mq_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MQ_TEST_DATABASE_URL: postgresql://mq:mq_test_only@localhost:5432/mq_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Materialize reviewed source changes and remove this transport
+        run: |
+          node .github/apply-flow-handoff.mjs
+          bunx --no-install oxfmt --write packages/better-effect-mq/src/store/flow-v2.ts packages/better-effect-mq/src/worker/supervisor.ts packages/better-effect-mq-postgres/src/store.ts packages/better-effect-mq-postgres/src/flow.ts packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts docs/superpowers/plans/2026-09-11-mq-flow-lease-handoff.md .github/workflows/mq-flow-handoff.yml
+          git rm .github/apply-flow-handoff.mjs .github/workflows/apply-flow-handoff.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git commit -m 'fix(mq): fence released flow leases and hand Collect to a new claim'
+          git push origin HEAD:fix/mq-flow-lease-handoff
+      - name: Build workspace sources
+        run: bun run build --filter=better-effect-mq-postgres... > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+      - name: Native lease regression
+        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
+      - name: Native Worker regression
+        if: always()
+        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker > /tmp/worker.log 2>&1 || { head -120 /tmp/worker.log; tail -30 /tmp/worker.log; exit 1; }
+      - name: Existing core and adapter tests
+        if: always()
+        run: |
+          (cd packages/better-effect-mq && bun run typecheck && bun test) > /tmp/core.log 2>&1 || { tail -150 /tmp/core.log; exit 1; }
+          tail -8 /tmp/core.log
+          (cd packages/better-effect-mq-postgres && bun run typecheck && bun test) > /tmp/pg.log 2>&1 || { tail -150 /tmp/pg.log; exit 1; }
+          tail -8 /tmp/pg.log
