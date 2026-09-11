@@ -39,10 +39,22 @@ jobs:
           bun-version: '1.4.2'
       - run: bun install --frozen-lockfile
       - name: Build the actual workspace dependency graph
+        id: build
         run: bun run build --filter=better-effect-mq-postgres...
       - name: Native mixed heartbeat and stale mutation fencing
         id: leases
         run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
       - name: Native concurrency-one handoff, typed failure and empty fan-out
-        if: always() && steps.leases.outcome != 'skipped'
+        if: always() && steps.build.outcome == 'success'
         run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+      - name: Bounded recovery fairness regression
+        if: always() && steps.build.outcome == 'success'
+        run: bun test packages/better-effect-mq/tests/flow-sweep-fairness.test.ts
+      - name: Core and PostgreSQL source qualification
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          for package in better-effect-mq better-effect-mq-postgres; do
+            (cd packages/$package && bun run typecheck && bun test && bun run lint && bun run format:check) > /tmp/$package.log 2>&1 || { tail -160 /tmp/$package.log; exit 1; }
+            tail -12 /tmp/$package.log
+          done
+          git diff --exit-code
