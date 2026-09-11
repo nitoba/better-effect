@@ -120,16 +120,9 @@ jobs:
               clearTimeout(deadline)
             }`]
           ])
-          patch('.github/workflows/mq-flow-handoff.yml', [[
-            '      - name: Bounded recovery fairness regression',
-            `      - name: Borrowed PostgreSQL store transaction-draining regression
-                  if: always() && steps.build.outcome == 'success'
-                  run: bun packages/better-effect-mq-postgres/tests/integration/store-dispose.ts
-                - name: Bounded recovery fairness regression`
-          ]])
           for (const [path, text] of staged) writeFileSync(path, text)
           NODE
-          bunx --no-install oxfmt --write packages/better-effect-mq-postgres/src/store.ts packages/better-effect-mq-postgres/tests/integration/store-dispose.ts packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts .github/workflows/mq-flow-handoff.yml
+          bunx --no-install oxfmt --write packages/better-effect-mq-postgres/src/store.ts packages/better-effect-mq-postgres/tests/integration/store-dispose.ts packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
           git rm .github/workflows/qualify-postgres-disposal.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
