@@ -1844,7 +1844,9 @@ export class WorkerSupervisor<
     }
 
     if (
-      isTerminalJobState(snapshot.value.parent.state) &&
+      (snapshot.value.parent.state === 'completed' ||
+        snapshot.value.parent.state === 'failed' ||
+        snapshot.value.parent.state === 'cancelled') &&
       snapshot.value.parent.flow.pending === 0 &&
       snapshot.value.children.every(
         (child) => child.status !== 'pending' && (child.status !== 'cancelled' || child.cascaded)

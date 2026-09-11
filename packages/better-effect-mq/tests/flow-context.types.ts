@@ -10,7 +10,11 @@ class BusinessService extends Service<BusinessService>()('FlowContextBusinessSer
 const queue = Queue.define('flow-context-types')
 const parent = queue.job('parent', { version: 1, payload: Codec.string, result: Codec.string })
 const child = queue.job('child', { version: 1, payload: Codec.string, result: Codec.string })
-const definition = Flow.define('flow-context-types', { parent, children: [child] as const })
+const definition = Flow.define('flow-context-types', {
+  parent,
+  children: [child] as const,
+  onChildFailure: 'continue'
+})
 const handler = Flow.handle(definition, {
   fanOut: (payload) =>
     Effect.fn(async function* () {
