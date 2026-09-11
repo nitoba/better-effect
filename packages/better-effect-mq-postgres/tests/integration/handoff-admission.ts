@@ -32,12 +32,20 @@ try {
     errors.push(error)
   }
   const queue = Queue.define('handoff-admission')
-  const parent = queue.job('parent', { version: 1, payload: Codec.string, result: Codec.string })
-  const child = queue.job('child', { version: 1, payload: Codec.string, result: Codec.string })
+  const parent = queue.job('parent', {
+    version: 1,
+    payload: Codec.json<{ value: string }>(),
+    result: Codec.json<{ value: string }>()
+  })
+  const child = queue.job('child', {
+    version: 1,
+    payload: Codec.json<{ value: string }>(),
+    result: Codec.json<{ value: string }>()
+  })
   const probe = Queue.define('handoff-admission-probe').job('probe', {
     version: 1,
-    payload: Codec.string,
-    result: Codec.string
+    payload: Codec.json<{ value: string }>(),
+    result: Codec.json<{ value: string }>()
   })
   const definition = Flow.define('handoff-admission', {
     parent,
@@ -116,16 +124,16 @@ try {
   )
   const runtime = await Runtime.make(live)
   try {
-    await runtime.warmup()
     const id = valueOf(
       await runtime.run(() =>
         Effect.gen(async function* () {
-          const id = yield* parent.enqueue('done')
-          yield* probe.enqueue('wake another queue')
+          const id = yield* parent.enqueue({ value: 'done' })
+          yield* probe.enqueue({ value: 'wake another queue' })
           return Result.ok(id)
         })
       )
     )
+    await runtime.warmup()
     await closing.promise
     // The independent probe completes and wakes slot waiters while the flow's
     // Scope remains held. Inspect actual persisted deliveries, not internal maps.
