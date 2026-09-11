@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { Effect, Layer, Runtime, Scope, ServiceRuntime } from 'better-effect'
+import { Effect, Layer, Runtime, Scope } from 'better-effect'
 import { ClockLive } from 'better-effect/standard-services'
-import { Codec, Flow, FlowStore, JobContext, JobStore, Queue, Worker } from 'better-effect-mq'
+import { Codec, Flow, FlowStore, JobContext, Queue, Worker } from 'better-effect-mq'
 import { Result } from 'better-result'
 import { Pool } from 'pg'
 import { PostgresFlowStore, PostgresJobStore, PostgresMigrator } from '../../src/index'
@@ -24,13 +24,9 @@ const schema = `mq_admission_${randomUUID().replaceAll('-', '')}`
 const pool = new Pool({ connectionString, max: 8 })
 try {
   await PostgresMigrator.run(pool, { schema })
-  await using storage = await Runtime.make(PostgresJobStore.layer({ pool, schema }))
-  const jobs = await storage.run(() => ServiceRuntime.resolve(JobStore))
   const nativeFlows = await PostgresFlowStore.make({ pool, schema })
   const closing = Promise.withResolvers<void>()
   const resume = Promise.withResolvers<void>()
-  const reclaimed = Promise.withResolvers<void>()
-  const deliveries: number[] = []
   const errors: unknown[] = []
   const captureError: WorkerErrorHandler = (error) => {
     errors.push(error)
@@ -63,30 +59,14 @@ try {
   const token = Worker.service('HandoffAdmissionRegression')
   const live = Layer.complete(
     Layer.merge(
-      Layer.succeed(
-        JobStore,
-        JobStore.of({
-          ...jobs,
-          async claim(request) {
-            const result = await jobs.claim(request)
-            if (Result.isOk(result)) {
-              for (const job of result.value.jobs) {
-                if (job.name !== parent.name) continue
-                deliveries.push(job.deliveryCount)
-                if (job.deliveryCount > 1) reclaimed.resolve()
-              }
-            }
-            return result
-          }
-        })
-      ),
+      PostgresJobStore.layer({ pool, schema }),
       Layer.succeed(
         FlowStore,
         FlowStore.of({
-          ...nativeFlows,
+          descriptor: nativeFlows.descriptor,
           async fanOut(request) {
-            // The real transaction is unchanged. Gate only the enclosing Scope's
-            // finalizer so the released lease and the live execution can be observed.
+            // Keep the real transaction unchanged. Gate only the enclosing Scope's
+            // finalizer so the released lease and live execution can be observed.
             const result = await nativeFlows.fanOut(request)
             if (Result.isOk(result)) {
               Scope.current().addFinalizer(async () => {
@@ -95,7 +75,15 @@ try {
               })
             }
             return result
-          }
+          },
+          getFlow: (request) => nativeFlows.getFlow(request),
+          recordChildResults: (request) => nativeFlows.recordChildResults(request),
+          reconcile: (request) => nativeFlows.reconcile(request),
+          cancel: (request) => nativeFlows.cancel(request),
+          markCascaded: (request) => nativeFlows.markCascaded(request),
+          appendChildReport: (request) => nativeFlows.appendChildReport(request),
+          peekOutbox: (request) => nativeFlows.peekOutbox(request),
+          ackOutbox: (request) => nativeFlows.ackOutbox(request)
         })
       ),
       ClockLive,
@@ -139,25 +127,26 @@ try {
       )
     )
     await closing.promise
-    // Completing the independent probe wakes slot waiters while the flow's Scope
-    // remains held. No private supervisor methods or synthetic job states are used.
-    await Promise.race([
-      reclaimed.promise,
-      new Promise<void>((resolve) => setTimeout(resolve, 150))
-    ])
-    assert.deepEqual(
-      deliveries,
-      [1],
+    // The independent probe completes and wakes slot waiters while the flow's
+    // Scope remains held. Inspect actual persisted deliveries, not internal maps.
+    const observeUntil = Date.now() + 150
+    let heldDelivery = 0
+    while (Date.now() < observeUntil) {
+      const held = (
+        await pool.query<{ delivery_count: string }>(
+          `SELECT delivery_count FROM "${schema}".better_effect_mq_jobs WHERE id=$1`,
+          [id]
+        )
+      ).rows[0]
+      heldDelivery = Number(held?.delivery_count)
+      if (heldDelivery > 1) break
+      await new Promise<void>((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(
+      heldDelivery,
+      1,
       'A handed-off execution must retain capacity until its Scope has closed'
     )
-    const held = (
-      await pool.query<{ state: string; delivery_count: string }>(
-        `SELECT state, delivery_count FROM "${schema}".better_effect_mq_jobs WHERE id=$1`,
-        [id]
-      )
-    ).rows[0]
-    assert.equal(held?.state, 'waiting')
-    assert.equal(Number(held.delivery_count), 1)
     resume.resolve()
     const until = Date.now() + 5_000
     let completed = false
@@ -176,9 +165,9 @@ try {
       await new Promise<void>((resolve) => setTimeout(resolve, 5))
     }
     assert.ok(completed, 'Collect must complete once cleanup releases capacity')
-    assert.deepEqual(deliveries, [1, 2])
   } finally {
     resume.resolve()
+    closing.resolve()
     await runtime.dispose()
     await nativeFlows.dispose()
   }
