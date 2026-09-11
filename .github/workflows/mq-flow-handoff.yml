@@ -41,12 +41,19 @@ jobs:
       - name: Build the actual workspace dependency graph
         id: build
         run: bun run build --filter=better-effect-mq-postgres...
-      - name: Native mixed heartbeat and stale mutation fencing
-        id: leases
-        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
-      - name: Native concurrency-one handoff, typed failure and empty fan-out
+      - name: Handoff admission through real execution Scope cleanup
         if: always() && steps.build.outcome == 'success'
-        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+        run: bun packages/better-effect-mq-postgres/tests/integration/handoff-admission.ts
+      - name: Native mixed heartbeat and stale mutation fencing
+        if: always() && steps.build.outcome == 'success'
+        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
+      - name: Repeated native concurrency-one handoff and clean shutdown
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          for attempt in $(seq 1 20); do
+            echo "HANDOFF REPETITION $attempt"
+            bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+          done
       - name: Borrowed PostgreSQL store transaction-draining regression
         if: always() && steps.build.outcome == 'success'
         run: bun packages/better-effect-mq-postgres/tests/integration/store-dispose.ts
