@@ -477,6 +477,11 @@ export class WorkerSupervisor<
       plan.group.observedEmpty = false
       this.releaseClaim(plan)
       this.notifyIdle()
+      // quiesce deliberately cancels the outstanding claim wait. Its
+      // generation fence and late compensation were established by
+      // claimOnce; stopping is not itself a storage failure event.
+      if (this.claimController.signal.aborted && result.error instanceof StoreOperationTimeoutError)
+        return
       this.emitStoreFailure('claim', result.error, {
         workerId: this.id,
         queue: plan.group.queue
