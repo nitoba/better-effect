@@ -1,0 +1,48 @@
+name: MQ flow lease handoff
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+  pull_request:
+    paths:
+      - 'packages/better-effect-mq/**'
+      - 'packages/better-effect-mq-postgres/**'
+      - '.github/workflows/mq-flow-handoff.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mq-flow-handoff-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mq
+          POSTGRES_PASSWORD: mq_test_only
+          POSTGRES_DB: mq_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U mq -d mq_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MQ_TEST_DATABASE_URL: postgresql://mq:mq_test_only@localhost:5432/mq_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Build the actual workspace dependency graph
+        run: bun run build --filter=better-effect-mq-postgres...
+      - name: Native mixed heartbeat and stale mutation fencing
+        id: leases
+        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
+      - name: Native concurrency-one handoff, typed failure and empty fan-out
+        if: always() && steps.leases.outcome != 'skipped'
+        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
