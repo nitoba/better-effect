@@ -28,13 +28,23 @@ assert.equal(source.split(stderrHook).length - 1, 1)
 source = source.replace(stderrHook, `${stderrHook}\n      process.stderr.write(chunk)`)
 const failureHook = "      console.error('FLOW SCENARIO FAILURE', cause)"
 assert.equal(source.split(failureHook).length - 1, 1)
-source = source.replace(failureHook, `${failureHook}
+source = source.replace(
+  failureHook,
+  `${failureHook}
       for (const table of ['better_effect_mq_flow_children', 'better_effect_mq_flow_outbox']) {
         console.error('PERSISTED FLOW DIAGNOSTIC', table, JSON.stringify((await pool.query(\`SELECT * FROM "\${schema}"."\${table}" LIMIT 30\`)).rows))
-      }`)
+      }`
+)
 writeFileSync(scenario, source)
-for (const command of [['node', 'node_modules/typescript/bin/tsc', '-p', 'tsconfig.flows.json'], ['node', 'dist/flows.js']]) {
-  const result = spawnSync(command[0], command.slice(1), { cwd: directory, stdio: 'inherit', timeout: 45_000 })
+for (const command of [
+  ['node', 'node_modules/typescript/bin/tsc', '-p', 'tsconfig.flows.json'],
+  ['node', 'dist/flows.js']
+]) {
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: directory,
+    stdio: 'inherit',
+    timeout: 45_000
+  })
   if (result.status !== 0) {
     console.error('Diagnostic command exited', result.status, result.signal, result.error)
     process.exitCode = 1

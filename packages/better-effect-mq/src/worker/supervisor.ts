@@ -257,6 +257,8 @@ export class WorkerSupervisor<
   private readonly flowRoutesByKey = new Map<string, FlowRoute>()
   private readonly flowSources = new Map<string, FlowSource>()
   private readonly flowIdsByRoute = new Map<string, Set<JobId>>()
+  private flowSweepRouteCursor = 0
+  private readonly flowChildSweepCursors = new Map<string, Map<JobId, string>>()
   private readonly relayCursors = new Map<string, string | undefined>()
   private readonly relayRetries = new Map<string, FlowOutboxEntry[]>()
   private readonly flowCycleTasks = new Set<Promise<void>>()
@@ -1448,7 +1450,8 @@ export class WorkerSupervisor<
       return
     }
     if (context.value.flowName.length === 0) return
-    const source = this.flowSources.get(group.store.serviceTag)
+    // Sources are indexed by FlowStore identity, not by the associated JobStore.
+    const source = this.flowSources.get(FlowStore.for(group.store).serviceTag)
     if (source === undefined) return
     const outcome =
       attempt.outcome === 'completed'
@@ -1803,15 +1806,26 @@ export class WorkerSupervisor<
 
   private async sweepFlows(): Promise<void> {
     let remaining = this.workerOptions.flowBatchSize
-    for (const route of this.flowRoutes) {
-      if (remaining <= 0) return
+    let visits = 0
+    for (const ids of this.flowIdsByRoute.values()) visits += ids.size
+    let emptyRoutes = 0
+    while (remaining > 0 && visits > 0 && emptyRoutes < this.flowRoutes.length) {
+      const route = this.flowRoutes[this.flowSweepRouteCursor % this.flowRoutes.length]
+      this.flowSweepRouteCursor = (this.flowSweepRouteCursor + 1) % this.flowRoutes.length
+      if (route === undefined) break
       const ids = this.flowIdsByRoute.get(route.key)
-      if (ids === undefined) continue
-      for (const flowId of Array.from(ids)) {
-        if (remaining <= 0) return
-        const inspected = await this.sweepFlow(route, flowId, remaining)
-        remaining -= inspected
+      const flowId = ids?.values().next().value
+      if (ids === undefined || flowId === undefined) {
+        emptyRoutes += 1
+        continue
       }
+      emptyRoutes = 0
+      // Rotate before I/O: a slow parent or a failed inspection must not pin the
+      // next bounded cycle to the same prefix, even across different flow routes.
+      ids.delete(flowId)
+      ids.add(flowId)
+      visits -= 1
+      remaining -= Math.max(1, await this.sweepFlow(route, flowId, remaining))
     }
   }
 
@@ -1829,14 +1843,33 @@ export class WorkerSupervisor<
       return 1
     }
 
+    if (
+      isTerminalJobState(snapshot.value.parent.state) &&
+      snapshot.value.parent.flow.pending === 0 &&
+      snapshot.value.children.every(
+        (child) => child.status !== 'pending' && (child.status !== 'cancelled' || child.cascaded)
+      )
+    ) {
+      this.forgetFlowId(route, flowId)
+      return 1
+    }
+
     // An empty manifest is real but has no children to reconcile or cascade.
     // Still consume one inspection unit so empty flows cannot bypass the budget.
     if (snapshot.value.children.length === 0) return 1
 
     const observations: FlowChildObservation[] = []
+    const children = snapshot.value.children
+    const cursors = this.flowChildSweepCursors.get(route.key) ?? new Map<JobId, string>()
+    this.flowChildSweepCursors.set(route.key, cursors)
+    const previous = cursors.get(flowId)
+    const start =
+      previous === undefined ? -1 : children.findIndex((child) => child.childKey === previous)
     let inspected = 0
-    for (const child of snapshot.value.children) {
-      if (child.status !== 'pending' || inspected >= limit) continue
+    for (let offset = 1; offset <= children.length && inspected < limit; offset += 1) {
+      const child = children[(start + offset) % children.length]
+      if (child === undefined || child.status !== 'pending') continue
+      cursors.set(flowId, child.childKey)
       inspected += 1
       const childStore = route.childStores.get(child.storeKey)
       if (childStore === undefined) continue
@@ -1964,6 +1997,9 @@ export class WorkerSupervisor<
 
   private forgetFlowId(route: FlowRoute, flowId: JobId): void {
     this.flowIdsByRoute.get(route.key)?.delete(flowId)
+    const cursors = this.flowChildSweepCursors.get(route.key)
+    cursors?.delete(flowId)
+    if (cursors?.size === 0) this.flowChildSweepCursors.delete(route.key)
   }
 
   private async runFlowOperation<Value>(
@@ -2240,6 +2276,9 @@ export class WorkerSupervisor<
         return 'wake'
       },
       (cause) => {
+        // Poll/quiesce deliberately abort this notification wait. The operation
+        // helper's abort boundary is not an infrastructure deadline in that case.
+        if (controller.signal.aborted && cause instanceof StoreOperationTimeoutError) return 'wake'
         this.report(cause)
         return 'wake-error'
       }
