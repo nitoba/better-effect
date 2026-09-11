@@ -47,6 +47,9 @@ jobs:
       - name: Native concurrency-one handoff, typed failure and empty fan-out
         if: always() && steps.build.outcome == 'success'
         run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+      - name: Borrowed PostgreSQL store transaction-draining regression
+        if: always() && steps.build.outcome == 'success'
+        run: bun packages/better-effect-mq-postgres/tests/integration/store-dispose.ts
       - name: Bounded recovery fairness regression
         if: always() && steps.build.outcome == 'success'
         run: bun test packages/better-effect-mq/tests/flow-sweep-fairness.test.ts
