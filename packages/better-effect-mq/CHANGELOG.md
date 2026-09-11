@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.3] - 2026-09-11
+
+### Fixed
+
+- Complete durable PostgreSQL fan-out under its original lease and run Collect
+  only after a new claim. Retain execution capacity until phase Scope cleanup
+  finishes, preventing an extra acquisition of an empty flow parent.
+- Route terminal child reports by FlowStore identity and rotate bounded recovery
+  across routes, parents, and pending children so later flows are not starved.
+- Preserve phase-local JobContext while retaining external business Service
+  requirements in Worker layers.
+- Distinguish deliberate notification and claim cancellation during quiescence
+  from storage deadlines without weakening late-claim fencing.
+
+### Compatibility
+
+- Add the optional FlowStore parentLeaseMode descriptor. Existing independent
+  stores retain their previous lease lifecycle when the field is omitted.
+- PostgreSQL handoff requires better-effect-mq-postgres 0.1.4 or newer. The
+  frozen v1 JobRecord inspection API is unchanged; suspended-parent inspection
+  still requires the explicit FlowStore/v2 boundary.
+- Regression coverage includes held Scope cleanup, repeated concurrency-one
+  execution, mixed child failures, nested flows, cancellation, and installed
+  Nest consumers using Node and Bun.
+
 ## [0.1.2] - 2026-09-10
 
 ### Added
