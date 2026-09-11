@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.1.4] - 2026-09-11
+
+### Fixed
+
+- Advertise the PostgreSQL FlowStore's atomic parent lease handoff so Collect
+  runs under a new claim instead of using the relinquished fan-out lease.
+- Fence heartbeat, release, and settlement for suspended parents under native
+  row locks while preserving ordinary jobs in mixed heartbeat batches.
+- Drain already-admitted transactions through commit or rollback and client
+  release before disposing a borrowed store. The application pool stays open.
+- Defer ordinary and controlled claims of records updated after the sampled
+  clock without backdating leases or rejecting older eligible jobs.
+
+### Compatibility
+
+- Use with better-effect-mq 0.1.3 or newer for the corrected Worker lifecycle.
+- No schema migration or persisted job-envelope change is required. The v1
+  inspection state union is unchanged; use the explicit FlowStore/v2 read
+  boundary for parents waiting for children.
+- Real PostgreSQL regressions cover held phase cleanup, stale leases, claim
+  timestamps, transaction draining, and repeated flow execution and shutdown.
+
 ## [0.1.3] - 2026-09-10
 
 - Add contextual `layerWith` and `layerFromConfigWith` factories for PostgreSQL

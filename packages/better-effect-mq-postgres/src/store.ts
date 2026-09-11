@@ -1041,6 +1041,7 @@ class PostgresJobStoreImplementation {
   private listenerReservationHeld = false
   private readonly waiters = new Set<WakeWaiter>()
   private disposal: Promise<void> | undefined
+  private readonly transactions = new Set<Promise<void>>()
   constructor(
     private readonly client: PostgresClient,
     private readonly eventWriter: JobEventStoreWriter = {
@@ -1208,11 +1209,26 @@ class PostgresJobStoreImplementation {
       // Layout detection is only a compatibility aid; normal SQL remains authoritative.
     }
   }
-  private async withTx<T>(
+  private withTx<T>(operation: string, body: (tx: Tx) => Promise<T>): Promise<StoreResult<T>> {
+    if (this.closed) return Promise.resolve(fail(operation, new Error('store is closed')))
+    // Admission is synchronous with closing. A cancelled Worker wait does
+    // not cancel PostgreSQL SQL, so disposal must retain its actual lifetime.
+    const pending = this.runTransaction(operation, body)
+    const drained = pending.then(
+      () => undefined,
+      () => undefined
+    )
+    this.transactions.add(drained)
+    void drained.then(() => {
+      this.transactions.delete(drained)
+    })
+    return pending
+  }
+
+  private async runTransaction<T>(
     operation: string,
     body: (tx: Tx) => Promise<T>
   ): Promise<StoreResult<T>> {
-    if (this.closed) return fail(operation, new Error('store is closed'))
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       let tx: PoolClient | undefined
       let value: T | undefined
@@ -1467,6 +1483,22 @@ class PostgresJobStoreImplementation {
     }
     waiter.resolve(result)
   }
+  /** Lease maintenance must classify known suspension before invoking the frozen
+   * v1 record decoder. The sentinel is private and can never reach a v1 reducer. */
+  private async readLeaseRecord(
+    tx: Tx,
+    id: string
+  ): Promise<JobRecord | { readonly state: 'waiting-children' } | undefined> {
+    const result = await tx.query<Row>(
+      `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 FOR UPDATE`,
+      [this.client.namespace, id]
+    )
+    const found = result.rows[0]
+    if (found === undefined) return undefined
+    if (found.state === 'waiting-children') return { state: 'waiting-children' }
+    return decodeJob(found)
+  }
+
   private async row(tx: Tx, id: string, lock = false): Promise<JobRecord | undefined> {
     const result = await tx.query<Row>(
       `SELECT ${this.jobColumns().join(',')},last_settlement_token,last_settlement_outcome,last_settlement_attempt_sequence FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND id=$2 ${lock ? 'FOR UPDATE' : ''}`,
@@ -1804,6 +1836,13 @@ class PostgresJobStoreImplementation {
     )
     const source = raw.rows[0]
     if (source === undefined) throw new JobNotFoundError({ jobId: request.jobId as never })
+    if (source.state === 'waiting-children') {
+      throw new LeaseLostError({
+        jobId: request.jobId as never,
+        leaseToken: request.leaseToken as never,
+        reason: 'missing-lease'
+      })
+    }
     const current = decodeJob(source)
     const previousToken = optionalString(source.last_settlement_token)
     const previousOutcome = optionalString(source.last_settlement_outcome)
@@ -2159,7 +2198,7 @@ class PostgresJobStoreImplementation {
           }
         }
         const rows = await tx.query<Row>(
-          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $5 FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND updated_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $5 FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, queue.value, now, json(accepted), limit]
         )
         const jobs: JobRecord[] = []
@@ -2427,7 +2466,7 @@ class PostgresJobStoreImplementation {
             : integer(cursorResult.rows[0].cursor_sequence, 'cursor_sequence')
         const scanBudget = Math.min(Math.max(limit * 4, 32), 256)
         const candidates = await tx.query<Row>(
-          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY (sequence > $5) DESC,priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $6 FOR UPDATE SKIP LOCKED`,
+          `SELECT ${this.jobColumns().join(',')} FROM ${this.table(POSTGRES_TABLES.jobs)} WHERE namespace=$1 AND queue=$2 AND state IN ('waiting','delayed') AND run_at_ms <= $3 AND updated_at_ms <= $3 AND (queue,name,version) IN (SELECT queue,name,version FROM jsonb_to_recordset($4::jsonb) AS x(queue text,name text,version bigint)) ORDER BY (sequence > $5) DESC,priority DESC,run_at_ms,sequence,id COLLATE "C" LIMIT $6 FOR UPDATE SKIP LOCKED`,
           [this.client.namespace, queue.value, now, json(accepted), cursor, scanBudget]
         )
         const permitCounts = await tx.query<Row>(
@@ -2814,6 +2853,13 @@ class PostgresJobStoreImplementation {
         )
         const source = raw.rows[0]
         if (source === undefined) throw new JobNotFoundError({ jobId: jobId.value })
+        if (source.state === 'waiting-children') {
+          throw new LeaseLostError({
+            jobId: request.jobId as never,
+            leaseToken: request.leaseToken as never,
+            reason: 'missing-lease'
+          })
+        }
         const current = decodeJob(source)
         const previousToken = optionalString(source.last_settlement_token)
         const previousOutcome = optionalString(source.last_settlement_outcome)
@@ -2962,20 +3008,30 @@ class PostgresJobStoreImplementation {
       if (jobId.value.includes('\u0000')) return definition('jobId', 'must not contain NUL')
       if (leaseToken.value.includes('\u0000'))
         return definition('leaseToken', 'must not contain NUL')
-      return this.transition('release', { jobId: jobId.value, now }, (r) => {
-        if (r.state !== 'active')
-          return Result.err(
-            new LeaseLostError({
-              jobId: r.id,
-              reason: 'missing-lease',
-              leaseToken: leaseToken.value
-            })
-          ) as ResultType<JobTransition, unknown>
-        return reduceJob(r, {
-          type: 'release',
-          jobId: r.id,
-          leaseToken: leaseToken.value,
-          now
+      return this.withTx('release', async (tx) => {
+        const record = await this.readLeaseRecord(tx, jobId.value)
+        if (record?.state === 'waiting-children') {
+          throw new LeaseLostError({
+            jobId: jobId.value,
+            leaseToken: leaseToken.value,
+            reason: 'missing-lease'
+          })
+        }
+        return this.applyTransitionInTx(tx, 'release', { jobId: jobId.value, now }, (r) => {
+          if (r.state !== 'active')
+            return Result.err(
+              new LeaseLostError({
+                jobId: r.id,
+                reason: 'missing-lease',
+                leaseToken: leaseToken.value
+              })
+            ) as ResultType<JobTransition, unknown>
+          return reduceJob(r, {
+            type: 'release',
+            jobId: r.id,
+            leaseToken: leaseToken.value,
+            now
+          })
         })
       })
     } catch (cause) {
@@ -3041,7 +3097,7 @@ class PostgresJobStoreImplementation {
         const lost = [] as JobStoreNamespace.LostLease[]
         const cancellationRequested = [] as never[]
         for (const lease of leases) {
-          const r = await this.row(tx, lease.jobId, true)
+          const r = await this.readLeaseRecord(tx, lease.jobId)
           if (!r) {
             lost.push(
               Object.freeze({
@@ -3730,6 +3786,9 @@ class PostgresJobStoreImplementation {
     for (const waiter of this.waiters) {
       this.finishWaiter(waiter, fail('awaitWake', new Error('store is closed')))
     }
+    // Drain this store's work, not the application's shared pool. Each
+    // promise includes commit/rollback and release of its checked-out client.
+    await Promise.all(this.transactions)
     const listener = this.listener
     this.listener = undefined
     let cleanup: unknown

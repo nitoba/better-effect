@@ -1,0 +1,73 @@
+name: MQ flow lease handoff
+on:
+  push:
+    branches: [fix/mq-flow-lease-handoff]
+  pull_request:
+    paths:
+      - 'packages/better-effect-mq/**'
+      - 'packages/better-effect-mq-postgres/**'
+      - '.github/workflows/mq-flow-handoff.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mq-flow-handoff-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mq
+          POSTGRES_PASSWORD: mq_test_only
+          POSTGRES_DB: mq_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U mq -d mq_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MQ_TEST_DATABASE_URL: postgresql://mq:mq_test_only@localhost:5432/mq_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Build the actual workspace dependency graph
+        id: build
+        run: bun run build --filter=better-effect-mq-postgres...
+      - name: Handoff admission through real execution Scope cleanup
+        if: always() && steps.build.outcome == 'success'
+        run: bun packages/better-effect-mq-postgres/tests/integration/handoff-admission.ts
+      - name: Native mixed heartbeat and stale mutation fencing
+        if: always() && steps.build.outcome == 'success'
+        run: bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts
+      - name: Repeated native concurrency-one handoff and clean shutdown
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          for attempt in $(seq 1 20); do
+            echo "HANDOFF REPETITION $attempt"
+            bun packages/better-effect-mq-postgres/tests/integration/flow-handoff.ts --worker
+          done
+      - name: Borrowed PostgreSQL store transaction-draining regression
+        if: always() && steps.build.outcome == 'success'
+        run: bun packages/better-effect-mq-postgres/tests/integration/store-dispose.ts
+      - name: Claim clock eligibility without timestamp coercion
+        if: always() && steps.build.outcome == 'success'
+        run: bun packages/better-effect-mq-postgres/tests/integration/claim-clock.ts
+      - name: Bounded recovery fairness regression
+        if: always() && steps.build.outcome == 'success'
+        run: bun test packages/better-effect-mq/tests/flow-sweep-fairness.test.ts
+      - name: Core and PostgreSQL source qualification
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          for package in better-effect-mq better-effect-mq-postgres; do
+            (cd packages/$package && bun run typecheck && bun test && bun run lint && bun run format:check) > /tmp/$package.log 2>&1 || { tail -160 /tmp/$package.log; exit 1; }
+            tail -12 /tmp/$package.log
+          done
+          git diff --exit-code

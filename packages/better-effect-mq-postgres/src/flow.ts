@@ -96,6 +96,7 @@ import {
 } from './layer-factory'
 
 const flowDescriptor: FlowStoreV2Descriptor = Object.freeze({
+  parentLeaseMode: 'handoff',
   protocolVersion: protocolVersionV2,
   layoutVersion: flowLayoutVersion,
   migration: makeFlowMigration({ status: 'complete', from: undefined, to: flowLayoutVersion })

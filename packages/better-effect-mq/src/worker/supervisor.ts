@@ -168,6 +168,8 @@ type AttemptState = {
   failureNotified?: boolean
   leaseLostNotified?: boolean
   terminalNotified?: boolean
+  /** The durable store acknowledged release of this phase's lease. */
+  flowHandoff?: boolean
   durationMs?: number
 }
 
@@ -255,6 +257,8 @@ export class WorkerSupervisor<
   private readonly flowRoutesByKey = new Map<string, FlowRoute>()
   private readonly flowSources = new Map<string, FlowSource>()
   private readonly flowIdsByRoute = new Map<string, Set<JobId>>()
+  private flowSweepRouteCursor = 0
+  private readonly flowChildSweepCursors = new Map<string, Map<JobId, string>>()
   private readonly relayCursors = new Map<string, string | undefined>()
   private readonly relayRetries = new Map<string, FlowOutboxEntry[]>()
   private readonly flowCycleTasks = new Set<Promise<void>>()
@@ -279,6 +283,15 @@ export class WorkerSupervisor<
     this.workerId = options.id
     this.jobStores = jobStores
     this.flowStores = flowStores
+    for (const store of flowStores.values()) {
+      const mode = store.descriptor.parentLeaseMode
+      if (mode !== undefined && mode !== 'retained' && mode !== 'handoff') {
+        throw new JobDefinitionError({
+          field: 'flows.parentLeaseMode',
+          message: 'unsupported parent lease lifecycle'
+        })
+      }
+    }
     this.flowRoutes = makeFlowRoutes(flows)
     this.groups = makeGroups(handlers, options, this.flowRoutes)
     for (const route of this.flowRoutes) {
@@ -424,6 +437,7 @@ export class WorkerSupervisor<
 
   private abortActiveAttempts(): void {
     for (const attempt of this.activeAttempts.values()) {
+      if (attempt.flowHandoff) continue
       if (attempt.state === 'running') attempt.state = 'cancelling'
       this.shutdownAborts.add(attempt.key)
       attempt.timeoutCancel?.()
@@ -463,6 +477,11 @@ export class WorkerSupervisor<
       plan.group.observedEmpty = false
       this.releaseClaim(plan)
       this.notifyIdle()
+      // quiesce deliberately cancels the outstanding claim wait. Its
+      // generation fence and late compensation were established by
+      // claimOnce; stopping is not itself a storage failure event.
+      if (this.claimController.signal.aborted && result.error instanceof StoreOperationTimeoutError)
+        return
       this.emitStoreFailure('claim', result.error, {
         workerId: this.id,
         queue: plan.group.queue
@@ -494,11 +513,9 @@ export class WorkerSupervisor<
       return undefined
     }
 
-    // A Flow parent remains admitted while its children run so its lease can be
-    // renewed and its execution Scope stays alive. It must not consume the only
-    // ordinary Worker slot, otherwise a concurrency-1 Worker deadlocks after fanOut.
-    const globalAvailable =
-      this.workerOptions.concurrency - this.activeNonFlowAttempts() - this.reserved
+    // Handoff-mode phases retain capacity until their execution Scope has closed.
+    // Retained-lease reference adapters keep their existing separate admission model.
+    const globalAvailable = this.workerOptions.concurrency - this.occupiedSlots() - this.reserved
     const queueReserved = this.reservedByQueue.get(group.key) ?? 0
     const queueAvailable =
       this.workerOptions.queueLimit(group.queue) - queueReserved - this.activeInQueue(group)
@@ -529,7 +546,7 @@ export class WorkerSupervisor<
 
     for (const attempt of this.activeAttempts.values()) {
       if (
-        attempt.entry.flow === undefined &&
+        (attempt.entry.flow === undefined || this.usesFlowLeaseHandoff(attempt.entry.flow)) &&
         attempt.entry.queue === group.queue &&
         attempt.entry.store.serviceTag === group.store.serviceTag
       ) {
@@ -748,16 +765,25 @@ export class WorkerSupervisor<
 
   private canStart(entry: HandlerEntry, group: ClaimGroup): boolean {
     return (
-      this.activeNonFlowAttempts() < this.workerOptions.concurrency &&
+      this.occupiedSlots() < this.workerOptions.concurrency &&
       this.activeInQueue(group) < this.workerOptions.queueLimit(group.queue) &&
       this.availableForHandler(entry) > 0
     )
   }
 
-  private activeNonFlowAttempts(): number {
+  private usesFlowLeaseHandoff(route: FlowRoute | undefined): boolean {
+    return (
+      route !== undefined &&
+      this.flowStores.get(route.parentFlowStore.serviceTag)?.descriptor.parentLeaseMode ===
+        'handoff'
+    )
+  }
+
+  private occupiedSlots(): number {
     let count = 0
     for (const attempt of this.activeAttempts.values()) {
-      if (attempt.entry.flow === undefined) count += 1
+      if (attempt.entry.flow === undefined || this.usesFlowLeaseHandoff(attempt.entry.flow))
+        count += 1
     }
     return count
   }
@@ -837,7 +863,7 @@ export class WorkerSupervisor<
 
     try {
       const result = await this.executeProgram(attempt, context)
-      if (attempt.state === 'lost') return
+      if (attempt.state === 'lost' || attempt.flowHandoff) return
       if (this.shutdownAborts.has(attempt.key)) {
         await this.releaseJob(group, attempt.job)
         return
@@ -863,7 +889,7 @@ export class WorkerSupervisor<
         )
       }
     } catch (cause) {
-      if (attempt.state === 'lost') return
+      if (attempt.state === 'lost' || attempt.flowHandoff) return
       if (this.shutdownAborts.has(attempt.key)) {
         await this.releaseJob(group, attempt.job)
         return
@@ -896,7 +922,7 @@ export class WorkerSupervisor<
 
     // Encoding a result/failure is an async boundary. Cancellation may have been
     // observed while it was pending, so it must win before settlement begins.
-    if (this.isLost(attempt)) return
+    if (this.isLost(attempt) || attempt.flowHandoff) return
     if (this.shutdownAborts.has(attempt.key)) {
       await this.releaseJob(group, attempt.job)
       return
@@ -992,6 +1018,16 @@ export class WorkerSupervisor<
         })
       )
       if (Result.isError(fanOut)) return Result.err(fanOut.error)
+      if (this.usesFlowLeaseHandoff(route)) {
+        // The successful native transaction owns the manifest now. Do not encode
+        // this phase as the parent result or settle/release its relinquished lease.
+        attempt.flowHandoff = true
+        attempt.timeoutCancel?.()
+        this.rememberFlowId(route, flowId)
+        await this.enqueueFlowChildren(route, specs.value)
+        this.requestFlowRelay()
+        return Result.ok(undefined)
+      }
       this.rememberFlowId(route, flowId)
       snapshot = {
         parent: fanOut.value.parent,
@@ -1001,9 +1037,23 @@ export class WorkerSupervisor<
       await this.enqueueFlowChildren(route, specs.value)
     }
 
-    const settled = await this.awaitFlow(route, flowId, attempt.controller.signal)
-    if (Result.isError(settled)) return Result.err(settled.error)
-    snapshot = settled.value
+    if (this.usesFlowLeaseHandoff(route)) {
+      // This invocation was admitted by a new native claim. The manifest's token
+      // can be archival, so it is not a replacement for the claimed job's lease.
+      if (snapshot.parent.state !== 'active' || snapshot.parent.flow.pending !== 0) {
+        const error = new LeaseLostError({
+          jobId: flowId,
+          leaseToken: attempt.job.leaseToken,
+          reason: 'missing-lease'
+        })
+        this.markLost(attempt, error)
+        return Result.err(error)
+      }
+    } else {
+      const settled = await this.awaitFlow(route, flowId, attempt.controller.signal)
+      if (Result.isError(settled)) return Result.err(settled.error)
+      snapshot = settled.value
+    }
     if (snapshot.parent.state === 'failed' || snapshot.parent.state === 'cancelled') {
       return Result.err(flowFailureForParent(snapshot.parent.failure))
     }
@@ -1401,7 +1451,8 @@ export class WorkerSupervisor<
       return
     }
     if (context.value.flowName.length === 0) return
-    const source = this.flowSources.get(group.store.serviceTag)
+    // Sources are indexed by FlowStore identity, not by the associated JobStore.
+    const source = this.flowSources.get(FlowStore.for(group.store).serviceTag)
     if (source === undefined) return
     const outcome =
       attempt.outcome === 'completed'
@@ -1756,15 +1807,26 @@ export class WorkerSupervisor<
 
   private async sweepFlows(): Promise<void> {
     let remaining = this.workerOptions.flowBatchSize
-    for (const route of this.flowRoutes) {
-      if (remaining <= 0) return
+    let visits = 0
+    for (const ids of this.flowIdsByRoute.values()) visits += ids.size
+    let emptyRoutes = 0
+    while (remaining > 0 && visits > 0 && emptyRoutes < this.flowRoutes.length) {
+      const route = this.flowRoutes[this.flowSweepRouteCursor % this.flowRoutes.length]
+      this.flowSweepRouteCursor = (this.flowSweepRouteCursor + 1) % this.flowRoutes.length
+      if (route === undefined) break
       const ids = this.flowIdsByRoute.get(route.key)
-      if (ids === undefined) continue
-      for (const flowId of Array.from(ids)) {
-        if (remaining <= 0) return
-        const inspected = await this.sweepFlow(route, flowId, remaining)
-        remaining -= inspected
+      const flowId = ids?.values().next().value
+      if (ids === undefined || flowId === undefined) {
+        emptyRoutes += 1
+        continue
       }
+      emptyRoutes = 0
+      // Rotate before I/O: a slow parent or a failed inspection must not pin the
+      // next bounded cycle to the same prefix, even across different flow routes.
+      ids.delete(flowId)
+      ids.add(flowId)
+      visits -= 1
+      remaining -= Math.max(1, await this.sweepFlow(route, flowId, remaining))
     }
   }
 
@@ -1782,10 +1844,35 @@ export class WorkerSupervisor<
       return 1
     }
 
+    if (
+      (snapshot.value.parent.state === 'completed' ||
+        snapshot.value.parent.state === 'failed' ||
+        snapshot.value.parent.state === 'cancelled') &&
+      snapshot.value.parent.flow.pending === 0 &&
+      snapshot.value.children.every(
+        (child) => child.status !== 'pending' && (child.status !== 'cancelled' || child.cascaded)
+      )
+    ) {
+      this.forgetFlowId(route, flowId)
+      return 1
+    }
+
+    // An empty manifest is real but has no children to reconcile or cascade.
+    // Still consume one inspection unit so empty flows cannot bypass the budget.
+    if (snapshot.value.children.length === 0) return 1
+
     const observations: FlowChildObservation[] = []
+    const children = snapshot.value.children
+    const cursors = this.flowChildSweepCursors.get(route.key) ?? new Map<JobId, string>()
+    this.flowChildSweepCursors.set(route.key, cursors)
+    const previous = cursors.get(flowId)
+    const start =
+      previous === undefined ? -1 : children.findIndex((child) => child.childKey === previous)
     let inspected = 0
-    for (const child of snapshot.value.children) {
-      if (child.status !== 'pending' || inspected >= limit) continue
+    for (let offset = 1; offset <= children.length && inspected < limit; offset += 1) {
+      const child = children[(start + offset) % children.length]
+      if (child === undefined || child.status !== 'pending') continue
+      cursors.set(flowId, child.childKey)
       inspected += 1
       const childStore = route.childStores.get(child.storeKey)
       if (childStore === undefined) continue
@@ -1913,6 +2000,9 @@ export class WorkerSupervisor<
 
   private forgetFlowId(route: FlowRoute, flowId: JobId): void {
     this.flowIdsByRoute.get(route.key)?.delete(flowId)
+    const cursors = this.flowChildSweepCursors.get(route.key)
+    cursors?.delete(flowId)
+    if (cursors?.size === 0) this.flowChildSweepCursors.delete(route.key)
   }
 
   private async runFlowOperation<Value>(
@@ -1985,7 +2075,10 @@ export class WorkerSupervisor<
           attempt.job.leaseToken !== undefined &&
           attempt.entry.store.serviceTag === store.serviceTag
       )
-      .filter((attempt) => attempt.state !== 'lost' && attempt.state !== 'settling')
+      .filter(
+        (attempt) =>
+          !attempt.flowHandoff && attempt.state !== 'lost' && attempt.state !== 'settling'
+      )
       .map((attempt) => ({ jobId: attempt.job.id, leaseToken: attempt.job.leaseToken! }))
     if (leases.length === 0) return
     const snapshot = new Map(
@@ -2028,6 +2121,7 @@ export class WorkerSupervisor<
       const attempt = snapshot.get(heartbeatKey(lost.jobId, lost.leaseToken))
       if (
         attempt === undefined ||
+        attempt.flowHandoff ||
         attempt.state === 'lost' ||
         attempt.job.leaseToken !== lost.leaseToken ||
         attempt.job.leaseOwner !== this.id
@@ -2043,7 +2137,7 @@ export class WorkerSupervisor<
         (candidate) =>
           candidate.job.id === jobId && candidate.entry.store.serviceTag === store.serviceTag
       )
-      if (attempt === undefined || attempt.state !== 'running') continue
+      if (attempt === undefined || attempt.flowHandoff || attempt.state !== 'running') continue
       attempt.state = 'cancelling'
       attempt.controller.abort(new Error('Job cancellation requested'))
     }
@@ -2054,7 +2148,7 @@ export class WorkerSupervisor<
   }
 
   private markLost(attempt: AttemptState, cause: unknown): void {
-    if (attempt.state === 'lost') return
+    if (attempt.state === 'lost' || attempt.flowHandoff) return
     attempt.state = 'lost'
     attempt.timeoutCancel?.()
     if (attempt.leaseLostNotified !== true) {
@@ -2162,9 +2256,12 @@ export class WorkerSupervisor<
           signal: controller.signal
         }),
       undefined,
-      1,
-      1,
-      undefined,
+      this.workerOptions.pollIntervalMs,
+      // Waiting for a notification is expected to last the polling interval.
+      // Give a cooperative adapter time to settle after the poll aborts it;
+      // an unresponsive adapter remains bounded by the operation deadline.
+      this.workerOptions.pollIntervalMs + this.workerOptions.storeOperationTimeoutMs,
+      controller.signal,
       this.jobStores.get(group.store.serviceTag)
     )
     const wakeResult = wake.then(
@@ -2182,6 +2279,9 @@ export class WorkerSupervisor<
         return 'wake'
       },
       (cause) => {
+        // Poll/quiesce deliberately abort this notification wait. The operation
+        // helper's abort boundary is not an infrastructure deadline in that case.
+        if (controller.signal.aborted && cause instanceof StoreOperationTimeoutError) return 'wake'
         this.report(cause)
         return 'wake-error'
       }

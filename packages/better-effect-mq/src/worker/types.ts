@@ -173,7 +173,9 @@ type WorkerFlowRequirement<Registration extends WorkerFlowRegistration> =
     infer FanOutRequirements,
     infer CollectRequirements
   >
-    ? FlowHandlerRequirements<Definition, FanOutRequirements, CollectRequirements>
+    ? WithoutJobContext<
+        FlowHandlerRequirements<Definition, FanOutRequirements, CollectRequirements>
+      >
     : Registration extends AnyFlowDefinition
       ? FlowDefinitionRequirements<Registration>
       : never
