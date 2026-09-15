@@ -31,10 +31,7 @@ for (const payload of payloads) {
     const database = new Database(':memory:')
     SqliteJobStore.migrate({ database })
     const runtime = await Runtime.make(
-      Layer.merge(
-        SqliteJobStore.layer({ database }),
-        SqliteJobScheduleStore.layer({ database })
-      )
+      Layer.merge(SqliteJobStore.layer({ database }), SqliteJobScheduleStore.layer({ database }))
     )
     try {
       const store = await runtime.run(() => ServiceRuntime.resolve(JobScheduleStore))

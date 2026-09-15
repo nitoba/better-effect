@@ -265,11 +265,13 @@ const logicalDigest = (record: ScheduleRecord): string =>
   })
 
 const cloneRecord = (record: ScheduleRecord): ScheduleRecord => {
-  const payload = parseJson(record.payload, 'payload')
+  // ScheduleRecord.payload is already decoded; strings must not be parsed again.
+  const payload = snapshotJson(record.payload, 'payload')
+  if (Result.isError(payload)) throw payload.error
   return Object.freeze({
     ...record,
     job: Object.freeze({ ...record.job }),
-    payload,
+    payload: payload.value,
     metadata: Object.freeze({ ...record.metadata }),
     backoff: record.backoff === undefined ? undefined : Object.freeze({ ...record.backoff }),
     misfire: Object.freeze({ ...record.misfire }) as MisfirePolicy
