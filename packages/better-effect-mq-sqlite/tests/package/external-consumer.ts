@@ -63,7 +63,9 @@ try {
     ],
     packageRoot
   )
-  console.log('external SQLite package consumer passed')
+  run(['node', '--experimental-sqlite', 'schedule-json.mjs', 'node'], fixtureRoot)
+  run(['bun', 'schedule-json.mjs', 'bun'], fixtureRoot)
+  console.log('external SQLite package consumer and Node/Bun schedule JSON persistence passed')
 } finally {
   await rm(nodeModules, { recursive: true, force: true })
   await rm(fixtureLock, { force: true })
