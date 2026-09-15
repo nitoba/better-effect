@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Fix schedule cloning to copy validated, already-decoded JSON instead of parsing
+  scalar strings a second time. Values such as `"null"`, `"123"`, `"true"`, and
+  JSON-looking object/array strings retain their type across reads, upserts,
+  pause/resume, and accepted or stale ticks (issue #390).
+- Add native regressions inspecting both returned records and persisted schedule
+  and emitted-job payload columns. Extend the installed-package consumer to run
+  Node and Bun file-reopen checks against the actual packed adapter.
+- Keep schema/migration checksums, occurrence fencing, namespaces, and dependency
+  versions unchanged. This prevents new corruption; previously overwritten
+  payloads require an authoritative original value and are not repaired
+  automatically. This entry does not indicate an npm publication.
+
 ## [0.1.2] - 2026-09-10
 
 - Add QueueControls protocol v3 support with durable controls, persisted dispatch keys, atomic
