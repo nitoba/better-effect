@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.3] - 2026-09-15
 
 - Fix schedule cloning to copy validated, already-decoded JSON instead of parsing
   scalar strings a second time. Values such as `"null"`, `"123"`, `"true"`, and
@@ -12,7 +12,7 @@
 - Keep schema/migration checksums, occurrence fencing, namespaces, and dependency
   versions unchanged. This prevents new corruption; previously overwritten
   payloads require an authoritative original value and are not repaired
-  automatically. This entry does not indicate an npm publication.
+  automatically.
 
 ## [0.1.2] - 2026-09-10
 
